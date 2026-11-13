@@ -10,6 +10,7 @@ the ``rl`` launcher under torchrun).
 
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.utils.config import check_mode, cli
+from prime_rl.utils.pathing import check_resume_dir_mode
 from prime_rl.utils.process import set_proc_title
 
 
@@ -17,6 +18,8 @@ def main():
     set_proc_title("Trainer")
     check_mode("trainer")
     config = cli(TrainerConfig)
+    # Fail before the checkpoint load when resume.dir forks another run kind's checkpoint.
+    check_resume_dir_mode(config.resume, "rl")
     from prime_rl.trainer.rl.train import train
 
     train(config)

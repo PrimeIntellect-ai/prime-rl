@@ -18,6 +18,7 @@ from prime_rl.entrypoints.inference import mooncake_offloads, vllm_overrides_fra
 from prime_rl.utils.config import check_mode, cli, dump_resolved_config, dump_rl_components
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
+    check_resume_dir_mode,
     clean_future_steps,
     format_config_message,
     format_log_message,
@@ -569,6 +570,9 @@ def rl_slurm(config: RLConfig):
 
 
 def rl(config: RLConfig):
+    # A pretrain or sft checkpoint has no orchestrator progress to resume; fail before startup.
+    check_resume_dir_mode(config.resume, "rl")
+
     ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None
     prepare_run(config, ckpt_output_dir)
 

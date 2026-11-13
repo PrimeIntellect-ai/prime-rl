@@ -92,6 +92,7 @@ from prime_rl.control.server import ControlServer
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
 from prime_rl.utils.pathing import (
+    check_resume_dir_mode,
     resolve_latest_ckpt_step,
     resolve_latest_trainer_ckpt_step,
     write_resolved_config,
@@ -899,7 +900,10 @@ def train(config: TrainerConfig):
 def main():
     """Main entry-point for RL trainer. Run using `uv run trainer`"""
     set_proc_title("Trainer")
-    train(cli(TrainerConfig))
+    config = cli(TrainerConfig)
+    # Fail before the checkpoint load when resume.dir forks another run kind's checkpoint.
+    check_resume_dir_mode(config.resume, "rl")
+    train(config)
 
 
 if __name__ == "__main__":

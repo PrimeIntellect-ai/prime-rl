@@ -1,11 +1,18 @@
+import sys
+from pathlib import Path
+
 import pytest
 
+from prime_rl.configs.shared import ResumeConfig
+from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.transports.weights.base import FINISHED_MARKER, SENDER_READY_MARKER, latest_finished_broadcast
 from prime_rl.utils.pathing import (
+    check_resume_dir_mode,
     clean_future_steps,
     create_attempt_dirs,
     get_batch_dir,
     get_broadcast_dir,
+    get_checkpoint_mode,
     get_step_path,
     resolve_latest_ckpt_step,
     resolve_latest_trainer_ckpt_step,
@@ -120,6 +127,136 @@ def test_clean_future_steps_rebuilds_resume_broadcast(tmp_path):
     assert get_step_path(broadcast_dir, 1).exists()
     assert not get_step_path(broadcast_dir, 2).exists()
     assert not get_step_path(broadcast_dir, 3).exists()
+
+
+ALL_SKIPS = CheckpointConfig(skip_scheduler=True, skip_optimizer=True, skip_dataloader=True)
+"""The ``ckpt`` flags that load only the weights — the workaround from the incident."""
+
+
+def _write_run_configs(run_dir: Path, *names: str) -> Path:
+    """A run directory as a launcher leaves it: ``configs/attempt_1/resolved/<name>.json``."""
+    config_dir, _ = create_attempt_dirs(run_dir)
+    for name in names:
+        (config_dir / f"{name}.json").touch()
+    return config_dir
+
+
+def _step_dir(run_dir: Path, step: int) -> Path:
+    step_dir = run_dir / "checkpoints" / f"step_{step}"
+    step_dir.mkdir(parents=True)
+    return step_dir
+
+
+def test_resume_dir_from_another_mode_raises(tmp_path):
+    """A pretrain checkpoint cannot resume an sft run: the error names both modes and the way out."""
+    source_dir = tmp_path / "pretrain-run"
+    _write_run_configs(source_dir, "pretrain", "eval")
+    step_dir = _step_dir(source_dir, 300)
+
+    with pytest.raises(ValueError) as error:
+        check_resume_dir_mode(ResumeConfig(dir=step_dir), "sft")
+
+    message = str(error.value)
+    assert f"the pretrain checkpoint {step_dir}" in message
+    assert "this run is sft" in message
+    assert f'`model.init_from = "{step_dir}"`' in message
+    assert "ckpt.skip_scheduler" in message
+
+
+def test_resume_dir_same_mode_passes(tmp_path):
+    """Forking a run of the same kind keeps working, with only online evals' config alongside."""
+    source_dir = tmp_path / "sft-run"
+    _write_run_configs(source_dir, "sft", "eval")
+
+    check_resume_dir_mode(ResumeConfig(dir=_step_dir(source_dir, 50)), "sft")
+
+
+def test_resume_dir_unknown_mode_passes(tmp_path):
+    """A checkpoint whose run dir keeps no resolved config keeps today's behavior."""
+    source_dir = tmp_path / "old-run"
+    config_dir, _ = create_attempt_dirs(source_dir)
+    (config_dir / "trainer.json").touch()
+
+    check_resume_dir_mode(ResumeConfig(dir=_step_dir(source_dir, 10)), "pretrain")
+
+
+def test_resume_dir_mode_ignores_configs_no_kind_owns(tmp_path):
+    """``trainer.json`` is every trainer's config, and a hosted sft attempt held only ``eval.json``."""
+    source_dir = tmp_path / "hosted-run"
+    _write_run_configs(source_dir, "trainer", "eval")
+
+    assert get_checkpoint_mode(_step_dir(source_dir, 10)) is None
+
+
+def test_resume_dir_mode_reads_attempts_without_latest_symlink(tmp_path):
+    """A hosted volume restores ``configs/latest`` from R2 as a plain ``latest.rclonelink`` file."""
+    source_dir = tmp_path / "hosted-run"
+    _write_run_configs(source_dir, "pretrain")
+    (source_dir / "configs" / "latest").unlink()
+    (source_dir / "configs" / "latest.rclonelink").touch()
+
+    assert get_checkpoint_mode(_step_dir(source_dir, 5)) == "pretrain"
+
+
+def test_resume_dir_mode_reads_the_newest_attempt_first(tmp_path):
+    """``attempt_10`` wins over ``attempt_2``: the attempts are ordered by number, not by name."""
+    source_dir = tmp_path / "hosted-run"
+    for number, mode in ((2, "pretrain"), (10, "sft")):
+        resolved = source_dir / "configs" / f"attempt_{number}" / "resolved"
+        resolved.mkdir(parents=True)
+        (resolved / f"{mode}.json").touch()
+    (source_dir / "configs" / "latest.rclonelink").touch()
+
+    assert get_checkpoint_mode(_step_dir(source_dir, 5)) == "sft"
+
+
+def test_resume_dir_all_skips_force_the_load(tmp_path):
+    source_dir = tmp_path / "rl-run"
+    # A local rl launch writes only its subconfigs: the orchestrator's config is rl's alone.
+    _write_run_configs(source_dir, "trainer", "orchestrator")
+    step_dir = _step_dir(source_dir, 20)
+
+    with pytest.raises(ValueError):
+        check_resume_dir_mode(ResumeConfig(dir=step_dir), "pretrain")
+    check_resume_dir_mode(ResumeConfig(dir=step_dir), "pretrain", ckpt=ALL_SKIPS)
+
+
+def test_resume_dir_from_another_mode_raises_for_rl(tmp_path):
+    """No ckpt.skip_* flag stands in for the orchestrator's progress: rl cannot force the load."""
+    source_dir = tmp_path / "sft-run"
+    _write_run_configs(source_dir, "sft")
+    step_dir = _step_dir(source_dir, 100)
+
+    with pytest.raises(ValueError) as error:
+        check_resume_dir_mode(ResumeConfig(dir=step_dir), "rl", ckpt=ALL_SKIPS)
+
+    assert f'`trainer.model.init_from = "{step_dir}"`' in str(error.value)
+
+
+def test_sft_trainer_entrypoint_rejects_cross_mode_resume(tmp_path, monkeypatch):
+    """A hosted ``-m prime_rl.trainer.sft.train`` stops before the trainer's heavy imports."""
+    source_dir = tmp_path / "pretrain-run"
+    _write_run_configs(source_dir, "pretrain")
+    step_dir = _step_dir(source_dir, 5)
+
+    from prime_rl.trainer.sft.train import main
+
+    monkeypatch.setattr(sys, "argv", ["sft", "--resume.dir", str(step_dir)])
+    with pytest.raises(ValueError, match="this run is sft"):
+        main()
+
+
+def test_orchestrator_entrypoint_rejects_cross_mode_resume(tmp_path, monkeypatch):
+    """A hosted ``orchestrator`` stops on an sft checkpoint before it loads its own progress."""
+    source_dir = tmp_path / "sft-run"
+    _write_run_configs(source_dir, "sft")
+    step_dir = _step_dir(source_dir, 10)
+
+    import prime_rl.entrypoints.orchestrator as entrypoint
+
+    monkeypatch.setattr(sys, "argv", ["orchestrator", "--resume.dir", str(step_dir)])
+    with pytest.raises(ValueError, match="this run is rl"):
+        entrypoint.main()
 
 
 def test_latest_trainer_checkpoint_skips_steps_without_a_complete_trainer_save(tmp_path):
