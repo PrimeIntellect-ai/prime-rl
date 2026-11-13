@@ -117,7 +117,11 @@ def clip_grad_norm_(
 
 
 class _PageLockedMapping(mmap.mmap):
-    """Anonymous shared mapping that stays page-locked with cudaHostRegister until it is freed."""
+    """Anonymous shared mapping that stays page-locked with cudaHostRegister until it is freed.
+
+    Shared (the `mmap` default) rather than private: on fork, Linux eagerly copies page-locked private
+    pages into the child, so every forked worker would duplicate the whole buffer.
+    """
 
     registered_ptr: int | None = None
 
