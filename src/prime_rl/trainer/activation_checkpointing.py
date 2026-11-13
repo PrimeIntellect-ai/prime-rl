@@ -1,9 +1,11 @@
 """Whole-block activation checkpointing with an operator-based policy."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from fnmatch import fnmatchcase
 from functools import partial
 
 import torch
+import torch.fx.traceback as fx_traceback
 from torch import nn
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     CheckpointImpl,
@@ -17,7 +19,7 @@ from torch.utils.checkpoint import (
     create_selective_checkpoint_contexts,
 )
 
-from prime_rl.configs.trainer import ActivationCheckpointConfig
+from prime_rl.configs.trainer import MODULE_TARGET_SEPARATOR, ActivationCheckpointConfig
 
 # FSDP's replay-specific hooks emit a different number of profiler markers.
 SAC_IGNORED_OPS.update(
@@ -94,6 +96,64 @@ DEFAULT_SELECTIVE_SAVE_OPERATIONS = frozenset(
 DEFAULT_SELECTIVE_TARGETS = DEFAULT_SELECTIVE_SAVE_NAMESPACES | DEFAULT_SELECTIVE_SAVE_OPERATIONS
 
 
+def _split_targets(targets: Iterable[str]) -> tuple[frozenset[str], tuple[tuple[str, str], ...]]:
+    """Split targets into plain operation targets and (operation target, module path pattern) pairs."""
+    operation_targets = set()
+    module_targets = []
+    for target in targets:
+        operation_target, separator, module_pattern = target.partition(MODULE_TARGET_SEPARATOR)
+        if separator:
+            module_targets.append((operation_target, module_pattern))
+        else:
+            operation_targets.add(target)
+    return frozenset(operation_targets), tuple(module_targets)
+
+
+def _matches_operation(operation: torch._ops.OpOverload | torch._ops.HigherOrderOperator, targets) -> bool:
+    return operation.namespace in targets or operation.name() in targets
+
+
+def _traced_block_module_paths() -> list[str]:
+    """Return the block-relative paths of the modules enclosing the operation that torch.compile is tracing."""
+    if not fx_traceback.has_preserved_node_meta():
+        raise RuntimeError(
+            "Module-qualified activation checkpointing targets need the checkpointed blocks to run under "
+            "torch.compile without graph breaks, which records the module of each traced operation."
+        )
+    module_sources = [source for source, _ in fx_traceback.get_current_meta().get("nn_module_stack", {}).values()]
+    if not module_sources:
+        return []
+    checkpointed_block_prefix = f"{module_sources[0]}."
+    return [
+        source.removeprefix(checkpointed_block_prefix)
+        for source in module_sources[1:]
+        if source.startswith(checkpointed_block_prefix)
+    ]
+
+
+def _matches_module_target(
+    operation: torch._ops.OpOverload | torch._ops.HigherOrderOperator,
+    module_targets: tuple[tuple[str, str], ...],
+    matched_module_targets: set[str],
+) -> bool:
+    module_paths = _traced_block_module_paths()
+    matched = {
+        f"{operation_target}{MODULE_TARGET_SEPARATOR}{pattern}"
+        for operation_target, pattern in module_targets
+        if _matches_operation(operation, (operation_target,))
+        and any(fnmatchcase(path, pattern) for path in module_paths)
+    }
+    matched_module_targets.update(matched)
+    return bool(matched)
+
+
+def unmatched_module_patterns(targets: Iterable[str], blocks: Iterable[nn.Module]) -> list[str]:
+    """Return the module path patterns in targets that match no submodule of any block."""
+    _, module_targets = _split_targets(targets)
+    paths = {path for block in blocks for path, _ in block.named_modules() if path}
+    return [pattern for _, pattern in module_targets if not any(fnmatchcase(path, pattern) for path in paths)]
+
+
 # PyTorch calls checkpoint policies with the dispatched operation's operands.
 # Keyword operands let us distinguish CUDA-to-CPU copies from other _to_copy calls.
 def _mandatory_checkpoint_policy(
@@ -118,12 +178,16 @@ def _selective_checkpoint_policy(
     operation: torch._ops.OpOverload | torch._ops.HigherOrderOperator,
     *args,
     targets: frozenset[str] = DEFAULT_SELECTIVE_TARGETS,
+    module_targets: tuple[tuple[str, str], ...] = (),
+    matched_module_targets: set[str],
     **kwargs,
 ) -> CheckpointPolicy:
     runtime_policy = _mandatory_checkpoint_policy(context, operation, *args, **kwargs)
     if runtime_policy is CheckpointPolicy.MUST_SAVE:
         return runtime_policy
-    if operation.namespace in targets or operation.name() in targets:
+    if _matches_operation(operation, targets):
+        return CheckpointPolicy.MUST_SAVE
+    if module_targets and _matches_module_target(operation, module_targets, matched_module_targets):
         return CheckpointPolicy.MUST_SAVE
     return CheckpointPolicy.PREFER_RECOMPUTE
 
@@ -175,12 +239,37 @@ class TokenChunkedCheckpointWrapper(CheckpointWrapper):
         return torch.cat(outputs, dim=1)
 
 
-def get_activation_checkpoint_wrapper(config: ActivationCheckpointConfig) -> Callable[[nn.Module], nn.Module]:
+def get_activation_checkpoint_wrapper(
+    config: ActivationCheckpointConfig, matched_module_targets: set[str] | None = None
+) -> Callable[[nn.Module], nn.Module]:
+    """Return a function that checkpoints a block, adding each module-qualified target that saves a traced operation
+    to ``matched_module_targets``."""
     if config.mode == "full":
         policy = _mandatory_checkpoint_policy
     else:
-        targets = DEFAULT_SELECTIVE_TARGETS if config.targets is None else frozenset(config.targets)
-        policy = partial(_selective_checkpoint_policy, targets=targets)
+        targets, module_targets = _split_targets(
+            DEFAULT_SELECTIVE_TARGETS if config.targets is None else config.targets
+        )
+        if matched_module_targets is None:
+            matched_module_targets = set()
+
+        # A closure, not a partial: compile deep-copies context_fn, and a copied partial would fill a copied set.
+        def policy(
+            context: SelectiveCheckpointContext,
+            operation: torch._ops.OpOverload | torch._ops.HigherOrderOperator,
+            *args,
+            **kwargs,
+        ) -> CheckpointPolicy:
+            return _selective_checkpoint_policy(
+                context,
+                operation,
+                *args,
+                targets=targets,
+                module_targets=module_targets,
+                matched_module_targets=matched_module_targets,
+                **kwargs,
+            )
+
     checkpoint_kwargs = {
         "checkpoint_impl": CheckpointImpl.NO_REENTRANT,
         "context_fn": partial(create_selective_checkpoint_contexts, policy),
@@ -204,4 +293,5 @@ __all__ = [
     "MANDATORY_SAVE_OPERATIONS",
     "TokenChunkedCheckpointWrapper",
     "get_activation_checkpoint_wrapper",
+    "unmatched_module_patterns",
 ]

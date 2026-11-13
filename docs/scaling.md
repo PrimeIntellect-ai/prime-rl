@@ -150,6 +150,17 @@ mode = "selective"
 
 Set `targets` to operator names (for example, `"aten::mm"`) or namespaces (for example, `"prime_rl_collectives"`) to replace the default selective targets. Correctness-required operations remain retained.
 
+To retain an operator only at some call sites, append `@` and a module path pattern relative to the transformer block. The pattern is an `fnmatch` glob, and it also matches inside the modules it names. Module-qualified targets require `trainer.model.compile`, whose module metadata identifies each call site. The trainer raises if a pattern matches no module, and after the first training forward if a target matched no traced operation, for example because the named module runs a different operator. This example names the FP8 GEMM, which runs only under `trainer.model.quantization.type = "fp8"`:
+
+```toml
+[trainer.model.ac]
+mode = "selective"
+targets = [
+  "prime_rl::fp8_blockwise_mm@self_attn.o_b_proj",
+  "prime_rl::fp8_blockwise_mm@mlp.shared_expert",
+]
+```
+
 Activation offloading still applies to tensors saved by autograd, but tensors retained by the checkpoint policy remain on the accelerator.
 
 For long sequences, a MoE layer's routed-expert activations (tokens × `top_k` × expert hidden size) dominate the recompute and backward peak. Token-chunked checkpointing checkpoints a block in token chunks, so recompute and backward hold one chunk at a time. It is experimental and only supported for Nemotron-H, whose MoE layers are the only blocks it chunks; it has no effect on other models:
