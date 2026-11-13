@@ -27,7 +27,7 @@ from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
-    get_expert_load_stats,
+    get_step_routing_stats,
     get_global_moe_stats,
     is_tt_moe_model,
     reshard_module,
@@ -507,7 +507,7 @@ def train(config: SFTConfig | PretrainConfig):
                 moe_stats[f"{name}/mean"] = values.mean()
                 if name != "routing_confidence":
                     moe_stats[f"{name}/max"] = values.max()
-            expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group)
+            expert_load_stats = get_step_routing_stats(step_tokens_per_expert, dp_cp_group)
 
         if gradient_manager is None:
             global_step_token_count = step_local_token_count.clone()

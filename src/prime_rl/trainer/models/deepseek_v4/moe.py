@@ -24,6 +24,8 @@ class DeepseekV4HashRouter(TokenChoiceTopKRouter):
     unbuilt, keeping the state dict aligned with HF's.
     """
 
+    learned_selection = False
+
     def __init__(self, *, vocab_size: int, **router_kwargs) -> None:
         super().__init__(**router_kwargs, selection_bias=False)
         self.register_buffer("tid2eid", torch.zeros(vocab_size, self.top_k, dtype=torch.long), persistent=True)

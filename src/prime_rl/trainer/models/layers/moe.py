@@ -27,26 +27,41 @@ ScoreFuncType = Literal["softmax", "sigmoid", "topk_softmax", "sqrtsoftplus"]
 
 @torch.library.custom_op(
     "prime_rl::record_moe_routing_statistics",
-    mutates_args=("tokens_per_expert", "routing_confidence_sum"),
+    mutates_args=("tokens_per_expert", "routing_confidence_sum", "router_agreement"),
 )
 def record_moe_routing_statistics(
     tokens_per_expert: torch.Tensor,
     routing_confidence_sum: torch.Tensor,
+    router_agreement: torch.Tensor,
     token_counts: torch.Tensor,
     confidence: torch.Tensor,
+    agreement: torch.Tensor,
 ) -> None:
     tokens_per_expert.add_(token_counts)
     routing_confidence_sum.add_(confidence)
+    router_agreement.add_(agreement)
 
 
 @record_moe_routing_statistics.register_fake
 def _record_moe_routing_statistics_fake(
     tokens_per_expert: torch.Tensor,
     routing_confidence_sum: torch.Tensor,
+    router_agreement: torch.Tensor,
     token_counts: torch.Tensor,
     confidence: torch.Tensor,
+    agreement: torch.Tensor,
 ) -> None:
     return None
+
+
+def routing_agreement(selected: torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
+    """Agreement of two ``(num_tokens, top_k)`` expert selections, as ``[overlap, exact matches, tokens]``: the sum
+    over tokens of ``|selected ∩ reference| / top_k``, the number of tokens whose two expert sets are equal, and the
+    number of tokens. Both selections must hold distinct experts per token."""
+    selected_in_reference = (selected.unsqueeze(-1) == reference.unsqueeze(-2)).any(dim=-1)
+    overlap = selected_in_reference.float().mean(dim=-1)
+    exact_match = selected_in_reference.all(dim=-1).float()
+    return torch.stack((overlap.sum(), exact_match.sum(), torch.ones_like(overlap).sum()))
 
 
 @dataclass
@@ -149,6 +164,10 @@ class TokenChoiceTopKRouter(nn.Module):
         topk_sorted (bool): Whether selected experts are returned in descending score order.
     """
 
+    # Whether the router selects experts from its scores. With replayed `routed_experts`, such a
+    # router also reports how often its own selection agrees with the replayed one.
+    learned_selection: bool = True
+
     def __init__(
         self,
         dim: int,
@@ -180,14 +199,14 @@ class TokenChoiceTopKRouter(nn.Module):
         self,
         x: torch.Tensor,
         routed_experts: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
             x (torch.Tensor): Input tensor with shape ``(bs*slen, dim)``.
             routed_experts (torch.Tensor | None, optional): Optional tensor with shape ``(bs * slen, top_k)``.
 
         Returns:
-            tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
                 - top_scores (torch.Tensor):
                     Routing scores for selected experts with shape ``(bs*slen, top_k)``.
                 - selected_experts_indices (torch.Tensor):
@@ -196,6 +215,9 @@ class TokenChoiceTopKRouter(nn.Module):
                     Number of tokens assigned to each expert with shape ``(num_experts,)``.
                 - routing_confidence_sum (torch.Tensor):
                     Sum over tokens of the selected-expert probability mass before route normalization/scaling.
+                - router_agreement (torch.Tensor):
+                    ``routing_agreement`` of the router's own selection with ``routed_experts``, shape ``(3,)``;
+                    zeros without ``routed_experts`` or a learned selection.
         """
         # scores shape (bs*slen, num_experts)
         assert routed_experts is None or routed_experts.shape[-1] == self.top_k, (
@@ -218,6 +240,12 @@ class TokenChoiceTopKRouter(nn.Module):
         # NOTE: selection biases are only used for routing. The gating value
         #       top_scores is still derived from the original scores/logits.
 
+        if routed_experts is not None and self.learned_selection:
+            with torch.no_grad():
+                router_agreement = routing_agreement(self.select_experts(scores), routed_experts)
+        else:
+            router_agreement = scores.new_zeros(3)
+
         if routed_experts is not None:
             top_scores = scores.gather(dim=1, index=routed_experts)
             selected_experts_indices = routed_experts
@@ -227,15 +255,7 @@ class TokenChoiceTopKRouter(nn.Module):
             selected_experts_indices = (arange % self.num_experts).view(num_tokens, self.top_k)
             top_scores = scores.gather(dim=1, index=selected_experts_indices)
         else:
-            selection_scores = scores
-            if self.selection_bias is not None:
-                selection_scores = selection_scores + self.selection_bias
-            _, selected_experts_indices = torch.topk(
-                selection_scores,
-                k=self.top_k,
-                dim=1,
-                sorted=self.topk_sorted,
-            )
+            selected_experts_indices = self.select_experts(scores)
             top_scores = scores.gather(dim=1, index=selected_experts_indices)
 
         if self.score_func == "topk_softmax":
@@ -261,7 +281,20 @@ class TokenChoiceTopKRouter(nn.Module):
             max=self.num_experts,
         ).to(torch.int64)
 
-        return top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum
+        return top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum, router_agreement
+
+    def select_experts(self, scores: torch.Tensor) -> torch.Tensor:
+        """The top-k experts of each token by ``scores`` plus the selection bias, shape ``(bs*slen, top_k)``."""
+        selection_scores = scores
+        if self.selection_bias is not None:
+            selection_scores = selection_scores + self.selection_bias
+        _, selected_experts_indices = torch.topk(
+            selection_scores,
+            k=self.top_k,
+            dim=1,
+            sorted=self.topk_sorted,
+        )
+        return selected_experts_indices
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.gate.weight, mean=0.0, std=init_std)
@@ -339,6 +372,8 @@ class MoE(nn.Module):
             persistent=False,
         )
         self.register_buffer("routing_confidence_sum", torch.tensor(0.0, dtype=torch.float32), persistent=False)
+        # `routing_agreement` of the router's own top-k with replayed experts, summed over forward passes.
+        self.register_buffer("router_agreement", torch.zeros(3, dtype=torch.float32), persistent=False)
 
     def set_token_dispatcher(self, token_dispatcher: TokenDispatcher) -> None:
         self.token_dispatcher = token_dispatcher
@@ -378,6 +413,7 @@ class MoE(nn.Module):
             selected_experts_indices,
             num_tokens_per_expert,
             routing_confidence_sum,
+            router_agreement,
         ) = self.router(x, routed_experts=routed_experts)
 
         # Accumulate expert usage for selection-bias updates and metrics.
@@ -385,8 +421,10 @@ class MoE(nn.Module):
             record_moe_routing_statistics(
                 self.tokens_per_expert,
                 self.routing_confidence_sum,
+                self.router_agreement,
                 num_tokens_per_expert,
                 routing_confidence_sum,
+                router_agreement,
             )
 
         routed_output = self.token_dispatcher.run(
@@ -421,5 +459,6 @@ class MoE(nn.Module):
         with torch.device(buffer_device):
             self.tokens_per_expert = torch.zeros(self.experts.num_experts, dtype=torch.float32)
             self.routing_confidence_sum = torch.tensor(0.0, dtype=torch.float32)
+            self.router_agreement = torch.zeros(3, dtype=torch.float32)
             if self.router.selection_bias is not None:
                 self.router.selection_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)

@@ -207,20 +207,28 @@ def is_tt_moe_model(model: nn.Module) -> bool:
 
 
 def take_moe_routing_stats(model: nn.Module) -> Tensor:
-    """This rank's routing counts since the last call, as `[num_moe_layers, num_experts + 1]` (tokens per expert,
-    then the routing confidence sum), and reset them."""
+    """This rank's routing counts since the last call, as `[num_moe_layers, num_experts + 4]` (tokens per expert,
+    the routing confidence sum, then the router agreement overlap sum, exact match count and token count), and reset
+    them."""
     block_mlps = list(iter_moe_blocks(model))
     if not block_mlps:
         return torch.empty(0, 0)
     stats = torch.stack(
         [
-            torch.cat((block_mlp.tokens_per_expert, block_mlp.routing_confidence_sum.reshape(1)))
+            torch.cat(
+                (
+                    block_mlp.tokens_per_expert,
+                    block_mlp.routing_confidence_sum.reshape(1),
+                    block_mlp.router_agreement,
+                )
+            )
             for block_mlp in block_mlps
         ]
     )
     for block_mlp in block_mlps:
         block_mlp.tokens_per_expert.zero_()
         block_mlp.routing_confidence_sum.zero_()
+        block_mlp.router_agreement.zero_()
     return stats
 
 
@@ -233,12 +241,13 @@ def get_global_moe_stats(
     """Reduce each micro step's `take_moe_routing_stats` across EP, then DP and CP ranks, into one value per micro step,
     or with EP, also one EP imbalance per micro step and layer.
 
-    Also returns this rank's unreduced per-layer expert counts summed over the micro steps, for `get_expert_load_stats`.
+    Also returns this rank's unreduced per-layer counts summed over the micro steps (tokens per expert, then the router
+    agreement overlap sum, exact match count and token count), for `get_step_routing_stats`.
     """
     stats = torch.stack(routing_stats)
-    tokens_per_expert = stats[..., :-1].sum(dim=0)
+    step_counts = torch.cat((stats[..., :-4], stats[..., -3:]), dim=-1).sum(dim=0)
     if stats.numel() == 0:
-        return {}, tokens_per_expert
+        return {}, step_counts
     if ep_group is not None:
         dist.all_reduce(stats, op=dist.ReduceOp.SUM, group=ep_group)
 
@@ -246,7 +255,7 @@ def get_global_moe_stats(
     per_layer_routing_confidence = []
     for layer_stats, block_mlp in zip(stats.unbind(dim=1), iter_moe_blocks(model)):
         top_k = block_mlp.router.top_k
-        layer_tokens_per_expert, routing_confidence_sum = layer_stats[:, :-1], layer_stats[:, -1]
+        layer_tokens_per_expert, routing_confidence_sum = layer_stats[:, :-4], layer_stats[:, -4]
         num_routed_tokens = layer_tokens_per_expert.sum(dim=1) / top_k
         layer_tokens_per_expert = layer_tokens_per_expert.sort(dim=1, descending=True).values[:, top_k:]
         balanced_load = layer_tokens_per_expert.mean(dim=1)
@@ -259,7 +268,7 @@ def get_global_moe_stats(
         # Every rank of an EP group holds the same `[micro_steps, layers]` imbalances. A layer waits for the busiest
         # rank of its EP group and, through its FSDP collectives, for the slowest group: take the max over DP groups,
         # with the DP mean beside it.
-        rank_imbalance = compute_ep_imbalance(stats[..., :-1], dist.get_world_size(ep_group))
+        rank_imbalance = compute_ep_imbalance(stats[..., :-4], dist.get_world_size(ep_group))
         max_stats.append(rank_imbalance)
         mean_stats.append(rank_imbalance)
     max_stats, mean_stats = torch.cat(max_stats, dim=1), torch.cat(mean_stats, dim=1)
@@ -271,7 +280,7 @@ def get_global_moe_stats(
     if ep_group is not None:
         moe_stats["ep_imbalance/rank"] = max_stats[:, 1:]
         moe_stats["ep_imbalance/rank_dp_mean"] = mean_stats[:, 1:]
-    return moe_stats, tokens_per_expert
+    return moe_stats, step_counts
 
 
 def compute_ep_imbalance(tokens_per_expert: Tensor, ep: int) -> Tensor:
@@ -303,12 +312,35 @@ def compute_expert_load_stats(tokens_per_expert: Tensor) -> dict[str, Tensor]:
     return stats
 
 
-def get_expert_load_stats(tokens_per_expert: Tensor, group: dist.ProcessGroup) -> dict[str, float]:
-    """Sum a step's per-layer expert counts across the group (every rank routes distinct tokens) and compute load stats."""
-    if tokens_per_expert.numel() == 0:
+def compute_router_agreement_stats(
+    overlap_sum: Tensor, exact_match_count: Tensor, token_count: Tensor
+) -> dict[str, Tensor]:
+    """Per-layer agreement of the router's own top-k with the replayed experts, as the mean and min over MoE layers.
+
+    `agreement` is a layer's mean over tokens of `|own top-k ∩ replayed| / top_k`, and `exact_match` its fraction of
+    tokens whose own top-k set equals the replayed one. Layers that measured no tokens (no router replay, or a router
+    without a learned selection) are left out, and without any the stats are absent.
+    """
+    measured = token_count > 0
+    if not measured.any():
         return {}
-    dist.all_reduce(tokens_per_expert, op=dist.ReduceOp.SUM, group=group)
-    return {name: value.item() for name, value in compute_expert_load_stats(tokens_per_expert).items()}
+    stats = {}
+    for name, total in (("agreement", overlap_sum), ("exact_match", exact_match_count)):
+        per_layer = total[measured] / token_count[measured]
+        stats[f"router/{name}/mean"] = per_layer.mean()
+        stats[f"router/{name}/min"] = per_layer.min()
+    return stats
+
+
+def get_step_routing_stats(step_counts: Tensor, group: dist.ProcessGroup) -> dict[str, float]:
+    """Sum a step's per-layer counts from `get_global_moe_stats` across the group (every rank routes distinct tokens)
+    and compute the expert load and router agreement stats."""
+    if step_counts.numel() == 0:
+        return {}
+    dist.all_reduce(step_counts, op=dist.ReduceOp.SUM, group=group)
+    stats = compute_expert_load_stats(step_counts[:, :-3])
+    stats.update(compute_router_agreement_stats(*step_counts[:, -3:].unbind(dim=1)))
+    return {name: value.item() for name, value in stats.items()}
 
 
 def get_model(
@@ -884,6 +916,7 @@ def _reset_runtime_moe_buffers(model: nn.Module) -> None:
         if isinstance(module, MoE) and module.tokens_per_expert.device.type != "meta":
             module.tokens_per_expert.zero_()
             module.routing_confidence_sum.zero_()
+            module.router_agreement.zero_()
 
 
 def _validate_flash_attn_4_installed() -> None:

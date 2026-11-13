@@ -54,7 +54,7 @@ from prime_rl.trainer.rl.annotations import AnnotationWriter
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
-    get_expert_load_stats,
+    get_step_routing_stats,
     get_global_moe_stats,
     is_tt_moe_model,
     setup_model,
@@ -769,7 +769,7 @@ def train(config: TrainerConfig):
         # Synchronize the tensor metrics across all steps and ranks
         tensor_metrics = tensor_stats.compute_stats()
         if is_moe_model:
-            tensor_metrics.update(get_expert_load_stats(step_tokens_per_expert, dp_cp_group))
+            tensor_metrics.update(get_step_routing_stats(step_tokens_per_expert, dp_cp_group))
 
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, forward_backward_time)
         mfu = perf_counter.get_step_mfu(num_flops, forward_backward_time)
