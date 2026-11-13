@@ -303,22 +303,6 @@ class _MicroBatchBin:
     def from_sample(cls, sample: MicroBatch) -> "_MicroBatchBin":
         return cls(samples=[sample], length=len(sample.input_ids))
 
-    @property
-    def first_sample(self) -> MicroBatch:
-        return self.samples[0]
-
-    def can_add(self, sample: MicroBatch, max_seq_len: int) -> bool:
-        # Loss routing is per token (component weight streams), so samples of
-        # different loss types and raw-image refs pack together freely.
-        first_sample = self.first_sample
-        if self.length + len(sample.input_ids) > max_seq_len:
-            return False
-        # Routing replays per micro batch: every sample in it has routing rows or none does.
-        if _has_routing(first_sample) != _has_routing(sample):
-            return False
-
-        return True
-
     def add(self, sample: MicroBatch) -> None:
         self.samples.append(sample)
         self.length += len(sample.input_ids)
@@ -344,6 +328,40 @@ class _MicroBatchBin:
             _MicroBatchBin(left, sum(len(sample.input_ids) for sample in left)),
             _MicroBatchBin(right, sum(len(sample.input_ids) for sample in right)),
         )
+
+
+class _FirstFitIndex:
+    """Find the earliest compatible bin with enough remaining capacity."""
+
+    def __init__(self, capacity: int):
+        self.size = 1 << (max(capacity, 1) - 1).bit_length()
+        self.max_remaining = [-1] * (2 * self.size)
+        self.bin_indices: list[int] = []
+
+    def add(self, bin_index: int, remaining: int) -> None:
+        local_index = len(self.bin_indices)
+        self.bin_indices.append(bin_index)
+        self.update(local_index, remaining)
+
+    def update(self, local_index: int, remaining: int) -> None:
+        node = local_index + self.size
+        self.max_remaining[node] = remaining
+        while node > 1:
+            node //= 2
+            value = max(self.max_remaining[2 * node], self.max_remaining[2 * node + 1])
+            if self.max_remaining[node] == value:
+                break
+            self.max_remaining[node] = value
+
+    def first(self, required: int) -> int | None:
+        if self.max_remaining[1] < required:
+            return None
+        node = 1
+        while node < self.size:
+            node *= 2
+            if self.max_remaining[node] < required:
+                node += 1
+        return node - self.size
 
 
 def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
@@ -480,16 +498,22 @@ def packed_samples_into_micro_bs(
     samples.sort(key=lambda sample: -len(sample.input_ids))
 
     bins: list[_MicroBatchBin] = []
+    indexes = {
+        False: _FirstFitIndex(len(samples)),
+        True: _FirstFitIndex(len(samples)),
+    }
 
     for sample in samples:
-        # Try to find a bin that can fit this sequence. Multimodal samples only
-        # pack when their sidecar tensors are compatible.
-        for bin_content in bins:
-            if bin_content.can_add(sample, max_seq_len):
-                bin_content.add(sample)
-                break
-        else:
+        sample_length = len(sample.input_ids)
+        index = indexes[_has_routing(sample)]
+        local_index = index.first(sample_length)
+        if local_index is None:
             bins.append(_MicroBatchBin.from_sample(sample))
+            index.add(len(bins) - 1, max_seq_len - sample_length)
+        else:
+            bin_content = bins[index.bin_indices[local_index]]
+            bin_content.add(sample)
+            index.update(local_index, max_seq_len - bin_content.length)
 
     if num_train_workers > 1:
         target_count = max(

@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from prime_rl.orchestrator.batch import (
+    packed_samples_into_micro_bs,
     pad_micro_batch,
     prepare_batch,
     prepare_sample,
@@ -268,6 +269,42 @@ def test_randomized_packing_invariants():
         for batch in dummy_batches:
             assert not batch.loss_mask.any()
             assert not batch.advantages.any()
+
+
+def test_packing_matches_first_fit_decreasing_with_routing():
+    rng = np.random.default_rng(0)
+    max_seq_len = 64
+    samples = []
+    for index, length in enumerate(rng.integers(1, max_seq_len + 1, size=256)):
+        example = make_sized_training_example(int(length), env_name=f"env-{index}")
+        if rng.random() < 0.5:
+            example.payload = PayloadSlice(
+                url="http://worker",
+                id=f"trace-{index}",
+                num_tokens=int(length),
+                fields=["routed_experts"],
+            )
+        samples.append(prepare_sample(example, max_seq_len))
+
+    expected = []
+    for sample in sorted(samples, key=lambda item: -len(item.input_ids)):
+        routed = any(payload is not None and "routed_experts" in payload.fields for payload in sample.payloads or [])
+        for bin_content in expected:
+            if bin_content["routed"] == routed and bin_content["length"] + len(sample.input_ids) <= max_seq_len:
+                bin_content["length"] += len(sample.input_ids)
+                bin_content["env_names"].extend(sample.env_names)
+                break
+        else:
+            expected.append(
+                {
+                    "routed": routed,
+                    "length": len(sample.input_ids),
+                    "env_names": list(sample.env_names),
+                }
+            )
+
+    actual = packed_samples_into_micro_bs(samples.copy(), max_seq_len, num_train_workers=1, bin_cost=sum)
+    assert [batch.env_names for batch in actual] == [bin_content["env_names"] for bin_content in expected]
 
 
 def test_pad_micro_batch_preserves_explicit_sequence_lengths():
