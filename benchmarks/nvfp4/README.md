@@ -1,14 +1,14 @@
 # NVFP4 on Blackwell: test kit
 
 Everything here waits for an SM100/SM103 node (B200, GB200, B300). Run the steps in order: each one gates the next.
-Install prime-kernels from `feat/nvfp4-moe-perf` built for the node:
+Install prime-kernels from `feat/nvfp4-moe-v2` built for the node:
 `PRIME_KERNELS=nvfp4_moe,mxfp8_moe PRIME_KERNELS_REQUIRE=1`.
 
 The recipe is one, after [Thinking Machines' end-to-end 4-bit training](https://thinkingmachines.ai/blog/end-to-end-4-bit-training/):
 an NVFP4 forward on the first 5/6 of the layers (per-token scales on both GEMM inputs with 4/6 on activations,
 per-expert weight scales, IEEE arithmetic), MXFP8 on the rest, and both gradient GEMMs in MXFP8 on the dequantized
-forward operands with stochastic rounding. vLLM's engines are not matched to it yet: these steps check our own
-kernels and training; matching the engines comes after.
+forward operands with stochastic rounding. These steps check our own kernels and training first; `rl` sets vLLM's
+engines as close to the recipe as vLLM can (see the gaps in step 3).
 
 ## 1. Kernel correctness and determinism (minutes)
 
@@ -41,9 +41,9 @@ One expert layer forward and backward per shape and tokens per expert (T). Read:
   MXFP8 one in theory; their end-to-end gains over full MXFP8 were 8% in pretraining and 20% in RL.
 - `+prequantized` against without: what receiving weights already quantized (the quantized all-gather) saves at
   each T.
-- Components: `quantize_activations` against `nvfp4_gemm`, and `grad_quant_stochastic` against
-  `grad_quant_nearest`: the stochastic-rounding quantizer is plain PyTorch for now, so if it is a large share of the
-  backward, fuse it into one kernel with Blackwell's hardware stochastic-rounding conversion.
+- Components: `quantize_activations` against `nvfp4_gemm`; the fused stochastic-rounding quantizers
+  (`grad_quant_stochastic`, `operand_requant_stochastic`) against round-to-nearest (`grad_quant_nearest`) and their
+  PyTorch references (`*_torch`, expected ~10x slower).
 
 ## 3. RL numerics (hours per run)
 
@@ -63,9 +63,10 @@ python benchmarks/nvfp4/compare.py outputs/nvfp4-mxfp8 outputs/nvfp4-*
 | `nvfp4` | the recipe: does it track `mxfp8` in reward, loss and grad norm? |
 | `nvfp4-bf16-tail` | the last sixth in BF16 instead of MXFP8 |
 
-The bar: `nvfp4` reward within run-to-run noise of `mxfp8`, no grad-norm spikes. The engines stay BF16 for the
-mixed-precision recipe (`rl` warns), so mismatch KL measures the trainer against BF16 sampling here and is expected
-above `mxfp8`'s until the engines run the recipe.
+The bar: `nvfp4` reward within run-to-run noise of `mxfp8`, no grad-norm spikes, and mismatch KL of the same order as
+`mxfp8`'s. The engines run vLLM's `nvfp4_per_token` on the NVFP4 layers and MXFP8 on the tail, with FlashInfer's IEEE
+division and 4/6; what remains different (`rl` warns) is the down projection's static input scale on TRTLLM and the
+unverified division of vLLM's load-time weight quantizer. A mismatch KL well above `mxfp8`'s points at those gaps.
 
 ## 4. RL speed
 
@@ -102,7 +103,8 @@ whose kernels move the packed rows as BF16 hidden states: a hidden size whose pa
 
 - **Quantized all-gather.** Exact and faster: make it the default. It needs equal whole-expert FSDP shards, which the
   trainer config validates.
-- **NVFP4 dispatch** (default): identical numerics and faster keeps it the default; slower would mean the packing
-  costs more than the all-to-all bytes it saves at this EP.
-- **Follow-ups:** a fused stochastic-rounding MXFP8 quantizer; Thinking Machines' 8-bit combine (a 32-wide random
-  Hadamard transform and block-scaled 8-bit fixed point, GB300-specific); matching vLLM's engines to the recipe.
+- **NVFP4 dispatch** (default): identical numerics and faster keeps it, and removes the temporary
+  `moe.compute.dispatch` switch; slower would mean the packing costs more than the all-to-all bytes it saves at this EP.
+- **Follow-ups:** Thinking Machines' 8-bit combine (a 32-wide random Hadamard transform and block-scaled 8-bit fixed
+  point, GB300-specific); closing the engine gaps (a per-token down-projection input scale on the engines, e.g. the
+  Mega MoE engine path).
