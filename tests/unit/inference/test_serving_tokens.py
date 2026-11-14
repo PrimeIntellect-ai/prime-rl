@@ -137,6 +137,7 @@ async def test_replay_mask_rows_dropped_by_capacity_fail_the_request():
 
 
 def _rows_by_id(ids_per_row: list[list[int]], logprobs_per_row: list[list[float]]):
+    """Sort each row by token id, since rows are sets and only native heads come ranked by probability."""
     rows = [sorted(zip(ids, logprobs)) for ids, logprobs in zip(ids_per_row, logprobs_per_row)]
     return [[i for i, _ in row] for row in rows], [[p for _, p in row] for row in rows]
 
