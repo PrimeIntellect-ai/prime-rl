@@ -60,6 +60,9 @@ class BaseValConfig(BaseConfig):
 
     data: BaseDataConfig
 
+    def data_configs(self) -> list[BaseDataConfig]:
+        return [self.data]
+
 
 class SingleNodeDeploymentConfig(BaseSingleNodeDeploymentConfig):
     @model_validator(mode="after")
@@ -318,7 +321,7 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
         if self.model.cp > 1:
             if self.data.seq_len % self.model.cp != 0:
                 raise ValueError("Sequence length must be divisible by CP degree")
-            if self.val is not None and self.val.data.seq_len % self.model.cp != 0:
+            if self.val is not None and any(data.seq_len % self.model.cp for data in self.val.data_configs()):
                 raise ValueError("Validation sequence length must be divisible by CP degree")
         return self
 
@@ -326,7 +329,7 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     def resolve_mega_moe_max_tokens_per_rank(self):
         dispatch = self.model.moe.dispatch
         if dispatch.type == "mega_moe":
-            data_configs = [self.data] + ([self.val.data] if self.val is not None else [])
+            data_configs = [self.data] + (self.val.data_configs() if self.val is not None else [])
             dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
                 dispatch.max_tokens_per_rank,
                 max(data.micro_batch_size * data.seq_len for data in data_configs),
@@ -339,7 +342,7 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
         if self.model.cp > 1:
             if self.data.micro_batch_size != 1:
                 raise ValueError("Micro batch size must be 1 when CP is enabled")
-            if self.val is not None and self.val.data.micro_batch_size != 1:
+            if self.val is not None and any(data.micro_batch_size != 1 for data in self.val.data_configs()):
                 raise ValueError("Validation micro batch size must be 1 when CP is enabled")
         return self
 

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from transformers import AutoTokenizer
 
 import prime_rl.trainer.pretrain.data as pretrain_data
 from prime_rl.configs.pretrain import DatatroveDataConfig
@@ -14,6 +15,7 @@ from prime_rl.trainer.pretrain.data import (
     detect_separator,
     document_edges,
     setup_document_dataset,
+    token_byte_lengths,
     warn_if_no_document_separator,
 )
 from prime_rl.trainer.world import reset_world
@@ -141,7 +143,11 @@ def test_validation_scores_every_document_on_its_own(
     for rank in range(world_size):
         set_world(monkeypatch, rank, world_size)
         batches_by_rank.append(
-            list(setup_dataloader(setup_document_dataset(config, num_documents=num_documents), config, cp=1))
+            list(
+                setup_dataloader(
+                    setup_document_dataset(config, config.seq_len, num_documents=num_documents), config, cp=1
+                )
+            )
         )
     reset_world()
 
@@ -268,3 +274,12 @@ def test_eod_mask_loss_masks_nothing_on_bos_separated_shards(tmp_path, monkeypat
     monkeypatch.setattr(pretrain_data, "get_logger", lambda: SimpleNamespace(info=infos.append))
     assert detect_separator(TokenShards([tmp_path / "a"]), tokenizer) is None
     assert len(infos) == 1
+
+
+def test_token_byte_lengths_add_up_to_the_text_bytes():
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
+    # Tokens holding part of a multi-byte character count their own bytes; <think> is added but not special.
+    text = "<think>Grüße aus Zürich!</think> 東京で会いましょう 🙂👍🏽 naïve façade"
+    byte_lengths = token_byte_lengths(tokenizer)
+    assert byte_lengths[tokenizer.encode(text)].sum() == len(text.encode())
+    assert byte_lengths[tokenizer.eos_token_id] == 0

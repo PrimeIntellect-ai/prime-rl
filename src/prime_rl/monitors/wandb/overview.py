@@ -160,7 +160,8 @@ def build_sections(
     # SFT trains on a dataset, not rollouts: the train section is the loss/perplexity
     # curves, eval sections are the same rollout-based ones as RL.
     if flavor == "sft":
-        sections = [section("train", metrics=SFT_TRAIN_METRICS)]
+        # Pretraining logs its held-out sets as val/<name>/<metric>@<length>.
+        sections = [section("train", metrics=SFT_TRAIN_METRICS, regexes=["val/[^/]+/.+"])]
         if eval_envs:
             sections += [eval_section(f"eval/{env}", re.escape(env)) for env in eval_envs]
         else:

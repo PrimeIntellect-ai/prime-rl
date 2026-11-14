@@ -493,7 +493,8 @@ def launch(config: SupervisedTrainerConfig, entrypoint: str):
         pre_download_model(config.model.name, skip_weights=config.model.debug.random_init or config.init_from_scratch)
         pre_download_data(config.data, config.env_vars)
         if config.val is not None:
-            pre_download_data(config.val.data, config.env_vars)
+            for data in config.val.data_configs():
+                pre_download_data(data, config.env_vars)
 
     from prime_rl.monitors.prime import launch_run
 

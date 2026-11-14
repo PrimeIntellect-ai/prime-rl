@@ -358,12 +358,45 @@ def setup_token_dataset(
 
 
 def setup_document_dataset(
-    config: DatatroveDataConfig, non_dp_size: int = 1, num_documents: int | None = None
+    config: DatatroveDataConfig, seq_len: int, non_dp_size: int = 1, num_documents: int | None = None
 ) -> DocumentDataset:
     return DocumentDataset(
         TokenShards(config.paths),
-        seq_len=config.seq_len,
+        seq_len=seq_len,
         row_len=config.seq_len * config.micro_batch_size,
         non_dp_size=non_dp_size,
         num_documents=num_documents,
+    )
+
+
+def length_label(seq_len: int) -> str:
+    return f"{seq_len // 1024}k" if seq_len % 1024 == 0 else str(seq_len)
+
+
+# The 256 characters byte-level BPE tokenizers (GPT-2, Llama 3, Qwen, DeepSeek) write the bytes as.
+BYTE_CHARS = {chr(c) for c in [*range(33, 127), *range(161, 173), *range(174, 256), *range(256, 324)]}
+
+
+def token_byte_lengths(tokenizer: PreTrainedTokenizer) -> np.ndarray | None:
+    """The UTF-8 bytes of every token id, special tokens 0. None if the tokenizer is not byte-level BPE."""
+    special = special_token_ids(tokenizer)
+    lengths = np.zeros(len(tokenizer), dtype=np.int64)
+    for token_id, token in enumerate(tokenizer.convert_ids_to_tokens(list(range(len(tokenizer))))):
+        if token_id in special:
+            continue
+        if token_id in tokenizer.added_tokens_decoder:
+            # Added tokens hold their text as is, not in the byte alphabet.
+            lengths[token_id] = len(token.encode())
+            continue
+        if not set(token) <= BYTE_CHARS:
+            return None
+        lengths[token_id] = len(token)
+    return lengths
+
+
+def scored_bytes(dataset: DocumentDataset, byte_lengths: np.ndarray) -> int:
+    """The UTF-8 bytes of the tokens ``dataset`` scores: every window's tokens after its first."""
+    return sum(
+        int(byte_lengths[dataset.shards.open(file_index)[0][start + 1 : end]].sum())
+        for file_index, start, end in dataset.windows
     )

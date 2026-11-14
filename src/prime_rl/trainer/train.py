@@ -42,8 +42,11 @@ from prime_rl.trainer.data import get_dataset_progress, get_dataset_state, setup
 from prime_rl.trainer.pretrain.data import (
     TokenShards,
     detect_separator,
+    length_label,
+    scored_bytes,
     setup_document_dataset,
     setup_token_dataset,
+    token_byte_lengths,
     warn_if_no_document_separator,
 )
 from prime_rl.trainer.sft.data import load_sft_dataset, setup_sft_dataset
@@ -211,11 +214,21 @@ def train(config: SFTConfig | PretrainConfig):
         logger.info(f"Loading validation dataset ({config.val.data})")
         val_raw_dataset = load_sft_dataset(config.val.data)
     if config.val is not None and isinstance(config, PretrainConfig):
-        val_document_dataset = setup_document_dataset(config.val.data, config.model.cp, config.val.num_samples)
-        logger.info(
-            f"Validation scores {len(val_document_dataset.windows)} windows of held-out documents "
-            f"in {len(val_document_dataset.rows)} rows"
-        )
+        byte_lengths = token_byte_lengths(tokenizer)
+        if byte_lengths is None:
+            logger.warning("The tokenizer is not byte-level BPE: validation logs no bits per byte")
+        val_sets = []
+        for data in config.val.data:
+            for seq_len in data.seq_lens:
+                dataset = setup_document_dataset(data, seq_len, config.model.cp, config.val.num_samples)
+                tokens = sum(end - start - 1 for _, start, end in dataset.windows)
+                num_bytes = scored_bytes(dataset, byte_lengths) if byte_lengths is not None else None
+                length = length_label(seq_len)
+                val_sets.append((data.name, length, data, dataset, tokens, num_bytes))
+                logger.info(
+                    f"Validation set {data.name}@{length}: {len(dataset.windows)} windows of held-out documents in "
+                    f"{len(dataset.rows)} rows"
+                )
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -342,9 +355,26 @@ def train(config: SFTConfig | PretrainConfig):
         mean_loss = (total_loss_sum / total_token_count).item() if total_token_count.item() > 0 else float("nan")
         return mean_loss, nan_count.item()
 
+    def validation_loss(val_dataloader, step: int, label: str | None = None) -> float:
+        # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
+        mean_loss, nan_count = run_eval_loop(val_dataloader)
+        where = f"Validation at step {step}" + (f" ({label})" if label else "")
+        if nan_count > 0:
+            logger.warning(f"{where}: {nan_count} batches had NaN loss")
+        if mean_loss != mean_loss:
+            logger.warning(f"{where} had no valid tokens")
+        else:
+            logger.success(f"Validation | Step {step} | " + (f"{label} | " if label else "") + f"Loss {mean_loss:.4f}")
+        return mean_loss
+
     def run_validation(step: int) -> None:
         if isinstance(config, PretrainConfig):
-            val_dataset = val_document_dataset
+            metrics = {}
+            for name, length, data, dataset, tokens, num_bytes in val_sets:
+                mean_loss = validation_loss(setup_dataloader(dataset, data, config.model.cp), step, f"{name}@{length}")
+                metrics[f"val/{name}/loss@{length}"] = mean_loss
+                if num_bytes:
+                    metrics[f"val/{name}/bpb@{length}"] = mean_loss * tokens / (num_bytes * math.log(2))
         else:
             val_dataset = setup_sft_dataset(
                 tokenizer,
@@ -356,24 +386,12 @@ def train(config: SFTConfig | PretrainConfig):
                 processor=processor,
                 multimodal=multimodal,
             )
-        val_dataloader = setup_dataloader(val_dataset, config.val.data, config.model.cp)
-
-        # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
-        mean_loss, nan_count = run_eval_loop(val_dataloader)
+            mean_loss = validation_loss(setup_dataloader(val_dataset, config.val.data, config.model.cp), step)
+            metrics = {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20))}
         if is_tt_moe_model(model):
             # Keep validation routing out of the next training step's statistics.
             take_moe_routing_stats(model)
-        if nan_count > 0:
-            logger.warning(f"Validation at step {step}: {nan_count} batches had NaN loss")
-        if mean_loss != mean_loss:
-            logger.warning(f"Validation at step {step} had no valid tokens")
-        else:
-            logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
-        asyncio.run(
-            monitors.log(
-                {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20)), "step": step}, step=step
-            )
-        )
+        asyncio.run(monitors.log({**metrics, "step": step}, step=step))
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 

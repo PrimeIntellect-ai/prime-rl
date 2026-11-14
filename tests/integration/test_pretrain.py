@@ -1,4 +1,6 @@
+import json
 import re
+import tomllib
 from pathlib import Path
 from typing import Callable
 
@@ -45,6 +47,12 @@ def token_dir(output_dir: Path) -> Path:
     return path
 
 
+def held_out_sets(token_dir: Path) -> list[dict]:
+    """The config's [[val.data]] sets, scoring the shards the test wrote."""
+    config = tomllib.loads(Path("configs/ci/integration/pretrain/start.toml").read_text())
+    return [{**data, "paths": [token_dir.as_posix()]} for data in config["val"]["data"]]
+
+
 def pretrain_command(
     configs: list[str], token_dir: Path, wandb_project: str, wandb_name: str, output_dir: Path
 ) -> list[str]:
@@ -55,8 +63,8 @@ def pretrain_command(
         *[arg for config in configs for arg in ("@", f"configs/ci/integration/pretrain/{config}")],
         "--data.paths",
         f'["{token_dir.as_posix()}"]',
-        "--val.data.paths",
-        f'["{token_dir.as_posix()}"]',
+        "--val.data",
+        json.dumps(held_out_sets(token_dir)),
         "--deployment.num-train-gpus",
         "2",
         "--monitors.wandb.project",
@@ -111,7 +119,9 @@ def test_loss_goes_down(pretrain_process: ProcessResult, run_dir: Path):
 
 
 def test_validation(pretrain_process: ProcessResult, run_dir: Path):
-    assert any("Validation | Step 10 | Loss" in line for line in trainer_log(run_dir))
+    lines = trainer_log(run_dir)
+    for length in ("512", "1k"):
+        assert any(f"Validation | Step 10 | reverse-text@{length} | Loss" in line for line in lines)
 
 
 def test_no_error_resume(pretrain_resume_process: ProcessResult):
