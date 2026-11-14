@@ -1,0 +1,330 @@
+# GLM-5.3 RL on SWE-rebench-V2: 8 trainer nodes (Muon, router replay) and 8 P/D-disaggregated inference nodes,
+# trained on every task outside a held-out set of repos and evaluated on those repos.
+#
+# This is the config of an experiment as it ran (job 1862), not a recipe for main. It targets a prime-rl checkout
+# from before #3703 (sources still take `shuffle` / `num_examples`; `group_size` and `algo` sit on [orchestrator]),
+# and its paths point at the cluster it ran on. Out-of-tree dependencies:
+#   - prime-rl: #3719 (Muon with streamed CPU state) and a local R3 diagnostics patch (trainer/models/layers/moe.py)
+#   - deps/prime-envs: `solver_network` on the swerebench_v2 taskset (agent offline, grading reopens egress)
+#   - deps/verifiers: `bash_timeout` on the bash harness
+#   - vllm-router PR 58, installed in the venv
+#   - a vLLM 0.29 overlay on the prefill PYTHONPATH: DeepEP-HT DBO record_stream fix, ep_gather int64 fix, and the
+#     DBO sparse-MLA fix
+#   - the sbatch template ([slurm] template_path) and the tuned MoE config folder (decode VLLM_TUNED_CONFIG_FOLDER)
+# [slurm] pre_run_command checks every patch above except #3719, read-only, and aborts the job if one is missing.
+#
+# Data: PrimeIntellect/SWE-rebench-V2-Filtered-Verified, train split (6,272 tasks from 1,890 repos). Repos with
+# sum(repo.encode()) % 20 == 13 are held out (95 repos, 241 tasks). Training uses the other 6,025 tasks: 6,031 minus
+# 6 tasks from 3 train-side aliases of held-out repos. The eval runs 100 held-out tasks at step 0 and every 50 steps.
+#
+# Topology:
+#   - trainer: 8 nodes / 64 H200, CP8 x EP8, FSDP over 8, Muon with streamed CPU state (the shape #3719 validated)
+#   - inference: one 4-node prefill instance (DP32/EP32, DeepEP high-throughput) and one 4-node decode instance
+#     (DP32/EP32, DeepEP low-latency), NIXL KV transfer over IB, one vllm-router
+#   - router replay (R3) on, prefill and decode MoE on DeepGEMM, prefill DBO off, V1 model runner on both roles
+#   - no [ckpt]: a single save is ~6 TB
+#
+# Launch from the prime-rl checkout on the cluster, with its env sourced:
+#   HF_HUB_OFFLINE=1 uv run --no-sync rl @ examples/advanced/glm-5.3/swe-rebench-v2.toml --dry-run --output-dir /tmp/dry
+#   HF_HUB_OFFLINE=1 uv run --no-sync rl @ examples/advanced/glm-5.3/swe-rebench-v2.toml
+
+max_steps = 1000                             # no checkpoint is written, so this only bounds the run
+seq_len = 131072                             # CP8 -> 16,384 tokens/GPU/micro-batch (the validated SFT shape)
+output_dir = "/home/ani/outputs"
+
+[run]
+name = "glm53-swerebench-v2-rl-pd-v7-fullsplit"  # run dir <output_dir>/<name>; also a label on every sandbox
+
+[model]
+name = "zai-org/GLM-5.3-BF16"                # trainer, orchestrator (tokenizer/renderer) and vLLM all load it
+
+[log]
+level = "debug"                              # trainer + orchestrator; vLLM's own logger stays at INFO
+
+[monitors.wandb]
+project = "ani-glm53-swe"
+
+[weight_broadcast]
+type = "nccl"                                # trainer rank 0 -> all 64 inference GPUs, HF-format BF16, layer by layer
+port = 29502
+# Inference NCCL store connect + trainer handshake wait. Covers the one-time 1.5 TB HF -> prime conversion and the
+# cold BF16 loads at startup.
+timeout = 12000
+
+[env_vars]
+UV_NO_SYNC = "1"                             # every `uv run` in the job; the template also skips the batch-node sync
+HF_HUB_OFFLINE = "1"                         # the model and dataset are already in ~/.cache/huggingface
+HF_DATASETS_OFFLINE = "1"
+TRITON_CACHE_DIR = "/tmp/ani/.triton-cache"  # node-local
+
+[slurm]
+job_name = "glm53-rl"
+partition = "all"
+project_dir = "/home/ani/prime-rl"
+cleanup_grace_period = 0                     # no checkpoints to flush; otherwise a crash idles 16 nodes for an hour
+exclude = "qpn01gpu049"                      # cordoned by the slurm-operator on 2026-10-02
+# Copy of src/prime_rl/templates without the batch-node `uv sync` (UV_NO_SYNC=1 instead) and with the router's
+# --worker-startup-timeout-secs raised from 4200 to 7200. The _launch_*.sh.j2 includes must sit next to it.
+template_path = "/home/ani/configs/glm53-rl/templates/multi_node_rl.sbatch.j2"
+# Runs once on the batch host (inference node 0) under `set -e`, after venv activation and before any srun. The
+# checks are read-only; the last line only deletes sandboxes carrying this run's label.
+pre_run_command = '''
+vllm-router --help 2>/dev/null | grep -A3 -- "--health-check-interval-secs HEALTH" | grep -q "default: 20" || { echo "[glm53-rl] vllm-router PR 58 not active in the venv - aborting"; exit 1; }
+grep -q "solver_network" /home/ani/prime-rl/deps/prime-envs/environments/swe/swerebench_v2/swerebench_v2/taskset.py || { echo "[glm53-rl] swerebench_v2 solver_network patch missing - aborting"; exit 1; }
+grep -q "bash_timeout" /home/ani/prime-rl/deps/verifiers/verifiers/v1/harnesses/bash/harness.py || { echo "[glm53-rl] bash harness bash_timeout patch missing - aborting"; exit 1; }
+grep -q VLLM_DEEPEP_HT_DBO_RECORD_STREAM /home/ani/vllm-f1/overlay-f1pr2-dg/vllm/model_executor/layers/fused_moe/prepare_finalize/deepep_ht.py || { echo "[glm53-rl] DeepEP-HT record_stream overlay missing - aborting"; exit 1; }
+grep -q source_token_index_i64 /home/ani/vllm-f1/overlay-f1pr2-dg/vllm/model_executor/layers/fused_moe/deep_gemm_utils.py || { echo "[glm53-rl] ep_gather int64 fix missing - aborting"; exit 1; }
+grep -q _UBATCH_TOPK_INDICES_BUFFERS /home/ani/vllm-f1/overlay-f1pr2-dg/vllm/model_executor/layers/attention/sparse_mla_attention.py || { echo "[glm53-rl] fixed vLLM DBO overlay missing - aborting"; exit 1; }
+echo "[glm53-rl] vllm-router PR 58 + submodule patches + DBO overlay present"
+grep -q pop_router_replay_agreement /home/ani/prime-rl/src/prime_rl/trainer/models/layers/moe.py || { echo "[glm53-rl] R3 diagnostics patch missing - aborting"; exit 1; }
+timeout 600 prime sandbox delete --label "ani-glm53-swe-rl-v7-fullsplit" -y || true
+'''
+
+[deployment]
+type = "multi_node"
+gpus_per_node = 8
+num_train_nodes = 8
+num_infer_nodes = 8                          # per replica: one 4-node prefill + one 4-node decode instance
+num_infer_replicas = 1
+orchestrator_on_inference = true             # orchestrator + 3 env servers on the last inference node (a decode node)
+
+# ---------------- Trainer ----------------
+# No [ckpt]: every save is the FP32 model plus optimizer state (~6 TB) and /home has ~1.5 TB free, so the run can't
+# resume and leaves no trained weights behind.
+
+[trainer]
+enable_router_replay = true                  # R3: replay vLLM's expert choices (auto-enables route return)
+# >= weight_broadcast.timeout: non-master ranks wait in dist.barrier while rank 0 waits for the receiver
+# (transports/weights/nccl.py). Also bounds the barrier around rank 0's one-time conversion (trainer/model.py).
+dist_timeout_seconds = 12000
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_2"                   # unused by glm_moe_dsa, as in the other GLM-5.3 examples
+cp = 8                                       # the validated SFT mesh (sft/h200/base.toml)
+ep = 8                                       # one EP group per node; experts FSDP-sharded over dp_shard_mod_ep = 8
+optim_cpu_offload = true                     # required by optim.stream_cpu_offload
+fused_lm_head_token_chunk_size = 2048        # below the 8192 default: less LM-head logits memory per chunk
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 5                 # the validated SFT value
+
+[trainer.optim]
+type = "muon"                                # #3719; validated only on 8-node GLM-5.3 SFT with fake data
+lr = 1e-6                                    # dion's rms_norm scaling puts the update RMS at ~0.2 * lr, like AdamW
+weight_decay = 0.0                           # dion also decays the AdamW group, which holds every norm weight
+max_concurrent_tasks = 1                     # the streaming path hard-codes 1
+stream_cpu_offload = true                    # FP32 grads + momentum in pinned host RAM, streamed one batch at a time
+
+[trainer.scheduler]
+type = "linear"
+warmup_steps = 5                             # the first Muon step is full size (no bias correction)
+decay_steps = 0
+
+# ---------------- Inference ----------------
+
+[inference]
+# prime-rl's global DeepGEMM switch stays off: in the baseline eval it re-quantized the block-FP8 scales to ue8m0 on
+# H200. Prefill and decode set DeepGEMM on with fp32 block scales (E8M0 off) through their env vars below.
+use_deep_gemm = false
+
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/ani/.vllm-cache"
+FLASHINFER_WORKSPACE_BASE = "/tmp/ani/.flashinfer-cache"   # node-local JIT kernels
+VLLM_ENGINE_READY_TIMEOUT_S = "7200"         # launcher default 4200; cold BF16 load + online quant + JIT on new nodes
+PRIME_DP_COORDINATOR_STARTUP_TIMEOUT = "1800"   # default 300 s; 8 ranks per node import off NFS at once
+
+# One 4-node prefill instance and one 4-node decode instance, both DP32/EP32. The template sets all2all_backend per
+# role (prefill deepep_high_throughput; decode deepep_low_latency + FULL_DECODE_ONLY cudagraphs) and builds the NIXL
+# kv_transfer_config; UCX uses the IB NICs it finds in sysfs.
+[inference.deployment]
+type = "disaggregated"
+# EP32 prefill: ~44 GiB of weights per GPU and ~3x the KV of two 2-node instances, for more IB traffic in MoE
+# dispatch. A single 2-node (EP16) prefill instance only fits with DBO on, which R3 rules out.
+prefill_nodes_per_replica = 4
+num_prefill_replicas = 1
+# One EP32 decode instance: three 2-node EP16 instances left decode idle (job 1821).
+decode_nodes_per_replica = 4
+num_decode_replicas = 1
+
+[inference.deployment.prefill_env_vars]
+"PYTHONPATH" = "/home/ani/vllm-f1/overlay-f1pr2-dg"   # the vLLM overlay (see header)
+"VLLM_ENABLE_MOE_DP_CHUNK" = "0"             # as in the upstream example
+"VLLM_DEEP_GEMM_WARMUP" = "skip"
+"UCX_RCACHE_MAX_UNRELEASED" = "1024"         # without it UCX segfaults at random
+"VLLM_USE_V2_MODEL_RUNNER" = "0"             # V1 on both roles, as in the validated jobs 1817/1819
+# DeepGEMM MoE with fp32 block scales, as on decode.
+"VLLM_USE_DEEP_GEMM" = "1"
+"VLLM_MOE_USE_DEEP_GEMM" = "1"
+"VLLM_USE_DEEP_GEMM_E8M0" = "0"
+"VLLM_DEEPEP_HT_DBO_RECORD_STREAM" = "1"     # overlay switch required by DeepGEMM MoE under DBO
+# Node-local DeepGEMM JIT cache (synced by dg_cache_sync.sbatch).
+"TRTLLM_DG_CACHE_DIR" = "/tmp/ani/.dg-cache"
+"DG_JIT_CACHE_DIR" = "/tmp/ani/.dg-cache"
+# Fresh FlashInfer autotune cache per Slurm job ($SLURM_JOB_ID expands in the node's shell at launch; costs ~10 s).
+# Job 1651 reused job 1650's cache: only the DP leaders hit it, and their next DeepEP HT dispatch timed out waiting
+# for the ranks still in the synchronized tuning (kernel_warmup.py flashinfer_autotune).
+"VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR" = "/tmp/ani/.fi-autotune-$SLURM_JOB_ID"
+
+[inference.deployment.decode_env_vars]
+"UCX_RCACHE_MAX_UNRELEASED" = "1024"
+"VLLM_USE_V2_MODEL_RUNNER" = "0"             # R3 with NIXL needs the V1 runner (inference/patches.py)
+# DeepGEMM for the MoE: vLLM's batched-Triton fp8 MoE took ~57% of every decode step at 20-40x below memory roofline
+# (profiled 2026-10-02). With BATCHED_DEEPGEMM a decode step drops from ~555 ms to ~37 ms at ~29 requests/rank.
+# E8M0 off keeps fp32 block scales (no power-of-two rounding). The JIT cache must be node-local: on the NFS home,
+# ranks race renaming cubins ("Text file busy") and one asserts.
+"VLLM_USE_DEEP_GEMM" = "1"
+"VLLM_MOE_USE_DEEP_GEMM" = "1"
+"VLLM_USE_DEEP_GEMM_E8M0" = "0"
+"TRTLLM_DG_CACHE_DIR" = "/tmp/ani/.dg-cache"
+"DG_JIT_CACHE_DIR" = "/tmp/ani/.dg-cache"
+# Fallback for the batched-Triton path, unused while DeepGEMM is on. vLLM 0.29 bug: decode's DeepEP-LL path runs the
+# batched-Triton fp8 MoE, whose launcher doesn't clamp BLOCK_SIZE_K to the 128-wide fp8 block
+# (experts/fused_batched_moe.py; the standard path clamps in fused_moe.py). The shipped H200 E=8,N=2048 config has
+# BLOCK_SIZE_K=256 at M=3072 (96 tokens x 32 ranks), so half of every expert GEMM used the neighbouring block's
+# scales: mismatch KL 0.139/0.149 vs 0.017 (job 1652). This folder holds that config with BLOCK_SIZE_K capped at
+# 128; vLLM reads VLLM_TUNED_CONFIG_FOLDER first.
+"VLLM_TUNED_CONFIG_FOLDER" = "/home/ani/configs/glm53-rl/moe-configs"
+
+[inference.deployment.prefill_vllm_overrides]
+"enable_dbo" = false                         # R3: DBO ubatches overwrite each other in the routed-experts buffer
+"max_num_batched_tokens" = 4096              # default 8192; a lower activation peak leaves more KV for the prefix cache
+# Weight reloads allocate one whole BF16 MoE layer (18.38 GiB) per GPU (inference/vllm/worker/nccl.py
+# receive_state_dict). In job 1650, at 0.75, every decode rank OOMed on the first post-training reload (14.9 GiB
+# free, 18.1 GiB cached but unusable) and a prefill GPU sat at 142 of 143.8 GB. 0.70 keeps ~42 GiB per GPU outside
+# vLLM's budget (~650k KV tokens/rank expected at EP32).
+"gpu_memory_utilization" = 0.70
+
+# vLLM 0.29 auto-enables breakable cudagraphs for GlmMoeDsaForCausalLM (compilation mode NONE), which returns before
+# its own "no CUDA graphs for deepep_high_throughput with DP>1" guard (compilation.py). Prefill then captured the
+# DeepEP HT internode dispatch in a FULL graph and every rank died with "DeepEP error: timeout (dispatch CPU)"
+# (job 1649). Set what the guard would have set.
+[inference.deployment.prefill_vllm_overrides.compilation_config]
+cudagraph_mode = "NONE"
+
+[inference.deployment.decode_vllm_overrides]
+# Small DeepEP low-latency buffers. 64 x 32 ranks = M 2048, whose shipped MoE config already has BLOCK_SIZE_K=128
+# (a second guard against the batched-Triton bug above).
+"max_num_batched_tokens" = 64
+"max_num_seqs" = 64                          # per decode rank; 32 ranks -> 2,048 sequences, matching max_inflight
+# ~10 GiB of reload margin by the job-1650 arithmetic. 0.75 OOMed on the first post-training reload (14.9 GiB free
+# < the 18.38 GiB layer buffer); 0.60 cut KV from 54.6 to 34.7 GiB (691,520 tokens/rank, job 1653).
+"gpu_memory_utilization" = 0.65
+
+[inference.router]
+type = "vllm-router"
+# Applies to prefill and decode alike; x-session-id pins a rollout's turns to one prefill rank (prefix-cache reuse).
+policy = "sticky_least_loaded"
+request_timeout_secs = 14400
+
+[inference.vllm]
+dtype = "bfloat16"
+quantization = "fp8_per_block"               # BF16 checkpoint quantized online; NCCL reloads arrive as HF BF16
+tensor_parallel_size = 1                     # P/D example layout: one DP rank per GPU, experts across the instance
+enable_expert_parallel = true
+enable_eplb = false
+kv_cache_dtype = "fp8"
+max_model_len = 131072                       # == seq_len
+gpu_memory_utilization = 0.75                # default only: prefill (0.70) and decode (0.65) both override it
+enable_prefix_caching = true
+tool_call_parser = "glm47"
+reasoning_parser = "glm47"
+safetensors_load_strategy = "prefetch"
+# No MTP: the upstream P/D example runs without speculative decoding, and it is untested with NIXL here.
+
+# ---------------- Orchestrator ----------------
+
+[orchestrator]
+batch_size = 256                             # 16 groups of 16 per step
+group_size = 16
+# 16 steps x ~4.5 min ~ 72 min, longer than the 45 min rollout timeout. At 8, long groups went stale and were
+# dropped in waves (up to 36% of a step).
+max_off_policy_steps = 16
+# No tasks_per_minute: with a finite rate the dispatcher awaits the limiter for every admission and only reaps
+# finished episodes once in-flight hits the cap (dispatcher.py fill_inflight). Episodes then sat ~3.7 min finished
+# but unreaped, and the trainer waited 13.2 h of 28 h. Sandbox starts are paced by creates_per_min instead.
+
+[orchestrator.model.client]
+wait_for_ready_timeout = 7200                # == VLLM_ENGINE_READY_TIMEOUT_S
+
+[orchestrator.concurrency]
+min_inflight = 512                           # floor for the adaptive controller (KV-pressure trims stop here)
+# Start at half of max_inflight and let the controller grow to it: with no dispatch cap, a full startup cohort
+# starts within ~50 s and its contexts grow in lockstep, overflowing the prefill prefix cache together.
+initial_inflight = 1024
+# 64 sessions x ~9k tokens per prefill rank ~ 576k tokens, under the ~794k-token prefix cache of the DeepGEMM
+# prefill. A 645k-token cache thrashed past ~65 sessions per rank.
+max_inflight = 2048
+
+[orchestrator.algo]
+type = "grpo"                                # advantages are rewards minus the group mean; no length penalty
+
+[orchestrator.renderer]
+name = "glm-5.3"
+clear_thinking = false                       # keep the reasoning of past turns (template default)
+reasoning_effort = "low"                     # lowest GLM-5.3 level (low/high/max); the baseline eval used max
+
+[orchestrator.train.sampling]
+temperature = 1.0
+top_p = 1.0                                  # no truncation -> no sampling replay, no V2 model runner
+max_completion_tokens = 16384                # per turn
+
+# One source over the 6,025 training tasks, shuffled once with prime-rl's fixed seed (orchestrator/envs.py
+# TASKSET_SHUFFLE_SEED) and then cycled: every task once per 6,025 groups dispatched. No curriculum: the default
+# StandardSampler, no admission gates.
+[[orchestrator.train.source]]
+name = "swe"
+shuffle = true
+env.taskset.id = "swerebench-v2"
+# Everything except the held-out repos and 3 train-side aliases of held-out repos (6 tasks).
+env.taskset.filter_fn = 'lambda row: sum(row["repo"].encode()) % 20 != 13 and row["repo"] not in {"OceanParcels/Parcels", "greyli/apiflask", "eslint-community/eslint-plugin-promise"}'
+env.taskset.solver_network = false           # agent offline; grading reopens egress (local prime-envs patch)
+env.agent.harness.id = "bash"
+env.agent.harness.bash_timeout = 600         # per bash call, as in the baseline eval (local verifiers patch)
+env.agent.max_turns = 40                     # 57% of rollouts hit a 20-turn cap; compaction stays off
+env.agent.runtime.type = "prime"
+env.agent.runtime.labels = ["ani-glm53-swe-rl-v7-fullsplit"]   # this run's label; pre_run_command cleans it up
+env.agent.runtime.creates_per_min = 400      # the only start pacing: 2,048 startup sandboxes in ~5 min
+env.agent.runtime.idle_timeout = 3600
+env.agent.timeout.rollout = 2700             # a timed-out train rollout is dropped as an error, not scored
+env.agent.timeout.scoring = 1800             # at 3600, scoring hangs of 63-106 min voided whole groups
+env.agent.retries.max_retries = 1            # a whole-rollout retry keeps groups at 16 on infra errors
+env.agent.retries.include = ["ProviderError", "SandboxError", "HarnessError", "InterceptionError", "TunnelError"]
+
+# Held-out eval: 100 tasks from the held-out repos, never trained on, with 4 rollouts each at step 0 and every 50
+# steps. Sampling is pinned to training's: EvalSamplingConfig defaults defer to the server, which would use the
+# model's generation_config top_p of 0.95.
+[orchestrator.eval]
+interval = 50
+group_size = 4
+skip_first_step = false
+
+[orchestrator.eval.sampling]
+temperature = 1.0
+top_p = 1.0
+max_completion_tokens = 16384
+reasoning_effort = "low"
+
+# Same env settings as the train source.
+[[orchestrator.eval.source]]
+name = "swe-heldout"
+shuffle = true                               # fixed-seed shuffle, then the first num_examples: the same 100 every eval
+num_examples = 100
+env.taskset.id = "swerebench-v2"
+# Held-out repos only (95 repos, 241 tasks).
+env.taskset.filter_fn = 'lambda row: sum(row["repo"].encode()) % 20 == 13'
+env.taskset.solver_network = false
+env.agent.harness.id = "bash"
+env.agent.harness.bash_timeout = 600
+env.agent.max_turns = 40
+env.agent.runtime.type = "prime"
+env.agent.runtime.labels = ["ani-glm53-swe-rl-v7-fullsplit"]
+env.agent.runtime.creates_per_min = 400
+env.agent.runtime.idle_timeout = 3600
+env.agent.timeout.rollout = 2700
+env.agent.timeout.scoring = 1800
+env.agent.retries.max_retries = 1
+env.agent.retries.include = ["ProviderError", "SandboxError", "HarnessError", "InterceptionError", "TunnelError"]

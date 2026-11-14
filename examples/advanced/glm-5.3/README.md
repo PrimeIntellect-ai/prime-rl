@@ -6,6 +6,7 @@ Large-scale RL and serving for the GLM-5 family — `zai-org/GLM-5.3-BF16` for t
 |---|---|---|
 | [`swe.toml`](swe.toml) | Base GLM-5.3 RL: trains on `r2e-gym` (`rlm` harness), FP8-quantized trainer (`deepgemm_fp8` MoE compute), serves `GLM-5.3-BF16` with online per-block FP8 quantization behind the default `vllm-router`. | 16 train + 16 infer nodes |
 | [`swe-llmd.toml`](swe-llmd.toml) | Append for `swe.toml`: swaps in the llm-d router (EPP scorer tuning) + Mooncake KV offload — launch as `rl @ swe.toml @ swe-llmd.toml`. | same |
+| [`swe-rebench-v2.toml`](swe-rebench-v2.toml) | Experiment record, kept as it ran: GLM-5.3 RL on SWE-rebench-V2 (`bash` harness) with a held-out-repo eval, Muon with streamed CPU state, router replay (R3), and DeepGEMM MoE on prefill and decode. Needs an older checkout and out-of-tree patches — see [below](#swe-rebench-v2-experiment-record). | 8 train + 8 infer nodes |
 | [`infer/pd.toml`](infer/pd.toml) | Inference-only pre-flight: P/D-disaggregated `GLM-5-FP8`. | 6 infer nodes |
 | [`infer/pd-llmd.toml`](infer/pd-llmd.toml) | Inference-only pre-flight: `GLM-5.2-FP8` with llm-d + Mooncake. | 16 infer nodes |
 
@@ -97,9 +98,19 @@ Pass several output directories to track parallel experiments side by side (`uv 
 
 ## Checkpoint and resume
 
-Both RL configs ship without `[ckpt]` — add a `[ckpt]` overlay (e.g. `interval = 100`) for periodic checkpoints. To resume, re-run the same command with `--resume` (latest checkpoint) or `--resume.step <N>`, a stable `--run.name`, and a `--max-steps` at least the target final step. Trainer checkpoints are DCP-sharded; export HF-format weights with `tools/convert_dcp_to_bf16.py`. See [Training](../../../docs/training.md) for the full resume and export reference.
+The RL configs ship without `[ckpt]` — add a `[ckpt]` overlay (e.g. `interval = 100`) for periodic checkpoints. To resume, re-run the same command with `--resume` (latest checkpoint) or `--resume.step <N>`, a stable `--run.name`, and a `--max-steps` at least the target final step. Trainer checkpoints are DCP-sharded; export HF-format weights with `tools/convert_dcp_to_bf16.py`. See [Training](../../../docs/training.md) for the full resume and export reference.
 
 See [Scaling](../../../docs/scaling.md) for SLURM details and [Inference](../../../docs/inference.md) for the disaggregated-inference and router reference.
+
+## SWE-rebench-V2 experiment record
+
+[`swe-rebench-v2.toml`](swe-rebench-v2.toml) is the config of a 16-node run (8 trainer + 8 inference nodes), kept as it ran rather than as a recipe for `main`:
+
+- It targets a prime-rl checkout from before [#3703](https://github.com/PrimeIntellect-ai/prime-rl/pull/3703): its sources still take `shuffle` and `num_examples`, and `group_size` and `algo` sit on `[orchestrator]`. It also needs [#3719](https://github.com/PrimeIntellect-ai/prime-rl/pull/3719) (Muon with streamed CPU state) applied.
+- It depends on patches outside the repo: `solver_network` on the `swerebench-v2` taskset (`deps/prime-envs`), `bash_timeout` on the `bash` harness (`deps/verifiers`), vllm-router PR 58, and a vLLM overlay for prefill. `[slurm] pre_run_command` checks for each one and aborts the job if any is missing.
+- Its paths point at the cluster it ran on: `output_dir`, `[slurm] project_dir` and `template_path`, the node-local caches under `/tmp/ani`, and the decode `VLLM_TUNED_CONFIG_FOLDER`.
+
+The file's header describes the data split and topology. Inline comments give the reason for each non-default setting.
 
 ## SFT
 
