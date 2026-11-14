@@ -224,28 +224,16 @@ class MXFP8MoEComputeConfig(MoEComputeConfigBase):
 
 
 class NVFP4MoEComputeConfig(MoEComputeConfigBase):
-    """Run routed-expert forwards in NVFP4 (per-token activation scales, per-expert weight scales, E4M3 scales per
-    16-element block): quantization-aware training with a straight-through backward. Master weights, optimizer state,
-    checkpoints and weight updates stay BF16. Needs SM100/SM103 (B200, GB200, B300) and a prime-kernels build with
-    ``nvfp4_moe``."""
+    """Run routed experts in NVFP4 with one recipe, after Thinking Machines' end-to-end 4-bit training. Forward: E2M1
+    values, E4M3 scales per 16-element block, a per-token outer scale on both GEMM inputs (block scales chosen with
+    4/6) and a per-expert one on the weights, in IEEE arithmetic. Backward: both gradient GEMMs in MXFP8 on the
+    dequantized forward operands, every operand quantized with stochastic rounding. By default the first 5/6 of the
+    layers run NVFP4 and the rest MXFP8. Master weights, optimizer state, checkpoints and weight updates stay BF16.
+    Needs SM100/SM103 (B200, GB200, B300) and a prime-kernels build with ``nvfp4_moe``."""
 
     type: Literal["nvfp4"] = "nvfp4"
-    backward: Literal["mxfp8", "dequant_mxfp8", "dequant_bf16", "bf16"] = "mxfp8"
-    """Gradient GEMMs: MXFP8 on the original BF16 operands (default, Composer 2's recipe; the backward never meets the
-    sampler, so it trades exactness for speed), MXFP8 or BF16 on the dequantized NVFP4 forward operands (the gradients
-    see the forward's rounding and clipping, which humans& found most stable), or BF16 on the original operands."""
-    four_over_six: bool = True
-    """FlashInfer's adaptive 4/6 block scaling (448 normalization, MAE selection). On by default because vLLM's NVFP4
-    engines use it when ``FLASHINFER_NVFP4_4OVER6`` is set, which ``rl`` sets to match: the trainer's forward then
-    quantizes like the sampler's."""
-    down_input_scale: Literal["static", "per_token"] = "static"
-    """Global scale of the down projection's input (the SwiGLU output). ``static``: 1.0 for every token, how vLLM's
-    online NVFP4 engines (FlashInfer TRTLLM) quantize it, so rollouts sample-match. ``per_token``: each token's
-    amax / 2688, as for the first GEMM's input (Composer 2's choice), for engines that quantize it per token too."""
-    exact_division: bool = False
-    """IEEE-rounded reciprocals in the NVFP4 block math instead of FlashInfer's approximate ones. Composer 2 found
-    IEEE arithmetic critical for RL stability, but vLLM's TRTLLM engines keep approximate division, so the trainer
-    then quantizes slightly differently from the sampler: an ablation until the engines can match."""
+    apply_to: str | list[Annotated[int, Field(ge=0, strict=True)]] = "83.34%"
+    remainder: Literal["bf16", "mxfp8"] = "mxfp8"
 
 
 MoEComputeConfig: TypeAlias = Annotated[

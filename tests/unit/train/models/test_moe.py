@@ -325,7 +325,7 @@ class _FakeNVFP4Kernel:
 
 
 def test_nvfp4_expert_compute_needs_fused_gate_up_and_aligned_shapes():
-    compute = NVFP4ExpertCompute(kernel=_FakeNVFP4Kernel, backward="dequant_bf16", four_over_six=True)
+    compute = NVFP4ExpertCompute(kernel=_FakeNVFP4Kernel)
     assert compute.token_group_alignment == 32
 
     unfused = MoE.from_args(MoEArgs(num_experts=2), dim=64, hidden_dim=64, shared_expert=None)

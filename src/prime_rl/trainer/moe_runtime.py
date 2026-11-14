@@ -87,13 +87,7 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
                 f"NVFP4 expert compute needs SM100 or SM103 (B200, GB200, B300), but this device is "
                 f"SM{capability[0]}{capability[1]}. Use moe.compute.type = 'mxfp8' (SM100+) or 'deepgemm_fp8' (SM90)."
             )
-        return NVFP4ExpertCompute(
-            kernel=prime_kernels.load("nvfp4_moe"),
-            backward=compute.backward,
-            four_over_six=compute.four_over_six,
-            exact_division=compute.exact_division,
-            static_down_input_scale=compute.down_input_scale == "static",
-        )
+        return NVFP4ExpertCompute(kernel=prime_kernels.load("nvfp4_moe"))
     raise TypeError(f"Unsupported MoE compute config: {type(compute).__name__}")
 
 
@@ -115,6 +109,15 @@ def _resolve_mega_moe_compute(
         num_sms=reserve_sms_for_comm(dispatch.num_reserved_sms, num_concurrent_nccl_kernels(dp_replicate)),
         precision=mega_moe_precision(compute),
     )
+
+
+def seed_expert_rounding(config: ModelConfig, step: int) -> None:
+    """Seed the NVFP4 experts' stochastic rounding for ``step``: its backward then quantizes the same way on every
+    replay, so a step is reproducible."""
+    if isinstance(config.moe.compute, NVFP4MoEComputeConfig) and not config.moe.compute.selects_none:
+        import prime_kernels
+
+        prime_kernels.load("nvfp4_moe").stochastic.set_seed(step)
 
 
 def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:

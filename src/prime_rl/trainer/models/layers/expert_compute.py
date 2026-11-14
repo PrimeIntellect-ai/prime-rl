@@ -71,8 +71,6 @@ class GroupedGemmExpertCompute:
         token_group_alignment: int = 8,
     ) -> None:
         self.gemm = gemm
-        self.down_gemm = gemm
-        """The down projection's GEMM: the same unless its input is quantized differently (NVFP4's static scale)."""
         self.token_group_alignment = token_group_alignment
 
     def validate(self, experts: "GroupedExperts") -> None:
@@ -107,7 +105,7 @@ class GroupedGemmExpertCompute:
 
         hidden = experts.activation.apply(gate, up)
         down_proj = to_local(experts.down_proj).transpose(-2, -1)
-        output = self.down_gemm(hidden, down_proj.bfloat16(), offsets)
+        output = self.gemm(hidden, down_proj.bfloat16(), offsets)
         if experts.down_proj_bias is not None:
             down_proj_bias = to_local(experts.down_proj_bias)
             output = output + broadcast_expert_bias(down_proj_bias, num_tokens_per_expert, output.shape[0]).bfloat16()
@@ -128,28 +126,11 @@ class DeepGemmFP8ExpertCompute(GroupedGemmExpertCompute):
 
 
 class NVFP4ExpertCompute(GroupedGemmExpertCompute):
-    def __init__(
-        self,
-        kernel: ModuleType,
-        backward: str,
-        four_over_six: bool,
-        exact_division: bool = False,
-        static_down_input_scale: bool = True,
-    ) -> None:
-        def gemm(x: torch.Tensor, weight: torch.Tensor, offsets: torch.Tensor, static: bool = False) -> torch.Tensor:
-            return kernel.grouped_gemm(
-                x,
-                weight,
-                offs=offsets,
-                backward=backward,
-                four_over_six=four_over_six,
-                exact_division=exact_division,
-                static_input_scale=static,
-            )
-
-        super().__init__(gemm, token_group_alignment=kernel.TOKEN_GROUP_ALIGNMENT)
-        if static_down_input_scale:
-            self.down_gemm = lambda x, weight, offsets: gemm(x, weight, offsets, static=True)
+    def __init__(self, kernel: ModuleType) -> None:
+        super().__init__(
+            lambda x, weight, offsets: kernel.grouped_gemm(x, weight, offs=offsets),
+            token_group_alignment=kernel.TOKEN_GROUP_ALIGNMENT,
+        )
         self.kernel = kernel
 
     def validate(self, experts: "GroupedExperts") -> None:

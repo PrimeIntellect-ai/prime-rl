@@ -521,10 +521,11 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_moe_nvfp4(self):
-        """Trainer experts in NVFP4 need rollouts sampled with the same quantization: the same layers, the same 4/6
-        block-scaling recipe and, with MXFP8 dense layers, the same dense precision with shared experts in BF16 on both
-        sides. Routing is replayed from the engines unless turned off explicitly, since NVFP4 noise flips near-tied
-        experts. Configure the engines to match unless they already are."""
+        """NVFP4 trainer experts: routing is replayed from the engines unless turned off explicitly, since NVFP4 noise
+        flips near-tied experts, and MXFP8 dense layers keep shared experts in BF16. vLLM's engines cannot run the
+        trainer's recipe yet (IEEE arithmetic, 4/6 on activations only, a per-token scale on the down projection's
+        input, an MXFP8 tail): with every layer in NVFP4, ``rl`` quantizes the engines' experts to vLLM's closest
+        scheme; otherwise it leaves them to the user. Either way it warns."""
         from prime_rl.configs.inference import NVFP4_4OVER6_ENV, MoENVFP4Config
         from prime_rl.configs.trainer import SHARED_EXPERTS_PATTERN, MXFP8Config, NVFP4MoEComputeConfig
 
@@ -536,32 +537,28 @@ class RLConfig(BaseConfig):
             self.trainer.enable_router_replay = True
         linear = None
         if model.quantization is not None:
-            if not isinstance(model.quantization, MXFP8Config) or not compute.selects_all:
-                raise ValueError(
-                    "NVFP4 experts pair only with mxfp8 dense layers (trainer.model.quantization), on every layer "
-                    "(moe.compute.apply_to = 'all'): the engines cannot match other combinations."
-                )
+            if not isinstance(model.quantization, MXFP8Config):
+                raise ValueError("NVFP4 experts pair only with mxfp8 dense layers (trainer.model.quantization).")
             linear = "mxfp8"
             if SHARED_EXPERTS_PATTERN not in model.quantization.extra_ignore_patterns:
                 model.quantization.extra_ignore_patterns.append(SHARED_EXPERTS_PATTERN)
         if self.inference is None:
             return self
-        if compute.down_input_scale == "per_token":
+        if not compute.selects_all:
             warnings.warn(
-                "trainer.model.moe.compute.down_input_scale = 'per_token' quantizes the down projection's input with "
-                "per-token scales, but vLLM's NVFP4 engines (TRTLLM) use a static one: rollouts are sampled with "
-                "different numerics than the trainer computes, until the engines quantize it per token too.",
+                f"trainer.model.moe.compute runs NVFP4 on {compute.apply_to} of the layers and {compute.remainder} on "
+                "the rest; vLLM's engines are not matched to that yet, so rl leaves inference's expert quantization "
+                "to you.",
                 stacklevel=2,
             )
-        if compute.exact_division:
-            warnings.warn(
-                "trainer.model.moe.compute.exact_division quantizes NVFP4 experts with IEEE-rounded reciprocals, but "
-                "vLLM's NVFP4 engines keep FlashInfer's approximate ones: rollouts are sampled with slightly different "
-                "numerics than the trainer computes. Meant as an ablation.",
-                stacklevel=2,
-            )
-        apply_to = "all" if compute.selects_all else compute.apply_to
-        wanted = MoENVFP4Config(apply_to=apply_to, four_over_six=compute.four_over_six, linear=linear)
+            return self
+        warnings.warn(
+            "vLLM's NVFP4 engines quantize experts close to, not exactly like, the trainer (approximate division, 4/6 "
+            "on weights too, a static scale on the down projection's input): rollouts are sampled with slightly "
+            "different numerics than the trainer computes.",
+            stacklevel=2,
+        )
+        wanted = MoENVFP4Config(apply_to="all", four_over_six=True, linear=linear)
         current = self.inference.moe_nvfp4
         if current is None:
             if self.inference.vllm.quantization is not None:
@@ -570,8 +567,7 @@ class RLConfig(BaseConfig):
                     f"unset inference.vllm.quantization ({self.inference.vllm.quantization})."
                 )
             self.inference.moe_nvfp4 = wanted
-            if wanted.four_over_six:
-                self.inference.env_vars = {NVFP4_4OVER6_ENV: "1", **self.inference.env_vars}
+            self.inference.env_vars = {NVFP4_4OVER6_ENV: "1", **self.inference.env_vars}
         elif current != wanted:
             raise ValueError(
                 f"inference.moe_nvfp4 ({current}) differs from the trainer's NVFP4 experts ({wanted}): rollouts would "
@@ -589,6 +585,8 @@ class RLConfig(BaseConfig):
         if self.inference is None:
             return self
         compute = self.trainer.model.moe.compute
+        if compute.type == "nvfp4":  # NVFP4 has its own setup (auto_setup_moe_nvfp4)
+            return self
         if compute.remainder != "bf16" and not compute.selects_all:
             warnings.warn(
                 f"model.moe.compute runs {compute.type} on {compute.apply_to} of the MoE layers and "
@@ -598,7 +596,7 @@ class RLConfig(BaseConfig):
             )
             return self
         wanted = expert_engine_scheme(compute)
-        if wanted is None or compute.type == "nvfp4":  # NVFP4 has its own setup (auto_setup_moe_nvfp4)
+        if wanted is None:
             return self
         vllm = self.inference.vllm
         config = dict(getattr(vllm, "quantization_config", None) or {})
