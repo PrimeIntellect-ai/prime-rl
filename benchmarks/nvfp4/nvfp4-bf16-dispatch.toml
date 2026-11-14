@@ -1,0 +1,5 @@
+# Speed: tokens travel to the experts in BF16 and are quantized after the all-to-all. The GEMMs see the same bytes as
+# nvfp4.toml, which dispatches them already quantized to NVFP4 (~3.5x fewer bytes), so numerics are identical.
+[trainer.model.moe.compute]
+type = "nvfp4"
+dispatch = "bf16"

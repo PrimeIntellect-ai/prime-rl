@@ -82,12 +82,27 @@ python benchmarks/nvfp4/compare.py outputs/nvfp4-nvfp4-ep2 outputs/nvfp4-nvfp4-a
 of the weights per all-gather instead of all of them for every GEMM, so the gain grows with the experts' FSDP group:
 rerun the pair at the target scale before turning it on by default.
 
+NVFP4 token dispatch against BF16, at EP > 1 so the tokens cross the expert all-to-all:
+
+```bash
+for variant in nvfp4 nvfp4-bf16-dispatch; do
+  uv run rl @ benchmarks/nvfp4/base.toml @ benchmarks/nvfp4/$variant.toml --trainer.model.ep 4 \
+    --output-dir outputs/nvfp4-$variant-ep4
+done
+python benchmarks/nvfp4/compare.py outputs/nvfp4-nvfp4-bf16-dispatch-ep4 outputs/nvfp4-nvfp4-ep4
+```
+
+The GEMMs see the same bytes either way, so loss and mismatch KL must match step for step (any difference is a
+dispatch bug). `nvfp4` should be faster by what the all-to-all costs: ~3.5x fewer bytes each way it carries tokens to
+the experts; the input gradient still returns in BF16. Repeat with DeepEP (`--trainer.model.moe.dispatch.type deepep`),
+whose kernels move the packed rows as BF16 hidden states: a hidden size whose packed row (9/16 bytes per element plus
+4) is not what DeepEP's buffers expect fails here first.
+
 ## What the results decide
 
 - **Quantized all-gather.** Exact and faster: make it the default. It needs equal whole-expert FSDP shards, which the
   trainer config validates.
-- **Quantize before dispatch** (`prime_kernels.nvfp4_moe.dispatch`): the backward now runs on the dequantized
-  tokens, so NVFP4 tokens can travel through the EP all-to-all (~3.5x fewer bytes). Worth wiring into the token
-  dispatchers if the all-to-all is a visible share of the step.
+- **NVFP4 dispatch** (default): identical numerics and faster keeps it the default; slower would mean the packing
+  costs more than the all-to-all bytes it saves at this EP.
 - **Follow-ups:** a fused stochastic-rounding MXFP8 quantizer; Thinking Machines' 8-bit combine (a 32-wide random
   Hadamard transform and block-scaled 8-bit fixed point, GB300-specific); matching vLLM's engines to the recipe.
