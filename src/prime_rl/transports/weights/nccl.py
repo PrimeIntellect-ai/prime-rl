@@ -8,7 +8,6 @@ import torch.nn as nn
 from torch import Tensor
 from torch.distributed.tensor import DTensor, Replicate, Shard
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
-from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.configs.shared import NCCLWeightBroadcastConfig
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
@@ -16,7 +15,12 @@ from prime_rl.trainer.utils import get_world
 from prime_rl.trainer.vlm import get_layer_prefix
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, encode_tensor_metadata, iter_tensor_buckets
+from prime_rl.utils.nccl import (
+    create_nccl_communicator,
+    disable_nccl_p2p_if_unavailable,
+    encode_tensor_metadata,
+    iter_tensor_buckets,
+)
 from prime_rl.utils.weights import get_chunked_conversion_ops, resolve_wire_dtype
 
 
@@ -176,10 +180,7 @@ class NCCLBroadcaster:
         if self.world.is_master:
             disable_nccl_p2p_if_unavailable()
             # Trainer is on rank 0 in process group with all inference GPUs
-            pg = StatelessProcessGroup.create(
-                host=host, port=port, rank=rank, world_size=world_size, store_timeout=timeout
-            )
-            self.communicator = PyNcclCommunicator(pg, device=device)
+            self.communicator = create_nccl_communicator(host, port, rank, world_size, device, timeout)
             self.logger.debug("Initialized NCCL broadcast on master rank")
         else:
             self.logger.debug("Initialized NCCL broadcast on non-master rank (no communicator)")
