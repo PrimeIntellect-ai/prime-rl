@@ -536,7 +536,7 @@ class NIXLWeightUpdateWorker(WeightRPCMixin, Worker):
             # As for NCCL and filesystem reloads: EPLB keeps the kernels it registered on the live storage
             restore_moe_kernels(moe_kernels)
         update_mla_absorbed_weights(self.raw_model)
-        torch.cuda.synchronize(self.device)
+        torch.accelerator.synchronize(self.device)
         logger.info(
             "Applied NIXL policy update on rank %d in %.2fs",
             self.model_express.rank,
@@ -581,7 +581,7 @@ class NIXLWeightUpdateWorker(WeightRPCMixin, Worker):
             return transfer_group
 
         def prefetch_group(group_index: int) -> WeightTransferGroup:
-            torch.cuda.set_device(self.device)
+            torch.accelerator.set_device_index(self.device)
             return pull_group(group_index)
 
         def replay_group(transfer_group: WeightTransferGroup) -> None:
@@ -622,12 +622,12 @@ class NIXLWeightUpdateWorker(WeightRPCMixin, Worker):
                 for group_index in range(len(plan.groups)):
                     transfer_group = pull.result() if pull is not None else pull_group(group_index)
 
-                    torch.cuda.synchronize(self.device)
+                    torch.accelerator.synchronize(self.device)
                     if executor is not None and group_index + 1 < len(plan.groups):
                         pull = executor.submit(prefetch_group, group_index + 1)
 
                     replay_group(transfer_group)
-                    torch.cuda.synchronize(self.device)
+                    torch.accelerator.synchronize(self.device)
             finally:
                 cancelled.set()
                 if executor is not None:

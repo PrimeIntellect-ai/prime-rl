@@ -91,6 +91,9 @@ class ModelExpressWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     port: int = 8001
     """ModelExpress gRPC port."""
 
+    metadata_port: int = 5655
+    """Base port of the trainer's NIXL metadata listener. Each local rank listens on this plus its device id."""
+
     staging_mode: Literal["COPY_TO_HOST", "COPY_TO_DEVICE", "IN_PLACE"] = "COPY_TO_HOST"
     """Trainer storage policy passed to ModelExpress."""
 

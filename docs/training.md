@@ -434,6 +434,27 @@ uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-last 3  # rolling window of 3
 uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-interval 100  # …plus permanent every 100
 ```
 
+### Asynchronous Checkpoints
+
+By default a trainer step waits until its checkpoint is written to storage. With `--ckpt.async-save` (`--trainer.ckpt.async-save` also works for `rl`), a save only copies each rank's model and optimizer state into pinned host memory. A background thread then writes the copy to storage while training continues:
+
+```bash
+uv run rl @ rl.toml --ckpt.interval 2 --ckpt.async-save
+uv run sft @ sft.toml --ckpt.interval 2 --ckpt.async-save
+```
+
+The checkpoint holds the same state that a synchronous save at that step would write. It works with every `model.offload` mode:
+
+- With `model.offload = "none"`, the copy from GPU memory runs alongside the next step's forward and backward passes. The trainer waits for it to finish before the optimizer step changes the state. Until then, any temporary GPU tensors the checkpoint is built from, such as gathered entries of fused parameters, stay allocated.
+- With `optimizer` or `full` offload, the save copies the CPU optimizer state and returns once the copy is done, because offloaded state changes outside the optimizer step. The copy reads the state where it lives, without moving it through the GPU as a synchronous save does.
+
+Some things to know:
+
+- **Host memory.** Each rank keeps pinned host buffers about the size of its checkpoint shard (model plus optimizer state), and reuses them for every save. On a node, this adds up to the node's share of the full checkpoint. With optimizer offload, this comes on top of the offloaded state itself.
+- **One save at a time.** A save first waits for the previous write to finish. If the checkpoint interval is shorter than a write takes, the trainer waits for the write.
+- **Completeness.** DCP writes `trainer/.metadata` after every rank has written its shards. A resume skips any step whose trainer checkpoint has no `.metadata`, for example one that was still being written when the job died. `keep_last` and `keep_interval` only count checkpoints that finished writing, so cleanup never deletes the newest finished checkpoint to make room for one that is still in flight.
+- **Failures.** If a background write fails, the trainer raises its error at the next optimizer step, the next save or the end of training, and stops. The final checkpoint, and any checkpoint requested through the control API, is written before the trainer exits or reports it as saved.
+
 ### Resuming a Run
 
 Re-run the same launch command and pass `--resume` (latest checkpoint) or `--resume.step <N>`. Resuming reuses the run directory, so the run needs a name you can point back at — launch with `--run.name` (or pass the first run's auto-generated name). Make sure `--max-steps` is at least the target final step, not the remaining delta:
@@ -544,14 +565,18 @@ Frozen fields include the model, tokenizer, renderer, transports, monitors, logg
 Trainer checkpoints are DCP-sharded; export them to HF-format safetensors with `tools/convert_dcp_to_bf16.py`. The script reads the model config from the run's resolved config and writes sharded safetensors plus config/tokenizer assets to `<ckpt_dir>/weights` (or a second positional arg). It exports full fine-tunes only — LoRA checkpoints are rejected.
 
 ```bash
-# single process (1 GPU)
+# stream one decoder layer at a time on CPU
 uv run python tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10
 
-# multi-rank for faster gathers and models that don't fit one GPU
-uv run torchrun --nproc-per-node 8 tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10
+# load and write up to four decoder layers concurrently on CPU
+uv run python tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10 --workers 4
 ```
 
-The exported directory loads directly into `uv run inference --vllm.model <dir>` or any HF consumer. Quantize it to blockwise FP8 (DeepSeek/GLM format, loads natively in vLLM) with `tools/convert_bf16_to_fp8.py <dir>`, or go straight from the checkpoint with `tools/convert_dcp_to_fp8.py <ckpt_dir>` (each rank quantizes its gathered slice, writes only `<ckpt_dir>/weights-FP8` — no intermediate bf16 export); dequantize an fp8-only release (e.g. GLM-5-FP8) for training with `tools/convert_fp8_to_bf16.py <dir>`.
+N-gram tables are read one stored DCP chunk at a time (one per training rank) and written as their HF table shards. `--workers` bounds how many decoder layers or tables are in flight; peak host memory is each in-flight decoder layer with its conversion buffers, plus, for each in-flight table, about twice its largest DCP storage chunk in the stored dtype (PyTorch holds the raw bytes while decoding a chunk).
+
+The export is staged in a hidden directory next to the output directory and renamed into place when complete, so the output's parent must be writable, a mount point cannot itself be the output directory, and replacing an existing export needs disk for both until the old one is removed. A failed or interrupted publish restores the previous export. An existing non-empty directory other than the default export dir is only replaced with `--overwrite`.
+
+The exported directory loads directly into `uv run inference --vllm.model <dir>` or any HF consumer. Quantize it to blockwise FP8 (DeepSeek/GLM format, loads natively in vLLM) with `tools/convert_bf16_to_fp8.py <dir>`, or go straight from the checkpoint with `tools/convert_dcp_to_fp8.py <ckpt_dir>` (streams decoder layers on CPU and writes only `<ckpt_dir>/weights-FP8`, with no intermediate BF16 export; `--workers` controls concurrency, and `--device cuda` enables GPU quantization instead of the default CPU); dequantize an fp8-only release (e.g. GLM-5-FP8) for training with `tools/convert_fp8_to_bf16.py <dir>`.
 
 ## Observability
 
