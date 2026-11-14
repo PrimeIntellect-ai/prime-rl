@@ -8,7 +8,7 @@ from pydantic import Field, model_validator
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig
-from prime_rl.configs.orchestrator import OrchestratorConfig, TrainSamplingConfig
+from prime_rl.configs.orchestrator import OrchestratorConfig, SpeculativeDecodingConfig, TrainSamplingConfig
 from prime_rl.configs.shared import (
     BaseMultiNodeDeploymentConfig,
     BaseSingleNodeDeploymentConfig,
@@ -153,6 +153,24 @@ class RLConfig(BaseConfig):
 
     inference: InferenceConfig | None = None
     """Inference server configuration. If None, the rl entrypoint will not start an inference server (useful for manually started servers)."""
+
+    @model_validator(mode="after")
+    def auto_setup_draft_swaps(self):
+        """The orchestrator swaps drafts on the engines, starting from the draft they launch with."""
+        dynamo = self.orchestrator.model.client.dynamo
+        if self.inference is None or (dynamo is not None and dynamo.enabled):
+            return self
+        draft = (getattr(self.inference.vllm, "speculative_config", None) or {}).get("model")
+        if draft is None:
+            return self
+        if self.orchestrator.speculative_decoding is None:
+            self.orchestrator.speculative_decoding = SpeculativeDecodingConfig(draft=draft)
+        elif self.orchestrator.speculative_decoding.draft != Path(draft):
+            raise ValueError(
+                "orchestrator.speculative_decoding.draft must be the inference draft at launch; "
+                "change it live with update_config"
+            )
+        return self
 
     env_vars: EnvVars = {}
     """Extra environment variables for every launched RL component. Component-specific env_vars override these."""
@@ -576,6 +594,12 @@ class RLConfig(BaseConfig):
             return self
         vllm = self.inference.vllm
         config = dict(getattr(vllm, "quantization_config", None) or {})
+        if "targets" in config:
+            warnings.warn(
+                f"inference.vllm.quantization_config.targets is set: make sure it quantizes the trainer's experts "
+                f"({compute.apply_to}) with {wanted!r}.",
+                stacklevel=2,
+            )
         if vllm.quantization is None:
             if not compute.selects_all:
                 raise ValueError(
@@ -586,11 +610,6 @@ class RLConfig(BaseConfig):
             vllm.quantization_config = {**config, "moe": wanted}
             return self
         if "targets" in config:
-            warnings.warn(
-                f"inference.vllm.quantization_config.targets is set: make sure it quantizes the trainer's experts "
-                f"({compute.apply_to}) with {wanted!r}.",
-                stacklevel=2,
-            )
             return self
         engines = config.get("moe", None if vllm.quantization == "online" else vllm.quantization)
         if engines != wanted or not compute.selects_all:
@@ -682,6 +701,17 @@ class RLConfig(BaseConfig):
             return sampling.model_copy(update={"logprobs": max(sampling.logprobs or 0, k)})
 
         self.orchestrator.update_policy_samplings(request_logprobs)
+        return self
+
+    @model_validator(mode="after")
+    def validate_speculative_sampler_logprobs(self):
+        """Speculative verification captures replayed supports, not untruncated sampler rows."""
+        if self.inference is None or not getattr(self.inference.vllm, "speculative_config", None):
+            return self
+        if any(not s.truncates_distribution() and s.logprobs for s in self.orchestrator.policy_samplings):
+            raise ValueError(
+                "With speculative decoding, sampler logprobs (e.g. score centering) need truncated train sampling"
+            )
         return self
 
     @model_validator(mode="after")

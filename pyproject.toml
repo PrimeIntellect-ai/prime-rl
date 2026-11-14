@@ -179,6 +179,7 @@ members = [
 ]
 # Tau tasksets require litellm<1.82.7, while Harbor requires litellm>=1.92.0.
 # Apex pins a verifiers git revision instead of the editable workspace member.
+# AutomationBench-AA needs upstream automation-bench 1.0.6, which conflicts with pi_automationbench's fork 1.1.1.
 # ALE CLI requires numpy>=2.4.4, while vLLM 0.33.0 (via mistral-common) requires numpy<2.4.
 # IFBench requires setuptools<78, while vLLM 0.33.0 requires setuptools>=78.1.1.
 # A workspace shares one lock, so these packages need separate environments.
@@ -189,6 +190,7 @@ exclude = [
     "deps/prime-envs/environments/tool_use/tau2_synth",
     "deps/prime-envs/environments/tool_use/tau3_bench",
     "deps/prime-envs/environments/tool_use/apex_agents",
+    "deps/prime-envs/environments/tool_use/automationbench_aa_env",
 ]
 
 # Mirror the upstream Pydantic compatibility correction until the next release.

@@ -214,6 +214,9 @@ class MXFP8MoEComputeConfig(MoEComputeConfigBase):
     type: Literal["mxfp8"] = "mxfp8"
     recipe: MXFP8Recipe = "mxfp8_rceil"
     """MXFP8 expert-compute recipe."""
+    backward: Literal["mxfp8", "dequant_bf16"] = "mxfp8"
+    """Backward GEMMs in MXFP8 (default), or in BF16 on the forward's dequantized weights, as MXFP8
+    quantization-aware training computes (Mega MoE on SM100)."""
 
 
 class NVFP4MoEComputeConfig(MoEComputeConfigBase):
@@ -265,8 +268,8 @@ class DeepEPMoEDispatchConfig(BaseConfig):
 
 class MegaMoeMoEDispatchConfig(BaseConfig):
     """Fused dispatch, expert MLP and combine. The expert precision comes from ``model.moe.compute``, as for every
-    dispatch: ``bf16`` (SM90+), ``mxfp8`` (SM100) or ``deepgemm_fp8`` (SM90; ``forward = "bf16"`` for a BF16 forward
-    with an FP8 backward)."""
+    dispatch: ``bf16`` (SM90+), ``mxfp8`` (SM100; ``backward = "dequant_bf16"`` for a BF16 backward on the dequantized
+    weights) or ``deepgemm_fp8`` (SM90; ``forward = "bf16"`` for a BF16 forward with an FP8 backward)."""
 
     type: Literal["mega_moe"] = "mega_moe"
 
@@ -290,7 +293,7 @@ def mega_moe_precision(compute: "MoEComputeConfig") -> str:
     if isinstance(compute, BF16MoEComputeConfig) and compute.backend == "torch":
         return "bf16"
     if isinstance(compute, MXFP8MoEComputeConfig) and compute.recipe == "mxfp8_rceil":
-        return "mxfp8"
+        return "mxfp8" if compute.backward == "mxfp8" else "mxfp8_qat"
     if isinstance(compute, DeepGemmFP8MoEComputeConfig):
         return "fp8" if compute.forward == "fp8" else "fp8_bwd"
     raise ValueError(
@@ -456,6 +459,8 @@ class ModelConfig(BaseModelConfig):
             mega_moe_precision(compute)  # raises for what Mega MoE cannot run
         elif isinstance(compute, DeepGemmFP8MoEComputeConfig) and compute.forward == "bf16":
             raise ValueError("model.moe.compute.forward = 'bf16' needs model.moe.dispatch.type = 'mega_moe'.")
+        elif isinstance(compute, MXFP8MoEComputeConfig) and compute.backward == "dequant_bf16":
+            raise ValueError("model.moe.compute.backward = 'dequant_bf16' needs model.moe.dispatch.type = 'mega_moe'.")
         if self.ep == 1:
             return self
 
@@ -814,6 +819,12 @@ class TrainerConfig(BaseTrainerConfig):
 
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
+
+    annotations: bool = True
+    """Write the trainer's recomputed per-token logprobs and entropies as trace annotations,
+    so a trace can show trainer against sampler token by token. Needs ``monitors.file``.
+    Each step gathers every trained token to the master rank before the optimizer step;
+    disable with ``--no-annotations`` to skip that work."""
 
     enable_router_replay: bool = False
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""
