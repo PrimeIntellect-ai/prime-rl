@@ -20,6 +20,7 @@ from transformers.utils import (
 )
 
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.distributed import all_gather_bytes
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -261,8 +262,8 @@ def save_state_dict_parallel(state_dict: dict[str, Tensor], save_dir: Path) -> N
         save_file(shard, save_dir / tmp_name, metadata={"format": "pt"})
         local_shards.append((tmp_name, {name: shard[name].nbytes for name in tensor_names}))
 
-    all_shards: list[list[tuple[str, dict[str, int]]] | None] = [None] * world.world_size
-    dist.all_gather_object(all_shards, local_shards)
+    encoded_shards = json.dumps(local_shards, separators=(",", ":")).encode()
+    all_shards = [json.loads(payload) for payload in all_gather_bytes(encoded_shards)]
     flat = [(rank, tmp_name, sizes) for rank, shards in enumerate(all_shards) for tmp_name, sizes in shards]
 
     num_shards = len(flat)

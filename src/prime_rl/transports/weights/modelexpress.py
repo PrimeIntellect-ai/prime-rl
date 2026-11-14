@@ -2,6 +2,7 @@
 
 import asyncio
 import atexit
+import json
 import os
 import time
 import uuid
@@ -24,6 +25,7 @@ from torch import nn
 
 from prime_rl.configs.shared import ModelExpressWeightBroadcastConfig
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender, marker_exists
+from prime_rl.utils.distributed import all_gather_bytes, broadcast_bytes
 from prime_rl.utils.pathing import wait_for_path
 
 VERSION_MARKER = ".mx_version"
@@ -56,8 +58,22 @@ class ModelExpressWeightSender(WeightSender):
         )
         atexit.register(self._trainer.close)
         metadata = self._trainer.bind_tensors(tensors)
-        gathered_workers = [None] * self.world.world_size
-        dist.all_gather_object(gathered_workers, (self._trainer.worker_id, metadata))
+        local_worker = json.dumps(
+            [self._trainer.worker_id, metadata.logical_shard_id, metadata.metadata_endpoint],
+            separators=(",", ":"),
+        ).encode()
+        gathered_workers = []
+        for payload in all_gather_bytes(local_worker):
+            worker_id, logical_shard_id, metadata_endpoint = json.loads(payload)
+            gathered_workers.append(
+                (
+                    worker_id,
+                    TrainerTensorsMetadata(
+                        logical_shard_id=logical_shard_id,
+                        metadata_endpoint=metadata_endpoint,
+                    ),
+                )
+            )
         if self.world.is_master:
             workers: dict[str, TrainerTensorsMetadata] = dict(gathered_workers)
             self._control = ModelExpressControlClient.connect(server_url=f"{self.config.host}:{self.config.port}")
@@ -75,7 +91,7 @@ class ModelExpressWeightSender(WeightSender):
         if self._trainer is None:
             self._initialize(model)
         assert self._trainer is not None
-        offered = [None]
+        offered = None
         if self.world.is_master:
             assert self._control is not None and self._mesh_id is not None
             version = self._control.create_weight_version(
@@ -85,17 +101,17 @@ class ModelExpressWeightSender(WeightSender):
                 trainer_mesh_id=self._mesh_id,
                 version_number=step,
             )
-            offered[0] = version.version_id
+            offered = version.version_id
             marker = step_dir / VERSION_MARKER
             pending = marker.with_suffix(".pending")
             pending.write_text(version.version_id)
             pending.replace(marker)
-        dist.broadcast_object_list(offered, src=0)
-        version = WeightVersionRef(offered[0])
+        offered = broadcast_bytes(offered.encode() if offered is not None else None).decode()
+        version = WeightVersionRef(offered)
         self._trainer.publish_version(version=version)
 
         # Installation acknowledgment is a PrimeRL outcome, not MX retirement.
-        installation_failed = [False]
+        installation_failed = False
         installation_error = None
         if self.world.is_master:
             try:
@@ -110,10 +126,10 @@ class ModelExpressWeightSender(WeightSender):
                 if installed.read_text() != version.version_id:
                     raise RuntimeError("Inference acknowledged a different weight version")
             except Exception as exc:
-                installation_failed[0] = True
+                installation_failed = True
                 installation_error = exc
-        dist.broadcast_object_list(installation_failed, src=0)
-        if installation_failed[0]:
+        installation_failed = broadcast_bytes(bytes([installation_failed]) if self.world.is_master else None) == b"\x01"
+        if installation_failed:
             if installation_error is not None:
                 raise installation_error
             raise RuntimeError("Inference weight installation failed on trainer rank zero")
