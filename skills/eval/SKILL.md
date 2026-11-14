@@ -61,7 +61,10 @@ uv run eval gsm8k -n 50 -s --select.seed 1                # another random subse
 uv run eval gsm8k --select.include.idx 0:10,42            # tasks by position (ints and Python slices)
 uv run eval terminal-bench-2 --select.include.names '["terminal-bench/fix-git"]' # tasks by name; `ids` and `keys` work the same
 uv run eval terminal-bench-2 --select.exclude.keys '["<task.key>"]' # drop known-broken tasks (keys are on every trace)
+uv run eval terminal-bench-2 --select.exclude.files.keys broken_keys.txt # the same list from a file, one entry per line
 ```
+
+`files.idx`, `files.ids`, `files.keys` and `files.names` each name a newline-delimited text file. Its lines extend the matching inline list. Relative paths resolve against the working directory.
 
 Disjoint train/test splits from one taskset:
 
