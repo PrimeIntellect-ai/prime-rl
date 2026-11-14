@@ -529,6 +529,14 @@ class RLConfig(BaseConfig):
         if self.inference is None:
             return self
         compute = self.trainer.model.moe.compute
+        if compute.remainder != "bf16" and not compute.selects_all:
+            warnings.warn(
+                f"model.moe.compute runs {compute.type} on {compute.apply_to} of the MoE layers and "
+                f"{compute.remainder} on the rest: rl does not configure engines to match mixed expert precisions yet, "
+                "so set inference.vllm's expert quantization yourself.",
+                stacklevel=2,
+            )
+            return self
         wanted = expert_engine_scheme(compute)
         if wanted is None:
             return self
