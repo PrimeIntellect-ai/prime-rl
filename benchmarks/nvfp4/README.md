@@ -5,7 +5,7 @@ Install prime-kernels from `feat/nvfp4-moe-v2` built for the node:
 `PRIME_KERNELS=nvfp4_moe,mxfp8_moe PRIME_KERNELS_REQUIRE=1`.
 
 The recipe is one, after [Thinking Machines' end-to-end 4-bit training](https://thinkingmachines.ai/blog/end-to-end-4-bit-training/):
-an NVFP4 forward on the first 5/6 of the layers (per-token scales on both GEMM inputs with 4/6 on activations,
+an NVFP4 forward on the first 5/6 of the MoE layers (per-token scales on both GEMM inputs with 4/6 on activations,
 per-expert weight scales, IEEE arithmetic), MXFP8 on the rest, and both gradient GEMMs in MXFP8 on the dequantized
 forward operands with stochastic rounding. These steps check our own kernels and training first; `rl` sets vLLM's
 engines as close to the recipe as vLLM can (see the gaps in step 3).
@@ -61,7 +61,7 @@ python benchmarks/nvfp4/compare.py outputs/nvfp4-mxfp8 outputs/nvfp4-*
 | `bf16`, `bf16-replay` | baselines; replay's own effect |
 | `mxfp8` | the baseline Thinking Machines compare against |
 | `nvfp4` | the recipe: does it track `mxfp8` in reward, loss and grad norm? |
-| `nvfp4-bf16-tail` | the last sixth in BF16 instead of MXFP8 |
+| `nvfp4-bf16-tail` | the last sixth of the MoE layers in BF16 instead of MXFP8 |
 
 The bar: `nvfp4` reward within run-to-run noise of `mxfp8`, no grad-norm spikes, and mismatch KL of the same order as
 `mxfp8`'s. The engines run vLLM's `nvfp4_per_token` on the NVFP4 layers and MXFP8 on the tail, with FlashInfer's IEEE

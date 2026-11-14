@@ -1,4 +1,4 @@
-# The recipe: NVFP4 routed-expert forward on the first 5/6 of the layers (per-token scales with 4/6 on activations,
+# The recipe: NVFP4 routed-expert forward on the first 5/6 of the MoE layers (per-token scales with 4/6 on activations,
 # IEEE arithmetic), MXFP8 on the rest, MXFP8 backward with stochastic rounding on the dequantized operands, router
 # replay, dense layers BF16.
 [trainer.model.moe.compute]
