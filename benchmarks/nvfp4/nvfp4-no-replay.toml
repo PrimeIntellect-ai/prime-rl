@@ -1,5 +1,0 @@
-[trainer]
-enable_router_replay = false
-
-[trainer.model.moe.compute]
-type = "nvfp4"

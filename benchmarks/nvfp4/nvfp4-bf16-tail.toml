@@ -1,0 +1,4 @@
+# The last sixth of the layers in BF16 instead of MXFP8 (NVIDIA's and humans&'s choice): what the MXFP8 tail costs.
+[trainer.model.moe.compute]
+type = "nvfp4"
+remainder = "bf16"

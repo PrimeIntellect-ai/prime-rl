@@ -1,10 +1,9 @@
 """NVFP4 all-gather of the routed experts' weights under FSDP2 (the NVFP4 counterpart of ``fp8_expert_weights``).
 
 With ``nvfp4`` expert compute and ``quantized_all_gather``, FSDP quantizes each expert weight's shard once per
-all-gather into what the GEMMs read (the NVFP4 forward operand and, for the ``mxfp8`` backward, the MXFP8
-input-gradient operand) and all-gathers those instead of BF16: ~0.8 of the bytes with both forms, ~0.3 with the
-forward alone, and the forward, the activation-checkpoint recompute and the input gradient of every micro-step
-reuse one quantization done on 1/shards of the weight. FSDP shards the experts on the expert dimension and every
+all-gather into the GEMMs' NVFP4 forward operand and all-gathers that instead of BF16 (~0.28x the bytes): the
+forward, the activation-checkpoint recompute and the backward (which dequantizes it) of every micro-step reuse one
+quantization done on 1/shards of the weight. FSDP shards the experts on the expert dimension and every
 quantized tensor leads with it (per-expert scales, per-row blocks), so the gathered bytes are exactly the ones the
 GEMM would make from the gathered BF16 weight.
 

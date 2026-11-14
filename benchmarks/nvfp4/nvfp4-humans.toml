@@ -1,7 +1,0 @@
-# humans&'s recipe (https://humansand.ai/blog/nvfp4-rl): dequantized BF16 backward, 4/6 scaling, last 15% of
-# MoE layers in BF16. They found only all three together free of gradient-norm spikes.
-[trainer.model.moe.compute]
-type = "nvfp4"
-backward = "dequant_bf16"
-four_over_six = true
-apply_to = "85%"

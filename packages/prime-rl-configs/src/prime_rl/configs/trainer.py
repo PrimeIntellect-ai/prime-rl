@@ -156,8 +156,12 @@ class MoEComputeConfigBase(BaseConfig):
     apply_to: str | list[Annotated[int, Field(ge=0, strict=True)]] = "all"
     """Model layers to use this backend for: ``"all"``, a percentage such as ``"85%"``,
     or zero-based layer indices such as ``[0, 1, 2]``. Percentages select the first fraction
-    of model layers, rounded down. Other expert groups use BF16 compute and transport.
+    of model layers, rounded down. The other MoE layers run ``remainder``.
     """
+
+    remainder: Literal["bf16", "mxfp8"] = "bf16"
+    """Expert compute of the MoE layers outside ``apply_to``: BF16 (default), or MXFP8 (SM100) for a higher-precision
+    tail cheaper than BF16, such as the last layers of a lower-precision run."""
 
     @field_validator("apply_to")
     @classmethod
@@ -220,39 +224,28 @@ class MXFP8MoEComputeConfig(MoEComputeConfigBase):
     type: Literal["mxfp8"] = "mxfp8"
     recipe: MXFP8Recipe = "mxfp8_rceil"
     """MXFP8 expert-compute recipe."""
+    backward: Literal["mxfp8", "dequant_bf16"] = "mxfp8"
+    """Backward GEMMs in MXFP8 (default), or in BF16 on the forward's dequantized weights, as MXFP8
+    quantization-aware training computes (Mega MoE on SM100)."""
 
 
 class NVFP4MoEComputeConfig(MoEComputeConfigBase):
-    """Run routed-expert forwards in NVFP4 (per-token activation scales, per-expert weight scales, E4M3 scales per
-    16-element block): quantization-aware training with a straight-through backward. Master weights, optimizer state,
-    checkpoints and weight updates stay BF16. Needs SM100/SM103 (B200, GB200, B300) and a prime-kernels build with
-    ``nvfp4_moe``."""
+    """Run routed experts in NVFP4 with one recipe, after Thinking Machines' end-to-end 4-bit training. Forward: E2M1
+    values, E4M3 scales per 16-element block, a per-token outer scale on both GEMM inputs (block scales chosen with
+    4/6) and a per-expert one on the weights, in IEEE arithmetic. Backward: both gradient GEMMs in MXFP8 on the
+    dequantized forward operands, every operand quantized with stochastic rounding. By default the first 5/6 of the
+    layers run NVFP4 and the rest MXFP8. Master weights, optimizer state, checkpoints and weight updates stay BF16.
+    Needs SM100/SM103 (B200, GB200, B300) and a prime-kernels build with ``nvfp4_moe``."""
 
     type: Literal["nvfp4"] = "nvfp4"
-    backward: Literal["mxfp8", "dequant_mxfp8", "dequant_bf16", "bf16"] = "mxfp8"
-    """Gradient GEMMs: MXFP8 on the original BF16 operands (default, Composer 2's recipe; the backward never meets the
-    sampler, so it trades exactness for speed), MXFP8 or BF16 on the dequantized NVFP4 forward operands (the gradients
-    see the forward's rounding and clipping, which humans& found most stable), or BF16 on the original operands."""
-    four_over_six: bool = True
-    """FlashInfer's adaptive 4/6 block scaling (448 normalization, MAE selection). On by default because vLLM's NVFP4
-    engines use it when ``FLASHINFER_NVFP4_4OVER6`` is set, which ``rl`` sets to match: the trainer's forward then
-    quantizes like the sampler's."""
+    apply_to: str | list[Annotated[int, Field(ge=0, strict=True)]] = "83.34%"
+    remainder: Literal["bf16", "mxfp8"] = "mxfp8"
     quantized_all_gather: bool = False
-    """FSDP all-gathers the routed experts' weights as the GEMMs' quantized operands (NVFP4, plus MXFP8 for the
-    ``mxfp8`` backward's input gradient) instead of BF16: each rank quantizes its shard once per all-gather, and the
-    forward, the activation-checkpoint recompute and the input gradient of every micro-step reuse it, with ~0.8x the
-    all-gather bytes (~0.3x with ``dequant_bf16``). Same numerics as quantizing the BF16 weight in the GEMM. Needs equal
-    whole-expert FSDP shards (no ``fusions.shard_fused_on_dim1``) and a backward that does not read BF16 weights (not
-    ``bf16``). Checkpoints hold plain tensors either way."""
-
-    down_input_scale: Literal["static", "per_token"] = "static"
-    """Global scale of the down projection's input (the SwiGLU output). ``static``: 1.0 for every token, how vLLM's
-    online NVFP4 engines (FlashInfer TRTLLM) quantize it, so rollouts sample-match. ``per_token``: each token's
-    amax / 2688, as for the first GEMM's input (Composer 2's choice), for engines that quantize it per token too."""
-    exact_division: bool = False
-    """IEEE-rounded reciprocals in the NVFP4 block math instead of FlashInfer's approximate ones. Composer 2 found
-    IEEE arithmetic critical for RL stability, but vLLM's TRTLLM engines keep approximate division, so the trainer
-    then quantizes slightly differently from the sampler: an ablation until the engines can match."""
+    """FSDP all-gathers the routed experts' weights as the GEMMs' NVFP4 forward operand instead of BF16 (~0.28x the
+    bytes): each rank quantizes its shard once per all-gather, and the forward, the activation-checkpoint recompute and
+    the backward (which dequantizes it) of every micro-step reuse it. Same numerics as quantizing the BF16 weight in the
+    GEMM. Needs equal whole-expert FSDP shards (no ``fusions.shard_fused_on_dim1``). Checkpoints hold plain tensors
+    either way."""
 
 
 MoEComputeConfig: TypeAlias = Annotated[
@@ -279,8 +272,8 @@ class DeepEPMoEDispatchConfig(BaseConfig):
 
 class MegaMoeMoEDispatchConfig(BaseConfig):
     """Fused dispatch, expert MLP and combine. The expert precision comes from ``model.moe.compute``, as for every
-    dispatch: ``bf16`` (SM90+), ``mxfp8`` (SM100) or ``deepgemm_fp8`` (SM90; ``forward = "bf16"`` for a BF16 forward
-    with an FP8 backward)."""
+    dispatch: ``bf16`` (SM90+), ``mxfp8`` (SM100; ``backward = "dequant_bf16"`` for a BF16 backward on the dequantized
+    weights) or ``deepgemm_fp8`` (SM90; ``forward = "bf16"`` for a BF16 forward with an FP8 backward)."""
 
     type: Literal["mega_moe"] = "mega_moe"
 
@@ -304,7 +297,7 @@ def mega_moe_precision(compute: "MoEComputeConfig") -> str:
     if isinstance(compute, BF16MoEComputeConfig) and compute.backend == "torch":
         return "bf16"
     if isinstance(compute, MXFP8MoEComputeConfig) and compute.recipe == "mxfp8_rceil":
-        return "mxfp8"
+        return "mxfp8" if compute.backward == "mxfp8" else "mxfp8_qat"
     if isinstance(compute, DeepGemmFP8MoEComputeConfig):
         return "fp8" if compute.forward == "fp8" else "fp8_bwd"
     raise ValueError(
@@ -470,6 +463,8 @@ class ModelConfig(BaseModelConfig):
             mega_moe_precision(compute)  # raises for what Mega MoE cannot run
         elif isinstance(compute, DeepGemmFP8MoEComputeConfig) and compute.forward == "bf16":
             raise ValueError("model.moe.compute.forward = 'bf16' needs model.moe.dispatch.type = 'mega_moe'.")
+        elif isinstance(compute, MXFP8MoEComputeConfig) and compute.backward == "dequant_bf16":
+            raise ValueError("model.moe.compute.backward = 'dequant_bf16' needs model.moe.dispatch.type = 'mega_moe'.")
         if self.ep == 1:
             return self
 
@@ -483,10 +478,6 @@ class ModelConfig(BaseModelConfig):
         compute = self.moe.compute
         if not (isinstance(compute, NVFP4MoEComputeConfig) and compute.quantized_all_gather):
             return self
-        if compute.backward == "bf16":
-            raise ValueError(
-                "model.moe.compute.quantized_all_gather gathers no BF16 expert weights, which backward = 'bf16' reads."
-            )
         if self.fusions.shard_fused_on_dim1:
             raise ValueError(
                 "model.moe.compute.quantized_all_gather quantizes each FSDP shard of whole experts, but "
@@ -861,6 +852,12 @@ class TrainerConfig(BaseTrainerConfig):
 
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
+
+    annotations: bool = True
+    """Write the trainer's recomputed per-token logprobs and entropies as trace annotations,
+    so a trace can show trainer against sampler token by token. Needs ``monitors.file``.
+    Each step gathers every trained token to the master rank before the optimizer step;
+    disable with ``--no-annotations`` to skip that work."""
 
     enable_router_replay: bool = False
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""

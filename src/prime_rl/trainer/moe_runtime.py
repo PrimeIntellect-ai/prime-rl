@@ -87,13 +87,7 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
                 f"NVFP4 expert compute needs SM100 or SM103 (B200, GB200, B300), but this device is "
                 f"SM{capability[0]}{capability[1]}. Use moe.compute.type = 'mxfp8' (SM100+) or 'deepgemm_fp8' (SM90)."
             )
-        return NVFP4ExpertCompute(
-            kernel=prime_kernels.load("nvfp4_moe"),
-            backward=compute.backward,
-            four_over_six=compute.four_over_six,
-            exact_division=compute.exact_division,
-            static_down_input_scale=compute.down_input_scale == "static",
-        )
+        return NVFP4ExpertCompute(kernel=prime_kernels.load("nvfp4_moe"))
     raise TypeError(f"Unsupported MoE compute config: {type(compute).__name__}")
 
 
@@ -117,6 +111,15 @@ def _resolve_mega_moe_compute(
     )
 
 
+def seed_expert_rounding(config: ModelConfig, step: int) -> None:
+    """Seed the NVFP4 experts' stochastic rounding for ``step``: its backward then quantizes the same way on every
+    replay, so a step is reproducible."""
+    if isinstance(config.moe.compute, NVFP4MoEComputeConfig) and not config.moe.compute.selects_none:
+        import prime_kernels
+
+        prime_kernels.load("nvfp4_moe").stochastic.set_seed(step)
+
+
 def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:
     moe_layers = [module for module in model.modules() if isinstance(module, MoE)]
     if not moe_layers:
@@ -136,7 +139,12 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
             if isinstance(module, MoE)
         }
         get_logger().debug(f"Selected model layers for MoE compute: {sorted(selected_layers)}")
-    bf16_compute = BF16ExpertCompute()
+    if config.moe.compute.remainder == "mxfp8":
+        import prime_kernels
+
+        remainder_compute = MXFP8ExpertCompute(kernel=prime_kernels.load("mxfp8_moe"), high_precision_wgrad=False)
+    else:
+        remainder_compute = BF16ExpertCompute()
     dispatch = config.moe.dispatch
     is_mega_moe = isinstance(dispatch, MegaMoeMoEDispatchConfig)
     ep_mesh = parallel_dims.get_mesh("ep") if parallel_dims.ep_enabled else None
@@ -151,7 +159,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
             moe_layers[0], dispatch, config.moe.compute, ep_mesh.get_group(), config.dp_replicate
         )
     else:
-        selected_compute = _resolve_expert_compute(config) if selected_moes else bf16_compute
+        selected_compute = _resolve_expert_compute(config) if selected_moes else remainder_compute
 
     for moe in moe_layers:
         if ep_mesh is not None and moe.experts.num_experts % parallel_dims.ep:
@@ -165,7 +173,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
             )
         if is_mega_moe:
             selected_compute.validate_top_k(moe.router.top_k)
-        compute = selected_compute if moe in selected_moes else bf16_compute
+        compute = selected_compute if moe in selected_moes else remainder_compute
         moe.experts.set_compute(compute)
         if ep_mesh is None:
             token_dispatcher = LocalTokenDispatcher(
@@ -221,5 +229,5 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
 
     get_logger().info(
         f"Configured {len(selected_moes)}/{len(moe_layers)} MoE layers with compute={type(selected_compute).__name__}, "
-        f"apply_to={config.moe.compute.apply_to}, fallback=bf16, dispatch={config.moe.dispatch.type}, ep={parallel_dims.ep}"
+        f"apply_to={config.moe.compute.apply_to}, remainder={config.moe.compute.remainder}, dispatch={config.moe.dispatch.type}, ep={parallel_dims.ep}"
     )

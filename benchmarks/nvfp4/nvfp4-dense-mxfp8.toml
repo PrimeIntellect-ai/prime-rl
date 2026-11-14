@@ -1,6 +1,0 @@
-# Dense layers in MXFP8 on trainer and engines too; shared experts, router and LM head stay BF16.
-[trainer.model.moe.compute]
-type = "nvfp4"
-
-[trainer.model.quantization]
-type = "mxfp8"

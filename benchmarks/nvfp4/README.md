@@ -1,35 +1,33 @@
 # NVFP4 on Blackwell: test kit
 
 Everything here waits for an SM100/SM103 node (B200, GB200, B300). Run the steps in order: each one gates the next.
-Install prime-kernels from `feat/nvfp4-moe-perf` (stacked on `feat/nvfp4-moe-v2`) built for the node:
+Install prime-kernels from `feat/nvfp4-moe-perf` built for the node:
 `PRIME_KERNELS=nvfp4_moe,mxfp8_moe PRIME_KERNELS_REQUIRE=1`.
 
-## 1. Kernel correctness (minutes)
+The recipe is one, after [Thinking Machines' end-to-end 4-bit training](https://thinkingmachines.ai/blog/end-to-end-4-bit-training/):
+an NVFP4 forward on the first 5/6 of the layers (per-token scales on both GEMM inputs with 4/6 on activations,
+per-expert weight scales, IEEE arithmetic), MXFP8 on the rest, and both gradient GEMMs in MXFP8 on the dequantized
+forward operands with stochastic rounding. vLLM's engines are not matched to it yet: these steps check our own
+kernels and training; matching the engines comes after.
+
+## 1. Kernel correctness and determinism (minutes)
 
 ```bash
 cd prime-kernels
-pytest tests/test_nvfp4_moe.py tests/test_nvfp4_dispatch.py tests/test_mxfp8_moe_grad_quant.py
+pytest tests/test_nvfp4_moe.py tests/test_nvfp4_dispatch.py tests/test_nvfp4_stochastic.py
 ```
 
-- `test_nvfp4_moe.py`: quantizer bytes against the documented layout, the forward against a dequantized BF16
-  reference, every backward, and whole-expert shards quantized apart matching the BF16 weight's GEMM bit for bit
-  (the quantized all-gather's invariant).
+- `test_nvfp4_moe.py`: the quantizers' bytes against the documented layout, the forward against the GEMM of the
+  dequantized operands, the MXFP8 gradients against the BF16 gradients of the dequantized operands (within MXFP8
+  error, also at RL-sized 1e-12 gradients), the same stochastic-rounding seed giving the same bits and another seed
+  other ones, and whole-expert shards quantized apart matching the BF16 weight's GEMM bit for bit (the quantized
+  all-gather's invariant).
 - `test_nvfp4_dispatch.py`: quantizing before the permutation gives the same bytes and GEMM output as after.
-- `test_mxfp8_moe_grad_quant.py`: the one-pass gradient quantizer is byte-identical to the two passes. If only the
-  row-wise half differs (torchao's CUDA and Triton quantizers round alike but are separate code), keep the one-pass
-  column-wise output and the Triton row-wise one.
+- `test_nvfp4_stochastic.py` (also runs on CPU): stochastic rounding lands on the two E4M3 neighbours, is unbiased,
+  and is reproducible from its seed.
 
-**First, the open question for the whole recipe: how the engines quantize the second GEMM's input** (the SwiGLU output
-feeding the down projection). The trainer here quantizes both GEMM inputs with per-token scales. vLLM's online
-`nvfp4_per_token` runs FlashInfer's TRTLLM MoE with neutral input scales and "per-token scales derived at runtime",
-which is clearly per-token for the first input but not visibly so for the second. DeepGEMM's NVFP4 Mega MoE (in
-vllm-project/DeepGEMM) uses a static global scale there instead. Dump the quantized down-projection inputs from a vLLM
-engine (vLLM `moe_backend` pinned, the TRTLLM backend first) and from the trainer on the same tokens and weights. If they differ,
-switch the trainer's second quantization to the engine's scheme before running any RL. A per-token vs static mismatch
-there would show up as elevated mismatch KL in step 3 without any other symptom.
-
-Then the matching-numerics check that motivates the whole recipe: the trainer's quantizer must produce FlashInfer's
-bytes (what vLLM's engines run). #12 checked it on its original stack; rerun it on this one, with and without 4/6.
+Then the end-to-end determinism check: run two forward-backward passes of one MoE layer on the same inputs with the
+same seed and compare the gradients byte for byte.
 
 ## 2. Kernel speed (minutes)
 
@@ -39,51 +37,35 @@ python benchmarks/nvfp4_moe.py --json nvfp4_moe.json
 
 One expert layer forward and backward per shape and tokens per expert (T). Read:
 
-- `nvfp4/mxfp8` against `bf16` and `mxfp8`: the recipe's speedup. Cursor reports ~1.5x for MXFP8 MoE layers with
-  hand-fused kernels; NVFP4's forward should beat that if the GEMM is not starved by the quantizers.
-- `+prequantized` against without: what receiving weights already quantized (the quantized all-gather) saves in
-  the GEMMs at each T. Expect a lot at T ~ 1k and little at T ~ 16k (quantizing a weight costs about as much as
-  its GEMMs at T ~ 800).
-- Components: `quantize_activations` against `nvfp4_gemm` sizes the payoff of quantizing before dispatch (it
-  removes `top_k - 1` of every `top_k` activation quantizations of the gate_up input); `grad_quant_one_pass`
-  against `two_pass` the gradient fusion.
-
-Then compare against TransformerEngine's NVFP4 (humans&'s implementation: 4/6, dequantized backward, bit-exact with
-FlashInfer per their post) as the trainer-side kernel, at the same shapes, for speed and for bytes against vLLM's
-TRTLLM engines. If it matches the engines and is faster or equally fast, it is a maintained alternative to
-prime-kernels' NVFP4 GEMM; engines stay on vLLM either way.
+- `nvfp4` against `bf16` and `mxfp8`: the recipe's speedup. Thinking Machines expect the NVFP4 forward about 3x the
+  MXFP8 one in theory; their end-to-end gains over full MXFP8 were 8% in pretraining and 20% in RL.
+- `+prequantized` against without: what receiving weights already quantized (the quantized all-gather) saves at
+  each T.
+- Components: `quantize_activations` against `nvfp4_gemm`, and `grad_quant_stochastic` against
+  `grad_quant_nearest`: the stochastic-rounding quantizer is plain PyTorch for now, so if it is a large share of the
+  backward, fuse it into one kernel with Blackwell's hardware stochastic-rounding conversion.
 
 ## 3. RL numerics (hours per run)
 
 Math RL on Qwen3-30B-A3B, one 8-GPU node, 200 steps per variant:
 
 ```bash
-for variant in bf16 bf16-replay nvfp4 nvfp4-no-replay nvfp4-no-4over6 nvfp4-dequant-bwd nvfp4-dequant-mxfp8 \
-    nvfp4-85pct nvfp4-humans nvfp4-dense-mxfp8; do
+for variant in bf16 bf16-replay mxfp8 nvfp4 nvfp4-bf16-tail; do
   uv run rl @ benchmarks/nvfp4/base.toml @ benchmarks/nvfp4/$variant.toml --output-dir outputs/nvfp4-$variant
 done
-python benchmarks/nvfp4/compare.py outputs/nvfp4-bf16-replay outputs/nvfp4-*
+python benchmarks/nvfp4/compare.py outputs/nvfp4-mxfp8 outputs/nvfp4-*
 ```
 
 | variant | question |
 |---|---|
-| `bf16`, `bf16-replay` | baselines; replay's own effect on mismatch |
-| `nvfp4` | the recipe: does it track `bf16-replay` in reward, and how much mismatch KL does it add? |
-| `nvfp4-no-replay` | is router replay needed? |
-| `nvfp4-no-4over6` | does 4/6 scaling matter? |
-| `nvfp4-dequant-bwd` | MXFP8 backward against BF16 gradients on the dequantized operands |
-| `nvfp4-dequant-mxfp8` | MXFP8 gradients on the dequantized operands: humans&'s gradient consistency at MXFP8 speed |
-| `nvfp4-85pct` | last 15% of MoE layers in BF16 |
-| `nvfp4-humans` | humans&'s full recipe (dequantized BF16 backward + 4/6 + last 15% BF16); they saw no grad-norm spikes only with all three |
-| `nvfp4-dense-mxfp8` | dense layers in MXFP8 too (shared experts, router, LM head stay BF16) |
+| `bf16`, `bf16-replay` | baselines; replay's own effect |
+| `mxfp8` | the baseline Thinking Machines compare against |
+| `nvfp4` | the recipe: does it track `mxfp8` in reward, loss and grad norm? |
+| `nvfp4-bf16-tail` | the last sixth in BF16 instead of MXFP8 |
 
-The bar: `nvfp4` reward within run-to-run noise of `bf16-replay`, mismatch KL of the same order (a few times
-the baseline, not orders of magnitude), no grad-norm spikes. If mismatch KL is far above the baseline:
-
-1. Check that the engines run the trainer's quantization (`FLASHINFER_NVFP4_4OVER6` set on them, `nvfp4_per_token`
-   in the vLLM logs).
-2. Division precision: the trainer and FlashInfer both divide with `rcp.approx`; Composer 2 found IEEE division
-   mattered. That needs the same change on both sides.
+The bar: `nvfp4` reward within run-to-run noise of `mxfp8`, no grad-norm spikes. The engines stay BF16 for the
+mixed-precision recipe (`rl` warns), so mismatch KL measures the trainer against BF16 sampling here and is expected
+above `mxfp8`'s until the engines run the recipe.
 
 ## 4. RL speed
 
@@ -96,19 +78,16 @@ done
 python benchmarks/nvfp4/compare.py outputs/nvfp4-nvfp4-ep2 outputs/nvfp4-nvfp4-ag-ep2
 ```
 
-`quantized_all_gather` must match `nvfp4` exactly (same loss and mismatch KL step for step) and be faster. Each rank
-quantizes 1/shards of the weights per all-gather instead of all of them three times per micro-batch (forward,
-recompute, input gradient), so the gain grows with the experts' FSDP group: rerun the pair at the target scale (EP
-and nodes) before turning it on by default.
+`quantized_all_gather` must match `nvfp4` exactly (same loss step for step) and be faster. Each rank quantizes 1/shards
+of the weights per all-gather instead of all of them for every GEMM, so the gain grows with the experts' FSDP group:
+rerun the pair at the target scale before turning it on by default.
 
 ## What the results decide
 
-- **Quantized all-gather.** Exact and faster: make it the default for NVFP4 runs. It needs equal whole-expert FSDP
-  shards, which `rl` validates at setup.
-- **Quantize before dispatch** (`prime_kernels.nvfp4_moe.dispatch`). Locally it only saves the gate_up input's
-  repeated quantizations, since the MXFP8 backward still needs the BF16 permuted tokens; worth wiring into the token
-  dispatcher if `quantize_activations` is a large share of the layer. The bigger win, NVFP4 bytes through the EP
-  all-to-all, needs the weight gradient to run on dequantized tokens: run `nvfp4-dequant-bwd` first to see what
-  that costs in numerics. Not valid with `score_before_experts` (tokens are scaled per route before the experts).
-- **Further kernel work**, by what the profile shows: quantization fused into the GEMM prologue, CUTLASS tile and
-  cluster tuning for B200/B300, and (largest) a fused MoE-layer kernel in the style of Cursor's MoK.
+- **Quantized all-gather.** Exact and faster: make it the default. It needs equal whole-expert FSDP shards, which the
+  trainer config validates.
+- **Quantize before dispatch** (`prime_kernels.nvfp4_moe.dispatch`): the backward now runs on the dequantized
+  tokens, so NVFP4 tokens can travel through the EP all-to-all (~3.5x fewer bytes). Worth wiring into the token
+  dispatchers if the all-to-all is a visible share of the step.
+- **Follow-ups:** a fused stochastic-rounding MXFP8 quantizer; Thinking Machines' 8-bit combine (a 32-wide random
+  Hadamard transform and block-scaled 8-bit fixed point, GB300-specific); matching vLLM's engines to the recipe.

@@ -1,3 +1,0 @@
-[trainer.model.moe.compute]
-type = "nvfp4"
-four_over_six = false

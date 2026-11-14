@@ -1,4 +1,0 @@
-# Last 15% of MoE layers in BF16 (apply_to selects the first 85%), as humans& keep for stability.
-[trainer.model.moe.compute]
-type = "nvfp4"
-apply_to = "85%"

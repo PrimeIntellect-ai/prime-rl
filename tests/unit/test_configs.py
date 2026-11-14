@@ -465,6 +465,7 @@ def test_mega_moe_buffer_covers_mxfp8_padding():
         ({}, "bf16"),
         ({"type": "mxfp8"}, "mxfp8"),
         ({"type": "mxfp8", "apply_to": "100%"}, "mxfp8"),
+        ({"type": "mxfp8", "backward": "dequant_bf16"}, "mxfp8_qat"),
         ({"type": "deepgemm_fp8"}, "fp8"),
         ({"type": "deepgemm_fp8", "forward": "bf16"}, "fp8_bwd"),
         ({"type": "bf16", "backend": "sonicmoe"}, "cannot run"),
@@ -476,13 +477,15 @@ def test_mega_moe_runs_the_expert_precision_of_moe_compute(compute, expected):
     from prime_rl.configs.trainer import mega_moe_precision
 
     model = {"moe": {"dispatch": {"type": "mega_moe", "max_tokens_per_rank": 8192}, "compute": compute}}
-    if expected in ("bf16", "mxfp8", "fp8", "fp8_bwd"):
+    if expected in ("bf16", "mxfp8", "mxfp8_qat", "fp8", "fp8_bwd"):
         assert mega_moe_precision(TrainerModelConfig.model_validate(model).moe.compute) == expected
     else:
         with pytest.raises(ValidationError, match=expected):
             TrainerModelConfig.model_validate(model)
     with pytest.raises(ValidationError, match="needs model.moe.dispatch.type = 'mega_moe'"):
         TrainerModelConfig.model_validate({"moe": {"compute": {"type": "deepgemm_fp8", "forward": "bf16"}}})
+    with pytest.raises(ValidationError, match="needs model.moe.dispatch.type = 'mega_moe'"):
+        TrainerModelConfig.model_validate({"moe": {"compute": {"type": "mxfp8", "backward": "dequant_bf16"}}})
 
 
 def test_mega_moe_buffer_smaller_than_a_cp_shard_fails():
@@ -1502,19 +1505,29 @@ def test_score_centering_replays_top_p_alone():
     assert config.inference.enable_return_sampling_mask
 
 
-def test_nvfp4_trainer_experts_configure_matching_engines():
+def test_nvfp4_runs_the_first_five_sixths_and_leaves_mixed_engines_to_the_user():
+    with pytest.warns(UserWarning, match="leaves inference's expert quantization"):
+        config = RLConfig.model_validate(
+            {"trainer": {"model": {"moe": {"compute": {"type": "nvfp4"}}}}, "orchestrator": {}, "inference": {}}
+        )
+    compute = config.trainer.model.moe.compute
+    assert compute.resolve_layers(48) == set(range(40)) and compute.resolve_layers(94) == set(range(78))
+    assert compute.remainder == "mxfp8"
+    assert config.inference.moe_nvfp4 is None and config.inference.vllm.quantization is None
+    # Routing is replayed from the engines
+    assert config.trainer.enable_router_replay and config.inference.vllm.enable_return_routed_experts
+
+
+def test_nvfp4_on_every_layer_configures_the_closest_engines():
     import re
 
     from prime_rl.configs.inference import InferenceConfig, MoENVFP4Config
 
-    config = RLConfig.model_validate(
-        {
-            "trainer": {"model": {"moe": {"compute": {"type": "nvfp4"}}}},
-            "orchestrator": {},
-            "inference": {},
-        }
-    )
-    # One switch on the trainer: the engines quantize the same experts with the same 4/6 recipe
+    compute = {"type": "nvfp4", "apply_to": "all"}
+    with pytest.warns(UserWarning, match="close to, not exactly like"):
+        config = RLConfig.model_validate(
+            {"trainer": {"model": {"moe": {"compute": compute}}}, "orchestrator": {}, "inference": {}}
+        )
     assert config.inference.moe_nvfp4 == MoENVFP4Config(apply_to="all", four_over_six=True)
     assert config.inference.env_vars["FLASHINFER_NVFP4_4OVER6"] == "1"
     namespace = config.inference.to_namespace()
@@ -1529,7 +1542,6 @@ def test_nvfp4_trainer_experts_configure_matching_engines():
     assert args["quantization"] == "online"
     (pattern,) = args["quantization_config"]["targets"]
     assert args["quantization_config"]["targets"][pattern] == "nvfp4_per_token"
-
     regex = re.compile(pattern.removeprefix("re:"))
     assert regex.fullmatch("model.layers.5.mlp.experts")
     assert regex.fullmatch("language_model.model.layers.0.mlp.experts")
@@ -1538,39 +1550,15 @@ def test_nvfp4_trainer_experts_configure_matching_engines():
     assert not regex.fullmatch("model.layers.5.mlp.shared_experts")
     assert MoENVFP4Config(apply_to="50%").resolve_layers(48) == list(range(24))
 
-    # "100%" is every layer; the down projection's input defaults to vLLM's static scale
-    full = RLConfig.model_validate(
-        {
-            "trainer": {"model": {"moe": {"compute": {"type": "nvfp4", "apply_to": "100%"}}}},
-            "orchestrator": {},
-            "inference": {},
-        }
-    )
-    assert full.inference.moe_nvfp4.apply_to == "all"
-    assert full.trainer.model.moe.compute.down_input_scale == "static"
-
-    # Without 4/6 on the trainer, the engines leave it off too
-    plain = RLConfig.model_validate(
-        {
-            "trainer": {"model": {"moe": {"compute": {"type": "nvfp4", "four_over_six": False}}}},
-            "orchestrator": {},
-            "inference": {},
-        }
-    )
-    assert "FLASHINFER_NVFP4_4OVER6" not in plain.inference.env_vars
-
-    # Routing is replayed from the engines, and the backward runs in MXFP8
-    assert config.trainer.enable_router_replay and config.inference.vllm.enable_return_routed_experts
-    assert config.trainer.model.moe.compute.backward == "mxfp8"
-
     # MXFP8 dense layers on the trainer: the engines match them, shared experts stay BF16 on both sides
-    dense = RLConfig.model_validate(
-        {
-            "trainer": {"model": {"moe": {"compute": {"type": "nvfp4"}}, "quantization": {"type": "mxfp8"}}},
-            "orchestrator": {},
-            "inference": {},
-        }
-    )
+    with pytest.warns(UserWarning):
+        dense = RLConfig.model_validate(
+            {
+                "trainer": {"model": {"moe": {"compute": compute}, "quantization": {"type": "mxfp8"}}},
+                "orchestrator": {},
+                "inference": {},
+            }
+        )
     assert r"shared_experts?\." in dense.trainer.model.quantization.extra_ignore_patterns
     namespace = dense.inference.to_namespace()
     assert namespace.quantization == "online"
@@ -1591,8 +1579,9 @@ def test_nvfp4_trainer_experts_configure_matching_engines():
         ({}, "pair only with mxfp8 dense layers"),
     ],
 )
+@pytest.mark.filterwarnings("ignore::UserWarning")
 def test_nvfp4_rejects_mismatched_engine_quantization(inference, message):
-    model = {"moe": {"compute": {"type": "nvfp4"}}}
+    model = {"moe": {"compute": {"type": "nvfp4", "apply_to": "all"}}}
     if not inference:
         model["quantization"] = {"type": "fp8"}
     with pytest.raises(ValidationError, match=message):
@@ -1604,13 +1593,14 @@ def test_nvfp4_rejects_mismatched_engine_quantization(inference, message):
     [
         ({"moe": {"compute": {"type": "nvfp4"}}, "lora": {}}, "does not support LoRA"),
         ({"moe": {"compute": {"type": "nvfp4"}}, "compile": {"fullgraph": True}}, "requires compile.fullgraph=false"),
-        ({"moe": {"compute": {"type": "nvfp4", "backward": "fp4"}}}, "Input should be"),
+        ({"moe": {"compute": {"type": "nvfp4", "exact_division": False}}}, "Extra inputs are not permitted"),
         (
-            {"moe": {"compute": {"type": "nvfp4", "backward": "bf16", "quantized_all_gather": True}}},
-            "gathers no BF16 expert weights",
-        ),
-        (
-            {"moe": {"compute": {"type": "nvfp4"}, "dispatch": {"type": "mega_moe", "max_tokens_per_rank": 8192}}},
+            {
+                "moe": {
+                    "compute": {"type": "nvfp4", "apply_to": "all"},
+                    "dispatch": {"type": "mega_moe", "max_tokens_per_rank": 8192},
+                }
+            },
             "Mega MoE cannot run",
         ),
     ],
@@ -1668,3 +1658,28 @@ def test_engines_that_quantize_experts_otherwise_are_rejected(compute, engines, 
         RLConfig.model_validate(
             {"trainer": {"model": {"moe": {"compute": compute}}}, "orchestrator": {}, "inference": {"vllm": engines}}
         )
+
+
+@pytest.mark.parametrize("quantization", [None, "online"])
+def test_engine_targets_warn_that_they_must_cover_the_trainers_experts(quantization):
+    engines = {"quantization_config": {"targets": [{"layers": "model.layers.0.*", "moe": "mxfp8"}]}}
+    if quantization is not None:
+        engines["quantization"] = quantization
+    with pytest.warns(UserWarning, match="quantization_config.targets is set"):
+        RLConfig.model_validate(
+            {
+                "trainer": {"model": {"moe": {"compute": {"type": "mxfp8"}}}},
+                "orchestrator": {},
+                "inference": {"vllm": engines},
+            }
+        )
+
+
+def test_a_quantized_remainder_leaves_the_engines_to_the_user():
+    compute = {"type": "deepgemm_fp8", "apply_to": "80%", "remainder": "mxfp8"}
+    with pytest.warns(UserWarning, match="mixed expert precisions"):
+        config = RLConfig.model_validate(
+            {"trainer": {"model": {"moe": {"compute": compute}}}, "orchestrator": {}, "inference": {"vllm": {}}}
+        )
+    assert config.inference.vllm.quantization is None
+    assert TrainerModelConfig.model_validate({"moe": {"compute": compute}}).moe.compute.remainder == "mxfp8"

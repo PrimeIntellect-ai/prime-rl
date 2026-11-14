@@ -1,4 +1,0 @@
-# MXFP8 gradient GEMMs on the dequantized forward operands: the gradients see the forward's rounding.
-[trainer.model.moe.compute]
-type = "nvfp4"
-backward = "dequant_mxfp8"
