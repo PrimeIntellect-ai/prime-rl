@@ -1,11 +1,15 @@
 from torch import Tensor
 
 from prime_rl.trainer.models.conversion_ops import ConvOp, Drop, PrefixRename, Rename, Stack
-from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
+from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig, NemotronHOmniConfig
 
 
 def is_hf_state_dict(state_dict: dict[str, Tensor]) -> bool:
-    return "backbone.embeddings.weight" in state_dict or any(".mixer." in name for name in state_dict)
+    return (
+        "backbone.embeddings.weight" in state_dict
+        or "language_model.backbone.embeddings.weight" in state_dict
+        or any(".mixer." in name for name in state_dict)
+    )
 
 
 def is_prime_state_dict(state_dict: dict[str, Tensor]) -> bool:
@@ -14,13 +18,26 @@ def is_prime_state_dict(state_dict: dict[str, Tensor]) -> bool:
     )
 
 
-def conversion_chain(config: NemotronHConfig) -> list[ConvOp]:
-    ops: list[ConvOp] = [
-        PrefixRename("backbone.", "model."),
-        Drop("mtp.", is_prefix=True),
-        Rename("model.embeddings.weight", "model.embed_tokens.weight"),
-        Rename("model.norm_f.weight", "model.norm.weight"),
-    ]
+def conversion_chain(config: NemotronHConfig | NemotronHOmniConfig) -> list[ConvOp]:
+    ops: list[ConvOp] = []
+    if config.model_type == "nemotron_h_omni":
+        ops.extend(
+            [
+                Drop("vision_model.", is_prefix=True),
+                Drop("vision_projector.", is_prefix=True),
+                Drop("mlp1.", is_prefix=True),
+                PrefixRename("language_model.", ""),
+            ]
+        )
+        config = config.text_config
+    ops.extend(
+        [
+            PrefixRename("backbone.", "model."),
+            Drop("mtp.", is_prefix=True),
+            Rename("model.embeddings.weight", "model.embed_tokens.weight"),
+            Rename("model.norm_f.weight", "model.norm.weight"),
+        ]
+    )
 
     for layer_idx, layer_type in enumerate(config.layer_types):
         prefix = f"model.layers.{layer_idx}"

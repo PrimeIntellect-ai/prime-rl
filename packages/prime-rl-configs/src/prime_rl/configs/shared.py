@@ -86,6 +86,9 @@ class ModelExpressWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     port: int = 8001
     """ModelExpress gRPC port."""
 
+    metadata_port: int = 5655
+    """Base port of the trainer's NIXL metadata listener. Each local rank listens on this plus its device id."""
+
     staging_mode: Literal["COPY_TO_HOST", "COPY_TO_DEVICE", "IN_PLACE"] = "COPY_TO_HOST"
     """Trainer storage policy passed to ModelExpress."""
 
@@ -160,8 +163,8 @@ class ResumeConfig(BaseConfig):
             raise ValueError(
                 "resume.step and resume.dir are mutually exclusive — the step is taken from the directory name"
             )
-        if self.dir is not None and not re.fullmatch(r"step_\d+", self.dir.name):
-            raise ValueError(f"resume.dir must point at a checkpoint step directory (`.../step_<N>`), got '{self.dir}'")
+        if self.dir is not None:
+            validate_step_dir(self.dir, field="resume.dir")
         return self
 
     @property
@@ -315,7 +318,13 @@ class HeartbeatConfig(BaseConfig):
 
 
 class BaseTransportConfig(BaseConfig):
-    pass
+    retain: bool = False
+    """Keep every shipped step, and the training arrays the env worker pools hold for it,
+    until a trainer checkpoint covers it, so a restarted trainer resumes from its newest
+    checkpoint and trains the steps since again. Needs a checkpoint interval, the filesystem
+    weight broadcast, a run directory the orchestrator and trainer share, and a rollout store
+    in every train env worker pool: the ``rl`` launcher sets ``store_dir`` for the pools it
+    starts, a pool started separately needs it in its own config."""
 
 
 class FileSystemTransportConfig(BaseTransportConfig):
@@ -333,3 +342,9 @@ class ZMQTransportConfig(BaseTransportConfig):
 
 
 TransportConfig: TypeAlias = Annotated[FileSystemTransportConfig | ZMQTransportConfig, Field(discriminator="type")]
+
+
+def validate_step_dir(path: Path, *, field: str) -> None:
+    """Raise unless ``path`` names a checkpoint step directory (``.../step_<N>``)."""
+    if not re.fullmatch(r"step_\d+", path.name):
+        raise ValueError(f"{field} must point at a checkpoint step directory (`.../step_<N>`), got '{path}'")

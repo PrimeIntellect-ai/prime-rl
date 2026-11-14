@@ -1,12 +1,11 @@
 import pickle
-import random
 
 import numpy as np
 from vllm.distributed.aux_output_connector import worker as aux_worker
 from vllm.distributed.aux_output_connector.connector import AuxRequestOutput
-from vllm.distributed.aux_output_connector.store import BlockObject, BlockObjectStore, BlockObjectStoreError
+from vllm.distributed.aux_output_connector.store import BlockObjectStore
 
-from prime_rl.inference.patches import monkey_patch_aux_output_store
+from prime_rl.inference.patches import AUX_OUTPUT_STORE_HEADROOM, monkey_patch_aux_output_store
 from prime_rl.inference.vllm.routed_experts import PackedAuxOutputs
 
 
@@ -26,33 +25,9 @@ def test_packed_aux_outputs_round_trip():
         np.testing.assert_array_equal(packed[request_id].rows, output.rows)
 
 
-def test_aux_output_store_eviction_matches_upstream(monkeypatch):
-    upstream_evict = BlockObjectStore._evict_to_fit
-    monkeypatch.setattr(BlockObjectStore, "_evict_to_fit", upstream_evict)
+def test_aux_output_store_has_headroom(monkeypatch):
     monkeypatch.setattr(aux_worker, "BlockObjectStore", BlockObjectStore)
     monkey_patch_aux_output_store()
-    upstream = type("Upstream", (BlockObjectStore,), {"_evict_to_fit": upstream_evict})
-    rng = random.Random(0)
-    for _ in range(50):
-        stores = [upstream(max_bytes=40, object_nbytes=1), BlockObjectStore(max_bytes=40, object_nbytes=1)]
-        references: dict[str, int] = {}
-        for _ in range(200):
-            objects = [BlockObject(f"k{rng.randrange(120)}", b"x") for _ in range(rng.randrange(6))]
-            retain = [f"k{rng.randrange(120)}" for _ in range(rng.randrange(4))]
-            release = [key for key, count in references.items() if count and rng.random() < 0.15]
-            for key in retain:
-                references[key] = references.get(key, 0) + 1
-            for key in release:
-                references[key] -= 1
-            failed = []
-            for store in stores:
-                try:
-                    store.put(objects, retain_keys=retain, release_keys=release)
-                    failed.append(False)
-                except BlockObjectStoreError:
-                    failed.append(True)
-            a, b = stores
-            assert failed[0] == failed[1]
-            assert set(a._lru) == set(b._lru)
-            # Only the order of unreferenced keys decides future evictions.
-            assert [k for k in a._lru if k not in a._references] == [k for k in b._lru if k not in b._references]
+    store = aux_worker.BlockObjectStore(max_bytes=40, object_nbytes=1)
+    assert isinstance(store, BlockObjectStore)
+    assert store.num_slots == AUX_OUTPUT_STORE_HEADROOM * 40

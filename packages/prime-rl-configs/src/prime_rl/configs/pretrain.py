@@ -33,12 +33,26 @@ class DatatroveDataConfig(BaseDataConfig):
     whole sample and positions run over it."""
 
 
+class PretrainDataConfig(DatatroveDataConfig):
+    """Training shards."""
+
+    eod_mask_loss: bool = True
+    """Don't train the model to predict the first token of the next, unrelated document: no loss where the input is
+    the document separator. The separator is the special token the training shards' documents end with, detected at
+    startup; startup fails if they don't all end with one, unless they start with BOS (then there is nothing to
+    mask)."""
+
+
 class PretrainValConfig(BaseValConfig):
     data: DatatroveDataConfig
-    """Held-out shard folders."""
+    """Held-out shard folders. Every validation scores each of their documents on its own, from its first token, in
+    non-overlapping windows of ``seq_len`` scored tokens (a longer document continues in the next window, without the
+    tokens before). Windows are packed into rows of ``seq_len * micro_batch_size`` tokens; ``seed`` and
+    ``document_masking`` do not apply."""
 
     num_samples: int | None = Field(None, ge=1)
-    """Windows per validation, the same ones every time. If None, one full pass over the held-out pool."""
+    """Documents per validation: the first ``num_samples`` documents of the held-out shards (in folder order, then file
+    name order), the same ones every time. If None, every document."""
 
 
 class PretrainAdamWConfig(AdamWConfig):
@@ -76,7 +90,7 @@ class PretrainConfig(SupervisedTrainerConfig):
     """Run kind of this config. ``uv run launch`` picks the entrypoint from it; ``uv run pretrain`` accepts only
     "pretrain" (or no mode)."""
 
-    data: DatatroveDataConfig
+    data: PretrainDataConfig
 
     val: PretrainValConfig | None = None
     """Validation on held-out shards. If None, no validation runs."""

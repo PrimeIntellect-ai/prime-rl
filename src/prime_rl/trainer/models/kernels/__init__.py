@@ -16,8 +16,13 @@ def cudnn_flashmla_error(heads: int, kv_group: int, dim: int) -> str | None:
     capability = torch.cuda.get_device_capability()
     if capability[0] != 9 and capability not in ((10, 0), (10, 3)):
         return f"the cudnn_flashmla backend runs on SM90, SM100 and SM103, but this GPU is SM{capability[0]}{capability[1]}"
-    if importlib.util.find_spec("flash_mla") is None:
-        return (
-            "`flash-mla` is not installed; install it with `uv sync --extra gpu` (the published wheel is x86_64 only)"
-        )
+    if importlib.util.find_spec("vllm") is None or importlib.util.find_spec("vllm._flashmla_C") is None:
+        return "vLLM's bundled FlashMLA (`vllm._flashmla_C`) is not installed; install it with `uv sync --extra gpu`"
     return None
+
+
+def flash_mla_sparse_fwd(*args, **kwargs):
+    """FlashMLA's sparse prefill forward, as bundled in the vLLM wheel (the `gpu` extra, x86_64 and aarch64)."""
+    from vllm.third_party.flashmla.flash_mla_interface import flash_mla_sparse_fwd
+
+    return flash_mla_sparse_fwd(*args, **kwargs)
