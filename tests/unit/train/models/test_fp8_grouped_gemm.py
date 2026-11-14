@@ -318,3 +318,32 @@ def test_forward_does_not_sync_with_the_host():
 
     with _forbid_device_to_host_sync():
         grouped_fp8_gemm(x, weight, offs)
+
+
+@pytest.mark.parametrize("counts", COUNTS.values(), ids=COUNTS.keys())
+def test_fp8_all_gathered_weight_matches_the_op_bitwise(counts):
+    """The GEMM on a weight cast once (as FSDP's FP8 all-gather does) gives the op's output and gradients exactly."""
+    from prime_rl.trainer.models.layers.fp8_expert_weights import Fp8ExpertWeight, prequantized_grouped_fp8_gemm
+
+    torch.manual_seed(0)
+    in_features, out_features = SHAPES[0]
+    # The parameter layout: [experts, out, in]; the GEMM takes its [experts, in, out] view.
+    weight = (torch.randn(NUM_EXPERTS, out_features, in_features, device="cuda") * WEIGHT_STD).bfloat16()
+    tokens = torch.randn(sum(counts), in_features, device="cuda", dtype=torch.bfloat16)
+    x, offs, _ = _dispatch(tokens, counts, "align128")
+    grad_output = torch.randn(x.shape[0], out_features, device="cuda", dtype=torch.bfloat16)
+
+    reference_weight = weight.clone().requires_grad_()
+    reference_x = x.clone().requires_grad_()
+    reference = grouped_fp8_gemm(reference_x, reference_weight.transpose(1, 2), offs)
+    reference.backward(grad_output)
+
+    data, scale = grouped_per_block_cast_to_fp8_triton(weight, ue8m0_for_device(weight.device), GROUP_ALIGNMENT)
+    fp8_weight = Fp8ExpertWeight(data, scale, torch.bfloat16).requires_grad_()
+    fp8_x = x.clone().requires_grad_()
+    out = prequantized_grouped_fp8_gemm(fp8_x, fp8_weight.transpose(1, 2), offs)
+    out.backward(grad_output)
+
+    _assert_bitwise(out, reference, "output")
+    _assert_bitwise(fp8_x.grad, reference_x.grad, "input gradient")
+    _assert_bitwise(fp8_weight.grad, reference_weight.grad, "weight gradient")
