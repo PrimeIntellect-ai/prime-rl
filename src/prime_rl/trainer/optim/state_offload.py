@@ -5,6 +5,7 @@ from torch.distributed.tensor import DTensor
 from torch.optim import Optimizer
 
 from prime_rl.trainer.optim.base import OffloadOptimizer
+from prime_rl.trainer.utils import empty_pinned
 
 
 class CPUOffloadOptimizer(OffloadOptimizer):
@@ -26,7 +27,7 @@ class CPUOffloadOptimizer(OffloadOptimizer):
             return src.to("cpu", non_blocking=True)
         buffer = self._cpu_buffers.get((param, key))
         if buffer is None or buffer.shape != src.shape or buffer.dtype != src.dtype:
-            buffer = torch.empty(src.shape, dtype=src.dtype, device="cpu", pin_memory=True)
+            buffer = empty_pinned(src.shape, src.dtype)
             self._cpu_buffers[(param, key)] = buffer
         if buffer is not src:
             buffer.copy_(src, non_blocking=True)
