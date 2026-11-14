@@ -9,7 +9,7 @@ A decision model is two pieces of user code, named in the config, plus the loss 
 | Piece | Config | What it does |
 |---|---|---|
 | Encoder | `[data.encoder]` | A `SystemOneEncoder` subclass: a record becomes tokens, attention segments and, per question, the token spans the head reads. It owns its chat template. |
-| Model class | `[model.implementation]` | A subclass of prime-rl's class for the architecture, with the head and a `decision_logits` method. The checkpoint holds the head's weights. |
+| Model class | `[model.implementation]` | A subclass of prime-rl's class for the architecture, with the head and a `decision_logits` method. The head's weights come from the checkpoint, or from the class's `init_missing_weights` when the checkpoint has none. |
 | Loss | `[loss] type = "custom"` | `prime_rl.trainer.sft.system_one.loss.decision_loss`, the same function for every model. |
 
 `decision_logits` is the model's readout: one logit vector per question of the packed row. Its contract, and what `decision_loss` computes from it, are in [System One Data](../../docs/training.md#system-one-data) and in `DecisionModel` in `src/prime_rl/trainer/sft/system_one/loss.py`.
@@ -30,21 +30,21 @@ Open-Jev trains on its own dataset. The other three train on Typed Decisions Syn
 | File | What |
 |---|---|
 | `open_jev/encoder.py` | `OpenJevEncoder`: every option of every question is its own yes/no prompt (one prompt for noul), each its own attention segment, read at its last token |
-| `open_jev/model.py` | `Qwen3_5Decision`: prime-rl's Qwen3.5 plus `decision_head`, a linear layer that scores a prompt. A noul question's logits are `[0, score]`; a choice or score question's are its prompts' scores |
-| `open_jev/prepare_checkpoint.py` | The checkpoint: the base model's files plus the head, initialised to `lm_head[Yes] - lm_head[No]` |
+| `open_jev/model.py` | `Qwen3_5Decision`: prime-rl's Qwen3.5 plus `decision_head`, a linear layer that scores a prompt, initialised to `lm_head[Yes] - lm_head[No]`. A noul question's logits are `[0, score]`; a choice or score question's are its prompts' scores |
 | `open_jev/convert_dataset.py` | Open-Jev's dataset as System One records, one question per record |
 | `open_jev/train.toml`, `open_jev/smoke.toml` | The full fine-tuning run, and a 30-step mechanics check composed after it |
 
 ## Run Open-Jev
 
-From the repository root, on one GPU. The data, the loss and both configs are checked on CPU; neither config has run on a GPU yet, so memory use and the hyperparameters are unmeasured. Prepare the checkpoint and the records once:
+From the repository root, on one GPU. The data, the loss and both configs are checked on CPU; neither config has run on a GPU yet, so memory use and the hyperparameters are unmeasured. Download the base model and the dataset, and convert the records once:
 
 ```bash
 uv run hf download Qwen/Qwen3.5-2B --revision 15852e8c16360a2fea060d615a32b45270f8a8fc --local-dir outputs/open-jev/Qwen3.5-2B
 uv run hf download ZefanCai/Open-Jev --repo-type dataset --local-dir outputs/open-jev/Open-Jev
-uv run python examples/decision_models/open_jev/prepare_checkpoint.py outputs/open-jev/Qwen3.5-2B outputs/open-jev/Qwen3.5-2B-decision
 PYTHONPATH=examples uv run python examples/decision_models/open_jev/convert_dataset.py outputs/open-jev/Open-Jev outputs/open-jev/Open-Jev-system-one
 ```
+
+`model.name` is the base model as downloaded. It has no decision head, so when a run starts the class sets the head from the loaded LM head (`init_missing_weights`); a resumed run takes the trained head from its checkpoint.
 
 Then the mechanics check, and the run. `PYTHONPATH=examples` makes `decision_models` importable in the trainer:
 
@@ -67,7 +67,7 @@ The prompts, their tokens, the head, its initialisation, the loss (soft cross-en
 
 ## Third-party notice
 
-The prompt format in `open_jev/encoder.py` (`render`, `compile_question`, `candidate_prompts`) is taken from `jev/api.py` of https://github.com/Zefan-Cai/Open-Jev at commit `bd4118882f733574a3250a4b65fe4d884130c08b`, and the head's initialisation in `open_jev/prepare_checkpoint.py` follows `jev/model.py` of the same commit. Open-Jev's licence:
+The prompt format in `open_jev/encoder.py` (`render`, `compile_question`, `candidate_prompts`) is taken from `jev/api.py` of https://github.com/Zefan-Cai/Open-Jev at commit `bd4118882f733574a3250a4b65fe4d884130c08b`, and the head's initialisation in `open_jev/model.py` follows `jev/model.py` of the same commit. Open-Jev's licence:
 
 ```text
 MIT License
