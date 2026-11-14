@@ -2,6 +2,7 @@
 
 import asyncio
 import atexit
+import os
 import time
 import uuid
 from pathlib import Path
@@ -42,6 +43,7 @@ class ModelExpressWeightSender(WeightSender):
         tensors = model.state_dict()
         keep_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
         overrides = {name: torch.float32 for name in tensors if keep_fp32 is not None and keep_fp32(name)}
+        os.environ["MX_METADATA_PORT"] = str(self.config.metadata_port)
         self._trainer = ModelExpressTrainerClient.initialize(
             ModelExpressTrainerConfig(
                 engine_context=FSDPTrainerContext(wire_dtype_overrides=overrides),
