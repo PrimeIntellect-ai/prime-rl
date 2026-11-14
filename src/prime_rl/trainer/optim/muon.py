@@ -217,6 +217,12 @@ def _shape_class(matrix: "_Matrix") -> tuple:
     return _local(matrix.param).shape[-1], matrix.partitions
 
 
+def _owned_class(matrix: "_Matrix") -> tuple:
+    """``_shape_class`` of the gathered matrix: the same on every rank, so senders and owner order a bucket alike
+    even when the last dim is sharded unevenly."""
+    return matrix.whole_shape()[-1], matrix.partitions
+
+
 def _num_shards(param: Tensor) -> int:
     if not isinstance(param, DTensor):
         return 1
@@ -540,7 +546,7 @@ class Muon(Optimizer):
             for pairs in plan_buckets(costs, nbytes, world_size, self.bucket_bytes):
                 # Every owner's matrices grouped by shape, in the same order on the sender's and owner's side
                 owned = [
-                    sorted((members[i] for i, owner in pairs if owner == r), key=_shape_class)
+                    sorted((members[i] for i, owner in pairs if owner == r), key=_owned_class)
                     for r in range(world_size)
                 ]
                 send_splits = [sum(math.prod(m.local_shape(rank)) for m in owned[r]) for r in range(world_size)]
