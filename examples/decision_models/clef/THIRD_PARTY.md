@@ -3,9 +3,9 @@
 `joint_schema_model.py` is an unmodified copy of `joint_schema_model.py` from the Hugging Face model repository
 [Cloudflare/clef-flash](https://huggingface.co/Cloudflare/clef-flash), released under the Apache License 2.0. It holds
 Clef's prompt format (`encode_record`), its joint schema head (`JointSchemaHead`) and the release's own inference code.
-`encoder.py` and `model.py` call it; `prepare_checkpoint.py` reads the release's weights and writes them under other
-names. Its sha256 is `0e304cf7c6500e8bb59bef7e2afd2c6373f82596dfb3b57d1aa93c175e2dc3a3`; the release's copy must give
-the same (`shasum -a 256 outputs/clef/clef-flash/joint_schema_model.py`).
+`encoder.py` and `model.py` call it, and `model.py` loads the release's head weights into its head. Its sha256 is
+`0e304cf7c6500e8bb59bef7e2afd2c6373f82596dfb3b57d1aa93c175e2dc3a3`; the release's copy must give the same
+(`shasum -a 256 outputs/clef/clef-flash/joint_schema_model.py`).
 
 The licence of the release:
 

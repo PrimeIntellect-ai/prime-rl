@@ -7,20 +7,22 @@
 | File | What |
 |---|---|
 | `encoder.py` | `ClefEncoder`: the record as Clef's own prompt, one attention segment. A question's read spans are its instruction, then one span per option, in Clef's option order (noul `true`, `false`; choice ids sorted) |
-| `model.py` | `Qwen3_5Clef`: prime-rl's Qwen3.5 plus `joint_head` and `lexical_embedding`, a frozen copy of the LM head's rows for the head's lexical prior. `decision_logits` calls the head once per record, on the record's slice of the packed row |
+| `model.py` | `Qwen3_5Clef`: prime-rl's Qwen3.5 plus `joint_head` and `lexical_embedding`, a frozen copy of the LM head's rows for the head's lexical prior. `decision_logits` calls the head once per record, on the record's slice of the packed row. `init_missing_weights` gives both their weights: the head's from the release's `joint_head.safetensors`, the copy from the loaded LM head |
 | `joint_schema_model.py` | Clef's own code, unmodified: the prompt format (`encode_record`) and the head (`JointSchemaHead`) |
-| `prepare_checkpoint.py` | The checkpoint: the release's files plus the head under `joint_head.`, the lexical copy, and the head's sizes in `config.json` |
+| `write_config.py` | The directory `model.name` points at: links to the release's files, and its `config.json` with the head's sizes added. It reads and writes no weights |
 | `train.toml`, `smoke.toml` | The full fine-tuning run, and a 30-step mechanics check composed after it |
 | `THIRD_PARTY.md` | The licence of `joint_schema_model.py` |
 
 ## Run
 
-From the repository root. Prepare the checkpoint once, and the records as [../data/README.md](../data/README.md#convert) says:
+From the repository root. Download the release and write its config once, and prepare the records as [../data/README.md](../data/README.md#convert) says:
 
 ```bash
 uv run hf download Cloudflare/clef-flash --local-dir outputs/clef/clef-flash
-uv run python examples/decision_models/clef/prepare_checkpoint.py outputs/clef/clef-flash outputs/clef/clef-flash-prime-rl
+uv run python examples/decision_models/clef/write_config.py outputs/clef/clef-flash outputs/clef/clef-flash-prime-rl
 ```
+
+The class takes the head's sizes from `config.json`, and the release keeps them in `joint_head_config.json`. `write_config.py` leaves the download as it is: `outputs/clef/clef-flash-prime-rl` holds a `config.json` with the sizes added and links to the release's other files, so the release must stay where it is. prime-rl loads the backbone through the links. The release's `joint_head.safetensors` stores the head under names without the `joint_head.` prefix, so the loader finds no head in it: when a run starts, the class reads the head from that file and copies the loaded LM head's rows into `lexical_embedding`, and writes nothing to disk. A resumed run takes every weight from its own checkpoint.
 
 Then the mechanics check, and the run. `PYTHONPATH=examples` makes `decision_models` importable in the trainer:
 
