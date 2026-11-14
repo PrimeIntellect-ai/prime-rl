@@ -1,7 +1,6 @@
 """Keep the framework adapter on ModelExpress's public client surface."""
 
 import ast
-import pickle
 import time
 import uuid
 from pathlib import Path
@@ -121,6 +120,8 @@ def test_modelexpress_worker_forwards_generator_buffer_config():
 
 @pytest.mark.parametrize("outcome", ["success", "timeout", "wrong_uid", "read_error"])
 def test_modelexpress_installation_outcome_reaches_non_master_without_shared_storage(tmp_path, outcome):
+    from prime_rl.transports.weights.base import marker_exists
+
     source = ast.parse((ROOT / "src/prime_rl/transports/weights/modelexpress.py").read_text())
     sender = next(
         node for node in source.body if isinstance(node, ast.ClassDef) and node.name == "ModelExpressWeightSender"
@@ -141,21 +142,20 @@ def test_modelexpress_installation_outcome_reaches_non_master_without_shared_sto
     calls = []
     rank = 0
 
-    def broadcast_object_list(values, src):
-        assert src == 0
-        assert len(values) == 1 and isinstance(values[0], bool)
+    def broadcast_bytes(value):
         if rank == 0:
-            messages.append(pickle.dumps(values))
-        else:
-            values[:] = pickle.loads(messages[0])
+            messages.append(value)
+            return value
+        return messages[0]
 
     namespace = {
         "time": time,
+        "broadcast_bytes": broadcast_bytes,
         "dist": SimpleNamespace(
-            broadcast_object_list=broadcast_object_list,
             barrier=lambda: calls.append((rank, "barrier")),
         ),
         "INSTALLED_MARKER": ".installed",
+        "marker_exists": marker_exists,
     }
     exec(compile(ast.fix_missing_locations(module), "<installation acknowledgment>", "exec"), namespace)
     installed = tmp_path / ".installed"
