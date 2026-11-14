@@ -1,3 +1,5 @@
+from collections import Counter
+from functools import partial
 from itertools import islice
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,14 +11,17 @@ import prime_rl.trainer.pretrain.data as pretrain_data
 from prime_rl.configs.pretrain import DatatroveDataConfig
 from prime_rl.trainer.data import setup_dataloader
 from prime_rl.trainer.pretrain.data import (
+    BestFitTokenDataset,
     TokenDataset,
     TokenShards,
+    best_fit_decreasing,
     detect_separator,
     document_edges,
     setup_document_dataset,
     warn_if_no_document_separator,
 )
 from prime_rl.trainer.world import reset_world
+from prime_rl.utils.sequence import repeat_to_length
 
 # Documents of the pool, in two folders, with an empty one. A token's id is its position in the pool.
 DOCUMENTS = [[range(0, 10), range(10, 30), range(30, 30), range(30, 60)], [range(60, 103)]]
@@ -80,20 +85,30 @@ def test_every_epoch_reads_every_window_once_in_a_new_order(folders: list[Path])
     assert take(TokenDataset(TokenShards(folders, seed=1), seq_len), num_windows) != epochs[0]
 
 
-@pytest.mark.parametrize("document_masking", [True, False])
-def test_document_masking(folders: list[Path], document_masking: bool):
+@pytest.mark.parametrize(
+    "token_dataset", [TokenDataset, partial(BestFitTokenDataset, group_windows=4)], ids=["windows", "best_fit"]
+)
+def test_document_masking(folders: list[Path], token_dataset):
     seq_len = 16
-    for sample in take(TokenDataset(TokenShards(folders), seq_len, document_masking), 20):
-        start = sample["input_ids"][0]
-        if document_masking:
-            # Documents start at the pool's document boundaries and where it wraps around.
-            boundaries = [i for i in range(1, seq_len) if (start + i) % NUM_TOKENS in DOCUMENT_STARTS]
-            seq_lens = np.diff([0, *boundaries, seq_len]).tolist()
-        else:
-            seq_lens = [seq_len]
-        assert sample["seq_lens"] == seq_lens
-        assert sample["position_ids"] == [position for length in seq_lens for position in range(length)]
-        assert sample["loss_mask"] == [True] * seq_len
+    masked = take(token_dataset(TokenShards(folders), seq_len), 20)
+    unmasked = take(token_dataset(TokenShards(folders), seq_len, document_masking=False), 20)
+    for on, off in zip(masked, unmasked):
+        assert {k: v for k, v in on.items() if k not in ("seq_lens", "position_ids")} == {
+            k: v for k, v in off.items() if k not in ("seq_lens", "position_ids")
+        }
+        # Unmasked, the tokens are one segment, plus a padding segment.
+        padding = off["seq_lens"][1] if len(off["seq_lens"]) == 2 else 0
+        assert off["seq_lens"] == [seq_len - padding] + ([padding] if padding else [])
+        # Masked, a segment starts at every document start and wherever the token does not continue the one before.
+        ids = on["input_ids"]
+        boundaries = [
+            i
+            for i in range(1, seq_len - padding)
+            if ids[i] in DOCUMENT_STARTS or ids[i] != (ids[i - 1] + 1) % NUM_TOKENS
+        ]
+        assert on["seq_lens"] == np.diff([0, *boundaries, seq_len - padding]).tolist() + ([padding] if padding else [])
+        for sample in (on, off):
+            assert sample["position_ids"] == [position for length in sample["seq_lens"] for position in range(length)]
 
 
 def set_world(monkeypatch, rank: int, world_size: int) -> None:
@@ -152,38 +167,102 @@ def test_validation_scores_every_document_on_its_own(
     assert sorted(segments) == sorted(expected)
 
 
-def first_tokens(batch: dict, seq_len: int) -> list[int]:
-    """The first token of every window in a micro-batch row, which is the window's position in the pool."""
-    return batch["input_ids"][0, ::seq_len].tolist()
+def samples_of(batch: dict, seq_len: int) -> list[tuple[tuple[int, ...], tuple[bool, ...]]]:
+    """The input ids and the loss mask of every sample in a micro-batch row."""
+    input_ids, loss_mask = batch["input_ids"][0].tolist(), batch["loss_mask"][0].tolist()
+    return [
+        (tuple(input_ids[i : i + seq_len]), tuple(loss_mask[i : i + seq_len]))
+        for i in range(0, len(input_ids), seq_len)
+    ]
 
 
-def test_resume_on_another_number_of_ranks_continues_the_window_sequence(folders: list[Path], monkeypatch):
+@pytest.mark.parametrize(
+    "token_dataset", [TokenDataset, partial(BestFitTokenDataset, group_windows=4)], ids=["windows", "best_fit"]
+)
+def test_resume_on_another_number_of_ranks_continues_the_sample_sequence(
+    folders: list[Path], monkeypatch, token_dataset
+):
     """Two data ranks read 3 micro-batches each and checkpoint; one rank resumes from rank 0's checkpoint. Together
-    they read the windows an uninterrupted single-rank run reads."""
+    they read the samples an uninterrupted single-rank run reads."""
     config = DatatroveDataConfig(paths=folders, seq_len=8, batch_size=2, micro_batch_size=2)
 
     def dataloader(rank: int, world_size: int):
         set_world(monkeypatch, rank, world_size)
-        return setup_dataloader(TokenDataset(TokenShards(config.paths), config.seq_len), config, cp=1)
+        return setup_dataloader(token_dataset(TokenShards(config.paths), config.seq_len), config, cp=1)
 
     uninterrupted = iter(dataloader(rank=0, world_size=1))
-    expected = [token for _ in range(12) for token in first_tokens(next(uninterrupted), config.seq_len)]
+    expected = [sample for _ in range(12) for sample in samples_of(next(uninterrupted), config.seq_len)]
 
-    windows_by_rank, states = [], []
+    samples_by_rank, states = [], []
     for rank in range(2):
         loader = dataloader(rank=rank, world_size=2)
         batches = iter(loader)
-        windows_by_rank.append([token for _ in range(3) for token in first_tokens(next(batches), config.seq_len)])
+        samples_by_rank.append([sample for _ in range(3) for sample in samples_of(next(batches), config.seq_len)])
         states.append(loader.state_dict())
-    # Rank r reads the windows r, r + 2, ...
-    windows = [windows_by_rank[w % 2][w // 2] for w in range(12)]
+    # Rank r reads the samples r, r + 2, ...
+    samples = [samples_by_rank[s % 2][s // 2] for s in range(12)]
 
     resumed = dataloader(rank=0, world_size=1)
     resumed.load_state_dict(states[0])
     batches = iter(resumed)
-    windows += [token for _ in range(6) for token in first_tokens(next(batches), config.seq_len)]
+    samples += [sample for _ in range(6) for sample in samples_of(next(batches), config.seq_len)]
     reset_world()
-    assert windows == expected
+    assert samples == expected
+
+
+def test_best_fit_decreasing():
+    # First fit would put 1 into the first bin; best fit puts it into the fullest bin with room, the second.
+    assert best_fit_decreasing([8, 6, 3, 1], capacity=10) == [[0], [1, 2, 3]]
+
+
+def test_best_fit_samples_hold_whole_documents(tmp_path):
+    seq_len = 8
+    # 552 tokens, a multiple of seq_len, so an epoch drops no document; 20 and 12 are cut, 9 fills a sample.
+    lengths = [3, 7, 2, 20, 4, 1, 6, 9, 5, 12] * 8
+    write_shard(tmp_path / "a" / "00.ds", consecutive_documents(lengths))
+    # With seed 1, one window wraps around the end of the pool.
+    shards = TokenShards([tmp_path / "a"], seed=1)
+    document = np.repeat(np.arange(len(lengths)), lengths)
+    document_start = np.cumsum([0, *lengths])[:-1]
+
+    dataset = BestFitTokenDataset(shards, seq_len, group_windows=4)
+    # Shuffled: best-fit decreasing opens rows longest piece first.
+    first_lengths = [row[0][2] for row in dataset.pack(0, 0)]
+    assert first_lengths != sorted(first_lengths, reverse=True)
+    samples = []
+    for sample in dataset:
+        if dataset.epoch > 1:
+            break
+        samples.append(sample)
+
+    trained = Counter()
+    for sample in samples:
+        inputs, targets, loss_mask = sample["input_ids"], sample["target_ids"], sample["loss_mask"]
+        assert len(inputs) == len(targets) == len(loss_mask) == sum(sample["seq_lens"]) == seq_len
+        assert sample["position_ids"] == [p for length in sample["seq_lens"] for p in range(length)]
+        offsets = np.cumsum([0, *sample["seq_lens"]]).tolist()
+        segments = [inputs[start:end] for start, end in zip(offsets[:-1], offsets[1:])]
+        # Padding repeats the sample's own tokens in a last segment of its own, without loss.
+        if len(segments) > 1 and segments[-1] == repeat_to_length(inputs[: offsets[-2]], len(segments[-1])):
+            assert not any(loss_mask[offsets[-2] :])
+            segments.pop()
+        for segment in segments:
+            # One piece of one document, in order.
+            assert segment == list(range(segment[0], segment[0] + len(segment)))
+            assert document[segment[0]] == document[segment[-1]]
+        for token, target, trains in zip(inputs, targets, loss_mask):
+            if trains:
+                # The next token of the document, or the first token of the next document after a document's end.
+                if document[token] == document[target]:
+                    assert target == token + 1
+                else:
+                    assert token + 1 == document_start[document[token]] + lengths[document[token]]
+                    assert target == document_start[document[target]]
+                trained[target] += 1
+
+    assert max(trained.values()) == 1
+    # Every token except a document's first one is trained, once.
+    assert set(range(sum(lengths))) - set(document_start.tolist()) <= set(trained)
 
 
 def test_separator_check_skips_empty_files_and_documents(tmp_path: Path, monkeypatch):
@@ -214,15 +293,18 @@ def test_separator_check_skips_empty_files_and_documents(tmp_path: Path, monkeyp
 EOS = 999  # every document ends with it, as the tokenizer writes the shards
 
 
-def test_eod_mask_loss(tmp_path):
-    # Documents of words (their positions in the stream) ending in EOS; lengths so that windows hold document ends and
+@pytest.mark.parametrize(
+    "token_dataset", [TokenDataset, partial(BestFitTokenDataset, group_windows=4)], ids=["windows", "best_fit"]
+)
+def test_eod_mask_loss(tmp_path, token_dataset):
+    # Documents of words (their positions in the stream) ending in EOS; lengths so that samples hold document ends and
     # cut documents.
     words = consecutive_documents([2, 6, 1, 11, 3, 4, 9, 5, 2, 7] * 6)
     write_shard(tmp_path / "a" / "00.ds", [[*document, EOS] for document in words])
     shards = TokenShards([tmp_path / "a"], seed=0)
     seq_len = 8
-    off = list(islice(TokenDataset(shards, seq_len), 40))
-    on = list(islice(TokenDataset(shards, seq_len, eod_mask_token=EOS), 40))
+    off = list(islice(token_dataset(shards, seq_len), 40))
+    on = list(islice(token_dataset(shards, seq_len, eod_mask_token=EOS), 40))
     eos_inputs = word_to_eos = 0
     for plain, masked in zip(off, on):
         # Only the loss mask changes.
