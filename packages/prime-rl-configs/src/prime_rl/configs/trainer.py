@@ -210,6 +210,15 @@ class TorchMoEDispatchConfig(BaseConfig):
     transport: Literal["bf16", "mxfp8"] = "bf16"
     """Wire format for routed activations and their reverse-path gradients."""
 
+    token_copies: Literal["per_expert", "per_rank"] = "per_expert"
+    """Send a token once per selected expert, or once per EP rank holding one of its experts."""
+
+    @model_validator(mode="after")
+    def validate_token_copies(self):
+        if self.token_copies == "per_rank" and self.transport != "bf16":
+            raise ValueError('model.moe.dispatch.token_copies = "per_rank" requires transport = "bf16".')
+        return self
+
 
 class DeepEPMoEDispatchConfig(BaseConfig):
     """Dispatch and combine routed tokens with DeepEP."""
