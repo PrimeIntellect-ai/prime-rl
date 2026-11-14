@@ -205,6 +205,17 @@ The group `env` block holds only the knobs that every env and taskset has: `retr
 
 Everything environment lives under the `env` block (verifiers' `[env]` shape): `env.taskset` configures the v1 taskset, and each agent is a field on the env — `env.agent.harness` selects how the single-agent env's tasks are run, and per-run caps are per-agent (`env.agent.max_turns`, `env.agent.timeout`, `env.agent.max_output_tokens`). A multi-agent env declares its own seats (`env.<role>.*`).
 
+Sandboxed envs run in Prime sandboxes unless `env.agent.runtime` says otherwise. A verifiers [runtime plugin](https://github.com/PrimeIntellect-ai/verifiers/blob/main/docs/runtimes.md#runtime-plugins) runs them on another provider. For Runta, install its plugin into the environment after syncing (`uv pip install "runta-sdk[verifiers]>=0.2.7"`), set `RUNTA_TOKEN`, and select the plugin on the source:
+
+```toml
+[[source]]
+env.taskset.id = "terminal-bench-2"
+env.agent.harness.id = "bash"
+env.agent.runtime = { type = "custom", import_path = "runta_verifiers.RuntaBackend" }
+```
+
+The plugin is not a prime-rl extra, so `uv sync` does not install it and a later `uv sync` removes it unless run with `--inexact`. Every process that loads the config must have the plugin installed, because validating the config imports it. The sandbox still reaches the model through the interception tunnel, which defaults to Prime and needs `PRIME_API_KEY`; set `env.interception.tunnel.type = "custom"` to supply your own.
+
 The same taskset can appear multiple times across train and eval (or with different settings) — useful for evaluating on a held-out split or comparing two configurations side by side. When it is reused, set a distinct `name` on each entry; `name` defaults to the taskset id and must be unique across all envs in the same group.
 
 ### Environment Variables

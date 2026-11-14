@@ -18,3 +18,6 @@ uv run rl   @ configs/debug/algo/<algo>.toml
 uv run sft  @ configs/debug/fake/sft.toml
 uv run eval @ configs/debug/eval/<shape>.toml
 ```
+
+The sandboxed configs run in Prime sandboxes. To run one in Runta sandboxes instead, see
+[Environments](../docs/configuration.md#environments).
