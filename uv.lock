@@ -933,8 +933,7 @@ version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/multimodal/charxiv" }
 dependencies = [
     { name = "datasets" },
-    { name = "pillow", version = "12.3.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "pillow", version = "13.0.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "pillow" },
     { name = "verifiers" },
 ]
 
@@ -1049,8 +1048,7 @@ name = "color-codeword"
 version = "0.1.0"
 source = { editable = "deps/verifiers/environments/color_codeword" }
 dependencies = [
-    { name = "pillow", version = "12.3.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "pillow", version = "13.0.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "pillow" },
     { name = "verifiers" },
 ]
 
@@ -2510,8 +2508,7 @@ version = "0.3.1"
 source = { editable = "deps/prime-envs/environments/knowledge/hle" }
 dependencies = [
     { name = "datasets" },
-    { name = "pillow", version = "12.3.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "pillow", version = "13.0.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "pillow" },
     { name = "verifiers" },
 ]
 
@@ -2529,8 +2526,7 @@ source = { editable = "deps/prime-envs/environments/knowledge/hle_diamond" }
 dependencies = [
     { name = "datasets" },
     { name = "httpx" },
-    { name = "pillow", version = "12.3.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "pillow", version = "13.0.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "pillow" },
     { name = "verifiers" },
 ]
 
@@ -3694,7 +3690,7 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jsonschema" },
     { name = "numpy" },
-    { name = "pillow", version = "13.0.0", source = { registry = "https://pypi.org/simple" } },
+    { name = "pillow" },
     { name = "pydantic" },
     { name = "pydantic-extra-types", extra = ["pycountry"] },
     { name = "requests" },
@@ -3766,8 +3762,7 @@ version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/multimodal/mmk12" }
 dependencies = [
     { name = "datasets" },
-    { name = "pillow", version = "12.3.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "pillow", version = "13.0.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "pillow" },
     { name = "verifiers" },
 ]
 
@@ -3799,8 +3794,7 @@ version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/knowledge/mmmu" }
 dependencies = [
     { name = "datasets" },
-    { name = "pillow", version = "12.3.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "pillow", version = "13.0.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "pillow" },
     { name = "verifiers" },
 ]
 
@@ -3817,8 +3811,7 @@ version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/multimodal/mmmu_pro" }
 dependencies = [
     { name = "datasets" },
-    { name = "pillow", version = "12.3.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "pillow", version = "13.0.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "pillow" },
     { name = "verifiers" },
 ]
 
@@ -5077,30 +5070,16 @@ requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2
 
 [[package]]
 name = "pillow"
-version = "12.3.0"
-source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "platform_machine == 'arm64' and sys_platform == 'darwin'",
-]
-sdist = { url = "https://files.pythonhosted.org/packages/1c/3d/bb7fca845737cf9d7dbde16ed1843984665ff2e0a518f5db43e77ec540b9/pillow-12.3.0.tar.gz", hash = "sha256:3b8182a766685eaa002637e28b4ec8d6b18819a0c71f579bf0dbaa5830297cce", size = 47025035, upload-time = "2026-07-01T11:56:38.965Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d8/66/9a386a92561f402389a4fc70c18838bf6d35eb5eb5c6850b4b2dc64f5048/pillow-12.3.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:ffd0c5368496f41b0944be820fcb7a838aa6e623d250b01acf2643939c3f99d7", size = 4780323, upload-time = "2026-07-01T11:54:09.351Z" },
-]
-
-[[package]]
-name = "pillow"
 version = "13.0.0"
 source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "platform_machine == 'x86_64' and sys_platform == 'linux'",
-    "platform_machine == 'aarch64' and sys_platform == 'linux'",
-]
 sdist = { url = "https://files.pythonhosted.org/packages/ce/a4/9cc30690a394a8305e8be4c9036aa16d0dfddadd09079860b582f562496d/pillow-13.0.0.tar.gz", hash = "sha256:cdcd1ba258178f7356d74170c9a81ba4eab6a5d55748bc402a5a2a6fe6be3510", size = 47058631, upload-time = "2026-10-16T22:18:09.718Z" }
 wheels = [
+    { url = "https://files.pythonhosted.org/packages/39/4b/f2ed53d83aa44ac19599ac0a54897f867fafb95f406980d1e24083f8cbe3/pillow-13.0.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:fc481f742ccda20e9ed760b8f978dff50f2a4e9bc253ac167fb0a05b0783ef52", size = 4852329, upload-time = "2026-10-16T22:15:46.284Z" },
     { url = "https://files.pythonhosted.org/packages/3b/bb/9e30e8ed18c20800ee327a12107d5249ad8dc444867b3adfcc21654e3c71/pillow-13.0.0-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:8bf295fe459343bc6093c8e5e0df60bfa189e0fcb775a22e2c2488fdeccc6c0d", size = 6519309, upload-time = "2026-10-16T22:15:48.14Z" },
     { url = "https://files.pythonhosted.org/packages/e6/99/fdf65cc539e266ab93546c261bdf98411fe165c6e4e13f9dbf597097192b/pillow-13.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:42d63be3af4f9b951b199b0a9d23365d37ab14687e6d77b74940432c8515c4ca", size = 7144542, upload-time = "2026-10-16T22:15:50.093Z" },
     { url = "https://files.pythonhosted.org/packages/26/9b/f38b7c4d8f599537e2d1a6d546cec9beef7536ff8f5c49a3f9c78179d8ac/pillow-13.0.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:4bd024d567eca931b668978d672dba914d4b8e2628e2c3073a2ad178de8a2620", size = 6618042, upload-time = "2026-10-16T22:15:52.054Z" },
     { url = "https://files.pythonhosted.org/packages/a8/7c/45ee28531f89ee4582967d8a17f7a26d71ca64cd902b93c269590cd60a00/pillow-13.0.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:23edf4ec4b6f4f240e8df6e4985e9ee2ced86474632433e55fb1e2548744bf40", size = 7228137, upload-time = "2026-10-16T22:15:54.009Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/b0/2594f202d743a35d4fe80682bfd96f277e5ca7aecb27cf64ef5bfc1d000b/pillow-13.0.0-pp312-pypy312_pp80-macosx_11_0_arm64.whl", hash = "sha256:7e91e97a929232cdb828889ee6ad0e48d7f40f4ec38818f4e4a8968b2b1af22e", size = 4806808, upload-time = "2026-10-16T22:18:01.188Z" },
     { url = "https://files.pythonhosted.org/packages/8e/ed/d504165ef79af6fafe25c76726cf30f544cc236002f7ed054f1d51adc4ff/pillow-13.0.0-pp312-pypy312_pp80-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:93ff9c9c3663ce23aaa5d0b6b6abac55359e2a0c06c7e30f3771829af816be63", size = 5464358, upload-time = "2026-10-16T22:18:02.779Z" },
     { url = "https://files.pythonhosted.org/packages/7b/fe/a10aba5503ca13e9e009b8bd0a1a4ce5584bdce246245fd6f3a83701369c/pillow-13.0.0-pp312-pypy312_pp80-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e65dd6e75de67b2362a4fa3e16aa627595f65054dc4ec73d64680c84d592fa61", size = 6043514, upload-time = "2026-10-16T22:18:04.538Z" },
 ]
@@ -5265,6 +5244,7 @@ dependencies = [
     { name = "numpy" },
     { name = "openai" },
     { name = "orjson" },
+    { name = "pillow" },
     { name = "prime-pydantic-config" },
     { name = "prime-rl-configs" },
     { name = "prime-runs", extra = ["train"] },
@@ -5434,6 +5414,7 @@ requires-dist = [
     { name = "nvidia-ml-py", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=12.575.51" },
     { name = "openai", specifier = ">=1.106.1" },
     { name = "orjson", specifier = ">=3.11.0" },
+    { name = "pillow", specifier = ">=13.0.0" },
     { name = "prime-kernels", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_aarch64.whl" },
     { name = "prime-kernels", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'kernels'" },
     { name = "prime-kernels", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_x86_64.whl" },
@@ -6266,8 +6247,7 @@ dependencies = [
     { name = "jsonlines" },
     { name = "jsonschema" },
     { name = "openai" },
-    { name = "pillow", version = "12.3.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "pillow", version = "13.0.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "pillow" },
     { name = "pydantic" },
     { name = "requests" },
     { name = "tiktoken" },
@@ -6310,8 +6290,7 @@ version = "2026.3.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
-    { name = "pillow", version = "12.3.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "pillow", version = "13.0.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "pillow" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fa/4f/75315459fdf73837a5cfa0e06f95c64e1a86a9d51ac95e3499c5003a6933/rdkit-2026.3.3-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:179d528fa88dd9fbbab31c4c0536546010db970fd784fbdf5e2379c36254dfb5", size = 29981343, upload-time = "2026-06-05T18:42:40.052Z" },
@@ -6409,8 +6388,7 @@ dependencies = [
 
 [package.optional-dependencies]
 multimodal = [
-    { name = "pillow", version = "12.3.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "pillow", version = "13.0.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "pillow" },
     { name = "transformers" },
 ]
 
@@ -7302,7 +7280,7 @@ dependencies = [
     { name = "markdown" },
     { name = "numpy" },
     { name = "packaging" },
-    { name = "pillow", version = "13.0.0", source = { registry = "https://pypi.org/simple" } },
+    { name = "pillow" },
     { name = "protobuf" },
     { name = "setuptools", version = "80.10.2", source = { registry = "https://pypi.org/simple" } },
     { name = "tensorboard-data-server" },
@@ -7736,7 +7714,7 @@ version = "0.29.0+cu130"
 source = { registry = "https://download.pytorch.org/whl/cu130" }
 dependencies = [
     { name = "numpy" },
-    { name = "pillow", version = "13.0.0", source = { registry = "https://pypi.org/simple" } },
+    { name = "pillow" },
     { name = "torch", version = "2.14.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
 ]
 wheels = [
@@ -8261,7 +8239,7 @@ dependencies = [
     { name = "oss-harmony" },
     { name = "outlines-core" },
     { name = "partial-json-parser" },
-    { name = "pillow", version = "13.0.0", source = { registry = "https://pypi.org/simple" } },
+    { name = "pillow" },
     { name = "prometheus-client" },
     { name = "prometheus-fastapi-instrumentator" },
     { name = "protobuf" },
@@ -8461,7 +8439,7 @@ dependencies = [
     { name = "oss-harmony" },
     { name = "outlines-core" },
     { name = "partial-json-parser" },
-    { name = "pillow", version = "13.0.0", source = { registry = "https://pypi.org/simple" } },
+    { name = "pillow" },
     { name = "prometheus-client" },
     { name = "prometheus-fastapi-instrumentator" },
     { name = "protobuf" },
