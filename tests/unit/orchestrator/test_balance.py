@@ -32,7 +32,17 @@ def pools(trainer: int = 4, inference: int = 4) -> list[BalancePoolConfig]:
     ]
 
 
-def run(pool_list, *, trainer_busy, inference_busy, env_bound=False, paused=lambda i: False, engines=None, minutes=45):
+def run(
+    pool_list,
+    *,
+    trainer_busy,
+    inference_busy,
+    env_bound=False,
+    paused=lambda i: False,
+    engines=None,
+    minutes=45,
+    idle_in_pauses=False,
+):
     """A run shipping 64 rollouts per 120 s step, the engines finishing them at the same pace. Returns the advisor
     and its notices."""
     clock = Clock()
@@ -43,6 +53,9 @@ def run(pool_list, *, trainer_busy, inference_busy, env_bound=False, paused=lamb
         clock.now += POLL_S
         credit += 64 / 120 * POLL_S
         finished, credit = int(credit), credit - int(credit)
+        if idle_in_pauses and paused(i):
+            # The engines stop for the update: what they would have finished completes after it
+            finished, credit = 0, credit + finished
         if engines is not None:
             balance.observe(engines(i, finished))
         else:
@@ -81,6 +94,14 @@ def test_trainer_bound_run_reads_idle_engines():
     assert advice.capacities["inference"].rate == pytest.approx(2.5 * 64 / 120, rel=0.02)
     assert advice.best == {"trainer": 5, "inference": 3}
     assert notices
+
+
+def test_weight_update_pauses_do_not_dilute_inference_capacity():
+    # The engines run 3/4 of the time and are busy 40% of it: per running second they make 64/120 / (3/4) rollouts
+    advice, _ = run(
+        pools(), trainer_busy=1.0, inference_busy={"inference": 0.4}, paused=lambda i: i % 4 == 0, idle_in_pauses=True
+    )
+    assert advice.capacities["inference"].rate == pytest.approx(64 / 120 / 0.75 / 0.4, rel=0.03)
 
 
 def test_saturated_or_unreported_engines_are_a_lower_bound():

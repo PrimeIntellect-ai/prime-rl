@@ -271,7 +271,10 @@ class BalanceAdvisor:
         # What the run ships per second, and the rollouts the engines finished per second: the trainer's pace
         # decouples from it while a backlog builds
         rate = sum(s.rollouts for s in trainer.steps) / sum(s.period for s in trainer.steps)
-        finished = sum(p.finished for _, p in self.polls) / poll_seconds
+        # Over the polls outside weight-update pauses, as the busy shares: capacity is throughput over busy share
+        running = [p for _, p in self.polls if not p.paused]
+        running_seconds = sum(p.seconds for p in running)
+        finished = sum(p.finished for p in running) / running_seconds if running_seconds > 0 else 0.0
         if finished <= 0:
             return None
         capacities = {"trainer": Capacity(trainer.rate, trainer.busy, False)}
