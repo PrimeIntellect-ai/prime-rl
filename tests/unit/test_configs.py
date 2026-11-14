@@ -487,6 +487,8 @@ def test_mega_moe_buffer_covers_mxfp8_padding():
         ({"type": "mxfp8", "backward": "dequant_bf16"}, "mxfp8_qat"),
         ({"type": "deepgemm_fp8"}, "fp8"),
         ({"type": "deepgemm_fp8", "forward": "bf16"}, "fp8_bwd"),
+        # The NVFP4 recipe as is: its MXFP8 tail runs Mega MoE's MXFP8 kernels
+        ({"type": "nvfp4"}, "nvfp4"),
         ({"type": "bf16", "backend": "sonicmoe"}, "cannot run"),
         ({"type": "mxfp8", "recipe": "mxfp8_rceil_wgrad_with_hp"}, "cannot run"),
         ({"type": "mxfp8", "apply_to": "50%"}, "apply_to must be 'all'"),
@@ -496,7 +498,7 @@ def test_mega_moe_runs_the_expert_precision_of_moe_compute(compute, expected):
     from prime_rl.configs.trainer import mega_moe_precision
 
     model = {"moe": {"dispatch": {"type": "mega_moe", "max_tokens_per_rank": 8192}, "compute": compute}}
-    if expected in ("bf16", "mxfp8", "mxfp8_qat", "fp8", "fp8_bwd"):
+    if expected in ("bf16", "mxfp8", "mxfp8_qat", "fp8", "fp8_bwd", "nvfp4"):
         assert mega_moe_precision(TrainerModelConfig.model_validate(model).moe.compute) == expected
     else:
         with pytest.raises(ValidationError, match=expected):
@@ -1639,15 +1641,6 @@ def test_nvfp4_rejects_mismatched_engine_quantization(inference, message):
     [
         ({"moe": {"compute": {"type": "nvfp4"}}, "lora": {}}, "does not support LoRA"),
         ({"moe": {"compute": {"type": "nvfp4"}}, "compile": {"fullgraph": True}}, "requires compile.fullgraph=false"),
-        (
-            {
-                "moe": {
-                    "compute": {"type": "nvfp4", "apply_to": "all"},
-                    "dispatch": {"type": "mega_moe", "max_tokens_per_rank": 8192},
-                }
-            },
-            "Mega MoE cannot run",
-        ),
     ],
 )
 def test_nvfp4_trainer_rejects_unsupported_setups(model, message):

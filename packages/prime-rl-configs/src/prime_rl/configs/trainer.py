@@ -329,7 +329,10 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
 
 def mega_moe_precision(compute: "MoEComputeConfig") -> str:
     """The Mega MoE kernels that run ``compute``'s expert precision. Mega MoE runs every MoE layer with its own
-    kernels, so only precisions and settings it implements are accepted."""
+    kernels, so only precisions and settings it implements are accepted. NVFP4 may leave layers out: those run Mega
+    MoE in the ``remainder``'s precision."""
+    if isinstance(compute, NVFP4MoEComputeConfig):
+        return "nvfp4"
     if not compute.selects_all:
         raise ValueError("Mega MoE runs every MoE layer; model.moe.compute.apply_to must be 'all'.")
     if isinstance(compute, BF16MoEComputeConfig) and compute.backend == "torch":
@@ -340,7 +343,7 @@ def mega_moe_precision(compute: "MoEComputeConfig") -> str:
         return "fp8" if compute.forward == "fp8" else "fp8_bwd"
     raise ValueError(
         f"Mega MoE cannot run model.moe.compute {compute.model_dump(exclude={'apply_to'})}: it supports type 'bf16' "
-        "(backend 'torch'), 'mxfp8' (recipe 'mxfp8_rceil') and 'deepgemm_fp8'."
+        "(backend 'torch'), 'mxfp8' (recipe 'mxfp8_rceil'), 'deepgemm_fp8' and 'nvfp4'."
     )
 
 
