@@ -1,4 +1,5 @@
 import gc
+import json
 import math
 import os
 import pickle
@@ -21,6 +22,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from prime_rl.control.controller import Controller
 from prime_rl.control.types import StepActionType
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.distributed import all_gather_bytes
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_ckpt_dir
 
@@ -305,8 +307,7 @@ class TensorStats:
 
     def compute_stats(self) -> dict[str, float]:
         """Reduce every key across all ranks and compute its statistics. Collective: every rank must call it."""
-        gathered_keys: list[list[str] | None] = [None] * dist.get_world_size()
-        dist.all_gather_object(gathered_keys, list(self.moments))
+        gathered_keys = [json.loads(payload) for payload in all_gather_bytes(json.dumps(list(self.moments)).encode())]
         keys = sorted({key for rank_keys in gathered_keys for key in rank_keys})
         if not keys:
             return {}

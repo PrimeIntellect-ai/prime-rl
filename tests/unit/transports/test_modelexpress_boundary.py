@@ -1,7 +1,6 @@
 """Keep the framework adapter on ModelExpress's public client surface."""
 
 import ast
-import pickle
 import time
 import uuid
 from pathlib import Path
@@ -143,18 +142,16 @@ def test_modelexpress_installation_outcome_reaches_non_master_without_shared_sto
     calls = []
     rank = 0
 
-    def broadcast_object_list(values, src):
-        assert src == 0
-        assert len(values) == 1 and isinstance(values[0], bool)
+    def broadcast_bytes(value):
         if rank == 0:
-            messages.append(pickle.dumps(values))
-        else:
-            values[:] = pickle.loads(messages[0])
+            messages.append(value)
+            return value
+        return messages[0]
 
     namespace = {
         "time": time,
+        "broadcast_bytes": broadcast_bytes,
         "dist": SimpleNamespace(
-            broadcast_object_list=broadcast_object_list,
             barrier=lambda: calls.append((rank, "barrier")),
         ),
         "INSTALLED_MARKER": ".installed",

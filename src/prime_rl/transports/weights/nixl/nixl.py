@@ -12,6 +12,7 @@ from math import prod
 from pathlib import Path
 from typing import cast
 
+import msgspec
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -41,6 +42,7 @@ from prime_rl.transports.weights.nixl.trainer_tensor_table import (
     TrainerTensor,
     TrainerTensorTable,
 )
+from prime_rl.utils.distributed import all_gather_bytes, broadcast_bytes
 from prime_rl.utils.weights import resolve_wire_dtype
 
 LAYER_RE = re.compile(r"(?:^|\.)layers\.(\d+)(?=\.|$)")
@@ -277,11 +279,10 @@ class NIXLWeightSender(WeightSender):
 
     def gather_trainer_table_fragments(self) -> list[bytes] | None:
         table_fragment = self.build_local_trainer_table_fragment().encode() if self.is_serving_rank else None
-        gathered: list[bytes | None] | None = [None] * self.world.world_size if self.world.is_master else None
-        dist.gather_object(table_fragment, gathered, dst=0)
-        if gathered is None:
+        gathered = all_gather_bytes(table_fragment or b"")
+        if not self.world.is_master:
             return None
-        return [fragment for fragment in gathered if fragment is not None]
+        return [fragment for fragment in gathered if fragment]
 
     def merge_trainer_table_fragments(self, table_fragments: list[bytes]) -> TrainerTensorTable:
         agents: list[TrainerAgent] = []
@@ -396,11 +397,13 @@ class NIXLWeightSender(WeightSender):
         if startup:
             # The master's ModelExpress discovery can outlast the NCCL timeout; hold the others on the store.
             wait_for_master(f"weight_broadcast/nixl_discovery/{step}", self.config.timeout)
-            objects = [inference_metadata]
-            dist.broadcast_object_list(objects, src=0)
+            encoded_metadata = broadcast_bytes(
+                msgspec.msgpack.encode(inference_metadata) if self.world.is_master else None
+            )
+            inference_metadata = msgspec.msgpack.decode(encoded_metadata, type=list[bytes])
             if self.is_serving_rank:
                 self.inference_peers = []
-                for metadata in cast(list[bytes], objects[0]):
+                for metadata in inference_metadata:
                     peer = self.nixl_agent.add_remote_agent(metadata)
                     self.nixl_agent.make_connection(peer)
                     self.inference_peers.append(peer)
