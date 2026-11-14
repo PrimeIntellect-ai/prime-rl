@@ -258,7 +258,7 @@ def save_model_assets(
     """Save model config, generation config, processor and tokenizer next to the weights."""
     _export_config(model.config)
     model.config.save_pretrained(output_dir)
-    if model.generation_config:
+    if getattr(model, "generation_config", None):
         generation_config = deepcopy(model.generation_config)
         generation_config.use_cache = True
         generation_config.save_pretrained(output_dir)
