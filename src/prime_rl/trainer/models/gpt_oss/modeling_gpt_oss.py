@@ -126,14 +126,15 @@ class GptOssModel(GptOssPreTrainedModel):
         inputs_embeds: torch.Tensor | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
-        seq_lens: torch.LongTensor,
+        seq_lens: list[int],
         seq_lens_are_pre_shard: bool = False,
     ) -> BaseModelOutput:
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
-            seq_lens.to(device=inputs_embeds.device),
+            seq_lens,
+            device=inputs_embeds.device,
             total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
@@ -174,7 +175,7 @@ class GptOssForCausalLM(GptOssPreTrainedModel):
         temperature: torch.Tensor | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
-        seq_lens: torch.LongTensor,
+        seq_lens: list[int],
         seq_lens_are_pre_shard: bool = False,
     ) -> PrimeLmOutput:
         outputs = self.model(

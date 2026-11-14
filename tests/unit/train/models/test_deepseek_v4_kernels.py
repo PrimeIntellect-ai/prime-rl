@@ -82,7 +82,7 @@ def _packed_context(
         rotary = DeepseekV4RotaryEmbedding(config)
     return PackedContext.build(
         rotary_emb=rotary,
-        seq_lens=torch.tensor(doc_lens, device="cuda"),
+        seq_lens=list(doc_lens),
         device=torch.device("cuda"),
     )
 

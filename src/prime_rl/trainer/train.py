@@ -264,7 +264,7 @@ def train(config: SFTConfig | PretrainConfig):
         position_ids = micro_batch["position_ids"].to("cuda", non_blocking=True)
         target_ids = micro_batch["target_ids"].to("cuda", non_blocking=True)
         loss_mask = micro_batch["loss_mask"].to("cuda", non_blocking=True)
-        seq_lens = micro_batch["seq_lens"].to("cuda", non_blocking=True)
+        seq_lens = micro_batch["seq_lens"].tolist()
         mm_kwargs = micro_batch.get("mm_kwargs")
         if mm_kwargs is not None:
             mm_kwargs = {key: value.to("cuda", non_blocking=True) for key, value in mm_kwargs.items()}
@@ -277,7 +277,7 @@ def train(config: SFTConfig | PretrainConfig):
         if cp_enabled:
             # CP requires the sequence length to be divisible by cp_size. CatDataset
             # pads every pack to a multiple of it; shard_for_cp raises on violations.
-            validate_cp_seq_lens(micro_batch["seq_lens"], input_ids.shape[-1])
+            validate_cp_seq_lens(seq_lens, input_ids.shape[-1])
             # The VLM shards image inputs itself, after building their positions.
             defer_vlm_cp_to_model = mm_kwargs is not None
             if not defer_vlm_cp_to_model:

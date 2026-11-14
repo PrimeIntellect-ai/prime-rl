@@ -93,8 +93,8 @@ def get_mm_token_type_ids(input_ids, image_token_id):
     return mm_token_type_ids
 
 
-def get_seq_lens(input_ids: torch.Tensor) -> torch.Tensor:
-    return torch.tensor([input_ids.shape[1]], device=input_ids.device)
+def get_seq_lens(input_ids: torch.Tensor) -> list[int]:
+    return [input_ids.shape[1]]
 
 
 @pytest.mark.gpu
@@ -238,7 +238,7 @@ def test_mrope_text_only_positions():
         mm_token_type_ids=mm_token_type_ids,
         image_grid_thw=None,
         spatial_merge_size=2,
-        seq_lens=torch.tensor([input_ids.shape[1]]),
+        seq_lens=[input_ids.shape[1]],
     )
 
     expected = torch.arange(4).view(1, 1, -1).expand(3, 1, -1)
@@ -255,7 +255,7 @@ def test_mrope_single_image_with_surrounding_text():
         mm_token_type_ids=mm_token_type_ids,
         image_grid_thw=image_grid_thw,
         spatial_merge_size=2,
-        seq_lens=torch.tensor([input_ids.shape[1]]),
+        seq_lens=[input_ids.shape[1]],
     )
 
     expected = torch.tensor(
@@ -278,7 +278,7 @@ def test_mrope_adjacent_images_consume_multiple_grids():
         mm_token_type_ids=mm_token_type_ids,
         image_grid_thw=image_grid_thw,
         spatial_merge_size=2,
-        seq_lens=torch.tensor([input_ids.shape[1]]),
+        seq_lens=[input_ids.shape[1]],
     )
 
     expected = torch.tensor(
@@ -295,7 +295,7 @@ def test_mrope_packed_segments_reset_independently():
     input_ids = torch.tensor([[10, 99, 99, 99, 99, 11, 99, 99, 99, 99]])
     mm_token_type_ids = torch.tensor([[0, 1, 1, 1, 1, 0, 1, 1, 1, 1]])
     image_grid_thw = torch.tensor([[1, 4, 4], [1, 4, 4]])
-    seq_lens = torch.tensor([5, 5])
+    seq_lens = [5, 5]
 
     position_ids = build_mrope_position_ids(
         input_ids=input_ids,
@@ -326,14 +326,14 @@ def test_mrope_packed_matches_standalone_segments():
         mm_token_type_ids=segment_token_types,
         image_grid_thw=image_grid_thw,
         spatial_merge_size=2,
-        seq_lens=torch.tensor([segment_input_ids.shape[1]]),
+        seq_lens=[segment_input_ids.shape[1]],
     )
     packed = build_mrope_position_ids(
         input_ids=torch.cat([segment_input_ids, segment_input_ids], dim=1),
         mm_token_type_ids=torch.cat([segment_token_types, segment_token_types], dim=1),
         image_grid_thw=torch.cat([image_grid_thw, image_grid_thw], dim=0),
         spatial_merge_size=2,
-        seq_lens=torch.tensor([segment_input_ids.shape[1], segment_input_ids.shape[1]]),
+        seq_lens=[segment_input_ids.shape[1], segment_input_ids.shape[1]],
     )
 
     torch.testing.assert_close(packed[:, :, : segment_input_ids.shape[1]], standalone)
@@ -351,7 +351,7 @@ def test_mrope_rejects_image_length_grid_mismatch():
             mm_token_type_ids=mm_token_type_ids,
             image_grid_thw=image_grid_thw,
             spatial_merge_size=2,
-            seq_lens=torch.tensor([input_ids.shape[1]]),
+            seq_lens=[input_ids.shape[1]],
         )
 
 
@@ -365,5 +365,5 @@ def test_mrope_rejects_unsupported_modalities():
             mm_token_type_ids=mm_token_type_ids,
             image_grid_thw=None,
             spatial_merge_size=2,
-            seq_lens=torch.tensor([input_ids.shape[1]]),
+            seq_lens=[input_ids.shape[1]],
         )

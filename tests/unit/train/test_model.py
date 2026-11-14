@@ -47,7 +47,7 @@ def test_model_forward(model):
     model = model.to("cuda")
     with torch.autocast("cuda", dtype=torch.bfloat16):
         inputs_ids = torch.randint(0, 100, (BS, SEQ_LEN)).to("cuda")
-        outputs = model(input_ids=inputs_ids, seq_lens=torch.tensor([SEQ_LEN], device="cuda"))
+        outputs = model(input_ids=inputs_ids, seq_lens=[SEQ_LEN])
         logits = outputs["logits"]
 
         assert logits.shape == (BS, SEQ_LEN, model.config.vocab_size)
@@ -62,7 +62,7 @@ def test_model_with_position_ids(model):
         outputs = model(
             input_ids=inputs_ids,
             position_ids=position_ids,
-            seq_lens=torch.tensor([SEQ_LEN], device="cuda"),
+            seq_lens=[SEQ_LEN],
         )
         logits = outputs["logits"]
 
@@ -77,7 +77,7 @@ def test_moe_custom_impl():
     inject_prime_lm_head(model, chunk_size=None)
     with torch.autocast("cuda", dtype=torch.bfloat16):
         inputs_ids = torch.randint(0, 100, (BS, SEQ_LEN)).to("cuda")
-        outputs = model(input_ids=inputs_ids, seq_lens=torch.tensor([SEQ_LEN], device="cuda"))
+        outputs = model(input_ids=inputs_ids, seq_lens=[SEQ_LEN])
         logits = outputs["logits"]
 
         assert logits.shape == (BS, SEQ_LEN, model.config.vocab_size)

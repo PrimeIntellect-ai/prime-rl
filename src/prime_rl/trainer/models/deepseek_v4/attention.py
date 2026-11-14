@@ -262,7 +262,7 @@ class PackedContext:
         cls,
         *,
         rotary_emb: DeepseekV4RotaryEmbedding,
-        seq_lens: Tensor,
+        seq_lens: list[int],
         device: torch.device,
         cp_rank: int = 0,
         cp_world_size: int = 1,
@@ -278,8 +278,7 @@ class PackedContext:
         values addressing them stay global, so only the query side narrows.
         """
         config = rotary_emb.config
-        # Read the width before `seq_lens` moves: on a CPU `seq_lens` that costs no device sync.
-        total_tokens = int(seq_lens.sum())
+        total_tokens = sum(seq_lens)
         assert total_tokens % cp_world_size == 0, (
             f"{total_tokens} tokens do not split evenly across {cp_world_size} CP ranks"
         )
@@ -290,7 +289,7 @@ class PackedContext:
         n_queries = total_tokens // cp_world_size
         q_start = cp_rank * n_queries
 
-        cu_seqlens, _ = get_cu_seqlens_from_seq_lens(seq_lens.to(device=device))
+        cu_seqlens, _ = get_cu_seqlens_from_seq_lens(seq_lens, device=device)
         compress_rates = {
             config.compress_rates[layer_type]
             for layer_type in set(config.layer_types)

@@ -179,13 +179,14 @@ class NemotronHModel(NemotronHPreTrainedModel):
         position_ids: torch.LongTensor | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
-        seq_lens: torch.LongTensor,
+        seq_lens: list[int],
         seq_lens_are_pre_shard: bool = False,
     ) -> BaseModelOutput:
         hidden_states = self.embed_tokens(input_ids)
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
-            seq_lens.to(device=hidden_states.device),
+            seq_lens,
+            device=hidden_states.device,
             total_tokens=None if seq_lens_are_pre_shard else hidden_states.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
@@ -217,7 +218,7 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel):
         support: TokenSupport | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
-        seq_lens: torch.LongTensor,
+        seq_lens: list[int],
         seq_lens_are_pre_shard: bool = False,
     ) -> PrimeLmOutput:
         outputs = self.model(

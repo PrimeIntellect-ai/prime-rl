@@ -1022,7 +1022,7 @@ def forward(
     input_ids: Int[Tensor, "batch seq"],
     position_ids: Int[Tensor, "batch seq"],
     *,
-    seq_lens: Int[Tensor, "segments"],
+    seq_lens: list[int],
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
@@ -1046,6 +1046,7 @@ def forward(
         if mm_token_type_ids is not None:
             kwargs["mm_token_type_ids"] = mm_token_type_ids
 
+    # A list, not a tensor: FSDP's root module copies tensor inputs to the GPU, and attention needs the lengths on the host.
     kwargs["seq_lens"] = seq_lens
     kwargs["seq_lens_are_pre_shard"] = seq_lens_are_pre_shard
 

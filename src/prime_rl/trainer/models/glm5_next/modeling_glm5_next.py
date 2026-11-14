@@ -203,13 +203,13 @@ class Glm5NextTextModel(Glm5NextPreTrainedModel):
         position_ids: torch.LongTensor | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
-        seq_lens: torch.LongTensor,
+        seq_lens: list[int],
         seq_lens_are_pre_shard: bool = False,
     ) -> BaseModelOutput:
         """
         position_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Unused: the model has no positional encoding, and document boundaries come from `seq_lens`.
-        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
+        seq_lens (`list[int]`):
             Per-document lengths of the packed row. KDA, the indexer's pools and sparse MLA's
             causal ranges all restart at each document boundary.
         seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
@@ -220,7 +220,8 @@ class Glm5NextTextModel(Glm5NextPreTrainedModel):
         )
         inputs_embeds = self.embed_tokens(input_ids)
         cu_seqlens, _ = get_cu_seqlens_from_seq_lens(
-            seq_lens.to(inputs_embeds.device),
+            seq_lens,
+            device=inputs_embeds.device,
             total_tokens=inputs_embeds.shape[1] * self.cp_context.cp_world_size,
         )
         # A hint, not a constraint: a one-document row (2-entry cu_seqlens) gets its own graph.
@@ -257,7 +258,7 @@ class Glm5NextModel(nn.Module):
         position_ids: torch.LongTensor | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
-        seq_lens: torch.LongTensor,
+        seq_lens: list[int],
         seq_lens_are_pre_shard: bool = False,
     ) -> BaseModelOutput:
         return self.language_model(
@@ -300,7 +301,7 @@ class Glm5NextForCausalLM(Glm5NextPreTrainedModel):
         support: TokenSupport | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
-        seq_lens: torch.LongTensor,
+        seq_lens: list[int],
         seq_lens_are_pre_shard: bool = False,
         **kwargs,
     ) -> PrimeLmOutput:

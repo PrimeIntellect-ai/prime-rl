@@ -41,8 +41,8 @@ _BASE = dict(
 )
 
 
-def _seq_lens(input_ids: torch.Tensor) -> torch.Tensor:
-    return torch.tensor([input_ids.shape[1]], device=input_ids.device)
+def _seq_lens(input_ids: torch.Tensor) -> list[int]:
+    return [input_ids.shape[1]]
 
 
 def test_nemotron_h_reverse():
@@ -178,7 +178,7 @@ def test_nemotron_h_omni_text_forward_matches_standalone():
     inject_prime_lm_head(standalone)
     inject_prime_lm_head(omni)
     input_ids = torch.randint(0, 256, (1, 16), device="cuda")
-    seq_lens = torch.tensor([8, 8], device="cuda")
+    seq_lens = [8, 8]
     expected = standalone(input_ids, seq_lens=seq_lens)["logits"]
     actual = omni(input_ids, seq_lens=seq_lens)["logits"]
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)

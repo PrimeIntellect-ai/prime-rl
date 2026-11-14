@@ -437,7 +437,7 @@ def test_inject_prime_lm_head_vanilla():
             position_ids=position_ids,
             labels=labels,
             temperature=temperature,
-            seq_lens=torch.tensor([seq_len], device="cuda"),
+            seq_lens=[seq_len],
         )
 
     # VanillaOutputLinear returns logits
@@ -489,7 +489,7 @@ def test_inject_prime_lm_head_fused():
             position_ids=position_ids,
             labels=labels,
             temperature=temperature,
-            seq_lens=torch.tensor([seq_len], device="cuda"),
+            seq_lens=[seq_len],
         )
 
     # FusedOutputLinear returns logprobs and entropy

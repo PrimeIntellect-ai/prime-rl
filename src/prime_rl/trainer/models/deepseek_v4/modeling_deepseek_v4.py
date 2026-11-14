@@ -187,7 +187,7 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
         inputs_embeds: torch.FloatTensor | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
-        seq_lens: torch.LongTensor,
+        seq_lens: list[int],
         seq_lens_are_pre_shard: bool = False,
     ) -> MoeModelOutputWithPast:
         """
@@ -198,7 +198,7 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             Ignored. V4 derives every position it rotates or thresholds on from `seq_lens`.
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
-        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
+        seq_lens (`list[int]`):
             Per-document lengths of the packed row (PrimeRL packed-batch contract). Clips the
             sliding window at document boundaries and lays out the compressors' entries per
             document, so a packed row gives every document what running it alone would.
@@ -218,7 +218,7 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             inputs_embeds = self.embed_tokens(input_ids)
 
         # `seq_lens` describes the whole row and `inputs_embeds` carries this rank's shard of it.
-        total_tokens = int(seq_lens.sum())
+        total_tokens = sum(seq_lens)
         assert total_tokens == inputs_embeds.shape[1] * cp_world_size, (
             f"seq_lens covers {total_tokens} tokens, but {cp_world_size} CP rank(s) holding "
             f"{inputs_embeds.shape[1]} tokens each"
@@ -284,7 +284,7 @@ class DeepseekV4ForCausalLM(DeepseekV4PreTrainedModel, GenerationMixin):
         temperature: torch.Tensor | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
-        seq_lens: torch.LongTensor,
+        seq_lens: list[int],
         seq_lens_are_pre_shard: bool = False,
         **kwargs,
     ) -> PrimeLmOutput:
@@ -294,7 +294,7 @@ class DeepseekV4ForCausalLM(DeepseekV4PreTrainedModel, GenerationMixin):
             logprobs/entropy.
         temperature (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
             Per-token temperatures for logprobs/entropy computation when `labels` are given.
-        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
+        seq_lens (`list[int]`):
             Per-document lengths of the packed row. Required rather than defaulting to one
             document, so a caller that forgets it fails instead of silently getting a window
             that spans neighbouring rollouts.
