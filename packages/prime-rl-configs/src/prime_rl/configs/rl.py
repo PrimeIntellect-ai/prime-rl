@@ -1,3 +1,4 @@
+import json
 import uuid
 import warnings
 from pathlib import Path
@@ -519,6 +520,71 @@ class RLConfig(BaseConfig):
             )
         if self.rollout_transport is None:
             self.rollout_transport = self.trainer.rollout_transport
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_kv_precision(self):
+        """Engines with an FP8 KV cache attend over rounded keys and values; the trainer recomputes attention without
+        a cache. Round the trainer's keys and values the same way (``model.kv_precision``) unless set explicitly."""
+        if self.inference is None:
+            return self
+        cache = getattr(self.inference.vllm, "kv_cache_dtype", None) or "auto"
+        model = self.trainer.model
+        explicit = "kv_precision" in model.model_fields_set
+        # The trainer resolves "auto" once it knows the model type (some models' auto is FP8 or GPU-dependent)
+        model.engine_kv_cache_dtype = cache
+        if cache in ("fp8", "fp8_e4m3"):
+            if not explicit:
+                model.kv_precision = "fp8"
+            if getattr(self.inference.vllm, "calculate_kv_scales", False):
+                warnings.warn(
+                    "inference.vllm.calculate_kv_scales computes KV scales on the engines, which the trainer's fixed "
+                    "model.kv_scale cannot follow: rollouts round keys and values differently.",
+                    stacklevel=2,
+                )
+        elif cache == "fp8_e5m2":
+            warnings.warn(
+                "inference.vllm.kv_cache_dtype = 'fp8_e5m2': the trainer rounds keys and values only to E4M3, so rollouts "
+                "attend over other values than the trainer computes.",
+                stacklevel=2,
+            )
+        elif cache in ("bfloat16", "float16") and model.kv_precision == "fp8":
+            warnings.warn(
+                "model.kv_precision = 'fp8' rounds keys and values the engines keep in full precision "
+                f"(inference.vllm.kv_cache_dtype = {cache!r}).",
+                stacklevel=2,
+            )
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_dsv4_indexer_precision(self):
+        """DeepSeek V4's indexer scores like the engines' indexer K cache (``model.dsv4_indexer_precision``). An
+        explicit ``inference.vllm.attention_config.indexer_kv_dtype`` sets it; an MXFP4 trainer pins an unspecified
+        (``auto``, which is fp8 on CUDA) engine indexer cache to ``mxfp4``."""
+        if self.inference is None:
+            return self
+        model = self.trainer.model
+        vllm = self.inference.vllm
+        attention_config = getattr(vllm, "attention_config", None)
+        if isinstance(attention_config, str):
+            attention_config = json.loads(attention_config)
+        if attention_config is None:
+            attention_config = {}
+        if not isinstance(attention_config, dict):
+            raise ValueError(
+                f"inference.vllm.attention_config must be a table (or its JSON), got {type(attention_config).__name__}."
+            )
+        indexer_kv_dtype = attention_config.get("indexer_kv_dtype") or "auto"
+        explicit = "dsv4_indexer_precision" in model.model_fields_set
+        if indexer_kv_dtype in ("fp8", "mxfp4") and not explicit:
+            model.dsv4_indexer_precision = indexer_kv_dtype
+        elif model.dsv4_indexer_precision == "mxfp4":
+            if indexer_kv_dtype != "auto":
+                raise ValueError(
+                    'model.dsv4_indexer_precision = "mxfp4" models vLLM\'s MXFP4 indexer cache, but the engines use '
+                    f"inference.vllm.attention_config.indexer_kv_dtype = {indexer_kv_dtype!r}."
+                )
+            vllm.attention_config = {**attention_config, "indexer_kv_dtype": "mxfp4"}
         return self
 
     @model_validator(mode="after")

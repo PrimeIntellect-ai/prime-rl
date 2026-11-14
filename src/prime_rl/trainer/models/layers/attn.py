@@ -446,8 +446,34 @@ class AttentionConfig:
 # Otherwise, do ABC or something to make the signatures match
 
 
+class _FP8KVFakeQuant(torch.autograd.Function):
+    """Exact rounding forward, identity backward. ``x + (rounded - x).detach()`` is not exact in BF16 once a value
+    saturates: the difference itself rounds."""
+
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, scale: float) -> torch.Tensor:
+        finfo = torch.finfo(torch.float8_e4m3fn)
+        stored = (x.float() / scale).clamp(finfo.min, finfo.max).to(torch.float8_e4m3fn)
+        return (stored.float() * scale).to(x.dtype)
+
+    @staticmethod
+    def backward(ctx, grad: torch.Tensor):
+        return grad, None
+
+
+def fp8_kv_fake_quant(x: torch.Tensor, scale: float) -> torch.Tensor:
+    """``x`` rounded as vLLM's FP8 KV cache stores it (``x / scale`` saturated to E4M3, then rescaled), with a
+    straight-through gradient."""
+    return _FP8KVFakeQuant.apply(x, scale)
+
+
 class FlashAttention(nn.Module):
     """Flash Attention"""
+
+    kv_precision: str = "bf16"
+    """``fp8``: attend over keys and values rounded as vLLM's FP8 KV cache stores them (set by the trainer)."""
+    kv_scale: float = 1.0
+    kv_fp8_query: bool = False
 
     supported_fusions = {"qkv": fuse_qkv_projections}
 
@@ -561,6 +587,13 @@ class FlashAttention(nn.Module):
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
+
+        if self.kv_precision == "fp8":
+            # The engines' FP8 KV cache stores keys after RoPE, and values, rounded: attend over the same values
+            key_states = fp8_kv_fake_quant(key_states, self.kv_scale)
+            value_states = fp8_kv_fake_quant(value_states, self.kv_scale)
+            if self.kv_fp8_query:
+                query_states = fp8_kv_fake_quant(query_states, self.kv_scale)
 
         out = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
         attn_output = out.contiguous().view(1, out.shape[0], -1)

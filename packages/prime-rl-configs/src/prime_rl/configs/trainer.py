@@ -386,6 +386,33 @@ class ModelConfig(BaseModelConfig):
     dsv4_kv_precision: Literal["bf16", "fp8"] = "fp8"
     """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
 
+    dsv4_indexer_precision: Literal["fp8", "mxfp4"] = "fp8"
+    """Precision the DeepSeek V4 Lightning Indexer scores queries and keys at, as vLLM's indexer K cache stores them.
+    ``fp8``: vLLM's default cache, one UE8M0-scaled E4M3 row per key and query head. ``mxfp4``: vLLM's
+    ``attention_config.indexer_kv_dtype = "mxfp4"`` cache (SM10x engines), E2M1 with a UE8M0 scale per 32 channels for
+    keys and queries, and the BF16 head weights its scoring takes. ``rl`` sets it from
+    ``inference.vllm.attention_config.indexer_kv_dtype``. vLLM 0.33 wires the MXFP4 cache only into DeepSeek V4's
+    indexers (V4, V4-Flash, V4.1), so other sparse-attention models keep scoring in FP8."""
+
+    kv_precision: Literal["bf16", "fp8"] = "bf16"
+    """Precision attention reads keys and values at (models on the shared ``FlashAttention``). ``fp8`` rounds them as
+    vLLM's ``fp8`` KV cache stores them (``kv_cache_dtype = "fp8"``: E4M3, saturating, at ``kv_scale``), with a
+    straight-through gradient, so the trainer attends over the values the engines sampled with. ``rl`` sets it from the
+    engines' ``kv_cache_dtype``. DeepSeek V4 has its own ``dsv4_kv_precision``."""
+
+    kv_scale: float = Field(1.0, gt=0)
+    """The KV cache's quantization scale under ``kv_precision = "fp8"``: vLLM's default per-tensor ``k_scale`` and
+    ``v_scale`` (1.0, unless the checkpoint or ``calculate_kv_scales`` sets them)."""
+
+    engine_kv_cache_dtype: str | None = None
+    """The inference engines' ``kv_cache_dtype`` as configured (``"auto"`` when unset), set by ``rl``; None without
+    engines (SFT). The trainer resolves it once the model type is known: for models whose vLLM ``auto`` depends on the
+    engines' GPU (GLM-5 DSA, DeepSeek V4.1) it must be explicit, and it decides ``kv_precision`` unless that is set."""
+
+    kv_fp8_query: bool = False
+    """Also round the query to FP8: some vLLM FP8-KV attention backends quantize the query too (FlashAttention-3 on
+    Hopper, FlashAttention-4 on Blackwell), others keep it BF16 (FlashAttention-4's Hopper FP8-KV path)."""
+
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
 
