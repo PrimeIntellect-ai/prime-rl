@@ -20,21 +20,16 @@ class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tru
     dtype: str
 
 
-# Sampling masks for top-p/top-k replay: flat int32 token-id bytes plus an
-# int32 count per token position (0 = no mask); len(ids) == 4 * counts.sum().
-# ``logprobs`` optionally carries the sampler's float32 logprob of each id.
-class SamplingMask(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
+class SamplerSupport(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
+    """The sampler's support per token in CSR form: an int32 count per token position (0 = none),
+    the flat int32 ``ids`` and a bool per token marking a replayed sampling mask (any other row is
+    a head of the sampler's distribution). ``logprobs`` optionally carries the sampler's float32
+    logprob of each id, NaN where a packed sample has none."""
+
     ids: bytes
     counts: bytes
+    replayed: bytes
     logprobs: bytes | None = None
-
-
-class TopLogprobs(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
-    """Flat int32 ids, float32 logprobs and int32 row counts (zero for context)."""
-
-    ids: bytes
-    logprobs: bytes
-    counts: bytes
 
 
 # Where an env worker that keeps a trace's arrays leaves the references to them:
@@ -49,7 +44,7 @@ class PayloadSlice(msgspec.Struct, array_like=True, gc=False):
     url: str
     id: str
     num_tokens: int
-    fields: list[str]  # which of routed_experts / sampling_mask / top_logprobs it holds
+    fields: list[str]  # which of routed_experts / sampler_support (/ its logprobs) it holds
     routed_shape: list[int] | None = None  # [layers, top_k] of its routing rows
     routed_dtype: str | None = None
 
@@ -57,8 +52,7 @@ class PayloadSlice(msgspec.Struct, array_like=True, gc=False):
 # One branch's training arrays as an env worker serves them.
 class BranchArrays(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     routed_experts: RoutedExperts | None = None
-    sampling_mask: SamplingMask | None = None
-    top_logprobs: TopLogprobs | None = None
+    sampler_support: SamplerSupport | None = None
 
 
 # Produced by the orchestrator's train sink; consumed in-process by
@@ -171,19 +165,17 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     ce_weights: memoryview | None = None
     ref_kl_weights: memoryview | None = None
 
-    # Sampling masks for top-p/top-k replay; appended for wire-layout stability.
-    sampling_mask: SamplingMask | None = None
+    sampler_support: SamplerSupport | None = None
 
     # Per-sequence branch identity, parallel to ``sequence_lengths`` (see
     # TrainingSample.trace_id). ``""`` / ``-1`` mark an unknown sequence
     # (e.g. a dummy micro batch). ``None`` when no packed sample carried one.
     trace_ids: list[str] | None = None
     branch_indices: list[int] | None = None
-    top_logprobs: TopLogprobs | None = None
     # Trailing padding tokens, folded into the last sequence's length by ``pad_micro_batch``.
     padding: int = 0
     staleness: memoryview | None = None
     # Per sequence, parallel to ``sequence_lengths``: the arrays an env worker kept for it
-    # (None if it has none). The trainer fetches them into ``routed_experts``,
-    # ``sampling_mask`` and ``top_logprobs``; None if no sequence has arrays.
+    # (None if it has none). The trainer fetches them into ``routed_experts`` and
+    # ``sampler_support``; None if no sequence has arrays.
     payloads: list[PayloadSlice | None] | None = None
