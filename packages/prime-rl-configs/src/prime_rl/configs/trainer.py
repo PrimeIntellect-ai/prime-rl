@@ -251,7 +251,8 @@ class NVFP4MoEComputeConfig(MoEComputeConfigBase):
     either way."""
     dispatch: Literal["nvfp4", "bf16"] = "nvfp4"
     """Token wire format to the experts: NVFP4 (quantized before dispatch, ~3.5x fewer bytes through the expert
-    all-to-all) or BF16 (quantized after it, to measure the difference). The GEMMs see the same bytes either way."""
+    all-to-all) or BF16 (quantized after it). The GEMMs see the same bytes either way. Temporary: kept for the
+    NVFP4-vs-BF16 dispatch comparison on Blackwell, to be removed once it is measured."""
 
 
 MoEComputeConfig: TypeAlias = Annotated[
