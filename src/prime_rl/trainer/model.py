@@ -25,7 +25,7 @@ from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.fsdp._fully_shard._fsdp_common import FSDPMeshInfo, ShardPlacementResult
 from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
-from torch.distributed.tensor import DTensor, Shard
+from torch.distributed.tensor import DTensor, Shard, distribute_tensor
 from transformers import AutoConfig, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
@@ -35,6 +35,7 @@ from prime_rl.configs.trainer import (
     CompileConfig,
     FP8Config,
     ModelConfig,
+    ModelImplementationConfig,
     MXFP8Config,
     TokenizerConfig,
 )
@@ -51,10 +52,12 @@ from prime_rl.trainer.models import (
     get_custom_vlm_cls,
     supports_custom_impl,
 )
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Indexer
 from prime_rl.trainer.models.fusions import (
     apply_model_fusions,
     get_fsdp_shard_placement_fn,
+    get_model_packed_parameters,
     write_back_loaded_packed_parameters,
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
@@ -71,7 +74,7 @@ from prime_rl.trainer.utils import get_dcp_group
 from prime_rl.trainer.vlm import get_language_model, get_vision_encoder
 from prime_rl.trainer.world import get_world, wait_for_master
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import format_time
+from prime_rl.utils.utils import format_time, import_object
 from prime_rl.utils.weights import (
     load_state_dict,
     load_state_dict_keys,
@@ -311,6 +314,29 @@ def get_expert_load_stats(tokens_per_expert: Tensor, group: dist.ProcessGroup) -
     return {name: value.item() for name, value in compute_expert_load_stats(tokens_per_expert).items()}
 
 
+def get_implementation_cls(
+    config: ModelImplementationConfig, model_config: PretrainedConfig
+) -> type[PreTrainedModelPrimeRL]:
+    """The class ``model.implementation`` names, checked to extend prime-rl's class for the checkpoint's architecture."""
+    try:
+        cls = import_object(config.import_path)
+    except (ImportError, AttributeError, ValueError) as error:
+        raise ImportError(f"model.implementation {config.import_path!r} cannot be imported: {error}") from error
+    if not (isinstance(cls, type) and issubclass(cls, PreTrainedModelPrimeRL)):
+        raise TypeError(
+            f"model.implementation must name a PreTrainedModelPrimeRL subclass, got {config.import_path!r} ({cls!r})"
+        )
+    base_classes = [get_custom_vlm_cls(model_config)]
+    if supports_custom_impl(model_config):
+        base_classes.append(get_custom_causal_lm_cls(model_config))
+    if not any(base is not None and issubclass(cls, base) for base in base_classes):
+        raise TypeError(
+            f"model.implementation must extend prime-rl's class for {model_config.model_type!r}, "
+            f"got {config.import_path!r}"
+        )
+    return cls
+
+
 def get_model(
     config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
 ) -> nn.Module:
@@ -387,8 +413,11 @@ def get_model(
         )
         target_config.num_hidden_layers = num_hidden_layers
 
-    custom_vlm_cls = get_custom_vlm_cls(model_config)
-    if custom_vlm_cls is None and not supports_custom_impl(model_config):
+    implementation_cls = None
+    if config.implementation is not None:
+        implementation_cls = get_implementation_cls(config.implementation, model_config)
+    custom_vlm_cls = get_custom_vlm_cls(model_config) if implementation_cls is None else None
+    if implementation_cls is None and custom_vlm_cls is None and not supports_custom_impl(model_config):
         raise ValueError(
             f"{model_config.model_type!r} has no PrimeRL model implementation. "
             "The trainer only supports the architectures in prime_rl.trainer.models."
@@ -396,7 +425,7 @@ def get_model(
 
     # Queried here so a misconfigured job dies at setup rather than at the first forward.
     if config.cp > 1:
-        cp_model_cls = custom_vlm_cls or get_custom_causal_lm_cls(model_config)
+        cp_model_cls = implementation_cls or custom_vlm_cls or get_custom_causal_lm_cls(model_config)
         cp_blocker = cp_model_cls.cp_blocker(model_config, config.cp)
         if cp_blocker is not None:
             raise ValueError(f"{model_config.model_type!r} cannot train with context parallelism: {cp_blocker}")
@@ -407,7 +436,7 @@ def get_model(
         )
 
     with device:
-        model_cls = custom_vlm_cls or AutoModelForCausalLMPrimeRL
+        model_cls = implementation_cls or custom_vlm_cls or AutoModelForCausalLMPrimeRL
 
         load_model_start_time = time.perf_counter()
         if device == torch.device("meta"):
@@ -649,6 +678,34 @@ def initialize_from_scratch(model: nn.Module) -> None:
         raise RuntimeError(f"The init of {type(model).__name__} does not initialize {uninitialized}")
 
 
+@torch.no_grad()
+def init_missing_weights(model: PreTrainedModelPrimeRL, missing: dict[str, Tensor], import_path: str) -> None:
+    """Fill `missing`, the state-dict entries the checkpoint lacks, with the weights the model's
+    ``init_missing_weights`` returns for them. `import_path` names the class in the errors and the log."""
+    method = f"{import_path}.init_missing_weights"
+    weights = model.init_missing_weights(list(missing))
+    if weights.keys() != missing.keys():
+        raise RuntimeError(
+            f"The checkpoint lacks {sorted(missing)} and {method} returned {sorted(weights)}: "
+            "the method must return exactly those that the class adds, and the checkpoint must hold the others"
+        )
+    for name, target in missing.items():
+        weight = weights[name]
+        if weight.shape != target.shape:
+            raise ValueError(
+                f"{method} returned {name} with shape {tuple(weight.shape)}, the parameter has {tuple(target.shape)}"
+            )
+        if isinstance(weight, DTensor):
+            weight = weight.full_tensor()
+        weight = weight.to(device=target.device, dtype=target.dtype)
+        if isinstance(target, DTensor):
+            # Every rank takes its shard of rank 0's weight, so the ranks agree on a parameter even with a random init.
+            weight = distribute_tensor(weight, target.device_mesh, target.placements).to_local()
+            target = target.to_local()
+        target.copy_(weight)
+    get_logger().warning(f"The checkpoint lacks {sorted(missing)}, set by {method}")
+
+
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     device = "cuda"
     model.to_empty(device=device)
@@ -732,12 +789,21 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
             f"{type(model).__name__} sets tie_word_embeddings but its lm_head does not share the input embedding weight"
         )
         state_dict.pop("lm_head.weight")
+    missing: dict[str, Tensor] = {}
+    if config.implementation is not None:
+        # The class may add parameters that the checkpoint lacks: it gives their weights after the load.
+        checkpoint_keys = set(load_state_dict_keys(snapshot_path))
+        # A packed parameter's logical weights stay in the strict load: the write-back below needs them all.
+        checkpoint_keys.update(name for packed in get_model_packed_parameters(model) for name in packed.logical_fqns)
+        missing = {name: state_dict.pop(name) for name in list(state_dict) if name not in checkpoint_keys}
     dcp_load(
         state_dict,
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
         process_group=get_dcp_group(),
     )
     write_back_loaded_packed_parameters(model, state_dict)
+    if missing:
+        init_missing_weights(model, missing, config.implementation.import_path)
 
     logger.debug(f"Loaded weights using HF DCP in {format_time(time.perf_counter() - load_dcp_start_time)}")
 
