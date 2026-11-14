@@ -38,3 +38,17 @@ def test_chunked_step_matches_plain_step():
     assert all(torch.equal(param, ref) for param, ref in zip(params, reference))
     assert optimizer.param_groups[0]["step"] == plain.param_groups[0]["step"] == 2
     assert optimizer.param_groups[0]["params"] == params
+
+
+def test_group_without_gradients_still_steps():
+    # Group-level state (e.g. Muon's step count) advances as with a plain step
+    params, frozen = [torch.nn.Parameter(torch.randn(4))], [torch.nn.Parameter(torch.randn(4))]
+    params[0].grad = torch.ones(4)
+    optimizer = ChunkedSGD([{"params": params}, {"params": frozen}], lr=0.1)
+    plain = CountingSGD([{"params": params}, {"params": frozen}], lr=0.1)
+    optimizer.update_hook = lambda chunk: lambda: None
+    optimizer.step()
+    plain.step()
+    assert (
+        [group["step"] for group in optimizer.param_groups] == [group["step"] for group in plain.param_groups] == [1, 1]
+    )

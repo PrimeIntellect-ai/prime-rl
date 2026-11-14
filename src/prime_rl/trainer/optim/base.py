@@ -39,6 +39,10 @@ class ChunkedUpdates:
                     chunks[-1] += params
                     numel += unit_numel
                 stepped = group
+                if not chunks[0]:
+                    # No parameter of the group has a gradient: step it anyway, as a plain step would
+                    self.param_groups = [group]
+                    super().step()
                 for chunk in filter(None, chunks):
                     # Every chunk steps a copy of the group, so per-group state (e.g. Muon's step count) advances once
                     stepped = {**group, "params": chunk}
