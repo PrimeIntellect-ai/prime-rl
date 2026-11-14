@@ -8,6 +8,7 @@ from torch.distributed.tensor import DTensor
 from torch.optim import AdamW, Optimizer
 
 from prime_rl.trainer.optim.base import OffloadOptimizer
+from prime_rl.trainer.utils import empty_pinned
 from prime_rl.utils.logger import get_logger
 
 # Byte budget of one staging chunk. A single state larger than this gets a chunk of its own.
@@ -224,7 +225,7 @@ class CPUOffloadOptimizer(OffloadOptimizer):
     def _offload_to_cpu(self, param: torch.Tensor, key: str, src: torch.Tensor) -> torch.Tensor:
         buffer = self._cpu_buffers.get((param, key))
         if buffer is None or buffer.shape != src.shape or buffer.dtype != src.dtype:
-            buffer = torch.empty(src.shape, dtype=src.dtype, device="cpu", pin_memory=True)
+            buffer = empty_pinned(src.shape, src.dtype)
             self._cpu_buffers[(param, key)] = buffer
         if buffer is not src:
             buffer.copy_(src, non_blocking=True)
