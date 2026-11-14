@@ -149,6 +149,8 @@ def rl_init_from_process(
         (run_dir / "checkpoints" / "step_5").as_posix(),
         "--trainer.optim.lr",
         "0",
+        "--orchestrator.train.algo.type",
+        "debug",
         "--monitors.wandb.project",
         wandb_project,
         "--monitors.wandb.name",
