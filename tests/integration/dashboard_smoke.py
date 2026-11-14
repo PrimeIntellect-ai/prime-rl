@@ -21,15 +21,6 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
-def _install_browser() -> None:
-    subprocess.run(
-        ["uv", "run", "playwright", "install", "--with-deps", "--only-shell", "chromium"],
-        check=True,
-        capture_output=True,
-        timeout=600,
-    )
-
-
 def _check_model_call_errors(page) -> None:
     call_index = page.evaluate(
         """() => {
@@ -93,7 +84,6 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
     """Serve ``output_dir`` and assert the dashboard renders the run end to end."""
     from playwright.sync_api import sync_playwright
 
-    _install_browser()
     port = _free_port()
     server = subprocess.Popen(
         ["uv", "run", "dashboard", output_dir.as_posix(), "--isolated", "--port", str(port)],
