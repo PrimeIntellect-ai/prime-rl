@@ -1682,3 +1682,13 @@ def test_engine_targets_warn_that_they_must_cover_the_trainers_experts(quantizat
                 "inference": {"vllm": engines},
             }
         )
+
+
+def test_a_quantized_remainder_leaves_the_engines_to_the_user():
+    compute = {"type": "deepgemm_fp8", "apply_to": "80%", "remainder": "mxfp8"}
+    with pytest.warns(UserWarning, match="mixed expert precisions"):
+        config = RLConfig.model_validate(
+            {"trainer": {"model": {"moe": {"compute": compute}}}, "orchestrator": {}, "inference": {"vllm": {}}}
+        )
+    assert config.inference.vllm.quantization is None
+    assert TrainerModelConfig.model_validate({"moe": {"compute": compute}}).moe.compute.remainder == "mxfp8"

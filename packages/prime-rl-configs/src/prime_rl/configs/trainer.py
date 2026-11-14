@@ -156,8 +156,12 @@ class MoEComputeConfigBase(BaseConfig):
     apply_to: str | list[Annotated[int, Field(ge=0, strict=True)]] = "all"
     """Model layers to use this backend for: ``"all"``, a percentage such as ``"85%"``,
     or zero-based layer indices such as ``[0, 1, 2]``. Percentages select the first fraction
-    of model layers, rounded down. Other expert groups use BF16 compute and transport.
+    of model layers, rounded down. The other MoE layers run ``remainder``.
     """
+
+    remainder: Literal["bf16", "mxfp8"] = "bf16"
+    """Expert compute of the MoE layers outside ``apply_to``: BF16 (default), or MXFP8 (SM100) for a higher-precision
+    tail cheaper than BF16, such as the last layers of a lower-precision run."""
 
     @field_validator("apply_to")
     @classmethod
