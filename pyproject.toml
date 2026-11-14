@@ -31,6 +31,7 @@ dependencies = [
     "uvloop>=0.21.0",
     "verifiers[harbor]>=0.4.1",
     "renderers[multimodal]>=0.2.0",
+    "pillow>=13.0.0",
     "pybase64>=1.4.2",
     "msgspec>=0.18",
     "fastapi>=0.115",
