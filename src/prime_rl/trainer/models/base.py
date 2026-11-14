@@ -175,6 +175,16 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         """
         return state_dict
 
+    def init_missing_weights(self, names: list[str]) -> dict[str, Tensor]:
+        """The whole weight of each entry of `names` that the class adds. `names` holds the state-dict entries the
+        checkpoint at ``model.name`` lacks; one that is not the class's own means a truncated checkpoint, so leave
+        it out, which fails the load. The default returns none.
+
+        Called on every rank once the checkpoint's weights are loaded, so it may read them (under FSDP a parameter
+        is a DTensor: ``full_tensor()``). Not called on a resume or with ``model.init_from``. A buffer must come out
+        the same on every rank."""
+        return {}
+
     def init_buffers_post_meta(self) -> None:
         """
         Initialize buffers that are not in the state dict after loading with meta device.
