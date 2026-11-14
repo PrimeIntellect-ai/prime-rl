@@ -15,7 +15,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
-from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
+from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager, setup_model_files
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
@@ -58,6 +58,7 @@ from prime_rl.trainer.model import (
     get_global_moe_stats,
     is_tt_moe_model,
     setup_model,
+    setup_tokenizer,
     take_moe_routing_stats,
 )
 from prime_rl.trainer.moe_runtime import setup_moe_comm_env
@@ -170,7 +171,14 @@ def train(config: TrainerConfig):
     # Check for checkpoint to resume from
     checkpoint_step = None
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt, resume=config.resume)
+    tokenizer = setup_tokenizer(config.tokenizer)
+    processor = None
+    if config.model.vlm is not None:
+        processor = setup_processor(config.model)
+        if processor is None:
+            raise ValueError("Multimodal training requires a model image processor")
+    model_files = setup_model_files(config.model, tokenizer, processor)
+    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt, model_files, resume=config.resume)
 
     if config.resume is not None:
         if config.resume.dir is not None:
@@ -194,9 +202,6 @@ def train(config: TrainerConfig):
     if config.model.vlm is not None:
         if not getattr(model, "supports_packed_multimodal_training", False):
             raise ValueError("Packed multimodal training requires model support")
-        processor = setup_processor(config.model)
-        if processor is None:
-            raise ValueError("Multimodal training requires a model image processor")
         materialize_images = partial(model.materialize_images, processor=processor)
     # A custom loss may put gradient on any token, so only the built-in losses take the sparse head backward
     sparse_backward_allowed = config.loss.type != "custom"

@@ -1,6 +1,7 @@
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import NamedTuple
+from unittest.mock import Mock
 
 import dion
 import pytest
@@ -11,7 +12,7 @@ from torch.distributed.checkpoint import save as dcp_save
 from torch.optim import Optimizer
 
 from prime_rl.configs.trainer import CheckpointConfig
-from prime_rl.trainer.ckpt import AppState, CheckpointManager, PinnedStager, Progress
+from prime_rl.trainer.ckpt import AppState, CheckpointManager, ModelFiles, PinnedStager, Progress
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 from prime_rl.trainer.utils import get_dcp_group
 
@@ -155,7 +156,7 @@ def test_offloaded_async_save_writes_after_it_returned(tmp_path) -> None:
         model = make_model(0)
         optimizer = CPUOffloadOptimizer(torch.optim.AdamW(model.parameters(), lr=1e-2))
         run_steps(model, optimizer, num_steps=1, seed=1)
-        manager = CheckpointManager(tmp_path, CheckpointConfig(async_save=True))
+        manager = CheckpointManager(tmp_path, CheckpointConfig(async_save=True), Mock(spec=ModelFiles))
         manager.stager = PinnedStager()
         manager.write_group = dist.new_group(backend="gloo")
         manager.writer = ThreadPoolExecutor(max_workers=1)
