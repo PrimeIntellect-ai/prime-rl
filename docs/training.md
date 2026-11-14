@@ -510,10 +510,16 @@ A resume can add, remove or change train and eval sources.
 
 Every type works with every entrypoint, and a `[model.init]` table without `type` keeps the entrypoint's default. `ckpt` loads only the weights: the run starts at step 0 with a fresh optimizer, scheduler and data. To continue a run with its optimizer, scheduler and data state, use `[resume]` instead, or `--resume.dir` to fork another run of the same kind (see [Resuming a Run](#resuming-a-run)). A model without a from-scratch init fails at startup with `scratch`, naming the parameters its init does not reach. The renderer cannot be picked from a step directory, so a `ckpt` run sets it explicitly; inference's `"auto"` tool-call and reasoning parsers try `tokenizer.name` first, so setting it to the HF model name keeps them.
 
+With a type other than `hf`, the inference server (RL, SFT online evals) starts without weights (`inference.vllm.load_format = "dummy"`) and receives the trainer's at startup, so LoRA requires `hf`. An explicit `inference.vllm.load_format` wins: `scratch` with an HF model name and `load_format = "auto"` keeps the pretrained weights for modules the trainer does not send. Under a dummy-loaded server, a speculative draft with its own `model` still loads from disk; a `draft_model` draft, which vLLM loads with the target's load format, and a draft that reads its weights from `model.name` (MTP, DSpark without a `model`) fail validation. In RL, set `name` and `init` in the shared `[model]`.
+
 ```bash
 # SFT from a pretraining checkpoint
 uv run sft @ sft.toml --model.name outputs/my-pretrain/checkpoints/step_5000 --model.init.type ckpt \
   --renderer.name qwen3
+
+# RL from an SFT checkpoint
+uv run rl @ rl.toml --model.name outputs/my-sft/checkpoints/step_500 --model.init.type ckpt \
+  --orchestrator.renderer.name qwen3
 ```
 
 ### Pausing or Checkpointing a Live Run
