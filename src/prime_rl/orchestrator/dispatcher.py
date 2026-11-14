@@ -167,6 +167,7 @@ class Dispatcher:
         unconsumed_train_rollouts: Callable[[], int] | None = None,
         batch_size: Callable[[], int] | None = None,
         trainer_rate: Callable[[], float | None] | None = None,
+        shipped_train_rollouts: Callable[[], int] | None = None,
     ) -> None:
         self.policy = policy
         self.policy_weights_change = policy_weights_change
@@ -189,11 +190,12 @@ class Dispatcher:
         self.on_pause = on_pause
         self.on_resume = on_resume
         # The consumer's finished train rollouts of complete groups not taken yet (``out_q`` excluded), the live
-        # batch size, and the rollouts per second the trainer takes while it is the bottleneck (else None); all
-        # unset without a trainer
+        # batch size, the rollouts per second the trainer takes while it is the bottleneck (else None), and the train
+        # rollouts shipped to it so far; all unset without a trainer
         self.unconsumed_train_rollouts = unconsumed_train_rollouts
         self.batch_size = batch_size
         self.trainer_rate = trainer_rate
+        self.shipped_train_rollouts = shipped_train_rollouts
         # Rollouts of the train episodes waiting in ``out_q``, and of every train episode finished so far
         self.queued_train_rollouts = 0
         self.finished_train_rollouts = 0
@@ -283,13 +285,22 @@ class Dispatcher:
         return max(0, waiting - BUFFERED_BATCHES * self.batch_size())
 
     @property
+    def shipped_share(self) -> float:
+        """The share of finished train rollouts that reach the trainer: failed, filtered and zero-advantage ones never
+        ship. Low while batches still fill, so the error leans towards keeping the trainer fed."""
+        shipped = self.shipped_train_rollouts() if self.shipped_train_rollouts is not None else 0
+        finished = self.finished_train_rollouts
+        return min(shipped / finished, 1.0) if finished and shipped else 1.0
+
+    @property
     def trainer_target(self) -> float | None:
         """Train episodes in flight that keep a bottlenecked trainer fed, by Little's law: the rollouts per second it
-        takes times the generation lifetime, plus ``TRAINER_MARGIN``. None while the trainer is not the bottleneck."""
+        takes over the share of finished rollouts that ship, times the generation lifetime, plus ``TRAINER_MARGIN``.
+        None while the trainer is not the bottleneck."""
         rate = self.trainer_rate() if self.trainer_rate is not None else None
         if rate is None or self.generation_s is None:
             return None
-        return (1 + TRAINER_MARGIN) * rate * self.generation_s
+        return (1 + TRAINER_MARGIN) * rate / self.shipped_share * self.generation_s
 
     def train_admission_open(self) -> bool:
         """Whether a train group may open: held permits count against the cap and against the trainer target."""
@@ -964,6 +975,7 @@ class Dispatcher:
             "dispatcher/inflight/eval": float(self.inflight_eval_count),
             "dispatcher/held_permits": float(self.held_permits),
             "dispatcher/trainer_target": self.trainer_target or 0.0,
+            "dispatcher/shipped_share": self.shipped_share,
             "dispatcher/queued/eval": float(self.queued_eval_examples),
             "dispatcher/mode": float(self.mode == DispatcherMode.PREFER_EVAL),
         }
