@@ -493,6 +493,12 @@ class ModelConfig(BaseModelConfig):
                 raise ValueError("NVFP4 expert compute does not support LoRA.")
             if self.compile is not None and self.compile.fullgraph:
                 raise ValueError("NVFP4 expert compute requires compile.fullgraph=false.")
+            if self.quantization is not None:
+                if not isinstance(self.quantization, MXFP8Config):
+                    raise ValueError("NVFP4 experts pair only with mxfp8 dense layers (model.quantization).")
+                # The recipe keeps shared experts in BF16, whatever the entry point (RL, SFT)
+                if SHARED_EXPERTS_PATTERN not in self.quantization.extra_ignore_patterns:
+                    self.quantization.extra_ignore_patterns.append(SHARED_EXPERTS_PATTERN)
         compute = self.moe.compute
         dispatch = self.moe.dispatch
         if isinstance(dispatch, MegaMoeMoEDispatchConfig):

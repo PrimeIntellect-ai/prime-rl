@@ -529,7 +529,7 @@ class RLConfig(BaseConfig):
         vLLM can: online ``nvfp4_per_token`` experts (FlashInfer TRTLLM) on the same layers, the MXFP8 tail through
         online targets, IEEE division and 4/6 on activations; ``rl`` warns about what still differs."""
         from prime_rl.configs.inference import MoENVFP4Config
-        from prime_rl.configs.trainer import SHARED_EXPERTS_PATTERN, MXFP8Config, NVFP4MoEComputeConfig
+        from prime_rl.configs.trainer import NVFP4MoEComputeConfig
 
         model = self.trainer.model
         compute = model.moe.compute
@@ -537,13 +537,8 @@ class RLConfig(BaseConfig):
             return self
         if "enable_router_replay" not in self.trainer.model_fields_set:
             self.trainer.enable_router_replay = True
-        linear = None
-        if model.quantization is not None:
-            if not isinstance(model.quantization, MXFP8Config):
-                raise ValueError("NVFP4 experts pair only with mxfp8 dense layers (trainer.model.quantization).")
-            linear = "mxfp8"
-            if SHARED_EXPERTS_PATTERN not in model.quantization.extra_ignore_patterns:
-                model.quantization.extra_ignore_patterns.append(SHARED_EXPERTS_PATTERN)
+        # Dense layers are MXFP8 or BF16 (model config), shared experts BF16
+        linear = "mxfp8" if model.quantization is not None else None
         if self.inference is None:
             return self
         gaps = [

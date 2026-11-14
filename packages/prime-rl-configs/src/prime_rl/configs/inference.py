@@ -501,8 +501,8 @@ class MoENVFP4Config(BaseConfig):
 
 
 def _experts_pattern(layers: list[int]) -> str:
-    """vLLM's routed-experts modules of ``layers``."""
-    return r"re:(.*\.)?layers\.(" + "|".join(str(index) for index in layers) + r")\.mlp\.experts$"
+    """vLLM's routed-experts modules of ``layers``, under any block name (``mlp``, ``block_sparse_moe``, ``mixer``)."""
+    return r"re:(.*\.)?layers\.(" + "|".join(str(index) for index in layers) + r")\.(.*\.)?experts$"
 
 
 class InferenceConfig(BaseConfig):
@@ -742,7 +742,8 @@ class InferenceConfig(BaseConfig):
 
     def moe_layers(self) -> list[int] | None:
         """The served model's MoE decoder layer indices, from its HF config (local cache or Hub), by the usual
-        dense-layer fields (``first_k_dense_replace``, ``moe_layer_freq``, ``decoder_sparse_step``,
+        per-layer types (``mlp_layer_types``; Nemotron-H's ``layers_block_type`` / ``hybrid_override_pattern``) or
+        the usual dense-layer fields (``first_k_dense_replace``, ``moe_layer_freq``, ``decoder_sparse_step``,
         ``mlp_only_layers``, ``interleave_moe_layer_step``). None if unreadable."""
         try:
             from transformers import AutoConfig
@@ -754,6 +755,13 @@ class InferenceConfig(BaseConfig):
             return None
         config = getattr(config, "text_config", None) or config
         num_layers = getattr(config, "num_hidden_layers", None)
+        types = (
+            getattr(config, "mlp_layer_types", None)
+            or getattr(config, "layers_block_type", None)
+            or list(getattr(config, "hybrid_override_pattern", None) or "")
+        )
+        if types:
+            return [index for index, kind in enumerate(types[:num_layers]) if kind in ("sparse", "moe", "E")]
         if num_layers is None:
             return None
         first_dense = getattr(config, "first_k_dense_replace", None) or 0
