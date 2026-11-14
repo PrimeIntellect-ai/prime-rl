@@ -156,7 +156,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
             raise ValueError(
                 "Mega MoE dispatch requires an expert-parallel group (model.ep > 1); it has no single-rank mode."
             )
-        # Mega MoE fuses the expert compute into dispatch, so `model.moe.compute` does not apply to it.
+        # Mega MoE fuses the expert compute into dispatch and runs every MoE layer, in `model.moe.compute`'s precision
         selected_moes = set(moe_layers)
         selected_compute = _resolve_mega_moe_compute(
             moe_layers[0], dispatch, config.moe.compute, ep_mesh.get_group(), config.dp_replicate
