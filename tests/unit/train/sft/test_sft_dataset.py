@@ -1,4 +1,5 @@
 import json
+import pickle
 from collections import Counter
 
 import pytest
@@ -9,7 +10,7 @@ from renderers.base import MultiModalData, PlaceholderRange, RenderedTrainingSam
 from transformers import AutoTokenizer
 
 import prime_rl.trainer.sft.data as sft_data
-from prime_rl.trainer.data import CatDataset
+from prime_rl.trainer.data import CatDataset, StatefulIterableDataset, cat_collate
 from prime_rl.trainer.sft.data import SFTDataset, _drop_null_fields
 from prime_rl.trainer.utils import print_sample
 
@@ -489,6 +490,61 @@ def test_cat_dataset_packs_text_and_multimodal_samples_together():
     assert text_pack["seq_lens"] == [6]
     assert text_pack["mm_kwargs"] is None
     assert text_pack["mm_token_type_ids"] is None
+
+
+class _ListDataset(StatefulIterableDataset):
+    def __init__(self, samples: list[dict]):
+        super().__init__()
+        self.samples = samples
+
+    def __iter__(self):
+        while self.step < len(self.samples):
+            self.step += 1
+            yield self.samples[self.step - 1]
+
+
+def test_cat_dataset_keeps_sample_data_in_pack_order():
+    samples = [
+        {**_sft_sample([1, 2]), "sample_data": "a"},
+        {**_sft_sample([3]), "sample_data": "b"},
+        {**_sft_sample([4, 5, 6]), "sample_data": "c"},
+        {**_sft_sample([7]), "sample_data": "d"},
+    ]
+
+    first, second = CatDataset(samples, seq_len=4, pad_to_multiple_of=1)
+
+    assert first["input_ids"] == [1, 2, 3]
+    assert first["sample_data"] == ["a", "b"]
+    assert second["input_ids"] == [4, 5, 6, 7]
+    assert second["sample_data"] == ["c", "d"]
+    assert cat_collate([first])["sample_data"] == ["a", "b"]
+
+
+def test_cat_dataset_resumes_a_pending_sample_with_its_sample_data():
+    samples = [
+        {**_sft_sample([1, 2]), "sample_data": "a"},
+        {**_sft_sample([3, 4, 5]), "sample_data": "b"},
+        {**_sft_sample([6]), "sample_data": "c"},
+    ]
+    dataset = CatDataset(_ListDataset(samples), seq_len=4, pad_to_multiple_of=1)
+
+    assert next(iter(dataset))["sample_data"] == ["a"]
+    state = pickle.loads(pickle.dumps(dataset.state_dict()))
+    assert state["pending_sample"]["sample_data"] == "b"
+
+    resumed = CatDataset(_ListDataset(samples), seq_len=4, pad_to_multiple_of=1)
+    resumed.load_state_dict(state)
+    (packed,) = resumed
+
+    assert packed["input_ids"] == [3, 4, 5, 6]
+    assert packed["sample_data"] == ["b", "c"]
+
+
+def test_cat_dataset_refuses_to_truncate_a_sample_with_sample_data():
+    dataset = CatDataset([{**_sft_sample([1, 2, 3, 4, 5]), "sample_data": "a"}], seq_len=4, pad_to_multiple_of=1)
+
+    with pytest.raises(ValueError, match="Cannot truncate a sample that carries sample_data"):
+        next(iter(dataset))
 
 
 CUSTOM_RENDERER_SOURCE = """

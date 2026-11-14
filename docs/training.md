@@ -17,6 +17,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [Launch](#launch-1)
   - [SFT-Specific Knobs](#sft-specific-knobs)
   - [Custom Loss](#custom-loss)
+  - [System One Data](#system-one-data)
   - [Important Metrics](#important-metrics-1)
 - [Pretraining](#pretraining)
 - [Checkpointing](#checkpointing)
@@ -203,7 +204,7 @@ The trainer warns when batch wait time exceeds active trainer time. Add inferenc
 
 ### Dataset Format
 
-Two accepted layouts:
+Two accepted layouts for chat data (for decision models, see [System One Data](#system-one-data)):
 
 - **Prompt-completion**: a HF dataset with `prompt` and `completion` columns ([TRL format](https://huggingface.co/docs/trl/en/dataset_formats#prompt-completion)). The trainer masks out the prompt and computes loss only over the completion.
 - **Messages**: a HF dataset with a single `messages` column containing a list of chat turns. The trainer interprets the whole conversation as one sample, applies role-based loss masking, and trains over all assistant turns.
@@ -251,7 +252,7 @@ clear_thinking = true
 
 The same config selects the renderer for RL under `[orchestrator.renderer]`. The [`renderers` README](https://github.com/PrimeIntellect-ai/renderers#custom-renderers) shows the class behind this example.
 
-**Renderer-backed tokenization.** SFT tokenization is renderer-only. The [`renderers`](algorithms.md#renderers) package owns message-to-token conversion and loss attribution end-to-end, so position-dependent chat templates (for example templates that strip past `<think>` blocks across user turns) do not corrupt the loss mask. `[renderer]` defaults to `name = "auto"`; set a typed renderer config only when you need model-specific template controls. Hand-coded renderers ship for Qwen3, Qwen3.5, Qwen3.8, GLM-5, GLM-4.5, Kimi K2/K2.5, MiniMax M2, DeepSeek V3, Nemotron 3, GPT-OSS, and VLM families such as Qwen3-VL/Qwen3.5/Qwen3.8.
+**Renderer-backed tokenization.** Chat SFT tokenization is renderer-only. The [`renderers`](algorithms.md#renderers) package owns message-to-token conversion and loss attribution end-to-end, so position-dependent chat templates (for example templates that strip past `<think>` blocks across user turns) do not corrupt the loss mask. `[renderer]` defaults to `name = "auto"`; set a typed renderer config only when you need model-specific template controls. Hand-coded renderers ship for Qwen3, Qwen3.5, Qwen3.8, GLM-5, GLM-4.5, Kimi K2/K2.5, MiniMax M2, DeepSeek V3, Nemotron 3, GPT-OSS, and VLM families such as Qwen3-VL/Qwen3.5/Qwen3.8.
 
 **VLM training requires a custom PrimeRL implementation.** Training a model with `[model.vlm]` set (SFT or RL) only works for models with a registered PrimeRL VLM class: Qwen3.5 dense and MoE, and Qwen3.8 Flash Next (`qwen4_exp`, text and images). See the [multimodal examples](../examples/extra/vlm/README.md) for SFT and multi-node image RL configurations.
 
@@ -318,9 +319,12 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 
 | Knob | What it controls |
 |---|---|
+| `data.type` | What a row is: `"sft"` (chat rows, the default), `"system_one"` (records for decision models; see [System One Data](#system-one-data)) or `"fake"` (generated tokens) |
 | `data.name` | HF dataset name or local path |
 | `data.batch_size` | Tokens per trainer step (packed) |
-| `data.seq_len` | Per-sample sequence length |
+| `data.seq_len` | Per-sample sequence length; with System One data, also the most tokens a record may have |
+| `data.columns.*` | Dataset column names, when they differ from the defaults: chat columns for `"sft"`, record columns for `"system_one"` |
+| `data.encoder.import_path` | With System One data: the `SystemOneEncoder` subclass that turns a record into tokens, attention segments and read spans; `data.encoder.kwargs` are its keyword arguments |
 | `loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |
 | `val.interval` | Run validation every N steps; `val.data` mirrors `data` |
 | `eval.interval` | Run online evals every N steps; see [Online Evals](#online-evals) |
@@ -330,7 +334,7 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 
 ### Custom Loss
 
-`[loss]` selects the SFT trainer's loss: token cross-entropy (`type = "ce"`, the default) or, with `type = "custom"`, a loss function of yours in its place. The samples are stock SFT's: the chat rendered per `data.columns` and `[loss_mask]`, shifted for next-token prediction. Shuffling, rank sharding, epochs, resume, packing, normalization, clipping, validation and checkpointing stay the trainer's. The loss is computed **per micro-batch** on the backbone's final hidden states: the function returns a summed loss and the count it averages over, and the trainer divides by the global count across ranks and micro-batches, as it does with the token count for cross-entropy. This is the SFT counterpart of the RL [custom loss](algorithms.md#custom-loss), a function called as `my_loss(inputs, **kwargs)` with the config's `kwargs`, except that it returns a summed loss with its count, and its metrics are summed and divided by the global count rather than averaged per sequence.
+`[loss]` selects the SFT trainer's loss: token cross-entropy (`type = "ce"`, the default) or, with `type = "custom"`, a loss function of yours in its place. The samples are stock SFT's: the chat rendered per `data.columns` and `[loss_mask]`, shifted for next-token prediction (or, with [System One data](#system-one-data), records with read spans and per-question targets). Shuffling, rank sharding, epochs, resume, packing, normalization, clipping, validation and checkpointing stay the trainer's. The loss is computed **per micro-batch** on the backbone's final hidden states: the function returns a summed loss and the count it averages over, and the trainer divides by the global count across ranks and micro-batches, as it does with the token count for cross-entropy. This is the SFT counterpart of the RL [custom loss](algorithms.md#custom-loss), a function called as `my_loss(inputs, **kwargs)` with the config's `kwargs`, except that it returns a summed loss with its count, and its metrics are summed and divided by the global count rather than averaged per sequence.
 
 ```python
 # my_module.py
@@ -375,6 +379,115 @@ class LossOutputs:
 ```
 
 The loss runs inside the model's forward pass, where stock SFT computes its cross-entropy, so it can call any module of the model, such as the LM head through `token_logprobs` above (one call per micro-batch: with a trainable LM head, each call of the fused head's summed cross-entropy keeps a weight-sized gradient buffer until backward, and on an untied model each further call re-gathers the head in backward; keep further calls independent of each other's outputs). Call modules rather than reading their weights: FSDP gathers a unit's parameters while its modules run, so a weight read directly can be a shard (a decoder layer's or, on an untied model, the embedding's). A trainable module belongs to the model, since the optimizer, rank sync and checkpoints see only the model's parameters. Call the same trainable modules on every micro-batch of a step: with `model.dp_replicate > 1` (HSDP) the gradients are all-reduced over the replicas once, after the step's last backward, so a module called only on an earlier micro-batch gets no gradient or fails that backward. `count` is an integer; metrics are scalar tensors with the same names on every call; with a global count of 0 the step's gradients are zeroed (the optimizer still applies weight decay and momentum). Not supported with context parallelism, VLM training or `model.offload = "full"`.
+
+### System One Data
+
+`[data] type = "system_one"` trains a decision model: a model that answers typed questions about a state with a distribution over each question's options, read from hidden states at chosen tokens instead of generated as text. A row is a System One record: a state, its questions and their labels. prime-rl parses the record and turns the labels into one target per question, an encoder of yours turns the record into tokens, and a [custom loss](#custom-loss) of yours compares the model's output with the targets. Loading, mixing subsets and splits, shuffling, packing, resume, validation and checkpointing are the SFT trainer's, as for chat data.
+
+**Prepare the records.** prime-rl does not convert datasets; you write the HF dataset. Its columns are `state`, `questions`, and `label` and/or `soft_label`, plus an optional `id` that names the record in warnings and errors (the row index when absent). All but `id` are string columns of JSON text (write them with `json.dumps`), so a text state is a JSON string; a label column that is null in every row counts as absent. A dataset that stores them under other names maps them in `[data.columns]`, e.g. `state = "ticket"`. One row:
+
+```text
+id          r
+state       "Checkout fails."
+questions   {"outage":  {"type": "noul",   "instructions": "Is a service down?", "criteria": {"true": "A service is down."}},
+             "team":    {"type": "choice", "instructions": "Who handles it?",    "criteria": {"technical": "Bugs", "billing": null}},
+             "urgency": {"type": "score",  "instructions": "How urgent?",        "criteria": ["Can wait", "This week", "Today"]}}
+label       {"outage": true, "urgency": 2}
+soft_label  {"team": {"technical": 0.75, "billing": 0.25}}
+```
+
+`questions` maps each question id to its `type`, `instructions` and `criteria`. `label` maps question ids to hard labels, and `soft_label` maps them to a probability for every option. A question's target is its soft label if it has one, else its hard label one-hot, in the order of its options; a question with neither is not trained.
+
+| `type` | `criteria` | Options, in order | Hard label | Target in the example |
+|---|---|---|---|---|
+| `noul` (yes or no) | optional: a description of `true` and/or `false` | `false`, `true` | `true` or `false` | `outage`: `[0, 1]` |
+| `choice` | option id → description or null, 1 to 255 options | the option ids as given | an option id | `team`: `[0.75, 0.25]` |
+| `score` | a list of 2 to 10 level descriptions | `0` … `n-1` | a level | `urgency`: `[0, 0, 1]` |
+
+**Write an encoder.** The encoder decides what the model sees: the text, how it splits into attention segments, and which tokens the model's head reads for each question. prime-rl ships none, since the encoder must match the head; it lives in your package as a subclass of `SystemOneEncoder`. It never sees labels.
+
+```python
+# my_pkg/encoder.py
+import json
+
+from prime_rl.trainer.sft.system_one.data import EncodedRecord, SystemOneEncoder
+from prime_rl.trainer.sft.system_one.record import SystemOneRecord
+
+
+class MyEncoder(SystemOneEncoder):
+    """One prompt per question; the head reads each prompt's last token."""
+
+    def __call__(self, record: SystemOneRecord, max_tokens: int) -> EncodedRecord | None:
+        input_ids, seq_lens, reads = [], [], []
+        state = json.dumps(record.state)
+        for question in record.questions:  # .id, .type, .instructions, .criteria, .options, .descriptions
+            options = ", ".join(question.options)
+            prompt = f"State: {state}\nQuestion: {question.instructions}\nOptions: {options}\nAnswer:"
+            ids = self.tokenizer.encode(prompt)
+            input_ids += ids
+            seq_lens.append(len(ids))  # one attention segment per prompt
+            reads.append([(len(input_ids) - 1, len(input_ids))])  # this question's [start, end) spans
+        return EncodedRecord(input_ids=input_ids, seq_lens=seq_lens, reads=reads)
+```
+
+- **Lifetime.** The encoder is built in the main process as `MyEncoder(tokenizer, **kwargs)` with the run's tokenizer and `[data.encoder.kwargs]`, at startup and again at each validation; a subclass with its own arguments passes the tokenizer to `super().__init__`. It is copied into every dataloader worker, so keep `__init__` cheap and create heavy state on first call, and it must be deterministic so that a resumed run reads the same samples.
+- **Input.** `record.state` and each question's `instructions` and `criteria` are the decoded JSON; `question.options` are the option ids in the order of the table, and `question.descriptions` their descriptions (`None` where there is none). `max_tokens` is `data.seq_len`: an encoder may shorten its own content to fit, or return `None` to skip the record. prime-rl never truncates a record.
+- **Output.** `input_ids`, `seq_lens`, `reads`, and optionally `options`: per question, the option ids in the order of the head's logits when that is not the order of the table (prime-rl reorders the targets to match). prime-rl checks every encoding against the `EncodedRecord` contract and raises on a violation.
+
+**Configure.** `data.name`, `[data.encoder]` and a custom loss are required:
+
+```toml
+[model]
+name = "my-org/my-decision-model"
+
+[model.implementation]            # optional: a model class with an added head
+import_path = "my_pkg.model.MyDecisionModel"
+
+[data]
+type = "system_one"
+name = "my-org/tickets-system-one"
+seq_len = 4096
+batch_size = 32
+
+[data.encoder]
+import_path = "my_pkg.encoder.MyEncoder"
+
+[loss]
+type = "custom"
+import_path = "my_pkg.loss.decision_loss"
+
+[val]                             # optional
+interval = 500
+
+[val.data]                        # type follows [data]; nothing else is copied
+name = "my-org/tickets-system-one"
+splits = ["validation"]
+seq_len = 4096                    # must equal data.seq_len
+
+[val.data.encoder]                # must equal [data.encoder]
+import_path = "my_pkg.encoder.MyEncoder"
+```
+
+- **Segments.** Each `seq_lens` entry is one attention segment: attention and positions restart at its first token. Records are packed back to back into rows of up to `seq_len * micro_batch_size` tokens, without padding, and no segment spans two records. `data.batch_size` counts budgets of `seq_len` tokens (up to `batch_size` x `seq_len` tokens per step), not records or questions.
+- **Reads.** `loss_mask` is true on every token of every read span and false elsewhere. There is no next-token shift and `target_ids` is all zeros, so token cross-entropy is refused: `[loss] type = "custom"` is required, with [its limits](#custom-loss).
+- **What the loss receives.** `inputs.batch["sample_data"]` holds one dict per record of the row, in row order. A record starts at the sum of the earlier records' `num_tokens`, and its `reads` count from there. `target` follows `options`, and is `None` for an unlabelled question, which the loss leaves out of its `count`. `inputs.hidden_states[inputs.batch["loss_mask"]]` is every read token of the row, in order. With `MyEncoder` and prompts of 30, 34 and 31 tokens, the example's dict is:
+
+  ```python
+  {"id": "r", "num_tokens": 95, "questions": [
+      {"id": "outage", "type": "noul", "options": ["false", "true"], "reads": [[29, 30]], "target": [0.0, 1.0]},
+      {"id": "team", "type": "choice", "options": ["technical", "billing"], "reads": [[63, 64]], "target": [0.75, 0.25]},
+      {"id": "urgency", "type": "score", "options": ["0", "1", "2"], "reads": [[94, 95]], "target": [0.0, 0.0, 1.0]},
+  ]}
+  ```
+
+- **Skips and errors.** A record is skipped when none of its questions has a label (with a warning), when the encoder returns `None`, or when its encoding is longer than `data.seq_len` (with a warning). A malformed record raises and stops the run.
+- **Validation and unused settings.** `[data]` and `[val.data]` are both System One or neither. `val.data.seq_len` is not inherited: it defaults to 128 and must equal `data.seq_len`, and `val.data.encoder` must equal `data.encoder`. The encoder owns any chat template, so a non-default `[renderer]` is refused, and per-row template columns such as `reasoning_effort` are not read. `pad_to_seq_len` is refused.
+
+**Launch.** The encoder, the loss and the model class must be importable where the trainer runs.
+
+```bash
+uv run sft @ system_one.toml
+```
 
 ### Important Metrics
 

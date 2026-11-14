@@ -1240,6 +1240,37 @@ def test_sft_allows_unused_default_renderer_for_fake_data():
     assert config.renderer.name == "default"
 
 
+SYSTEM_ONE_DATA = {"name": "org/records", "seq_len": 4096, "encoder": {"import_path": "my_pkg.MyEncoder"}}
+
+
+def test_system_one_config_roundtrip(tmp_path):
+    """A System One config needs no typed renderer, its `[val.data]` takes the type of `[data]`, and it survives the
+    launcher's resolved config, which writes the default `[renderer]` out. `uv run pretrain` rejects the data."""
+    data = {"type": "system_one", **SYSTEM_ONE_DATA}
+    write_toml(
+        tmp_path / "sft.toml",
+        {
+            "model": {"name": "not-a-real-org/not-a-real-model"},
+            "data": data,
+            "val": {"data": SYSTEM_ONE_DATA},
+            "loss": {"type": "custom", "import_path": "my_pkg.my_loss"},
+        },
+    )
+    config = cli(SFTConfig, args=["@", str(tmp_path / "sft.toml")])
+    assert config.data.type == config.val.data.type == "system_one"
+
+    (tmp_path / "sft.json").write_text(json.dumps(dump_resolved_config(config)))
+    assert cli(SFTConfig, args=["@", str(tmp_path / "sft.json")]) == config
+
+    write_toml(tmp_path / "pretrain.toml", {"data": data})
+    assert not can_parse(PretrainConfig, ["@", str(tmp_path / "pretrain.toml")])
+
+
+def test_system_one_data_rejects_token_cross_entropy():
+    with pytest.raises(ValidationError, match="loss.type"):
+        SFTConfig.model_validate({"data": {"type": "system_one", **SYSTEM_ONE_DATA}})
+
+
 def test_orchestrator_explicit_renderer_skips_unmapped_check():
     """Explicit renderer.name bypasses the auto-resolution check — user opted in."""
     config = OrchestratorConfig.model_validate(
