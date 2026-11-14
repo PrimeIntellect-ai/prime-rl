@@ -182,7 +182,7 @@ class NIXLWeightUpdateWorker(WeightRPCMixin, Worker):
                         table,
                         device=self.device,
                         recorder=recorder,
-                        hf_config=self.model_runner.model_config.hf_text_config,
+                        hf_config=self.model_runner.model_config.hf_config,
                     )
                 )
 
