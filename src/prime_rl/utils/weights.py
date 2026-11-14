@@ -1,6 +1,7 @@
 import json
 import re
 import warnings
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, cast
 
@@ -19,6 +20,7 @@ from transformers.utils import (
 )
 
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.distributed import all_gather_bytes
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -131,6 +133,15 @@ def resolve_fqn(model: nn.Module, key: str) -> str:
 _LAYER_RE = re.compile(r"^(.*?\blayers\.\d+)\.")
 
 
+def group_by_layer(keys: Iterable[str]) -> dict[str, list[str]]:
+    """Group complete decoder layers for conversion, with non-layer keys together."""
+    layer_to_keys: dict[str, list[str]] = {}
+    for key in keys:
+        match = _LAYER_RE.match(key)
+        layer_to_keys.setdefault(match.group(1) if match else "", []).append(key)
+    return layer_to_keys
+
+
 def partition_weights(state_dict: dict[str, Tensor], world_size: int, dtype: torch.dtype) -> dict[str, int]:
     """Assign each state-dict key an owner rank, balanced by byte size.
 
@@ -155,10 +166,7 @@ def partition_weights(state_dict: dict[str, Tensor], world_size: int, dtype: tor
 
 
 def resolve_wire_dtype(keep_in_fp32: Callable[[str], bool] | None, key: str, default: torch.dtype) -> torch.dtype:
-    """The dtype a tensor must travel to the inference engine in.
-
-    TODO: NIXL keeps its own inline copy of this rule; unify the handling.
-    """
+    """The dtype a tensor must travel to the inference engine in."""
     return torch.float32 if keep_in_fp32 is not None and keep_in_fp32(key) else default
 
 
@@ -254,8 +262,8 @@ def save_state_dict_parallel(state_dict: dict[str, Tensor], save_dir: Path) -> N
         save_file(shard, save_dir / tmp_name, metadata={"format": "pt"})
         local_shards.append((tmp_name, {name: shard[name].nbytes for name in tensor_names}))
 
-    all_shards: list[list[tuple[str, dict[str, int]]] | None] = [None] * world.world_size
-    dist.all_gather_object(all_shards, local_shards)
+    encoded_shards = json.dumps(local_shards, separators=(",", ":")).encode()
+    all_shards = [json.loads(payload) for payload in all_gather_bytes(encoded_shards)]
     flat = [(rank, tmp_name, sizes) for rank, shards in enumerate(all_shards) for tmp_name, sizes in shards]
 
     num_shards = len(flat)
