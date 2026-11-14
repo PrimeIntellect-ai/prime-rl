@@ -24,6 +24,14 @@ class Qwen3WithHead(Qwen3ForCausalLM):
         self.score_head = nn.Linear(config.hidden_size, 1)
 
 
+class Qwen3WithInitializedHead(Qwen3WithHead):
+    """The head starts from two rows of the loaded LM head."""
+
+    def init_missing_weights(self, names):
+        rows = self.lm_head.weight
+        return {"score_head.weight": rows[1:2] - rows[0:1], "score_head.bias": torch.zeros(1)}
+
+
 @pytest.fixture
 def checkpoint(tmp_path):
     config = Qwen3Config(
@@ -74,6 +82,44 @@ def test_added_modules_load_from_the_checkpoint(checkpoint, monkeypatch):
 
     for name, tensor in model.state_dict().items():
         torch.testing.assert_close(tensor.cpu(), expected[name].to(tensor.dtype))
+
+
+@pytest.mark.gpu
+def test_added_modules_the_checkpoint_lacks_are_initialized(checkpoint, monkeypatch):
+    torch.manual_seed(0)
+    base = {
+        name: tensor.clone()
+        for name, tensor in Qwen3ForCausalLM(Qwen3Config.from_pretrained(checkpoint)).state_dict().items()
+    }
+    save_state_dict(dict(base), checkpoint)  # the base weights only
+
+    monkeypatch.setattr("torch.distributed.barrier", lambda *args, **kwargs: None)
+    monkeypatch.setattr("prime_rl.trainer.model.wait_for_master", lambda *args, **kwargs: None)
+    monkeypatch.setattr("prime_rl.trainer.model.get_dcp_group", lambda: None)
+
+    def load(implementation):
+        config = model_config(checkpoint, implementation=implementation)
+        model = get_model(config, device=torch.device("meta"))
+        load_dcp_from_hf(model, config)
+        return model
+
+    model = load(f"{__name__}.Qwen3WithInitializedHead")
+    rows = base["lm_head.weight"].to(model.lm_head.weight.dtype)  # the head is computed from the loaded rows
+    expected = base | {"score_head.weight": rows[1:2] - rows[0:1], "score_head.bias": torch.zeros(1)}
+    for name, tensor in model.state_dict().items():
+        torch.testing.assert_close(tensor.cpu(), expected[name].to(tensor.dtype))
+
+    lacks = r"The checkpoint lacks \['score_head.bias', 'score_head.weight'\] and"
+    with pytest.raises(RuntimeError, match=rf"{lacks} \S+\.Qwen3WithHead.init_missing_weights returned \[\]"):
+        load(f"{__name__}.Qwen3WithHead")  # the class does not define the method
+    monkeypatch.setattr(Qwen3WithInitializedHead, "init_missing_weights", lambda self, names: {"head.weight": None})
+    with pytest.raises(RuntimeError, match=rf"{lacks} \S+ returned \['head.weight'\]"):
+        load(f"{__name__}.Qwen3WithInitializedHead")
+    monkeypatch.setattr(
+        Qwen3WithInitializedHead, "init_missing_weights", lambda self, names: dict.fromkeys(names, torch.zeros(1))
+    )
+    with pytest.raises(ValueError, match=r"returned score_head.weight with shape \(1,\), the parameter has \(1, 32\)"):
+        load(f"{__name__}.Qwen3WithInitializedHead")
 
 
 def test_a_mistyped_implementation_names_the_setting(checkpoint):
