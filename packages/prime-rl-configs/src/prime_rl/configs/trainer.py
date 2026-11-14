@@ -537,6 +537,10 @@ class ModelConfig(BaseModelConfig):
         compute = self.moe.compute
         if not (isinstance(compute, NVFP4MoEComputeConfig) and compute.quantized_all_gather):
             return self
+        if isinstance(self.moe.dispatch, MegaMoeMoEDispatchConfig):
+            raise ValueError(
+                "model.moe.compute.quantized_all_gather does not apply to Mega MoE, which casts its own weights."
+            )
         if self.fusions.shard_fused_on_dim1:
             raise ValueError(
                 "model.moe.compute.quantized_all_gather quantizes each FSDP shard of whole experts, but "
@@ -549,6 +553,10 @@ class ModelConfig(BaseModelConfig):
         compute = self.moe.compute
         if not (isinstance(compute, DeepGemmFP8MoEComputeConfig) and compute.fp8_all_gather):
             return self
+        if isinstance(self.moe.dispatch, MegaMoeMoEDispatchConfig):
+            raise ValueError(
+                "model.moe.compute.fp8_all_gather does not apply to Mega MoE, which casts its own weights."
+            )
         if self.fusions.shard_fused_on_dim1:
             raise ValueError(
                 "model.moe.compute.fp8_all_gather casts each FSDP shard of whole experts, but "

@@ -165,9 +165,10 @@ class _PrequantizedGroupedGemm(torch.autograd.Function):
     def backward(ctx, grad_output: torch.Tensor):
         x, offs = ctx.saved_tensors
         needs_grad_x, needs_grad_weight, _ = ctx.needs_input_grad
+        # The op has no autograd kernel: give it plain tensors, as grouped_fp8_gemm's backward does
         grad_x, grad_weight = torch.ops.prime_rl.grouped_fp8_gemm_prequantized_backward(
             grad_output,
-            x,
+            x.detach(),
             ctx.weight._data,
             ctx.weight._scale,
             offs,
@@ -225,7 +226,7 @@ class Fp8ExpertMaster(torch.Tensor):
     def __torch_dispatch__(cls, func, types, args, kwargs=None):
         master = next(t for t in pytree.tree_leaves((args, kwargs)) if isinstance(t, Fp8ExpertMaster))
         if func == torch.ops.aten.detach.default:
-            return master._rewrap(args[0]._tensor)
+            return master._rewrap(args[0]._tensor.detach())
         args, kwargs = pytree.tree_map_only(Fp8ExpertMaster, lambda t: t._tensor, (args, kwargs or {}))
         out = func(*args, **kwargs)
         if func not in _OPS_KEEPING_MASTER:

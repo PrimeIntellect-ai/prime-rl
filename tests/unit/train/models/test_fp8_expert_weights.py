@@ -40,3 +40,26 @@ def test_checkpoints_hold_plain_tensors_with_the_fp8_all_gather_on_or_off(tmp_pa
 def test_the_experts_must_split_evenly_over_the_fsdp_ranks():
     with pytest.raises(ValueError, match="split evenly"):
         all_gather_expert_weights_in_fp8(Experts(num_experts=4), shard_size=3)
+
+
+def test_detaching_the_master_detaches_its_tensor():
+    master = Fp8ExpertMaster(torch.randn(4, 8, 16, requires_grad=True))
+    detached = master.detach()
+    assert isinstance(detached, Fp8ExpertMaster) and not detached._tensor.requires_grad
+    assert detached._tensor.data_ptr() == master._tensor.data_ptr()
+
+
+def test_fp8_all_gather_is_rejected_under_mega_moe():
+    from pydantic import ValidationError
+
+    from prime_rl.configs.trainer import ModelConfig
+
+    with pytest.raises(ValidationError, match="does not apply to Mega MoE"):
+        ModelConfig.model_validate(
+            {
+                "moe": {
+                    "compute": {"type": "deepgemm_fp8", "fp8_all_gather": True},
+                    "dispatch": {"type": "mega_moe", "max_tokens_per_rank": 8192},
+                }
+            }
+        )
