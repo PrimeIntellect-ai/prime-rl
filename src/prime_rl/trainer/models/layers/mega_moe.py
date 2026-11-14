@@ -83,7 +83,8 @@ def default_nccl_max_ctas(num_reserved_sms: int, num_concurrent: int) -> None:
 
 
 def check_nccl_max_ctas(num_reserved_sms: int, num_concurrent: int) -> None:
-    """Raise unless ``num_concurrent`` NCCL kernels of ``NCCL_MAX_CTAS`` CTAs fit in the reserved SMs."""
+    """Raise unless ``num_concurrent`` NCCL kernels of ``NCCL_MAX_CTAS`` CTAs fit in the reserved SMs and no NCCL
+    minimum (``NCCL_MIN_CTAS``, ``NCCL_MIN_NCHANNELS``) is above ``NCCL_MAX_CTAS``."""
     nccl_max_ctas = os.environ.get("NCCL_MAX_CTAS")
     max_ctas = num_reserved_sms // num_concurrent
     if max_ctas < 1 or nccl_max_ctas is None or not nccl_max_ctas.isdigit() or not 1 <= int(nccl_max_ctas) <= max_ctas:
@@ -92,6 +93,15 @@ def check_nccl_max_ctas(num_reserved_sms: int, num_concurrent: int) -> None:
             f"kernels, so `NCCL_MAX_CTAS` must be an integer in [1, {max_ctas}] (got {nccl_max_ctas!r}); unset it "
             f"to use {max_ctas} or raise `num_reserved_sms`."
         )
+    # NCCL's minimum channel count wins over NCCL_MAX_CTAS
+    for name in ("NCCL_MIN_CTAS", "NCCL_MIN_NCHANNELS"):
+        value = os.environ.get(name)
+        if value is not None and (not value.isdigit() or int(value) > int(nccl_max_ctas)):
+            raise ValueError(
+                f"`{name}={value}` makes NCCL kernels launch more than `NCCL_MAX_CTAS={nccl_max_ctas}` CTAs, so they "
+                f"do not fit in the {num_reserved_sms} SMs Mega MoE reserves for NCCL and can deadlock against its "
+                f"grids; set it to at most {nccl_max_ctas} or unset it."
+            )
 
 
 def reserve_sms_for_comm(num_reserved_sms: int, num_concurrent: int) -> int:
