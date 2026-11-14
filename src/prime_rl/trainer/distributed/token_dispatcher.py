@@ -11,6 +11,7 @@ from prime_rl.trainer.distributed.collectives import (
     mxfp8_all_to_all_combine,
     mxfp8_all_to_all_dispatch,
 )
+from prime_rl.trainer.distributed.host_copy import host_copy_start, host_copy_wait
 
 
 class ExpertFunction(Protocol):
@@ -18,6 +19,8 @@ class ExpertFunction(Protocol):
 
 
 class TokenDispatcher(Protocol):
+    def plan(self, selected_experts_indices: torch.Tensor) -> object | None: ...
+
     def run(
         self,
         x: torch.Tensor,
@@ -26,12 +29,16 @@ class TokenDispatcher(Protocol):
         experts: ExpertFunction,
         *,
         score_before_experts: bool,
+        plan: object | None = None,
     ) -> torch.Tensor: ...
 
 
 class FusedTokenDispatcher:
     """Passes undispatched tokens and their routing to an expert compute that dispatches and combines them itself."""
 
+    def plan(self, selected_experts_indices: torch.Tensor) -> None:
+        return None
+
     def run(
         self,
         x: torch.Tensor,
@@ -40,6 +47,7 @@ class FusedTokenDispatcher:
         experts: ExpertFunction,
         *,
         score_before_experts: bool,
+        plan: None = None,
     ) -> torch.Tensor:
         if score_before_experts:
             raise ValueError(
@@ -72,6 +80,16 @@ class TokenDispatcherBase(ABC, Generic[DispatchState]):
     @abstractmethod
     def combine(self, routed_output: torch.Tensor, state: DispatchState) -> torch.Tensor: ...
 
+    def plan(self, selected_experts_indices: torch.Tensor) -> object | None:
+        """What the dispatch computes from the routing alone, started before the experts' input exists, for `run` to
+        finish (`dispatch_planned`); None for a dispatch that starts with its input."""
+        return None
+
+    def dispatch_planned(
+        self, plan: object, x: torch.Tensor, top_scores: torch.Tensor, *, score_before_experts: bool
+    ) -> tuple[torch.Tensor, torch.Tensor, DispatchState]:
+        raise NotImplementedError(f"{type(self).__name__} plans no dispatch")
+
     def run(
         self,
         x: torch.Tensor,
@@ -80,13 +98,19 @@ class TokenDispatcherBase(ABC, Generic[DispatchState]):
         experts: ExpertFunction,
         *,
         score_before_experts: bool,
+        plan: object | None = None,
     ) -> torch.Tensor:
-        routed_input, num_tokens_per_expert, state = self.dispatch(
-            x,
-            top_scores,
-            selected_experts_indices,
-            score_before_experts=score_before_experts,
-        )
+        if plan is None:
+            routed_input, num_tokens_per_expert, state = self.dispatch(
+                x,
+                top_scores,
+                selected_experts_indices,
+                score_before_experts=score_before_experts,
+            )
+        else:
+            routed_input, num_tokens_per_expert, state = self.dispatch_planned(
+                plan, x, top_scores, score_before_experts=score_before_experts
+            )
         routed_output = experts(routed_input, num_tokens_per_expert)
         return self.combine(routed_output, state)
 
@@ -110,6 +134,16 @@ class TorchDispatchState(LocalDispatchState):
     input_splits: torch.Tensor
     output_splits: torch.Tensor
     num_routed_tokens: int
+
+
+@dataclass(frozen=True)
+class TorchDispatchPlan:
+    """What `TorchTokenDispatcher.plan` computes from the routing alone; ``splits`` are the all-to-all split sizes'
+    pending copy to the host (`host_copy_start`)."""
+
+    route_indices_experts_sorted: torch.Tensor
+    num_tokens_per_expert_group: torch.Tensor
+    splits: torch.Tensor
 
 
 def permute_for_grouped_gemm(
@@ -191,14 +225,8 @@ def _(x: torch.Tensor) -> torch.Tensor:
     return torch.empty_like(x, dtype=torch.int64)
 
 
-def _local_reorder(
-    x: torch.Tensor,
-    top_scores: torch.Tensor,
-    selected_experts_indices: torch.Tensor,
-    *,
-    num_experts: int,
-    top_k: int,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+def _sort_routes(selected_experts_indices: torch.Tensor, num_experts: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """The routes per expert and the route slots sorted by expert."""
     flattened_experts = selected_experts_indices.reshape(-1)
     num_tokens_per_expert = torch.histc(
         flattened_experts.float(),
@@ -206,12 +234,21 @@ def _local_reorder(
         min=0,
         max=num_experts,
     ).to(torch.int64)
-    route_indices_experts_sorted = stable_argsort(flattened_experts)
+    return num_tokens_per_expert, stable_argsort(flattened_experts)
+
+
+def _local_reorder(
+    x: torch.Tensor,
+    top_scores: torch.Tensor,
+    route_indices_experts_sorted: torch.Tensor,
+    *,
+    top_k: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
     top_scores_experts_sorted = top_scores.reshape(-1)[route_indices_experts_sorted]
     # A route slot is token_index * top_k + expert_slot (position among selected experts).
     # // top_k recovers its token; keep the full slot index to restore outputs in combine.
     routed_input = x[route_indices_experts_sorted // top_k]
-    return routed_input, route_indices_experts_sorted, top_scores_experts_sorted, num_tokens_per_expert
+    return routed_input, top_scores_experts_sorted
 
 
 def _combine_routed_output(
@@ -253,13 +290,8 @@ class LocalTokenDispatcher(TokenDispatcherBase[LocalDispatchState]):
         *,
         score_before_experts: bool,
     ) -> tuple[torch.Tensor, torch.Tensor, LocalDispatchState]:
-        routed_input, route_indices, sorted_scores, num_tokens_per_expert = _local_reorder(
-            x,
-            top_scores,
-            selected_experts_indices,
-            num_experts=self.num_experts,
-            top_k=self.top_k,
-        )
+        num_tokens_per_expert, route_indices = _sort_routes(selected_experts_indices, self.num_experts)
+        routed_input, sorted_scores = _local_reorder(x, top_scores, route_indices, top_k=self.top_k)
         scores_after_experts = None
         if score_before_experts:
             routed_input = (routed_input.float() * sorted_scores.reshape(-1, 1)).to(x.dtype)
@@ -321,6 +353,19 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
     ) -> torch.Tensor:
         return all_to_all_single(x, output_splits, input_splits, self.group, output_size)
 
+    def plan(self, selected_experts_indices: torch.Tensor) -> TorchDispatchPlan:
+        ep_degree = self.group.size()
+        with torch.no_grad():
+            num_tokens_per_expert, route_indices = _sort_routes(selected_experts_indices, self.num_experts)
+            num_tokens_per_expert_group = all_to_all_counts(num_tokens_per_expert, self.group)
+            splits = torch.stack(
+                (
+                    num_tokens_per_expert.view(ep_degree, -1).sum(dim=1),
+                    num_tokens_per_expert_group.view(ep_degree, -1).sum(dim=1),
+                )
+            )
+        return TorchDispatchPlan(route_indices, num_tokens_per_expert_group, host_copy_start(splits))
+
     def dispatch(
         self,
         x: torch.Tensor,
@@ -329,13 +374,14 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
         *,
         score_before_experts: bool,
     ) -> tuple[torch.Tensor, torch.Tensor, TorchDispatchState]:
-        routed_input, route_indices, sorted_scores, num_tokens_per_expert = _local_reorder(
-            x,
-            top_scores,
-            selected_experts_indices,
-            num_experts=self.num_experts,
-            top_k=self.top_k,
-        )
+        plan = self.plan(selected_experts_indices)
+        return self.dispatch_planned(plan, x, top_scores, score_before_experts=score_before_experts)
+
+    def dispatch_planned(
+        self, plan: TorchDispatchPlan, x: torch.Tensor, top_scores: torch.Tensor, *, score_before_experts: bool
+    ) -> tuple[torch.Tensor, torch.Tensor, TorchDispatchState]:
+        route_indices = plan.route_indices_experts_sorted
+        routed_input, sorted_scores = _local_reorder(x, top_scores, route_indices, top_k=self.top_k)
         scores_after_experts = None
         if score_before_experts:
             routed_input = (routed_input.float() * sorted_scores.reshape(-1, 1)).to(x.dtype)
@@ -343,14 +389,7 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
             scores_after_experts = sorted_scores
 
         ep_degree = self.group.size()
-        with torch.no_grad():
-            num_tokens_per_expert_group = all_to_all_counts(num_tokens_per_expert, self.group)
-            input_splits, output_splits = torch.stack(
-                (
-                    num_tokens_per_expert.view(ep_degree, -1).sum(dim=1),
-                    num_tokens_per_expert_group.view(ep_degree, -1).sum(dim=1),
-                )
-            ).cpu()  # Transfer to CPU now once, so a2a can read this without sync
+        input_splits, output_splits = host_copy_wait(plan.splits)
 
         num_routed_tokens = routed_input.shape[0]
         num_received_tokens = int(output_splits.sum())
@@ -358,7 +397,7 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
         experts_per_rank = self.num_experts // ep_degree
         routed_input, num_tokens_per_expert, permutation = permute_for_grouped_gemm(
             routed_input,
-            num_tokens_per_expert_group,
+            plan.num_tokens_per_expert_group,
             experts_per_rank=experts_per_rank,
             num_ranks=ep_degree,
             alignment=self.token_group_alignment,

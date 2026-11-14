@@ -46,7 +46,8 @@ def _run(dispatcher, x, scores, selected, score_before_experts, first_expert, gr
     experts = _scaled_square_experts(first_expert)
 
     def forward(x: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
-        return dispatcher.run(x, scores, selected, experts, score_before_experts=score_before_experts)
+        plan = dispatcher.plan(selected)
+        return dispatcher.run(x, scores, selected, experts, score_before_experts=score_before_experts, plan=plan)
 
     if compiled:  # pretraining compiles MoE blocks with fullgraph=True: the dispatch must not break the graph
         torch._dynamo.reset()

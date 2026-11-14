@@ -389,17 +389,22 @@ class MoE(nn.Module):
                 routing_confidence_sum,
             )
 
+        # Start the counts' copy to the host now; the expert input projection and shared expert queued below keep the
+        # GPU busy while `run` waits for it.
+        plan = self.token_dispatcher.plan(selected_experts_indices)
+        expert_input = self.prepare_expert_input(x)
+        shared_output = None
+        if self.shared_expert is not None:
+            shared_output = self.shared_expert(x)
+
         routed_output = self.token_dispatcher.run(
-            self.prepare_expert_input(x),
+            expert_input,
             top_scores,
             selected_experts_indices,
             self.experts,
             score_before_experts=self.score_before_experts,
+            plan=plan,
         )
-
-        shared_output = None
-        if self.shared_expert is not None:
-            shared_output = self.shared_expert(x)
 
         routed_output = self.prepare_expert_output(routed_output)
 
