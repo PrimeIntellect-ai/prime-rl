@@ -1679,6 +1679,9 @@ def test_nvfp4_trainer_rejects_unsupported_setups(model, message):
         ({"type": "mxfp8", "apply_to": []}, {}, (None, None)),
         ({"type": "deepgemm_fp8", "apply_to": "0%"}, {"quantization": "mxfp8"}, ("mxfp8", None)),
         ({"type": "deepgemm_fp8", "forward": "bf16"}, {}, (None, None)),
+        # Every expert runs the MXFP8 remainder, or both groups run MXFP8: uniform, so the engines match it
+        ({"type": "deepgemm_fp8", "apply_to": [], "remainder": "mxfp8"}, {}, ("online", {"moe": "mxfp8"})),
+        ({"type": "mxfp8", "apply_to": "50%", "remainder": "mxfp8"}, {}, ("online", {"moe": "mxfp8"})),
     ],
 )
 def test_engines_quantize_experts_like_the_trainer(compute, engines, expected):

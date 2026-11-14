@@ -346,9 +346,7 @@ def mega_moe_precision(compute: "MoEComputeConfig") -> str:
 
 def expert_engine_scheme(compute: "MoEComputeConfig") -> str | None:
     """vLLM's online scheme that quantizes routed experts as ``compute`` runs them in the forward, so rollouts are
-    sampled with the numerics the trainer computes. None for BF16 forwards (or no quantized layer)."""
-    if compute.selects_none:
-        return None
+    sampled with the numerics the trainer computes, for the ``apply_to`` layers. None for BF16 forwards."""
     if isinstance(compute, DeepGemmFP8MoEComputeConfig):
         return "fp8_per_block" if compute.forward == "fp8" else None
     if isinstance(compute, MXFP8MoEComputeConfig):
