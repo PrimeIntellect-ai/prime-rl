@@ -308,6 +308,40 @@ def test_capture_supports_is_the_masked_set():
     assert (overflow.counts_cpu[2:] == -1).all()
 
 
+@pytest.mark.gpu
+def test_verified_supports_follow_accepted_positions_across_chunks():
+    from vllm.v1.sample.ops.topk_topp_triton import apply_top_k_top_p_triton
+
+    from prime_rl.inference.vllm.paired_capture import VerifiedSupports, capture_verified_supports
+
+    torch.manual_seed(0)
+    # Request 0 verifies 3 positions, request 1 only its bonus row, request 2 (not replayed) 3 positions.
+    logits = torch.randn(7, 50_000, device="cuda")
+    masked = apply_top_k_top_p_triton(logits, None, torch.full((7,), 0.9, device="cuda"))
+    cu = torch.tensor([0, 3, 4, 7], device="cuda", dtype=torch.int32)
+    num_sampled = torch.tensor([3, 1, 2], device="cuda", dtype=torch.int32)
+    replay = np.array([True, True, False])
+    whole = capture_verified_supports(masked, cu, num_sampled, replay, 3, 1 << 20)
+    chunked = VerifiedSupports.cat(
+        [
+            capture_verified_supports(masked[:3], cu[:2], num_sampled[:1], replay[:1], 3, 1 << 20),
+            capture_verified_supports(masked[3:], cu[1:] - 3, num_sampled[1:], replay[1:], 3, 1 << 20),
+        ]
+    )
+    for supports in (whole, chunked):
+        supports.to_cpu_nonblocking()
+        torch.cuda.synchronize()
+        lists = supports.tolists(np.array([3, 1, 2]))
+        assert lists.cu_num_generated_tokens == [0, 3, 4, 6]
+        for position, row in enumerate([0, 1, 2, 3]):
+            entries = lists.token_ids[lists.offsets[position] : lists.offsets[position + 1]]
+            kept = torch.isfinite(masked[row]).nonzero().squeeze(-1)
+            values = ((entries >> 32).astype(np.int32) ^ NEG_INF_BITS).view(np.float32)
+            assert (entries & 0xFFFFFFFF).tolist() == kept.tolist()
+            np.testing.assert_allclose(values, masked[row, kept].log_softmax(-1).cpu().numpy(), atol=1e-5)
+        assert np.diff(lists.offsets)[4:].tolist() == [0, 0]
+
+
 @pytest.mark.asyncio
 async def test_flat_sampled_logprobs_are_packed():
     """The default RL path (flat logprobs, logprobs<=1): upstream reads ``logprobs`` before it

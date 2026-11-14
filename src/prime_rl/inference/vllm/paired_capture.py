@@ -166,6 +166,44 @@ def capture_supports(logits, cu_num_logits, committed, capacity, sampler_rows=No
     return CsrSupports(flat, counts)
 
 
+class VerifiedSupports:
+    """Supports of one speculative verification step: one row per verified position, row ``r`` holding
+    position ``r % R`` of request ``r // R``, in vLLM's request-contiguous verification chunks."""
+
+    def __init__(self, chunks: list[CsrSupports], rows_per_request: int):
+        self.chunks = chunks
+        self.rows_per_request = rows_per_request
+
+    @classmethod
+    def cat(cls, parts: list["VerifiedSupports"]) -> "VerifiedSupports":
+        return cls([chunk for part in parts for chunk in part.chunks], parts[0].rows_per_request)
+
+    def to_cpu_nonblocking(self) -> "VerifiedSupports":
+        for chunk in self.chunks:
+            chunk.to_cpu_nonblocking()
+        return self
+
+    def tolists(self, num_sampled_tokens: np.ndarray) -> SamplingMaskLists:
+        """The accepted positions' supports, indexed per request like vLLM's multi-position masks."""
+        rows = [chunk.tolists() for chunk in self.chunks]
+        entries = np.concatenate([row.token_ids for row in rows])
+        lengths = np.concatenate([np.diff(row.offsets) for row in rows])
+        accepted = (np.arange(self.rows_per_request)[None, :] < num_sampled_tokens[:, None]).ravel()
+        offsets = np.zeros(int(accepted.sum()) + 1, dtype=np.int64)
+        np.cumsum(lengths[accepted], out=offsets[1:])
+        cu_num_generated_tokens = np.concatenate(([0], np.cumsum(num_sampled_tokens))).tolist()
+        return SamplingMaskLists(entries[np.repeat(accepted, lengths)], offsets, cu_num_generated_tokens)
+
+
+def capture_verified_supports(logits, cu_num_logits, num_sampled, replay, rows_per_request, capacity):
+    """``capture_supports`` over every verified position of the replayed requests in one chunk."""
+    slots = torch.arange(rows_per_request, device=logits.device)
+    row_starts = (cu_num_logits[:-1].long().unsqueeze(-1) + slots).flatten().clamp(max=logits.shape[0] - 1)
+    keep = torch.from_numpy(replay).pin_memory().to(logits.device, non_blocking=True)
+    committed = ((slots < num_sampled.unsqueeze(-1)) & keep.unsqueeze(-1)).flatten().to(torch.int32)
+    return VerifiedSupports([capture_supports(logits, row_starts, committed, capacity)], rows_per_request)
+
+
 def pack_sampler_rows(logits, cu_num_logits, num_sampled, sampled, num_rows):
     """Per selected request: the sampled token, then the ``num_rows`` top ids of the processed distribution q,
     each packed with its full-vocabulary processed logprob. The rows copy vLLM's ``[sampled, top...]`` logprob

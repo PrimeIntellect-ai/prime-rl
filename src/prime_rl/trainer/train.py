@@ -40,6 +40,8 @@ from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.data import get_dataset_progress, get_dataset_state, setup_dataloader
 from prime_rl.trainer.pretrain.data import (
+    TokenShards,
+    detect_separator,
     setup_document_dataset,
     setup_token_dataset,
     warn_if_no_document_separator,
@@ -186,8 +188,13 @@ def train(config: SFTConfig | PretrainConfig):
     logger.info(f"Initializing data ({config.data})")
     multimodal = config.model.vlm is not None
     if isinstance(config, PretrainConfig):
-        dataset = setup_token_dataset(config.data, config.model.cp)
-        warn_if_no_document_separator(dataset.shards, tokenizer)
+        shards = TokenShards(config.data.paths)
+        if config.data.eod_mask_loss:
+            eod_mask_token = detect_separator(shards, tokenizer)
+        else:
+            eod_mask_token = None
+            warn_if_no_document_separator(shards, tokenizer)
+        dataset = setup_token_dataset(config.data, config.model.cp, eod_mask_token=eod_mask_token)
     else:
         dataset = setup_sft_dataset(
             tokenizer,
@@ -406,7 +413,7 @@ def train(config: SFTConfig | PretrainConfig):
         maybe_record_function = record_function  # noqa: F841 – captured by run_forward_loop closure
     max_peak_memory = 0.0
     controller = Controller(requires_step=False)
-    control_server = ControlServer(controller, config.control if world.is_master else None)
+    control_server = ControlServer(controller, config.control if world.is_master else None, ckpt_manager.ckpt_dir)
     control_server.start()
     while True:
         # Reset peak memory stats
@@ -532,6 +539,8 @@ def train(config: SFTConfig | PretrainConfig):
         if config.optim.max_norm is not None:
             logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
             grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
+        # An async checkpoint must finish copying the state before the optimizer step mutates it
+        ckpt_manager.wait_for_staging()
         logger.debug("Optimizer step")
         optimizer.step()
         optimizer.zero_grad()
@@ -558,9 +567,11 @@ def train(config: SFTConfig | PretrainConfig):
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
-            save_ckpt_time += time.perf_counter() - save_ckpt_start_time
             if step_action == "checkpoint":
+                # The action commits once the checkpoint is on storage
+                ckpt_manager.wait()
                 controller.mark_saved(progress.step)
+            save_ckpt_time += time.perf_counter() - save_ckpt_start_time
 
             ckpt_manager.maybe_clean()
 
@@ -695,6 +706,7 @@ def train(config: SFTConfig | PretrainConfig):
     if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
+        ckpt_manager.wait()
         if step_action is not None:
             controller.mark_saved(progress.step)
         if not paused:

@@ -1,6 +1,5 @@
 """Autograd and compile-friendly distributed collectives."""
 
-import prime_kernels
 import torch
 import torch.distributed as dist
 from torch.distributed import ProcessGroup
@@ -120,6 +119,10 @@ def _mxfp8_all_to_all(
     quantized: bool,
     output_size: int,
 ) -> torch.Tensor:
+    # Deferred: prime-kernels is the optional `kernels` extra, and this module is imported by
+    # every trainer run, not just MXFP8 ones.
+    import prime_kernels
+
     kernel = prime_kernels.load("mxfp8_moe")
     operation = kernel.all_to_all_dispatch if quantized else kernel.all_to_all_combine
     return operation(
