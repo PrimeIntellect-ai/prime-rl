@@ -1,7 +1,7 @@
 import re
 import warnings
 from pathlib import Path
-from typing import Annotated, Any, ClassVar, Literal, TypeAlias
+from typing import Annotated, ClassVar, Literal, TypeAlias
 
 from pydantic import Field, field_validator, model_validator
 
@@ -13,6 +13,7 @@ from prime_rl.configs.shared import (
     FileSystemWeightBroadcastConfig,
     GCConfig,
     HeartbeatConfig,
+    PluginConfig,
     ResumeConfig,
     TrainerLogConfig,
     TransportConfig,
@@ -614,14 +615,11 @@ class IcePopLossConfig(BaseConfig):
         return self
 
 
-class CustomLossConfig(BaseConfig):
+class CustomLossConfig(PluginConfig):
+    """A custom loss function, called as ``my_loss(inputs, **kwargs)`` with a ``prime_rl.trainer.rl.loss.LossInputs``
+    and returning a ``LossOutputs``."""
+
     type: Literal["custom"] = "custom"
-
-    import_path: str
-    """Import path to the loss function (e.g. ``my_module.my_loss``)."""
-
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Kwargs forwarded to the loss function."""
 
 
 LossConfig: TypeAlias = Annotated[
