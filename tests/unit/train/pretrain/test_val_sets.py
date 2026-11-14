@@ -1,0 +1,72 @@
+import json
+
+import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
+import torch
+
+from prime_rl.trainer.pretrain.val_sets import (
+    head_logprobs,
+    prepare_set,
+    requests_of,
+    summarize_ctxcont,
+)
+
+
+class CharTokenizer:
+    bos_token_id, eos_token_id = 1, 2
+
+    def __call__(self, texts, add_special_tokens=False, return_offsets_mapping=False):
+        if isinstance(texts, str):
+            return {
+                "input_ids": [ord(char) for char in texts],
+                "offset_mapping": [(i, i + 1) for i in range(len(texts))],
+            }
+        return {
+            "input_ids": [[ord(char) for char in text] for text in texts],
+            "offset_mapping": [[(i, i + 1) for i in range(len(text))] for text in texts],
+        }
+
+
+def test_head_logprobs_chunks_match_the_full_softmax():
+    hidden, weight = torch.randn(7, 4, dtype=torch.bfloat16), torch.randn(11, 4, dtype=torch.bfloat16)
+    targets = torch.randint(0, 11, (7,))
+    logprobs, hits = head_logprobs(hidden, weight, targets, chunk=3)
+    logits = hidden.float() @ weight.float().T
+    torch.testing.assert_close(logprobs, logits.log_softmax(-1).gather(-1, targets[:, None])[:, 0])
+    assert torch.equal(hits, logits.argmax(-1) == targets)
+
+
+def test_requests_without_bos_start_at_the_text(tmp_path):
+    for name, kind, columns in [
+        ("docs", "ppl", {"text": ["hello"]}),
+        ("cc", "ctxcont", {"context": ["Q:"], "continuation": [" yes"]}),
+        ("pairs", "pairs", {"good": ["ab"], "bad": ["ba"]}),
+    ]:
+        (tmp_path / name).mkdir()
+        pq.write_table(pa.table(columns), tmp_path / name / "test.parquet")
+        (tmp_path / name / "meta.json").write_text(json.dumps({"kind": kind}))
+    docs = prepare_set("docs", tmp_path, CharTokenizer(), seq_len=32, bos=False, end_token=2)
+    assert docs.requests == [([ord(char) for char in "hello"] + [2], 1)]
+    assert docs.info["bytes"].tolist() == [4]  # the first character is context only
+    with_bos = prepare_set("docs", tmp_path, CharTokenizer(), seq_len=32, bos=True, end_token=None)
+    assert with_bos.requests == [([1] + [ord(char) for char in "hello"], 1)] and with_bos.info["bytes"].tolist() == [5]
+    ids, start = prepare_set("cc", tmp_path, CharTokenizer(), seq_len=32, bos=False, end_token=2).requests[0]
+    assert ids == [ord(char) for char in "Q: yes"] and start == 2
+    assert prepare_set("pairs", tmp_path, CharTokenizer(), seq_len=32, bos=False, end_token=2).requests[0] == (
+        [97, 98],
+        1,
+    )
+
+
+def test_ctxcont_picks_the_likeliest_choice_with_and_without_length_normalization():
+    rows = [{"context": "Q:", "choices": [" ab", " c"], "gold": 0}]
+    options = [requests_of(row) for row in rows]
+    # The gold choice has the lower total log-prob (-2 vs -1.5) but the higher log-prob per byte (-2/3 vs -3/4).
+    logprobs = [np.array([-1.0, -1.0]), np.array([-1.5])]
+    hits = [np.array([True, False]), np.array([True])]
+    summary, _ = summarize_ctxcont(rows, options, logprobs, hits)
+    assert summary["acc"] == 0.0 and summary["acc_norm"] == 1.0
+    assert summary["loss"] == 1.0 and summary["bpb"] == pytest.approx(2 / (3 * np.log(2)))
+    assert summary["greedy_em"] == 0.0 and summary["greedy_token_acc"] == 0.5
