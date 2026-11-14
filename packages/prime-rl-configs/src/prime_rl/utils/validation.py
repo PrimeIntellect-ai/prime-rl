@@ -103,11 +103,10 @@ def propagate_shared_fields(data: Any) -> Any:
     # [monitors.prime] leaf.
     propagate("monitors.prime.name", "trainer.monitors.prime.name", "orchestrator.monitors.prime.name")
 
-    # [tokenizer]. ``chat_template`` also flows to ``inference.vllm`` (vLLM's
-    # ``--chat-template``); ``name`` and ``trust_remote_code`` can legitimately
-    # differ between sub-configs (auto-derived from model names, which may
-    # differ for FP8-quantized inference variants).
-    propagate("tokenizer.name", "trainer.tokenizer.name", "orchestrator.tokenizer.name")
+    # [tokenizer]. ``name`` also flows to ``inference.vllm`` (vLLM's ``--tokenizer``, which also picks its "auto"
+    # parsers) and ``chat_template`` too (vLLM's ``--chat-template``); ``trust_remote_code`` can legitimately differ
+    # between sub-configs (auto-derived from model names, which may differ for FP8-quantized inference variants).
+    propagate("tokenizer.name", "trainer.tokenizer.name", "orchestrator.tokenizer.name", "inference.vllm.tokenizer")
     propagate(
         "tokenizer.trust_remote_code",
         "trainer.tokenizer.trust_remote_code",

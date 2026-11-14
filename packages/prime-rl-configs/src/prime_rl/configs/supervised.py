@@ -1,7 +1,7 @@
 import uuid
 import warnings
 from pathlib import Path
-from typing import Annotated, ClassVar, TypeAlias
+from typing import Annotated, TypeAlias
 from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
@@ -86,9 +86,6 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     auto_freeze_moe_router = False
     # Standard L2 regularization for supervised training.
     auto_weight_decay = 0.01
-    # Initialize the weights from scratch instead of loading them from ``model.name``, unless resuming.
-    init_from_scratch: ClassVar[bool] = False
-
     data: BaseDataConfig
 
     val: BaseValConfig | None = None
@@ -161,17 +158,21 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     @model_validator(mode="before")
     @classmethod
     def propagate_model_to_inference(cls, data):
-        """Fill ``inference.vllm.model`` from ``model.name`` before InferenceConfig
-        construction, so its parser auto-resolution sees the right model name."""
+        """Fill ``inference.vllm.model`` and ``tokenizer`` from ``model.name`` and ``tokenizer.name`` before
+        InferenceConfig construction, so its parser auto-resolution sees the right names."""
         if not isinstance(data, dict):
             return data
         inference = data.get("inference")
-        model = data.get("model")
-        name = model.get("name") if isinstance(model, dict) else None
-        if isinstance(inference, dict) and name:
-            vllm = inference.setdefault("vllm", {})
-            if isinstance(vllm, dict):
-                vllm.setdefault("model", name)
+        if not isinstance(inference, dict):
+            return data
+        vllm = inference.setdefault("vllm", {})
+        if not isinstance(vllm, dict):
+            return data
+        for section, key in (("model", "model"), ("tokenizer", "tokenizer")):
+            config = data.get(section)
+            name = config.get("name") if isinstance(config, dict) else None
+            if name:
+                vllm.setdefault(key, name)
         return data
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)

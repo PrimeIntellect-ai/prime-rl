@@ -1454,16 +1454,51 @@ def test_score_centering_captures_complete_bounded_support(top_k, top_p):
     assert RLConfig.model_validate_json(config.model_dump_json()) == config
 
 
-def test_init_from_accepts_a_checkpoint_step_dir():
-    config = TrainerModelConfig(init_from="runs/sft/checkpoints/step_500")
+@pytest.mark.parametrize(
+    ("config_cls", "default_type"), [(PretrainConfig, "scratch"), (SFTConfig, "hf"), (TrainerConfig, "hf")]
+)
+def test_model_init_type_defaults_per_entrypoint(tmp_path, config_cls, default_type: str):
+    data = {"data": {"paths": [str(tmp_path)]}} if config_cls is PretrainConfig else {}
+    assert config_cls.model_validate(data).model.init.type == default_type
+    # A [model.init] table without a type keeps the entrypoint's default.
+    assert config_cls.model_validate({**data, "model": {"init": {}}}).model.init.type == default_type
 
-    assert config.init_from == Path("runs/sft/checkpoints/step_500")
+
+def test_model_init_seed_requires_type_scratch():
+    assert SFTConfig.model_validate({"model": {"init": {"type": "scratch", "seed": 1}}}).model.init.seed == 1
+    with pytest.raises(ValidationError, match='model.init.seed applies to type "scratch", not "hf"'):
+        SFTConfig.model_validate({"model": {"init": {"seed": 1}}})
 
 
-@pytest.mark.parametrize("init_from", ["runs/sft/checkpoints", "runs/sft/checkpoints/step_500/trainer"])
-def test_init_from_rejects_a_path_that_is_not_a_step_dir(init_from: str):
-    with pytest.raises(ValidationError, match="model.init_from must point at a checkpoint step directory"):
-        TrainerModelConfig(init_from=init_from)
+def test_model_init_scratch_rejects_lora():
+    with pytest.raises(ValidationError, match='model.init.type = "scratch" does not load'):
+        SFTConfig.model_validate({"model": {"init": {"type": "scratch"}, "lora": {}}})
+
+
+@pytest.mark.parametrize("tokenizer", [None, "Qwen/Qwen3-0.6B"])
+def test_inference_parsers_resolve_from_the_tokenizer_name(tokenizer: str | None):
+    data = {
+        "model": {"name": "runs/sft/checkpoints/step_500"},
+        "trainer": {},
+        "orchestrator": {
+            "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
+            "renderer": {"name": "qwen3"},
+        },
+        "inference": {},
+    }
+    if tokenizer is None:
+        with pytest.warns(UserWarning, match="set tokenizer.name"):
+            config = RLConfig.model_validate(data)
+        assert config.inference.vllm.tool_call_parser is None
+    else:
+        config = RLConfig.model_validate({**data, "tokenizer": {"name": tokenizer}})
+        assert config.inference.vllm.tool_call_parser == "hermes"
+
+
+def test_model_init_checkpoint_requires_a_step_dir():
+    TrainerModelConfig(name="runs/sft/checkpoints/step_500", init={"type": "ckpt"})
+    with pytest.raises(ValidationError, match="must point at a checkpoint step directory"):
+        TrainerModelConfig(name="Qwen/Qwen3-0.6B", init={"type": "ckpt"})
 
 
 def test_score_centering_replays_top_p_alone():

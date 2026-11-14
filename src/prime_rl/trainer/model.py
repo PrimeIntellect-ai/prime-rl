@@ -82,14 +82,14 @@ from prime_rl.utils.weights import (
 def pre_download_model(model_name: str, *, skip_weights: bool = False) -> None:
     """Pre-download model from HuggingFace Hub so all nodes have cached weights before training.
 
-    With ``skip_weights`` (random-init debug runs), only config and tokenizer files are fetched.
+    With ``skip_weights`` (weights that do not come from the HF model), only config and tokenizer files are fetched.
     """
     if Path(model_name).exists():
         get_logger().info(f"Model {model_name} found at local path, skipping download")
         return
     t0 = time.perf_counter()
     if skip_weights:
-        get_logger().info(f"Pre-downloading config and tokenizer for {model_name} (random init, skipping weights)")
+        get_logger().info(f"Pre-downloading config and tokenizer for {model_name} (skipping weights)")
         path = snapshot_download(
             repo_id=model_name, repo_type="model", allow_patterns=["*.json", "*.txt", "tokenizer*", "*.jinja"]
         )
@@ -386,6 +386,8 @@ def get_model(
             f"Setting the number of layers to {config.debug.num_layers} in the model config. This means {target_config.num_hidden_layers - num_hidden_layers} layers will not be loaded."
         )
         target_config.num_hidden_layers = num_hidden_layers
+        if getattr(target_config, "layer_types", None) is not None:
+            target_config.layer_types = target_config.layer_types[:num_hidden_layers]
 
     custom_vlm_cls = get_custom_vlm_cls(model_config)
     if custom_vlm_cls is None and not supports_custom_impl(model_config):
@@ -429,8 +431,23 @@ def get_model(
     return model
 
 
-def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
+def check_ckpt_dir(config: ModelConfig) -> None:
+    """A ``ckpt`` step directory supplies the architecture with its config.json."""
+    if config.init.type == "ckpt" and not (Path(config.name) / "config.json").exists():
+        raise FileNotFoundError(
+            f"model.name {config.name} has no config.json, so the architecture is unknown; copy the model's "
+            "config.json into it"
+        )
+
+
+def setup_tokenizer(config: TokenizerConfig, model_name: str) -> PreTrainedTokenizer:
     logger = get_logger()
+    # The tokenizer name defaults to the model name, a folder of which may hold only a config.json (transformers then
+    # loads an empty tokenizer).
+    model_dir = Path(model_name)
+    tokenizer_files = ("tokenizer_config.json", "tokenizer.json", "tokenizer.model")
+    if config.name == model_name and model_dir.is_dir() and not any((model_dir / f).exists() for f in tokenizer_files):
+        raise FileNotFoundError(f"No tokenizer at model.name {model_name}; set tokenizer.name")
     tokenizer = AutoTokenizer.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
     if config.chat_template is not None:
         path = Path(config.chat_template)
@@ -631,10 +648,11 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
 
 @torch.no_grad()
-def initialize_from_scratch(model: nn.Module) -> None:
+def initialize_from_scratch(model: nn.Module, seed: int) -> None:
     """Initialize the weights with the model's own init (``initialize_weights``, which applies its
-    ``_init_weights``). The parameters are NaN before, so one the init does not reach fails here."""
-    get_logger().info("Initializing the weights from scratch")
+    ``_init_weights``), seeded with ``seed``. The parameters are NaN before, so one the init does not reach fails
+    here."""
+    get_logger().info(f"Initializing the weights from scratch (seed {seed})")
     model.to_empty(device="cuda")
     torch.distributed.barrier()
     model.init_buffers_post_meta()
@@ -643,10 +661,15 @@ def initialize_from_scratch(model: nn.Module) -> None:
     }
     for param in local_params.values():
         param.fill_(float("nan"))
+    torch.manual_seed(seed)
     model.initialize_weights()
     uninitialized = [name for name, param in local_params.items() if param.isnan().any()]
     if uninitialized:
-        raise RuntimeError(f"The init of {type(model).__name__} does not initialize {uninitialized}")
+        more = f", +{len(uninitialized) - 3} more" if len(uninitialized) > 3 else ""
+        raise RuntimeError(
+            f'{model.config.model_type!r} does not support model.init.type = "scratch": its init does not reach '
+            f"{', '.join(uninitialized[:3])}{more}"
+        )
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
@@ -658,10 +681,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     model.init_buffers_post_meta()
 
     logger = get_logger()
-    if config.debug.random_init:
-        logger.warning("Randomly initializing model. Skipping loading weights from HF.")
-        return
-
     if not Path(config.name).exists():
         snapshot_path = Path(snapshot_download(repo_id=config.name, repo_type="model"))
     else:
@@ -931,7 +950,6 @@ def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
-    init_from_scratch: bool = False,
 ) -> nn.Module:
     resolve_auto_attn(config)
 
@@ -1008,8 +1026,8 @@ def setup_model(
         model.to_empty(device=device)
         torch.distributed.barrier()
         model.init_buffers_post_meta()
-    elif init_from_scratch:
-        initialize_from_scratch(model)
+    elif config.init.type == "scratch":
+        initialize_from_scratch(model, config.init.seed)
     else:
         load_dcp_from_hf(model, config)
 

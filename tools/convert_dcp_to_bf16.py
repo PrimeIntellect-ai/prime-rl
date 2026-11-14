@@ -55,7 +55,13 @@ def resolve_run_configs(step_dir: Path) -> tuple[ModelConfig, TokenizerConfig]:
         if path.exists():
             logger.info(f"Reading model config from {path}")
             config = json.loads(path.read_text())
-            return ModelConfig(**config["model"]), TokenizerConfig(**config["tokenizer"])
+            model = config["model"]
+            # Where the weights started does not change the model (older versions: init_from, debug.random_init),
+            # and a ckpt init would require its source step directory to still exist.
+            for key in ("init", "init_from"):
+                model.pop(key, None)
+            model.get("debug", {}).pop("random_init", None)
+            return ModelConfig(**model), TokenizerConfig(**config["tokenizer"])
     raise FileNotFoundError(f"No resolved run config ({' or '.join(RUN_CONFIG_NAMES)}) found under {config_dir}")
 
 
@@ -269,7 +275,7 @@ def save_model_assets(
         processor.save_pretrained(output_dir)
     if tokenizer_config.name is None:
         tokenizer_config = tokenizer_config.model_copy(update={"name": model_config.name})
-    setup_tokenizer(tokenizer_config).save_pretrained(output_dir)
+    setup_tokenizer(tokenizer_config, model_config.name).save_pretrained(output_dir)
     if Path(model_config.name).is_dir():
         for path in Path(model_config.name).glob("*.py"):
             shutil.copyfile(path, output_dir / path.name)

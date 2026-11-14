@@ -5,6 +5,7 @@ import time
 import asyncio
 from contextlib import nullcontext
 from datetime import timedelta
+from pathlib import Path
 
 # Import environment before any other imports
 # ruff: noqa: I001
@@ -31,6 +32,7 @@ from prime_rl.trainer.model import (
     get_global_moe_stats,
     is_tt_moe_model,
     reshard_module,
+    check_ckpt_dir,
     setup_tokenizer,
     setup_model,
     take_moe_routing_stats,
@@ -133,7 +135,8 @@ def train(config: SFTConfig | PretrainConfig):
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
-    tokenizer = setup_tokenizer(config.tokenizer)
+    check_ckpt_dir(config.model)
+    tokenizer = setup_tokenizer(config.tokenizer, config.model.name)
     processor = setup_processor(config.model)
     if config.model.vlm is not None and processor is None:
         raise ValueError(f"[model.vlm] is set but no multimodal processor could be loaded for {config.model.name!r}")
@@ -154,8 +157,8 @@ def train(config: SFTConfig | PretrainConfig):
 
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")
-    loading_from_ckpt_later = checkpoint_step is not None or config.model.init_from is not None
-    model = setup_model(config.model, parallel_dims, loading_from_ckpt_later, config.init_from_scratch)
+    loading_from_ckpt_later = checkpoint_step is not None or config.model.init.type == "ckpt"
+    model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
 
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
@@ -242,8 +245,8 @@ def train(config: SFTConfig | PretrainConfig):
             f"Resuming from step {checkpoint_step} (total_tokens={progress.total_tokens}, "
             f"total_samples={progress.total_samples}, dataset_state={get_dataset_state(dataloader)})"
         )
-    elif config.model.init_from is not None:
-        ckpt_manager.load_weights(config.model.init_from / "trainer", model, [optimizer])
+    elif config.model.init.type == "ckpt":
+        ckpt_manager.load_weights(Path(config.model.name) / "trainer", model, [optimizer])
     else:
         logger.info("Starting from scratch")
 

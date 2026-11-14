@@ -98,9 +98,6 @@ class DebugModelConfig(BaseConfig):
     num_layers: int | None = None
     """Override the number of transformer layers (truncates the model)."""
 
-    random_init: bool = False
-    """Randomly initialize the model instead of loading weights."""
-
     force_balanced_routing: bool = False
     """Replace MoE token-choice routing with a round-robin assignment so every expert sees an equal share. Intended for fake-data smoke tests where untrained routing would otherwise OOM under severe imbalance. Gating scores are still gathered from the override indices so the forward pass stays consistent."""
 
@@ -323,6 +320,26 @@ class MoERuntimeConfig(BaseConfig):
     dispatch: MoEDispatchConfig = TorchMoEDispatchConfig()
 
 
+class InitConfig(BaseConfig):
+    """Where the weights start. A resumed run loads its own checkpoint instead, whatever the type."""
+
+    type: Literal["scratch", "hf", "ckpt"] = "hf"
+    """``scratch``: the model's own random init; ``model.name`` supplies the architecture and the tokenizer. ``hf``: the
+    weights of ``model.name``. ``ckpt``: ``model.name`` is a checkpoint step directory (``.../step_<N>``) of
+    another run, whose ``config.json`` and tokenizer files supply the architecture and the tokenizer; only its weights
+    load, and the run starts at step 0 with a fresh optimizer, scheduler and data."""
+
+    seed: int = 0
+    """Seed for the ``scratch`` init: the same seed gives the same weights."""
+
+    @model_validator(mode="after")
+    def seed_requires_scratch(self):
+        # Resolved configs write the default seed for every type.
+        if self.type != "scratch" and self.seed != 0:
+            raise ValueError(f'model.init.seed applies to type "scratch", not "{self.type}"')
+        return self
+
+
 class ModelConfig(BaseModelConfig):
     vlm: VLMConfig | None = None
     """VLM configuration. Setting this enables vision-language model support."""
@@ -330,8 +347,8 @@ class ModelConfig(BaseModelConfig):
     conversion_dir: Path | None = None
     """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
 
-    init_from: Path | None = None
-    """Checkpoint step directory (e.g. ``other/run/checkpoints/step_500``) to initialize the weights from instead of ``name``'s, such as an SFT run's checkpoint to start RL from. Only the weights load: the run starts at step 0 with a fresh optimizer, scheduler and data. ``name`` still sets the architecture and tokenizer, and a resumed run loads its own checkpoint instead."""
+    init: InitConfig = InitConfig()
+    """Where the weights start."""
 
     seq_len: int = 2048
     """Sequence length the model is trained on."""
@@ -399,9 +416,15 @@ class ModelConfig(BaseModelConfig):
     """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. In SFT the fused head computes the summed cross-entropy and its gradients chunk by chunk, holding one chunk's full-vocab logits at a time."""
 
     @model_validator(mode="after")
-    def validate_init_from(self):
-        if self.init_from is not None:
-            validate_step_dir(self.init_from, field="model.init_from")
+    def validate_checkpoint_name(self):
+        if self.init.type == "ckpt":
+            validate_step_dir(Path(self.name), field='model.name with model.init.type = "ckpt"')
+        return self
+
+    @model_validator(mode="after")
+    def validate_scratch_lora(self):
+        if self.init.type == "scratch" and self.lora is not None:
+            raise ValueError('model.lora adapts pretrained weights, which model.init.type = "scratch" does not load')
         return self
 
     @model_validator(mode="after")
