@@ -106,19 +106,31 @@ transport = "bf16"
 
 For DeepEP, set `type = "deepep"` and tune `num_sms` in the same dispatch table. Routed-expert precision is selected separately with `[trainer.model.moe.compute]` (`bf16`, `deepgemm_fp8`, or `mxfp8`).
 
-Mega MoE (`type = "mega_moe"`) fuses dispatch, the SwiGLU expert MLP, and combine into one persistent kernel per direction, overlapping the expert-parallel communication with the GEMMs. `precision` selects the expert GEMMs: `bf16` (default, SM90+), `mxfp8` (SM100), `fp8` (blockwise FP8 forward and backward, SM90), or `fp8_bwd` (BF16 forward, blockwise FP8 backward, SM90); `[trainer.model.moe.compute]` does not apply to those layers. The kernels come from prime-mega-moe, Prime Intellect's closed-source DeepGEMM fork, built as a `deep_gemm` wheel installed as the top-level `deep_gemm` package (`uv pip install --no-deps <wheel>` after syncing). vLLM prefers a top-level `deep_gemm` over the copy it bundles, so inference then uses the fork too. Without it, selecting `mega_moe` fails at startup with a message naming the missing kernels. Mega MoE needs EP > 1, nvcc 13 on `CUDA_HOME` for the runtime JIT, gated experts without biases, `hidden_size` divisible by 256 and `moe_intermediate_size` by 128.
+Mega MoE (`type = "mega_moe"`) fuses dispatch, the SwiGLU expert MLP, and combine into one persistent kernel per direction, overlapping the expert-parallel communication with the GEMMs. `precision` selects the expert GEMMs: `bf16` (default, SM90+), `mxfp8` (SM100), `mxfp8_qat` (MXFP8 forward, BF16 backward on the forward's dequantized weights: quantization-aware training, SM100), `fp8` (blockwise FP8 forward and backward, SM90), or `fp8_bwd` (BF16 forward, blockwise FP8 backward, SM90); `[trainer.model.moe.compute]` does not apply to those layers. The kernels come from prime-mega-moe, Prime Intellect's closed-source DeepGEMM fork, built as a `deep_gemm` wheel that replaces the public one (`uv pip install --no-deps <wheel>` after syncing). Without it, selecting `mega_moe` fails at startup with a message naming the missing kernels. Mega MoE needs EP > 1, nvcc 13 on `CUDA_HOME` for the runtime JIT, gated experts without biases, `hidden_size` divisible by 256 and `moe_intermediate_size` by 128.
 
 The kernels are persistent grids that synchronize across ranks, so an NCCL kernel on another stream (FSDP all-gathers, gradient reductions) has to fit in the SMs they leave free, or the two deadlock. `num_reserved_sms` is how many SMs they leave free. `NCCL_MAX_CTAS` caps the CTAs (one per SM) a NCCL kernel launches. In the worst case each NCCL kernel uses all `NCCL_MAX_CTAS`, so at most `num_reserved_sms // NCCL_MAX_CTAS` NCCL kernels can run concurrently. FSDP overlaps an all-gather and a reduce-scatter, and HSDP (`dp_replicate > 1`) adds an all-reduce, so the trainer sets `NCCL_MAX_CTAS` to `num_reserved_sms // 2` (`// 3` under HSDP) when it is unset, and refuses to start if it is set higher than that. The default 16 reserved SMs (8 CTAs, 5 under HSDP) are enough for FSDP's collectives; every reserved SM is taken from the GEMMs, so raise `num_reserved_sms` only if NCCL needs more. The symmetric buffer is sized once at startup from `max_tokens_per_rank`, which defaults to a rank's share of the micro batch under context parallelism (`model.seq_len / model.cp` for RL, `data.micro_batch_size * data.seq_len / model.cp` for SFT); a smaller value is rejected at startup.
 
 ```toml
 [trainer.model.moe.dispatch]
 type = "mega_moe"
-precision = "bf16"     # or "mxfp8" (SM100), "fp8" / "fp8_bwd" (SM90)
+precision = "bf16"     # or "mxfp8" / "mxfp8_qat" (SM100), "fp8" / "fp8_bwd" (SM90)
 num_reserved_sms = 16  # SMs left free for NCCL; NCCL_MAX_CTAS defaults to this // 2 (// 3 under HSDP)
 
 [trainer.env_vars]
 CUDA_HOME = "/usr/local/cuda-13.0"
 PATH = "/usr/local/cuda-13.0/bin:${PATH}"
+```
+
+With `[trainer.model.moe.dispatch.llep]`, Mega MoE (`precision = "bf16"` on SM90, `"mxfp8_qat"` on SM100) runs least-loaded expert parallelism ([LLEP](https://arxiv.org/abs/2601.17111)): when routing overloads a rank's experts, some of their routes are computed on the least-loaded ranks, which receive a copy of those experts' weights over NVLink (with MXFP8, the owner's quantized weights and scales). Every rank plans on the GPU from all ranks' per-expert counts (no host sync, no recompiles as the routing changes), and the weight copies overlap with the expert computation. Outputs are bitwise identical to plain Mega MoE and expert gradients are as accurate. Because the plan bounds what a rank receives, the symmetric buffers are several times smaller than plain Mega MoE's; `chunk_tokens` runs long sequences in several calls over a buffer sized for one chunk. With LLEP, `num_reserved_sms` defaults to 32, since the weight copies run next to the grid. It needs the prime-mega-moe build with LLEP support.
+
+```toml
+[trainer.model.moe.dispatch.llep]
+alpha = 1.05       # a rank is full at alpha x the mean routes per rank
+min_chunk = 1024   # fewest routes worth copying an expert's weights for
+lam = 1.1          # below this busiest/mean rank load, nothing moves
+max_foreign = 8    # experts a rank can compute for others (weights + fp32 gradients of memory each)
+max_recv = 1.3     # routes a rank's buffers hold, as a multiple of its own routes
+chunk_tokens = 16384  # optional: tokens per rank per kernel call (long sequences)
 ```
 
 ### Context Parallelism
@@ -177,7 +189,7 @@ fused_lm_head_token_chunk_size = 8192       # default
 # fused_lm_head_token_chunk_size = "disabled"  # vanilla LM head
 ```
 
-Drop the chunk size further when peak memory is still tight (e.g. with very long sequences); raise it to amortize kernel-launch overhead. SFT training silently disables this (not supported yet).
+Drop the chunk size further when peak memory is still tight (e.g. with very long sequences); raise it to amortize kernel-launch overhead. In SFT the head returns the summed cross-entropy and computes its gradients chunk by chunk during the forward pass.
 
 ## Memory-Tight Recipe
 

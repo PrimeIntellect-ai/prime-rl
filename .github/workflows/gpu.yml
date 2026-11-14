@@ -43,7 +43,7 @@ jobs:
   unit-gpu:
     name: Unit (GPU)
     needs: gate
-    runs-on: prime-rl-2xh200
+    runs-on: prime-rl-2xh100
     container:
       image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
       options: --gpus all
@@ -58,21 +58,25 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: false
+          persist-credentials: false
       - parallel:
           - name: Init public submodules
+            env:
+              GITHUB_TOKEN: ${{ github.token }}
             run: |
+              git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
               git config --global url."https://github.com/".insteadOf "git@github.com:"
               git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
           - name: Install uv
             uses: astral-sh/setup-uv@v10.0.1
             with:
-              enable-cache: true
-              cache-dependency-glob: "uv.lock"
+              enable-cache: false
       - name: Install dependencies
         run: uv sync --all-extras --all-packages --locked
       - name: Run unit tests
         env:
           USERNAME_CI: CI_RUNNER
+          UV_NO_SYNC: "1"
           WANDB_MODE: offline
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
@@ -84,7 +88,7 @@ jobs:
   integration:
     name: Integration / ${{ matrix.name }}
     needs: gate
-    runs-on: prime-rl-2xh200
+    runs-on: prime-rl-2xh100
     container:
       image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
       options: --gpus all
@@ -92,7 +96,7 @@ jobs:
     strategy:
       fail-fast: false
       # Bound per-PR fan-out: at most 5 integration jobs at a time (plus unit-tests),
-      # i.e. 6 h200 pods per PR. Tune together with the ARC scale set maxRunners.
+      # i.e. 6 h100 pods per PR. Tune together with the ARC scale set maxRunners.
       max-parallel: 5
       matrix:
         include:
@@ -116,16 +120,19 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: false
+          persist-credentials: false
       - parallel:
           - name: Init public submodules
+            env:
+              GITHUB_TOKEN: ${{ github.token }}
             run: |
+              git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
               git config --global url."https://github.com/".insteadOf "git@github.com:"
               git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
           - name: Install uv
             uses: astral-sh/setup-uv@v10.0.1
             with:
-              enable-cache: true
-              cache-dependency-glob: "uv.lock"
+              enable-cache: false
       - name: Install dependencies
         run: uv sync --all-extras --all-packages --locked
       - name: Install ModelExpress server
@@ -136,6 +143,7 @@ jobs:
       - name: Run integration tests
         env:
           USERNAME_CI: CI_RUNNER
+          UV_NO_SYNC: "1"
           WANDB_MODE: offline
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
