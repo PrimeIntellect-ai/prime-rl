@@ -397,6 +397,8 @@ class Orchestrator:
             set_limit=self.dispatcher.set_limit,
             get_inflight=lambda: self.dispatcher.current_inflight,
             on_overload=self.dispatcher.cancel_inflight,
+            get_train_finished=lambda: self.dispatcher.finished_train_rollouts,
+            trainer=self.trainer_capacity,
         )
         # The collector always polls — it feeds the concurrency controller;
         # metrics fan out to every registered monitor when collection is on.
@@ -757,6 +759,7 @@ class Orchestrator:
         self.trainer_rate = batch.cohort.num_traces / (shipped_at - self.shipped_at) if trainer_bound else None
         self.shipped_at = shipped_at
         self.trainer_capacity.shipped(batch.cohort.num_traces, self.sender.last_requested_at)
+        self.concurrency.trainer_shipped()
         wait_for_policy_time = shipped_at - send_start_time - send_batch_time
         self.train_sink.shipped(batch)
         self.progress.step += 1

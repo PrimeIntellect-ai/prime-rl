@@ -18,7 +18,7 @@ dependencies = [
     "wandb-workspaces>=0.4.3",
     "prime-runs[train]>=0.1.6",
     "pyzmq>=27.1.0",
-    "msgpack>=1.1.2",
+    "msgpack>=1.2.3",
     "aiolimiter>=1.2.1",
     "tenacity>=8.2.0",
     "openai>=1.106.1",
@@ -31,6 +31,7 @@ dependencies = [
     "uvloop>=0.21.0",
     "verifiers[harbor]>=0.4.1",
     "renderers[multimodal]>=0.2.0",
+    "pillow>=13.0.0",
     "pybase64>=1.4.2",
     "msgspec>=0.18",
     "fastapi>=0.115",
@@ -157,7 +158,18 @@ override-dependencies = [
     "nvidia-cutlass-dsl==4.8.0",
     # vLLM 0.33.0 is compiled against and pins exactly torch 2.14.0.
     "torch==2.14.0",
+    # torch 2.14 pins NCCL 2.30.7, which puts both GPUs of a pair on the same NIC when every GPU
+    # runs its own cross-node communicator at once (e.g. FSDP with expert parallelism inside a
+    # node), cutting their bandwidth 40-50% where two GPUs share two NICs. Fixed in NCCL 2.31.2:
+    # https://github.com/NVIDIA/nccl/releases/tag/v2.31.2-1
+    # Drop this pin once torch pins NCCL >= 2.31.2. With NCCL >= 2.31.2, torch releases up to 2.15
+    # can hang in destroy_process_group when a process group holds several communicators, e.g.
+    # unbatched send/recv to several peers on a group created without device_id (pytorch#201536).
+    "nvidia-nccl-cu13==2.32.3 ; sys_platform == 'linux'",
     "openenv-core",
+    # enterprise-ops-gym and mcp-atlas cap datasets<5, which holds huggingface-hub,
+    # filelock and fsspec at versions with known vulnerabilities.
+    "datasets>=5.0.1",
 ]
 
 # prime-envs packages are auto-discovered as workspace members, so new

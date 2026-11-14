@@ -16,8 +16,9 @@ from prime_rl.transports.weights.base import (
     SENDER_READY_MARKER,
     WeightReceiver,
     WeightSender,
+    marker_exists,
 )
-from prime_rl.utils.sparse_weights import DELTA_DIR, MANIFEST, revalidate
+from prime_rl.utils.sparse_weights import DELTA_DIR, MANIFEST
 from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
     gather_weights_parallel,
@@ -83,11 +84,10 @@ class FileSystemWeightReceiver(WeightReceiver):
             return
         weights_dir = self.step_dir(step)
         manifest, finished = weights_dir / DELTA_DIR / MANIFEST, weights_dir / FINISHED_MARKER
-        while not (manifest.exists() or finished.exists()):
+        while not (marker_exists(manifest) or marker_exists(finished)):
             self._ack_offer(step)
             await asyncio.sleep(0.05)
-            revalidate(manifest.parent)
-        if manifest.exists():
+        if marker_exists(manifest):
             start = time.perf_counter()
             await self.admin_plane.prefetch_weights(weights_dir)
             self.logger.debug(f"Prefetched sparse weight delta v{step} in {time.perf_counter() - start:.2f}s")
@@ -97,7 +97,7 @@ class FileSystemWeightReceiver(WeightReceiver):
         """Acknowledge an offer of v{step} not yet acknowledged. A trainer restarted mid-broadcast offers the version
         again, resetting the directory, so every offer is acknowledged."""
         weights_dir = self.step_dir(step)
-        if (weights_dir / SENDER_READY_MARKER).exists() and not (weights_dir / RECEIVER_READY_MARKER).exists():
+        if marker_exists(weights_dir / SENDER_READY_MARKER) and not marker_exists(weights_dir / RECEIVER_READY_MARKER):
             with contextlib.suppress(FileNotFoundError):
                 self._ack(step)
                 return True
@@ -107,13 +107,12 @@ class FileSystemWeightReceiver(WeightReceiver):
         await self.prepare(step)
         weights_dir = self.step_dir(step)
         finished = weights_dir / FINISHED_MARKER
-        while not finished.exists():
+        while not marker_exists(finished):
             if self._ack_offer(step):
                 # A new offer rewrites the delta: prefetch it again rather than apply the abandoned one
                 self.prepared_step = None
                 await self.prepare(step)
             await asyncio.sleep(0.05)
-            revalidate(weights_dir)
         if (weights_dir / "adapter_config.json").exists():
             await load_lora_adapter(self.admin_plane, self.model_name, weights_dir, step)
         else:
