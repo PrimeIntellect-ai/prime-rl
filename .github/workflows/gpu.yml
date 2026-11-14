@@ -153,6 +153,11 @@ jobs:
           GITHUB_HEAD_REF: ${{ github.head_ref }}
           PYTEST_OUTPUT_DIR: /tmp/outputs
           VLLM_WORKER_MULTIPROC_METHOD: spawn
+          # The runner pods expose an InfiniBand device without a usable address, and UCX
+          # auto-selects it, so ModelExpress's NIXL agent fails with uct_iface_open "Address
+          # not valid". "^ib" excludes the InfiniBand transports, leaving TCP and CUDA IPC.
+          # ModelExpress applies it to UCX_TLS only for its agent. An empty value leaves UCX untouched.
+          NIXL_UCX_TLS: ${{ matrix.test == 'reverse_text_modelexpress' && '^ib' || '' }}
         run: uv run pytest -vvs tests/integration/test_${{ matrix.test }}.py
       - name: Upload run logs on failure
         if: failure()
