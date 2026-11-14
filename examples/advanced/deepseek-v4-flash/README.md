@@ -6,7 +6,7 @@ The recipe is a hardware-agnostic base plus one overlay per GPU type under `gpu/
 
 | Config | What it sets |
 |---|---|
-| [`rl.toml`](rl.toml) | Base: `terminal-lego` + `swelego` training with a linear length penalty, `openthoughts-tblite` evals (avg@4), Muon, batch 512 / group 16, DEP8 inference (one replica per node: attention data parallel, experts sharded 8 ways). Does not parse standalone. |
+| [`rl.toml`](rl.toml) | Base: `terminal-lego` + `swelego` training with a linear length penalty, `openthoughts-tblite` evals (avg@4), Muon, batch 256 / group 8, DEP8 inference (one replica per node: attention data parallel, experts sharded 8 ways). Does not parse standalone. |
 | [`gpu/h200.toml`](gpu/h200.toml) | 8×H200 nodes: 4 trainer + 2 inference nodes, blockwise FP8 trainer and online FP8 vLLM, DeepEP low-latency all-to-all, 1024+ rollouts in flight. |
 
 ```bash

@@ -40,12 +40,12 @@ score_centering = true
 # --- Orchestrator ---
 
 [orchestrator]
-batch_size = 512
+batch_size = 256
 # Episodes span many trainer steps at high concurrency.
 max_staleness = 32
 
 [orchestrator.train]
-group_size = 16
+group_size = 8
 
 [orchestrator.train.sampling]
 top_p = 0.97
