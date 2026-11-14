@@ -241,6 +241,38 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     """SMs allocated to DeepEP communication kernels."""
 
 
+class LLEPConfig(BaseConfig):
+    """Least-loaded expert parallelism (https://arxiv.org/abs/2601.17111): a rank whose experts are overloaded hands
+    part of their routes, with a copy of the experts' weights, to the least-loaded ranks. The computation stays exact."""
+
+    alpha: float = Field(1.05, ge=1.0)
+    """A rank counts as full at ``alpha`` times the mean routes per rank."""
+
+    min_chunk: int = Field(1024, ge=1)
+    """Fewest routes worth copying an expert's weights to another rank."""
+
+    lam: float = Field(1.1, ge=0.0)
+    """Below this busiest-rank over mean-rank load, every expert stays on its own rank (standard EP)."""
+
+    max_foreign: int = Field(8, ge=1)
+    """Experts a rank can compute for other ranks; each costs one expert's weights (and gradients) of memory."""
+
+    chunk_tokens: int | None = Field(None, ge=1)
+    """Tokens per rank per kernel call. A larger batch runs as several calls, so the symmetric buffers hold one chunk
+    instead of the whole batch (for long sequences). ``None``: one call per layer."""
+
+    max_recv: float = Field(1.3, gt=0.0)
+    """Routes a rank's buffers hold, as a multiple of its own routes (``max_tokens_per_rank * top_k``). The plan keeps
+    every rank within about ``max(alpha, lam)`` of the mean, so this can be far below the ``ep`` multiple plain Mega MoE
+    reserves. A plan that would exceed it (only when helpers run out of foreign slots) stops the kernel with an error."""
+
+    @model_validator(mode="after")
+    def validate_max_recv(self):
+        if self.max_recv < max(self.alpha, self.lam):
+            raise ValueError("model.moe.dispatch.llep.max_recv must be at least max(alpha, lam).")
+        return self
+
+
 class MegaMoeMoEDispatchConfig(BaseConfig):
     """Fused dispatch, expert MLP and combine. The expert precision comes from ``model.moe.compute``, as for every
     dispatch: ``bf16`` (SM90+), ``mxfp8`` (SM100; ``backward = "dequant_bf16"`` for a BF16 backward on the dequantized
@@ -257,7 +289,18 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     """SMs left free for concurrent NCCL kernels. In the worst case each NCCL kernel uses all ``NCCL_MAX_CTAS``, so
     at most ``num_reserved_sms // NCCL_MAX_CTAS`` NCCL kernels can run concurrently. FSDP overlaps an all-gather and
     a reduce-scatter, and HSDP (``dp_replicate > 1``) adds an all-reduce, so the trainer sets ``NCCL_MAX_CTAS`` to
-    this value divided by 2 (3 under HSDP) when it is unset and requires it to be at most that."""
+    this value divided by 2 (3 under HSDP) when it is unset and requires it to be at most that. Defaults to 32 with
+    ``llep``, whose weight copies run next to the grid."""
+
+    llep: LLEPConfig | None = None
+    """Balance imbalanced routing with least-loaded expert parallelism. Requires ``model.moe.compute`` ``bf16``
+    (SM90) or ``mxfp8`` with ``backward = "dequant_bf16"`` (SM100)."""
+
+    @model_validator(mode="after")
+    def llep_reserved_sms(self):
+        if self.llep is not None and "num_reserved_sms" not in self.model_fields_set:
+            self.num_reserved_sms = 32
+        return self
 
 
 def mega_moe_precision(compute: "MoEComputeConfig") -> str:
@@ -424,7 +467,12 @@ class ModelConfig(BaseModelConfig):
         compute = self.moe.compute
         dispatch = self.moe.dispatch
         if isinstance(dispatch, MegaMoeMoEDispatchConfig):
-            mega_moe_precision(compute)  # raises for what Mega MoE cannot run
+            precision = mega_moe_precision(compute)  # raises for what Mega MoE cannot run
+            if dispatch.llep is not None and precision not in ("bf16", "mxfp8_qat"):
+                raise ValueError(
+                    "model.moe.dispatch.llep requires model.moe.compute type 'bf16', or 'mxfp8' with "
+                    "backward = 'dequant_bf16'."
+                )
         elif isinstance(compute, DeepGemmFP8MoEComputeConfig) and compute.forward == "bf16":
             raise ValueError("model.moe.compute.forward = 'bf16' needs model.moe.dispatch.type = 'mega_moe'.")
         elif isinstance(compute, MXFP8MoEComputeConfig) and compute.backward == "dequant_bf16":
@@ -574,6 +622,13 @@ class CheckpointConfig(BaseConfig):
 
     skip_optimizer: bool = False
     """Skip loading the optimizer state from checkpoint."""
+
+    async_save: bool = False
+    """Write checkpoints in the background. A save copies this rank's model and optimizer state into pinned host
+    buffers and returns; a background thread writes the copy while training continues. The buffers are kept for
+    the next save, so this costs pinned host memory about the size of the rank's checkpoint shard. Without
+    optimizer offload the copy also overlaps the next step, until its optimizer step. A save first waits for the
+    previous write to finish."""
 
 
 class IPOLossConfig(BaseConfig):

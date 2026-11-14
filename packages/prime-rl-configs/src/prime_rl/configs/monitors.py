@@ -35,7 +35,7 @@ class FileMonitorConfig(BaseConfig):
     compress: bool = True
     """Seal full chunks with zstd once the stream rolls past them (the live chunk stays
     plain text). Sealed chunks use seekable frames: a reader still lands on one line,
-    and ``zstd -dcf stream/* | jq`` reads a whole stream."""
+    and ``zstd -dcf stream/*.jsonl* | jq`` reads a whole stream."""
 
     float_decimals: int | None = 4
     """Decimals kept for per-token float streams (logprobs, entropies, advantages) in

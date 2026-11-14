@@ -426,6 +426,16 @@ def test_moe_compute_apply_to_cli(selection, selected):
             },
             "MXFP8 transport requires",
         ),
+        (
+            {
+                "ep": 8,
+                "moe": {
+                    "compute": {"type": "mxfp8"},
+                    "dispatch": {"type": "mega_moe", "max_tokens_per_rank": 8192, "llep": {}},
+                },
+            },
+            "llep requires",
+        ),
     ],
 )
 def test_invalid_moe_runtime_configs_fail(model, message):
