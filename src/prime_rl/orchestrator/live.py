@@ -41,21 +41,45 @@ def dispatched_event(meta: InflightEpisode) -> dict[str, Any]:
     return {"dispatched": meta.dispatch_id}
 
 
-def apply(meta: InflightEpisode, delta: dict[str, Any]) -> None:
-    """Fold one delta into the episode's phase/turn bookkeeping."""
+def apply(meta: InflightEpisode, delta: dict[str, Any]) -> list[tuple[int, int]]:
+    """Fold one delta into the episode's phase/turn bookkeeping. Returns the context
+    of each of the delta's model calls (see :func:`context`) with the call's number
+    within the episode."""
     trace_id = delta["trace"]
     if delta.get("discard"):
         meta.live.pop(trace_id, None)
-        return
+        return []
     if "open" in delta or trace_id not in meta.live:  # an `open` for a known trace is a retry
         meta.live[trace_id] = LiveTrace()
     trace = meta.live[trace_id]
-    trace.turns += len(delta.get("calls") or [])
+    calls = delta.get("calls") or []
+    trace.turns += len(calls)
+    contexts = []
+    for call in calls:
+        meta.calls += 1
+        contexts.append((context(trace, call.get("usage")), meta.calls))
     changed = delta.get("set") or {}
     if changed.get("errors"):
         trace.stage = "error"
     elif "timing" in changed:
         trace.stage = stage({"timing": changed["timing"]})
+    return contexts
+
+
+def context(trace: LiveTrace, usage: dict[str, Any] | None) -> int:
+    """The history one model call carries on from its trace's previous call: that
+    call's input, when this one extends it (an append-only history). A call whose
+    input shrank (compaction, a forked branch) rewrote the history and carries none;
+    so does a call without reported cached tokens, whose full input is unknown, and
+    which also breaks the chain."""
+    if not usage or usage.get("cached_input_tokens") is None:
+        trace.prev_input = None
+        return 0
+    input_tokens = usage["prompt_tokens"] + usage["cached_input_tokens"]
+    prev_input, trace.prev_input = trace.prev_input, input_tokens
+    if prev_input is None or input_tokens < prev_input:
+        return 0
+    return prev_input
 
 
 def stage_counts(inflight: list[InflightEpisode]) -> str:
