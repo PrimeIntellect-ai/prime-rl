@@ -7,7 +7,7 @@ mode = "sft"
 max_steps = 13700
 
 [model]
-name = "outputs/open-jev/Qwen3.5-2B-decision"  # the base weights plus the decision head (prepare_checkpoint.py)
+name = "outputs/open-jev/Qwen3.5-2B"  # the base model, as downloaded: the class initialises the decision head
 
 [model.implementation]
 import_path = "decision_models.open_jev.model.Qwen3_5Decision"
