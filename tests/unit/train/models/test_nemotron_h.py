@@ -2,9 +2,12 @@ from unittest.mock import MagicMock
 
 import pytest
 import torch
+from transformers import AutoConfig
 
+from prime_rl.trainer.models import get_custom_causal_lm_cls
+from prime_rl.trainer.models.conversion_ops import view_mapping
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
+from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM, NemotronHOmniConfig
 from prime_rl.trainer.models.nemotron_h.mamba import NemotronHMamba2
 from prime_rl.utils.cp import CPContext
 from prime_rl.utils.utils import default_dtype
@@ -101,6 +104,86 @@ def test_nemotron_h_layer_types():
     assert list_config.layer_types == expected
     assert legacy_config.layer_types == expected
     assert pattern_config.num_hidden_layers == list_config.num_hidden_layers == 4
+
+
+def test_nemotron_h_omni_config(tmp_path):
+    config = NemotronHOmniConfig(
+        llm_config=_BASE
+        | {
+            "layers_block_type": ["mamba", "moe", "attention", "moe"],
+            "eos_token_id": 11,
+            "time_step_limit": [0.0, {"__float__": "Infinity"}],
+        },
+        vision_config={"model_type": "radio"},
+        attn_implementation="flash_attention_2",
+    )
+    config.save_pretrained(tmp_path)
+    restored = AutoConfig.from_pretrained(tmp_path, attn_implementation="flash_attention_2")
+
+    assert isinstance(restored, NemotronHOmniConfig)
+    assert get_custom_causal_lm_cls(restored) is NemotronHForCausalLM
+    assert restored.get_text_config() is restored.llm_config
+    assert restored.text_config.num_hidden_layers == 4
+    assert restored.text_config.layer_types == ["linear_attention", "moe", "full_attention", "moe"]
+    assert restored.text_config.time_step_limit == (0.0, float("inf"))
+    assert restored.text_config._attn_implementation == "flash_attention_2"
+    assert restored.eos_token_id == restored.text_config.eos_token_id == 11
+    assert restored.vision_config == config.vision_config
+
+
+def test_nemotron_h_omni_conversion_roundtrip():
+    config = NemotronHOmniConfig(llm_config=_BASE | {"hybrid_override_pattern": "ME*E"})
+    with torch.device("meta"):
+        model = NemotronHForCausalLM(config)
+    assert model.model.config is config.text_config
+    assert not hasattr(model.model, "visual")
+
+    original = {key: torch.randn(value.shape) for key, value in model.state_dict().items()}
+    hf = model.convert_to_hf(dict(original))
+    assert "language_model.backbone.embeddings.weight" in hf
+    assert "language_model.lm_head.weight" in hf
+    assert "language_model.backbone.layers.1.mixer.experts.0.up_proj.weight" in hf
+    assert all(key.startswith("language_model.") for key in hf)
+    assert model.is_hf_state_dict(hf)
+    assert not model.is_prime_state_dict(hf)
+
+    # Official checkpoints also include vision, projector, and MTP tensors.
+    hf.update(
+        {
+            "vision_model.radio_model.weight": torch.ones(1),
+            "vision_projector.vision_final_layernorm.weight": torch.ones(1),
+            "mlp1.1.weight": torch.ones(1),
+            "language_model.mtp.weight": torch.ones(1),
+        }
+    )
+    converted = model.convert_to_prime(hf)
+    assert converted.keys() == original.keys()
+    for key, value in original.items():
+        torch.testing.assert_close(converted[key], value, rtol=0, atol=0)
+
+    # The same chain must export rank-local packets and checkpoint views.
+    partial = model.convert_to_hf({"lm_head.weight": original["lm_head.weight"]})
+    assert partial.keys() == {"language_model.lm_head.weight"}
+    mapping = view_mapping(model.conversion_chain(config), {key: value.shape for key, value in original.items()})
+    assert mapping is not None
+    assert mapping.keys() == model.convert_to_hf(dict(original)).keys()
+
+
+def test_nemotron_h_omni_text_forward_matches_standalone():
+    config = NemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
+        standalone = NemotronHForCausalLM(config)
+        omni = NemotronHForCausalLM(NemotronHOmniConfig(llm_config=config))
+    omni.load_state_dict(standalone.state_dict())
+    inject_prime_lm_head(standalone)
+    inject_prime_lm_head(omni)
+    input_ids = torch.randint(0, 256, (1, 16), device="cuda")
+    seq_lens = torch.tensor([8, 8], device="cuda")
+    expected = standalone(input_ids, seq_lens=seq_lens)["logits"]
+    actual = omni(input_ids, seq_lens=seq_lens)["logits"]
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    actual.sum().backward()
+    assert all(parameter.grad is not None for parameter in omni.parameters())
 
 
 def test_nemotron_h_context_parallel_setup_finds_wrapped_mamba_layer():

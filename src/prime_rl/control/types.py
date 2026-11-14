@@ -11,8 +11,10 @@ if TYPE_CHECKING:
     from prime_rl.configs.orchestrator import OrchestratorConfig
 
 ActionState = Literal["pending", "accepted", "committed", "applied"]
-"""A pause goes pending -> accepted -> committed, a config update pending -> applied."""
-ActionType = Literal["pause", "update_config"]
+"""A pause or checkpoint goes pending -> accepted -> committed, a config update pending -> applied."""
+StepActionType = Literal["checkpoint", "pause"]
+"""An action that saves the run at a step: a checkpoint keeps running after it, a pause stops."""
+ActionType = Literal["checkpoint", "pause", "update_config"]
 
 
 class Action(BaseModel):
@@ -26,8 +28,8 @@ class Action(BaseModel):
     """What a config update changes."""
 
 
-class PauseRequest(BaseModel):
-    type: Literal["pause"]
+class StepActionRequest(BaseModel):
+    type: StepActionType
     step: int | None = None
     """The step to apply the action at, which the orchestrator requires and the trainer picks itself."""
 
@@ -38,7 +40,7 @@ class UpdateConfigRequest(BaseModel):
     """The full new config, as returned by ``GET /v1/config``."""
 
 
-ActionRequest = Annotated[PauseRequest | UpdateConfigRequest, Field(discriminator="type")]
+ActionRequest = Annotated[StepActionRequest | UpdateConfigRequest, Field(discriminator="type")]
 
 
 class ConfigSnapshot(BaseModel):
@@ -46,6 +48,17 @@ class ConfigSnapshot(BaseModel):
     step: int | None
     """The last step the run shipped, None before the first."""
     config: dict[str, Any]
+
+
+class CheckpointStatus(BaseModel):
+    step: int
+    complete: bool
+    """Whether the trainer finished saving the step, which DCP marks by writing ``trainer/.metadata`` last."""
+
+
+class CheckpointList(BaseModel):
+    checkpoints: list[CheckpointStatus]
+    """Ascending by step."""
 
 
 @dataclass(frozen=True)

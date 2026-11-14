@@ -7,7 +7,7 @@ from torch.distributed.checkpoint.format_utils import dcp_to_torch_save
 
 from tests.conftest import ProcessResult
 from tests.integration.dashboard_smoke import make_dashboard_test
-from tests.utils import check_hf_load, check_loss_goes_down, convert_checkpoint, strip_escape_codes
+from tests.utils import check_hf_load, check_loss_goes_down, check_no_error, convert_checkpoint, strip_escape_codes
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
@@ -20,6 +20,8 @@ def run_dir(output_dir: Path) -> Path:
 
 
 TIMEOUT = 300  # 5 minutes
+RL_TIMEOUT = 600
+RL_INIT_FROM_RUN_NAME = "reverse-text-rl-init-from"
 
 
 @pytest.fixture(scope="module")
@@ -124,6 +126,42 @@ def sft_full_offload_model_only_resume_process(
     return run_process(cmd, timeout=TIMEOUT)
 
 
+@pytest.fixture(scope="module")
+def rl_init_from_process(
+    sft_process,
+    run_process: Callable[..., ProcessResult],
+    wandb_project: str,
+    wandb_name: str,
+    output_dir: Path,
+    run_dir: Path,
+) -> ProcessResult:
+    """RL from the SFT checkpoint's weights, with a zero learning rate so its
+    checkpoint holds exactly the weights it started from."""
+    cmd = [
+        "uv",
+        "run",
+        "rl",
+        "@",
+        "configs/ci/integration/reverse-text/start.toml",
+        "--max-steps",
+        "1",
+        "--trainer.model.init-from",
+        (run_dir / "checkpoints" / "step_5").as_posix(),
+        "--trainer.optim.lr",
+        "0",
+        "--monitors.wandb.project",
+        wandb_project,
+        "--monitors.wandb.name",
+        f"{wandb_name}-rl-init-from",
+        "--no-monitors.prime",
+        "--output-dir",
+        output_dir.as_posix(),
+        "--run.name",
+        RL_INIT_FROM_RUN_NAME,
+    ]
+    return run_process(cmd, timeout=RL_TIMEOUT)
+
+
 def test_no_error(sft_process: ProcessResult):
     """Tests that the SFT process does not fail."""
     assert sft_process.returncode == 0, f"Process has non-zero return code ({sft_process})"
@@ -136,6 +174,20 @@ def test_loss_goes_down(sft_process: ProcessResult, run_dir: Path):
     with open(trainer_log_path, "r") as f:
         trainer_stdout = strip_escape_codes(f.read()).splitlines()
     check_loss_goes_down(trainer_stdout)
+
+
+def test_rl_init_from_starts_from_the_sft_weights(
+    rl_init_from_process: ProcessResult, output_dir: Path, run_dir: Path, tmp_path: Path
+):
+    rl_run_dir = output_dir / RL_INIT_FROM_RUN_NAME
+    check_no_error(rl_init_from_process, rl_run_dir)
+
+    sft = _model_state(run_dir / "checkpoints" / "step_5", tmp_path / "sft.pt")
+    rl = _model_state(rl_run_dir / "checkpoints" / "step_1", tmp_path / "rl.pt")
+
+    assert sft.keys() == rl.keys()
+    for key in sft:
+        assert torch.equal(sft[key].to(torch.bfloat16), rl[key].to(torch.bfloat16)), f"Weight mismatch: {key}"
 
 
 def test_no_error_resume(sft_resume_process: ProcessResult):
@@ -161,12 +213,8 @@ def test_full_offload_model_only_resume_preserves_weights(
         f"Process has non-zero return code ({sft_full_offload_model_only_resume_process})"
     )
 
-    def model_state(step: int) -> dict[str, torch.Tensor]:
-        torch_save_path = tmp_path / f"step_{step}.pt"
-        dcp_to_torch_save(run_dir / "checkpoints" / f"step_{step}" / "trainer", torch_save_path)
-        return torch.load(torch_save_path, map_location="cpu", weights_only=False)["app"]["model"]
-
-    before, after = model_state(5), model_state(6)
+    before = _model_state(run_dir / "checkpoints" / "step_5", tmp_path / "step_5.pt")
+    after = _model_state(run_dir / "checkpoints" / "step_6", tmp_path / "step_6.pt")
     assert before.keys() == after.keys()
     # The runs train in different compute dtypes (fp32 vs bf16 under full offload),
     # so compare in the dtype the resumed model actually loaded.
@@ -188,3 +236,8 @@ def test_convert_final_checkpoint(sft_resume_process: ProcessResult, run_dir: Pa
 
 
 test_dashboard = make_dashboard_test("sft_process", RUN_NAME)
+
+
+def _model_state(step_dir: Path, torch_save_path: Path) -> dict[str, torch.Tensor]:
+    dcp_to_torch_save(step_dir / "trainer", torch_save_path)
+    return torch.load(torch_save_path, map_location="cpu", weights_only=False)["app"]["model"]

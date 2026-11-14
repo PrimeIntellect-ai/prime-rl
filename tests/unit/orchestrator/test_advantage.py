@@ -380,6 +380,64 @@ def test_linear_subagent_tokens_follow_semantic_edges(subagent_token_weight, ter
     )
 
 
+@pytest.mark.parametrize("penalty_type", [LinearLengthPenaltyConfig, LinearSubagentLengthPenaltyConfig])
+@pytest.mark.parametrize("term", ["num_output_tokens_weight", "num_input_tokens_weight", "num_turns_weight"])
+def test_length_penalty_ignores_discarded_compactions(penalty_type, term):
+    episode = _build_episode(1.0, sampled_lengths=[5])
+    trace = episode.traces[0]
+    trace.calls[0].usage = vf.Usage(prompt_tokens=10, completion_tokens=5)
+    trace.nodes.extend(
+        [
+            vf.MessageNode(parent=1, message=vf.UserMessage(content="summarize")),
+            vf.MessageNode(
+                parent=2,
+                message=vf.AssistantMessage(content="discarded"),
+                sampled=True,
+                token_ids=[1],
+                mask=[True],
+                semantic_parents=[vf.ParentLink(node=1, type="compaction_attempt")],
+            ),
+            vf.MessageNode(
+                parent=2,
+                message=vf.AssistantMessage(content="summary"),
+                sampled=True,
+                token_ids=[2] * 10,
+                mask=[True] * 10,
+                semantic_parents=[vf.ParentLink(node=1, type="compaction_attempt")],
+            ),
+            vf.MessageNode(parent=None, message=vf.UserMessage(content="summary")),
+            vf.MessageNode(
+                parent=5,
+                message=vf.AssistantMessage(content="answer"),
+                sampled=True,
+                token_ids=[3] * 15,
+                mask=[True] * 15,
+                semantic_parents=[vf.ParentLink(node=4, type="compaction")],
+            ),
+        ]
+    )
+    trace.calls.extend(
+        [
+            vf.ModelCall(node=3, usage=vf.Usage(prompt_tokens=1000, completion_tokens=1000)),
+            vf.ModelCall(node=4, usage=vf.Usage(prompt_tokens=20, completion_tokens=10)),
+            vf.ModelCall(node=6, usage=vf.Usage(prompt_tokens=30, completion_tokens=15)),
+        ]
+    )
+    assert _length_penalty_tokens(trace, 1.0) == pytest.approx((30, 45))
+    restored = vf.WireTrace.model_validate_json(trace.model_dump_json())
+    assert _length_penalty_tokens(restored, 1.0) == pytest.approx((30, 45))
+
+    # The same trained work and context, with no discarded generation.
+    peer = episode.model_copy(deep=True)
+    peer.traces[0].nodes[3].sampled = False
+    peer.traces[0].nodes[3].mask = [False]
+    peer.traces[0].calls[1].usage = vf.Usage(prompt_tokens=0, completion_tokens=0)
+    kwargs = dict(num_output_tokens_weight=0.0, num_input_tokens_weight=0.0, num_turns_weight=0.0)
+    kwargs[term] = 0.25
+    penalty = penalty_type(**kwargs)
+    assert _grpo([episode, peer], length_penalty=penalty) == pytest.approx([0.0, 0.0], abs=1e-6)
+
+
 # --------------------------------------------------------------------------
 # assign_advantages: scalar broadcast over the rollout's trainable tokens.
 # --------------------------------------------------------------------------

@@ -136,3 +136,35 @@ A_LIVE = {"batch_size": 128, "max_staleness": 8, "source": [{"ratio": 2.0}, {"ra
 )
 def test_merge_resumed_config(launch, expected):
     assert merge_resumed_config(A, A_LIVE, launch) == expected
+
+
+def source(name: str | None, ratio: float, taskset: str = "math") -> dict:
+    return {"name": name, "env": {"id": "", "taskset": {"id": taskset}}, "ratio": ratio}
+
+
+SOURCES = {"source": [source("math", 1.0), source(None, 1.0, taskset="code")]}
+SOURCES_LIVE = {"source": [source("math", 2.0), source(None, 3.0, taskset="code")]}
+
+
+@pytest.mark.parametrize(
+    ("launch", "expected"),
+    [
+        (
+            [source(None, 1.0, taskset="code"), source("math", 1.0)],
+            [source(None, 3.0, taskset="code"), source("math", 2.0)],
+        ),
+        ([source("math", 1.0), source("logic", 1.0)], [source("math", 2.0), source("logic", 1.0)]),
+        ([source(None, 1.0, taskset="code")], [source(None, 3.0, taskset="code")]),
+        (
+            [source("math", 1.0, taskset="math-v2"), source(None, 1.0, taskset="code"), source("new", 5.0)],
+            [source("math", 2.0, taskset="math-v2"), source(None, 3.0, taskset="code"), source("new", 5.0)],
+        ),
+        (
+            [source("math", 1.0), source("code", 1.0, taskset="code")],
+            [source("math", 2.0), source("code", 3.0, taskset="code")],
+        ),
+    ],
+    ids=["reordered", "replaced", "removed", "updated_and_added", "named_as_resolved"],
+)
+def test_merge_resumed_config_matches_sources_by_name(launch, expected):
+    assert merge_resumed_config(SOURCES, SOURCES_LIVE, {"source": launch}) == {"source": expected}

@@ -17,7 +17,7 @@ from subprocess import Popen
 from typing import Any
 
 from prime_rl.configs.eval import EvalConfig
-from prime_rl.utils.config import cli, dump_resolved_config
+from prime_rl.utils.config import check_mode, cli, config_files, dump_resolved_config
 from prime_rl.utils.process import DEFAULT_COMMON_ENV_VARS, cleanup_processes, set_proc_title
 
 USAGE = """\
@@ -59,7 +59,7 @@ def expand_shorthands(argv: list[str]) -> list[str]:
     source: dict[str, Any] = {}
     rest = list(argv)
     positional = bool(rest) and not rest[0].startswith(("-", "@"))
-    sources_in_toml = any(toml_defines_source(path) for path in root_config_files(argv))
+    sources_in_toml = any(toml_defines_source(path) for path in config_files(argv))
     shared_env = sources_in_toml and not positional
     if positional:
         set_nested(source, ["env", "taskset", "id"], rest.pop(0))
@@ -91,15 +91,6 @@ def expand_shorthands(argv: list[str]) -> list[str]:
     return out
 
 
-def root_config_files(argv: list[str]) -> list[Path]:
-    """Root ``@ file`` references (a ``--flag @ file`` is a nested reference)."""
-    return [
-        Path(argv[i + 1])
-        for i, arg in enumerate(argv[:-1])
-        if arg == "@" and (i == 0 or not argv[i - 1].startswith("--"))
-    ]
-
-
 def toml_defines_source(path: Path) -> bool:
     if path.suffix != ".toml" or not path.is_file():
         return False
@@ -110,6 +101,7 @@ def toml_defines_source(path: Path) -> bool:
 def main():
     set_proc_title("Eval")
     argv = sys.argv[1:]
+    check_mode("eval", argv)
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
         sys.argv = [sys.argv[0], "--help"]
@@ -121,18 +113,17 @@ def main():
     sys.argv = [sys.argv[0], *argv]
 
     from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, run_links
-    from prime_rl.utils.links import PRIME_EVAL_LINKS, WANDB_LINKS
     from prime_rl.utils.logger import setup_logger
     from prime_rl.utils.pathing import (
         format_config_message,
         format_log_message,
         prepare_attempt_dirs,
         prepare_run,
-        write_env_server_config,
+        write_env_worker_pool_config,
         write_launch_artifacts,
     )
 
-    # The run identity is stamped on every episode and inherited by the env servers.
+    # The run identity is stamped on every episode and inherited by the env worker pools.
     prepare_run(config)
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
     os.environ["PRL_ATTEMPT_CONFIG_DIR"] = str(config_dir)
@@ -144,16 +135,16 @@ def main():
     write_launch_artifacts(config_dir, "eval")
     (config_dir / "eval.json").write_text(json.dumps(dump_resolved_config(config), indent=2))
     components: list[tuple[str, Path | str]] = [("Eval", config_dir / "eval.json")]
-    # One env server per source without an explicit `serve.address`, like the rl launcher's:
-    # `env-server @ <path>` binds an OS-assigned port and publishes it to the source's
+    # One env worker pool per source without an explicit `serve.address`, like the rl launcher's:
+    # `env-worker-pool @ <path>` binds an OS-assigned port and publishes it to the source's
     # address file, where the eval picks it up.
-    env_servers = [source for source in config.source if source.serve.address is None]
-    env_names = [source.resolved_name for source in env_servers]
-    if env_servers:
+    env_worker_pools = [source for source in config.source if source.serve.address is None]
+    env_names = [source.resolved_name for source in env_worker_pools]
+    if env_worker_pools:
         components.append(("Envs", f"{config_dir}/envs/eval/*.json"))
-        for source in env_servers:
+        for source in env_worker_pools:
             components.append(
-                (f" {source.resolved_name}", write_env_server_config(config_dir, "eval", source, config.log))
+                (f" {source.resolved_name}", write_env_worker_pool_config(config_dir, "eval", source, config.log))
             )
     if config.dry_run:
         logger.info(f"Configs:\n{format_config_message(config_dir, 'eval', components)}")
@@ -164,15 +155,15 @@ def main():
     from prime_rl.eval.eval import run_eval
 
     processes: list[Popen] = []
-    for source in env_servers:
+    for source in env_worker_pools:
         name = source.resolved_name
-        logger.info(f"Starting {name} server")
-        env_server_log = log_dir / "envs" / "eval" / f"{name}.log"
-        env_server_log.parent.mkdir(parents=True, exist_ok=True)
-        with open(env_server_log, "w") as log_file_handle:
+        logger.info(f"Starting {name} env worker pool")
+        env_worker_pool_log = log_dir / "envs" / "eval" / f"{name}.log"
+        env_worker_pool_log.parent.mkdir(parents=True, exist_ok=True)
+        with open(env_worker_pool_log, "w") as log_file_handle:
             processes.append(
                 Popen(
-                    ["env-server", "@", (config_dir / "envs" / "eval" / f"{name}.json").as_posix()],
+                    ["env-worker-pool", "@", (config_dir / "envs" / "eval" / f"{name}.json").as_posix()],
                     env={**os.environ, **DEFAULT_COMMON_ENV_VARS},
                     stdout=log_file_handle,
                     stderr=log_file_handle,
@@ -195,8 +186,7 @@ def main():
     # Each source's Prime evaluation opens once the eval counts its tasks, so the
     # banner waits for the links next to the running eval.
     eval_done = threading.Event()
-    monitors = {PRIME_EVAL_LINKS: config.monitors.prime, WANDB_LINKS: config.monitors.wandb}
-    links = run_links(config.run_dir, log_dir, monitors, eval_done.is_set)
+    links = run_links(config.run_dir, log_dir, config.monitors, eval_done.is_set)
     banner = threading.Thread(target=log_run_links, args=(dashboard_url, links), daemon=True)
     banner.start()
     try:

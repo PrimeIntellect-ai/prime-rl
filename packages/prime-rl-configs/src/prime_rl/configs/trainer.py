@@ -19,6 +19,7 @@ from prime_rl.configs.shared import (
     VLMConfig,
     WeightBroadcastConfig,
     ZMQTransportConfig,
+    validate_step_dir,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir
 
@@ -37,6 +38,9 @@ class ActivationCheckpointConfig(BaseConfig):
 
     targets: list[str] | None = None
     """Operator names or namespaces retained in selective mode. ``None`` uses the default targets; an explicit list replaces them."""
+
+    token_chunk_size: int | None = Field(None, ge=3)
+    """Experimental. Checkpoint token-local blocks in chunks of this many tokens per rank, so their recompute and backward hold one chunk's activations at a time. Only supported for Nemotron-H, whose MoE layers are the only blocks it chunks; it has no effect on other models. Requires ``ep == 1`` or ``ep == cp``. ``None`` checkpoints every block whole."""
 
 
 class ActivationOffloadingConfig(BaseConfig):
@@ -211,18 +215,48 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     """Dispatch and combine routed tokens with DeepEP."""
 
     type: Literal["deepep"] = "deepep"
-    num_sms: int = Field(20, ge=1)
+    num_sms: int = Field(32, ge=1)
     """SMs allocated to DeepEP communication kernels."""
 
-    token_chunk_size: int | None = Field(None, ge=1)
-    """Optional chunk size used to pipeline dispatch with local expert compute."""
+
+class LLEPConfig(BaseConfig):
+    """Least-loaded expert parallelism (https://arxiv.org/abs/2601.17111): a rank whose experts are overloaded hands
+    part of their routes, with a copy of the experts' weights, to the least-loaded ranks. The computation stays exact."""
+
+    alpha: float = Field(1.05, ge=1.0)
+    """A rank counts as full at ``alpha`` times the mean routes per rank."""
+
+    min_chunk: int = Field(1024, ge=1)
+    """Fewest routes worth copying an expert's weights to another rank."""
+
+    lam: float = Field(1.1, ge=0.0)
+    """Below this busiest-rank over mean-rank load, every expert stays on its own rank (standard EP)."""
+
+    max_foreign: int = Field(8, ge=1)
+    """Experts a rank can compute for other ranks; each costs one expert's weights (and gradients) of memory."""
+
+    chunk_tokens: int | None = Field(None, ge=1)
+    """Tokens per rank per kernel call. A larger batch runs as several calls, so the symmetric buffers hold one chunk
+    instead of the whole batch (for long sequences). ``None``: one call per layer."""
+
+    max_recv: float = Field(1.3, gt=0.0)
+    """Routes a rank's buffers hold, as a multiple of its own routes (``max_tokens_per_rank * top_k``). The plan keeps
+    every rank within about ``max(alpha, lam)`` of the mean, so this can be far below the ``ep`` multiple plain Mega MoE
+    reserves. A plan that would exceed it (only when helpers run out of foreign slots) stops the kernel with an error."""
+
+    @model_validator(mode="after")
+    def validate_max_recv(self):
+        if self.max_recv < max(self.alpha, self.lam):
+            raise ValueError("model.moe.dispatch.llep.max_recv must be at least max(alpha, lam).")
+        return self
 
 
 class MegaMoeMoEDispatchConfig(BaseConfig):
     type: Literal["mega_moe"] = "mega_moe"
-    precision: Literal["bf16", "mxfp8", "fp8", "fp8_bwd"] = "bf16"
-    """Expert GEMM precision. ``mxfp8``: forward and backward in MXFP8 (SM100). ``fp8``: forward and backward
-    in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90)."""
+    precision: Literal["bf16", "mxfp8", "mxfp8_qat", "fp8", "fp8_bwd"] = "bf16"
+    """Expert GEMM precision. ``mxfp8``: forward and backward in MXFP8 (SM100). ``mxfp8_qat``: MXFP8 forward, BF16
+    backward on the forward's dequantized weights, as MXFP8 quantization-aware training computes (SM100). ``fp8``:
+    forward and backward in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90)."""
 
     max_tokens_per_rank: int | None = Field(None, ge=1)
     """Tokens per rank per MoE call that the symmetric buffer is sized for. Defaults to the rank's share of the
@@ -233,7 +267,24 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     """SMs left free for concurrent NCCL kernels. In the worst case each NCCL kernel uses all ``NCCL_MAX_CTAS``, so
     at most ``num_reserved_sms // NCCL_MAX_CTAS`` NCCL kernels can run concurrently. FSDP overlaps an all-gather and
     a reduce-scatter, and HSDP (``dp_replicate > 1``) adds an all-reduce, so the trainer sets ``NCCL_MAX_CTAS`` to
-    this value divided by 2 (3 under HSDP) when it is unset and requires it to be at most that."""
+    this value divided by 2 (3 under HSDP) when it is unset and requires it to be at most that. Defaults to 32 with
+    ``llep``, whose weight copies run next to the grid."""
+
+    llep: LLEPConfig | None = None
+    """Balance imbalanced routing with least-loaded expert parallelism. Requires ``precision = "bf16"`` (SM90) or
+    ``"mxfp8_qat"`` (SM100)."""
+
+    @model_validator(mode="after")
+    def validate_llep_precision(self):
+        if self.llep is not None and self.precision not in ("bf16", "mxfp8_qat"):
+            raise ValueError("model.moe.dispatch.llep requires model.moe.dispatch.precision 'bf16' or 'mxfp8_qat'.")
+        return self
+
+    @model_validator(mode="after")
+    def llep_reserved_sms(self):
+        if self.llep is not None and "num_reserved_sms" not in self.model_fields_set:
+            self.num_reserved_sms = 32
+        return self
 
 
 def rl_micro_batch_multiple(model: "ModelConfig") -> int:
@@ -278,6 +329,9 @@ class ModelConfig(BaseModelConfig):
 
     conversion_dir: Path | None = None
     """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
+
+    init_from: Path | None = None
+    """Checkpoint step directory (e.g. ``other/run/checkpoints/step_500``) to initialize the weights from instead of ``name``'s, such as an SFT run's checkpoint to start RL from. Only the weights load: the run starts at step 0 with a fresh optimizer, scheduler and data. ``name`` still sets the architecture and tokenizer, and a resumed run loads its own checkpoint instead."""
 
     seq_len: int = 2048
     """Sequence length the model is trained on."""
@@ -327,7 +381,7 @@ class ModelConfig(BaseModelConfig):
     quantization: QuantizationConfig | None = None
 
     dsa_backend: DSABackend = "cudnn_flashmla"
-    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``cudnn_flashmla`` (default) runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs an SM90, SM100 or SM103 GPU, ``flash-mla`` (installed with the ``gpu`` extra on x86_64), 64 or 128 attention heads and head_dim 512, and setup fails otherwise. ``tilelang`` runs the TileLang forward and backward."""
+    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``cudnn_flashmla`` (default) runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs an SM90, SM100 or SM103 GPU, vLLM's bundled FlashMLA (installed with the ``gpu`` extra), 64 or 128 attention heads and head_dim 512, and setup fails otherwise. ``tilelang`` runs the TileLang forward and backward."""
 
     dsv4_kv_precision: Literal["bf16", "fp8"] = "fp8"
     """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
@@ -343,6 +397,12 @@ class ModelConfig(BaseModelConfig):
 
     fused_lm_head_token_chunk_size: int | Literal["disabled"] = 8192
     """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. In SFT the fused head computes the summed cross-entropy and its gradients chunk by chunk, holding one chunk's full-vocab logits at a time."""
+
+    @model_validator(mode="after")
+    def validate_init_from(self):
+        if self.init_from is not None:
+            validate_step_dir(self.init_from, field="model.init_from")
+        return self
 
     @model_validator(mode="after")
     def validate_cp(self):
@@ -364,12 +424,7 @@ class ModelConfig(BaseModelConfig):
 
         compute = self.moe.compute
         dispatch = self.moe.dispatch
-        if isinstance(dispatch, DeepEPMoEDispatchConfig):
-            if isinstance(compute, MXFP8MoEComputeConfig):
-                raise ValueError("MXFP8 expert compute does not support DeepEP dispatch.")
-        elif isinstance(dispatch, MegaMoeMoEDispatchConfig):
-            pass  # Compute is fused into dispatch; `model.moe.compute` is ignored for these layers.
-        elif dispatch.transport == "mxfp8":
+        if isinstance(dispatch, TorchMoEDispatchConfig) and dispatch.transport == "mxfp8":
             if not isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 transport requires model.moe.compute.type='mxfp8'.")
         return self
@@ -512,6 +567,13 @@ class CheckpointConfig(BaseConfig):
     skip_optimizer: bool = False
     """Skip loading the optimizer state from checkpoint."""
 
+    async_save: bool = False
+    """Write checkpoints in the background. A save copies this rank's model and optimizer state into pinned host
+    buffers and returns; a background thread writes the copy while training continues. The buffers are kept for
+    the next save, so this costs pinned host memory about the size of the rank's checkpoint shard. Without
+    optimizer offload the copy also overlaps the next step, until its optimizer step. A save first waits for the
+    previous write to finish."""
+
 
 class IPOLossConfig(BaseConfig):
     type: Literal["ipo"] = "ipo"
@@ -594,7 +656,8 @@ class DataLoaderConfig(BaseConfig):
 
 
 class BaseTrainerConfig(BaseConfig):
-    """Fields and validators shared by the RL trainer (``TrainerConfig``) and SFT (``SFTConfig``)."""
+    """Fields and validators shared by the RL trainer (``TrainerConfig``) and the SFT and pretraining trainer
+    (``SupervisedTrainerConfig``)."""
 
     auto_freeze_moe_router: ClassVar[bool]
     auto_weight_decay: ClassVar[float]
@@ -633,8 +696,8 @@ class BaseTrainerConfig(BaseConfig):
     """BetterStack heartbeat configuration for monitoring training progress."""
 
     control: ControlConfig | None = None
-    """Serve the run control API on the master rank (pause the run after the next
-    step). If None, the run takes no control requests."""
+    """Serve the run control API on the master rank (pause or checkpoint the run
+    after the next step). If None, the run takes no control requests."""
 
     env_vars: EnvVars = {}
     """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""
@@ -645,17 +708,6 @@ class BaseTrainerConfig(BaseConfig):
             self.model.freeze_moe_router = self.auto_freeze_moe_router
         if self.optim.weight_decay == "auto":
             self.optim.weight_decay = self.auto_weight_decay
-        return self
-
-    @model_validator(mode="after")
-    def deepep_disables_grad_clipping(self):
-        if self.model.ep != 1 and self.model.moe.dispatch.type == "deepep" and self.optim.max_norm is not None:
-            warnings.warn(
-                "Gradient clipping is not compatible with DeepEP. "
-                "Automatically setting optim.max_norm to None (disabled).",
-                stacklevel=1,
-            )
-            self.optim.max_norm = None
         return self
 
     @model_validator(mode="after")
@@ -730,10 +782,16 @@ class TrainerConfig(BaseTrainerConfig):
     """Transport used to ship rollouts from orchestrator to trainer."""
 
     monitors: MonitorsConfig = MonitorsConfig()
-    """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
+    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
+
+    annotations: bool = True
+    """Write the trainer's recomputed per-token logprobs and entropies as trace annotations,
+    so a trace can show trainer against sampler token by token. Needs ``monitors.file``.
+    Each step gathers every trained token to the master rank before the optimizer step;
+    disable with ``--no-annotations`` to skip that work."""
 
     enable_router_replay: bool = False
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""
@@ -744,6 +802,20 @@ class TrainerConfig(BaseTrainerConfig):
             raise ValueError(
                 "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
                 "PEFT-shaped directory on disk - in-memory transports have no disk artifact to load from."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_retain(self):
+        if not self.rollout_transport.retain:
+            return self
+        if not (self.ckpt and self.ckpt.interval):
+            raise ValueError("rollout_transport.retain needs ckpt.interval: only a checkpoint releases a retained step")
+        if self.weight_broadcast.type != "filesystem":
+            raise ValueError(
+                f"rollout_transport.retain is not yet supported with weight_broadcast.type = "
+                f"'{self.weight_broadcast.type}': a restarted trainer cannot rejoin its transfer group. "
+                "Use weight_broadcast.type = 'filesystem'."
             )
         return self
 

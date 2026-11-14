@@ -1,3 +1,4 @@
+mode = "sft"
 max_steps = 100
 
 [ckpt] # Checkpoint at the end of training

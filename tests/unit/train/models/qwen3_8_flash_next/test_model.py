@@ -16,7 +16,7 @@ from prime_rl.trainer.perf import FlopCounter
 from prime_rl.trainer.vlm import get_language_model, get_vision_encoder
 
 
-@pytest.fixture(params=[False, True], ids=["text", "composite"])
+@pytest.fixture(params=["text", "composite", "language_model_only"])
 def config(request, layer_type):
     text = Qwen3_8FlashNextTextConfig(
         vocab_size=32,
@@ -42,7 +42,7 @@ def config(request, layer_type):
         make_ngram_vocab_size_divisible_by=8,
         split_ngram_parts=3,
     )
-    if not request.param:
+    if request.param == "text":
         return text
     vision = Qwen3_8FlashNextVisionConfig(
         depth=1,
@@ -52,7 +52,12 @@ def config(request, layer_type):
         out_hidden_size=16,
         num_position_embeddings=16,
     )
-    return Qwen3_8FlashNextConfig(text_config=text, vision_config=vision, image_token_id=30)
+    return Qwen3_8FlashNextConfig(
+        text_config=text,
+        vision_config=vision,
+        image_token_id=30,
+        language_model_only=request.param == "language_model_only",
+    )
 
 
 @pytest.fixture(params=["linear_attention", "full_attention"])

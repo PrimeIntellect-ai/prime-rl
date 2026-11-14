@@ -16,7 +16,7 @@ from prime_rl.configs.monitors import WandbMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.monitors.wandb.overview import ensure_overview_view
 from prime_rl.utils.config import BaseConfig
-from prime_rl.utils.links import WANDB_LINKS, publish_link, register_links
+from prime_rl.utils.links import publish_link, register_links
 from prime_rl.utils.logger import format_time
 
 if TYPE_CHECKING:
@@ -117,10 +117,10 @@ class WandbMonitor(Monitor):
         try:
             self.wandb = init_wandb(max_retries)
         except UsageError as e:
-            raise RuntimeError(
-                f"The W&B monitor could not start ({e}). Authenticate with `wandb login` (or set WANDB_API_KEY), "
-                "or turn the monitor off with --no-monitors.wandb"
-            ) from e
+            hint = "Authenticate with `wandb login` (or set WANDB_API_KEY), or turn the monitor off with --no-monitors.wandb"
+            if "No API key" in str(e):
+                raise RuntimeError(f"The W&B monitor found no W&B API key. {hint}") from e
+            raise RuntimeError(f"The W&B monitor could not start ({e}). {hint}") from e
 
         wandb.define_metric("*", step_metric="step")
         # key prefixes that arrived via step=None (wall-time rows); their time axis
@@ -149,9 +149,9 @@ class WandbMonitor(Monitor):
 
     @staticmethod
     def _record(output_dir: Path, url: str | None) -> None:
-        register_links(output_dir, WANDB_LINKS, 1 if url else 0)
+        register_links(output_dir, "wandb", 1 if url else 0)
         if url:
-            publish_link(output_dir, WANDB_LINKS, "run", url)
+            publish_link(output_dir, "wandb", "run", url)
 
     async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
         # every log carries the monitor's own wall-time stamp
