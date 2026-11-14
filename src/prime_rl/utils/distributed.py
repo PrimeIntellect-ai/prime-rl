@@ -22,7 +22,6 @@ def all_gather_bytes(
     max_bytes: int = MAX_COLLECTIVE_BYTES,
 ) -> list[bytes]:
     """All-gather bounded byte strings using tensor collectives."""
-    _validate_size(len(data), max_bytes)
     device = _collective_device(group)
     size = torch.tensor([len(data)], dtype=torch.int64, device=device)
     sizes = [torch.empty_like(size) for _ in range(dist.get_world_size(group))]
@@ -53,13 +52,14 @@ def broadcast_bytes(
     """Broadcast a bounded byte string using tensor collectives."""
     device = _collective_device(group)
     is_source = dist.get_rank() == src
+    source_length = 0
     if is_source:
-        if data is None:
-            raise ValueError("The broadcast source must provide a payload")
-        _validate_size(len(data), max_bytes)
-    size = torch.tensor([len(data) if data is not None and is_source else 0], dtype=torch.int64, device=device)
+        source_length = -1 if data is None else len(data)
+    size = torch.tensor([source_length], dtype=torch.int64, device=device)
     dist.broadcast(size, src=src, group=group)
     length = int(size.item())
+    if length == -1:
+        raise ValueError("The broadcast source must provide a payload")
     _validate_size(length, max_bytes)
     if length == 0:
         return b""
