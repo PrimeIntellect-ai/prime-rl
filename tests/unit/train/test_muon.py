@@ -159,3 +159,16 @@ def test_resume_from_state_dict_matches_continuous_training():
     train(resumed_params, resumed, range(2, 4))
     for p, q in zip(params, resumed_params):
         assert torch.equal(p, q)
+
+
+def test_bucket_order_is_the_same_on_every_rank_with_uneven_shards():
+    from prime_rl.trainer.optim.muon import _Matrix, _owned_class, _shape_class, _Sharding
+
+    # The last dim (10) split 6 / 4 over two ranks: each rank's local width differs, the gathered width does not
+    def matrix(rank, width):
+        sharding = _Sharding(dim=-1, group=None, rank=rank, sizes=(6, 4))
+        return _Matrix(param=torch.zeros(8, width), group=0, partitions=(8,), sharding=sharding, lr_ratio=1.0)
+
+    on_rank0, on_rank1 = matrix(0, 6), matrix(1, 4)
+    assert _shape_class(on_rank0) != _shape_class(on_rank1)
+    assert _owned_class(on_rank0) == _owned_class(on_rank1) == (10, (8,))
