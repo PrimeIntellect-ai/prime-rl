@@ -29,6 +29,9 @@ class Qwen3_5Clef(Qwen3_5ForCausalLM):
 
     def __init__(self, config) -> None:
         super().__init__(config)
+        if config.joint_head.get("dropout"):
+            # prime-rl never switches the model to eval mode, so validation would run with the dropout on.
+            raise ValueError(f"Qwen3_5Clef needs a joint head without dropout, got {config.joint_head['dropout']}")
         self.joint_head = JointSchemaHead(**config.joint_head)
         for name in SCALARS:
             setattr(self.joint_head, name, nn.Parameter(getattr(self.joint_head, name).detach().reshape(1)))
