@@ -534,7 +534,14 @@ class FlashAttention(nn.Module):
         return self.qkv_proj(hidden_states).split(self.qkv_sizes, dim=-1)
 
     def _compute_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens, max_seqlen):
-        """Run the flash attention kernel. q/k/v are [total_tokens, heads, dim]."""
+        """Run the flash attention kernel. q/k/v are [total_tokens, heads, dim], after RoPE."""
+        if self.kv_precision == "fp8":
+            # The engines' FP8 KV cache stores keys after RoPE, and values, rounded: attend over the same values. Here
+            # rather than in forward, so subclasses with their own forward (Qwen3.5, Laguna, Muse Glimmer) round too
+            k = fp8_kv_fake_quant(k, self.kv_scale)
+            v = fp8_kv_fake_quant(v, self.kv_scale)
+            if self.kv_fp8_query:
+                q = fp8_kv_fake_quant(q, self.kv_scale)
         kwargs: dict = {"causal": self.is_causal}
         sliding_window = getattr(self, "sliding_window", None)
         if sliding_window is not None:
@@ -587,13 +594,6 @@ class FlashAttention(nn.Module):
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
-
-        if self.kv_precision == "fp8":
-            # The engines' FP8 KV cache stores keys after RoPE, and values, rounded: attend over the same values
-            key_states = fp8_kv_fake_quant(key_states, self.kv_scale)
-            value_states = fp8_kv_fake_quant(value_states, self.kv_scale)
-            if self.kv_fp8_query:
-                query_states = fp8_kv_fake_quant(query_states, self.kv_scale)
 
         out = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
         attn_output = out.contiguous().view(1, out.shape[0], -1)
