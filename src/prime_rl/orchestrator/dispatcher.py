@@ -90,6 +90,7 @@ def infra_failure(episode: vf.WireEpisode, infra: frozenset[str]) -> vf.Error | 
     errors = [*episode.errors, *(error for trace in episode.traces if not trace.ok for error in trace.errors)]
     return next((error for error in reversed(errors) if error.type in infra), None)
 
+
 BUFFERED_BATCHES = 1
 """Batches of finished train rollouts that free their permits while they wait for the trainer: enough that the
 trainer finds its next batch ready."""
@@ -758,7 +759,10 @@ class Dispatcher:
         if isinstance(exc, Exception):
             get_logger().warning(f"Environment request failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
             self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
-            await self.record_outcome(meta, ok=False, reason=f"{type(exc).__name__}: {exc}")
+            if aborted is None:
+                # A dead replica's aborted episodes don't count: its env routes around it, and the health monitor
+                # pauses the env itself once every replica is down
+                await self.record_outcome(meta, ok=False, reason=f"{type(exc).__name__}: {exc}")
             policy_version = self.complete_group_member(meta, group)
             await self.out_q.put(
                 DispatchFailure(

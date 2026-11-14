@@ -82,3 +82,30 @@ def test_cancelled_probe_frees_the_breaker_while_older_episodes_run():
     # Overload shedding cancels the probe's group before it reports.
     del d.inflight["probe"]
     assert d.env_allowed("e") and not breaker.probing
+
+
+def test_a_dead_replicas_aborted_episodes_do_not_count_against_the_env():
+    import asyncio
+
+    breaker = CircuitBreaker(CircuitBreakerConfig(failures=1, cooldown=10))
+    d = Dispatcher.__new__(Dispatcher)
+    task_meta = SimpleNamespace(key="k", hash="h")
+    d.breakers, d.groups, d.generation_s = {"e": breaker}, {}, None
+    d.retire = d.release = lambda *args, **kwargs: None
+    d.metrics = SimpleNamespace(record_error=lambda **kwargs: None)
+    d.complete_group_member = lambda meta, group: 0
+
+    async def run():
+        d.out_q = asyncio.Queue()
+        task = asyncio.create_task(asyncio.sleep(10))
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        meta = SimpleNamespace(
+            kind="train", env_name="e", group_id="g", step=0, policy_version=0, task=task_meta, started_at=1.0
+        )
+        d.inflight, d.aborted = {task: meta}, {task: "env worker pool at tcp://replica missed 3 health checks"}
+        await d.handle_completed_request(task)
+        assert d.out_q.qsize() == 1  # the episode still fails its group
+
+    asyncio.run(run())
+    assert breaker.state == "closed" and not breaker.failed_groups
