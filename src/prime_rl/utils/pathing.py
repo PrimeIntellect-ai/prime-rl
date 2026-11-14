@@ -330,9 +330,21 @@ def get_all_ckpt_steps(ckpt_dir: Path) -> list[int]:
     return sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
 
 
+def is_ckpt_step_complete(step_dir: Path) -> bool:
+    """Whether a step's trainer checkpoint finished writing. DCP writes ``.metadata`` after every rank's shards, so a
+    trainer checkpoint without it was interrupted mid-write. A step without a trainer checkpoint counts as complete."""
+    trainer_dir = step_dir / "trainer"
+    return not trainer_dir.exists() or (trainer_dir / ".metadata").exists()
+
+
 def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
-    """Gets the latest checkpoint step from the checkpoint directory. Returns None if no checkpoints are found."""
-    steps = get_all_ckpt_steps(ckpt_dir)
+    """Gets the latest complete checkpoint step from the checkpoint directory. Returns None if no checkpoints are found."""
+    steps = []
+    for step in get_all_ckpt_steps(ckpt_dir):
+        if is_ckpt_step_complete(get_step_path(ckpt_dir, step)):
+            steps.append(step)
+        else:
+            get_logger().warning(f"Skipping checkpoint step {step} in {ckpt_dir}: its trainer checkpoint is incomplete")
     if len(steps) == 0:
         logger = get_logger()
         logger.warning(f"No checkpoints found in {ckpt_dir}. Starting from scratch.")

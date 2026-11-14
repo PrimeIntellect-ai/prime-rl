@@ -219,11 +219,44 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     """SMs allocated to DeepEP communication kernels."""
 
 
+class LLEPConfig(BaseConfig):
+    """Least-loaded expert parallelism (https://arxiv.org/abs/2601.17111): a rank whose experts are overloaded hands
+    part of their routes, with a copy of the experts' weights, to the least-loaded ranks. The computation stays exact."""
+
+    alpha: float = Field(1.05, ge=1.0)
+    """A rank counts as full at ``alpha`` times the mean routes per rank."""
+
+    min_chunk: int = Field(1024, ge=1)
+    """Fewest routes worth copying an expert's weights to another rank."""
+
+    lam: float = Field(1.1, ge=0.0)
+    """Below this busiest-rank over mean-rank load, every expert stays on its own rank (standard EP)."""
+
+    max_foreign: int = Field(8, ge=1)
+    """Experts a rank can compute for other ranks; each costs one expert's weights (and gradients) of memory."""
+
+    chunk_tokens: int | None = Field(None, ge=1)
+    """Tokens per rank per kernel call. A larger batch runs as several calls, so the symmetric buffers hold one chunk
+    instead of the whole batch (for long sequences). ``None``: one call per layer."""
+
+    max_recv: float = Field(1.3, gt=0.0)
+    """Routes a rank's buffers hold, as a multiple of its own routes (``max_tokens_per_rank * top_k``). The plan keeps
+    every rank within about ``max(alpha, lam)`` of the mean, so this can be far below the ``ep`` multiple plain Mega MoE
+    reserves. A plan that would exceed it (only when helpers run out of foreign slots) stops the kernel with an error."""
+
+    @model_validator(mode="after")
+    def validate_max_recv(self):
+        if self.max_recv < max(self.alpha, self.lam):
+            raise ValueError("model.moe.dispatch.llep.max_recv must be at least max(alpha, lam).")
+        return self
+
+
 class MegaMoeMoEDispatchConfig(BaseConfig):
     type: Literal["mega_moe"] = "mega_moe"
-    precision: Literal["bf16", "mxfp8", "fp8", "fp8_bwd"] = "bf16"
-    """Expert GEMM precision. ``mxfp8``: forward and backward in MXFP8 (SM100). ``fp8``: forward and backward
-    in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90)."""
+    precision: Literal["bf16", "mxfp8", "mxfp8_qat", "fp8", "fp8_bwd"] = "bf16"
+    """Expert GEMM precision. ``mxfp8``: forward and backward in MXFP8 (SM100). ``mxfp8_qat``: MXFP8 forward, BF16
+    backward on the forward's dequantized weights, as MXFP8 quantization-aware training computes (SM100). ``fp8``:
+    forward and backward in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90)."""
 
     max_tokens_per_rank: int | None = Field(None, ge=1)
     """Tokens per rank per MoE call that the symmetric buffer is sized for. Defaults to the rank's share of the
@@ -234,7 +267,24 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     """SMs left free for concurrent NCCL kernels. In the worst case each NCCL kernel uses all ``NCCL_MAX_CTAS``, so
     at most ``num_reserved_sms // NCCL_MAX_CTAS`` NCCL kernels can run concurrently. FSDP overlaps an all-gather and
     a reduce-scatter, and HSDP (``dp_replicate > 1``) adds an all-reduce, so the trainer sets ``NCCL_MAX_CTAS`` to
-    this value divided by 2 (3 under HSDP) when it is unset and requires it to be at most that."""
+    this value divided by 2 (3 under HSDP) when it is unset and requires it to be at most that. Defaults to 32 with
+    ``llep``, whose weight copies run next to the grid."""
+
+    llep: LLEPConfig | None = None
+    """Balance imbalanced routing with least-loaded expert parallelism. Requires ``precision = "bf16"`` (SM90) or
+    ``"mxfp8_qat"`` (SM100)."""
+
+    @model_validator(mode="after")
+    def validate_llep_precision(self):
+        if self.llep is not None and self.precision not in ("bf16", "mxfp8_qat"):
+            raise ValueError("model.moe.dispatch.llep requires model.moe.dispatch.precision 'bf16' or 'mxfp8_qat'.")
+        return self
+
+    @model_validator(mode="after")
+    def llep_reserved_sms(self):
+        if self.llep is not None and "num_reserved_sms" not in self.model_fields_set:
+            self.num_reserved_sms = 32
+        return self
 
 
 def rl_micro_batch_multiple(model: "ModelConfig") -> int:
@@ -517,6 +567,13 @@ class CheckpointConfig(BaseConfig):
     skip_optimizer: bool = False
     """Skip loading the optimizer state from checkpoint."""
 
+    async_save: bool = False
+    """Write checkpoints in the background. A save copies this rank's model and optimizer state into pinned host
+    buffers and returns; a background thread writes the copy while training continues. The buffers are kept for
+    the next save, so this costs pinned host memory about the size of the rank's checkpoint shard. Without
+    optimizer offload the copy also overlaps the next step, until its optimizer step. A save first waits for the
+    previous write to finish."""
+
 
 class IPOLossConfig(BaseConfig):
     type: Literal["ipo"] = "ipo"
@@ -729,6 +786,12 @@ class TrainerConfig(BaseTrainerConfig):
 
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
+
+    annotations: bool = True
+    """Write the trainer's recomputed per-token logprobs and entropies as trace annotations,
+    so a trace can show trainer against sampler token by token. Needs ``monitors.file``.
+    Each step gathers every trained token to the master rank before the optimizer step;
+    disable with ``--no-annotations`` to skip that work."""
 
     enable_router_replay: bool = False
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""

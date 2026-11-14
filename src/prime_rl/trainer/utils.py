@@ -1,5 +1,7 @@
 import gc
+import json
 import math
+import mmap
 import os
 import pickle
 import shutil
@@ -21,6 +23,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from prime_rl.control.controller import Controller
 from prime_rl.control.types import StepActionType
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.distributed import all_gather_bytes
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_ckpt_dir
 
@@ -113,6 +116,38 @@ def clip_grad_norm_(
         for parameters in mesh_parameters.values():
             torch.nn.utils.clip_grads_with_norm_(parameters, max_norm, grad_norm)
     return grad_norm.cuda() if grad_norm.device.type == "cpu" else grad_norm
+
+
+class _PageLockedMapping(mmap.mmap):
+    """Anonymous shared mapping that stays page-locked with cudaHostRegister until it is freed.
+
+    Shared (the `mmap` default) rather than private: on fork, Linux eagerly copies page-locked private
+    pages into the child, so every forked worker would duplicate the whole buffer.
+    """
+
+    registered_ptr: int | None = None
+
+    def __del__(self):
+        if self.registered_ptr is not None:
+            torch.cuda.check_error(torch.cuda.cudart().cudaHostUnregister(self.registered_ptr))
+
+
+def empty_pinned(shape: tuple[int, ...] | torch.Size, dtype: torch.dtype) -> Tensor:
+    """Allocate a page-locked CPU tensor of exactly the requested size.
+
+    `pin_memory=True` goes through torch's caching host allocator, which rounds every block up to the
+    next power of two, so a 1.1 GiB buffer pins 2 GiB. This pins a page-aligned mapping instead. The
+    tensor owns the mapping through `torch.frombuffer`, so the memory is unregistered and unmapped
+    only when the last view of its storage is freed.
+    """
+    nbytes = torch.Size(shape).numel() * dtype.itemsize
+    if nbytes == 0:
+        return torch.empty(shape, dtype=dtype, pin_memory=True)
+    mapping = _PageLockedMapping(-1, nbytes)
+    tensor = torch.frombuffer(mapping, dtype=torch.uint8)
+    torch.cuda.check_error(torch.cuda.cudart().cudaHostRegister(tensor.data_ptr(), nbytes, 0))
+    mapping.registered_ptr = tensor.data_ptr()
+    return tensor.view(dtype).view(shape)
 
 
 def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:
@@ -305,8 +340,7 @@ class TensorStats:
 
     def compute_stats(self) -> dict[str, float]:
         """Reduce every key across all ranks and compute its statistics. Collective: every rank must call it."""
-        gathered_keys: list[list[str] | None] = [None] * dist.get_world_size()
-        dist.all_gather_object(gathered_keys, list(self.moments))
+        gathered_keys = [json.loads(payload) for payload in all_gather_bytes(json.dumps(list(self.moments)).encode())]
         keys = sorted({key for rank_keys in gathered_keys for key in rank_keys})
         if not keys:
             return {}
