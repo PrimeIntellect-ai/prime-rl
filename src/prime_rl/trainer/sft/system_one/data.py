@@ -10,6 +10,7 @@ from prime_rl.configs.sft import SystemOneColumnsConfig, SystemOneDataConfig
 from prime_rl.trainer.data import Sample
 from prime_rl.trainer.sft.data import HFDataset
 from prime_rl.trainer.sft.system_one.record import SystemOneRecord, build_targets, parse_record
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import import_object
 
 
@@ -135,6 +136,26 @@ def build_sample(encoded: EncodedRecord, record: SystemOneRecord, targets: list[
     }
 
 
+def encode_sample(
+    encoder: SystemOneEncoder, record: SystemOneRecord, seq_len: int, targets: list[list[float] | None] | None = None
+) -> Sample | None:
+    """The record's sample, or None when the encoder declines the record or its encoding has more than ``seq_len``
+    tokens. Without ``targets`` its questions carry none."""
+    encoded = encoder(record, seq_len)
+    if encoded is None:
+        get_logger().debug(f"Skipping record {record.id!r}: the encoder returned None")
+        return None
+    # Checked before the length, so that a broken encoding of an over-long record raises instead of being skipped.
+    check_encoded(encoded, record)
+    if len(encoded["input_ids"]) > seq_len:
+        get_logger().warning(
+            f"Skipping record {record.id!r}: its encoding has {len(encoded['input_ids'])} tokens, more than "
+            f"seq_len ({seq_len}). Records are never truncated."
+        )
+        return None
+    return build_sample(encoded, record, targets or [None] * len(record.questions))
+
+
 class SystemOneDataset(HFDataset):
     """A HF dataset of System One records, one sample per record with a labelled question."""
 
@@ -189,19 +210,7 @@ class SystemOneDataset(HFDataset):
         if all(target is None for target in targets):
             self.logger.warning(f"Skipping record {record.id!r}: none of its questions has a label")
             return None
-        encoded = self.encoder(record, self.seq_len)
-        if encoded is None:
-            self.logger.debug(f"Skipping record {record.id!r}: the encoder returned None")
-            return None
-        # Checked before the length, so that a broken encoding of an over-long record raises instead of being skipped.
-        check_encoded(encoded, record)
-        if len(encoded["input_ids"]) > self.seq_len:
-            self.logger.warning(
-                f"Skipping record {record.id!r}: its encoding has {len(encoded['input_ids'])} tokens, more than "
-                f"seq_len ({self.seq_len}). Records are never truncated."
-            )
-            return None
-        return build_sample(encoded, record, targets)
+        return encode_sample(self.encoder, record, self.seq_len, targets)
 
 
 def setup_system_one_dataset(
