@@ -74,7 +74,12 @@ class TrainSamplingConfig(BaseConfig):
     @model_validator(mode="after")
     def resolve_sampler_draws(self):
         if self.sampler_draws is not None:
-            extra_args = {**self.extra_body.get("extra_args", {}), "prl_sampler_draws": self.sampler_draws}
+            # The server returns sampler draws only with compact logprobs
+            extra_args = {
+                **self.extra_body.get("extra_args", {}),
+                "prl_sampler_draws": self.sampler_draws,
+                "prl_compact_logprobs": True,
+            }
             self.extra_body = {**self.extra_body, "extra_args": extra_args}
         return self
 

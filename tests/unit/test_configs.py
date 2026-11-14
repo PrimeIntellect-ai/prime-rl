@@ -1483,6 +1483,8 @@ def test_sampler_capture_follows_sampling_truncation(loss, top_k, logprobs, draw
     sampling = config.orchestrator.train.source[0].sampling
     assert sampling.logprobs == logprobs
     assert sampling.extra_body["extra_args"].get("prl_sampler_draws") == draws
+    # The server returns sampler draws only with compact logprobs
+    assert sampling.extra_body["extra_args"].get("prl_compact_logprobs", False) == (draws is not None)
 
 
 def test_score_centering_replays_top_p_alone():
