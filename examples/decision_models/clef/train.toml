@@ -8,7 +8,7 @@ mode = "sft"
 max_steps = 290
 
 [model]
-name = "outputs/clef/clef-flash-prime-rl"  # the release plus the head under joint_head. (prepare_checkpoint.py)
+name = "outputs/clef/clef-flash-prime-rl"  # the release, linked, with the head's sizes in config.json (write_config.py)
 
 [model.implementation]
 import_path = "decision_models.clef.model.Qwen3_5Clef"
