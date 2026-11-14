@@ -8,6 +8,13 @@ from prime_rl.trainer.models.qwen3_8_flash_next.hyper_connection import Expanded
 from prime_rl.utils.cp import CPContext, gather_for_cp
 
 
+class ZeroInitConv1d(nn.Conv1d):
+    """A convolution that starts at zero, so the PLE branch adds nothing at initialization."""
+
+    def reset_parameters(self) -> None:
+        nn.init.zeros_(self.weight)
+
+
 class PositionLearningEnhancement(nn.Module):
     """Inject hashed N-gram features into the expanded residual streams."""
 
@@ -32,7 +39,7 @@ class PositionLearningEnhancement(nn.Module):
         self.norm_key = ExpandedRMSNorm(hidden_size, stream_count, norm_eps)
         self.norm_query = ExpandedRMSNorm(hidden_size, stream_count, norm_eps)
         self.norm_conv = ExpandedRMSNorm(hidden_size, stream_count, norm_eps)
-        self.conv1d = nn.Conv1d(
+        self.conv1d = ZeroInitConv1d(
             expanded_size,
             expanded_size,
             conv_kernel_size,
@@ -40,12 +47,8 @@ class PositionLearningEnhancement(nn.Module):
             dilation=conv_dilation,
             bias=False,
         )
-        nn.init.zeros_(self.conv1d.weight)
 
         self.cp_context = CPContext()
-
-    def reset_parameters(self) -> None:
-        nn.init.zeros_(self.conv1d.weight)
 
     def forward(
         self,

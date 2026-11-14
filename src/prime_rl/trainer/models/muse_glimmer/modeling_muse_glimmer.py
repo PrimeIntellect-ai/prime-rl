@@ -147,6 +147,12 @@ class MuseGlimmerPreTrainedModel(PreTrainedModelPrimeRL):
         # Text weights use the checkpoint's names, so there is no separate PrimeRL format.
         return False
 
+    def _init_weights(self, module: nn.Module) -> None:
+        super()._init_weights(module)
+        if isinstance(module, MuseGlimmerRMSNorm) and module.weight is not None:
+            # The norm scales by weight + weight_offset, which starts at one.
+            nn.init.constant_(module.weight, 1.0 - module.weight_offset)
+
 
 class MuseGlimmerTextModel(MuseGlimmerPreTrainedModel):
     config_class = MuseGlimmerTextConfig
