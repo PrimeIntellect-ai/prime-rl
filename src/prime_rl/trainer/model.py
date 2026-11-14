@@ -630,14 +630,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 transformer_block.set_modules_to_backward_prefetch([embed_module])
 
 
-def clear_padding_idx(model: nn.Module) -> None:
-    """Pretraining has no padding: a padding index (which falls back to the EOS id) would start that token's
-    embedding at zero and keep it frozen, also after a resume."""
-    for module in model.modules():
-        if isinstance(module, nn.Embedding):
-            module.padding_idx = None
-
-
 @torch.no_grad()
 def initialize_from_scratch(model: nn.Module) -> None:
     """Initialize the weights with the model's own init (``initialize_weights``, which applies its
@@ -1008,8 +1000,6 @@ def setup_model(
 
     setup_fsdp(model, config, parallel_dims)
 
-    if init_from_scratch:
-        clear_padding_idx(model)
     if loading_from_checkpoint_later:
         logger.warning(
             "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
