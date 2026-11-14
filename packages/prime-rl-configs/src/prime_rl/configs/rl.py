@@ -529,7 +529,7 @@ class RLConfig(BaseConfig):
         vLLM can: online ``nvfp4_per_token`` experts (FlashInfer TRTLLM) on the same layers, the MXFP8 tail through
         online targets, IEEE division and 4/6 on activations; ``rl`` warns about what still differs."""
         from prime_rl.configs.inference import MoENVFP4Config
-        from prime_rl.configs.trainer import SHARED_EXPERTS_PATTERN, MXFP8Config, NVFP4MoEComputeConfig
+        from prime_rl.configs.trainer import NVFP4MoEComputeConfig
 
         model = self.trainer.model
         compute = model.moe.compute
@@ -537,13 +537,8 @@ class RLConfig(BaseConfig):
             return self
         if "enable_router_replay" not in self.trainer.model_fields_set:
             self.trainer.enable_router_replay = True
-        linear = None
-        if model.quantization is not None:
-            if not isinstance(model.quantization, MXFP8Config):
-                raise ValueError("NVFP4 experts pair only with mxfp8 dense layers (trainer.model.quantization).")
-            linear = "mxfp8"
-            if SHARED_EXPERTS_PATTERN not in model.quantization.extra_ignore_patterns:
-                model.quantization.extra_ignore_patterns.append(SHARED_EXPERTS_PATTERN)
+        # Dense layers are MXFP8 or BF16 (model config), shared experts BF16
+        linear = "mxfp8" if model.quantization is not None else None
         if self.inference is None:
             return self
         gaps = [
@@ -594,7 +589,11 @@ class RLConfig(BaseConfig):
         compute = self.trainer.model.moe.compute
         if compute.type == "nvfp4":  # NVFP4 has its own setup (auto_setup_moe_nvfp4)
             return self
-        if compute.remainder != "bf16" and not compute.selects_all:
+        # The scheme of the apply_to layers and of the rest; mixed only when both groups exist and differ
+        rest = "mxfp8" if compute.remainder == "mxfp8" else None
+        wanted = rest if compute.selects_none else expert_engine_scheme(compute)
+        uniform = compute.selects_all or wanted == rest
+        if not uniform and compute.remainder != "bf16":
             warnings.warn(
                 f"model.moe.compute runs {compute.type} on {compute.apply_to} of the MoE layers and "
                 f"{compute.remainder} on the rest: rl does not configure engines to match mixed expert precisions yet, "
@@ -602,7 +601,6 @@ class RLConfig(BaseConfig):
                 stacklevel=2,
             )
             return self
-        wanted = expert_engine_scheme(compute)
         if wanted is None:
             return self
         vllm = self.inference.vllm
@@ -614,7 +612,7 @@ class RLConfig(BaseConfig):
                 stacklevel=2,
             )
         if vllm.quantization is None:
-            if not compute.selects_all:
+            if not uniform:
                 raise ValueError(
                     f"model.moe.compute.apply_to = {compute.apply_to!r} quantizes some MoE layers only: set "
                     "inference.vllm.quantization = 'online' with quantization_config.targets on the same layers."
@@ -625,7 +623,7 @@ class RLConfig(BaseConfig):
         if "targets" in config:
             return self
         engines = config.get("moe", None if vllm.quantization == "online" else vllm.quantization)
-        if engines != wanted or not compute.selects_all:
+        if engines != wanted or not uniform:
             raise ValueError(
                 f"The trainer's experts run {compute.type} ({compute.apply_to}), but the engines quantize experts "
                 f"with {engines!r}: rollouts would be sampled with other numerics than the trainer computes. "

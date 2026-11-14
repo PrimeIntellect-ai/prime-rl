@@ -1679,6 +1679,9 @@ def test_nvfp4_trainer_rejects_unsupported_setups(model, message):
         ({"type": "mxfp8", "apply_to": []}, {}, (None, None)),
         ({"type": "deepgemm_fp8", "apply_to": "0%"}, {"quantization": "mxfp8"}, ("mxfp8", None)),
         ({"type": "deepgemm_fp8", "forward": "bf16"}, {}, (None, None)),
+        # Every expert runs the MXFP8 remainder, or both groups run MXFP8: uniform, so the engines match it
+        ({"type": "deepgemm_fp8", "apply_to": [], "remainder": "mxfp8"}, {}, ("online", {"moe": "mxfp8"})),
+        ({"type": "mxfp8", "apply_to": "50%", "remainder": "mxfp8"}, {}, ("online", {"moe": "mxfp8"})),
     ],
 )
 def test_engines_quantize_experts_like_the_trainer(compute, engines, expected):
@@ -1750,6 +1753,9 @@ def test_nvfp4_with_mxfp8_dense_layers_puts_every_engine_moe_layer_in_nvfp4():
         ({"num_hidden_layers": 6, "mlp_only_layers": [0, 4], "decoder_sparse_step": 1}, [1, 2, 3, 5]),  # Qwen MoE
         ({"num_hidden_layers": 6, "interleave_moe_layer_step": 2}, [1, 3, 5]),  # Llama 4
         ({"num_hidden_layers": 4}, [0, 1, 2, 3]),
+        ({"num_hidden_layers": 4, "mlp_layer_types": ["dense", "sparse", "dense", "sparse"]}, [1, 3]),  # GLM-5
+        ({"num_hidden_layers": 4, "hybrid_override_pattern": "ME*E"}, [1, 3]),  # Nemotron-H
+        ({"num_hidden_layers": 3, "layers_block_type": ["moe", "full_attention", "moe"]}, [0, 2]),
     ],
 )
 def test_inference_reads_the_served_models_moe_layers(monkeypatch, hf_config, moe_layers):
@@ -1763,3 +1769,27 @@ def test_inference_reads_the_served_models_moe_layers(monkeypatch, hf_config, mo
         transformers.AutoConfig, "from_pretrained", lambda *args, **kwargs: SimpleNamespace(**hf_config)
     )
     assert InferenceConfig().moe_layers() == moe_layers
+
+
+def test_nvfp4_keeps_shared_experts_bf16_without_rl():
+    # SFT and other trainer-only entry points validate the model config alone
+    model = TrainerModelConfig.model_validate(
+        {"moe": {"compute": {"type": "nvfp4"}}, "quantization": {"type": "mxfp8"}}
+    )
+    assert r"shared_experts?\." in model.quantization.extra_ignore_patterns
+
+
+def test_engine_expert_targets_match_any_block_name():
+    import re as regex
+
+    from prime_rl.configs.inference import _experts_pattern
+
+    pattern = regex.compile(_experts_pattern([1, 3]).removeprefix("re:"))
+    for name in (
+        "model.layers.1.mlp.experts",
+        "model.layers.3.block_sparse_moe.experts",
+        "model.layers.1.mixer.experts",
+    ):
+        assert pattern.fullmatch(name), name
+    for name in ("model.layers.2.mlp.experts", "model.layers.1.mlp.shared_experts", "model.layers.13.mlp.experts"):
+        assert not pattern.fullmatch(name), name
