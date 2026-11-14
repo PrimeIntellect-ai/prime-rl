@@ -84,13 +84,13 @@ def finish_backward(manager: "GradientOffloadManager | None", *, wait_for_copies
 
 
 @torch.no_grad()
-def scale_gradients_(manager: "GradientOffloadManager | None", model: nn.Module, factor: float) -> None:
+def scale_gradients_(manager: "GradientOffloadManager | None", model: nn.Module, factor: float | Tensor) -> None:
+    """Multiply every gradient by ``factor``, a number or a 0-dim tensor on the gradients' device (no host sync)."""
     if manager is not None:
         manager.scale_(factor)
         return
-    for param in model.parameters():
-        if param.grad is not None:
-            param.grad.mul_(factor)
+    grads = [param.grad for param in model.parameters() if param.grad is not None]
+    torch._foreach_mul_([grad.to_local() if isinstance(grad, DTensor) else grad for grad in grads], factor)
 
 
 def clip_grad_norm_(
