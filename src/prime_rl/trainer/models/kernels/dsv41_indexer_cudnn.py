@@ -7,8 +7,8 @@ query `i` reads the first `(q_causal_offsets[b] + i + 1) // ratio` of those entr
 the part of one document whose queries this rank holds, so the same layout serves a whole packed
 row and a context-parallel shard of it.
 
-cuDNN scores in bf16 while vLLM scores in fp8, so the queries and keys are first rounded to the
-values vLLM's fp8 copies hold, which bf16 represents exactly.
+cuDNN scores in bf16 while vLLM scores in fp8 (or MXFP4), so the queries and keys are first rounded to
+the values vLLM's quantized copies hold, which bf16 represents exactly.
 
 It has no counterpart of the two-level candidate filter, so the candidate source layer and the
 layers consuming its candidates stay on `dsv41_index_topk`.
@@ -23,6 +23,7 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor
 
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv41_mxfp4_indexer import mxfp4_round
 from prime_rl.trainer.models.kernels.fp8_indexer import per_token_group_quant_fp8
 
 try:
@@ -113,12 +114,16 @@ def dsv41_index_topk_cudnn(
     max_seqlen_q: int,
     max_seqlen_k: int,
     amax_floor: float,
+    mxfp4: bool = False,
 ) -> Tensor:
     """`q` `(S_q, H, D)`, `k` `(S_k, D)`, `w` `(S_q, H)` -> `(S_q, topk)` int64 entry indices into the
-    packed row, -1 where a query has fewer readable entries."""
+    packed row, -1 where a query has fewer readable entries. `mxfp4` rounds `q` and `k` as vLLM's MXFP4
+    indexer stores them instead of to fp8."""
+    rounded_q = mxfp4_round(q) if mxfp4 else _fp8_round(q, amax_floor)
+    rounded_k = mxfp4_round(k) if mxfp4 else _fp8_round(k, amax_floor)
     out = indexer_forward_top_k_wrapper(
-        _fp8_round(q, amax_floor),
-        _fp8_round(k, amax_floor).unsqueeze(1).contiguous(),
+        rounded_q,
+        rounded_k.unsqueeze(1).contiguous(),
         w.to(torch.bfloat16).contiguous(),
         top_k=topk,
         ratio=compress_rate,
@@ -138,7 +143,18 @@ def dsv41_index_topk_cudnn(
 
 @dsv41_index_topk_cudnn.register_fake
 def _dsv41_index_topk_cudnn_fake(
-    q, k, w, cu_seqlens_q, cu_seqlens_k, q_causal_offsets, topk, compress_rate, max_seqlen_q, max_seqlen_k, amax_floor
+    q,
+    k,
+    w,
+    cu_seqlens_q,
+    cu_seqlens_k,
+    q_causal_offsets,
+    topk,
+    compress_rate,
+    max_seqlen_q,
+    max_seqlen_k,
+    amax_floor,
+    mxfp4=False,
 ):
     return q.new_empty((q.shape[0], topk), dtype=torch.int64)
 

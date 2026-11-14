@@ -311,8 +311,18 @@ class ModelConfig(BaseModelConfig):
     dsa_backend: DSABackend = "cudnn_flashmla"
     """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5), ``deepseek_v4`` and ``deepseek_v41``. ``cudnn_flashmla`` (default) runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs an SM90, SM100 or SM103 GPU, ``flash-mla`` (installed with the ``gpu`` extra on x86_64), 64 or 128 attention heads and head_dim 512, and setup fails otherwise. ``tilelang`` runs the TileLang forward and backward."""
 
-    dsv4_kv_precision: Literal["bf16", "fp8"] = "fp8"
-    """Precision DeepSeek V4 and V4.1 attention read keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
+    dsv4_kv_precision: Literal["bf16", "fp8", "nvfp4"] = "fp8"
+    """Precision DeepSeek V4 / V4.1 attention reads keys and values at, as vLLM's KV cache stores them, with a
+    straight-through gradient. ``fp8``: the ``fp8_ds_mla`` records. ``nvfp4`` (V4.1 only): vLLM's ``nvfp4_ds_mla``
+    cache on SM100, the MXFP8 sliding-window record with NVFP4 compressed entries (E2M1 with an E4M3 scale per 16
+    channels). ``rl`` sets it from ``inference.vllm.kv_cache_dtype`` (``nvfp4_ds_mla`` or ``fp8_ds_mla``)."""
+
+    dsv4_indexer_precision: Literal["fp8", "mxfp4"] = "fp8"
+    """Precision the DeepSeek V4.1 Lightning Indexer scores queries and keys at, as vLLM's indexer K cache stores
+    them. ``fp8``: vLLM's default cache, one UE8M0-scaled E4M3 row per key and query head. ``mxfp4``: vLLM's
+    ``attention_config.indexer_kv_dtype = "mxfp4"`` cache (SM100; required by ``indexer_sparse_logits``), E2M1 with a
+    UE8M0 scale per 32 channels for keys and queries, and the BF16 head weights those kernels take. ``rl`` sets it
+    from ``inference.vllm.attention_config.indexer_kv_dtype``."""
 
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
