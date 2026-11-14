@@ -78,7 +78,11 @@ def trainer_placement(
 
 
 def install_trainer_placement(
-    eplb_state: Any, model_config: Any, weight_dir: str | None, node_count: Callable[[], int] = lambda: ep_node_count()
+    eplb_state: Any,
+    model_config: Any,
+    weight_dir: str | None,
+    node_count: Callable[[], int] = lambda: ep_node_count(),
+    all_ranks: Callable[[bool], bool] = lambda present: ep_all(present),
 ) -> int | None:
     """If the trainer published expert counts with this update (``EXPERT_LOAD_FILE`` in ``weight_dir``), place the
     experts by them: commit EPLB's maps (physical-to-logical, logical-to-physical, replica counts) without moving any
@@ -90,10 +94,12 @@ def install_trainer_placement(
     from vllm.distributed.eplb.eplb_state import _commit_eplb_maps
     from vllm.distributed.parallel_state import get_ep_group
 
-    if weight_dir is None:
-        return None
-    path = Path(weight_dir) / EXPERT_LOAD_FILE
-    if not path.exists():
+    from prime_rl.transports.weights.base import marker_exists
+
+    path = Path(weight_dir) / EXPERT_LOAD_FILE if weight_dir is not None else None
+    # Every rank of the EP group installs the same maps or none does: a rank missing the file on a stale NFS lookup
+    # keeps the current placement for everyone until the next update
+    if not all_ranks(path is not None and marker_exists(path)):
         return None
     state = eplb_state.model_states[model_config.compute_hash()]
     model = state.model
@@ -111,6 +117,17 @@ def install_trainer_placement(
     if torch.cuda.is_available():
         torch.cuda.synchronize()
     return moved
+
+
+def ep_all(flag: bool) -> bool:
+    """Whether ``flag`` holds on every rank of this rank's EP group."""
+    import torch
+    import torch.distributed as dist
+    from vllm.distributed.parallel_state import get_ep_group
+
+    value = torch.tensor([int(flag)])
+    dist.all_reduce(value, op=dist.ReduceOp.MIN, group=get_ep_group().cpu_group)
+    return bool(value.item())
 
 
 @cache

@@ -151,9 +151,12 @@ def test_trainer_placement_installs_maps_without_moving_weights(tmp_path, monkey
     config = SimpleNamespace(compute_hash=lambda: "m")
 
     # No counts published with this update: nothing changes
-    assert install_trainer_placement(eplb_state, config, str(tmp_path), lambda: 1) is None
+    assert install_trainer_placement(eplb_state, config, str(tmp_path), lambda: 1, lambda present: present) is None
     torch.save(torch.tensor([[10, 10, 10, 10, 10, 400, 10, 10]]), tmp_path / EXPERT_LOAD_FILE)
-    moved = install_trainer_placement(eplb_state, config, str(tmp_path), lambda: 1)
+    # A rank of the EP group that does not see the file yet: no rank installs, so all keep the same maps
+    assert install_trainer_placement(eplb_state, config, str(tmp_path), lambda: 1, lambda present: False) is None
+    assert torch.equal(state.physical_to_logical_map[0], initial)
+    moved = install_trainer_placement(eplb_state, config, str(tmp_path), lambda: 1, lambda present: present)
     new = state.physical_to_logical_map[0]
     assert moved == int((new != initial).sum()) > 0
     # The routing maps follow the new placement; the expert weights are left to the update to write
@@ -168,7 +171,7 @@ def test_trainer_placement_installs_maps_without_moving_weights(tmp_path, monkey
     import pytest
 
     with pytest.raises(ValueError, match="shape"):
-        install_trainer_placement(eplb_state, config, str(tmp_path), lambda: 1)
+        install_trainer_placement(eplb_state, config, str(tmp_path), lambda: 1, lambda present: present)
 
 
 def test_engine_weights_count_what_the_engines_computed():
@@ -176,7 +179,7 @@ def test_engine_weights_count_what_the_engines_computed():
 
     import numpy as np
 
-    from prime_rl.orchestrator.trajectories import engine_weights
+    from prime_rl.orchestrator.trajectories import engine_weights, reports_cache_reads
 
     # prompt (4) -> reply (2) -> tool output (3) -> reply (1)
     nodes = [NS(token_ids=[0] * n) for n in (4, 2, 3, 1)]
@@ -194,9 +197,12 @@ def test_engine_weights_count_what_the_engines_computed():
     np.testing.assert_array_equal(engine_weights(trace, branch, set()), [1, 1, 2, 2, 2, 2, 1, 1, 1, 1])
     # A call an earlier branch already counted counts there only
     np.testing.assert_array_equal(engine_weights(trace, branch, {1}), [0, 0, 1, 1, 1, 1, 1, 1, 1, 1])
-    # No reported cache reads: unknown, so every token counts once (None)
-    branch.calls = [NS(node=1, usage=NS(cached_input_tokens=None))]
-    assert engine_weights(trace, branch, set()) is None
+    # A call without reported cache reads: the whole trace counts every token once, so no branch weighs a shared
+    # prefix while another counts it again
+    trace.branches = [branch, NS(calls=[call(1, 0), NS(node=3, usage=NS(cached_input_tokens=None))])]
+    assert not reports_cache_reads(trace)
+    trace.branches = [branch]
+    assert reports_cache_reads(trace)
 
 
 def test_moe_engine_load_weighs_each_routed_token():
