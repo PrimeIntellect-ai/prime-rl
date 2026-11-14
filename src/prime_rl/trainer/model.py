@@ -25,7 +25,7 @@ from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.fsdp._fully_shard._fsdp_common import FSDPMeshInfo, ShardPlacementResult
 from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
-from torch.distributed.tensor import DTensor, Shard
+from torch.distributed.tensor import DTensor, Shard, distribute_tensor
 from transformers import AutoConfig, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
@@ -54,6 +54,7 @@ from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Indexer
 from prime_rl.trainer.models.fusions import (
     apply_model_fusions,
     get_fsdp_shard_placement_fn,
+    get_model_packed_parameters,
     write_back_loaded_packed_parameters,
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
@@ -682,6 +683,34 @@ def initialize_from_scratch(model: nn.Module) -> None:
         raise RuntimeError(f"The init of {type(model).__name__} does not initialize {uninitialized}")
 
 
+@torch.no_grad()
+def init_missing_weights(model: PreTrainedModelPrimeRL, missing: dict[str, Tensor], import_path: str) -> None:
+    """Fill `missing`, the state-dict entries the checkpoint lacks, with the weights the model's
+    ``init_missing_weights`` returns for them. `import_path` names the class in the errors and the log."""
+    method = f"{import_path}.init_missing_weights"
+    weights = model.init_missing_weights(list(missing))
+    if weights.keys() != missing.keys():
+        raise RuntimeError(
+            f"The checkpoint lacks {sorted(missing)} and {method} returned {sorted(weights)}: "
+            "the method must return exactly those that the class adds, and the checkpoint must hold the others"
+        )
+    for name, target in missing.items():
+        weight = weights[name]
+        if weight.shape != target.shape:
+            raise ValueError(
+                f"{method} returned {name} with shape {tuple(weight.shape)}, the parameter has {tuple(target.shape)}"
+            )
+        if isinstance(weight, DTensor):
+            weight = weight.full_tensor()
+        weight = weight.to(device=target.device, dtype=target.dtype)
+        if isinstance(target, DTensor):
+            # Every rank takes its shard of rank 0's weight, so the ranks agree on a parameter even with a random init.
+            weight = distribute_tensor(weight, target.device_mesh, target.placements).to_local()
+            target = target.to_local()
+        target.copy_(weight)
+    get_logger().warning(f"The checkpoint lacks {sorted(missing)}, set by {method}")
+
+
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     device = "cuda"
     model.to_empty(device=device)
@@ -765,12 +794,21 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
             f"{type(model).__name__} sets tie_word_embeddings but its lm_head does not share the input embedding weight"
         )
         state_dict.pop("lm_head.weight")
+    missing: dict[str, Tensor] = {}
+    if config.implementation is not None:
+        # The class may add parameters that the checkpoint lacks: it gives their weights after the load.
+        checkpoint_keys = set(load_state_dict_keys(snapshot_path))
+        # A packed parameter's logical weights stay in the strict load: the write-back below needs them all.
+        checkpoint_keys.update(name for packed in get_model_packed_parameters(model) for name in packed.logical_fqns)
+        missing = {name: state_dict.pop(name) for name in list(state_dict) if name not in checkpoint_keys}
     dcp_load(
         state_dict,
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
         process_group=get_dcp_group(),
     )
     write_back_loaded_packed_parameters(model, state_dict)
+    if missing:
+        init_missing_weights(model, missing, config.implementation.import_path)
 
     logger.debug(f"Loaded weights using HF DCP in {format_time(time.perf_counter() - load_dcp_start_time)}")
 
