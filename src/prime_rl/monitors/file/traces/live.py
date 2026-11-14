@@ -1,6 +1,6 @@
 """Live traces: the in-flight rollouts, one file of deltas per trace.
 
-Env worker pools stream every rollout as it happens (``prime_rl.env.delta``): the
+Env worker pools stream every rollout as it happens (``verifiers.v1.delta``): the
 trace's header when it is minted, then each committed turn and each phase change. The
 file monitor appends those deltas to ``traces/live/<trace_id>.jsonl`` — the first line
 also carries the ``dispatch`` identity (kind, env, group, task, step) — and deletes the
@@ -24,8 +24,8 @@ from pathlib import Path
 from typing import Any
 
 import orjson
+from verifiers.v1.delta import EpisodeAssembly
 
-from prime_rl.env import EpisodeAssembly
 from prime_rl.monitors.file.traces import get_trace_dir
 
 STAGES = ("pending", "boot", "setup", "running", "finalize", "scoring", "done", "error")
@@ -69,7 +69,9 @@ def fold_lines(data: bytes, dispatch: dict[str, Any], assembly: EpisodeAssembly)
             continue
         delta = orjson.loads(line)
         dispatch = delta.pop("dispatch", dispatch)
-        assembly.apply(delta)  # KeyError("open") when a file lost its header line
+        # KeyError("open") when a file lost its header line, IndexError when it lost a
+        # delta that later links point into (the live buffer drops the oldest under load)
+        assembly.apply(delta)
     return end, dispatch
 
 
@@ -83,7 +85,7 @@ def read_live(path: Path) -> tuple[dict[str, Any], dict[str, Any]] | None:
     assembly = EpisodeAssembly()
     try:
         _, dispatch = fold_lines(data, {}, assembly)
-    except (orjson.JSONDecodeError, KeyError):
+    except (orjson.JSONDecodeError, KeyError, IndexError):
         return None
     if not assembly.traces:
         return None
@@ -110,7 +112,7 @@ class LiveFolds:
                 self._folds.pop(path, None)
                 return None
             consumed, dispatch, assembly = self._folds.get(path) or (0, {}, EpisodeAssembly())
-            if size < consumed:  # replaced by a new attempt's file
+            if size < consumed:  # the file was replaced
                 consumed, dispatch, assembly = 0, {}, EpisodeAssembly()
             if size > consumed:
                 try:
@@ -122,7 +124,7 @@ class LiveFolds:
                     return None
                 try:
                     read, dispatch = fold_lines(data, dispatch, assembly)
-                except (orjson.JSONDecodeError, KeyError):
+                except (orjson.JSONDecodeError, KeyError, IndexError):
                     self._folds.pop(path, None)
                     return None
                 consumed += read
