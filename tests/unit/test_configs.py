@@ -1536,7 +1536,7 @@ def test_nvfp4_runs_the_first_five_sixths_and_matches_the_engines_with_an_mxfp8_
     # Routing is replayed from the engines
     assert config.trainer.enable_router_replay and config.inference.vllm.enable_return_routed_experts
     nvfp4 = config.inference.moe_nvfp4
-    assert (nvfp4.apply_to, nvfp4.remainder, nvfp4.four_over_six) == ("83.34%", "mxfp8", True)
+    assert (nvfp4.apply_to, nvfp4.remainder) == ("83.34%", "mxfp8")
     env = config.inference.env_vars
     assert env["FLASHINFER_NVFP4_4OVER6"] == "1" and env["FLASHINFER_DISABLE_FP4_QUANT_FAST_MATH"] == "1"
 
@@ -1574,7 +1574,7 @@ def test_nvfp4_on_every_layer_configures_the_closest_engines():
         config = RLConfig.model_validate(
             {"trainer": {"model": {"moe": {"compute": compute}}}, "orchestrator": {}, "inference": {}}
         )
-    assert config.inference.moe_nvfp4 == MoENVFP4Config(apply_to="all", four_over_six=True)
+    assert config.inference.moe_nvfp4 == MoENVFP4Config(apply_to="all")
     assert config.inference.env_vars["FLASHINFER_NVFP4_4OVER6"] == "1"
     namespace = config.inference.to_namespace()
     assert namespace.quantization == "nvfp4_per_token"
@@ -1639,7 +1639,6 @@ def test_nvfp4_rejects_mismatched_engine_quantization(inference, message):
     [
         ({"moe": {"compute": {"type": "nvfp4"}}, "lora": {}}, "does not support LoRA"),
         ({"moe": {"compute": {"type": "nvfp4"}}, "compile": {"fullgraph": True}}, "requires compile.fullgraph=false"),
-        ({"moe": {"compute": {"type": "nvfp4", "exact_division": False}}}, "Extra inputs are not permitted"),
         (
             {
                 "moe": {

@@ -91,7 +91,8 @@ def test_unselected_moe_uses_bf16_without_loading_compute_backend(selection, com
     model = torch.nn.Module()
     model.model = torch.nn.Module()
     model.model.layers = torch.nn.ModuleList([torch.nn.Identity(), moe])
-    config = ModelConfig.model_validate({"moe": {"compute": {**compute, "apply_to": selection}}})
+    # A BF16 remainder (NVFP4 defaults to an MXFP8 one)
+    config = ModelConfig.model_validate({"moe": {"compute": {**compute, "apply_to": selection, "remainder": "bf16"}}})
     dims = ParallelDims(dp_replicate=1, dp_shard=1, cp=1, pp=1, ep=1, world_size=1)
 
     configure_moe_runtime(model, config, dims)
