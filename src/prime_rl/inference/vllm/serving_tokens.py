@@ -25,7 +25,6 @@ Everything else delegates to upstream so we track future vLLM changes for free.
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncGenerator, AsyncIterator
 from copy import copy
 from typing import Any
@@ -46,7 +45,6 @@ from vllm.entrypoints.serve.engine.protocol import ErrorResponse
 from vllm.logprobs import FlatLogprobs
 from vllm.outputs import RequestOutput
 
-from prime_rl.inference.vllm.compact_logprobs import serialize_compact_logprobs
 from prime_rl.inference.vllm.paired_capture import serialize_paired_support
 
 # vLLM's clamp for missing or -inf logprobs; renderers treat it as "no sampling evidence".
@@ -95,14 +93,11 @@ class _PackedOutputs:
         sampling_params = request.sampling_params
         extra_args = sampling_params.extra_args or {}
         self._generator = generator
-        self._num_logprobs = sampling_params.logprobs
         self._paired = extra_args.get("prl_paired_capture", False)
-        self._compact = not self._paired and extra_args.get("prl_compact_logprobs", False)
+        self._sampler_rows = extra_args.get("prl_sampler_rows", 0)
         # ``serve_tokens`` asks for flat logprobs, so the engine returns FlatLogprobs here.
         self._flat = (
-            not self._paired
-            and not self._compact
-            and sampling_params.flat_logprobs
+            sampling_params.flat_logprobs
             and sampling_params.logprobs in (0, 1)
             and not sampling_params.logprob_token_ids
         )
@@ -110,7 +105,7 @@ class _PackedOutputs:
 
     @property
     def strips_logprobs(self) -> bool:
-        return self._compact or self._flat
+        return self._flat
 
     async def __aiter__(self):
         async for request_output in self._generator:
@@ -125,18 +120,20 @@ class _PackedOutputs:
                         "start": num_tokens - 1 - len(output.routed_experts),
                     }
                     output.routed_experts = None
-                if self._paired:
-                    mask = output.sampling_mask
-                    if mask is None or mask.ids.dtype != np.int64:
-                        raise ValueError("Missing paired sampling-support evidence")
-                    mask.ids, fields["compact_logprobs"] = serialize_paired_support(mask.ids, mask.counts)
-                    output.logprobs = None
-                elif self._compact:
-                    assert output.logprobs is not None, "Did not output logprobs"
-                    assert len(output.logprobs) == len(output.token_ids), "Logprob count does not match token count"
-                    fields["compact_logprobs"] = serialize_compact_logprobs(
-                        output.logprobs, self._num_logprobs, drop_filtered=output.sampling_mask is not None
+                mask = output.sampling_mask
+                if mask is not None and (mask.counts <= 0).any():
+                    raise ValueError(
+                        "Missing sampling support: the step's supports exceeded inference.sampling_support_capacity"
                     )
+                if self._paired or self._sampler_rows:
+                    if mask is None or mask.ids.dtype != np.int64:
+                        raise ValueError("Missing paired sampling-support evidence (needs enable_return_sampling_mask)")
+                    ids, fields["compact_logprobs"] = serialize_paired_support(mask.ids, mask.counts)
+                    if self._paired:
+                        mask.ids = ids
+                    else:
+                        # Sampler rows are compact logprobs, not a support to replay.
+                        output.sampling_mask = None
                     output.logprobs = None
                 elif self._flat:
                     assert isinstance(output.logprobs, FlatLogprobs), "Did not output flat logprobs"
@@ -171,22 +168,23 @@ class PrimeRlServingTokens(ServingTokens):
         raw_request: Request | None = None,
     ) -> GenerateResponse | ErrorResponse | AsyncGenerator[str, None]:
         sampling_params = request.sampling_params
-        if (sampling_params.extra_args or {}).get("prl_compact_logprobs", False):
+        extra_args = sampling_params.extra_args or {}
+        captures = extra_args.get("prl_replay", False) or extra_args.get("prl_sampler_rows", 0)
+        if captures and (request.stream or request.output_mode != "tokens"):
+            return self.create_error_response("Sampling-support capture requires a non-streaming tokens request")
+        if extra_args.get("prl_compact_logprobs", False):
             if request.stream or request.output_mode != "tokens" or sampling_params.logprobs is None:
                 return self.create_error_response(
                     "Compact logprobs require a non-streaming tokens request with logprobs enabled"
                 )
-        extra_args = sampling_params.extra_args or {}
-        paired = (
-            not request.stream
-            and extra_args.get("prl_replay", False)
-            and extra_args.get("prl_compact_logprobs", False)
-            and os.environ.get("PRL_TOP_P_BEFORE_TOP_K") == "1"
-        )
-        sampling_params.extra_args = {**extra_args, "prl_paired_capture": paired}
-        if paired:
-            # Full support evidence supplies both sampled and candidate logprobs.
-            sampling_params.logprobs = None
+            # Captured on the GPU: the replayed support, or the sampled token plus the top ids.
+            # logprobs = 0 (sampled token only) keeps vLLM's flat logprobs.
+            if extra_args.get("prl_replay", False):
+                sampling_params.extra_args = {**extra_args, "prl_paired_capture": True}
+                sampling_params.logprobs = None
+            elif rows := sampling_params.logprobs:
+                sampling_params.extra_args = {**extra_args, "prl_sampler_rows": rows}
+                sampling_params.logprobs = None
         if not request.stream and request.output_mode == "tokens":
             # Upstream's prompt-logprobs response path expects the per-token dicts.
             sampling_params.flat_logprobs = sampling_params.prompt_logprobs is None
