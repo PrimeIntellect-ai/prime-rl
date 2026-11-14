@@ -8,7 +8,7 @@ mode = "sft"
 max_steps = 240
 
 [model]
-name = "outputs/decider/pplx-decider-flash-v1.2-prime-rl"  # the release under prime-rl's weight names (prepare_checkpoint.py)
+name = "outputs/decider/pplx-decider-flash-v1.2"  # the release: the first load converts it to prime-rl's weight names
 
 [model.implementation]
 import_path = "decision_models.decider.model.Qwen3_5Decider"

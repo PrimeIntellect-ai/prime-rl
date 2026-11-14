@@ -7,17 +7,15 @@
 | File | What |
 |---|---|
 | `encoder.py` | `DeciderEncoder`: the whole record is one prompt and one attention segment (a system prompt, the state, then every question with its options under the answer codes and a marker), read at each question's marker. The answer codes come from the checkpoint's `decision_config.json` |
-| `model.py` | `Qwen3_5Decider`: prime-rl's Qwen3.5 plus `readout`, with the full-attention layers made non-causal. A question's logits are the readout's first rows at its marker |
-| `prepare_checkpoint.py` | The checkpoint: the release under prime-rl's parameter names, with the readout |
+| `model.py` | `Qwen3_5Decider`: prime-rl's Qwen3.5 plus `readout`, with the full-attention layers made non-causal. A question's logits are the readout's first rows at its marker. Its conversion methods put the release's weights under prime-rl's parameter names |
 | `train.toml`, `smoke.toml` | The full fine-tuning run, and a 30-step mechanics check composed after it |
 
 ## Run Decider
 
-From the repository root, on one GPU. The data, the loss and both configs are checked on CPU; neither config has run on a GPU yet, so memory use and the hyperparameters are unmeasured, and `prepare_checkpoint.py` has run only on a small stand-in, not on the release's weights. Prepare the checkpoint once, and the records as [their README](../data/README.md) says (they go to `outputs/typed-decisions-synth-system-one`):
+From the repository root, on one GPU. The data, the loss and both configs are checked on CPU; neither config has run on a GPU yet, so memory use and the hyperparameters are unmeasured, and the conversion of the release has run only on a small stand-in, not on the release's weights. Download the release, and prepare the records as [their README](../data/README.md) says (they go to `outputs/typed-decisions-synth-system-one`):
 
 ```bash
 uv run hf download perplexity-ai/pplx-decider-flash-v1.2 --revision 9ff7cf9838e59df461c276b7699d56b244d2af58 --local-dir outputs/decider/pplx-decider-flash-v1.2
-uv run python examples/decision_models/decider/prepare_checkpoint.py outputs/decider/pplx-decider-flash-v1.2 outputs/decider/pplx-decider-flash-v1.2-prime-rl
 ```
 
 Then the mechanics check, and the run. `PYTHONPATH=examples` makes `decision_models` importable in the trainer:
@@ -29,7 +27,9 @@ PYTHONPATH=examples uv run sft @ examples/decision_models/decider/train.toml
 
 The run is one pass over the 6,682 training records (23,319 questions) in 240 steps. It validates on the 732 validation records before the first step and every 30 steps, the last step included. The first validation measures the released model. The mechanics check keeps Qwen3.5's first four layers, of which the fourth is a full-attention layer. A run without a Prime API key needs `--no-monitors.prime`.
 
-The encoder reads `decision_config.json` from the directory the tokenizer is loaded from, which is `model.name` unless `[tokenizer]` names another.
+`model.name` is the release. It holds the backbone as a bare `Qwen3_5Model` (`language_model.*`, `visual.*`) and the readout apart (`readout.safetensors`, key `weight`), and prime-rl loads every parameter by its name in `Qwen3_5Decider` (`model.language_model.*`, `model.visual.*`, `readout.weight`). So the first load converts the release: prime-rl writes a copy of every weight, under the names `Qwen3_5Decider`'s conversion methods give it, to `outputs/decider/pplx-decider-flash-v1.2/prime/` (or under `model.conversion_dir`). Every later load reads that copy, which prime-rl never rebuilds: delete it if the release's files change. Completing an interrupted download is such a change: a run on a download that lacks a backbone shard still writes the copy, without that shard's weights, and every load that needs them fails with `The checkpoint lacks [...]` until the copy is deleted.
+
+The encoder reads `decision_config.json` from the directory the tokenizer is loaded from, which is the release (`model.name`) unless `[tokenizer]` names another.
 
 A record's attention segment must hold the record alone: the full-attention layers are non-causal, so every token of the record would attend to padding in the same segment. prime-rl packs records back to back without padding, and refuses `pad_to_seq_len` for System One data.
 
@@ -51,7 +51,7 @@ The prompt, its tokens, the answer codes, the attention pattern and the readout 
 
 ## Third-party notice
 
-The prompt format in `encoder.py` is taken from `source/src/pplx_decider/protocol.py` of https://huggingface.co/perplexity-ai/pplx-decider-flash-v1.2, rewritten compactly for System One questions and text-only records, and `prepare_checkpoint.py` rewrites that release's weights under prime-rl's parameter names. pplx-decider-flash-v1.2 is licensed under the Apache License, Version 2.0, which is also this repository's licence ([LICENSE](../../../LICENSE)). Its `NOTICE`:
+The prompt format in `encoder.py` is taken from `source/src/pplx_decider/protocol.py` of https://huggingface.co/perplexity-ai/pplx-decider-flash-v1.2, rewritten compactly for System One questions and text-only records, and `model.py` converts that release's weights to prime-rl's parameter names. pplx-decider-flash-v1.2 is licensed under the Apache License, Version 2.0, which is also this repository's licence ([LICENSE](../../../LICENSE)). Its `NOTICE`:
 
 ```text
 pplx-decider-flash-v1.2
