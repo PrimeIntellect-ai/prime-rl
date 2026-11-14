@@ -60,7 +60,7 @@ from prime_rl.trainer.model import (
     setup_model,
     take_moe_routing_stats,
 )
-from prime_rl.trainer.moe_runtime import setup_moe_comm_env
+from prime_rl.trainer.moe_runtime import seed_expert_rounding, setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.vlm import setup_processor
 from prime_rl.trainer.perf import get_perf_counter
@@ -293,8 +293,11 @@ def train(config: TrainerConfig):
         )
     logger.debug(f"Initialized data loader in {format_time(time.perf_counter() - t0)}")
 
-    annotation_writer = AnnotationWriter(
-        parallel_dims, world, config.monitors.file.float_decimals if config.monitors.file else None
+    # Only the file monitor stores annotations, so without it there is nothing to write.
+    annotation_writer = (
+        AnnotationWriter(parallel_dims, world, config.monitors.file.float_decimals)
+        if config.annotations and config.monitors.file
+        else None
     )
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
@@ -316,7 +319,7 @@ def train(config: TrainerConfig):
         logger.info(f"Policies up to v{published} are published; not broadcasting them again")
     max_peak_memory = 0.0
     controller = Controller(requires_step=False)
-    control_server = ControlServer(controller, config.control if world.is_master else None)
+    control_server = ControlServer(controller, config.control if world.is_master else None, ckpt_manager.ckpt_dir)
     control_server.start()
     while True:
         # Reset peak memory stats
@@ -329,6 +332,7 @@ def train(config: TrainerConfig):
         is_last_step = is_last_step or paused
 
         logger.debug(f"Starting training step {progress.step}")
+        seed_expert_rounding(config.model, progress.step)
         step_start_time = time.perf_counter()
 
         # Broadcast the incoming policy (v{progress.step-1}) before waiting for its
@@ -364,6 +368,11 @@ def train(config: TrainerConfig):
             failed = torch.zeros(dataloader.dp_world_size, len(micro_batches), device="cuda")
             failed[dataloader.dp_rank, dataloader.failed_micro_batches] = 1
             dist.all_reduce(failed, op=dist.ReduceOp.MAX)
+            # An NCCL all-reduce returns once it is enqueued, not once every rank joined it.
+            # Reading the result on the host waits for every rank's contribution, which each
+            # rank makes only after its fetch: without this, a data master that finished
+            # fetching first deleted the arrays while its CP peers were still fetching them.
+            failed = failed.cpu()
             # Every rank has fetched its arrays now, so one rank per data rank frees them
             # (dummy micro batches may reuse another data rank's, hence after the world
             # all-reduce).
@@ -662,7 +671,8 @@ def train(config: TrainerConfig):
                     fold_all=False,
                 )
 
-            annotation_writer.export(micro_batch, out)
+            if annotation_writer is not None:
+                annotation_writer.export(micro_batch, out)
 
             if is_moe_model:
                 routing_stats.append(take_moe_routing_stats(model))
@@ -679,7 +689,8 @@ def train(config: TrainerConfig):
                 lambda: mismatch_kl[mismatch_mask].mean().item(),
             )
 
-        annotation_writer.flush()
+        if annotation_writer is not None:
+            annotation_writer.flush()
         # Free this batch before the next one is received and converted
         del micro_batches, micro_batch
         # Invalid sampler evidence fails the step before the optimizer applies its gradients
@@ -694,6 +705,9 @@ def train(config: TrainerConfig):
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
             grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
+
+        # An async checkpoint must finish copying the state before the optimizer step mutates it
+        ckpt_manager.wait_for_staging()
 
         # Update the model parameters
         optimizer.step()
@@ -738,10 +752,13 @@ def train(config: TrainerConfig):
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+            if step_action == "checkpoint" or config.rollout_transport.retain:
+                # The action and the release of retained rollouts both need the checkpoint on storage
+                ckpt_manager.wait()
             dataloader.commit(progress.step, release=is_data_master)
-            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
             if step_action == "checkpoint":
                 controller.mark_saved(progress.step)
+            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
 
             ckpt_manager.maybe_clean()
         else:
@@ -860,6 +877,7 @@ def train(config: TrainerConfig):
     if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+        ckpt_manager.wait()
         dataloader.commit(progress.step, release=is_data_master)
         if step_action is not None:
             controller.mark_saved(progress.step)

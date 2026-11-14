@@ -154,10 +154,14 @@ QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discrim
 
 class MoEComputeConfigBase(BaseConfig):
     apply_to: str | list[Annotated[int, Field(ge=0, strict=True)]] = "all"
-    """Model layers to use this backend for: ``"all"``, a percentage such as ``"85%"``,
-    or zero-based layer indices such as ``[0, 1, 2]``. Percentages select the first fraction
-    of model layers, rounded down. Other expert groups use BF16 compute and transport.
+    """MoE layers to use this backend for: ``"all"``, a percentage such as ``"85%"``,
+    or zero-based model layer indices such as ``[0, 1, 2]``. Percentages select the first fraction
+    of the MoE layers (dense layers do not count), rounded down. The other MoE layers run ``remainder``.
     """
+
+    remainder: Literal["bf16", "mxfp8"] = "bf16"
+    """Expert compute of the MoE layers outside ``apply_to``: BF16 (default), or MXFP8 (SM100) for a higher-precision
+    tail cheaper than BF16, such as the last layers of a lower-precision run."""
 
     @field_validator("apply_to")
     @classmethod
@@ -179,7 +183,9 @@ class MoEComputeConfigBase(BaseConfig):
             return not self.apply_to
         return self.apply_to != "all" and float(self.apply_to[:-1]) == 0
 
-    def resolve_layers(self, num_layers: int) -> set[int]:
+    def resolve_layers(self, num_layers: int, moe_layers: list[int] | None = None) -> set[int]:
+        """The model layer indices selected among ``num_layers``, of which ``moe_layers`` hold MoE (all of them by
+        default)."""
         if isinstance(self.apply_to, list):
             invalid = [index for index in self.apply_to if index >= num_layers]
             if invalid:
@@ -187,8 +193,9 @@ class MoEComputeConfigBase(BaseConfig):
                     f"apply_to layer indices {invalid} are out of range for a model with {num_layers} layers"
                 )
             return set(self.apply_to)
-        count = num_layers if self.apply_to == "all" else int(num_layers * float(self.apply_to[:-1]) / 100)
-        return set(range(count))
+        moe_layers = list(range(num_layers)) if moe_layers is None else moe_layers
+        count = len(moe_layers) if self.apply_to == "all" else int(len(moe_layers) * float(self.apply_to[:-1]) / 100)
+        return set(moe_layers[:count])
 
 
 class BF16MoEComputeConfig(MoEComputeConfigBase):
@@ -214,31 +221,25 @@ class MXFP8MoEComputeConfig(MoEComputeConfigBase):
     type: Literal["mxfp8"] = "mxfp8"
     recipe: MXFP8Recipe = "mxfp8_rceil"
     """MXFP8 expert-compute recipe."""
+    backward: Literal["mxfp8", "dequant_bf16"] = "mxfp8"
+    """Backward GEMMs in MXFP8 (default), or in BF16 on the forward's dequantized weights, as MXFP8
+    quantization-aware training computes (Mega MoE on SM100)."""
 
 
 class NVFP4MoEComputeConfig(MoEComputeConfigBase):
-    """Run routed-expert forwards in NVFP4 (per-token activation scales, per-expert weight scales, E4M3 scales per
-    16-element block): quantization-aware training with a straight-through backward. Master weights, optimizer state,
-    checkpoints and weight updates stay BF16. Needs SM100/SM103 (B200, GB200, B300) and a prime-kernels build with
-    ``nvfp4_moe``."""
+    """Run routed experts in NVFP4 with one recipe, after Thinking Machines' end-to-end 4-bit training. Forward: E2M1
+    values, E4M3 scales per 16-element block, a per-token outer scale on both GEMM inputs (block scales chosen with
+    4/6) and a per-expert one on the weights, in IEEE arithmetic. Backward: both gradient GEMMs in MXFP8 on the
+    dequantized forward operands, every operand quantized with stochastic rounding. By default the first 5/6 of the
+    layers run NVFP4 and the rest MXFP8. Master weights, optimizer state, checkpoints and weight updates stay BF16.
+    Needs SM100/SM103 (B200, GB200, B300) and a prime-kernels build with ``nvfp4_moe``."""
 
     type: Literal["nvfp4"] = "nvfp4"
-    backward: Literal["mxfp8", "dequant_mxfp8", "dequant_bf16", "bf16"] = "mxfp8"
-    """Gradient GEMMs: MXFP8 on the original BF16 operands (default, Composer 2's recipe; the backward never meets the
-    sampler, so it trades exactness for speed), MXFP8 or BF16 on the dequantized NVFP4 forward operands (the gradients
-    see the forward's rounding and clipping, which humans& found most stable), or BF16 on the original operands."""
-    four_over_six: bool = True
-    """FlashInfer's adaptive 4/6 block scaling (448 normalization, MAE selection). On by default because vLLM's NVFP4
-    engines use it when ``FLASHINFER_NVFP4_4OVER6`` is set, which ``rl`` sets to match: the trainer's forward then
-    quantizes like the sampler's."""
-    down_input_scale: Literal["static", "per_token"] = "static"
-    """Global scale of the down projection's input (the SwiGLU output). ``static``: 1.0 for every token, how vLLM's
-    online NVFP4 engines (FlashInfer TRTLLM) quantize it, so rollouts sample-match. ``per_token``: each token's
-    amax / 2688, as for the first GEMM's input (Composer 2's choice), for engines that quantize it per token too."""
-    exact_division: bool = False
-    """IEEE-rounded reciprocals in the NVFP4 block math instead of FlashInfer's approximate ones. Composer 2 found
-    IEEE arithmetic critical for RL stability, but vLLM's TRTLLM engines keep approximate division, so the trainer
-    then quantizes slightly differently from the sampler: an ablation until the engines can match."""
+    apply_to: str | list[Annotated[int, Field(ge=0, strict=True)]] = "83.34%"
+    remainder: Literal["bf16", "mxfp8"] = "mxfp8"
+    dispatch: Literal["nvfp4", "bf16"] = "nvfp4"
+    """Token wire format to the experts: NVFP4 (quantized before dispatch, ~3.5x fewer bytes through the expert
+    all-to-all) or BF16 (quantized after it, to measure the difference). The GEMMs see the same bytes either way."""
 
 
 MoEComputeConfig: TypeAlias = Annotated[
@@ -263,10 +264,42 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     """SMs allocated to DeepEP communication kernels."""
 
 
+class LLEPConfig(BaseConfig):
+    """Least-loaded expert parallelism (https://arxiv.org/abs/2601.17111): a rank whose experts are overloaded hands
+    part of their routes, with a copy of the experts' weights, to the least-loaded ranks. The computation stays exact."""
+
+    alpha: float = Field(1.05, ge=1.0)
+    """A rank counts as full at ``alpha`` times the mean routes per rank."""
+
+    min_chunk: int = Field(1024, ge=1)
+    """Fewest routes worth copying an expert's weights to another rank."""
+
+    lam: float = Field(1.1, ge=0.0)
+    """Below this busiest-rank over mean-rank load, every expert stays on its own rank (standard EP)."""
+
+    max_foreign: int = Field(8, ge=1)
+    """Experts a rank can compute for other ranks; each costs one expert's weights (and gradients) of memory."""
+
+    chunk_tokens: int | None = Field(None, ge=1)
+    """Tokens per rank per kernel call. A larger batch runs as several calls, so the symmetric buffers hold one chunk
+    instead of the whole batch (for long sequences). ``None``: one call per layer."""
+
+    max_recv: float = Field(1.3, gt=0.0)
+    """Routes a rank's buffers hold, as a multiple of its own routes (``max_tokens_per_rank * top_k``). The plan keeps
+    every rank within about ``max(alpha, lam)`` of the mean, so this can be far below the ``ep`` multiple plain Mega MoE
+    reserves. A plan that would exceed it (only when helpers run out of foreign slots) stops the kernel with an error."""
+
+    @model_validator(mode="after")
+    def validate_max_recv(self):
+        if self.max_recv < max(self.alpha, self.lam):
+            raise ValueError("model.moe.dispatch.llep.max_recv must be at least max(alpha, lam).")
+        return self
+
+
 class MegaMoeMoEDispatchConfig(BaseConfig):
     """Fused dispatch, expert MLP and combine. The expert precision comes from ``model.moe.compute``, as for every
-    dispatch: ``bf16`` (SM90+), ``mxfp8`` (SM100) or ``deepgemm_fp8`` (SM90; ``forward = "bf16"`` for a BF16 forward
-    with an FP8 backward)."""
+    dispatch: ``bf16`` (SM90+), ``mxfp8`` (SM100; ``backward = "dequant_bf16"`` for a BF16 backward on the dequantized
+    weights) or ``deepgemm_fp8`` (SM90; ``forward = "bf16"`` for a BF16 forward with an FP8 backward)."""
 
     type: Literal["mega_moe"] = "mega_moe"
 
@@ -279,40 +312,34 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     """SMs left free for concurrent NCCL kernels. In the worst case each NCCL kernel uses all ``NCCL_MAX_CTAS``, so
     at most ``num_reserved_sms // NCCL_MAX_CTAS`` NCCL kernels can run concurrently. FSDP overlaps an all-gather and
     a reduce-scatter, and HSDP (``dp_replicate > 1``) adds an all-reduce, so the trainer sets ``NCCL_MAX_CTAS`` to
-    this value divided by 2 (3 under HSDP) when it is unset and requires it to be at most that."""
+    this value divided by 2 (3 under HSDP) when it is unset and requires it to be at most that. Defaults to 32 with
+    ``llep``, whose weight copies run next to the grid."""
+
+    llep: LLEPConfig | None = None
+    """Balance imbalanced routing with least-loaded expert parallelism. Requires ``model.moe.compute`` ``bf16``
+    (SM90) or ``mxfp8`` with ``backward = "dequant_bf16"`` (SM100)."""
+
+    @model_validator(mode="after")
+    def llep_reserved_sms(self):
+        if self.llep is not None and "num_reserved_sms" not in self.model_fields_set:
+            self.num_reserved_sms = 32
+        return self
 
 
 def mega_moe_precision(compute: "MoEComputeConfig") -> str:
     """The Mega MoE kernels that run ``compute``'s expert precision. Mega MoE runs every MoE layer with its own
-    kernels, so only precisions and settings it implements are accepted."""
+    kernels, so only precisions and settings it implements are accepted. NVFP4 may leave layers out: those run Mega
+    MoE in the ``remainder``'s precision."""
+    if isinstance(compute, NVFP4MoEComputeConfig):
+        return "nvfp4"
     if not compute.selects_all:
         raise ValueError("Mega MoE runs every MoE layer; model.moe.compute.apply_to must be 'all'.")
     if isinstance(compute, BF16MoEComputeConfig) and compute.backend == "torch":
         return "bf16"
     if isinstance(compute, MXFP8MoEComputeConfig) and compute.recipe == "mxfp8_rceil":
-        return "mxfp8"
+        return "mxfp8" if compute.backward == "mxfp8" else "mxfp8_qat"
     if isinstance(compute, DeepGemmFP8MoEComputeConfig):
         return "fp8" if compute.forward == "fp8" else "fp8_bwd"
-    if isinstance(compute, NVFP4MoEComputeConfig):
-        unsupported = [
-            reason
-            for reason, applies in (
-                ("backward = 'mxfp8' (its backward kernel is MXFP8)", compute.backward != "mxfp8"),
-                ("four_over_six = false (no 4/6 block scaling)", compute.four_over_six),
-                (
-                    "down_input_scale = 'static' (per-token is not in the kernel yet)",
-                    compute.down_input_scale != "static",
-                ),
-            )
-            if applies
-        ]
-        if unsupported:
-            raise ValueError(
-                "Mega MoE's NVFP4 kernel (prime-mega-moe, from vllm-project/DeepGEMM) needs model.moe.compute "
-                + ", ".join(unsupported)
-                + "."
-            )
-        return "nvfp4_exact_division" if compute.exact_division else "nvfp4"
     raise ValueError(
         f"Mega MoE cannot run model.moe.compute {compute.model_dump(exclude={'apply_to'})}: it supports type 'bf16' "
         "(backend 'torch'), 'mxfp8' (recipe 'mxfp8_rceil'), 'deepgemm_fp8' and 'nvfp4'."
@@ -473,9 +500,16 @@ class ModelConfig(BaseModelConfig):
         compute = self.moe.compute
         dispatch = self.moe.dispatch
         if isinstance(dispatch, MegaMoeMoEDispatchConfig):
-            mega_moe_precision(compute)  # raises for what Mega MoE cannot run
+            precision = mega_moe_precision(compute)  # raises for what Mega MoE cannot run
+            if dispatch.llep is not None and precision not in ("bf16", "mxfp8_qat"):
+                raise ValueError(
+                    "model.moe.dispatch.llep requires model.moe.compute type 'bf16', or 'mxfp8' with "
+                    "backward = 'dequant_bf16'."
+                )
         elif isinstance(compute, DeepGemmFP8MoEComputeConfig) and compute.forward == "bf16":
             raise ValueError("model.moe.compute.forward = 'bf16' needs model.moe.dispatch.type = 'mega_moe'.")
+        elif isinstance(compute, MXFP8MoEComputeConfig) and compute.backward == "dequant_bf16":
+            raise ValueError("model.moe.compute.backward = 'dequant_bf16' needs model.moe.dispatch.type = 'mega_moe'.")
         if self.ep == 1:
             return self
 
@@ -621,6 +655,13 @@ class CheckpointConfig(BaseConfig):
 
     skip_optimizer: bool = False
     """Skip loading the optimizer state from checkpoint."""
+
+    async_save: bool = False
+    """Write checkpoints in the background. A save copies this rank's model and optimizer state into pinned host
+    buffers and returns; a background thread writes the copy while training continues. The buffers are kept for
+    the next save, so this costs pinned host memory about the size of the rank's checkpoint shard. Without
+    optimizer offload the copy also overlaps the next step, until its optimizer step. A save first waits for the
+    previous write to finish."""
 
 
 class IPOLossConfig(BaseConfig):
@@ -834,6 +875,12 @@ class TrainerConfig(BaseTrainerConfig):
 
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
+
+    annotations: bool = True
+    """Write the trainer's recomputed per-token logprobs and entropies as trace annotations,
+    so a trace can show trainer against sampler token by token. Needs ``monitors.file``.
+    Each step gathers every trained token to the master rank before the optimizer step;
+    disable with ``--no-annotations`` to skip that work."""
 
     enable_router_replay: bool = False
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""

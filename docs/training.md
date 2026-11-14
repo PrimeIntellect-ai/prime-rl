@@ -359,7 +359,7 @@ Pulled from the console log and mirrored to W&B.
 
 `uv run pretrain` trains a model from scratch on tokenized text. It shares the trainer, launcher, checkpointing and monitoring with `uv run sft`. What differs is the data, and that the weights start from the model's own init: `model.name` only supplies the architecture, and a resumed run loads its weights from the checkpoint. The from-scratch init is tested on dense models. The defaults are SFT's, except `optim.lr = 1e-3` and a 10-step linear learning-rate warmup.
 
-**Tokenize first.** prime-rl does not tokenize; it reads the output of [datatrove](https://github.com/huggingface/datatrove)'s `DocumentTokenizer`: `*.ds` token files, each with its `.ds.index` (document ends) and `.ds.metadata`. datatrove is a separate install (`pip install datatrove`), not a prime-rl dependency. Set `eos_token` to the tokenizer's end-of-text token, which is not always its EOS: for Qwen it is `<|endoftext|>`, not `<|im_end|>`. datatrove adds no separator by default and prime-rl adds none either, so without one the documents run together and the model never learns to stop. The trainer warns at startup when shards look like they have no separator.
+**Tokenize first.** prime-rl does not tokenize; it reads the output of [datatrove](https://github.com/huggingface/datatrove)'s `DocumentTokenizer`: `*.ds` token files, each with its `.ds.index` (document ends) and `.ds.metadata`. datatrove is a separate install (`pip install datatrove`), not a prime-rl dependency. Set `eos_token` to the tokenizer's end-of-text token, which is not always its EOS: for Qwen it is `<|endoftext|>`, not `<|im_end|>`. datatrove adds no separator by default and prime-rl adds none either, so without one the documents run together and the model never learns to stop; the trainer checks at startup that the documents end with one. If a document's text contains the separator string, the tokenizer may encode it as the separator token, and the loss at that position is then masked too.
 
 ```python
 # Run with datatrove installed. Tokenize held-out documents into another folder for validation.
@@ -403,7 +403,7 @@ paths = ["data/fineweb-edu-val"]
 seq_len = 2048
 ```
 
-All files in `data.paths` (in folder order, then file name order) form one token pool. Each epoch reads every `seq_len` window of the pool once, in a new random order and from a new random offset drawn from `data.seed`. Attention and positions restart at every document; `data.document_masking = false` makes a window one sequence. A resumed run reads exactly the windows an uninterrupted run would, also on another number of GPUs, as long as `data.num_workers` stays the same.
+All files in `data.paths` (in folder order, then file name order) form one token pool. Each epoch reads every `seq_len` window of the pool once, in a new random order and from a new random offset drawn from `data.seed`. Attention and positions restart at every document; `data.document_masking = false` makes a window one sequence. In training, the model is not trained to predict the next document's first token: there is no loss where the input is the document separator (`data.eod_mask_loss = false` turns this off). The separator is the special token the training shards' documents end with, detected at startup; shards whose documents start with BOS have nothing to mask. A resumed run reads exactly the windows an uninterrupted run would, also on another number of GPUs, as long as `data.num_workers` stays the same.
 
 Validation scores every document in `val.data.paths` on its own, from its first token, and logs the mean loss over all scored tokens as `val/loss`. A document is cut into non-overlapping windows of `val.data.seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it. Every token after a document's first is scored, and no position predicts a token of another document. The windows are packed into rows of `val.data.seq_len * val.data.micro_batch_size` tokens and shared out over the data-parallel ranks. `val.num_samples` limits every validation to the first documents of the held-out shards, the same ones every time; without it, every validation scores all of them.
 
@@ -433,6 +433,27 @@ uv run rl @ rl.toml --ckpt.interval 25                  # every 25 steps
 uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-last 3  # rolling window of 3
 uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-interval 100  # …plus permanent every 100
 ```
+
+### Asynchronous Checkpoints
+
+By default a trainer step waits until its checkpoint is written to storage. With `--ckpt.async-save` (`--trainer.ckpt.async-save` also works for `rl`), a save only copies each rank's model and optimizer state into pinned host memory. A background thread then writes the copy to storage while training continues:
+
+```bash
+uv run rl @ rl.toml --ckpt.interval 2 --ckpt.async-save
+uv run sft @ sft.toml --ckpt.interval 2 --ckpt.async-save
+```
+
+The checkpoint holds the same state that a synchronous save at that step would write. It works with every `model.offload` mode:
+
+- With `model.offload = "none"`, the copy from GPU memory runs alongside the next step's forward and backward passes. The trainer waits for it to finish before the optimizer step changes the state. Until then, any temporary GPU tensors the checkpoint is built from, such as gathered entries of fused parameters, stay allocated.
+- With `optimizer` or `full` offload, the save copies the CPU optimizer state and returns once the copy is done, because offloaded state changes outside the optimizer step. The copy reads the state where it lives, without moving it through the GPU as a synchronous save does.
+
+Some things to know:
+
+- **Host memory.** Each rank keeps pinned host buffers about the size of its checkpoint shard (model plus optimizer state), and reuses them for every save. On a node, this adds up to the node's share of the full checkpoint. With optimizer offload, this comes on top of the offloaded state itself.
+- **One save at a time.** A save first waits for the previous write to finish. If the checkpoint interval is shorter than a write takes, the trainer waits for the write.
+- **Completeness.** DCP writes `trainer/.metadata` after every rank has written its shards. A resume skips any step whose trainer checkpoint has no `.metadata`, for example one that was still being written when the job died. `keep_last` and `keep_interval` only count checkpoints that finished writing, so cleanup never deletes the newest finished checkpoint to make room for one that is still in flight.
+- **Failures.** If a background write fails, the trainer raises its error at the next optimizer step, the next save or the end of training, and stops. The final checkpoint, and any checkpoint requested through the control API, is written before the trainer exits or reports it as saved.
 
 ### Resuming a Run
 
@@ -502,6 +523,13 @@ curl -X POST localhost:8040/v1/actions -H 'content-type: application/json' -d '{
 curl -X POST localhost:8041/v1/actions -H 'content-type: application/json' -d '{"type": "checkpoint", "step": 12}'
 ```
 
+The trainer also lists the checkpoints in its checkpoint dir, ascending by step. A step is `complete` once the trainer finished saving it; an incomplete one is still being written (or was interrupted):
+
+```bash
+curl localhost:8040/v1/checkpoints
+# {"checkpoints": [{"step": 10, "complete": true}, {"step": 12, "complete": false}]}
+```
+
 ### Updating the Config Live
 
 With `--orchestrator.control`, you can also resubmit the full orchestrator config while the run is going. Read the current config, edit it, and submit it back as an `update_config` action:
@@ -537,14 +565,18 @@ Frozen fields include the model, tokenizer, renderer, transports, monitors, logg
 Trainer checkpoints are DCP-sharded; export them to HF-format safetensors with `tools/convert_dcp_to_bf16.py`. The script reads the model config from the run's resolved config and writes sharded safetensors plus config/tokenizer assets to `<ckpt_dir>/weights` (or a second positional arg). It exports full fine-tunes only — LoRA checkpoints are rejected.
 
 ```bash
-# single process (1 GPU)
+# stream one decoder layer at a time on CPU
 uv run python tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10
 
-# multi-rank for faster gathers and models that don't fit one GPU
-uv run torchrun --nproc-per-node 8 tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10
+# load and write up to four decoder layers concurrently on CPU
+uv run python tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10 --workers 4
 ```
 
-The exported directory loads directly into `uv run inference --vllm.model <dir>` or any HF consumer. Quantize it to blockwise FP8 (DeepSeek/GLM format, loads natively in vLLM) with `tools/convert_bf16_to_fp8.py <dir>`, or go straight from the checkpoint with `tools/convert_dcp_to_fp8.py <ckpt_dir>` (each rank quantizes its gathered slice, writes only `<ckpt_dir>/weights-FP8` — no intermediate bf16 export); dequantize an fp8-only release (e.g. GLM-5-FP8) for training with `tools/convert_fp8_to_bf16.py <dir>`.
+N-gram tables are read one stored DCP chunk at a time (one per training rank) and written as their HF table shards. `--workers` bounds how many decoder layers or tables are in flight; peak host memory is each in-flight decoder layer with its conversion buffers, plus, for each in-flight table, about twice its largest DCP storage chunk in the stored dtype (PyTorch holds the raw bytes while decoding a chunk).
+
+The export is staged in a hidden directory next to the output directory and renamed into place when complete, so the output's parent must be writable, a mount point cannot itself be the output directory, and replacing an existing export needs disk for both until the old one is removed. A failed or interrupted publish restores the previous export. An existing non-empty directory other than the default export dir is only replaced with `--overwrite`.
+
+The exported directory loads directly into `uv run inference --vllm.model <dir>` or any HF consumer. Quantize it to blockwise FP8 (DeepSeek/GLM format, loads natively in vLLM) with `tools/convert_bf16_to_fp8.py <dir>`, or go straight from the checkpoint with `tools/convert_dcp_to_fp8.py <ckpt_dir>` (streams decoder layers on CPU and writes only `<ckpt_dir>/weights-FP8`, with no intermediate BF16 export; `--workers` controls concurrency, and `--device cuda` enables GPU quantization instead of the default CPU); dequantize an fp8-only release (e.g. GLM-5-FP8) for training with `tools/convert_fp8_to_bf16.py <dir>`.
 
 ## Observability
 

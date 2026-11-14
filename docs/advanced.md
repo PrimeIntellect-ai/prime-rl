@@ -6,6 +6,7 @@ This page covers the specialized features layered on top of the core training st
 
 - [Custom Modeling](#custom-modeling)
   - [Router Precision](#router-precision)
+  - [LM Head Precision](#lm-head-precision)
   - [Expert Parallelism Backends](#expert-parallelism-backends)
   - [Runtime Fusions](#runtime-fusions)
 - [Multimodal Training](#multimodal-training)
@@ -90,10 +91,10 @@ transport = "mxfp8"
 All MoE compute backends accept `apply_to`:
 
 - `"all"` (default) applies the backend to all expert groups.
-- `"85%"` applies it to the first 85% of model layers, rounded down. For a 48-layer model, this selects layers 0–39.
+- `"85%"` applies it to the first 85% of the MoE layers, rounded down; dense layers do not count. For a model with 48 MoE layers, this selects the first 40.
 - `[0, 1, 2, 3]` selects explicit zero-based model layer indices; `[]` selects none.
 
-Percentages must be between 0% and 100%; explicit indices must be within the model's layer count. Non-MoE blocks in hybrid models count toward layer indices and percentages. Each selected layer uses the backend for all its routed experts. Other expert groups use BF16 compute and BF16 token transport while retaining the configured dispatch backend and expert parallelism. Dense linear quantization is configured separately.
+Percentages must be between 0% and 100%; explicit indices must be within the model's layer count. Non-MoE blocks count toward layer indices, not percentages. Each selected layer uses the backend for all its routed experts. Other expert groups use `remainder` compute (BF16 by default, or MXFP8) and BF16 token transport while retaining the configured dispatch backend and expert parallelism. Dense linear quantization is configured separately.
 
 For example, this selects routed experts in Qwen3's first four model layers:
 
@@ -109,25 +110,24 @@ In RL runs, `rl` quantizes the engines' routed experts like the trainer's (`mode
 
 #### NVFP4 experts
 
-One switch runs routed experts in NVFP4 on both the trainer and the engines:
+One switch runs routed experts in NVFP4, with one recipe after [Thinking Machines' end-to-end 4-bit training](https://thinkingmachines.ai/blog/end-to-end-4-bit-training/):
 
 ```toml
 [trainer.model.moe.compute]
 type = "nvfp4"
-apply_to = "85%"  # optional, as for other backends
 
 [trainer.model.fusions]
 enabled = ["gate_up"]  # gate and up projections share one set of NVFP4 weight scales
 ```
 
-- **Trainer:** the routed experts' forward runs in NVFP4 (E2M1 values, E4M3 scales per 16-element block, per-token activation and per-expert weight scales). Gradient GEMMs run in MXFP8 on the original BF16 operands (`backward = "mxfp8"`, default; needs torchao), in MXFP8 or BF16 on the dequantized forward operands, so the gradients see the forward's rounding (`"dequant_mxfp8"`, `"dequant_bf16"`), or in BF16 on the original ones (`"bf16"`). Master weights, optimizer state, gradient reduction (FP32), checkpoints and weight updates stay BF16/FP32, so this is quantization-aware training with a straight-through backward. Attention, shared experts, the router and the LM head stay BF16. LoRA and `compile.fullgraph` are not supported.
-- **Dense layers:** BF16 by default. With `[trainer.model.quantization] type = "mxfp8"` they run in MXFP8 on both sides (needs `apply_to = "all"`); `rl` adds shared experts to the trainer's ignore patterns and gives the engines the same exclusions.
+- **Forward:** NVFP4 (E2M1 values, E4M3 scales per 16-element block). Both GEMM inputs take a per-token outer scale with each block's scale chosen by 4/6; weights take a per-expert outer scale, without 4/6. All quantizer arithmetic is IEEE.
+- **Backward:** both gradient GEMMs in MXFP8 on the dequantized forward operands, so the gradients see the forward's rounding; every operand, the output gradient included, is quantized with stochastic rounding, seeded per training step so a step reproduces. Master weights, optimizer state, gradient reduction (FP32), checkpoints and weight updates stay BF16/FP32. Attention, shared experts, the router and the LM head stay BF16. LoRA and `compile.fullgraph` are not supported.
+- **Layers:** by default the first 5/6 of the layers (`apply_to = "83.34%"`) run NVFP4 and the rest MXFP8 (`remainder = "mxfp8"`); `remainder = "bf16"` keeps the tail in BF16, `apply_to = "all"` runs every layer in NVFP4.
+- **Dense layers:** BF16 by default, or MXFP8 with `[trainer.model.quantization] type = "mxfp8"`; `rl` adds shared experts to the trainer's ignore patterns.
 - **Router replay:** `rl` turns on `trainer.enable_router_replay`, since quantization noise flips near-tied experts between sampler and trainer. Set it to `false` explicitly to turn it off.
-- **Engines:** `rl` sets `inference.moe_nvfp4` to the same layers. vLLM quantizes those experts online (`nvfp4_per_token`) from the BF16 weights of every update: the `nvfp4_per_token` shorthand when every layer is selected, `online` targets matched on vLLM's expert module names (`layers.<i>.mlp.experts`) for a subset, and an `online` config with `linear = "mxfp8"` and BF16 exclusions alongside MXFP8 dense layers.
-- **Matching numerics:** `four_over_six = true` (default) uses FlashInfer's adaptive 4/6 block scaling (448 normalization, MAE selection) in the trainer, and `rl` sets `FLASHINFER_NVFP4_4OVER6=1` on the engines so the sampler quantizes the same way. The trainer's quantizer matches FlashInfer's bytes; set `four_over_six = false` on the trainer to turn it off on both sides.
-- `rl` rejects an `inference.vllm.quantization` or an `inference.moe_nvfp4` that differs from the trainer's experts, since rollouts would be sampled with other numerics than the trainer computes.
+- **Engines:** vLLM cannot run this recipe yet. With every layer in NVFP4, `rl` sets `inference.moe_nvfp4` to vLLM's closest scheme (`nvfp4_per_token` with FlashInfer's 4/6, which differs in division, 4/6 on weights and the down projection's input scale) and warns; with an MXFP8 tail it leaves the engines' expert quantization to you and warns.
 - On Hopper (H100/H200) the trainer fails at setup with a pointer to `mxfp8` or `deepgemm_fp8`.
-- **Mega MoE:** with `[trainer.model.moe.dispatch] type = "mega_moe"`, the experts run prime-mega-moe's NVFP4 Mega MoE kernel (forward) and MXFP8 Mega MoE backward. That kernel quantizes the down-projection input with a static unit scale and has no 4/6, so set `four_over_six = false` and `down_input_scale = "static"`. The engines keep vLLM's FlashInfer TRTLLM NVFP4 backend; `rl` warns that the two match only where their quantizations agree.
+- **Mega MoE:** with `[trainer.model.moe.dispatch] type = "mega_moe"`, the same recipe runs fused: prime-mega-moe's NVFP4 Mega MoE kernel (tokens and weights quantized by prime-kernels' quantizers, the SwiGLU output quantized per token with 4/6 inside the kernel) and its MXFP8 Mega MoE backward on the dequantized operands, stochastically rounded. The MXFP8 tail runs Mega MoE's MXFP8 kernels. The backward recomputes the L1 output in MXFP8, so its SwiGLU backward and dW2 operand approximate the NVFP4 forward's rather than reusing it.
 
 GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset of layers and the remaining layers reuse the cached top-k indices. The trainer reads this schedule from the model's `indexer_types` config field and enables the index cache automatically, so no extra config is needed.
 
@@ -142,6 +142,10 @@ This also covers MXFP8 expert compute with Torch dispatch. With DeepEP, each ran
 outputs for a token in FP32 and casts once, then DeepEP's combine adds these per-rank BF16 sums in FP32
 (across nodes, after summing each node's ranks in FP32 and casting to BF16). MegaMoE uses its own combine
 kernels and does not share this accumulation guarantee.
+
+### LM head precision
+
+The LM head computes FP32 logits from its BF16 operands: one GEMM writes the logits in FP32 instead of rounding them to BF16 (fused and vanilla head). Gradients stay BF16. This matches inference, whose `enable_fp32_lm_head` defaults to `true` (vLLM's FP32 head), and lowers the trainer–inference mismatch.
 
 ### Expert Parallelism Backends
 

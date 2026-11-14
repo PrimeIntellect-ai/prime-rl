@@ -8,7 +8,7 @@ from pydantic import Field, model_validator
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig
-from prime_rl.configs.orchestrator import OrchestratorConfig, TrainSamplingConfig
+from prime_rl.configs.orchestrator import OrchestratorConfig, SpeculativeDecodingConfig, TrainSamplingConfig
 from prime_rl.configs.shared import (
     BaseMultiNodeDeploymentConfig,
     BaseSingleNodeDeploymentConfig,
@@ -97,6 +97,9 @@ class SharedCheckpointConfig(BaseConfig):
     keep_interval: int | None = Field(None, ge=1)
     """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
 
+    async_save: bool | None = None
+    """Write trainer checkpoints in the background (see ``trainer.ckpt.async_save``). If None, uses the trainer's default."""
+
 
 class SharedModelConfig(BaseConfig):
     name: str = "Qwen/Qwen3-0.6B"
@@ -153,6 +156,24 @@ class RLConfig(BaseConfig):
 
     inference: InferenceConfig | None = None
     """Inference server configuration. If None, the rl entrypoint will not start an inference server (useful for manually started servers)."""
+
+    @model_validator(mode="after")
+    def auto_setup_draft_swaps(self):
+        """The orchestrator swaps drafts on the engines, starting from the draft they launch with."""
+        dynamo = self.orchestrator.model.client.dynamo
+        if self.inference is None or (dynamo is not None and dynamo.enabled):
+            return self
+        draft = (getattr(self.inference.vllm, "speculative_config", None) or {}).get("model")
+        if draft is None:
+            return self
+        if self.orchestrator.speculative_decoding is None:
+            self.orchestrator.speculative_decoding = SpeculativeDecodingConfig(draft=draft)
+        elif self.orchestrator.speculative_decoding.draft != Path(draft):
+            raise ValueError(
+                "orchestrator.speculative_decoding.draft must be the inference draft at launch; "
+                "change it live with update_config"
+            )
+        return self
 
     env_vars: EnvVars = {}
     """Extra environment variables for every launched RL component. Component-specific env_vars override these."""
@@ -503,55 +524,48 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_moe_nvfp4(self):
-        """Trainer experts in NVFP4 need rollouts sampled with the same quantization: the same layers, the same 4/6
-        block-scaling recipe and, with MXFP8 dense layers, the same dense precision with shared experts in BF16 on both
-        sides. Routing is replayed from the engines unless turned off explicitly, since NVFP4 noise flips near-tied
-        experts. Configure the engines to match unless they already are."""
-        from prime_rl.configs.inference import NVFP4_4OVER6_ENV, MoENVFP4Config
+        """NVFP4 trainer experts: routing is replayed from the engines unless turned off explicitly, since NVFP4 noise
+        flips near-tied experts, and MXFP8 dense layers keep shared experts in BF16. The engines run the closest
+        vLLM can: online ``nvfp4_per_token`` experts (FlashInfer TRTLLM) on the same layers, the MXFP8 tail through
+        online targets, IEEE division and 4/6 on activations; ``rl`` warns about what still differs."""
+        from prime_rl.configs.inference import MoENVFP4Config
         from prime_rl.configs.trainer import SHARED_EXPERTS_PATTERN, MXFP8Config, NVFP4MoEComputeConfig
 
         model = self.trainer.model
         compute = model.moe.compute
         if not isinstance(compute, NVFP4MoEComputeConfig) or compute.selects_none:
             return self
-        if self.inference is not None and model.moe.dispatch.type == "mega_moe":
-            warnings.warn(
-                "The trainer's experts run Mega MoE's NVFP4 kernel (static down-projection input scale, no 4/6) while "
-                "the engines run vLLM's FlashInfer TRTLLM NVFP4 backend: trainer and sampler match only where their "
-                "quantizations agree, which the Blackwell byte check has to confirm. Compare mismatch KL against the "
-                "standalone NVFP4 compute.",
-                stacklevel=2,
-            )
         if "enable_router_replay" not in self.trainer.model_fields_set:
             self.trainer.enable_router_replay = True
         linear = None
         if model.quantization is not None:
-            if not isinstance(model.quantization, MXFP8Config) or not compute.selects_all:
-                raise ValueError(
-                    "NVFP4 experts pair only with mxfp8 dense layers (trainer.model.quantization), on every layer "
-                    "(moe.compute.apply_to = 'all'): the engines cannot match other combinations."
-                )
+            if not isinstance(model.quantization, MXFP8Config):
+                raise ValueError("NVFP4 experts pair only with mxfp8 dense layers (trainer.model.quantization).")
             linear = "mxfp8"
             if SHARED_EXPERTS_PATTERN not in model.quantization.extra_ignore_patterns:
                 model.quantization.extra_ignore_patterns.append(SHARED_EXPERTS_PATTERN)
         if self.inference is None:
             return self
-        if compute.down_input_scale == "per_token":
-            warnings.warn(
-                "trainer.model.moe.compute.down_input_scale = 'per_token' quantizes the down projection's input with "
-                "per-token scales, but vLLM's NVFP4 engines (TRTLLM) use a static one: rollouts are sampled with "
-                "different numerics than the trainer computes, until the engines quantize it per token too.",
-                stacklevel=2,
+        gaps = [
+            "the down projection's input takes a static scale on vLLM's TRTLLM experts, a per-token one on the trainer"
+        ]
+        tail = not compute.selects_all and compute.remainder != "bf16"
+        if linear is not None and not compute.selects_all:
+            # vLLM's online targets exclude its linear/moe settings: every MoE layer in NVFP4 beside MXFP8 dense layers
+            wanted = MoENVFP4Config(apply_to="all", linear=linear)
+            gaps.append(
+                f"the engines run NVFP4 on every MoE layer, the trainer {compute.remainder} outside {compute.apply_to}"
             )
-        if compute.exact_division:
-            warnings.warn(
-                "trainer.model.moe.compute.exact_division quantizes NVFP4 experts with IEEE-rounded reciprocals, but "
-                "vLLM's NVFP4 engines keep FlashInfer's approximate ones: rollouts are sampled with slightly different "
-                "numerics than the trainer computes. Meant as an ablation.",
-                stacklevel=2,
+        else:
+            wanted = MoENVFP4Config(
+                apply_to=compute.apply_to, remainder=compute.remainder if tail else "bf16", linear=linear
             )
-        apply_to = "all" if compute.selects_all else compute.apply_to
-        wanted = MoENVFP4Config(apply_to=apply_to, four_over_six=compute.four_over_six, linear=linear)
+        warnings.warn(
+            "vLLM's engines run the trainer's NVFP4 recipe as closely as they can; rollouts still differ where "
+            + "; and where ".join(gaps)
+            + ".",
+            stacklevel=2,
+        )
         current = self.inference.moe_nvfp4
         if current is None:
             if self.inference.vllm.quantization is not None:
@@ -560,8 +574,7 @@ class RLConfig(BaseConfig):
                     f"unset inference.vllm.quantization ({self.inference.vllm.quantization})."
                 )
             self.inference.moe_nvfp4 = wanted
-            if wanted.four_over_six:
-                self.inference.env_vars = {NVFP4_4OVER6_ENV: "1", **self.inference.env_vars}
+            self.inference.add_nvfp4_env()
         elif current != wanted:
             raise ValueError(
                 f"inference.moe_nvfp4 ({current}) differs from the trainer's NVFP4 experts ({wanted}): rollouts would "
@@ -579,11 +592,27 @@ class RLConfig(BaseConfig):
         if self.inference is None:
             return self
         compute = self.trainer.model.moe.compute
+        if compute.type == "nvfp4":  # NVFP4 has its own setup (auto_setup_moe_nvfp4)
+            return self
+        if compute.remainder != "bf16" and not compute.selects_all:
+            warnings.warn(
+                f"model.moe.compute runs {compute.type} on {compute.apply_to} of the MoE layers and "
+                f"{compute.remainder} on the rest: rl does not configure engines to match mixed expert precisions yet, "
+                "so set inference.vllm's expert quantization yourself.",
+                stacklevel=2,
+            )
+            return self
         wanted = expert_engine_scheme(compute)
-        if wanted is None or compute.type == "nvfp4":  # NVFP4 has its own setup (auto_setup_moe_nvfp4)
+        if wanted is None:
             return self
         vllm = self.inference.vllm
         config = dict(getattr(vllm, "quantization_config", None) or {})
+        if "targets" in config:
+            warnings.warn(
+                f"inference.vllm.quantization_config.targets is set: make sure it quantizes the trainer's experts "
+                f"({compute.apply_to}) with {wanted!r}.",
+                stacklevel=2,
+            )
         if vllm.quantization is None:
             if not compute.selects_all:
                 raise ValueError(
@@ -594,11 +623,6 @@ class RLConfig(BaseConfig):
             vllm.quantization_config = {**config, "moe": wanted}
             return self
         if "targets" in config:
-            warnings.warn(
-                f"inference.vllm.quantization_config.targets is set: make sure it quantizes the trainer's experts "
-                f"({compute.apply_to}) with {wanted!r}.",
-                stacklevel=2,
-            )
             return self
         engines = config.get("moe", None if vllm.quantization == "online" else vllm.quantization)
         if engines != wanted or not compute.selects_all:
@@ -690,6 +714,17 @@ class RLConfig(BaseConfig):
             return sampling.model_copy(update={"logprobs": max(sampling.logprobs or 0, k)})
 
         self.orchestrator.update_policy_samplings(request_logprobs)
+        return self
+
+    @model_validator(mode="after")
+    def validate_speculative_sampler_logprobs(self):
+        """Speculative verification captures replayed supports, not untruncated sampler rows."""
+        if self.inference is None or not getattr(self.inference.vllm, "speculative_config", None):
+            return self
+        if any(not s.truncates_distribution() and s.logprobs for s in self.orchestrator.policy_samplings):
+            raise ValueError(
+                "With speculative decoding, sampler logprobs (e.g. score centering) need truncated train sampling"
+            )
         return self
 
     @model_validator(mode="after")

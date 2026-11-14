@@ -9,6 +9,7 @@ import torch
 from torch.distributed import ProcessGroup
 
 from prime_rl.trainer.models.kernels.mega_moe_mxfp8 import (
+    MX_BLOCK,
     cast_weight_along_rows,
     mx_cast,
     mx_weight_sf,
@@ -21,12 +22,13 @@ if TYPE_CHECKING:
     from prime_rl.trainer.models.layers.moe import GroupedExperts
 
 
-MegaMoePrecision = Literal["bf16", "mxfp8", "fp8", "fp8_bwd", "nvfp4", "nvfp4_exact_division"]
+MegaMoePrecision = Literal["bf16", "mxfp8", "mxfp8_qat", "fp8", "fp8_bwd", "nvfp4"]
 # `deep_gemm` symbols each precision needs, named `<precision>_mega_moe[_backward]`; only the prime-mega-moe
 # build has the training kernels
 _REQUIRED_KERNELS: dict[str, tuple[str, ...]] = {
     "bf16": ("bf16_mega_moe", "bf16_mega_moe_backward"),
     "mxfp8": ("mxfp8_mega_moe", "mxfp8_mega_moe_backward"),
+    "mxfp8_qat": ("mxfp8_mega_moe", "bf16_mega_moe_backward"),
     "fp8": (
         "fp8_mega_moe",
         "fp8_mega_moe_backward",
@@ -34,17 +36,15 @@ _REQUIRED_KERNELS: dict[str, tuple[str, ...]] = {
         "quantize_l1_weight_for_fp8_mega_moe",
     ),
     "fp8_bwd": ("bf16_mega_moe", "fp8_mega_moe_backward", "quantize_weight_blockwise_fp8"),
-    # NVFP4 forward (ported from vllm-project/DeepGEMM), MXFP8 backward
     "nvfp4": ("nvfp4_mega_moe", "NVFP4SymmBuffer", "mxfp8_mega_moe_backward"),
-    "nvfp4_exact_division": ("nvfp4_mega_moe", "NVFP4SymmBuffer", "mxfp8_mega_moe_backward"),
 }
 _MIN_CAPABILITY: dict[str, tuple[int, int]] = {
     "bf16": (9, 0),
     "mxfp8": (10, 0),
+    "mxfp8_qat": (10, 0),
     "fp8": (9, 0),
     "fp8_bwd": (9, 0),
     "nvfp4": (10, 0),
-    "nvfp4_exact_division": (10, 0),
 }
 
 
@@ -57,7 +57,10 @@ def mega_moe_available(precision: MegaMoePrecision = "bf16") -> bool:
         return False
     if torch.cuda.get_device_capability() < _MIN_CAPABILITY[precision]:
         return False
-    return all(hasattr(deep_gemm, name) for name in _REQUIRED_KERNELS[precision])
+    if not all(hasattr(deep_gemm, name) for name in _REQUIRED_KERNELS[precision]):
+        return False
+    # `mxfp8_qat` sizes the allocation its two staging layouts share
+    return precision != "mxfp8_qat" or hasattr(deep_gemm.SymmBuffer, "num_bytes")
 
 
 def check_mega_moe_dims(hidden: int, intermediate_hidden: int) -> None:
@@ -125,6 +128,7 @@ class MegaMoeBuffers:
 _STAGING_MMA_TYPES: dict[str, tuple[str, str]] = {  # (forward, backward)
     "bf16": ("bf16xbf16", "bf16xbf16"),
     "mxfp8": ("fp8xfp8", "fp8xfp8"),
+    "mxfp8_qat": ("fp8xfp8", "bf16xbf16"),
     "fp8": ("fp8xfp8", "bf16xbf16"),
     "fp8_bwd": ("bf16xbf16", "bf16xbf16"),
 }
@@ -143,19 +147,27 @@ def build_mega_moe_buffers(
 
     check_mega_moe_dims(hidden, intermediate_hidden)
     args = (group, num_experts, num_max_tokens_per_rank, top_k, hidden, intermediate_hidden)
-    if precision.startswith("nvfp4"):
-        # The NVFP4 forward has its own buffer layout (packed E2M1 tokens with per-16 scales and per-token scales);
-        # the MXFP8 backward stages into the usual one
+    if precision == "nvfp4":
+        # The NVFP4 forward has its own layout (packed E2M1 tokens, per-16 scales, per-token scales)
         return MegaMoeBuffers(
             forward=deep_gemm.NVFP4SymmBuffer(*args), backward=deep_gemm.SymmBuffer(*args, mma_type="fp8xfp8")
         )
     forward_mma_type, backward_mma_type = _STAGING_MMA_TYPES[precision]
-    backward = deep_gemm.SymmBuffer(*args, mma_type=backward_mma_type)
     if forward_mma_type == backward_mma_type:
-        return MegaMoeBuffers(forward=backward, backward=backward)
-    # Both directions restage their inputs on every call, so the forward layout can view the backward's allocation instead of allocating a second symmetric buffer
-    forward = deep_gemm.SymmBuffer(*args, mma_type=forward_mma_type, base=backward)
-    return MegaMoeBuffers(forward=forward, backward=backward)
+        buffer = deep_gemm.SymmBuffer(*args, mma_type=backward_mma_type)
+        return MegaMoeBuffers(forward=buffer, backward=buffer)
+    # Both directions restage their inputs on every call, so one layout views the other's allocation instead of
+    # allocating a second symmetric buffer: the smaller one, when the sizes are known
+    larger, smaller = backward_mma_type, forward_mma_type
+    if hasattr(deep_gemm.SymmBuffer, "num_bytes"):
+        sizes = {
+            mma_type: deep_gemm.SymmBuffer.num_bytes(*args, mma_type=mma_type)
+            for mma_type in (forward_mma_type, backward_mma_type)
+        }
+        larger, smaller = sorted((forward_mma_type, backward_mma_type), key=sizes.get, reverse=True)
+    base = deep_gemm.SymmBuffer(*args, mma_type=larger)
+    buffers = {larger: base, smaller: deep_gemm.SymmBuffer(*args, mma_type=smaller, base=base)}
+    return MegaMoeBuffers(forward=buffers[forward_mma_type], backward=buffers[backward_mma_type])
 
 
 # Custom ops take an int key: the buffers are not tensors
@@ -282,6 +294,20 @@ def mega_moe_forward_mxfp8(x, topk_idx, topk_weights, gate_up_proj, down_proj, b
     return y
 
 
+def mxfp8_decoded_weights(weights: MegaMoeMXFP8ExpertWeights) -> tuple[torch.Tensor, torch.Tensor]:
+    """`mxfp8_rounded_weights` decoded from an MXFP8 forward's quantized operands (``[E, 2I, H]`` natural gate/up
+    rows, ``[E, H, I]``) by a kernel, without fp32 temporaries: LLEP decodes the copies it holds."""
+    from deep_gemm.llep import dequant_mxfp8
+
+    (l1, l1_sf), (l2, l2_sf) = weights.l1, weights.l2
+    gate_up = torch.empty(l1.shape, dtype=torch.bfloat16, device=l1.device)
+    down = torch.empty(l2.shape, dtype=torch.bfloat16, device=l2.device)
+    # The scale tensors are MN-major views of `[E, K / 128, MN]` storage
+    dequant_mxfp8(l1, l1_sf.transpose(1, 2), gate_up, interleaved=True)
+    dequant_mxfp8(l2, l2_sf.transpose(1, 2), down)
+    return gate_up, down
+
+
 def mega_moe_backward_mxfp8(dy, x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, dw_dtype, activation_clamp):
     import deep_gemm
 
@@ -293,6 +319,27 @@ def mega_moe_backward_mxfp8(dy, x, topk_idx, topk_weights, gate_up_proj, down_pr
         dx, dw1, dw2, dtopk, dy, x, weights.l1, weights.l1_t, weights.l2_t, buffer, activation_clamp=activation_clamp
     )
     return dx, dw1, dw2, dtopk
+
+
+def mxfp8_rounded_weights(gate_up_proj: torch.Tensor, down_proj: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """The bf16 weights the MXFP8 forward computes with: each expert weight cast along K as
+    `MegaMoeMXFP8ExpertWeights` casts it (the gate/up interleave only reorders rows), and decoded (exact)."""
+
+    def rounded(weight: torch.Tensor) -> torch.Tensor:
+        num_experts, n, k = weight.shape
+        fp8, sf = mx_cast(weight.contiguous().view(num_experts * n, k), along_rows=False)
+        return (fp8.float().view(-1, k // MX_BLOCK, MX_BLOCK) * sf.unsqueeze(-1)).view(weight.shape).bfloat16()
+
+    return rounded(gate_up_proj), rounded(down_proj)
+
+
+def mega_moe_backward_mxfp8_qat(
+    dy, x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, dw_dtype, activation_clamp
+):
+    """MXFP8 quantization-aware training: the bf16 backward on the weights the MXFP8 forward computed with and the
+    bf16 tokens (the straight-through estimator), so the gradients carry no MXFP8 rounding."""
+    gate_up, down = mxfp8_rounded_weights(gate_up_proj, down_proj)
+    return mega_moe_backward_bf16(dy, x, topk_idx, topk_weights, gate_up, down, buffer, dw_dtype, activation_clamp)
 
 
 # FP8 (SM90): E4M3 with 128x128 fp32 block scales for weights, 1x128 for tokens
@@ -368,79 +415,128 @@ def mega_moe_backward_fp8(dy, x, topk_idx, topk_weights, gate_up_proj, down_proj
     return dx, dw1, dw2, dtopk
 
 
-# NVFP4 (SM100/SM103): routed experts in packed E2M1 with E4M3 scales per 16 values. Tokens carry one FP32 scale each
-# (row amax / 2688); weights one per expert (amax / 2688), applied as the kernel's `l1_alpha` / `l2_alpha`. The SwiGLU
-# output is requantized inside the kernel with a static unit global scale. The backward is the MXFP8 one, on the BF16
-# operands (straight-through, as Composer 2's NVFP4 forward / MXFP8 backward).
+# NVFP4 (SM100/SM103), the recipe of prime-kernels' NVFP4 experts, quantized by prime-kernels' own quantizers so the
+# fused path computes on the same bytes as the standalone one: tokens with one FP32 scale each (amax / 2688) and 4/6
+# block scales, weights with one FP32 scale per expert. The kernel quantizes its L2 input (the SwiGLU output) the same
+# way. The backward is the MXFP8 Mega MoE backward on the dequantized NVFP4 operands, stochastically rounded.
 
 
-def _nvfp4_expert_weights(weight: torch.Tensor) -> tuple[tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
-    """``[E, N, K]`` BF16 expert weights as the kernel's operand (packed E2M1, E4M3 scales packed four per int32 in
-    MN-major layout) and their per-expert dequantization scales. vLLM's online NVFP4 quantizer, which its engines run
-    on the same BF16 weights, so trainer and engines hold the same weight bytes."""
-    from vllm.model_executor.layers.quantization.online.nvfp4 import _quantize_moe_weight_to_nvfp4
+def _nvfp4_kernels():
+    import prime_kernels
 
-    packed, block_scale, global_scale = _quantize_moe_weight_to_nvfp4(weight.contiguous())
-    scales = block_scale.contiguous().view(torch.int32)
-    return (packed.view(torch.int8), scales.transpose(-1, -2).contiguous().transpose(-1, -2)), global_scale.float()
+    return prime_kernels.load("nvfp4_moe")
 
 
-def _mega_moe_forward_nvfp4(
-    x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, activation_clamp, *, exact_division: bool
-):
+def _nvfp4_scale_rows(block_scales: torch.Tensor, groups: int, rows: int, k_blocks: int) -> torch.Tensor:
+    """prime-kernels' E4M3 block scales (128 x 4 tiles, rows padded to 128 per group) as ``[groups, rows,
+    k_blocks]`` bytes, the row-major layout Mega MoE reads."""
+    row_tiles, col_tiles = -(-rows // 128), -(-k_blocks // 4)
+    # Within a tile, the byte of (row, column) is at (row % 32) * 16 + (row // 32) * 4 + column % 4
+    tiles = block_scales.view(torch.uint8).view(groups, row_tiles, col_tiles, 32, 4, 4)
+    return tiles.permute(0, 1, 4, 3, 2, 5).reshape(groups, row_tiles * 128, col_tiles * 4)[:, :rows, :k_blocks]
+
+
+def _nvfp4_tokens(x: torch.Tensor):
+    return _nvfp4_kernels().quantize_activations(x, torch.tensor([x.shape[0]], dtype=torch.int32, device=x.device))
+
+
+def _nvfp4_weights(weight: torch.Tensor):
+    """``[E, N, K]`` BF16 expert weights in NVFP4 (prime-kernels takes the logical ``[E, K, N]``)."""
+    return _nvfp4_kernels().quantize_weights(weight.transpose(-2, -1))
+
+
+def _nvfp4_weight_operand(weight: torch.Tensor) -> tuple[tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
+    """The kernel's operand for ``[E, N, K]`` weights (packed E2M1, E4M3 scales four per int32 in MN-major layout) and
+    their per-expert decode scales."""
+    num_experts, n, k = weight.shape
+    quantized = _nvfp4_weights(weight)
+    packed = quantized.data.view(torch.uint8).view(num_experts, n, k // 2).view(torch.int8)
+    scales = _nvfp4_scale_rows(quantized.block_scales, num_experts, n, k // 16).contiguous().view(torch.int32)
+    return (packed, scales.transpose(-1, -2).contiguous().transpose(-1, -2)), quantized.global_scales.float()
+
+
+def mega_moe_forward_nvfp4(x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, activation_clamp):
     import deep_gemm
-    from vllm.model_executor.layers.fused_moe.prepare_megamoe import prepare_megamoe_nvfp4_inputs
 
-    l1, l1_scale = _nvfp4_expert_weights(gate_up_proj)
-    l2, l2_scale = _nvfp4_expert_weights(down_proj)
+    l1, l1_scales = _nvfp4_weight_operand(gate_up_proj)
+    l2, l2_scales = _nvfp4_weight_operand(down_proj)
     l1, l2 = deep_gemm.transform_weights_for_mega_moe(l1, l2)
-    num_tokens = x.shape[0]
-    # The engines' own token staging: per-token scales, E2M1 values and per-16 E4M3 scales, routing
-    prepare_megamoe_nvfp4_inputs(
-        x,
-        topk_weights.view(num_tokens, buffer.num_topk),
-        topk_idx.view(num_tokens, buffer.num_topk),
-        buffer.x[:num_tokens],
-        buffer.x_sf[:num_tokens],
-        buffer.x_scales[:num_tokens],
-        buffer.topk_idx[:num_tokens],
-        buffer.topk_weights[:num_tokens],
+    num_tokens, hidden = x.shape
+    tokens = _nvfp4_tokens(x)
+    buffer.x[:num_tokens].view(torch.uint8).copy_(tokens.data.view(torch.uint8))
+    buffer.x_sf[:num_tokens].copy_(
+        _nvfp4_scale_rows(tokens.block_scales, 1, num_tokens, hidden // 16)[0].contiguous().view(torch.int32)
     )
+    buffer.x_scales[:num_tokens].copy_(tokens.global_scales)
+    _stage_routing(buffer, num_tokens, topk_idx, topk_weights)
     y = torch.empty_like(x)
     deep_gemm.nvfp4_mega_moe(
-        y,
-        l1,
-        l2,
-        buffer,
-        activation_clamp=activation_clamp,
-        l1_alpha=l1_scale,
-        l2_alpha=l2_scale,
-        l2_activation_scale=1.0,
-        use_x_scales=True,
-        exact_division=exact_division,
+        y, l1, l2, buffer, activation_clamp=activation_clamp, l1_alpha=l1_scales, l2_alpha=l2_scales
     )
     return y
 
 
-def mega_moe_forward_nvfp4(x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, activation_clamp):
-    return _mega_moe_forward_nvfp4(
-        x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, activation_clamp, exact_division=False
-    )
+def _mxfp8_columns_sr(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """``[E, R, C]`` BF16 cast along R with stochastic rounding, laid out as ``cast_weight_along_rows`` lays it out
+    (values ``[E, R, C]``, power-of-two scales ``[E, C, R / 32]``)."""
+    num_experts, rows, cols = weight.shape
+    values, scales = _nvfp4_kernels().stochastic.quantize_columns_sr(weight.reshape(num_experts * rows, cols))
+    values = values.view(cols, num_experts, rows).permute(1, 2, 0).contiguous()
+    scales = scales.float().view(cols, num_experts, rows // MX_BLOCK).permute(1, 0, 2).contiguous()
+    return values, scales
 
 
-def mega_moe_forward_nvfp4_exact_division(x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, activation_clamp):
-    return _mega_moe_forward_nvfp4(
-        x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, activation_clamp, exact_division=True
+def mega_moe_backward_nvfp4(dy, x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, dw_dtype, activation_clamp):
+    """The MXFP8 Mega MoE backward on what the forward computed with: the dequantized NVFP4 tokens and weights
+    (re-quantized deterministically), with every MXFP8 operand stochastically rounded. The kernel recomputes the L1
+    output (for the SwiGLU backward and dW2) in MXFP8 from these operands, close to but not bit for bit the NVFP4
+    forward's."""
+    import deep_gemm
+    from deep_gemm.mega import _interleave_weights
+
+    stochastic = _nvfp4_kernels().stochastic
+    tokens = _nvfp4_tokens(x).dequantize()
+    gate_up = _nvfp4_weights(gate_up_proj).dequantize().transpose(-2, -1)
+    down = _nvfp4_weights(down_proj).dequantize().transpose(-2, -1).contiguous()
+    num_experts, two_i, hidden = gate_up.shape
+    l1_bf16 = _interleave_weights(gate_up.contiguous())
+    # The L1 recompute's operand approximates the forward (round to nearest); the gradient operands are rounded
+    # stochastically, as the standalone recipe's
+    l1_fp8, l1_sf = mx_cast(l1_bf16.view(num_experts * two_i, hidden), along_rows=False)
+    l1 = (l1_fp8.view(num_experts, two_i, hidden), mx_weight_sf(l1_sf.view(num_experts, two_i, -1), two_i, hidden))
+    l1_t_fp8, l1_t_sf = _mxfp8_columns_sr(l1_bf16)
+    l2_t_fp8, l2_t_sf = _mxfp8_columns_sr(down)
+    l1_t = (l1_t_fp8, mx_weight_sf(l1_t_sf, hidden, two_i))
+    l2_t = (l2_t_fp8, mx_weight_sf(l2_t_sf, two_i // 2, hidden))
+    _stage_routing(buffer, x.shape[0], topk_idx, topk_weights)
+    dx, dw1, dw2, dtopk = _grad_buffers(x, buffer, l1[0].shape, l2_t[0].shape, dw_dtype)
+    # The kernel's own quantizations (tokens, gradients) hash their noise from one seed per call: the step's seed
+    # (prime-kernels' `set_seed`) and this call's number, so a replayed step rounds the same way
+    seed = hash((stochastic._seed, stochastic.next_calls(1))) & 0xFFFFFFFF
+    deep_gemm.mxfp8_mega_moe_backward(
+        dx,
+        dw1,
+        dw2,
+        dtopk,
+        dy,
+        tokens,
+        l1,
+        l1_t,
+        l2_t,
+        buffer,
+        activation_clamp=activation_clamp,
+        stochastic_rounding_seed=seed,
     )
+    return dx, dw1, dw2, dtopk
 
 
 MEGA_MOE_IMPLS: dict[str, tuple[Callable, Callable]] = {
     "bf16": (mega_moe_forward_bf16, mega_moe_backward_bf16),
     "mxfp8": (mega_moe_forward_mxfp8, mega_moe_backward_mxfp8),
+    "mxfp8_qat": (mega_moe_forward_mxfp8, mega_moe_backward_mxfp8_qat),
     "fp8": (mega_moe_forward_fp8, mega_moe_backward_fp8),
     "fp8_bwd": (mega_moe_forward_bf16, mega_moe_backward_fp8),
-    "nvfp4": (mega_moe_forward_nvfp4, mega_moe_backward_mxfp8),
-    "nvfp4_exact_division": (mega_moe_forward_nvfp4_exact_division, mega_moe_backward_mxfp8),
+    "nvfp4": (mega_moe_forward_nvfp4, mega_moe_backward_nvfp4),
 }
 
 
@@ -576,7 +672,8 @@ class MegaMoEExpertCompute:
         precision: MegaMoePrecision = "bf16",
     ) -> None:
         if not mega_moe_available(precision):
-            kernels = " and ".join(f"`{name}`" for name in _REQUIRED_KERNELS[precision])
+            names = [*_REQUIRED_KERNELS[precision], *(["SymmBuffer.num_bytes"] if precision == "mxfp8_qat" else [])]
+            kernels = " and ".join(f"`{name}`" for name in names)
             raise RuntimeError(
                 f"Mega MoE `{precision}` requires an SM{_MIN_CAPABILITY[precision][0]}0+ GPU and the "
                 "prime-mega-moe `deep_gemm` wheel from Prime Intellect installed as the top-level `deep_gemm` package; "
