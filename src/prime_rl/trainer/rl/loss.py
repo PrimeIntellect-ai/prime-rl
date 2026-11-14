@@ -12,7 +12,7 @@ from prime_rl.configs.trainer import (
     IPOLossConfig,
     LossConfig,
 )
-from prime_rl.trainer.models.layers.lm_head import TokenSupport, support_replay_mask
+from prime_rl.trainer.models.layers.lm_head import TokenSupport, label_logprob, max_tail_spread, support_replay_mask
 from prime_rl.utils.utils import import_object
 
 
@@ -68,14 +68,16 @@ Expected signature for a custom loss:
 def selective_log_softmax(
     logits: Float[Tensor, "batch seq vocab"], index: Int[Tensor, "batch seq"]
 ) -> Float[Tensor, "batch seq"]:
-    logprobs = logits.log_softmax(dim=-1)
-    return torch.gather(logprobs, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
+    index = index.unsqueeze(-1)
+    rest_logsumexp = logits.scatter(-1, index, float("-inf")).logsumexp(-1)
+    return label_logprob(logits.gather(-1, index).squeeze(-1), rest_logsumexp)
 
 
 def _segment_logsumexp(values: Tensor, rows: Tensor, num_rows: int) -> Tensor:
-    """Differentiable logsumexp per row of flat ``values``; -inf for empty rows (their gradient is zero)."""
+    """Differentiable logsumexp per row of flat ``values``; -inf for empty or all -inf rows (their gradient is zero)."""
     row_max = values.new_full((num_rows,), float("-inf")).scatter_reduce(0, rows, values.detach(), "amax")
-    total = values.new_zeros(num_rows).index_add(0, rows, torch.exp(values - row_max[rows]))
+    shifted = torch.where(values > float("-inf"), values - row_max[rows], float("-inf"))
+    total = values.new_zeros(num_rows).index_add(0, rows, torch.exp(shifted))
     return row_max + torch.where(total > 0, total, 1.0).log()
 
 
@@ -91,18 +93,21 @@ def selective_log_softmax_with_support(
     in_vocab = (support.ids >= 0) & (support.ids < logits.shape[-1])
     support_logits = logits[rows, torch.where(in_vocab, support.ids, 0).long()].masked_fill(~in_vocab, float("-inf"))
     replay = support_replay_mask(support, index, rows)
-    logz = torch.where(replay, _segment_logsumexp(support_logits, rows, support.num_rows), logits.logsumexp(-1))
+    label_entry = support.ids == index[rows]
+    support_rest = _segment_logsumexp(support_logits.masked_fill(label_entry, float("-inf")), rows, support.num_rows)
+    full_rest = logits.scatter(-1, index.unsqueeze(-1), float("-inf")).logsumexp(-1)
     target_logits = logits.gather(-1, index.unsqueeze(-1)).squeeze(-1)
-    return (target_logits - logz).unsqueeze(0), support_logits - logz[rows]
+    logprobs = label_logprob(target_logits, torch.where(replay, support_rest, full_rest))
+    logz = target_logits - logprobs
+    return logprobs.unsqueeze(0), torch.where(label_entry, logprobs[rows], support_logits - logz[rows])
 
 
 @jaxtyped(typechecker=typechecker)
 @torch.compile(dynamic=True)
 def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq"]:
     with torch.no_grad():
-        pd = torch.nn.functional.softmax(shifted_logits, dim=-1)
-        entropy = torch.logsumexp(shifted_logits, dim=-1) - torch.sum(pd * shifted_logits, dim=-1)
-    return entropy
+        _, tail, spread = max_tail_spread(shifted_logits)
+        return torch.log1p(tail) + spread / (1 + tail)
 
 
 def shift_tensor_left(t: Tensor, pad_value: float = 0.0) -> Tensor:

@@ -18,6 +18,7 @@ from prime_rl.trainer.rl.loss import (
     IcePopLoss,
     LossInputs,
     compute_entropy,
+    selective_log_softmax,
     selective_log_softmax_with_support,
     shift_tensor_left,
     shift_tensor_right,
@@ -499,3 +500,36 @@ def test_inject_prime_lm_head_fused():
     assert out.get("logits") is None, "Fused path should not return logits"
     assert out["logprobs"].shape == (batch_size, seq_len), "Logprobs shape mismatch"
     assert out["entropy"].shape == (batch_size, seq_len), "Entropy shape mismatch"
+
+
+def _collapsing_logits() -> torch.Tensor:
+    """Label 0 beats the other logits by ~21, past the margin (~16.6) where fp32 rounds its probability to 1."""
+    logits = 15.0 - torch.rand(64, generator=torch.Generator().manual_seed(0))
+    logits[0] = 40.0
+    return logits
+
+
+def _fp64_label_logprob_and_gradient(logits: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    rest = (logits.double()[1:] - logits.double()[0]).exp()
+    return -torch.log1p(rest.sum()), torch.cat([rest.sum().view(1), -rest]) / (1 + rest.sum())
+
+
+@pytest.mark.parametrize("head", ["fused", "vanilla"])
+def test_label_logprob_and_gradient_survive_softmax_collapse(head):
+    logits = _collapsing_logits()
+    expected_logprob, expected_grad = _fp64_label_logprob_and_gradient(logits)
+    labels = torch.zeros(1, 1, dtype=torch.long)
+    if head == "fused":
+        lm_head = FusedOutputLinear(1, logits.numel(), chunk_size=1)
+        with torch.no_grad():
+            lm_head.weight.copy_(logits.unsqueeze(-1))
+        logprobs = lm_head(torch.ones(1, 1, 1), labels, temperature=torch.ones(1, 1))["logprobs"]
+        logprobs.sum().backward()
+        grad = lm_head.weight.grad.squeeze(-1)
+    else:
+        leaf = logits.clone().requires_grad_(True)
+        logprobs = selective_log_softmax(leaf.view(1, 1, -1), labels)
+        logprobs.sum().backward()
+        grad = leaf.grad
+    torch.testing.assert_close(logprobs.double().view(()), expected_logprob, rtol=1e-5, atol=0)
+    torch.testing.assert_close(grad.double(), expected_grad, rtol=1e-5, atol=0)
