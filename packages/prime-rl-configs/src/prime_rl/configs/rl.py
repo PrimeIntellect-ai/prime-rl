@@ -25,6 +25,7 @@ from prime_rl.configs.shared import (
 from prime_rl.configs.trainer import (
     TokenizerConfig,
     TrainerConfig,
+    expert_engine_scheme,
     rl_micro_batch_multiple,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
@@ -519,6 +520,55 @@ class RLConfig(BaseConfig):
             )
         if self.rollout_transport is None:
             self.rollout_transport = self.trainer.rollout_transport
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_expert_quantization(self):
+        """Quantized trainer experts (``model.moe.compute``, whatever the dispatch) need rollouts sampled with the
+        same expert quantization, or the trainer learns a policy the engines never ran. Without engine quantization,
+        quantize the routed experts alone (vLLM ``online`` with ``moe``); dense layers stay as configured. An engine
+        quantization set by hand must give the experts the same scheme. BF16 trainer experts leave the engines
+        alone: quantizing rollouts on purpose stays possible."""
+        if self.inference is None:
+            return self
+        compute = self.trainer.model.moe.compute
+        if compute.remainder != "bf16" and not compute.selects_all:
+            warnings.warn(
+                f"model.moe.compute runs {compute.type} on {compute.apply_to} of the MoE layers and "
+                f"{compute.remainder} on the rest: rl does not configure engines to match mixed expert precisions yet, "
+                "so set inference.vllm's expert quantization yourself.",
+                stacklevel=2,
+            )
+            return self
+        wanted = expert_engine_scheme(compute)
+        if wanted is None:
+            return self
+        vllm = self.inference.vllm
+        config = dict(getattr(vllm, "quantization_config", None) or {})
+        if "targets" in config:
+            warnings.warn(
+                f"inference.vllm.quantization_config.targets is set: make sure it quantizes the trainer's experts "
+                f"({compute.apply_to}) with {wanted!r}.",
+                stacklevel=2,
+            )
+        if vllm.quantization is None:
+            if not compute.selects_all:
+                raise ValueError(
+                    f"model.moe.compute.apply_to = {compute.apply_to!r} quantizes some MoE layers only: set "
+                    "inference.vllm.quantization = 'online' with quantization_config.targets on the same layers."
+                )
+            vllm.quantization = "online"
+            vllm.quantization_config = {**config, "moe": wanted}
+            return self
+        if "targets" in config:
+            return self
+        engines = config.get("moe", None if vllm.quantization == "online" else vllm.quantization)
+        if engines != wanted or not compute.selects_all:
+            raise ValueError(
+                f"The trainer's experts run {compute.type} ({compute.apply_to}), but the engines quantize experts "
+                f"with {engines!r}: rollouts would be sampled with other numerics than the trainer computes. "
+                f"Use {wanted!r} for the experts on all layers, or leave inference.vllm.quantization unset."
+            )
         return self
 
     @model_validator(mode="after")

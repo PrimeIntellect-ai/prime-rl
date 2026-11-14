@@ -90,10 +90,10 @@ transport = "mxfp8"
 All MoE compute backends accept `apply_to`:
 
 - `"all"` (default) applies the backend to all expert groups.
-- `"85%"` applies it to the first 85% of model layers, rounded down. For a 48-layer model, this selects layers 0–39.
+- `"85%"` applies it to the first 85% of the MoE layers, rounded down; dense layers do not count. For a model with 48 MoE layers, this selects the first 40.
 - `[0, 1, 2, 3]` selects explicit zero-based model layer indices; `[]` selects none.
 
-Percentages must be between 0% and 100%; explicit indices must be within the model's layer count. Non-MoE blocks in hybrid models count toward layer indices and percentages. Each selected layer uses the backend for all its routed experts. Other expert groups use BF16 compute and BF16 token transport while retaining the configured dispatch backend and expert parallelism. Dense linear quantization is configured separately.
+Percentages must be between 0% and 100%; explicit indices must be within the model's layer count. Non-MoE blocks count toward layer indices, not percentages. Each selected layer uses the backend for all its routed experts. Other expert groups use `remainder` compute (BF16 by default, or MXFP8) and BF16 token transport while retaining the configured dispatch backend and expert parallelism. Dense linear quantization is configured separately.
 
 For example, this selects routed experts in Qwen3's first four model layers:
 
@@ -105,7 +105,7 @@ apply_to = [0, 1, 2, 3]
 
 Backend shape checks and token alignment apply only to the selected compute path.
 
-In RL runs, configure the same precision selection for rollouts. Inference module names can differ from the trainer's names, and inference precision is configured explicitly, not inferred from `apply_to`. Check the selected modules on both sides before comparing trainer and rollout logprobs.
+In RL runs, `rl` quantizes the engines' routed experts like the trainer's (`model.moe.compute`, whatever the dispatch): without `inference.vllm.quantization`, it sets vLLM's `online` mode with `quantization_config.moe` (`fp8_per_block` for `deepgemm_fp8`, `mxfp8` for `mxfp8`), so only the experts are quantized. An engine quantization set by hand must give the experts the same scheme, or `rl` rejects it, since rollouts would be sampled with other numerics than the trainer computes. Dense layers are not inferred: their module names and kernels differ by model, so configure `inference.vllm.quantization` and its `ignore` list to match `[trainer.model.quantization]`, and check the selected modules on both sides. BF16 trainer experts leave the engines as configured. Quantizing a subset of MoE layers (`apply_to`) needs engine `targets` on the same layers.
 
 GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset of layers and the remaining layers reuse the cached top-k indices. The trainer reads this schedule from the model's `indexer_types` config field and enables the index cache automatically, so no extra config is needed.
 

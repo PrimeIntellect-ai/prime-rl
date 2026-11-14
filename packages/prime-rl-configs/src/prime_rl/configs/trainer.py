@@ -150,10 +150,14 @@ QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discrim
 
 class MoEComputeConfigBase(BaseConfig):
     apply_to: str | list[Annotated[int, Field(ge=0, strict=True)]] = "all"
-    """Model layers to use this backend for: ``"all"``, a percentage such as ``"85%"``,
-    or zero-based layer indices such as ``[0, 1, 2]``. Percentages select the first fraction
-    of model layers, rounded down. Other expert groups use BF16 compute and transport.
+    """MoE layers to use this backend for: ``"all"``, a percentage such as ``"85%"``,
+    or zero-based model layer indices such as ``[0, 1, 2]``. Percentages select the first fraction
+    of the MoE layers (dense layers do not count), rounded down. The other MoE layers run ``remainder``.
     """
+
+    remainder: Literal["bf16", "mxfp8"] = "bf16"
+    """Expert compute of the MoE layers outside ``apply_to``: BF16 (default), or MXFP8 (SM100) for a higher-precision
+    tail cheaper than BF16, such as the last layers of a lower-precision run."""
 
     @field_validator("apply_to")
     @classmethod
@@ -163,7 +167,21 @@ class MoEComputeConfigBase(BaseConfig):
                 raise ValueError('apply_to must be "all", a percentage from "0%" to "100%", or a list of layer indices')
         return value
 
-    def resolve_layers(self, num_layers: int) -> set[int]:
+    @property
+    def selects_all(self) -> bool:
+        """Every MoE layer: ``"all"`` or ``"100%"``."""
+        return self.apply_to == "all" or (isinstance(self.apply_to, str) and float(self.apply_to[:-1]) >= 100)
+
+    @property
+    def selects_none(self) -> bool:
+        """No MoE layer: ``[]`` or ``"0%"``; every expert then stays BF16."""
+        if isinstance(self.apply_to, list):
+            return not self.apply_to
+        return self.apply_to != "all" and float(self.apply_to[:-1]) == 0
+
+    def resolve_layers(self, num_layers: int, moe_layers: list[int] | None = None) -> set[int]:
+        """The model layer indices selected among ``num_layers``, of which ``moe_layers`` hold MoE (all of them by
+        default)."""
         if isinstance(self.apply_to, list):
             invalid = [index for index in self.apply_to if index >= num_layers]
             if invalid:
@@ -171,8 +189,9 @@ class MoEComputeConfigBase(BaseConfig):
                     f"apply_to layer indices {invalid} are out of range for a model with {num_layers} layers"
                 )
             return set(self.apply_to)
-        count = num_layers if self.apply_to == "all" else int(num_layers * float(self.apply_to[:-1]) / 100)
-        return set(range(count))
+        moe_layers = list(range(num_layers)) if moe_layers is None else moe_layers
+        count = len(moe_layers) if self.apply_to == "all" else int(len(moe_layers) * float(self.apply_to[:-1]) / 100)
+        return set(moe_layers[:count])
 
 
 class BF16MoEComputeConfig(MoEComputeConfigBase):
@@ -188,6 +207,9 @@ class DeepGemmFP8MoEComputeConfig(MoEComputeConfigBase):
 
     type: Literal["deepgemm_fp8"] = "deepgemm_fp8"
 
+    forward: Literal["fp8", "bf16"] = "fp8"
+    """Forward GEMMs in blockwise FP8 (default), or in BF16 with only the backward in FP8 (Mega MoE on SM90)."""
+
 
 class MXFP8MoEComputeConfig(MoEComputeConfigBase):
     """Run routed-expert grouped GEMMs with Prime's vendored MXFP8 implementation."""
@@ -195,6 +217,9 @@ class MXFP8MoEComputeConfig(MoEComputeConfigBase):
     type: Literal["mxfp8"] = "mxfp8"
     recipe: MXFP8Recipe = "mxfp8_rceil"
     """MXFP8 expert-compute recipe."""
+    backward: Literal["mxfp8", "dequant_bf16"] = "mxfp8"
+    """Backward GEMMs in MXFP8 (default), or in BF16 on the forward's dequantized weights, as MXFP8
+    quantization-aware training computes (Mega MoE on SM100)."""
 
 
 MoEComputeConfig: TypeAlias = Annotated[
@@ -252,11 +277,11 @@ class LLEPConfig(BaseConfig):
 
 
 class MegaMoeMoEDispatchConfig(BaseConfig):
+    """Fused dispatch, expert MLP and combine. The expert precision comes from ``model.moe.compute``, as for every
+    dispatch: ``bf16`` (SM90+), ``mxfp8`` (SM100; ``backward = "dequant_bf16"`` for a BF16 backward on the dequantized
+    weights) or ``deepgemm_fp8`` (SM90; ``forward = "bf16"`` for a BF16 forward with an FP8 backward)."""
+
     type: Literal["mega_moe"] = "mega_moe"
-    precision: Literal["bf16", "mxfp8", "mxfp8_qat", "fp8", "fp8_bwd"] = "bf16"
-    """Expert GEMM precision. ``mxfp8``: forward and backward in MXFP8 (SM100). ``mxfp8_qat``: MXFP8 forward, BF16
-    backward on the forward's dequantized weights, as MXFP8 quantization-aware training computes (SM100). ``fp8``:
-    forward and backward in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90)."""
 
     max_tokens_per_rank: int | None = Field(None, ge=1)
     """Tokens per rank per MoE call that the symmetric buffer is sized for. Defaults to the rank's share of the
@@ -271,20 +296,43 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     ``llep``, whose weight copies run next to the grid."""
 
     llep: LLEPConfig | None = None
-    """Balance imbalanced routing with least-loaded expert parallelism. Requires ``precision = "bf16"`` (SM90) or
-    ``"mxfp8_qat"`` (SM100)."""
-
-    @model_validator(mode="after")
-    def validate_llep_precision(self):
-        if self.llep is not None and self.precision not in ("bf16", "mxfp8_qat"):
-            raise ValueError("model.moe.dispatch.llep requires model.moe.dispatch.precision 'bf16' or 'mxfp8_qat'.")
-        return self
+    """Balance imbalanced routing with least-loaded expert parallelism. Requires ``model.moe.compute`` ``bf16``
+    (SM90) or ``mxfp8`` with ``backward = "dequant_bf16"`` (SM100)."""
 
     @model_validator(mode="after")
     def llep_reserved_sms(self):
         if self.llep is not None and "num_reserved_sms" not in self.model_fields_set:
             self.num_reserved_sms = 32
         return self
+
+
+def mega_moe_precision(compute: "MoEComputeConfig") -> str:
+    """The Mega MoE kernels that run ``compute``'s expert precision. Mega MoE runs every MoE layer with its own
+    kernels, so only precisions and settings it implements are accepted."""
+    if not compute.selects_all:
+        raise ValueError("Mega MoE runs every MoE layer; model.moe.compute.apply_to must be 'all'.")
+    if isinstance(compute, BF16MoEComputeConfig) and compute.backend == "torch":
+        return "bf16"
+    if isinstance(compute, MXFP8MoEComputeConfig) and compute.recipe == "mxfp8_rceil":
+        return "mxfp8" if compute.backward == "mxfp8" else "mxfp8_qat"
+    if isinstance(compute, DeepGemmFP8MoEComputeConfig):
+        return "fp8" if compute.forward == "fp8" else "fp8_bwd"
+    raise ValueError(
+        f"Mega MoE cannot run model.moe.compute {compute.model_dump(exclude={'apply_to'})}: it supports type 'bf16' "
+        "(backend 'torch'), 'mxfp8' (recipe 'mxfp8_rceil') and 'deepgemm_fp8'."
+    )
+
+
+def expert_engine_scheme(compute: "MoEComputeConfig") -> str | None:
+    """vLLM's online scheme that quantizes routed experts as ``compute`` runs them in the forward, so rollouts are
+    sampled with the numerics the trainer computes. None for BF16 forwards (or no quantized layer)."""
+    if compute.selects_none:
+        return None
+    if isinstance(compute, DeepGemmFP8MoEComputeConfig):
+        return "fp8_per_block" if compute.forward == "fp8" else None
+    if isinstance(compute, MXFP8MoEComputeConfig):
+        return "mxfp8"
+    return None
 
 
 def rl_micro_batch_multiple(model: "ModelConfig") -> int:
@@ -419,11 +467,22 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def validate_moe_runtime(self):
+        compute = self.moe.compute
+        dispatch = self.moe.dispatch
+        if isinstance(dispatch, MegaMoeMoEDispatchConfig):
+            precision = mega_moe_precision(compute)  # raises for what Mega MoE cannot run
+            if dispatch.llep is not None and precision not in ("bf16", "mxfp8_qat"):
+                raise ValueError(
+                    "model.moe.dispatch.llep requires model.moe.compute type 'bf16', or 'mxfp8' with "
+                    "backward = 'dequant_bf16'."
+                )
+        elif isinstance(compute, DeepGemmFP8MoEComputeConfig) and compute.forward == "bf16":
+            raise ValueError("model.moe.compute.forward = 'bf16' needs model.moe.dispatch.type = 'mega_moe'.")
+        elif isinstance(compute, MXFP8MoEComputeConfig) and compute.backward == "dequant_bf16":
+            raise ValueError("model.moe.compute.backward = 'dequant_bf16' needs model.moe.dispatch.type = 'mega_moe'.")
         if self.ep == 1:
             return self
 
-        compute = self.moe.compute
-        dispatch = self.moe.dispatch
         if isinstance(dispatch, TorchMoEDispatchConfig) and dispatch.transport == "mxfp8":
             if not isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 transport requires model.moe.compute.type='mxfp8'.")
