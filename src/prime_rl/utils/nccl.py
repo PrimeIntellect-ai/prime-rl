@@ -1,10 +1,15 @@
+import dataclasses
 import json
 import math
 import os
 from collections.abc import Iterator
+from typing import Any
 
 import pynvml
 import torch
+from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
+from vllm.distributed.device_communicators.pynccl_wrapper import ncclUniqueId
+from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.utils.logger import get_logger
 
@@ -86,3 +91,37 @@ def decode_tensor_metadata(data: bytes) -> dict[torch.dtype, list[tuple[str, tor
             raise ValueError(f"Invalid dtype in weight metadata: {dtype_name}")
         metadata[dtype] = [(key, torch.Size(shape), math.prod(shape)) for key, shape in tensor_info]
     return metadata
+
+
+@dataclasses.dataclass
+class UniqueIdProcessGroup(StatelessProcessGroup):
+    """A process group limited to exchanging the NCCL unique id as raw bytes."""
+
+    def broadcast_obj(self, obj: Any, src: int) -> ncclUniqueId:
+        key = f"nccl_unique_id/{src}"
+        if self.rank == src:
+            if not isinstance(obj, ncclUniqueId):
+                raise TypeError(f"Can only broadcast an NCCL unique id, got {type(obj).__name__}")
+            self.store.set(key, bytes(obj))
+            return obj
+        return ncclUniqueId.from_buffer_copy(self.store.get(key))
+
+    def send_obj(self, obj: Any, dst: int) -> None:
+        raise NotImplementedError("UniqueIdProcessGroup only broadcasts the NCCL unique id")
+
+    def recv_obj(self, src: int) -> Any:
+        raise NotImplementedError("UniqueIdProcessGroup only broadcasts the NCCL unique id")
+
+    def all_gather_obj(self, obj: Any) -> list[Any]:
+        raise NotImplementedError("UniqueIdProcessGroup only broadcasts the NCCL unique id")
+
+
+def create_nccl_communicator(
+    host: str, port: int, rank: int, world_size: int, device: int | str | torch.device, timeout: int
+) -> PyNcclCommunicator:
+    """Rendezvous at `host:port` through a TCPStore hosted by rank 0 and build an NCCL communicator over it."""
+    store = StatelessProcessGroup.create(
+        host=host, port=port, rank=rank, world_size=world_size, store_timeout=timeout
+    ).store
+    group = UniqueIdProcessGroup(rank=rank, world_size=world_size, store=store)
+    return PyNcclCommunicator(group, device=device)
