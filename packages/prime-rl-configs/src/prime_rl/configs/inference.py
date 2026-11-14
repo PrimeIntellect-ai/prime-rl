@@ -469,9 +469,6 @@ class MoENVFP4Config(BaseConfig):
     remainder: Literal["bf16", "mxfp8"] = "bf16"
     """The other MoE layers' experts, as the trainer's ``moe.compute.remainder``."""
 
-    four_over_six: bool = True
-    """FlashInfer's adaptive 4/6 block scaling (sets ``FLASHINFER_NVFP4_4OVER6``), matching the trainer's recipe."""
-
     linear: Literal["mxfp8"] | None = None
     """Dense linear layers in MXFP8 (``rl`` sets it when the trainer's ``model.quantization`` is ``mxfp8``); shared
     experts, the router and the LM head stay BF16. Needs ``apply_to = "all"``. None keeps dense layers BF16."""
@@ -741,8 +738,7 @@ class InferenceConfig(BaseConfig):
 
     def add_nvfp4_env(self) -> None:
         """FlashInfer's IEEE division and 4/6 for ``moe_nvfp4``, under any value the user set."""
-        recipe = {NVFP4_IEEE_DIVISION_ENV: "1"} | ({NVFP4_4OVER6_ENV: "1"} if self.moe_nvfp4.four_over_six else {})
-        self.env_vars = {**recipe, **self.env_vars}
+        self.env_vars = {NVFP4_IEEE_DIVISION_ENV: "1", NVFP4_4OVER6_ENV: "1", **self.env_vars}
 
     def moe_layers(self) -> list[int] | None:
         """The served model's MoE decoder layer indices, from its HF config (local cache or Hub), by the usual

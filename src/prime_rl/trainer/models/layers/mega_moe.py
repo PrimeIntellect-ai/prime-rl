@@ -512,7 +512,7 @@ def mega_moe_backward_nvfp4(dy, x, topk_idx, topk_weights, gate_up_proj, down_pr
     dx, dw1, dw2, dtopk = _grad_buffers(x, buffer, l1[0].shape, l2_t[0].shape, dw_dtype)
     # The kernel's own quantizations (tokens, gradients) hash their noise from one seed per call: the step's seed
     # (prime-kernels' `set_seed`) and this call's number, so a replayed step rounds the same way
-    seed = hash((stochastic._seed, stochastic.next_calls(1))) & 0xFFFFFFFF
+    seed = hash((stochastic.seed(), stochastic.next_calls(1))) & 0xFFFFFFFF
     deep_gemm.mxfp8_mega_moe_backward(
         dx,
         dw1,
