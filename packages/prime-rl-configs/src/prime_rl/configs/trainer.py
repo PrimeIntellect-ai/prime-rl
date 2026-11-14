@@ -237,6 +237,9 @@ class NVFP4MoEComputeConfig(MoEComputeConfigBase):
     type: Literal["nvfp4"] = "nvfp4"
     apply_to: str | list[Annotated[int, Field(ge=0, strict=True)]] = "83.34%"
     remainder: Literal["bf16", "mxfp8"] = "mxfp8"
+    dispatch: Literal["nvfp4", "bf16"] = "nvfp4"
+    """Token wire format to the experts: NVFP4 (quantized before dispatch, ~3.5x fewer bytes through the expert
+    all-to-all) or BF16 (quantized after it, to measure the difference). The GEMMs see the same bytes either way."""
 
 
 MoEComputeConfig: TypeAlias = Annotated[

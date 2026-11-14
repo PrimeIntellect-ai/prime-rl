@@ -26,7 +26,11 @@ class ExpertCompute(Protocol):
     def validate(self, experts: "GroupedExperts") -> None: ...
 
     def __call__(
-        self, experts: "GroupedExperts", x: torch.Tensor, num_tokens_per_expert: torch.Tensor
+        self,
+        experts: "GroupedExperts",
+        x: torch.Tensor,
+        num_tokens_per_expert: torch.Tensor,
+        encoded: torch.Tensor | None = None,
     ) -> torch.Tensor: ...
 
 
@@ -76,15 +80,26 @@ class GroupedGemmExpertCompute:
     def validate(self, experts: "GroupedExperts") -> None:
         """The shared forward handles the experts' activation, biases, and weight layout."""
 
-    def __call__(self, experts: "GroupedExperts", x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
+    def __call__(
+        self,
+        experts: "GroupedExperts",
+        x: torch.Tensor,
+        num_tokens_per_expert: torch.Tensor,
+        encoded: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """``encoded``: the routed tokens in ``encode_tokens``' form, dispatched instead of ``x``, which then only
+        stands in for them (its gradient is the input gradient)."""
         assert x.dim() == 2
 
         offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
         x_bf16 = x.bfloat16()
+        first_gemm = self.gemm
+        if encoded is not None:
+            first_gemm = partial(self.gemm, activations=self.decode_tokens(encoded, offsets, x.shape[-1]))
 
         if experts.gate_up_proj is None:
             up_proj = to_local(experts.up_proj).transpose(-2, -1)
-            up = self.gemm(x_bf16, up_proj.bfloat16(), offsets)
+            up = first_gemm(x_bf16, up_proj.bfloat16(), offsets)
 
             gate = None
             if experts.gate_proj is not None:
@@ -92,7 +107,7 @@ class GroupedGemmExpertCompute:
                 gate = self.gemm(x_bf16, gate_proj.bfloat16(), offsets)
         else:
             gate_up_proj = to_local(experts.gate_up_proj).transpose(-2, -1)
-            gate_up = self.gemm(x_bf16, gate_up_proj.bfloat16(), offsets)
+            gate_up = first_gemm(x_bf16, gate_up_proj.bfloat16(), offsets)
             gate, up = gate_up.chunk(2, dim=-1)
 
         if experts.up_proj_bias is not None:
@@ -126,12 +141,30 @@ class DeepGemmFP8ExpertCompute(GroupedGemmExpertCompute):
 
 
 class NVFP4ExpertCompute(GroupedGemmExpertCompute):
-    def __init__(self, kernel: ModuleType) -> None:
+    """NVFP4 forward, MXFP8 backward. Tokens are quantized before dispatch and travel as NVFP4 bytes (the scales are
+    per token, so the bytes do not depend on the expert): ``encode_tokens`` packs each token, ``decode_tokens`` hands
+    the routed rows to the GEMM as its activation operand."""
+
+    def __init__(self, kernel: ModuleType, quantized_dispatch: bool = True) -> None:
         super().__init__(
-            lambda x, weight, offsets: kernel.grouped_gemm(x, weight, offs=offsets),
+            lambda x, weight, offsets, activations=None: kernel.grouped_gemm(
+                x, weight, offs=offsets, activations=activations
+            ),
             token_group_alignment=kernel.TOKEN_GROUP_ALIGNMENT,
         )
         self.kernel = kernel
+        if not quantized_dispatch:
+            self.encode_tokens = None  # BF16 tokens through dispatch, quantized by the GEMM
+
+    def encode_tokens(self, x: torch.Tensor) -> torch.Tensor:
+        from prime_kernels.nvfp4_moe.dispatch import quantize_tokens
+
+        return pack_nvfp4_tokens(*quantize_tokens(x.bfloat16()).tensors())
+
+    def decode_tokens(self, encoded: torch.Tensor, offsets: torch.Tensor, dim: int):
+        from prime_kernels.nvfp4_moe.dispatch import NVFP4Tokens, group_tokens
+
+        return group_tokens(NVFP4Tokens(*unpack_nvfp4_tokens(encoded, dim)), offsets)
 
     def validate(self, experts: "GroupedExperts") -> None:
         """Gate and up projections share one set of weight scales, so they must be fused; the kernel tiles in
@@ -141,6 +174,26 @@ class NVFP4ExpertCompute(GroupedGemmExpertCompute):
         reason = self.kernel.unsupported_shape_reason(experts.down_proj.shape[-2], experts.hidden_dim)
         if reason is not None:
             raise ValueError(reason)
+
+
+def pack_nvfp4_tokens(data: torch.Tensor, block_scales: torch.Tensor, global_scales: torch.Tensor) -> torch.Tensor:
+    """NVFP4 tokens (``[M, K // 2]`` E2M1 pairs, ``[M, K // 16]`` E4M3 block scales, ``[M]`` FP32 scales) as one row of
+    bytes each, padded to 16 bytes and viewed as BF16 so every dispatcher moves them like hidden states."""
+    rows = data.shape[0]
+    packed = torch.cat(
+        (data.view(torch.uint8), block_scales.view(torch.uint8), global_scales.reshape(rows, 1).view(torch.uint8)), 1
+    )
+    return torch.nn.functional.pad(packed, (0, -packed.shape[1] % 16)).view(torch.bfloat16)
+
+
+def unpack_nvfp4_tokens(packed: torch.Tensor, dim: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """The tensors ``pack_nvfp4_tokens`` packed, for ``dim``-wide tokens."""
+    raw = packed.view(torch.uint8)
+    blocks = dim // 16
+    data = raw[:, : dim // 2].contiguous()
+    block_scales = raw[:, dim // 2 : dim // 2 + blocks].contiguous().view(torch.float8_e4m3fn)
+    global_scales = raw[:, dim // 2 + blocks : dim // 2 + blocks + 4].contiguous().view(torch.float32).reshape(-1)
+    return data, block_scales, global_scales
 
 
 class MXFP8ExpertCompute(GroupedGemmExpertCompute):

@@ -341,3 +341,78 @@ def test_nvfp4_expert_compute_needs_fused_gate_up_and_aligned_shapes():
     fuse_gate_up_projections(misaligned.experts)
     with pytest.raises(ValueError, match="multiples of 32"):
         misaligned.experts.set_compute(compute)
+
+
+def test_nvfp4_tokens_pack_into_rows_and_back():
+    from prime_rl.trainer.models.layers.expert_compute import pack_nvfp4_tokens, unpack_nvfp4_tokens
+
+    data = torch.randint(0, 256, (5, 32), dtype=torch.uint8)
+    block_scales = torch.randn(5, 4).to(torch.float8_e4m3fn)
+    global_scales = torch.rand(5)
+    packed = pack_nvfp4_tokens(data, block_scales, global_scales)
+    assert packed.dtype == torch.bfloat16 and packed.view(torch.uint8).shape == (5, 48)  # 32 + 4 + 4, padded to 16
+    for expected, actual in zip((data, block_scales, global_scales), unpack_nvfp4_tokens(packed, 64)):
+        assert torch.equal(expected.view(torch.uint8), actual.view(torch.uint8))
+
+
+class _EncodedExperts:
+    """Experts whose compute takes tokens encoded before dispatch (row by row, as NVFP4's per-token scales allow):
+    here E4M3, each row scaled by its expert (index + 1). It records what each expert received."""
+
+    def __init__(self):
+        self.compute = self
+        self.received = None
+
+    def encode_tokens(self, x):
+        return x.to(torch.float8_e4m3fn).view(torch.uint8).view(torch.bfloat16)
+
+    def __call__(self, stand_in, num_tokens_per_expert, encoded):
+        self.received = (encoded.view(torch.uint8).view(torch.float8_e4m3fn).float(), num_tokens_per_expert)
+        scale = torch.repeat_interleave(
+            torch.arange(1, len(num_tokens_per_expert) + 1, dtype=torch.float32), num_tokens_per_expert
+        )
+        scale = torch.nn.functional.pad(scale, (0, len(encoded) - len(scale))).unsqueeze(1)  # padding rows: 0
+        return _ScaledStandIn.apply(stand_in, self.received[0], scale)
+
+
+class _ScaledStandIn(torch.autograd.Function):
+    """The routed rows (decoded) times their expert's scale, with the gradient going to the stand-in, as the NVFP4
+    GEMM returns the input gradient for the matrix it never reads."""
+
+    @staticmethod
+    def forward(ctx, stand_in, decoded, scale):
+        ctx.save_for_backward(scale)
+        return decoded * scale
+
+    @staticmethod
+    def backward(ctx, grad):
+        (scale,) = ctx.saved_tensors
+        return grad * scale, None, None
+
+
+def test_encoded_dispatch_delivers_each_expert_its_tokens_and_returns_the_input_gradient():
+    dispatcher = LocalTokenDispatcher(num_experts=3, top_k=2, token_group_alignment=1)
+    x = (torch.arange(16, dtype=torch.float32).reshape(4, 4) / 8).requires_grad_()
+    scores = torch.tensor([[0.2, 0.8], [0.4, 0.6], [0.7, 0.3], [0.9, 0.1]])
+    selected = torch.tensor([[0, 1], [1, 2], [2, 0], [1, 0]])
+    experts = _EncodedExperts()
+    output = dispatcher.run(x, scores, selected, experts, score_before_experts=False)
+
+    # Each expert received its tokens' encoded rows, in token order: the bytes quantizing after dispatch would give
+    decoded, counts = experts.received
+    quantized = x.detach().to(torch.float8_e4m3fn).float()
+    expected_rows = [quantized[(selected == expert).any(dim=1)] for expert in range(3)]
+    assert counts.tolist() == [len(rows) for rows in expected_rows]
+    torch.testing.assert_close(decoded[: counts.sum()], torch.cat(expected_rows))
+
+    expected = sum(
+        quantized * scores[:, route : route + 1] * (selected[:, route : route + 1] + 1) for route in range(2)
+    )
+    torch.testing.assert_close(output, expected)
+    output.sum().backward()
+    torch.testing.assert_close(
+        x.grad, sum(scores[:, r : r + 1] * (selected[:, r : r + 1] + 1) for r in range(2)).expand(4, 4)
+    )
+
+    with pytest.raises(ValueError, match="score_before_experts=False"):
+        dispatcher.run(x, scores, selected, experts, score_before_experts=True)

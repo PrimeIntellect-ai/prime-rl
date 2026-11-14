@@ -88,7 +88,9 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
                 f"NVFP4 expert compute needs SM100 or SM103 (B200, GB200, B300), but this device is "
                 f"SM{capability[0]}{capability[1]}. Use moe.compute.type = 'mxfp8' (SM100+) or 'deepgemm_fp8' (SM90)."
             )
-        return NVFP4ExpertCompute(kernel=prime_kernels.load("nvfp4_moe"))
+        return NVFP4ExpertCompute(
+            kernel=prime_kernels.load("nvfp4_moe"), quantized_dispatch=compute.dispatch == "nvfp4"
+        )
     raise TypeError(f"Unsupported MoE compute config: {type(compute).__name__}")
 
 
@@ -175,6 +177,10 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
         if is_mega_moe:
             selected_compute.validate_top_k(moe.router.top_k)
         compute = selected_compute if moe in selected_moes else remainder_compute
+        if getattr(compute, "encode_tokens", None) is not None and moe.score_before_experts:
+            raise ValueError(
+                "NVFP4 experts dispatch quantized tokens, which needs `score_before_experts=False` on the MoE layer."
+            )
         moe.experts.set_compute(compute)
         if ep_mesh is None:
             token_dispatcher = LocalTokenDispatcher(
