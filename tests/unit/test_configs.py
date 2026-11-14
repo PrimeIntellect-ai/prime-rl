@@ -1412,6 +1412,13 @@ def test_dsv41_nvfp4_kv_rejects_another_engine_cache():
             {"indexer_kv_dtype": "mxfp4", "backend": "FLASHMLA"},
         ),
         ({}, {}, "fp8", None),
+        # Both set to MXFP4: they match
+        (
+            {"attention_config": {"indexer_kv_dtype": "mxfp4"}},
+            {"dsv4_indexer_precision": "mxfp4"},
+            "mxfp4",
+            {"indexer_kv_dtype": "mxfp4"},
+        ),
     ],
 )
 def test_dsv41_indexer_precision_follows_the_engines_indexer_cache(

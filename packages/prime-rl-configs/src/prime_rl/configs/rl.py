@@ -518,7 +518,7 @@ class RLConfig(BaseConfig):
         if indexer_kv_dtype in ("fp8", "mxfp4") and not explicit:
             model.dsv4_indexer_precision = indexer_kv_dtype
         elif model.dsv4_indexer_precision == "mxfp4":
-            if indexer_kv_dtype != "auto":
+            if indexer_kv_dtype not in ("auto", "mxfp4"):
                 raise ValueError(
                     'model.dsv4_indexer_precision = "mxfp4" models vLLM\'s MXFP4 indexer cache, but the engines use '
                     f"inference.vllm.attention_config.indexer_kv_dtype = {indexer_kv_dtype!r}."
