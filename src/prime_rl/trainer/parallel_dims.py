@@ -72,7 +72,11 @@ class ParallelDims:
 
         if ep > 1:
             # EP would borrow all cp and some dp_shard degree
-            assert ep % cp == 0 and (dp_shard * cp) % ep == 0
+            if ep % cp != 0 or (dp_shard * cp) % ep != 0:
+                raise ValueError(
+                    f"EP borrows all CP ranks and part of dp_shard: ep ({ep}) must be a multiple of cp ({cp}) "
+                    f"and divide dp_shard * cp ({dp_shard * cp})"
+                )
 
     def build_mesh(self) -> DeviceMesh:
         mesh = self._build_mesh_with_ep() if self.ep > 1 else self._build_mesh_without_ep()

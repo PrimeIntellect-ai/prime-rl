@@ -1,6 +1,5 @@
 """Autograd and compile-friendly distributed collectives."""
 
-import prime_kernels
 import torch
 import torch.distributed as dist
 from torch.distributed import ProcessGroup
@@ -65,8 +64,7 @@ def _all_to_all_backward(ctx, grad_output: torch.Tensor) -> tuple[torch.Tensor, 
 _all_to_all_single.register_autograd(_all_to_all_backward, setup_context=_all_to_all_setup_context)
 
 
-@torch.library.custom_op("prime_rl_collectives::all_to_all_single_equal", mutates_args=())
-def _all_to_all_single_equal(x: torch.Tensor, group_name: str) -> torch.Tensor:
+def _equal_split_all_to_all(x: torch.Tensor, group_name: str) -> torch.Tensor:
     output = x.new_empty(x.shape)
     dist.all_to_all_single(
         output,
@@ -74,6 +72,11 @@ def _all_to_all_single_equal(x: torch.Tensor, group_name: str) -> torch.Tensor:
         group=dist.distributed_c10d._resolve_process_group(group_name),
     )
     return output
+
+
+@torch.library.custom_op("prime_rl_collectives::all_to_all_single_equal", mutates_args=())
+def _all_to_all_single_equal(x: torch.Tensor, group_name: str) -> torch.Tensor:
+    return _equal_split_all_to_all(x, group_name)
 
 
 @_all_to_all_single_equal.register_fake
@@ -96,6 +99,17 @@ _all_to_all_single_equal.register_autograd(
 )
 
 
+@torch.library.custom_op("prime_rl_collectives::all_to_all_counts", mutates_args=())
+def _all_to_all_counts(counts: torch.Tensor, group_name: str) -> torch.Tensor:
+    """Equal-split all-to-all of integer counts, a separate op so activation checkpointing can save its output."""
+    return _equal_split_all_to_all(counts, group_name)
+
+
+@_all_to_all_counts.register_fake
+def _all_to_all_counts_fake(counts: torch.Tensor, group_name: str) -> torch.Tensor:
+    return counts.new_empty(counts.shape)
+
+
 @torch.library.custom_op("prime_rl_collectives::mxfp8_all_to_all", mutates_args=())
 def _mxfp8_all_to_all(
     x: torch.Tensor,
@@ -105,6 +119,10 @@ def _mxfp8_all_to_all(
     quantized: bool,
     output_size: int,
 ) -> torch.Tensor:
+    # Deferred: prime-kernels is the optional `kernels` extra, and this module is imported by
+    # every trainer run, not just MXFP8 ones.
+    import prime_kernels
+
     kernel = prime_kernels.load("mxfp8_moe")
     operation = kernel.all_to_all_dispatch if quantized else kernel.all_to_all_combine
     return operation(
@@ -241,6 +259,10 @@ def all_to_all_single_equal(x: torch.Tensor, group: ProcessGroup) -> torch.Tenso
     return _all_to_all_single_equal(x, group.group_name)
 
 
+def all_to_all_counts(counts: torch.Tensor, group: ProcessGroup) -> torch.Tensor:
+    return _all_to_all_counts(counts, group.group_name)
+
+
 def mxfp8_all_to_all_dispatch(
     x: torch.Tensor,
     output_splits: torch.Tensor,
@@ -267,6 +289,7 @@ def all_gather(x: torch.Tensor, dim: int, group: ProcessGroup) -> torch.Tensor:
 
 __all__ = [
     "all_gather",
+    "all_to_all_counts",
     "all_to_all_single",
     "all_to_all_single_equal",
     "mxfp8_all_to_all_combine",

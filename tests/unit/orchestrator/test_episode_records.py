@@ -12,9 +12,12 @@ from prime_runs.projection import build_samples, episodes_to_parquet_bytes
 from prime_runs.sinks.base import stamp_run, to_mapping
 from prime_runs.sinks.traces import names_run
 from prime_traces.traces import _encode_record
+from verifiers.v1.delta import DeltaStreamer, EpisodeAssembly, dump
 
 from prime_rl.configs.monitors import FileMonitorConfig
-from prime_rl.env.delta import DeltaStreamer, EpisodeAssembly, TraceSummary, dump, pack, unpack
+from prime_rl.env.client import assemble_episode
+from prime_rl.env.encoding import pack, unpack
+from prime_rl.env.types import TraceSummary
 from prime_rl.monitors.file.monitor import FileMonitor
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import chunk_path
@@ -40,7 +43,7 @@ def _over_the_wire(source: vf.Episode) -> tuple[vf.WireEpisode, list[dict]]:
         deltas.append(delta)
     summaries = [TraceSummary(id=t.id, nodes=len(t.nodes), calls=len(t.calls)) for t in traces]
     head = dump(source, exclude={"traces"})
-    return vf.WireEpisode.model_validate(assembly.finish(head, summaries)), deltas
+    return vf.WireEpisode.model_validate(assemble_episode(assembly, head, summaries)), deltas
 
 
 def _assert_plain_streams(node: dict) -> None:
@@ -76,11 +79,15 @@ def test_received_episode_writes_plain_records(tmp_path):
         _assert_plain_streams(node)
     assert [node["token_ids"] for node in live_trace["nodes"]] == [[1], [2], [3, 4]]
 
-    # The annotation stream carries the branch advantages as numbers
-    annotations = chunk_path(get_annotations_dir(tmp_path) / "unknown", 0)
-    updates = [orjson.loads(line) for line in annotations.read_bytes().splitlines()]
-    branch_advantages = [branch["advantages"] for update in updates for branch in update["branches"]]
-    assert branch_advantages == [[0.0, 0.0, 0.7, 0.7]]
+    # The annotation stream carries the branch advantages as float32 bytes beside the line
+    stream = get_annotations_dir(tmp_path) / "unknown"
+    (annotation,) = chunk_path(stream, 0).read_bytes().splitlines()
+    (branch,) = orjson.loads(annotation)["branches"]
+    ref = branch["advantages"]
+    with open(chunk_path(stream, ref["bin"], ".bin"), "rb") as f:
+        f.seek(ref["offset"])
+        decoded = np.frombuffer(f.read(ref["count"] * np.dtype(np.float32).itemsize), dtype=np.float32)
+    assert np.array_equal(decoded, np.float32([0.0, 0.0, 0.7, 0.7]))
 
 
 def test_received_episode_uploads_plain_json():
