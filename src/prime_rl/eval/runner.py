@@ -89,7 +89,7 @@ class EvalRunner:
 
         get_logger().info(f"Initializing inference pool (base_url={config.client.base_url}, model={config.model})")
         self.clients = InferenceClient(config.client, model_name=config.model)
-        self.admin_plane = AdminPlane(config.client)
+        self.admin_plane = AdminPlane(config.client, roles=config.inference_metrics_roles)
 
         get_logger().info("Loading eval environment(s)")
         self.eval_envs = EvalEnvs(config.source, config.env_addresses, get_config_dir(self.run_dir))
@@ -126,6 +126,9 @@ class EvalRunner:
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
+            on_call=self.concurrency.record_call,
+            on_pause=self.concurrency.pause,
+            on_resume=self.concurrency.resume,
         )
         # No ``on_overload``: eval episodes are measurements and are never
         # cancelled — a cut only blocks admission until the pool drains.
@@ -137,6 +140,7 @@ class EvalRunner:
         # metrics fan out to every registered monitor.
         self.inference_metrics = InferenceMetricsCollector(
             self.admin_plane.clients,
+            roles=config.inference_metrics_roles,
             on_load=self.concurrency.observe,
         )
         # Fail fast when adaptivity has no signal: external API endpoints
@@ -332,7 +336,7 @@ class EvalRunner:
         stages = live.stage_counts(list(self.dispatcher.inflight.values()))
         body = (
             f"{progress_part}; {self.dispatcher.inflight_eval_count} inflight episodes "
-            f"(cap {self.dispatcher.max_inflight}, signal {self.concurrency.signal})"
+            f"(cap {self.dispatcher.max_inflight}, queued share {self.concurrency.queued_share:.2f})"
             + (f" - {stages}" if stages else "")
         )
         payload = {**disp_gauges, **disp_drain, **self.concurrency.gauges()}

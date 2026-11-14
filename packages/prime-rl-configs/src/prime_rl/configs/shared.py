@@ -86,6 +86,9 @@ class ModelExpressWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     port: int = 8001
     """ModelExpress gRPC port."""
 
+    metadata_port: int = 5655
+    """Base port of the trainer's NIXL metadata listener. Each local rank listens on this plus its device id."""
+
     staging_mode: Literal["COPY_TO_HOST", "COPY_TO_DEVICE", "IN_PLACE"] = "COPY_TO_HOST"
     """Trainer storage policy passed to ModelExpress."""
 
@@ -315,7 +318,13 @@ class HeartbeatConfig(BaseConfig):
 
 
 class BaseTransportConfig(BaseConfig):
-    pass
+    retain: bool = False
+    """Keep every shipped step, and the training arrays the env worker pools hold for it,
+    until a trainer checkpoint covers it, so a restarted trainer resumes from its newest
+    checkpoint and trains the steps since again. Needs a checkpoint interval, the filesystem
+    weight broadcast, a run directory the orchestrator and trainer share, and a rollout store
+    in every train env worker pool: the ``rl`` launcher sets ``store_dir`` for the pools it
+    starts, a pool started separately needs it in its own config."""
 
 
 class FileSystemTransportConfig(BaseTransportConfig):

@@ -630,14 +630,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 transformer_block.set_modules_to_backward_prefetch([embed_module])
 
 
-def clear_padding_idx(model: nn.Module) -> None:
-    """Pretraining has no padding: a padding index (which falls back to the EOS id) would start that token's
-    embedding at zero and keep it frozen, also after a resume."""
-    for module in model.modules():
-        if isinstance(module, nn.Embedding):
-            module.padding_idx = None
-
-
 @torch.no_grad()
 def initialize_from_scratch(model: nn.Module) -> None:
     """Initialize the weights with the model's own init (``initialize_weights``, which applies its
@@ -829,6 +821,9 @@ def load_lazy_modules() -> None:
 
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
+    # Ops whose output shape depends on input data (DeepEP dispatch) would otherwise graph-break. A graph break
+    # inside an activation-checkpointed block makes Dynamo run the whole block eagerly.
+    torch._dynamo.config.capture_dynamic_output_shape_ops = True
     load_lazy_modules()
     mark_dynamic_args()
     language_model = get_language_model(model)
@@ -1005,8 +1000,6 @@ def setup_model(
 
     setup_fsdp(model, config, parallel_dims)
 
-    if init_from_scratch:
-        clear_padding_idx(model)
     if loading_from_checkpoint_later:
         logger.warning(
             "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."

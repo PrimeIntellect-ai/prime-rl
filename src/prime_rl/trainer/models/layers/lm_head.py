@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import types
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from typing import TypedDict
 
 import torch
@@ -10,6 +11,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from prime_rl.trainer.models.kernels.segment_reduce import csr_matmul, segment_logsumexp, segment_sum
+from prime_rl.trainer.models.layers.fp32_linear import FP32OutputMatmulBF16Backward, fp32_output_mm
 from prime_rl.utils.logger import get_logger
 
 # Same as torch's cross entropy loss
@@ -130,7 +132,9 @@ class FusedOutputLinear(torch.nn.Linear):
 
         if temperature is None:
             assert support is None, "Sampling evidence requires per-token temperatures"
-            loss = _ChunkedCrossEntropySumFn.apply(hidden_states, self.weight, labels, self.chunk_size, self.softcap)
+            # needs_input_grad follows requires_grad, also under no_grad: a detached weight skips the gradients there.
+            weight = self.weight if torch.is_grad_enabled() else self.weight.detach()
+            loss = _ChunkedCrossEntropySumFn.apply(hidden_states, weight, labels, self.chunk_size, self.softcap)
             return PrimeLmOutput(loss=loss)
 
         inv_t = 1.0 / temperature.reshape(b * s).contiguous()  # [N]
@@ -160,7 +164,8 @@ class FusedOutputLinear(torch.nn.Linear):
 
 class VanillaOutputLinear(torch.nn.Linear):
     """LM head that returns the full logits, or with ``labels`` and no ``temperature`` the summed fp32
-    cross-entropy over labels != IGNORE_INDEX as ``loss``. With ``softcap`` the logits are capped first."""
+    cross-entropy over labels != IGNORE_INDEX as ``loss``. The logits are FP32, also from BF16 operands (see
+    ``fp32_output_mm``); with ``softcap`` they are capped first."""
 
     def __init__(self, in_features: int, out_features: int, softcap: float | None = None):
         super().__init__(in_features, out_features, bias=False)
@@ -173,7 +178,9 @@ class VanillaOutputLinear(torch.nn.Linear):
         temperature: Tensor | None = None,
         support: TokenSupport | None = None,
     ) -> PrimeLmOutput:
-        logits = super().forward(hidden_states)
+        logits = FP32OutputMatmulBF16Backward.apply(hidden_states.flatten(0, -2), self.weight).unflatten(
+            0, hidden_states.shape[:-1]
+        )
         if self.softcap is not None:
             logits = self.softcap * torch.tanh(logits / self.softcap)
         if labels is not None and temperature is None:
@@ -346,8 +353,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             for vocab_start in range(0, vocab, vocab_chunk_size):
                 vocab_end = min(vocab_start + vocab_chunk_size, vocab)
                 weight_chunk = weight[vocab_start:vocab_end]
-                logits_chunk = hidden_chunk @ weight_chunk.t()
-                scaled_logits = logits_chunk.to(torch.float32)
+                scaled_logits = fp32_output_mm(hidden_chunk, weight_chunk).to(torch.float32)
                 if softcap is not None:
                     scaled_logits = softcap * torch.tanh(scaled_logits / softcap)
                 scaled_logits = scaled_logits * inv_t_chunk
@@ -453,8 +459,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             for vocab_start in range(0, vocab, vocab_chunk_size):
                 vocab_end = min(vocab_start + vocab_chunk_size, vocab)
                 weight_chunk = weight[vocab_start:vocab_end]
-                logits_chunk = hidden_chunk @ weight_chunk.t()
-                scaled_logits = logits_chunk.to(torch.float32)
+                scaled_logits = fp32_output_mm(hidden_chunk, weight_chunk).to(torch.float32)
                 if softcap is not None:
                     tanh_logits = torch.tanh(scaled_logits / softcap)
                     scaled_logits = softcap * tanh_logits
@@ -490,6 +495,57 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         return grad_hidden, grad_weight, None, None, None, None, None, None, None, None, None
 
 
+# The GPUs the kernel was tested on: H100
+_QUACK_CROSS_ENTROPY_CAPABILITIES = ((9, 0),)
+
+
+@lru_cache(maxsize=1)
+def _quack_cross_entropy_fwd_out():
+    """quack's fused cross-entropy kernel, or None without the ``quack`` extra."""
+    try:
+        from quack.cross_entropy import cross_entropy_fwd_out
+
+        return cross_entropy_fwd_out
+    except ImportError:
+        return None
+
+
+def _quack_cross_entropy_supported(logits: Tensor) -> bool:
+    """Whether quack's fused cross-entropy kernel takes ``logits``: FP32 rows (the head's GEMM output) on a GPU the
+    kernel was tested on, with quack installed."""
+    return (
+        logits.is_cuda
+        and logits.dtype == torch.float32
+        and torch.cuda.get_device_capability(logits.device) in _QUACK_CROSS_ENTROPY_CAPABILITIES
+        and _quack_cross_entropy_fwd_out() is not None
+    )
+
+
+def _cross_entropy(logits: Tensor, labels: Tensor, loss: Tensor, with_grad: bool) -> Tensor | None:
+    """Writes the fp32 cross-entropy of each row of ``logits`` into ``loss``, 0 where the label is IGNORE_INDEX. With
+    ``with_grad`` it also returns the gradient w.r.t. ``logits``: softmax minus one-hot, zero on ignored rows. Where
+    quack supports it, one quack kernel reads the logits once, does the math in fp32 and writes the gradient over them."""
+    if _quack_cross_entropy_supported(logits):
+        # The kernel reads the label's logit unchecked: check the labels on the device, without a host sync.
+        in_vocab = (labels >= 0) & (labels < logits.shape[1])
+        torch._assert_async((in_vocab | (labels == IGNORE_INDEX)).all())
+        # dx=None selects quack's online-softmax variant, which returns NaN when a warp's columns all lie past the
+        # vocab (Dao-AILab/quack#64). Always writing the gradient keeps the two-pass variant.
+        _quack_cross_entropy_fwd_out()(logits, labels, None, loss, None, logits, None, IGNORE_INDEX)
+        return logits if with_grad else None
+
+    valid = labels != IGNORE_INDEX
+    target = labels.clamp(min=0).unsqueeze(-1)
+    logits = logits.float()
+    logz = torch.logsumexp(logits, dim=-1)
+    loss.copy_(torch.where(valid, logz - logits.gather(1, target).squeeze(1), 0.0))
+    if not with_grad:
+        return None
+    grad_logits = logits.sub_(logz.unsqueeze(-1)).exp_()
+    grad_logits.scatter_add_(1, target, torch.full_like(target, -1, dtype=grad_logits.dtype))
+    return grad_logits.mul_(valid.unsqueeze(-1))
+
+
 class _ChunkedCrossEntropySumFn(torch.autograd.Function):
     """Summed cross-entropy over labels != IGNORE_INDEX, with the gradients computed during forward.
 
@@ -519,28 +575,18 @@ class _ChunkedCrossEntropySumFn(torch.autograd.Function):
         needs_hidden, needs_weight = ctx.needs_input_grad[0], ctx.needs_input_grad[1]
         grad_hidden = torch.empty_like(hidden) if needs_hidden else None
         grad_weight = torch.zeros_like(weight) if needs_weight else None
-        loss = torch.zeros((), device=hidden.device, dtype=torch.float32)
+        loss = torch.empty(hidden.shape[0], device=hidden.device, dtype=torch.float32)
 
         for start in range(0, hidden.shape[0], chunk_size):
             end = min(start + chunk_size, hidden.shape[0])
             hidden_chunk = hidden[start:end]
-            labels_chunk = labels[start:end]
-            valid = labels_chunk != IGNORE_INDEX
-            target = labels_chunk.clamp(min=0).unsqueeze(-1)
 
-            logits = (hidden_chunk @ weight.t()).float()
+            logits = fp32_output_mm(hidden_chunk, weight)
             if softcap is not None:
-                tanh_logits = torch.tanh(logits / softcap)
+                tanh_logits = torch.tanh(logits.float() / softcap)
                 logits = softcap * tanh_logits
-            logz = torch.logsumexp(logits, dim=-1)
-            target_logits = logits.gather(1, target).squeeze(1)
-            loss += torch.where(valid, logz - target_logits, 0.0).sum()
-
-            if needs_hidden or needs_weight:
-                # dx(loss)/dx(logits) is softmax minus one-hot on valid rows and zero elsewhere so it reuses the logits buffer
-                grad_logits = logits.sub_(logz.unsqueeze(-1)).exp_()
-                grad_logits.scatter_add_(1, target, torch.full_like(target, -1, dtype=grad_logits.dtype))
-                grad_logits = grad_logits.mul_(valid.unsqueeze(-1))
+            grad_logits = _cross_entropy(logits, labels[start:end], loss[start:end], needs_hidden or needs_weight)
+            if grad_logits is not None:
                 if softcap is not None:
                     grad_logits = grad_logits.mul_(1 - tanh_logits.square())
                 grad_logits = grad_logits.to(hidden.dtype)
@@ -548,9 +594,13 @@ class _ChunkedCrossEntropySumFn(torch.autograd.Function):
                     torch.mm(grad_logits, weight, out=grad_hidden[start:end])
                 if needs_weight:
                     grad_weight.addmm_(grad_logits.t(), hidden_chunk)
+            # Free this chunk's logits before the next chunk's GEMM allocates its own.
+            del logits, grad_logits
+            if softcap is not None:
+                del tanh_logits
 
         ctx.save_for_backward(grad_hidden, grad_weight)
-        return loss
+        return loss.sum()
 
     @staticmethod
     def backward(ctx, grad_loss: torch.Tensor):

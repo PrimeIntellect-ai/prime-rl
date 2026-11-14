@@ -193,6 +193,10 @@ class TrainSink(Reconfigurable):
         failures = sum(len(group) for group in self.pending_group_failures.values())
         return episodes + failures
 
+    def batchable_rollouts(self) -> int:
+        """Finished rollouts queued for a batch; those of groups still waiting for members can't be taken yet."""
+        return len(self.pending_batch)
+
     def pending_batch_by_env(self) -> dict[str, int]:
         counts: dict[str, int] = defaultdict(int)
         for trace_id in self.pending_batch:

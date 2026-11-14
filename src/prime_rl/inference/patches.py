@@ -1,5 +1,6 @@
+import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import torch
@@ -37,9 +38,136 @@ def apply_shared_vllm_patches():
     from prime_rl.inference.vllm.request_replay import patch_request_replay
 
     patch_request_replay()
+    monkey_patch_block_outermost_mla_stride()
+    monkey_patch_fit_sliding_window_pages()
+    monkey_patch_flashinfer_fp8_ds_mla_draft()
+    monkey_patch_dspark_dp_compile_cache()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
+
+
+def monkey_patch_block_outermost_mla_stride():
+    """Align the shared block stride of packed KV caches to DeepSeek V4's MLA pages.
+
+    Block-outermost groups share one block stride: the widest group's bytes per block, rounded to
+    each layer's ``block_stride_alignment``. DeepSeek V4's MLA specs declare their 576 B FlashMLA
+    alignment only as page padding (``alignment``), so a wider group of another kind, such as a
+    draft's KV cache, leaves the stride unaligned and FlashMLA rejects it.
+    """
+    from vllm.utils.math_utils import round_up
+    from vllm.v1.core import kv_cache_planning
+
+    original = kv_cache_planning._get_kv_cache_bytes_per_block
+    if getattr(original, "_prime_rl_aligns_mla_stride", False):
+        return
+
+    def _get_kv_cache_bytes_per_block(kv_cache_groups, layout):
+        bytes_per_block = original(kv_cache_groups, layout)
+        if not layout.is_block_outermost:
+            return bytes_per_block
+        alignments = {
+            alignment
+            for group in kv_cache_groups
+            for name in group.layer_names
+            if (alignment := getattr(kv_cache_planning._get_per_layer_spec(group, name), "alignment", None))
+        }
+        return round_up(bytes_per_block, math.lcm(*alignments)) if alignments else bytes_per_block
+
+    _get_kv_cache_bytes_per_block._prime_rl_aligns_mla_stride = True
+    kv_cache_planning._get_kv_cache_bytes_per_block = _get_kv_cache_bytes_per_block
+
+
+def monkey_patch_fit_sliding_window_pages():
+    """Keep a sliding-window KV group, such as a draft's, from widening block-outermost KV blocks.
+
+    The packed layout sizes every physical block by the widest group's bytes per block, and every
+    group draws blocks from that one pool. A sliding-window layer takes the largest kernel block its
+    backend runs (64 tokens on FlashInfer) regardless of the packing, so a dense GQA draft next to
+    DeepSeek V4's compressed MLA widens every block of the pool, although the draft only needs its
+    window's blocks. Halving the group's block size until it fits under the widest other group
+    restores the target's capacity at the cost of more window blocks per request.
+    """
+    from vllm.v1.core import kv_cache_planning
+    from vllm.v1.kv_cache_interface import SlidingWindowSpec, UniformTypeKVCacheSpecs
+
+    original = kv_cache_planning._get_packed_kv_cache_groups
+    if getattr(original, "_prime_rl_fits_sliding_window_pages", False):
+        return
+
+    def layer_specs(group):
+        spec = group.kv_cache_spec
+        if isinstance(spec, UniformTypeKVCacheSpecs):
+            return dict(spec.kv_cache_specs)
+        return {name: spec for name in group.layer_names}
+
+    def group_bytes(group):
+        return sum(spec.page_size_bytes for spec in layer_specs(group).values())
+
+    def _get_packed_kv_cache_groups(vllm_config, kv_cache_spec):
+        groups = original(vllm_config, kv_cache_spec)
+        if not groups or len(groups) == 1:
+            return groups
+        fitted = []
+        for i, group in enumerate(groups):
+            specs = layer_specs(group)
+            widest_other = max(group_bytes(other) for j, other in enumerate(groups) if j != i)
+            plain_swa = all(type(s) is SlidingWindowSpec and s.page_size_padded is None for s in specs.values())
+            block_size = next(iter(specs.values())).block_size
+            if plain_swa and group_bytes(group) > widest_other:
+                # An unpadded sliding-window page is linear in the block size.
+                bytes_per_token = group_bytes(group) // block_size
+                while block_size > 16 and bytes_per_token * block_size > widest_other:
+                    block_size //= 2
+                specs = {name: replace(s, block_size=block_size) for name, s in specs.items()}
+                group = replace(group, kv_cache_spec=UniformTypeKVCacheSpecs.from_specs(specs))
+            fitted.append(group)
+        return fitted
+
+    _get_packed_kv_cache_groups._prime_rl_fits_sliding_window_pages = True
+    kv_cache_planning._get_packed_kv_cache_groups = _get_packed_kv_cache_groups
+
+
+def monkey_patch_flashinfer_fp8_ds_mla_draft():
+    """Let a draft's fp8 KV cache on FlashInfer coexist with DeepSeek V4's ``fp8_ds_mla`` cache.
+
+    DeepSeek V4's attention writes its packed format onto the shared ``cache_config.cache_dtype``,
+    and FlashInfer reads that global for a draft with its own fp8 KV cache
+    (``speculative_config.kv_cache_dtype = "fp8"``). FlashInfer never serves DeepSeek V4's layers,
+    so for it the format can only mean the draft's per-tensor fp8 e4m3 rows.
+    """
+    from vllm.v1.attention.backends.flashinfer import FlashInferBackend
+
+    original = FlashInferBackend.get_dtype_for_flashinfer
+    if getattr(original, "_prime_rl_maps_fp8_ds_mla", False):
+        return
+
+    def get_dtype_for_flashinfer(kv_cache_dtype: str) -> torch.dtype:
+        return original("fp8" if kv_cache_dtype == "fp8_ds_mla" else kv_cache_dtype)
+
+    get_dtype_for_flashinfer._prime_rl_maps_fp8_ds_mla = True
+    FlashInferBackend.get_dtype_for_flashinfer = staticmethod(get_dtype_for_flashinfer)
+
+
+def monkey_patch_dspark_dp_compile_cache():
+    """Keep independent DP replicas in distinct draft compilation caches."""
+    from functools import wraps
+
+    from vllm.v1.worker.gpu.spec_decode.dspark import utils
+
+    original = utils._get_dspark_parallel_config
+    if getattr(original, "_prime_rl_preserves_dp_cache_index", False):
+        return
+
+    @wraps(original)
+    def _get_dspark_parallel_config(parallel_config, tensor_parallel_size, draft_model_config):
+        draft = original(parallel_config, tensor_parallel_size, draft_model_config)
+        # Config replacement reconstructs this init=False field from the local rank.
+        draft.data_parallel_index = parallel_config.data_parallel_index
+        return draft
+
+    _get_dspark_parallel_config._prime_rl_preserves_dp_cache_index = True
+    utils._get_dspark_parallel_config = _get_dspark_parallel_config
 
 
 @dataclass
@@ -57,8 +185,8 @@ def monkey_patch_packed_sampling_masks():
     vLLM keeps one ``SamplingMaskLists`` tuple per generated token while a request
     runs and turns a finished request's masks into ``list[list[int]]``: GC-tracked
     objects per token that every gen-2 pass walks. Store only the (untracked) id
-    arrays and hand ``PrimeRlServingTokens`` a ``PackedSamplingMask`` instead. Each
-    appended chunk is one position (``SamplingMaskLists.slice_request`` asserts it).
+    arrays, one per position, and hand ``PrimeRlServingTokens`` a ``PackedSamplingMask``
+    instead. A speculative step appends one chunk covering all its accepted positions.
     Only non-streaming (``FINAL_ONLY``) outputs are packed, the form
     ``PrimeRlServingTokens.serve_tokens_full_generator`` reads. Replay requests, the only ones that keep their
     masks, are non-streaming tokens requests.
@@ -71,7 +199,10 @@ def monkey_patch_packed_sampling_masks():
 
     class _MaskIds(list):
         def append(self, chunk):
-            super().append(chunk.token_ids)
+            if chunk.offsets is None:
+                super().append(chunk.token_ids)
+            else:
+                self.extend(chunk.token_ids[a:b] for a, b in zip(chunk.offsets[:-1], chunk.offsets[1:]))
 
     def _init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)

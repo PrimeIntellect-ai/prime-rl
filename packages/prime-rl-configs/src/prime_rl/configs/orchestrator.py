@@ -267,7 +267,7 @@ class TrainSourceConfig(EnvConfig):
 
     @model_validator(mode="after")
     def validate_policy_sampling(self):
-        if self.algo.sampling.source != "policy":
+        if self.algo.rollout_model != "policy":
             return self
         # The source owns the distribution replayed by the trainer; agents may
         # change generation limits and rendering without changing that distribution.
@@ -457,7 +457,7 @@ class CheckpointConfig(BaseConfig):
 
 class ConcurrencyConfig(BaseConfig):
     """Adaptive in-flight concurrency control. The orchestrator sizes the
-    in-flight episode cap from engine KV pressure; these fields only bound and
+    in-flight episode cap from engine load; these fields only bound and
     seed it."""
 
     initial_inflight: Annotated[int | None, Live()] = Field(None, ge=1)
@@ -466,8 +466,8 @@ class ConcurrencyConfig(BaseConfig):
     min_inflight: Annotated[int, Live()] = Field(1, ge=1)
     """Minimum number of in-flight episodes. Set ``min_inflight = max_inflight`` to recover fixed concurrency."""
 
-    max_inflight: Annotated[int | None, Live()] = Field(1024, ge=1)
-    """Maximum number of in-flight episodes. Set it to avoid runaway concurrency, especially to limit other external resources (e.g. sandboxes). None removes the ceiling."""
+    max_inflight: Annotated[int | None, Live()] = Field(None, ge=1)
+    """Maximum number of in-flight episodes. None (the default) leaves the cap to the controller. Set it to bound other external resources the episodes hold (e.g. sandboxes)."""
 
     @model_validator(mode="after")
     def validate_bounds(self):
@@ -487,6 +487,13 @@ TRAIN_TOP_K_DEFAULT = 10000
 class OrchestratorControlConfig(ControlConfig):
     port: int = Field(8041, ge=1, le=65535)
     """Port the control API listens on, next to the trainer's 8040 on a single node."""
+
+
+class SpeculativeDecodingConfig(BaseConfig):
+    draft: Annotated[Path, Live()]
+    """Draft checkpoint the inference engines serve; at launch, the one they started with. A live update
+    loads the new draft on every engine at the next policy weight sync. It must keep the served draft's
+    architecture and tensor shapes. A failed load restores the previous draft and reverts this value."""
 
 
 class OrchestratorConfig(BaseConfig):
@@ -585,6 +592,19 @@ class OrchestratorConfig(BaseConfig):
     """Serve the orchestrator's control API (pause or checkpoint at a step the trainer
     accepted, update the config live). If None, it takes no control requests."""
 
+    speculative_decoding: SpeculativeDecodingConfig | None = None
+    """Draft model served by the policy engines. Auto-filled by the ``rl`` entrypoint from the inference
+    servers' speculative config; set it for standalone orchestrator runs that should swap drafts."""
+
+    @model_validator(mode="after")
+    def validate_draft_swaps(self):
+        dynamo = self.model.client.dynamo
+        if self.speculative_decoding is not None and dynamo is not None and dynamo.enabled:
+            raise ValueError("Draft swaps use prime-rl's engine admin routes, which Dynamo deployments do not serve")
+        if self.speculative_decoding is not None and self.weight_broadcast.type == "modelexpress":
+            raise ValueError("Draft swaps load with filesystem, NCCL or NIXL weight broadcasts, not modelexpress")
+        return self
+
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):
         if self.tokenizer.name is None:
@@ -671,7 +691,7 @@ class OrchestratorConfig(BaseConfig):
         there are no sources."""
         if not self.train.source:
             return [self.train.sampling]
-        return [env.sampling for env in self.train.source if env.algo.sampling.source == "policy"]
+        return [env.sampling for env in self.train.source if env.algo.rollout_model == "policy"]
 
     def update_policy_samplings(self, update: Callable[[TrainSamplingConfig], TrainSamplingConfig]) -> None:
         """Replace each of ``policy_samplings`` with ``update(sampling)``. The group's sampling is
@@ -679,13 +699,13 @@ class OrchestratorConfig(BaseConfig):
         if not self.train.source:
             self.train = self.train.model_copy(update={"sampling": update(self.train.sampling)})
         for env in self.train.source:
-            if env.algo.sampling.source == "policy":
+            if env.algo.rollout_model == "policy":
                 env.sampling = update(env.sampling)
 
     @property
     def any_policy_sourced(self) -> bool:
         """True when at least one train env samples rollouts from the live policy."""
-        return any(env.algo.sampling.source == "policy" for env in self.train.source)
+        return any(env.algo.rollout_model == "policy" for env in self.train.source)
 
     @model_validator(mode="after")
     def validate_renderer_auto_resolves(self):
@@ -744,7 +764,7 @@ class OrchestratorConfig(BaseConfig):
         for env in self.train.source:
             # Policy-sourced rollouts hit our vLLM server; frozen-sourced
             # rollouts may hit external OAI endpoints that reject these knobs.
-            if env.algo.sampling.source == "policy":
+            if env.algo.rollout_model == "policy":
                 extra_args = dict(env.sampling.extra_body.get("extra_args") or {})
                 extra_args["prl_replay"] = env.sampling.truncates_distribution()
                 env.sampling.extra_body["extra_args"] = extra_args

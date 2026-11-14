@@ -421,6 +421,10 @@ def test_moe_compute_apply_to_cli(selection, selected):
             },
             "MXFP8 transport requires",
         ),
+        (
+            {"ep": 8, "moe": {"dispatch": {"type": "mega_moe", "precision": "mxfp8", "llep": {}}}},
+            "llep requires",
+        ),
     ],
 )
 def test_invalid_moe_runtime_configs_fail(model, message):
@@ -776,7 +780,7 @@ def test_policy_sampling_is_validated_before_rollouts(sampling, agent_sampling, 
     if frozen:
         source["algo"] = {
             "type": "sft",
-            "sampling": {"source": {"name": "teacher", "base_url": "http://localhost:8000/v1"}},
+            "teacher": {"name": "teacher", "base_url": "http://localhost:8000/v1"},
         }
     if rejected and not frozen:
         with pytest.raises(ValidationError, match="sampling"):
@@ -826,6 +830,40 @@ def test_single_node_nccl_resolved_json_roundtrips(tmp_path):
     reloaded = cli(RLConfig, args=["@", str(path)])
     assert reloaded.trainer.weight_broadcast.inference_world_size == 2
     assert reloaded == config
+
+
+@pytest.mark.parametrize(
+    "overrides, match",
+    [
+        ({"orchestrator": {"pad_to_multiple_of": 4}}, "orchestrator.pad_to_multiple_of"),
+        ({"orchestrator": {"num_train_workers": 3}}, "orchestrator.num_train_workers"),
+        ({"orchestrator": {"weight_broadcast": {"type": "filesystem"}}}, "orchestrator.weight_broadcast"),
+        ({"trainer": {"weight_broadcast": {"type": "nccl", "timeout": 60}}}, "trainer.weight_broadcast"),
+    ],
+)
+def test_rl_rejects_conflicting_launcher_owned_fields(overrides, match):
+    data = {
+        "trainer": {},
+        "orchestrator": {},
+        "inference": {"vllm": {"tensor_parallel_size": 1}},
+        "deployment": {"type": "single_node", "gpus_per_node": 4, "num_train_gpus": 2, "num_infer_gpus": 2},
+    }
+    for key, value in overrides.items():
+        data[key] = value
+    with pytest.raises(ValidationError, match=match):
+        RLConfig.model_validate(data)
+
+
+def test_rl_nccl_broadcast_needs_two_gpus():
+    with pytest.raises(ValidationError, match="at least 2 GPUs"):
+        RLConfig.model_validate(
+            {
+                "trainer": {"data": {"fake": {}}},
+                "orchestrator": {},
+                "weight_broadcast": {"type": "nccl"},
+                "deployment": {"type": "single_node", "gpus_per_node": 1, "num_train_gpus": 1, "num_infer_gpus": 0},
+            }
+        )
 
 
 def test_multi_node_auto_inference_parallelism():

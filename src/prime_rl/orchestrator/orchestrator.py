@@ -43,7 +43,7 @@ from prime_rl.configs.diff import ConfigChange, diff_config, merge_resumed_confi
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.control.controller import Controller, validate_update
 from prime_rl.control.server import ControlServer
-from prime_rl.control.types import ConfigUpdate, Reconfigurable
+from prime_rl.control.types import ConfigUpdate, InvalidConfigError, Reconfigurable
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.batch import BatchPacker
@@ -51,6 +51,7 @@ from prime_rl.orchestrator.ckpt import build_state, setup_ckpt_manager
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
+from prime_rl.orchestrator.draft import DraftLoader
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
@@ -60,6 +61,7 @@ from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metric
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
+from prime_rl.orchestrator.trainer_capacity import TrainerCapacity
 from prime_rl.orchestrator.types import (
     DispatchFailure,
     EvalBatch,
@@ -91,6 +93,7 @@ from prime_rl.utils.pathing import (
     resolve_latest_ckpt_step,
     write_resolved_config,
 )
+from prime_rl.utils.specdec import check_draft_swap, local_draft_dir
 from prime_rl.utils.utils import clean_exit
 
 # Wall-clock budget for post-training cleanup; force-exit if graceful
@@ -102,6 +105,9 @@ SHUTDOWN_TIMEOUT_S = 300
 # when the watcher advances ``policy.version``. Shipping itself is paced by the
 # trainer: a batch goes out only once every trainer rank requested it.
 TARGET_LAG = 1
+
+# A send that waited at least this long for the trainer's request means the trainer is the bottleneck.
+TRAINER_BOUND_WAIT_S = 0.5
 
 
 class Orchestrator:
@@ -158,6 +164,8 @@ class Orchestrator:
         self.ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
         # The launch config, before live updates, which checkpoints record as the merge base.
         self.launch_config = dump_resolved_config(config)
+        # The draft the engines launch with, before live updates are restored.
+        self.launch_draft = config.speculative_decoding.draft if config.speculative_decoding is not None else None
         self.config_revision = 0
         self.resume_step = resolve_resume_step(config, self.ckpt_manager)
         # Components read the config when built, so a resumed run restores live updates first.
@@ -182,11 +190,20 @@ class Orchestrator:
         self.eval_triggered_steps: set[int] = set()
         self.component_tasks = []
         self.release_future: asyncio.Future | None = None
+        # Rollouts of the batch cut and waiting for the trainer to request it
+        self.unsent_rollouts = 0
+        # Batches shipped by this process, when the last one shipped, and the rollouts per second the trainer took
+        # over the step before it if that batch waited for the trainer (the trainer is the bottleneck), else None
+        self.ships = 0
+        self.shipped_at: float | None = None
+        self.trainer_rate: float | None = None
+        self.trainer_capacity = TrainerCapacity()
 
         # Always assigned by ``setup()``; None-initialized so teardown can run
         # on a partially completed setup with plain attribute checks
         self.clients = None
         self.admin_plane = None
+        self.draft_loader = None
 
         # Optional attributes — ``setup()`` populates them when the relevant
         # config is present
@@ -224,6 +241,10 @@ class Orchestrator:
         self.admin_plane = setup_admin_plane(
             config.model.client, config.model.name, roles=config.inference_metrics_roles
         )
+        if config.speculative_decoding is not None:
+            # A draft restored from live updates loads with the startup policy.
+            self.draft_loader = DraftLoader(self.admin_plane, self.launch_draft, config.speculative_decoding.draft)
+            self.admin_plane.after_transfer = self.draft_loader.sync
 
         await monitors.setup(
             producer="orchestrator",
@@ -340,6 +361,16 @@ class Orchestrator:
 
         log_interval = config.log.interval
 
+        self.train_sink = TrainSink(
+            config,
+            tokenizer=self.tokenizer,
+            train_envs=self.train_envs,
+            progress=self.progress,
+            batch_size=config.batch_size,
+            on_result=self.train_source.on_result,
+            on_groups_closed=self.train_source.close_groups,
+            group_size=self.train_source.group_size,
+        )
         self.concurrency = ConcurrencyController(config.concurrency, fallback_cost=config.seq_len)
         self.dispatcher = Dispatcher(
             train_envs=self.train_envs,
@@ -355,11 +386,19 @@ class Orchestrator:
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
+            on_call=self.concurrency.record_call,
+            on_pause=self.concurrency.pause,
+            on_resume=self.concurrency.resume,
+            unconsumed_train_rollouts=lambda: self.train_sink.batchable_rollouts() + self.unsent_rollouts,
+            batch_size=lambda: self.train_sink.batch_size,
+            trainer_rate=lambda: self.trainer_rate,
         )
         self.concurrency.bind(
             set_limit=self.dispatcher.set_limit,
             get_inflight=lambda: self.dispatcher.current_inflight,
             on_overload=self.dispatcher.cancel_inflight,
+            get_train_finished=lambda: self.dispatcher.finished_train_rollouts,
+            trainer=self.trainer_capacity,
         )
         # The collector always polls — it feeds the concurrency controller;
         # metrics fan out to every registered monitor when collection is on.
@@ -373,16 +412,6 @@ class Orchestrator:
         # One awaited scrape so the concurrency controller derives (and logs) its
         # initial limit before the loop-start line; failures are tolerated.
         await self.inference_metrics.probe()
-        self.train_sink = TrainSink(
-            config,
-            tokenizer=self.tokenizer,
-            train_envs=self.train_envs,
-            progress=self.progress,
-            batch_size=config.batch_size,
-            on_result=self.train_source.on_result,
-            on_groups_closed=self.train_source.close_groups,
-            group_size=self.train_source.group_size,
-        )
 
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
         self.watcher = WeightWatcher(
@@ -406,6 +435,8 @@ class Orchestrator:
         self.reconfigurables = [self.concurrency, self.train_envs, self.train_source, self.train_sink]
         if self.eval_source is not None:
             self.reconfigurables.append(self.eval_source)
+        if self.draft_loader is not None:
+            self.reconfigurables.append(self.draft_loader)
 
         get_logger().info(f"Syncing inference to the trainer's startup broadcast (v{sync_version})")
         t0 = time.perf_counter()
@@ -438,7 +469,7 @@ class Orchestrator:
                 requires_step=True,
                 on_submit=lambda: loop.call_soon_threadsafe(self.control_requested.set),
                 read_config=lambda: (self.config_revision, self.config),
-                check_config=lambda raw: validate_update(self.config, raw),
+                check_config=self.check_config,
             )
             ControlServer(self.controller, config.control).start()
             self.component_tasks.append(asyncio.create_task(self.serve_control(), name="control"))
@@ -551,7 +582,7 @@ class Orchestrator:
                 break
 
             try:
-                item = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
+                item = await asyncio.wait_for(self.dispatcher.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 self._raise_if_component_stopped()
                 continue
@@ -718,11 +749,22 @@ class Orchestrator:
         # Sending blocks until every trainer rank requested the batch, so the wait is the time
         # the orchestrator spent waiting on the trainer for the next policy.
         send_start_time = time.perf_counter()
+        self.unsent_rollouts = batch.cohort.num_traces
         send_batch_time = await self.sender.send(micro_batch_grid)
-        wait_for_policy_time = time.perf_counter() - send_start_time - send_batch_time
+        self.unsent_rollouts = 0
+        shipped_at = time.perf_counter()
+        # The trainer's first step in a process includes its warmup, so its pace counts from the second one
+        self.ships += 1
+        trainer_bound = self.ships > 2 and self.sender.last_wait_s >= TRAINER_BOUND_WAIT_S
+        self.trainer_rate = batch.cohort.num_traces / (shipped_at - self.shipped_at) if trainer_bound else None
+        self.shipped_at = shipped_at
+        self.trainer_capacity.shipped(batch.cohort.num_traces, self.sender.last_requested_at)
+        self.concurrency.trainer_shipped()
+        wait_for_policy_time = shipped_at - send_start_time - send_batch_time
         self.train_sink.shipped(batch)
         self.progress.step += 1
         self.update_dispatch_gate()
+        self.revert_rejected_draft()
         if self.controller is not None:
             self.apply_config_update()
             self.shipped_state = (step, build_state(self.progress, self.train_source, self.config_state()))
@@ -899,8 +941,11 @@ class Orchestrator:
             **disp_drain,
             **watcher_gauges,
             **self.concurrency.gauges(),
+            **self.trainer_capacity.gauges(),
             **self.clients.session_release_gauges(),
         }
+        if self.draft_loader is not None:
+            payload |= self.draft_loader.gauges()
         if self.gc is not None:
             payload |= self.gc.gauges()
         if lag_stats.n > 0:
@@ -1045,6 +1090,36 @@ class Orchestrator:
         shipping, before anything is dispatched for that step; running episodes keep their
         settings and nothing is cancelled."""
         self.controller.apply_update(self.progress.step, self.apply_config)
+
+    def check_config(self, raw: dict) -> tuple[OrchestratorConfig, list[ConfigChange]]:
+        """Validate a submitted config; a new draft must be able to replace the served one in place."""
+        config, changes = validate_update(self.config, raw)
+        if (
+            self.draft_loader is not None
+            and config.speculative_decoding.draft != self.config.speculative_decoding.draft
+        ):
+            try:
+                check_draft_swap(
+                    local_draft_dir(str(self.launch_draft)), local_draft_dir(str(config.speculative_decoding.draft))
+                )
+            except (OSError, ValueError) as error:
+                raise InvalidConfigError(f"The draft cannot replace the served draft: {error}") from error
+        return config, changes
+
+    def revert_rejected_draft(self) -> None:
+        """Revert a draft that failed to load as a new config revision, so the live config, its records
+        and checkpoints name the draft the engines serve."""
+        rejected = self.draft_loader.take_rejected() if self.draft_loader is not None else None
+        if rejected is None or self.config.speculative_decoding.draft != rejected:
+            return
+        config = self.config.model_copy(deep=True)
+        config.speculative_decoding.draft = self.draft_loader.good
+        change = ConfigChange(path="speculative_decoding.draft", old=str(rejected), new=str(self.draft_loader.good))
+        if self.controller is None:
+            self.apply_config(config, [change])
+            return
+        with self.controller.lock:
+            self.apply_config(config, [change])
 
     def apply_config(self, config: OrchestratorConfig, changes: list[ConfigChange]) -> None:
         self.config_revision += 1
