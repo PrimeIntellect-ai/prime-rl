@@ -1,3 +1,4 @@
+import dataclasses
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Generic, Protocol, TypeVar
@@ -81,6 +82,9 @@ class TokenDispatcherBase(ABC, Generic[DispatchState]):
         *,
         score_before_experts: bool,
     ) -> torch.Tensor:
+        compute = getattr(experts, "compute", None)
+        if getattr(compute, "encode_tokens", None) is not None:
+            return self._run_encoded(x, top_scores, selected_experts_indices, experts, compute, score_before_experts)
         routed_input, num_tokens_per_expert, state = self.dispatch(
             x,
             top_scores,
@@ -89,6 +93,36 @@ class TokenDispatcherBase(ABC, Generic[DispatchState]):
         )
         routed_output = experts(routed_input, num_tokens_per_expert)
         return self.combine(routed_output, state)
+
+    def _run_encoded(self, x, top_scores, selected_experts_indices, experts, compute, score_before_experts):
+        """Dispatch the tokens in the compute's encoded form (e.g. NVFP4 bytes: ~3.5x fewer than BF16), which the
+        compute consumes as is: every dispatcher only moves rows, so it moves the encoded rows like hidden states.
+        The input gradient travels back in BF16 through ``combine`` without router weights, the reverse of the
+        dispatch (gather, all-to-all and permutation back, summed over each token's routes)."""
+        if score_before_experts:
+            raise ValueError("Encoded token dispatch needs score_before_experts=False: tokens travel quantized.")
+        encoded = compute.encode_tokens(x.detach())
+        routed, num_tokens_per_expert, state = self.dispatch(
+            encoded, top_scores, selected_experts_indices, score_before_experts=False
+        )
+        grad_state = dataclasses.replace(state, scores_after_experts=None)
+        stand_in = _RoutedGradient.apply(x, routed.shape[0], self, grad_state)
+        routed_output = experts(stand_in, num_tokens_per_expert, routed)
+        return self.combine(routed_output, state)
+
+
+class _RoutedGradient(torch.autograd.Function):
+    """A stand-in for the routed BF16 rows, which the compute never reads (it consumes the encoded rows): its
+    gradient is the routed input gradient, which ``combine`` without router weights brings back to the tokens."""
+
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, rows: int, dispatcher: "TokenDispatcherBase", state) -> torch.Tensor:
+        ctx.dispatcher, ctx.state = dispatcher, state
+        return x.new_zeros(()).expand(rows, x.shape[-1])
+
+    @staticmethod
+    def backward(ctx, grad: torch.Tensor):
+        return ctx.dispatcher.combine(grad.contiguous(), ctx.state), None, None, None
 
 
 @dataclass(frozen=True)
@@ -166,7 +200,8 @@ class _GatherPermutedRows(torch.autograd.Function):
 
 
 def unpermute_from_grouped_gemm(x: torch.Tensor, state: PermutationState) -> torch.Tensor:
-    output = x.new_empty(state.input_shape)
+    # Rows as dispatched, width of ``x``: encoded tokens are dispatched narrower than the expert outputs
+    output = x.new_empty((state.input_shape[0], x.shape[-1]))
     output[state.permuted_indices] = x
     return output[:-1]
 

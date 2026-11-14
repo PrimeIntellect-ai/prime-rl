@@ -439,8 +439,11 @@ InferenceDeploymentConfig: TypeAlias = Annotated[
 
 
 NVFP4_4OVER6_ENV = "FLASHINFER_NVFP4_4OVER6"
-"""FlashInfer's switch for adaptive 4/6 block scaling in its NVFP4 quantizer, the recipe the trainer's
-``four_over_six`` matches."""
+"""FlashInfer's switch for adaptive 4/6 block scaling in its NVFP4 quantizer. vLLM quantizes only activations with
+FlashInfer (expert weights go through its own kernel at load), so this matches the trainer's 4/6 on activations."""
+
+NVFP4_IEEE_DIVISION_ENV = "FLASHINFER_DISABLE_FP4_QUANT_FAST_MATH"
+"""FlashInfer's switch for IEEE division in its FP4 quantizers, the trainer's only division."""
 
 
 NVFP4_DENSE_IGNORE = [
@@ -460,8 +463,11 @@ class MoENVFP4Config(BaseConfig):
     ``rl`` sets it from the trainer's ``model.moe.compute`` when that is ``nvfp4``."""
 
     apply_to: str | list[Annotated[int, Field(ge=0, strict=True)]] = "all"
-    """Model layers whose experts run in NVFP4, as the trainer's ``moe.compute.apply_to``: ``"all"``, a percentage
-    of the first layers, or layer indices."""
+    """MoE layers whose experts run in NVFP4, as the trainer's ``moe.compute.apply_to``: ``"all"``, a percentage
+    of the first MoE layers, or model layer indices."""
+
+    remainder: Literal["bf16", "mxfp8"] = "bf16"
+    """The other MoE layers' experts, as the trainer's ``moe.compute.remainder``."""
 
     four_over_six: bool = True
     """FlashInfer's adaptive 4/6 block scaling (sets ``FLASHINFER_NVFP4_4OVER6``), matching the trainer's recipe."""
@@ -470,27 +476,36 @@ class MoENVFP4Config(BaseConfig):
     """Dense linear layers in MXFP8 (``rl`` sets it when the trainer's ``model.quantization`` is ``mxfp8``); shared
     experts, the router and the LM head stay BF16. Needs ``apply_to = "all"``. None keeps dense layers BF16."""
 
-    def resolve_layers(self, num_layers: int) -> list[int]:
+    def resolve_layers(self, moe_layers: list[int]) -> list[int]:
+        """The NVFP4 layers among the model's MoE layers ``moe_layers``."""
         if isinstance(self.apply_to, list):
             return sorted(self.apply_to)
         fraction = 100.0 if self.apply_to == "all" else float(self.apply_to.removesuffix("%"))
-        return list(range(int(num_layers * fraction / 100)))
+        return moe_layers[: int(len(moe_layers) * fraction / 100)]
 
-    def quantization_args(self, num_layers: int | None) -> dict[str, Any]:
+    def quantization_args(self, moe_layers: list[int] | None) -> dict[str, Any]:
         """vLLM's ``quantization`` (and ``quantization_config``) for these experts: the ``nvfp4_per_token`` shorthand
-        covers every MoE layer; a subset goes through ``online`` targets matched on vLLM's expert module names."""
+        covers every MoE layer; a subset (and an MXFP8 remainder) goes through ``online`` targets matched on vLLM's
+        expert module names. ``moe_layers``: the model's MoE layer indices, needed for a percentage or a remainder.
+        Targets exclude vLLM's ``linear``/``moe`` settings, so MXFP8 dense layers put every MoE layer in NVFP4."""
         if self.linear is not None:
             config = {"linear": self.linear, "moe": "nvfp4_per_token", "ignore": NVFP4_DENSE_IGNORE}
             return {"quantization": "online", "quantization_config": config}
         if self.apply_to == "all":
             return {"quantization": "nvfp4_per_token"}
-        if num_layers is None and not isinstance(self.apply_to, list):
-            raise ValueError("NVFP4 on a subset of layers needs the model's layer count")
-        layers = self.resolve_layers(num_layers)
-        if not layers:
-            return {}
-        pattern = r"re:(.*\.)?layers\.(" + "|".join(str(index) for index in layers) + r")\.mlp\.experts$"
-        return {"quantization": "online", "quantization_config": {"targets": {pattern: "nvfp4_per_token"}}}
+        if moe_layers is None and (not isinstance(self.apply_to, list) or self.remainder != "bf16"):
+            raise ValueError("NVFP4 on a subset of layers needs the model's MoE layers")
+        layers = self.resolve_layers(moe_layers or [])
+        targets = {_experts_pattern(layers): "nvfp4_per_token"} if layers else {}
+        tail = [index for index in moe_layers or [] if index not in layers]
+        if self.remainder != "bf16" and tail:
+            targets[_experts_pattern(tail)] = self.remainder
+        return {"quantization": "online", "quantization_config": {"targets": targets}} if targets else {}
+
+
+def _experts_pattern(layers: list[int]) -> str:
+    """vLLM's routed-experts modules of ``layers``."""
+    return r"re:(.*\.)?layers\.(" + "|".join(str(index) for index in layers) + r")\.mlp\.experts$"
 
 
 class InferenceConfig(BaseConfig):
@@ -721,12 +736,18 @@ class InferenceConfig(BaseConfig):
             )
         if self.moe_nvfp4.linear is not None and self.moe_nvfp4.apply_to != "all":
             raise ValueError("moe_nvfp4.linear needs apply_to = 'all': vLLM cannot combine it with per-layer targets.")
-        if self.moe_nvfp4.four_over_six:
-            self.env_vars = {NVFP4_4OVER6_ENV: "1", **self.env_vars}
+        self.add_nvfp4_env()
         return self
 
-    def num_hidden_layers(self) -> int | None:
-        """The served model's decoder layer count, from its HF config (local cache or Hub). None if unreadable."""
+    def add_nvfp4_env(self) -> None:
+        """FlashInfer's IEEE division and 4/6 for ``moe_nvfp4``, under any value the user set."""
+        recipe = {NVFP4_IEEE_DIVISION_ENV: "1"} | ({NVFP4_4OVER6_ENV: "1"} if self.moe_nvfp4.four_over_six else {})
+        self.env_vars = {**recipe, **self.env_vars}
+
+    def moe_layers(self) -> list[int] | None:
+        """The served model's MoE decoder layer indices, from its HF config (local cache or Hub), by the usual
+        dense-layer fields (``first_k_dense_replace``, ``moe_layer_freq``, ``decoder_sparse_step``,
+        ``mlp_only_layers``, ``interleave_moe_layer_step``). None if unreadable."""
         try:
             from transformers import AutoConfig
 
@@ -736,7 +757,18 @@ class InferenceConfig(BaseConfig):
         except Exception:
             return None
         config = getattr(config, "text_config", None) or config
-        return getattr(config, "num_hidden_layers", None)
+        num_layers = getattr(config, "num_hidden_layers", None)
+        if num_layers is None:
+            return None
+        first_dense = getattr(config, "first_k_dense_replace", None) or 0
+        freq = getattr(config, "moe_layer_freq", None) or 1
+        step = getattr(config, "decoder_sparse_step", None) or getattr(config, "interleave_moe_layer_step", None) or 1
+        dense = set(getattr(config, "mlp_only_layers", None) or [])
+        return [
+            index
+            for index in range(num_layers)
+            if index >= first_dense and index % freq == 0 and (index + 1) % step == 0 and index not in dense
+        ]
 
     def to_namespace(self) -> Namespace:
         """Dump the server + vllm sections into a vLLM-compatible Namespace."""
@@ -796,10 +828,11 @@ class InferenceConfig(BaseConfig):
             namespace.served_model_name = [f"{self.vllm.model}-base"]
 
         if self.moe_nvfp4 is not None:
-            # Only a percentage needs the model's layer count; explicit indices already name the layers
-            apply_to = self.moe_nvfp4.apply_to
-            num_layers = self.num_hidden_layers() if isinstance(apply_to, str) and apply_to != "all" else None
-            for key, value in self.moe_nvfp4.quantization_args(num_layers).items():
+            # A percentage or a remainder needs the model's MoE layers; explicit indices alone name the layers
+            nvfp4 = self.moe_nvfp4
+            explicit = isinstance(nvfp4.apply_to, list) and nvfp4.remainder == "bf16"
+            moe_layers = None if nvfp4.apply_to == "all" or nvfp4.linear is not None or explicit else self.moe_layers()
+            for key, value in nvfp4.quantization_args(moe_layers).items():
                 setattr(namespace, key, value)
 
         kv_transfer_config = self.build_kv_transfer_config()

@@ -91,10 +91,10 @@ transport = "mxfp8"
 All MoE compute backends accept `apply_to`:
 
 - `"all"` (default) applies the backend to all expert groups.
-- `"85%"` applies it to the first 85% of model layers, rounded down. For a 48-layer model, this selects layers 0–39.
+- `"85%"` applies it to the first 85% of the MoE layers, rounded down; dense layers do not count. For a model with 48 MoE layers, this selects the first 40.
 - `[0, 1, 2, 3]` selects explicit zero-based model layer indices; `[]` selects none.
 
-Percentages must be between 0% and 100%; explicit indices must be within the model's layer count. Non-MoE blocks in hybrid models count toward layer indices and percentages. Each selected layer uses the backend for all its routed experts. Other expert groups use BF16 compute and BF16 token transport while retaining the configured dispatch backend and expert parallelism. Dense linear quantization is configured separately.
+Percentages must be between 0% and 100%; explicit indices must be within the model's layer count. Non-MoE blocks count toward layer indices, not percentages. Each selected layer uses the backend for all its routed experts. Other expert groups use `remainder` compute (BF16 by default, or MXFP8) and BF16 token transport while retaining the configured dispatch backend and expert parallelism. Dense linear quantization is configured separately.
 
 For example, this selects routed experts in Qwen3's first four model layers:
 

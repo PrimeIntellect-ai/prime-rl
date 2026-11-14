@@ -88,7 +88,9 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
                 f"NVFP4 expert compute needs SM100 or SM103 (B200, GB200, B300), but this device is "
                 f"SM{capability[0]}{capability[1]}. Use moe.compute.type = 'mxfp8' (SM100+) or 'deepgemm_fp8' (SM90)."
             )
-        return NVFP4ExpertCompute(kernel=prime_kernels.load("nvfp4_moe"))
+        return NVFP4ExpertCompute(
+            kernel=prime_kernels.load("nvfp4_moe"), quantized_dispatch=compute.dispatch == "nvfp4"
+        )
     raise TypeError(f"Unsupported MoE compute config: {type(compute).__name__}")
 
 
@@ -134,15 +136,11 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
 
     selected_moes = set(moe_layers)
     if config.moe.compute.apply_to != "all":
-        language_model = get_language_model(model)
-        selected_layers = config.moe.compute.resolve_layers(len(language_model.layers))
-        selected_moes = {
-            module
-            for index, layer in enumerate(language_model.layers.children())
-            if index in selected_layers
-            for module in layer.modules()
-            if isinstance(module, MoE)
-        }
+        layers = list(get_language_model(model).layers.children())
+        moes = [[module for module in layer.modules() if isinstance(module, MoE)] for layer in layers]
+        moe_indices = [index for index, modules in enumerate(moes) if modules]
+        selected_layers = config.moe.compute.resolve_layers(len(layers), moe_indices)
+        selected_moes = {module for index in selected_layers for module in moes[index]}
         get_logger().debug(f"Selected model layers for MoE compute: {sorted(selected_layers)}")
     if config.moe.compute.remainder == "mxfp8":
         import prime_kernels
@@ -179,6 +177,10 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
         if is_mega_moe:
             selected_compute.validate_top_k(moe.router.top_k)
         compute = selected_compute if moe in selected_moes else remainder_compute
+        if getattr(compute, "encode_tokens", None) is not None and moe.score_before_experts:
+            raise ValueError(
+                "NVFP4 experts dispatch quantized tokens, which needs `score_before_experts=False` on the MoE layer."
+            )
         moe.experts.set_compute(compute)
         if ep_mesh is None:
             token_dispatcher = LocalTokenDispatcher(
