@@ -1,0 +1,15 @@
+# A mechanics check, composed after train.toml: 2 layers, 30 steps, validation and a checkpoint every 10 steps.
+#     PYTHONPATH=examples uv run sft @ examples/decision_models/open_jev/train.toml @ examples/decision_models/open_jev/smoke.toml
+max_steps = 30
+
+[model.debug]
+num_layers = 2
+
+[scheduler]
+warmup_steps = 5
+
+[val]
+interval = 10
+
+[ckpt]
+interval = 10

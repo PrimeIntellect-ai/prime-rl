@@ -1,0 +1,17 @@
+# A mechanics check, composed after train.toml: 4 layers (the fourth is the first full-attention layer), 30 steps,
+# validation and a checkpoint every 10 steps.
+#     PYTHONPATH=examples uv run sft @ examples/decision_models/decider/train.toml @ examples/decision_models/decider/smoke.toml
+max_steps = 30
+
+[model.debug]
+num_layers = 4
+
+[scheduler]
+warmup_steps = 5
+
+[val]
+interval = 10
+
+[ckpt]
+interval = 10
+keep_last = 2

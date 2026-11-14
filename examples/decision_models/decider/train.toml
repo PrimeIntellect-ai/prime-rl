@@ -1,0 +1,52 @@
+# Decider: full fine-tuning of pplx-decider-flash-v1.2 (Qwen3.5-4B with an answer-code readout) on Typed Decisions
+# Synth, on one GPU. From the repository root (see README.md):
+#     PYTHONPATH=examples uv run sft @ examples/decision_models/decider/train.toml
+# Not yet run on a GPU: the learning rate, the schedule and the memory use are unmeasured.
+mode = "sft"
+# One pass over the 6,682 training records is 1,903 packed rows of up to 2,048 tokens, 3.5 records on average: 238
+# steps of 8 rows. 240 makes the last step a validation step.
+max_steps = 240
+
+[model]
+name = "outputs/decider/pplx-decider-flash-v1.2"  # the release: the first load converts it to prime-rl's weight names
+
+[model.implementation]
+import_path = "decision_models.decider.model.Qwen3_5Decider"
+
+[data]
+type = "system_one"
+name = "outputs/typed-decisions-synth-system-one"  # the records (../data/convert_typed_decisions_synth.py)
+subsets = ["default"]
+splits = ["train"]  # trains on the soft labels
+seq_len = 2048  # the longest record has 1,349 tokens
+batch_size = 8  # a step is 8 packed rows, one at a time: about 28 records and 98 questions
+
+[data.encoder]
+import_path = "decision_models.decider.encoder.DeciderEncoder"
+
+[loss]
+type = "custom"
+import_path = "prime_rl.trainer.sft.system_one.loss.decision_loss"
+kwargs = { brier_weight = 0.0 }  # soft cross-entropy alone: Perplexity published no training recipe
+
+[optim]
+lr = 1e-5  # untuned: a conservative starting value for full fine-tuning
+
+[scheduler]
+type = "cosine"
+warmup_steps = 20
+
+[val]
+interval = 30
+eval_on_start = true  # the baseline: the released model
+
+[val.data]
+name = "outputs/typed-decisions-synth-system-one"
+subsets = ["default"]
+splits = ["validation"]
+seq_len = 2048
+
+[val.data.encoder]
+import_path = "decision_models.decider.encoder.DeciderEncoder"
+
+[ckpt]  # one checkpoint, at the end of the run
