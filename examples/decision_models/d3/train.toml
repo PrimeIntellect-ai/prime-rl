@@ -9,7 +9,7 @@ mode = "sft"
 max_steps = 550
 
 [model]
-name = "outputs/d3/d3-nano-prime-rl"  # the release under prime-rl's names, with the readout (prepare_checkpoint.py)
+name = "outputs/d3/d3-nano-prime-rl"  # the release's files with the config.json the class reads (write_config.py)
 
 [model.implementation]
 import_path = "decision_models.d3.model.Qwen3_5D3"

@@ -11,9 +11,13 @@ ATTENTION_MODES = ("causal", "noncausal_full_attention")
 
 
 class Qwen3_5D3(Qwen3_5ForCausalLM):
-    """prime-rl's Qwen3.5 plus ``readout``, which scores d3's answer codes from a prompt's last token. The readout's
-    weights and the ``d3`` entry of ``config.json`` (``readout_rows``, ``temperature``, ``attention_mode``) come from
-    the checkpoint (``prepare_checkpoint.py``).
+    """prime-rl's Qwen3.5 plus ``readout``, which scores d3's answer codes from a prompt's last token. The ``d3``
+    entry of the checkpoint's ``config.json`` (``readout_rows``, ``temperature``, ``attention_mode``) is written by
+    ``write_config.py``.
+
+    A d3 release stores the backbone under the names of transformers' ``Qwen3_5Model`` (``language_model.*``,
+    ``visual.*``) and the readout apart, as ``weight`` in ``readout.safetensors``. The loader converts it once, on
+    the first load (``convert_to_prime``); a checkpoint under this class's names loads as it is.
 
     With ``attention_mode = "noncausal_full_attention"`` the full-attention layers attend in both directions within a
     prompt (an attention segment); the Gated DeltaNet layers stay causal."""
@@ -28,6 +32,23 @@ class Qwen3_5D3(Qwen3_5ForCausalLM):
             for module in self.modules():
                 if isinstance(module, Qwen3_5Attention):
                     module.is_causal = False
+
+    @classmethod
+    def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
+        """Whether these are a d3 release's names: the backbone without the ``model.`` prefix."""
+        return any(name.startswith("language_model.") for name in state_dict)
+
+    @classmethod
+    def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
+        return not cls.is_hf_state_dict(state_dict) and super().is_prime_state_dict(state_dict)
+
+    def convert_to_prime(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        """A release's weights under this class's names: the backbone under ``model.``, the readout as
+        ``readout.weight``."""
+        state_dict["readout.weight"] = state_dict.pop("weight")
+        for name in [name for name in state_dict if name.startswith(("language_model.", "visual."))]:
+            state_dict[f"model.{name}"] = state_dict.pop(name)
+        return super().convert_to_prime(state_dict)
 
     def decision_logits(self, hidden_states: Tensor, batch: Batch) -> list[Tensor]:
         """One logit vector per question, in pack order: the readout's first rows, one per option, divided by the

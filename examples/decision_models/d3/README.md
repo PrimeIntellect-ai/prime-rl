@@ -7,18 +7,20 @@
 | File | What |
 |---|---|
 | `encoder.py` | `D3Encoder`: every question is one d3 prompt (the state, the question, and its options under the answer codes; a score question lists its levels), each its own attention segment, read at its last token. The answer codes are derived from the tokenizer, as d3 derives them |
-| `model.py` | `Qwen3_5D3`: prime-rl's Qwen3.5 plus `readout`, with the full-attention layers made non-causal. A question's logits are the readout's first rows at its prompt's last token, divided by the checkpoint's temperature |
-| `prepare_checkpoint.py` | The checkpoint: the release under prime-rl's parameter names, with the readout and a `d3` entry in `config.json` (attention mode, temperature, readout rows) |
+| `model.py` | `Qwen3_5D3`: prime-rl's Qwen3.5 plus `readout`, with the full-attention layers made non-causal. A question's logits are the readout's first rows at its prompt's last token, divided by the checkpoint's temperature. It converts a release's weights to prime-rl's parameter names when the trainer first loads them |
+| `write_config.py` | The `config.json` the class reads: the release's, with a `d3` entry (attention mode, temperature, readout rows), in a directory that links the release's other files |
 | `train.toml`, `smoke.toml` | The full fine-tuning run, and a 30-step mechanics check composed after it |
 
 ## Run d3
 
-From the repository root, on one GPU. The data, the loss, the checkpoint layout and both configs are checked on CPU; neither config has run on a GPU yet, so memory use, the hyperparameters and the non-causal attention in prime-rl's flash-attention kernels are unmeasured. Prepare the checkpoint once, and the records as [their README](../data/README.md) says (they go to `outputs/typed-decisions-synth-system-one`):
+From the repository root, on one GPU. The data, the loss, the conversion of a release and both configs are checked on CPU; neither config has run on a GPU yet, so memory use, the hyperparameters and the non-causal attention in prime-rl's flash-attention kernels are unmeasured. Download the release and write its `config.json` once, and prepare the records as [their README](../data/README.md) says (they go to `outputs/typed-decisions-synth-system-one`):
 
 ```bash
 uv run hf download vllm-sr/d3-nano --revision 462efc366229ea268cf4eed3738b3fc4415e4817 --local-dir outputs/d3/d3-nano
-uv run python examples/decision_models/d3/prepare_checkpoint.py outputs/d3/d3-nano outputs/d3/d3-nano-prime-rl
+uv run python examples/decision_models/d3/write_config.py outputs/d3/d3-nano outputs/d3/d3-nano-prime-rl
 ```
+
+`model.name` is `outputs/d3/d3-nano-prime-rl`: the `config.json` the class reads, beside links to the release's other files. The release stores the backbone under other names than prime-rl's and the readout in a file apart, so the first load (the mechanics check's, if it runs first) converts the weights once into `outputs/d3/d3-nano-prime-rl/prime`, a copy of about 4.4 GB that later loads read. The copy is not refreshed when the release's files change: delete it to convert again. The download stays as it is.
 
 Then the mechanics check, and the run. `PYTHONPATH=examples` makes `decision_models` importable in the trainer:
 
@@ -49,7 +51,7 @@ The prompts, their tokens, the answer codes, the attention pattern, the readout 
 
 ## Third-party notice
 
-The prompt format and the answer codes in `encoder.py` are taken from `d3_format.py` of https://huggingface.co/vllm-sr/d3-nano at revision `462efc366229ea268cf4eed3738b3fc4415e4817`, rewritten compactly for System One questions, and `prepare_checkpoint.py` rewrites that release's weights and `config.json`. d3-nano is licensed under the Apache License, Version 2.0, which is also this repository's licence ([LICENSE](../../../LICENSE)). Its `NOTICE`:
+The prompt format and the answer codes in `encoder.py` are taken from `d3_format.py` of https://huggingface.co/vllm-sr/d3-nano at revision `462efc366229ea268cf4eed3738b3fc4415e4817`, rewritten compactly for System One questions; `write_config.py` rewrites that release's `config.json`, and `model.py` renames its weights. d3-nano is licensed under the Apache License, Version 2.0, which is also this repository's licence ([LICENSE](../../../LICENSE)). Its `NOTICE`:
 
 ```text
 d3-nano (Decision 3.0)
