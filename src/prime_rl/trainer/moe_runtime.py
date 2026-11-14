@@ -111,15 +111,11 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
 
     selected_moes = set(moe_layers)
     if config.moe.compute.apply_to != "all":
-        language_model = get_language_model(model)
-        selected_layers = config.moe.compute.resolve_layers(len(language_model.layers))
-        selected_moes = {
-            module
-            for index, layer in enumerate(language_model.layers.children())
-            if index in selected_layers
-            for module in layer.modules()
-            if isinstance(module, MoE)
-        }
+        layers = list(get_language_model(model).layers.children())
+        moes = [[module for module in layer.modules() if isinstance(module, MoE)] for layer in layers]
+        moe_layers = [index for index, modules in enumerate(moes) if modules]
+        selected_layers = config.moe.compute.resolve_layers(len(layers), moe_layers)
+        selected_moes = {module for index in selected_layers for module in moes[index]}
         get_logger().debug(f"Selected model layers for MoE compute: {sorted(selected_layers)}")
     if config.moe.compute.remainder == "mxfp8":
         import prime_kernels

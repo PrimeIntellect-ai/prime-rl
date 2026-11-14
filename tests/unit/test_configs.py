@@ -401,6 +401,15 @@ def test_moe_compute_rejects_invalid_apply_to(selection):
         TrainerModelConfig.model_validate({"moe": {"compute": {"type": "mxfp8", "apply_to": selection}}})
 
 
+def test_moe_compute_percentages_count_moe_layers():
+    # 3 dense leading layers, then 12 MoE layers: "83.34%" puts 10 of the 12 in the backend, the last 2 run remainder
+    config = TrainerModelConfig.model_validate({"moe": {"compute": {"type": "mxfp8", "apply_to": "83.34%"}}})
+    assert config.moe.compute.resolve_layers(15, list(range(3, 15))) == set(range(3, 13))
+    assert TrainerModelConfig.model_validate({"moe": {"compute": {"apply_to": [1, 4]}}}).moe.compute.resolve_layers(
+        15, list(range(3, 15))
+    ) == {1, 4}  # indices stay model layers
+
+
 def test_moe_compute_rejects_out_of_range_layer():
     config = TrainerModelConfig.model_validate({"moe": {"compute": {"type": "mxfp8", "apply_to": [3]}}})
     with pytest.raises(ValueError, match="out of range"):

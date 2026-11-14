@@ -150,9 +150,9 @@ QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discrim
 
 class MoEComputeConfigBase(BaseConfig):
     apply_to: str | list[Annotated[int, Field(ge=0, strict=True)]] = "all"
-    """Model layers to use this backend for: ``"all"``, a percentage such as ``"85%"``,
-    or zero-based layer indices such as ``[0, 1, 2]``. Percentages select the first fraction
-    of model layers, rounded down. The other MoE layers run ``remainder``.
+    """MoE layers to use this backend for: ``"all"``, a percentage such as ``"85%"``,
+    or zero-based model layer indices such as ``[0, 1, 2]``. Percentages select the first fraction
+    of the MoE layers (dense layers do not count), rounded down. The other MoE layers run ``remainder``.
     """
 
     remainder: Literal["bf16", "mxfp8"] = "bf16"
@@ -179,7 +179,9 @@ class MoEComputeConfigBase(BaseConfig):
             return not self.apply_to
         return self.apply_to != "all" and float(self.apply_to[:-1]) == 0
 
-    def resolve_layers(self, num_layers: int) -> set[int]:
+    def resolve_layers(self, num_layers: int, moe_layers: list[int] | None = None) -> set[int]:
+        """The model layer indices selected among ``num_layers``, of which ``moe_layers`` hold MoE (all of them by
+        default)."""
         if isinstance(self.apply_to, list):
             invalid = [index for index in self.apply_to if index >= num_layers]
             if invalid:
@@ -187,8 +189,9 @@ class MoEComputeConfigBase(BaseConfig):
                     f"apply_to layer indices {invalid} are out of range for a model with {num_layers} layers"
                 )
             return set(self.apply_to)
-        count = num_layers if self.apply_to == "all" else int(num_layers * float(self.apply_to[:-1]) / 100)
-        return set(range(count))
+        moe_layers = list(range(num_layers)) if moe_layers is None else moe_layers
+        count = len(moe_layers) if self.apply_to == "all" else int(len(moe_layers) * float(self.apply_to[:-1]) / 100)
+        return set(moe_layers[:count])
 
 
 class BF16MoEComputeConfig(MoEComputeConfigBase):
