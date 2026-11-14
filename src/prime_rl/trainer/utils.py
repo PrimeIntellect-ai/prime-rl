@@ -191,7 +191,8 @@ def setup_full_cpu_optimizer_offload() -> None:
 def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: bool = False):
     get_logger().info(f"Initializing torch distributed (timeout={int(timeout.total_seconds())}s)")
     t0 = time.perf_counter()
-    device_id = get_world().local_rank
+    # Wraps local ranks onto the visible GPUs so several ranks can share one (NCCL_MULTI_RANK_GPU_ENABLE=1)
+    device_id = get_world().local_rank % torch.cuda.device_count()
     torch.cuda.set_device(device_id)
     # Use Gloo backend for CPU and NCCL for GPU when CPU offloading is enabled
     # Otherwise use NCCL for better GPU performance
