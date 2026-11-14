@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
+from huggingface_hub import snapshot_download
+from safetensors import safe_open
 from safetensors.torch import save_file
 from torch import Tensor, nn
 from torch.distributed.checkpoint import DefaultLoadPlanner, FileSystemReader, Metadata
@@ -21,7 +23,7 @@ from torch.distributed.checkpoint.planner import LoadPlan
 from torch.distributed.checkpoint.planner_helpers import create_read_items_for_chunk_list
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from transformers import PretrainedConfig
-from transformers.utils import SAFE_WEIGHTS_INDEX_NAME
+from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
 
 from prime_rl.configs.trainer import ModelConfig, TokenizerConfig
 from prime_rl.trainer.model import get_model, setup_tokenizer
@@ -76,6 +78,8 @@ class Checkpoint:
     model: nn.Module
     model_config: ModelConfig
     tokenizer_config: TokenizerConfig
+    base_dir: Path | None = None
+    """HF checkpoint of the frozen weights the DCP checkpoint leaves out; ``model_config.name`` if unset."""
 
 
 class MetadataReader(FileSystemReader):
@@ -145,6 +149,36 @@ def export_dtype(checkpoint: Checkpoint, key: str) -> torch.dtype:
     return resolve_wire_dtype(keep_in_fp32, key, torch.bfloat16)
 
 
+def frozen_keys(checkpoint: Checkpoint) -> set[str]:
+    """Model weights the checkpoint leaves out: frozen ones, which keep the base checkpoint's values."""
+    stored = checkpoint.metadata.state_dict_metadata
+    return {key for key in checkpoint.model.state_dict() if f"app.model.{key}" not in stored}
+
+
+def load_base(checkpoint: Checkpoint, names: list[str]) -> dict[str, Tensor]:
+    """HF tensors ``names`` from the base checkpoint, in the export dtypes."""
+    base = checkpoint.base_dir
+    if base is None:
+        name = checkpoint.model_config.name
+        base = (
+            Path(name)
+            if Path(name).exists()
+            else Path(snapshot_download(name, allow_patterns=["*.safetensors", "*.json"]))
+        )
+    index_path = base / SAFE_WEIGHTS_INDEX_NAME
+    files = json.loads(index_path.read_text())["weight_map"] if index_path.exists() else {}
+    model = checkpoint.model
+    keep_in_fp32 = model.keep_in_fp32_for_weight_transfer if isinstance(model, PreTrainedModelPrimeRL) else None
+    tensors = {}
+    for name in names:
+        with safe_open(base / files.get(name, SAFE_WEIGHTS_NAME), framework="pt") as file:
+            tensor = file.get_tensor(name)
+        if tensor.is_floating_point() and not name.endswith(("selection_bias", "e_score_correction_bias")):
+            tensor = tensor.to(resolve_wire_dtype(keep_in_fp32, name, torch.bfloat16))
+        tensors[name] = tensor
+    return tensors
+
+
 def load_layer(checkpoint: Checkpoint, keys: list[str]) -> dict[str, Tensor]:
     """Load one decoder layer from the checkpoint on CPU and convert it to HF format."""
     model = checkpoint.model
@@ -198,10 +232,24 @@ def write_weights(
         )
         return name, {key: tensor.nbytes for key, tensor in shard.items()}
 
+    frozen = frozen_keys(checkpoint)
+
     def write_layer(index: int, keys: list[str]) -> tuple[str, dict[str, int]]:
-        return write_shard(index, load_layer(checkpoint, keys))
+        stored = [key for key in keys if key not in frozen]
+        shard = load_layer(checkpoint, stored) if stored else {}
+        if missing := [key for key in keys if key in frozen]:
+            # Frozen modules: their HF names from the conversion rules, their values from the base checkpoint
+            names = convert_state_dict_to_hf(checkpoint.model, {key: skeleton[key] for key in missing})
+            shard |= load_base(checkpoint, list(names))
+        return write_shard(index, shard)
 
     def write_table(key: str, op: ChunkedConvOp, index: int) -> list[tuple[str, dict[str, int]]]:
+        if key in frozen:
+            packets = op.iter_prime_to_hf(skeleton[key], lambda weight, start, stop: weight[start:stop])
+            return [
+                write_shard(index + offset, load_base(checkpoint, list(packet)))
+                for offset, packet in enumerate(packets)
+            ]
         # DCP reads a stored chunk in full to serve any of its rows, so read each
         # chunk once and slice the HF shards, which arrive in row order, from it.
         row_ranges = stored_row_ranges(checkpoint, key)
