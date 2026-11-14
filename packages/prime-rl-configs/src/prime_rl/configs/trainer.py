@@ -123,6 +123,10 @@ _DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
     "in_proj_b",
 ]
 
+SHARED_EXPERTS_PATTERN = r"shared_experts?\."
+"""Shared-expert linears, kept BF16 beside NVFP4 routed experts: every token passes through them, so their precision
+matters more than a routed expert's."""
+
 
 class FP8Config(BaseConfig):
     type: Literal["fp8"] = "fp8"
@@ -222,8 +226,25 @@ class MXFP8MoEComputeConfig(MoEComputeConfigBase):
     quantization-aware training computes (Mega MoE on SM100)."""
 
 
+class NVFP4MoEComputeConfig(MoEComputeConfigBase):
+    """Run routed experts in NVFP4 with one recipe, after Thinking Machines' end-to-end 4-bit training. Forward: E2M1
+    values, E4M3 scales per 16-element block, a per-token outer scale on both GEMM inputs (block scales chosen with
+    4/6) and a per-expert one on the weights, in IEEE arithmetic. Backward: both gradient GEMMs in MXFP8 on the
+    dequantized forward operands, every operand quantized with stochastic rounding. By default the first 5/6 of the
+    layers run NVFP4 and the rest MXFP8. Master weights, optimizer state, checkpoints and weight updates stay BF16.
+    Needs SM100/SM103 (B200, GB200, B300) and a prime-kernels build with ``nvfp4_moe``."""
+
+    type: Literal["nvfp4"] = "nvfp4"
+    apply_to: str | list[Annotated[int, Field(ge=0, strict=True)]] = "83.34%"
+    remainder: Literal["bf16", "mxfp8"] = "mxfp8"
+    dispatch: Literal["nvfp4", "bf16"] = "nvfp4"
+    """Token wire format to the experts: NVFP4 (quantized before dispatch, ~3.5x fewer bytes through the expert
+    all-to-all) or BF16 (quantized after it). The GEMMs see the same bytes either way. Temporary: kept for the
+    NVFP4-vs-BF16 dispatch comparison on Blackwell, to be removed once it is measured."""
+
+
 MoEComputeConfig: TypeAlias = Annotated[
-    BF16MoEComputeConfig | DeepGemmFP8MoEComputeConfig | MXFP8MoEComputeConfig,
+    BF16MoEComputeConfig | DeepGemmFP8MoEComputeConfig | MXFP8MoEComputeConfig | NVFP4MoEComputeConfig,
     Field(discriminator="type"),
 ]
 
@@ -332,6 +353,8 @@ def expert_engine_scheme(compute: "MoEComputeConfig") -> str | None:
         return "fp8_per_block" if compute.forward == "fp8" else None
     if isinstance(compute, MXFP8MoEComputeConfig):
         return "mxfp8"
+    if isinstance(compute, NVFP4MoEComputeConfig):
+        return "nvfp4_per_token"
     return None
 
 
@@ -467,6 +490,11 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def validate_moe_runtime(self):
+        if isinstance(self.moe.compute, NVFP4MoEComputeConfig):
+            if self.lora is not None:
+                raise ValueError("NVFP4 expert compute does not support LoRA.")
+            if self.compile is not None and self.compile.fullgraph:
+                raise ValueError("NVFP4 expert compute requires compile.fullgraph=false.")
         compute = self.moe.compute
         dispatch = self.moe.dispatch
         if isinstance(dispatch, MegaMoeMoEDispatchConfig):

@@ -523,6 +523,66 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_moe_nvfp4(self):
+        """NVFP4 trainer experts: routing is replayed from the engines unless turned off explicitly, since NVFP4 noise
+        flips near-tied experts, and MXFP8 dense layers keep shared experts in BF16. The engines run the closest
+        vLLM can: online ``nvfp4_per_token`` experts (FlashInfer TRTLLM) on the same layers, the MXFP8 tail through
+        online targets, IEEE division and 4/6 on activations; ``rl`` warns about what still differs."""
+        from prime_rl.configs.inference import MoENVFP4Config
+        from prime_rl.configs.trainer import SHARED_EXPERTS_PATTERN, MXFP8Config, NVFP4MoEComputeConfig
+
+        model = self.trainer.model
+        compute = model.moe.compute
+        if not isinstance(compute, NVFP4MoEComputeConfig) or compute.selects_none:
+            return self
+        if "enable_router_replay" not in self.trainer.model_fields_set:
+            self.trainer.enable_router_replay = True
+        linear = None
+        if model.quantization is not None:
+            if not isinstance(model.quantization, MXFP8Config):
+                raise ValueError("NVFP4 experts pair only with mxfp8 dense layers (trainer.model.quantization).")
+            linear = "mxfp8"
+            if SHARED_EXPERTS_PATTERN not in model.quantization.extra_ignore_patterns:
+                model.quantization.extra_ignore_patterns.append(SHARED_EXPERTS_PATTERN)
+        if self.inference is None:
+            return self
+        gaps = [
+            "the down projection's input takes a static scale on vLLM's TRTLLM experts, a per-token one on the trainer"
+        ]
+        tail = not compute.selects_all and compute.remainder != "bf16"
+        if linear is not None and not compute.selects_all:
+            # vLLM's online targets exclude its linear/moe settings: every MoE layer in NVFP4 beside MXFP8 dense layers
+            wanted = MoENVFP4Config(apply_to="all", linear=linear)
+            gaps.append(
+                f"the engines run NVFP4 on every MoE layer, the trainer {compute.remainder} outside {compute.apply_to}"
+            )
+        else:
+            wanted = MoENVFP4Config(
+                apply_to=compute.apply_to, remainder=compute.remainder if tail else "bf16", linear=linear
+            )
+        warnings.warn(
+            "vLLM's engines run the trainer's NVFP4 recipe as closely as they can; rollouts still differ where "
+            + "; and where ".join(gaps)
+            + ".",
+            stacklevel=2,
+        )
+        current = self.inference.moe_nvfp4
+        if current is None:
+            if self.inference.vllm.quantization is not None:
+                raise ValueError(
+                    "trainer.model.moe.compute.type = 'nvfp4' configures inference's expert quantization itself; "
+                    f"unset inference.vllm.quantization ({self.inference.vllm.quantization})."
+                )
+            self.inference.moe_nvfp4 = wanted
+            self.inference.add_nvfp4_env()
+        elif current != wanted:
+            raise ValueError(
+                f"inference.moe_nvfp4 ({current}) differs from the trainer's NVFP4 experts ({wanted}): rollouts would "
+                "be sampled with other numerics than the trainer computes. Leave inference.moe_nvfp4 unset to match."
+            )
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_expert_quantization(self):
         """Quantized trainer experts (``model.moe.compute``, whatever the dispatch) need rollouts sampled with the
         same expert quantization, or the trainer learns a policy the engines never ran. Without engine quantization,
@@ -532,6 +592,8 @@ class RLConfig(BaseConfig):
         if self.inference is None:
             return self
         compute = self.trainer.model.moe.compute
+        if compute.type == "nvfp4":  # NVFP4 has its own setup (auto_setup_moe_nvfp4)
+            return self
         if compute.remainder != "bf16" and not compute.selects_all:
             warnings.warn(
                 f"model.moe.compute runs {compute.type} on {compute.apply_to} of the MoE layers and "

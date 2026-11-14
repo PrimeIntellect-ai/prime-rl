@@ -35,7 +35,7 @@ from prime_rl.trainer.model import (
     setup_model,
     take_moe_routing_stats,
 )
-from prime_rl.trainer.moe_runtime import setup_moe_comm_env
+from prime_rl.trainer.moe_runtime import seed_expert_rounding, setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.data import get_dataset_progress, get_dataset_state, setup_dataloader
@@ -428,6 +428,7 @@ def train(config: SFTConfig | PretrainConfig):
         memory_profiler = (
             MemoryProfiler(progress.step, config.memory_profiler_path) if config.memory_profiler_path else None
         )
+        seed_expert_rounding(config.model, progress.step)
 
         step_start_time = time.perf_counter()
         forward_backward_start_time = time.perf_counter()

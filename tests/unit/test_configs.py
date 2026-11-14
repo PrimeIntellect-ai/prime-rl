@@ -1524,6 +1524,137 @@ def test_score_centering_replays_top_p_alone():
     assert config.inference.enable_return_sampling_mask
 
 
+def test_nvfp4_runs_the_first_five_sixths_and_matches_the_engines_with_an_mxfp8_tail():
+    import re
+
+    with pytest.warns(UserWarning, match="static scale on vLLM's TRTLLM experts"):
+        config = RLConfig.model_validate(
+            {"trainer": {"model": {"moe": {"compute": {"type": "nvfp4"}}}}, "orchestrator": {}, "inference": {}}
+        )
+    compute = config.trainer.model.moe.compute
+    assert compute.resolve_layers(48) == set(range(40)) and compute.remainder == "mxfp8"
+    # Routing is replayed from the engines
+    assert config.trainer.enable_router_replay and config.inference.vllm.enable_return_routed_experts
+    nvfp4 = config.inference.moe_nvfp4
+    assert (nvfp4.apply_to, nvfp4.remainder) == ("83.34%", "mxfp8")
+    env = config.inference.env_vars
+    assert env["FLASHINFER_NVFP4_4OVER6"] == "1" and env["FLASHINFER_DISABLE_FP4_QUANT_FAST_MATH"] == "1"
+
+    # 3 dense layers, then 12 MoE layers: NVFP4 on the first 10 MoE layers, MXFP8 on the last 2, through targets
+    args = nvfp4.quantization_args(moe_layers=list(range(3, 15)))
+    assert args["quantization"] == "online"
+    targets = {
+        re.compile(p.removeprefix("re:")): scheme for p, scheme in args["quantization_config"]["targets"].items()
+    }
+
+    def scheme(layer):
+        (match,) = [s for regex, s in targets.items() if regex.fullmatch(f"model.layers.{layer}.mlp.experts")] or [None]
+        return match
+
+    assert [scheme(layer) for layer in range(15)] == [None] * 3 + ["nvfp4_per_token"] * 10 + ["mxfp8"] * 2
+
+    # A value the user set wins over the recipe's
+    user = RLConfig.model_validate(
+        {
+            "trainer": {"model": {"moe": {"compute": {"type": "nvfp4"}}}},
+            "orchestrator": {},
+            "inference": {"env_vars": {"FLASHINFER_DISABLE_FP4_QUANT_FAST_MATH": "0"}},
+        }
+    )
+    assert user.inference.env_vars["FLASHINFER_DISABLE_FP4_QUANT_FAST_MATH"] == "0"
+
+
+def test_nvfp4_on_every_layer_configures_the_closest_engines():
+    import re
+
+    from prime_rl.configs.inference import InferenceConfig, MoENVFP4Config
+
+    compute = {"type": "nvfp4", "apply_to": "all"}
+    with pytest.warns(UserWarning, match="static scale on vLLM's TRTLLM experts"):
+        config = RLConfig.model_validate(
+            {"trainer": {"model": {"moe": {"compute": compute}}}, "orchestrator": {}, "inference": {}}
+        )
+    assert config.inference.moe_nvfp4 == MoENVFP4Config(apply_to="all")
+    assert config.inference.env_vars["FLASHINFER_NVFP4_4OVER6"] == "1"
+    namespace = config.inference.to_namespace()
+    assert namespace.quantization == "nvfp4_per_token"
+    assert not hasattr(namespace, "quantization_config")
+
+    # A subset of layers goes through vLLM's online targets, on its expert module names
+    subset = InferenceConfig.model_validate({"moe_nvfp4": {"apply_to": [0, 2, 5]}})
+    args = subset.moe_nvfp4.quantization_args(moe_layers=list(range(48)))
+    # Explicit indices need no layer list (no HF config read at engine startup)
+    assert subset.moe_nvfp4.quantization_args(moe_layers=None) == args
+    assert args["quantization"] == "online"
+    (pattern,) = args["quantization_config"]["targets"]
+    assert args["quantization_config"]["targets"][pattern] == "nvfp4_per_token"
+    regex = re.compile(pattern.removeprefix("re:"))
+    assert regex.fullmatch("model.layers.5.mlp.experts")
+    assert regex.fullmatch("language_model.model.layers.0.mlp.experts")
+    assert not regex.fullmatch("model.layers.1.mlp.experts")
+    assert not regex.fullmatch("model.layers.50.mlp.experts")
+    assert not regex.fullmatch("model.layers.5.mlp.shared_experts")
+    assert MoENVFP4Config(apply_to="50%").resolve_layers(list(range(48))) == list(range(24))
+
+    # MXFP8 dense layers on the trainer: the engines match them, shared experts stay BF16 on both sides
+    with pytest.warns(UserWarning):
+        dense = RLConfig.model_validate(
+            {
+                "trainer": {"model": {"moe": {"compute": compute}, "quantization": {"type": "mxfp8"}}},
+                "orchestrator": {},
+                "inference": {},
+            }
+        )
+    assert r"shared_experts?\." in dense.trainer.model.quantization.extra_ignore_patterns
+    namespace = dense.inference.to_namespace()
+    assert namespace.quantization == "online"
+    assert namespace.quantization_config["linear"] == "mxfp8"
+    assert namespace.quantization_config["moe"] == "nvfp4_per_token"
+    ignore = [re.compile(p.removeprefix("re:")) for p in namespace.quantization_config["ignore"]]
+    for name in ("model.layers.3.mlp.shared_experts.down_proj", "model.layers.3.mlp.gate", "lm_head"):
+        assert any(r.match(name) for r in ignore), name
+    for name in ("model.layers.3.mlp.experts", "model.layers.3.self_attn.o_proj", "model.layers.3.mlp.gate_up_proj"):
+        assert not any(r.match(name) for r in ignore), name
+
+
+@pytest.mark.parametrize(
+    "inference, message",
+    [
+        ({"vllm": {"quantization": "fp8_per_block"}}, "unset inference.vllm.quantization"),
+        ({"moe_nvfp4": {"apply_to": [0]}}, "differs from the trainer's NVFP4 experts"),
+        ({}, "pair only with mxfp8 dense layers"),
+    ],
+)
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_nvfp4_rejects_mismatched_engine_quantization(inference, message):
+    model = {"moe": {"compute": {"type": "nvfp4", "apply_to": "all"}}}
+    if not inference:
+        model["quantization"] = {"type": "fp8"}
+    with pytest.raises(ValidationError, match=message):
+        RLConfig.model_validate({"trainer": {"model": model}, "orchestrator": {}, "inference": inference})
+
+
+@pytest.mark.parametrize(
+    "model, message",
+    [
+        ({"moe": {"compute": {"type": "nvfp4"}}, "lora": {}}, "does not support LoRA"),
+        ({"moe": {"compute": {"type": "nvfp4"}}, "compile": {"fullgraph": True}}, "requires compile.fullgraph=false"),
+        (
+            {
+                "moe": {
+                    "compute": {"type": "nvfp4", "apply_to": "all"},
+                    "dispatch": {"type": "mega_moe", "max_tokens_per_rank": 8192},
+                }
+            },
+            "Mega MoE cannot run",
+        ),
+    ],
+)
+def test_nvfp4_trainer_rejects_unsupported_setups(model, message):
+    with pytest.raises(ValidationError, match=message):
+        TrainerModelConfig.model_validate(model)
+
+
 @pytest.mark.parametrize(
     "compute, engines, expected",
     [
@@ -1597,3 +1728,38 @@ def test_a_quantized_remainder_leaves_the_engines_to_the_user():
         )
     assert config.inference.vllm.quantization is None
     assert TrainerModelConfig.model_validate({"moe": {"compute": compute}}).moe.compute.remainder == "mxfp8"
+
+
+def test_nvfp4_with_mxfp8_dense_layers_puts_every_engine_moe_layer_in_nvfp4():
+    # vLLM's online targets exclude its linear/moe settings, so the MXFP8 tail cannot ride along with MXFP8 dense layers
+    with pytest.warns(UserWarning, match="the engines run NVFP4 on every MoE layer"):
+        config = RLConfig.model_validate(
+            {
+                "trainer": {"model": {"moe": {"compute": {"type": "nvfp4"}}, "quantization": {"type": "mxfp8"}}},
+                "orchestrator": {},
+                "inference": {},
+            }
+        )
+    assert config.inference.moe_nvfp4.apply_to == "all" and config.inference.moe_nvfp4.linear == "mxfp8"
+
+
+@pytest.mark.parametrize(
+    "hf_config, moe_layers",
+    [
+        ({"num_hidden_layers": 6, "first_k_dense_replace": 3}, [3, 4, 5]),  # DeepSeek / GLM
+        ({"num_hidden_layers": 6, "mlp_only_layers": [0, 4], "decoder_sparse_step": 1}, [1, 2, 3, 5]),  # Qwen MoE
+        ({"num_hidden_layers": 6, "interleave_moe_layer_step": 2}, [1, 3, 5]),  # Llama 4
+        ({"num_hidden_layers": 4}, [0, 1, 2, 3]),
+    ],
+)
+def test_inference_reads_the_served_models_moe_layers(monkeypatch, hf_config, moe_layers):
+    from types import SimpleNamespace
+
+    import transformers
+
+    from prime_rl.configs.inference import InferenceConfig
+
+    monkeypatch.setattr(
+        transformers.AutoConfig, "from_pretrained", lambda *args, **kwargs: SimpleNamespace(**hf_config)
+    )
+    assert InferenceConfig().moe_layers() == moe_layers

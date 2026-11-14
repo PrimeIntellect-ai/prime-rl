@@ -14,6 +14,7 @@ from prime_rl.configs.trainer import (
     MoEComputeConfig,
     MoERuntimeConfig,
     MXFP8MoEComputeConfig,
+    NVFP4MoEComputeConfig,
     TorchMoEDispatchConfig,
     mega_moe_precision,
 )
@@ -30,6 +31,7 @@ from prime_rl.trainer.models.layers.expert_compute import (
     ExpertCompute,
     FusedDispatchExpertCompute,
     MXFP8ExpertCompute,
+    NVFP4ExpertCompute,
 )
 from prime_rl.trainer.models.layers.mega_moe import (
     MegaMoEExpertCompute,
@@ -75,6 +77,20 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
             kernel=kernel,
             high_precision_wgrad=compute.recipe == "mxfp8_rceil_wgrad_with_hp",
         )
+    if isinstance(compute, NVFP4MoEComputeConfig):
+        import prime_kernels
+
+        if "nvfp4_moe" not in prime_kernels.KERNELS:
+            raise RuntimeError("NVFP4 expert compute needs a prime-kernels build containing nvfp4_moe.")
+        capability = torch.cuda.get_device_capability()
+        if capability not in ((10, 0), (10, 3)):
+            raise RuntimeError(
+                f"NVFP4 expert compute needs SM100 or SM103 (B200, GB200, B300), but this device is "
+                f"SM{capability[0]}{capability[1]}. Use moe.compute.type = 'mxfp8' (SM100+) or 'deepgemm_fp8' (SM90)."
+            )
+        return NVFP4ExpertCompute(
+            kernel=prime_kernels.load("nvfp4_moe"), quantized_dispatch=compute.dispatch == "nvfp4"
+        )
     raise TypeError(f"Unsupported MoE compute config: {type(compute).__name__}")
 
 
@@ -100,6 +116,15 @@ def _resolve_mega_moe_compute(
 
         return LLEPMegaMoEExpertCompute(**kwargs, options=dispatch.llep, precision=mega_moe_precision(compute))
     return MegaMoEExpertCompute(**kwargs, precision=mega_moe_precision(compute))
+
+
+def seed_expert_rounding(config: ModelConfig, step: int) -> None:
+    """Seed the NVFP4 experts' stochastic rounding for ``step``: its backward then quantizes the same way on every
+    replay, so a step is reproducible."""
+    if isinstance(config.moe.compute, NVFP4MoEComputeConfig) and not config.moe.compute.selects_none:
+        import prime_kernels
+
+        prime_kernels.load("nvfp4_moe").stochastic.set_seed(step)
 
 
 def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:
@@ -152,6 +177,10 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
         if is_mega_moe:
             selected_compute.validate_top_k(moe.router.top_k)
         compute = selected_compute if moe in selected_moes else remainder_compute
+        if getattr(compute, "encode_tokens", None) is not None and moe.score_before_experts:
+            raise ValueError(
+                "NVFP4 experts dispatch quantized tokens, which needs `score_before_experts=False` on the MoE layer."
+            )
         moe.experts.set_compute(compute)
         if ep_mesh is None:
             token_dispatcher = LocalTokenDispatcher(

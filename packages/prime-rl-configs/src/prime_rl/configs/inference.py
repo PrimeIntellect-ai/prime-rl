@@ -438,6 +438,73 @@ InferenceDeploymentConfig: TypeAlias = Annotated[
 ]
 
 
+NVFP4_4OVER6_ENV = "FLASHINFER_NVFP4_4OVER6"
+"""FlashInfer's switch for adaptive 4/6 block scaling in its NVFP4 quantizer. vLLM quantizes only activations with
+FlashInfer (expert weights go through its own kernel at load), so this matches the trainer's 4/6 on activations."""
+
+NVFP4_IEEE_DIVISION_ENV = "FLASHINFER_DISABLE_FP4_QUANT_FAST_MATH"
+"""FlashInfer's switch for IEEE division in its FP4 quantizers, the trainer's only division."""
+
+
+NVFP4_DENSE_IGNORE = [
+    r"re:.*shared_experts?\.",
+    r"re:.*shared_expert_gate$",
+    r"re:.*mlp\.gate$",
+    r"re:.*lm_head$",
+    r"re:.*(eh_proj|weights_proj|in_proj_a|in_proj_b)$",
+]
+"""vLLM modules left BF16 when dense layers run in MXFP8 beside NVFP4 experts: shared experts, the router and the
+modules the trainer's dense quantization skips by default."""
+
+
+class MoENVFP4Config(BaseConfig):
+    """Routed experts in NVFP4 on the engines: vLLM quantizes them online from the BF16 weights it loads, with
+    per-token activation scales (``nvfp4_per_token``), on every weight update. Needs SM100/SM103 (B200, GB200, B300).
+    ``rl`` sets it from the trainer's ``model.moe.compute`` when that is ``nvfp4``."""
+
+    apply_to: str | list[Annotated[int, Field(ge=0, strict=True)]] = "all"
+    """MoE layers whose experts run in NVFP4, as the trainer's ``moe.compute.apply_to``: ``"all"``, a percentage
+    of the first MoE layers, or model layer indices."""
+
+    remainder: Literal["bf16", "mxfp8"] = "bf16"
+    """The other MoE layers' experts, as the trainer's ``moe.compute.remainder``."""
+
+    linear: Literal["mxfp8"] | None = None
+    """Dense linear layers in MXFP8 (``rl`` sets it when the trainer's ``model.quantization`` is ``mxfp8``); shared
+    experts, the router and the LM head stay BF16. Needs ``apply_to = "all"``. None keeps dense layers BF16."""
+
+    def resolve_layers(self, moe_layers: list[int]) -> list[int]:
+        """The NVFP4 layers among the model's MoE layers ``moe_layers``."""
+        if isinstance(self.apply_to, list):
+            return sorted(self.apply_to)
+        fraction = 100.0 if self.apply_to == "all" else float(self.apply_to.removesuffix("%"))
+        return moe_layers[: int(len(moe_layers) * fraction / 100)]
+
+    def quantization_args(self, moe_layers: list[int] | None) -> dict[str, Any]:
+        """vLLM's ``quantization`` (and ``quantization_config``) for these experts: the ``nvfp4_per_token`` shorthand
+        covers every MoE layer; a subset (and an MXFP8 remainder) goes through ``online`` targets matched on vLLM's
+        expert module names. ``moe_layers``: the model's MoE layer indices, needed for a percentage or a remainder.
+        Targets exclude vLLM's ``linear``/``moe`` settings, so MXFP8 dense layers put every MoE layer in NVFP4."""
+        if self.linear is not None:
+            config = {"linear": self.linear, "moe": "nvfp4_per_token", "ignore": NVFP4_DENSE_IGNORE}
+            return {"quantization": "online", "quantization_config": config}
+        if self.apply_to == "all":
+            return {"quantization": "nvfp4_per_token"}
+        if moe_layers is None and (not isinstance(self.apply_to, list) or self.remainder != "bf16"):
+            raise ValueError("NVFP4 on a subset of layers needs the model's MoE layers")
+        layers = self.resolve_layers(moe_layers or [])
+        targets = {_experts_pattern(layers): "nvfp4_per_token"} if layers else {}
+        tail = [index for index in moe_layers or [] if index not in layers]
+        if self.remainder != "bf16" and tail:
+            targets[_experts_pattern(tail)] = self.remainder
+        return {"quantization": "online", "quantization_config": {"targets": targets}} if targets else {}
+
+
+def _experts_pattern(layers: list[int]) -> str:
+    """vLLM's routed-experts modules of ``layers``."""
+    return r"re:(.*\.)?layers\.(" + "|".join(str(index) for index in layers) + r")\.mlp\.experts$"
+
+
 class InferenceConfig(BaseConfig):
     server: ServerConfig = ServerConfig()
 
@@ -455,6 +522,10 @@ class InferenceConfig(BaseConfig):
 
     env_vars: EnvVars = {}
     """Extra environment variables for the inference server process(es). Merged on top of the launcher defaults."""
+
+    moe_nvfp4: MoENVFP4Config | None = None
+    """Run routed experts in NVFP4 (Blackwell). ``rl`` sets it to match the trainer's ``moe.compute.type = "nvfp4"``;
+    leave ``vllm.quantization`` unset alongside it."""
 
     use_deep_gemm: bool = False
     """Enable vLLM DeepGEMM FP8 kernels ``VLLM_USE_DEEP_GEMM=1``. Only works with block-wise FP8 quantization (e.g. GLM-5-FP8)."""
@@ -651,6 +722,50 @@ class InferenceConfig(BaseConfig):
         {"chat_template", "tool_call_parser", "reasoning_parser", "lora_target_modules", "quantization", "rope_scaling"}
     )
 
+    @model_validator(mode="after")
+    def validate_moe_nvfp4(self):
+        """NVFP4 experts set vLLM's quantization themselves, and turn on FlashInfer's 4/6 recipe to match."""
+        if self.moe_nvfp4 is None:
+            return self
+        if self.vllm.quantization is not None:
+            raise ValueError(
+                f"moe_nvfp4 sets vLLM's quantization itself; unset vllm.quantization ({self.vllm.quantization})."
+            )
+        if self.moe_nvfp4.linear is not None and self.moe_nvfp4.apply_to != "all":
+            raise ValueError("moe_nvfp4.linear needs apply_to = 'all': vLLM cannot combine it with per-layer targets.")
+        self.add_nvfp4_env()
+        return self
+
+    def add_nvfp4_env(self) -> None:
+        """FlashInfer's IEEE division and 4/6 for ``moe_nvfp4``, under any value the user set."""
+        self.env_vars = {NVFP4_IEEE_DIVISION_ENV: "1", NVFP4_4OVER6_ENV: "1", **self.env_vars}
+
+    def moe_layers(self) -> list[int] | None:
+        """The served model's MoE decoder layer indices, from its HF config (local cache or Hub), by the usual
+        dense-layer fields (``first_k_dense_replace``, ``moe_layer_freq``, ``decoder_sparse_step``,
+        ``mlp_only_layers``, ``interleave_moe_layer_step``). None if unreadable."""
+        try:
+            from transformers import AutoConfig
+
+            config = AutoConfig.from_pretrained(
+                self.vllm.model, trust_remote_code=bool(getattr(self.vllm, "trust_remote_code", False))
+            )
+        except Exception:
+            return None
+        config = getattr(config, "text_config", None) or config
+        num_layers = getattr(config, "num_hidden_layers", None)
+        if num_layers is None:
+            return None
+        first_dense = getattr(config, "first_k_dense_replace", None) or 0
+        freq = getattr(config, "moe_layer_freq", None) or 1
+        step = getattr(config, "decoder_sparse_step", None) or getattr(config, "interleave_moe_layer_step", None) or 1
+        dense = set(getattr(config, "mlp_only_layers", None) or [])
+        return [
+            index
+            for index in range(num_layers)
+            if index >= first_dense and index % freq == 0 and (index + 1) % step == 0 and index not in dense
+        ]
+
     def to_namespace(self) -> Namespace:
         """Dump the server + vllm sections into a vLLM-compatible Namespace."""
         namespace = Namespace(
@@ -707,6 +822,14 @@ class InferenceConfig(BaseConfig):
         # an adapter named like a served base model, so serve the base under another name.
         if self.vllm.enable_lora and "served_model_name" not in extra_fields:
             namespace.served_model_name = [f"{self.vllm.model}-base"]
+
+        if self.moe_nvfp4 is not None:
+            # A percentage or a remainder needs the model's MoE layers; explicit indices alone name the layers
+            nvfp4 = self.moe_nvfp4
+            explicit = isinstance(nvfp4.apply_to, list) and nvfp4.remainder == "bf16"
+            moe_layers = None if nvfp4.apply_to == "all" or nvfp4.linear is not None or explicit else self.moe_layers()
+            for key, value in nvfp4.quantization_args(moe_layers).items():
+                setattr(namespace, key, value)
 
         kv_transfer_config = self.build_kv_transfer_config()
         if kv_transfer_config is not None:
