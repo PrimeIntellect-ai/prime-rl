@@ -1,5 +1,6 @@
 import asyncio
 import socket
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -91,6 +92,7 @@ def test_step_is_sent_only_after_every_trainer_rank_requests_it(
 ):
     sender, receivers, _ = setup_transport(tmp_path)
 
+    started = time.time()
     result = asyncio.run(_send_while_ranks_request(sender, receivers))
 
     sent_before_last_request, received = result
@@ -99,6 +101,9 @@ def test_step_is_sent_only_after_every_trainer_rank_requests_it(
     assert [[np.frombuffer(mb.input_ids, np.int32).tolist() for mb in batches] for batches in received] == [
         [mb.input_ids.tolist() for mb in MICRO_BATCH_GRID[data_rank]] for data_rank in RANK_TO_DATA_RANK
     ]
+    # The sender knows when the last rank asked: the trainer was busy until then (file mtimes are coarse)
+    assert sender.last_requested_at is not None
+    assert started + 0.4 <= sender.last_requested_at <= time.time() + 1
     for transport in [sender, *receivers]:
         transport.close()
 
