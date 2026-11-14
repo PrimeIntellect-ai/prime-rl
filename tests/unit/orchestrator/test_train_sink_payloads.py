@@ -35,7 +35,7 @@ def payload_sink(*, constant=True, batch_size=100) -> TrainSink:
         config=SimpleNamespace(group_size=1),
         sampling_at=lambda step: SimpleNamespace(temperature=1.0),
         requires_sampling_masks=False,
-        requires_top_logprobs=False,
+        requires_sampler_logprobs=False,
         algorithm=Algorithm(GRPOAlgoConfig(), None),
     )
     return TrainSink(

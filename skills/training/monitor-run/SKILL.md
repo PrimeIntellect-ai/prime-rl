@@ -177,7 +177,8 @@ curl -s http://localhost:8100/metrics | grep -E "num_requests|gpu_cache_usage"  
 {run_dir}/monitors/file/traces/stream/00000.jsonl.zst              # every episode, appended as it arrives: sealed chunks ...
 {run_dir}/monitors/file/traces/stream/00001.jsonl                  # ... and the live one, plain text
 {run_dir}/monitors/file/traces/stream.index.jsonl                  # one compact row per episode, with its chunk and byte offset
-{run_dir}/monitors/file/traces/annotations/{producer}/00000.jsonl  # trace updates: orch ship-time facts, trainer per-token streams
+{run_dir}/monitors/file/traces/annotations/{producer}/00000.jsonl  # trace updates: orch ship-time facts, refs to per-token streams
+{run_dir}/monitors/file/traces/annotations/{producer}/00000.bin    # the per-token streams' float32 values, at {bin, offset, count}
 {run_dir}/monitors/file/traces/annotations/{producer}.index.jsonl  # each update's scalars and where its record sits
 ```
 
