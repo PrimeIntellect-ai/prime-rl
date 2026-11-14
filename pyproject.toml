@@ -166,6 +166,9 @@ override-dependencies = [
     # unbatched send/recv to several peers on a group created without device_id (pytorch#201536).
     "nvidia-nccl-cu13==2.32.3 ; sys_platform == 'linux'",
     "openenv-core",
+    # enterprise-ops-gym and mcp-atlas cap datasets<5, which holds huggingface-hub,
+    # filelock and fsspec at versions with known vulnerabilities.
+    "datasets>=5.0.1",
 ]
 
 # prime-envs packages are auto-discovered as workspace members, so new
