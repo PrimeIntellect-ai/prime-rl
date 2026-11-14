@@ -137,3 +137,24 @@ def test_fused_lm_head_cross_entropy_kernel_matches_eager_math(monkeypatch, voca
     # In bf16 the weight gradient adds up chunk by chunk in bf16, where one rounding difference can grow to a few ulps
     grad_tolerance = {"atol": 1e-4, "rtol": 1.6e-2} if dtype == torch.bfloat16 else {}
     torch.testing.assert_close(fused[2:], eager[2:], **grad_tolerance)
+
+
+@pytest.mark.parametrize("path", ["chunked_fallback", "vanilla"])
+def test_cross_entropy_and_label_gradient_survive_softmax_collapse(path, monkeypatch):
+    logits = 15.0 - torch.rand(64, generator=torch.Generator().manual_seed(0))
+    logits[0] = 40.0
+    rest = (logits.double()[1:] - logits.double()[0]).exp()
+    expected_loss = torch.log1p(rest.sum())
+    expected_grad = torch.cat([-rest.sum().view(1), rest]) / (1 + rest.sum())
+    labels = torch.zeros(1, dtype=torch.long)
+    if path == "chunked_fallback":
+        monkeypatch.setattr(lm_head_module, "_quack_cross_entropy_supported", lambda _: False)
+        loss = torch.empty(1)
+        grad = lm_head_module._cross_entropy(logits.view(1, -1).clone(), labels, loss, with_grad=True).view(-1)
+    else:
+        leaf = logits.clone().requires_grad_(True)
+        loss = lm_head_module.cross_entropy_sum(leaf.view(1, 1, -1), labels.view(1, 1))
+        loss.backward()
+        grad = leaf.grad
+    torch.testing.assert_close(loss.double().view(()), expected_loss, rtol=1e-5, atol=0)
+    torch.testing.assert_close(grad.double(), expected_grad, rtol=1e-5, atol=0)
