@@ -7,9 +7,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import final
 
+import torch
 import torch.nn as nn
 
 from prime_rl.configs.shared import WeightBroadcastConfig
+from prime_rl.inference.vllm.eplb import EXPERT_LOAD_FILE
 from prime_rl.orchestrator.clients import AdminPlane
 from prime_rl.trainer.world import get_world, wait_for_master
 from prime_rl.utils.logger import get_logger
@@ -77,8 +79,9 @@ class WeightSender(ABC):
         self.timeout = timeout
 
     @final
-    def broadcast(self, model: nn.Module, step: int) -> None:
-        """Broadcast policy v{step} to the inference pool."""
+    def broadcast(self, model: nn.Module, step: int, expert_load: torch.Tensor | None = None) -> None:
+        """Broadcast policy v{step} to the inference pool. ``expert_load`` (``[moe_layers, experts]`` token counts,
+        the same on every rank) rides along in the step dir, written before the version is offered."""
         start_time = time.perf_counter()
         step_dir = self.step_dir(step)
         if self.world.is_master:
@@ -86,6 +89,8 @@ class WeightSender(ABC):
             # the consumer or the trainer on stale markers of a previous run.
             shutil.rmtree(step_dir, ignore_errors=True)
             step_dir.mkdir(parents=True)
+            if expert_load is not None:
+                torch.save(expert_load.cpu(), step_dir / EXPERT_LOAD_FILE)
             (step_dir / SENDER_READY_MARKER).touch()
             self._wait_for_receiver_ready(step_dir)
             (step_dir / STARTED_MARKER).touch()

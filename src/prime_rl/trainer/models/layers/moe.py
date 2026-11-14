@@ -49,6 +49,18 @@ def _record_moe_routing_statistics_fake(
     return None
 
 
+@torch.library.custom_op("prime_rl::record_moe_engine_load", mutates_args=("engine_load",))
+def record_moe_engine_load(engine_load: torch.Tensor, selected_experts: torch.Tensor, weights: torch.Tensor) -> None:
+    """Add each token's ``weights`` (``[tokens]``) to every expert it was routed to (``[tokens, top_k]``)."""
+    weights = weights.reshape(-1, 1).expand_as(selected_experts).to(engine_load.dtype)
+    engine_load.index_add_(0, selected_experts.reshape(-1), weights.reshape(-1))
+
+
+@record_moe_engine_load.register_fake
+def _record_moe_engine_load_fake(engine_load: torch.Tensor, selected_experts: torch.Tensor, weights: torch.Tensor):
+    return None
+
+
 @dataclass
 class MoEArgs:
     num_experts: int = 8
@@ -339,6 +351,9 @@ class MoE(nn.Module):
             persistent=False,
         )
         self.register_buffer("routing_confidence_sum", torch.tensor(0.0, dtype=torch.float32), persistent=False)
+        # Expert counts weighted by how often the engines computed each token (``engine_weights``), for EPLB
+        self.register_buffer("engine_load", torch.zeros(experts.num_experts, dtype=torch.float32), persistent=False)
+        self.engine_weights: torch.Tensor | None = None
 
     def set_token_dispatcher(self, token_dispatcher: TokenDispatcher) -> None:
         self.token_dispatcher = token_dispatcher
@@ -388,6 +403,8 @@ class MoE(nn.Module):
                 num_tokens_per_expert,
                 routing_confidence_sum,
             )
+            if self.engine_weights is not None:
+                record_moe_engine_load(self.engine_load, selected_experts_indices, self.engine_weights)
 
         routed_output = self.token_dispatcher.run(
             self.prepare_expert_input(x),
@@ -421,5 +438,6 @@ class MoE(nn.Module):
         with torch.device(buffer_device):
             self.tokens_per_expert = torch.zeros(self.experts.num_experts, dtype=torch.float32)
             self.routing_confidence_sum = torch.tensor(0.0, dtype=torch.float32)
+            self.engine_load = torch.zeros(self.experts.num_experts, dtype=torch.float32)
             if self.router.selection_bias is not None:
                 self.router.selection_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)

@@ -74,6 +74,8 @@ class TensorMicroBatch(TypedDict):
 
     # Per-token staleness, -1 on tokens the policy did not sample
     staleness: Int[Tensor, "batch seq"] | None
+    # Per token, how many model calls computed it on the engines (EPLB's expert counts); absent counts each once
+    engine_weights: NotRequired[Float[Tensor, "batch seq"] | None]
 
 
 class FakeDataLoader:
@@ -345,6 +347,7 @@ class DataLoader:
             ce_weights=stream("ce_weights", np.float32),
             ref_kl_weights=stream("ref_kl_weights", np.float32),
             staleness=stream("staleness", np.int16),
+            engine_weights=stream("engine_weights", np.float32),
         )
 
 

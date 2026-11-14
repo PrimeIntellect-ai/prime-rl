@@ -523,8 +523,18 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_eplb(self):
+        if (
+            self.inference is not None
+            and self.inference.vllm.enable_eplb
+            and self.trainer.weight_broadcast.type not in ("nccl", "filesystem", "nixl")
+        ):
+            raise ValueError(
+                "inference.vllm.enable_eplb needs NCCL, filesystem or NIXL weight updates: they load each expert into "
+                "the slots EPLB currently gives it. ModelExpress replays a load plan traced before any rearrangement."
+            )
         if self.inference is not None and self.inference.vllm.enable_eplb:
-            raise ValueError("inference.vllm.enable_eplb is not supported with RL weight updates.")
+            # The trainer publishes the expert counts each placement is computed from
+            self.trainer.weight_broadcast.expert_load_interval = self.inference.vllm.eplb.rebalance_interval
         return self
 
     @model_validator(mode="after")

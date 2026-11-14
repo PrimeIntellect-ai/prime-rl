@@ -27,4 +27,11 @@ class FileSystemWeightUpdateWorker(WeightRPCMixin, Worker):
         """Update weights from a specified path in shared filesystem containing a HF-compatible checkpoint."""
         model = get_weight_model(self.model_runner, "model")
         weights = checkpoint_weights(model, weight_path, self.load_config)
-        load_weights_checkpoint_layerwise(model, weights, self.model_runner.model_config, self.vllm_config)
+        load_weights_checkpoint_layerwise(
+            model,
+            weights,
+            self.model_runner.model_config,
+            self.vllm_config,
+            eplb_state=self.model_runner.eplb_state,
+            weight_dir=weight_path,
+        )
