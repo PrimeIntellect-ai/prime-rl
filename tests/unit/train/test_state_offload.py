@@ -8,6 +8,7 @@ from torch.distributed.checkpoint import save as dcp_save
 from torch.optim import Optimizer
 
 from prime_rl.trainer.ckpt import AppState
+from prime_rl.trainer.optim import state_offload
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 
 pytestmark = [pytest.mark.gpu]
@@ -68,7 +69,9 @@ def state_data_ptrs(optimizer: CPUOffloadOptimizer) -> dict[tuple[int, str], int
 
 
 @pytest.fixture
-def trained_pair() -> TrainedPair:
+def trained_pair(monkeypatch: pytest.MonkeyPatch) -> TrainedPair:
+    # Every parameter gets a chunk of its own, so the tests cross chunk boundaries and reuse both staging slots.
+    monkeypatch.setattr(state_offload, "CHUNK_BYTES", 0)
     reference_model = make_model(0)
     reference_optimizer = torch.optim.AdamW(reference_model.parameters(), lr=1e-2)
     run_steps(reference_model, reference_optimizer, num_steps=3, seed=1)

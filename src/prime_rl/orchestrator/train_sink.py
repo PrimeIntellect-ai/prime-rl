@@ -10,7 +10,7 @@ observations; only queued traces retain verifier objects. The consumer drains
 from __future__ import annotations
 
 import asyncio
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Iterator
 
 import numpy as np
@@ -157,7 +157,8 @@ class TrainSink(Reconfigurable):
         # Step of the last full staleness sweep — queued traces only age when
         # ``progress.step`` advances, so one full sweep per step suffices.
         self._swept_step = 0
-        self.zero_output_units = 0
+        # Finalized units that shipped no payload since the last shipment, by drop reason.
+        self.zero_output_units: Counter[str] = Counter()
         self.reported_zero_output_windows = 0
 
     def reconfigure(self, update: ConfigUpdate) -> None:
@@ -329,7 +330,7 @@ class TrainSink(Reconfigurable):
         # resume re-runs it.
         if cancellation is not None and cancellation.reason == "shutdown":
             self._record_group(group, failures, cancellation, env_name, admitted=False, cancelled=group)
-            self._record_zero_output(group, [], n_owed)
+            self._record_zero_output(group, [], n_owed, reason="cancelled")
             get_logger().debug(
                 f"Dropped group | env={env_name} task_idx={task_idx} | "
                 f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | "
@@ -344,8 +345,8 @@ class TrainSink(Reconfigurable):
         if not survivors or not admitted:
             self._close([group_id])
             self._record_group(group, failures, cancellation, env_name, admitted=admitted)
-            self._record_zero_output(group, survivors, n_owed)
             reason = "no trainable survivors" if not survivors else "rejected by curriculum"
+            self._record_zero_output(group, survivors, n_owed, reason=reason)
             get_logger().debug(
                 f"Dropped group | env={env_name} task_idx={task_idx} | "
                 f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | reason={reason}"
@@ -383,7 +384,7 @@ class TrainSink(Reconfigurable):
         if not samples_by_trace:
             self._close([group_id])
             self._record_group(group, failures, cancellation, env_name)
-            self._record_zero_output(group, survivors, n_owed)
+            self._record_zero_output(group, survivors, n_owed, reason="zero advantage")
             return
 
         self.pending_batch.update(samples_by_trace)
@@ -404,9 +405,9 @@ class TrainSink(Reconfigurable):
         # instead of resetting it, or a stalled trainer plus a tight bound
         # could void groups forever without ever surfacing the warning.
         if not queued:
-            self._record_zero_output(group, [], n_owed)
+            self._record_zero_output(group, [], n_owed, reason="stale")
             return
-        self.zero_output_units = 0
+        self.zero_output_units.clear()
         self.reported_zero_output_windows = 0
 
     def _record_group(
@@ -467,25 +468,29 @@ class TrainSink(Reconfigurable):
     def _admit(self, group: list[vf.Episode]) -> bool:
         return self.on_result(group) if self.on_result is not None else True
 
-    def _record_zero_output(self, group: list[vf.Episode], survivors: list[vf.Trace], n_owed: int) -> None:
+    def _record_zero_output(
+        self, group: list[vf.Episode], survivors: list[vf.Trace], n_owed: int, *, reason: str
+    ) -> None:
         """``n_owed`` counts the group's full episode budget (arrived +
         cancelled), so dropped groups advance the zero-output tally at the
         same rate as fully-delivered ones."""
         returned_traces = sum(len(episode.traces) for episode in group)
-        self.zero_output_units += len(survivors) or returned_traces or n_owed
+        self.zero_output_units[reason] += len(survivors) or returned_traces or n_owed
         self._warn_zero_output()
 
     def _warn_zero_output(self) -> None:
         """Warn once per batch-equivalent of finalized units that shipped no
         payload, so a run that produces no training signal stays visible in the
         logs without aborting."""
-        windows = self.zero_output_units // self.batch_size
+        units = self.zero_output_units.total()
+        windows = units // self.batch_size
         if windows <= self.reported_zero_output_windows:
             return
         self.reported_zero_output_windows = windows
         get_logger().warning(
-            f"No admitted train payload after {self.zero_output_units} finalized units "
-            f"({windows} zero-output batch equivalents)"
+            f"No admitted train payload after {units} finalized units "
+            f"({windows} zero-output batch equivalents), by drop reason: "
+            + ", ".join(f"{reason}={count}" for reason, count in self.zero_output_units.most_common())
         )
 
     async def process_batch(self) -> TrainBatch:

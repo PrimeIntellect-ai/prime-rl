@@ -25,8 +25,13 @@ def reference_top_p_then_top_k(logits: Tensor, k: Tensor | None, p: Tensor | Non
     return logits.scatter_(dim=-1, index=indices, src=sorted_logits)
 
 
-def apply_top_p_then_top_k(logits: Tensor, k: Tensor | None, p: Tensor | None) -> Tensor:
-    """Full-vocabulary nucleus mass, sorting only bounded candidates."""
+def apply_top_p_then_top_k(
+    logits: Tensor, k: Tensor | None, p: Tensor | None, has_topp_only_rows: bool = True
+) -> Tensor:
+    """Full-vocabulary nucleus mass, sorting only bounded candidates.
+
+    ``has_topp_only_rows`` matches vLLM's signature; it only selects a split kernel there.
+    """
     # For a single row, the full sort is cheaper than bounded-path dispatch.
     if k is None or logits.shape[0] == 1:
         return reference_top_p_then_top_k(logits, k, p)
