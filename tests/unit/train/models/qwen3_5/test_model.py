@@ -2,6 +2,8 @@ from unittest.mock import MagicMock
 
 import pytest
 import torch
+from transformers import Qwen3_5ForCausalLM as HFQwen3_5ForCausalLM
+from transformers import Qwen3_5MoeForCausalLM as HFQwen3_5MoeForCausalLM
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import resolve_auto_attn
@@ -17,6 +19,8 @@ from prime_rl.trainer.models.qwen3_5 import (
 )
 from prime_rl.trainer.vlm import get_vision_encoder
 from prime_rl.utils.cp import CPContext
+from prime_rl.utils.utils import default_dtype
+from tests.unit.train.models.parity import assert_matches_hf
 
 
 def get_text_config(config_cls=Qwen3_5TextConfig) -> Qwen3_5TextConfig:
@@ -179,6 +183,24 @@ def test_forward_backward_and_packing(text_config):
             dim=1,
         )
     torch.testing.assert_close(packed, unpacked, atol=0.03, rtol=0.01)
+
+
+@pytest.mark.gpu
+def test_matches_hf(text_config):
+    torch.manual_seed(0)
+    is_moe = isinstance(text_config, Qwen3_5MoeTextConfig)
+    if is_moe:
+        # Near-tied router scores flip top-k picks between the two bf16 implementations; routing to every expert
+        # keeps the comparison tight while still covering the router, expert and shared-expert weights.
+        text_config.num_experts_per_tok = text_config.num_experts
+    hf_cls = HFQwen3_5MoeForCausalLM if is_moe else HFQwen3_5ForCausalLM
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
+        hf_model = hf_cls._from_config(text_config, attn_implementation="flash_attention_2")
+    prime_model = get_model(text_config)
+    # Official checkpoints store fused MoE experts like the in-memory HF layout, not like HF's save_pretrained.
+    with torch.no_grad():
+        prime_model.load_state_dict(prime_model.convert_to_prime(hf_model.state_dict()))
+    assert_matches_hf(hf_model, prime_model, tol=3e-2)
 
 
 @pytest.mark.gpu

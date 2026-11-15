@@ -3,6 +3,8 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 from transformers import AutoConfig
+from transformers import NemotronHConfig as HFNemotronHConfig
+from transformers import NemotronHForCausalLM as HFNemotronHForCausalLM
 
 from prime_rl.trainer.models import get_custom_causal_lm_cls
 from prime_rl.trainer.models.conversion_ops import view_mapping
@@ -11,6 +13,7 @@ from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCaus
 from prime_rl.trainer.models.nemotron_h.mamba import NemotronHMamba2
 from prime_rl.utils.cp import CPContext
 from prime_rl.utils.utils import default_dtype
+from tests.unit.train.models.parity import assert_matches_hf, hf_checkpoint_state_dict
 
 pytestmark = [pytest.mark.gpu]
 
@@ -55,6 +58,19 @@ def test_nemotron_h_reverse():
     assert prime_model.is_hf_state_dict(converted)
     assert "backbone.layers.1.mixer.experts.0.up_proj.weight" in converted
     assert not any("mlp.experts.up_proj" in name for name in converted)
+
+
+def test_nemotron_h_matches_hf(tmp_path):
+    torch.manual_seed(0)
+    hf_config = HFNemotronHConfig(**_BASE, layers_block_type=["mamba", "moe", "attention", "moe"])
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
+        hf_model = HFNemotronHForCausalLM._from_config(hf_config)
+        prime_model = NemotronHForCausalLM(NemotronHConfig(**_BASE, hybrid_override_pattern="ME*E"))
+    with torch.no_grad():
+        state_dict = hf_checkpoint_state_dict(hf_model, tmp_path)
+        prime_model.load_state_dict(prime_model.convert_to_prime(state_dict))
+    inject_prime_lm_head(prime_model, chunk_size=None)
+    assert_matches_hf(hf_model, prime_model, tol=2e-2)
 
 
 def test_nemotron_h_backward():
