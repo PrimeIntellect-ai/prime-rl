@@ -291,11 +291,9 @@ def test_forward_matches_reference(seq_lens, clip_thresholds):
     torch.testing.assert_close(logits, cap * torch.tanh(hidden_states @ unembed.T / cap))
 
 
-def test_flex_attention_matches_dense(model, monkeypatch):
-    # Uncompiled, so this checks the score and mask logic, not the fused kernel.
-    monkeypatch.setattr(modeling_inkling2, "compiled_flex_attention", lambda: flex_attention)
-    text_model = get_language_model(model)
-    input_ids = torch.randint(0, 150, (1, 150), generator=torch.Generator().manual_seed(2))
+def assert_flex_matches_dense(model, device: str) -> None:
+    text_model = get_language_model(model.to(device))
+    input_ids = torch.randint(0, 150, (1, 150), generator=torch.Generator().manual_seed(2)).to(device)
     seq_lens = torch.tensor([70, 80])
     hidden_states = {}
     for backend in ("dense", "flex"):
@@ -304,6 +302,18 @@ def test_flex_attention_matches_dense(model, monkeypatch):
             hidden_states[backend] = text_model(input_ids=input_ids, seq_lens=seq_lens).last_hidden_state
     # The dense path computes its scores in fp32; a wrong mask or bias would be off by O(1).
     torch.testing.assert_close(hidden_states["flex"], hidden_states["dense"], rtol=1e-3, atol=1e-4)
+
+
+def test_flex_attention_matches_dense(model, monkeypatch):
+    # Uncompiled, so this checks the score and mask logic, not the fused kernel.
+    monkeypatch.setattr(modeling_inkling2, "compiled_flex_attention", lambda: flex_attention)
+    assert_flex_matches_dense(model, "cpu")
+
+
+@pytest.mark.gpu
+def test_compiled_flex_attention_matches_dense(model):
+    # The fused kernel, which packed rows take on CUDA.
+    assert_flex_matches_dense(model, "cuda")
 
 
 def test_softcap_of_zero_is_no_cap():
