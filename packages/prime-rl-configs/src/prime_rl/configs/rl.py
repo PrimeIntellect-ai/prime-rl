@@ -587,12 +587,14 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_score_centering(self):
         loss = self.trainer.loss
-        if loss.type != "icepop" or not loss.score_centering:
+        if loss.type not in ("icepop", "ipo") or not loss.score_centering:
             return self
         if not self.orchestrator.policy_samplings:
             raise ValueError("Score centering requires a policy-sampled training source")
 
         def request_logprobs(sampling: TrainSamplingConfig) -> TrainSamplingConfig:
+            if loss.type == "ipo" and not sampling.truncates_distribution():
+                raise ValueError("IPO score centering requires complete sampling-support replay")
             if sampling.temperature <= 0:
                 raise ValueError("Score centering requires stochastic sampling (temperature > 0)")
             # A replayed support comes back whole with its sampler logprobs, whatever the count

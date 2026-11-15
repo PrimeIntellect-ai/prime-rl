@@ -183,6 +183,16 @@ class IPOLoss:
 
     def loss(self, inputs: LossInputs) -> LossOutputs:
         loss_config = self.config
+        if loss_config.score_centering:
+            return IcePopLoss(
+                IcePopLossConfig(
+                    ratio_low=loss_config.ratio_low,
+                    ratio_high=loss_config.ratio_high,
+                    adv_tau=loss_config.adv_tau,
+                    score_centering=True,
+                ),
+                max_probability_difference=loss_config.eps,
+            ).loss(inputs)
         trainer_logprobs = inputs.trainer_logprobs[inputs.loss_mask]
         inference_logprobs = inputs.inference_logprobs[inputs.loss_mask]
         advantages = inputs.advantages[inputs.loss_mask]
@@ -221,8 +231,9 @@ class IcePopLoss:
     """IcePop loss type: policy gradient with a fixed importance-ratio
     acceptance band."""
 
-    def __init__(self, config: IcePopLossConfig):
+    def __init__(self, config: IcePopLossConfig, *, max_probability_difference: float | None = None):
         self.config = config
+        self.max_probability_difference = max_probability_difference
 
     def loss(self, inputs: LossInputs) -> LossOutputs:
         loss_config = self.config
@@ -234,6 +245,13 @@ class IcePopLoss:
         log_ratio_high = log_importance_ratio.new_tensor(loss_config.ratio_high).log()
         detached_log_ratio = log_importance_ratio.detach()
         is_masked = (detached_log_ratio < log_ratio_low) | (detached_log_ratio > log_ratio_high)
+        if self.max_probability_difference is not None:
+            replayed = inputs.support_replayed
+            if replayed is None or not bool(replayed[inputs.loss_mask].all()):
+                raise ValueError("IPO score centering requires complete sampling-support replay for every loss token")
+            p = inputs.trainer_logprobs[inputs.loss_mask].detach().exp()
+            q = inputs.inference_logprobs[inputs.loss_mask].detach().exp()
+            is_masked = is_masked | ((p - q).abs() > self.max_probability_difference)
         keep_mask = ~is_masked
 
         importance_ratio = torch.exp(log_importance_ratio[keep_mask])
@@ -261,6 +279,8 @@ class IcePopLoss:
                 p_head, q_head = row_sum(p), row_sum(sampler.exp())
                 head_log_ratio = head - sampler
                 accepted = (head_log_ratio >= log_ratio_low) & (head_log_ratio <= log_ratio_high)
+                if self.max_probability_difference is not None:
+                    accepted = accepted & ((p - sampler.exp()).abs() <= self.max_probability_difference)
                 # q * (p/q) * mask = p * mask, without unstable exponentiation.
                 mass = p * accepted
                 rho = (1.0 - q_head).clamp_min(1e-6) / (1.0 - p_head).clamp_min(1e-6)

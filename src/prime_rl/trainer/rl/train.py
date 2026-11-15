@@ -443,7 +443,7 @@ def train(config: TrainerConfig):
         routing_stats = []
         step_local_num_tokens = 0
         step_local_flops = 0
-        score_centering = config.loss.type == "icepop" and config.loss.score_centering
+        score_centering = config.loss.type in ("icepop", "ipo") and config.loss.score_centering
         score_centering_errors = []
         for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
             step_local_num_tokens += micro_batch["input_ids"].shape[1]

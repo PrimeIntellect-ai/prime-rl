@@ -468,6 +468,9 @@ class InferenceConfig(BaseConfig):
     use_pd_kv_transfer: bool = False
     """Auto-set for disaggregated P/D: emit the NIXL transfer connector. Persisted into the per-node config (which drops ``deployment``) so the connector is still built per worker. Not meant to be set by hand."""
 
+    top_p_before_top_k: bool = False
+    """Apply the full-vocabulary nucleus before the top-k cap on the V2 sampler."""
+
     enable_return_sampling_mask: bool = False
     """Return per-token sampling masks (``sampling_mask``) on ``/inference/v1/generate`` responses via vLLM's native ``--return-sampling-mask`` (>= 0.28). The ``rl`` entrypoint enables this field for truncated policy sampling and for recorded sampler logprobs (``sampling.logprobs``, set by score centering), which are captured next to the mask. Standalone inference must set it explicitly because no orchestrator sampling config is available. The field persists into per-node configs and selects the V2 model runner before vLLM starts. Requests opt in with ``extra_args.prl_replay = true``; only these requests require positive temperature. Their supports are captured whole, so top-p alone needs no top-k. Evaluation requests need not opt in. Under speculative decoding each accepted position carries its own support, and sampler logprobs need truncated (replayed) sampling."""
 

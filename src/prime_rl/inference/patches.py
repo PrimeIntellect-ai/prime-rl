@@ -38,6 +38,10 @@ def apply_shared_vllm_patches():
     from prime_rl.inference.vllm.request_replay import patch_request_replay
 
     patch_request_replay()
+    if os.environ.get("PRIME_TOP_P_BEFORE_TOP_K") == "1":
+        from prime_rl.inference.vllm.sampling_order import patch_top_p_then_top_k
+
+        patch_top_p_then_top_k()
     monkey_patch_block_outermost_mla_stride()
     monkey_patch_fit_sliding_window_pages()
     monkey_patch_flashinfer_fp8_ds_mla_draft()
