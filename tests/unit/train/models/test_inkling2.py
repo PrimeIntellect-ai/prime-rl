@@ -6,10 +6,11 @@ from torch.nn.attention.flex_attention import flex_attention
 
 from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL, supports_custom_impl
 from prime_rl.trainer.models.inkling2 import Inkling2Config, Inkling2TextConfig, modeling_inkling2
+from prime_rl.trainer.models.layers.activations import SoftcappedSwiglu
 from prime_rl.trainer.vlm import get_language_model, get_layer_prefix
 
-# Layers 2 and 5 attend globally, blocks span 3 layers. The clip thresholds are sized for 16-dim heads: most
-# vectors are clipped, and scores stay O(1) so the softmax does not amplify rounding differences.
+# Layers 2 and 5 attend globally, blocks span 3 layers. The clip thresholds are sized for 16-dim heads: every
+# vector is clipped, and scores stay O(1) so the softmax does not amplify rounding differences.
 TEXT_CONFIG = dict(
     vocab_size=160,
     unpadded_vocab_size=150,
@@ -56,9 +57,9 @@ class ExactExpertCompute:
         return torch.cat(outputs)
 
 
-@pytest.fixture
-def model():
-    model = AutoModelForCausalLMPrimeRL.from_config(Inkling2Config(text_config=TEXT_CONFIG), dtype=torch.float64)
+def build_model(**text_overrides):
+    config = Inkling2Config(text_config=TEXT_CONFIG | text_overrides)
+    model = AutoModelForCausalLMPrimeRL.from_config(config, dtype=torch.float64)
     generator = torch.Generator().manual_seed(0)
     with torch.no_grad():
         for name, tensor in model.state_dict().items():
@@ -72,6 +73,11 @@ def model():
     for layer in get_language_model(model).layers:
         layer.mlp.experts.set_compute(ExactExpertCompute())
     return model.eval()
+
+
+@pytest.fixture
+def model():
+    return build_model()
 
 
 def rms_norm(x: torch.Tensor, weight: torch.Tensor | None = None) -> torch.Tensor:
@@ -257,8 +263,15 @@ def test_quantized_experts_are_rejected(model):
         model.convert_to_prime(checkpoint)
 
 
+# A clipped key or value forgets the scale of its short convolution, and a clip that always binds never
+# takes its pass-through branch: also run with clips that bind for some vectors, and for none.
+@pytest.mark.parametrize(
+    "clip_thresholds", [(2.0, 1.0), (8.0, 4.0), (1e3, 1e3)], ids=["all_clipped", "some_clipped", "none_clipped"]
+)
 @pytest.mark.parametrize("seq_lens", [[19], [9, 1, 3, 12]], ids=["one_document", "packed_documents"])
-def test_forward_matches_reference(model, seq_lens):
+def test_forward_matches_reference(seq_lens, clip_thresholds):
+    qk_threshold, rel_threshold = clip_thresholds
+    model = build_model(qk_l2_clip_threshold=qk_threshold, rel_l2_clip_threshold=rel_threshold)
     text_config = model.config.text_config
     input_ids = torch.randint(0, 150, (1, sum(seq_lens)), generator=torch.Generator().manual_seed(1))
     with torch.no_grad():
@@ -289,4 +302,30 @@ def test_flex_attention_matches_dense(model, monkeypatch):
         text_model.attention_backend = backend
         with torch.no_grad():
             hidden_states[backend] = text_model(input_ids=input_ids, seq_lens=seq_lens).last_hidden_state
-    torch.testing.assert_close(hidden_states["flex"], hidden_states["dense"], rtol=1e-4, atol=1e-5)
+    # The dense path computes its scores in fp32; a wrong mask or bias would be off by O(1).
+    torch.testing.assert_close(hidden_states["flex"], hidden_states["dense"], rtol=1e-3, atol=1e-4)
+
+
+def test_softcap_of_zero_is_no_cap():
+    # The serving kernels read a cap of 0 as "no cap"; dividing by it would give zeros and NaN.
+    gate = torch.tensor([-2.0, 0.0, 0.5, 3.0])
+    up = torch.tensor([1.0, -1.0, 0.0, 2.0])
+    swiglu = gate * torch.sigmoid(gate) * up
+    torch.testing.assert_close(SoftcappedSwiglu(0.0, 0.0).apply(gate, up), swiglu)
+    torch.testing.assert_close(
+        SoftcappedSwiglu(4.0, 0.0).apply(gate, up), 4 * torch.tanh(gate / 4) * torch.sigmoid(gate) * up
+    )
+
+
+def test_init_buffers_post_meta_zeroes_checkpoint_buffers(model):
+    # A model initialized from scratch never loads them, and they are exported with the checkpoint.
+    text_model = get_language_model(model)
+    selection_biases = [layer.mlp.router.selection_bias for layer in text_model.layers]
+    with torch.no_grad():
+        for buffer in (text_model.unembed_padding, *selection_biases):
+            buffer.fill_(7.0)
+
+    model.init_buffers_post_meta()
+
+    for buffer in (text_model.unembed_padding, *selection_biases):
+        assert buffer.count_nonzero() == 0

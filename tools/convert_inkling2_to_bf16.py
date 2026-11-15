@@ -2,8 +2,12 @@
 
 The releases store the routed experts, ``model.llm.layers.N.mlp.experts.{w13,w2}_weight``, in NVFP4 or
 MXFP8, chosen per tensor; every other tensor is plain bf16 or fp32. The trainer reads bf16 experts, so this
-writes the same checkpoint with every expert weight dequantized, its scale tensors dropped, and the
-quantization metadata removed.
+writes the same checkpoint with every expert weight dequantized and its scale tensors dropped.
+
+``hf_quant_config.json`` (the release's per-tensor precision metadata) is rewritten to list the experts as
+bf16: vLLM builds a layer's experts from it, and serves bf16 experts on GPUs without the Blackwell kernels
+of the quantized ones. ``quantization_config`` is dropped from ``config.json``, where it would take
+precedence over that file.
 
 NVFP4 (uint8 weight): two E2M1 codes per byte along the input dim, low nibble first. Bit 3 of a code is the
 sign and bits 0-2 index (0, 0.5, 1, 1.5, 2, 3, 4, 6). Every 16 inputs share an E4M3 scale (``<name>_scale``)
@@ -31,7 +35,8 @@ E2M1_MAGNITUDES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
 NVFP4_BLOCK = 16
 MXFP8_BLOCK = 32
 SCALE_SUFFIXES = ("_scale", "_amax", "_outer_scale_denominator")
-QUANTIZATION_FILES = ("hf_quant_config.json",)
+PRECISION_METADATA = "hf_quant_config.json"
+QUANTIZED_COMPUTE_DTYPES = ("nvfp4", "mxfp8")
 # Experts dequantized at a time: bounds the fp32 intermediate to a few GB.
 EXPERT_CHUNK = 16
 
@@ -64,6 +69,28 @@ def is_expert_scale(name: str) -> bool:
 
 def is_quantized(tensor: torch.Tensor) -> bool:
     return tensor.dtype in (torch.uint8, torch.float8_e4m3fn)
+
+
+def list_experts_as_bf16(precision_metadata: dict) -> dict:
+    """``hf_quant_config.json`` with the tensors of its NVFP4 / MXFP8 groups moved to one bf16 group."""
+    groups = []
+    experts: list[str] = []
+    for group in precision_metadata["model"]["parameter_groups"]:
+        if group["compute_dtype"] in QUANTIZED_COMPUTE_DTYPES:
+            experts.extend(group["tensors"])
+        else:
+            groups.append(group)
+    groups.append(
+        {
+            "compute_dtype": "bfloat16",
+            "output_dtype": "bfloat16",
+            "required_activation_quantization": None,
+            "tensors": sorted(experts),
+            "weight_block_shape": [],
+            "weight_transform": "cast",
+        }
+    )
+    return {**precision_metadata, "model": {**precision_metadata["model"], "parameter_groups": groups}}
 
 
 def main() -> None:
@@ -136,7 +163,10 @@ def main() -> None:
     config.pop("quantization_config", None)
     (output_dir / "config.json").write_text(json.dumps(config, indent=2) + "\n")
 
-    converted = {"model.safetensors.index.json", "config.json", *QUANTIZATION_FILES, *tensor_to_shard.values()}
+    precision_metadata = json.loads((input_dir / PRECISION_METADATA).read_text())
+    (output_dir / PRECISION_METADATA).write_text(json.dumps(list_experts_as_bf16(precision_metadata), indent=2) + "\n")
+
+    converted = {"model.safetensors.index.json", "config.json", PRECISION_METADATA, *tensor_to_shard.values()}
     for path in input_dir.iterdir():
         # Everything else is copied as is, the speculator's `mtp.safetensors` included.
         if path.is_file() and path.name not in converted:

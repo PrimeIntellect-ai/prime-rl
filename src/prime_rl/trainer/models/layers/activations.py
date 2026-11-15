@@ -32,18 +32,22 @@ class ClampedSilu(Activation):
 
 
 class SoftcappedSwiglu(Activation):
-    """SwiGLU whose gate and up branches are soft-capped by `cap * tanh(x / cap)` (Inkling 2). The sigmoid
-    reads the uncapped gate. Computed in fp32 and rounded once."""
+    """SwiGLU whose gate and up branches are soft-capped by `cap * tanh(x / cap)` (Inkling 2); a cap of 0
+    is no cap. The sigmoid reads the uncapped gate. Computed in fp32 and rounded once."""
 
     def __init__(self, gate_cap: float, up_cap: float) -> None:
         self.gate_cap = gate_cap
         self.up_cap = up_cap
 
+    @staticmethod
+    def softcap(x: torch.Tensor, cap: float) -> torch.Tensor:
+        return cap * torch.tanh(x / cap) if cap > 0 else x
+
     def apply(self, gate: torch.Tensor | None, up: torch.Tensor) -> torch.Tensor:
         assert gate is not None
         gate_fp32, up_fp32 = gate.float(), up.float()
-        hidden = self.gate_cap * torch.tanh(gate_fp32 / self.gate_cap) * torch.sigmoid(gate_fp32)
-        return (hidden * (self.up_cap * torch.tanh(up_fp32 / self.up_cap))).to(up.dtype)
+        hidden = self.softcap(gate_fp32, self.gate_cap) * torch.sigmoid(gate_fp32)
+        return (hidden * self.softcap(up_fp32, self.up_cap)).to(up.dtype)
 
 
 class Relu2(Activation):

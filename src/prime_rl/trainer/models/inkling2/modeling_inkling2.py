@@ -637,8 +637,17 @@ class Inkling2ForCausalLM(Inkling2PreTrainedModel):
         )
 
     def init_buffers_post_meta(self) -> None:
-        # Every persistent buffer (the routers' selection biases, the unembedding padding) is a checkpoint tensor.
-        return None
+        # The selection biases and the unembedding padding are checkpoint tensors: a load overwrites these
+        # zeros, and a model initialized from scratch keeps them.
+        for module in self.modules():
+            if isinstance(module, MoE):
+                module.tokens_per_expert.zero_()
+                module.routing_confidence_sum.zero_()
+                if module.router.selection_bias is not None:
+                    module.router.selection_bias.zero_()
+        unembed_padding = getattr(self.model.language_model, "unembed_padding", None)
+        if unembed_padding is not None:
+            unembed_padding.zero_()
 
 
 __all__ = [
