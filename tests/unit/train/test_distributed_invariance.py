@@ -46,7 +46,7 @@ from prime_rl.utils.act_offloading import maybe_activation_offloading
 from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp
 from prime_rl.utils.logger import setup_logger
 
-pytestmark = [pytest.mark.gpu]
+pytestmark = [pytest.mark.gpu, pytest.mark.tiny]
 
 TOKENIZER = "Qwen/Qwen3-0.6B"
 NUM_ROWS = 4
