@@ -48,6 +48,10 @@ jobs:
       image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
       options: --gpus all
     timeout-minutes: 45
+    env:
+      # The runner's uv cache is on a different filesystem than the workspace, so uv cannot
+      # hardlink from it and would copy the whole venv (~23 GB) on every job.
+      UV_LINK_MODE: symlink
     steps:
       - name: Install Git
         run: |
@@ -66,7 +70,7 @@ jobs:
             run: |
               git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
               git config --global url."https://github.com/".insteadOf "git@github.com:"
-              git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
+              git submodule update --init --recursive --jobs 4 -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
           - name: Install uv
             uses: astral-sh/setup-uv@v10.0.1
             with:
@@ -93,6 +97,10 @@ jobs:
       image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
       options: --gpus all
     timeout-minutes: 60
+    env:
+      # The runner's uv cache is on a different filesystem than the workspace, so uv cannot
+      # hardlink from it and would copy the whole venv (~23 GB) on every job.
+      UV_LINK_MODE: symlink
     strategy:
       fail-fast: false
       # Bound per-PR fan-out: at most 5 integration jobs at a time (plus unit-tests),
@@ -128,7 +136,7 @@ jobs:
             run: |
               git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
               git config --global url."https://github.com/".insteadOf "git@github.com:"
-              git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
+              git submodule update --init --recursive --jobs 4 -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
           - name: Install uv
             uses: astral-sh/setup-uv@v10.0.1
             with:
