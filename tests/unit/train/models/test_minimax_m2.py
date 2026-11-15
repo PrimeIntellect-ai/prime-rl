@@ -8,7 +8,7 @@ from prime_rl.trainer.models.minimax_m2 import MiniMaxM2Config, MiniMaxM2ForCaus
 from prime_rl.utils.utils import default_dtype
 from tests.unit.train.models.parity import assert_matches_hf, hf_checkpoint_state_dict
 
-pytestmark = [pytest.mark.gpu]
+pytestmark = [pytest.mark.gpu, pytest.mark.tiny]
 
 
 def test_minimax_m2_matches_hf(tmp_path):

@@ -9,7 +9,7 @@ from prime_rl.trainer.models.qwen3_moe import Qwen3MoeForCausalLM as PrimeRLQwen
 from prime_rl.utils.utils import default_dtype
 from tests.unit.train.models.parity import assert_matches_hf, hf_checkpoint_state_dict
 
-pytestmark = [pytest.mark.gpu]
+pytestmark = [pytest.mark.gpu, pytest.mark.tiny]
 
 TOL = 2e-2
 

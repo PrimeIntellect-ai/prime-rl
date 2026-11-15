@@ -12,7 +12,7 @@ from tests.unit.train.models.parity import assert_matches_hf
 
 SEQ_LEN = 64
 
-pytestmark = [pytest.mark.gpu]
+pytestmark = [pytest.mark.gpu, pytest.mark.tiny]
 
 
 def save_checkpoint(model_cls, config, path) -> None:
