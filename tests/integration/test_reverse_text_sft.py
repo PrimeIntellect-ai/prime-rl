@@ -162,11 +162,13 @@ def rl_init_from_process(
     return run_process(cmd, timeout=RL_TIMEOUT)
 
 
+@pytest.mark.tiny
 def test_no_error(sft_process: ProcessResult):
     """Tests that the SFT process does not fail."""
     assert sft_process.returncode == 0, f"Process has non-zero return code ({sft_process})"
 
 
+@pytest.mark.tiny
 def test_loss_goes_down(sft_process: ProcessResult, run_dir: Path):
     """Tests that the loss goes down in the SFT process"""
     trainer_log_path = run_dir / "logs" / "latest" / "trainer.log"
