@@ -240,7 +240,7 @@ def add_routing_stats(
     sums: dict[str, Tensor],
     maxes: dict[str, Tensor],
     routing_stats: list[Tensor],
-    top_k: int,
+    top_ks: list[int],
     ep_group: dist.ProcessGroup | None,
 ) -> None:
     """Add the step's expert counts, and the max violation and routing confidence of every micro-batch's
@@ -250,7 +250,11 @@ def add_routing_stats(
     sums["expert_counts"] = routing[..., :-1].sum(dim=0)
     if ep_group is not None:
         dist.all_reduce(routing, group=ep_group)
-    max_vio, routing_confidence = compute_max_vio_and_routing_confidence(routing[..., :-1], routing[..., -1], top_k)
+    per_layer = [
+        compute_max_vio_and_routing_confidence(layer[..., :-1], layer[..., -1], top_k)
+        for layer, top_k in zip(routing.unbind(dim=1), top_ks, strict=True)
+    ]
+    max_vio, routing_confidence = (torch.stack(stats, dim=1) for stats in zip(*per_layer))
     maxes["max_vio"] = max_vio.amax(dim=-1)
     sums["routing_confidence"] = routing_confidence.mean(dim=-1)
     if ep_group is not None:

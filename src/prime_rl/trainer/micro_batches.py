@@ -94,7 +94,7 @@ def run_micro_batches(
     }
     maxes = {}
     if moes:
-        add_routing_stats(sums, maxes, routing_stats, moes[0].router.top_k, ep_group)
+        add_routing_stats(sums, maxes, routing_stats, [moe.router.top_k for moe in moes], ep_group)
     return reduce_stats(sums, maxes, dp_cp_group)
 
 
