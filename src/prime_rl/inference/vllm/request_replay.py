@@ -1,4 +1,4 @@
-"""Request-scoped replay for vLLM's V2 non-speculative sampler."""
+"""Request-scoped replay for vLLM's V2 sampler and speculative verifier."""
 
 import os
 from contextvars import ContextVar
@@ -12,6 +12,19 @@ REPLAY_KEY = "prl_replay"
 SAMPLER_ROWS_KEY = "prl_sampler_rows"
 CAPACITY_ENV = "PRIME_SAMPLING_SUPPORT_CAPACITY"
 _capture: ContextVar[list | None] = ContextVar("prl_capture", default=None)
+_verified: ContextVar["_VerifiedReplay | None"] = ContextVar("prl_verified", default=None)
+
+
+class _VerifiedReplay:
+    """Replay flags of one verification call, consumed in request order across its chunks."""
+
+    def __init__(self, replay: np.ndarray):
+        self.replay = replay
+        self.start = 0
+
+    def take(self, num_reqs: int) -> np.ndarray:
+        self.start += num_reqs
+        return self.replay[self.start - num_reqs : self.start]
 
 
 def wants_replay(params) -> bool:
@@ -29,8 +42,14 @@ def patch_request_replay():
     from vllm.v1.engine.output_processor import RequestState
     from vllm.v1.worker.gpu.sample.output import SamplingMaskTensors
     from vllm.v1.worker.gpu.sample.sampler import Sampler
+    from vllm.v1.worker.gpu.spec_decode.rejection_sampler import RejectionSampler
 
-    from prime_rl.inference.vllm.paired_capture import capture_supports, pack_sampler_rows
+    from prime_rl.inference.vllm.paired_capture import (
+        VerifiedSupports,
+        capture_supports,
+        capture_verified_supports,
+        pack_sampler_rows,
+    )
 
     if getattr(Sampler, "_prime_request_replay", False):
         return
@@ -50,8 +69,8 @@ def patch_request_replay():
             if rows and wants_replay(params):
                 raise VLLMValidationError("A request captures its replayed support or sampler rows, not both")
             if self.model_config.return_sampling_mask:
-                if self.speculative_config is not None:
-                    raise VLLMValidationError("Request-scoped sampling replay does not support speculative decoding")
+                if rows and self.speculative_config is not None:
+                    raise VLLMValidationError("Sampler rows do not support speculative decoding")
                 if wants_replay(params) and params.temperature <= 0:
                     raise VLLMValidationError("Replay requests require temperature > 0")
                 if wants_replay(params) and params.output_kind != RequestOutputKind.FINAL_ONLY:
@@ -102,15 +121,47 @@ def patch_request_replay():
         )
         return output
 
+    verify = RejectionSampler.__call__
+
+    @wraps(verify)
+    def verify_and_capture(self, logits, input_batch, *args, **kwargs):
+        replay = getattr(self.sampler, "_prime_capture", None)
+        if replay is None:
+            return verify(self, logits, input_batch, *args, **kwargs)
+        token = _verified.set(_VerifiedReplay(replay[input_batch.idx_mapping_np]))
+        try:
+            return verify(self, logits, input_batch, *args, **kwargs)
+        finally:
+            _verified.reset(token)
+
     from_logits = SamplingMaskTensors.from_logits
 
     @classmethod
-    def capture(cls, logits, cu_num_logits, num_sampled_tokens, *args, **kwargs):
+    def capture(cls, logits, cu_num_logits, num_sampled_tokens, max_num_kept, rows_per_request=1):
+        verified = _verified.get()
+        if verified is not None:
+            replay = verified.take(num_sampled_tokens.shape[0])
+            if not verified.replay.any():
+                return None
+            capacity = int(os.environ[CAPACITY_ENV])
+            return capture_verified_supports(
+                logits, cu_num_logits, num_sampled_tokens, replay, rows_per_request, capacity
+            )
         stash = _capture.get()
         if stash is None:
-            return from_logits(logits, cu_num_logits, num_sampled_tokens, *args, **kwargs)
+            return from_logits(logits, cu_num_logits, num_sampled_tokens, max_num_kept, rows_per_request)
         stash.extend([logits, cu_num_logits, num_sampled_tokens])
         return None
+
+    cat = SamplingMaskTensors.cat.__func__
+
+    @classmethod
+    def cat_chunks(cls, chunks):
+        if all(chunk is None for chunk in chunks):
+            return None
+        if isinstance(chunks[0], VerifiedSupports):
+            return VerifiedSupports.cat(chunks)
+        return cat(cls, chunks)
 
     class DiscardChunks(list):
         def append(self, chunk):
@@ -130,6 +181,8 @@ def patch_request_replay():
     InputProcessor._validate_params = validate_params
     Sampler.add_request = add
     Sampler.__call__ = sample
+    RejectionSampler.__call__ = verify_and_capture
     SamplingMaskTensors.from_logits = capture
+    SamplingMaskTensors.cat = cat_chunks
     RequestState.from_new_request = new_request
     Sampler._prime_request_replay = True
