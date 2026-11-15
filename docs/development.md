@@ -34,6 +34,7 @@ uv run pytest tests/unit -v                                # unit only
 uv run pytest tests/integration -v                         # integration only
 uv run pytest -v -m "not gpu"                              # CPU-only subset (mirrors CPU CI)
 uv run pytest -v -m gpu                                    # GPU-only subset
+uv run pytest tests/unit tests/integration -m tiny -v      # fast GPU subset (mirrors the Tiny (GPU) job)
 uv run pytest tests/integration/test_reverse_text.py -vvs  # one specific scenario
 uv run playwright install --only-shell chromium            # browser for the integration dashboard smoke tests
 ```
@@ -43,7 +44,7 @@ uv run playwright install --only-shell chromium            # browser for the int
 | Workflow | Trigger | What runs | Where |
 |---|---|---|---|
 | [`tests.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/tests.yml) | CPU jobs: every PR + push to `main`. `gsm8k_eval`: relevant changes in non-draft PRs, every push to `main`, manual dispatch | CPU: `pytest tests/unit -m "not gpu"`, plus a slim-wheel install check that `prime-rl-configs` imports cleanly without heavy deps (no torch / vllm / transformers / wandb / verifiers / datasets / liger / loguru in `sys.modules`). Separate hosted `gsm8k_eval` job | `ubuntu-latest` |
-| [`gpu.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/gpu.yml) | On a PR: applying the `gpu-ci` label (Triage or higher). Also every merge to `main` and manual dispatch | Full GPU suite: `pytest tests/unit -m gpu`, plus RL/SFT integration scenarios (`reverse_text`, `reverse_text_sft`, `reverse_text_sft_lora`, `reverse_text_lora`, `reverse_text_moe`, `reverse_text_rl_opd`, `reverse_text_rl_sft`, `alphabet_sort`) with `max-parallel: 5` | Self-hosted `prime-rl-2xh100` k8s scale set (2xH100); `ubuntu-latest` for the trigger check |
+| [`gpu.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/gpu.yml) | On a PR: applying the `gpu-ci` label (Triage or higher). Also every merge to `main` and manual dispatch | Full GPU suite: `pytest tests/unit -m gpu`, a `Tiny (GPU)` job with the fast subset (`pytest tests/unit tests/integration -m tiny`), plus RL/SFT integration scenarios (`reverse_text`, `reverse_text_sft`, `reverse_text_sft_lora`, `reverse_text_lora`, `reverse_text_moe`, `reverse_text_rl_opd`, `reverse_text_rl_sft`, `alphabet_sort`) with `max-parallel: 5` | Self-hosted `prime-rl-2xh100` k8s scale set (2xH100); `ubuntu-latest` for the trigger check |
 | [`regression.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/regression.yml) | 03:00 PST daily + manual `workflow_dispatch` (`suite` picks one suite; `eval_config` picks one eval config); `eval` also on PRs that touch it | `parallel`: `tests/regression/test_parallel_invariance.py`. `eval`: every `tests/regression/configs/eval/*.toml` (gsm8k, PI-TerminalBench2.1) against Prime Inference, each compared against its baseline in `tests/regression/baselines/eval/`. Nightly and manual runs post one Slack message per config through the `SLACK_WEBHOOK_URL` secret | `eval`: `ubuntu-latest`. `parallel`: `prime-rl-4xh100` |
 
 GPU jobs run on self-hosted k8s runner scale sets. Each job gets a fresh container. Target one with its label in `runs-on`:
@@ -57,10 +58,11 @@ Pushes to a PR do not run GPU jobs. To run the GPU suite on a PR's current commi
 
 ### Markers
 
-Two pytest markers are declared in `pyproject.toml` (`addopts = "--strict-markers"`):
+Three pytest markers are declared in `pyproject.toml` (`addopts = "--strict-markers"`):
 
 - `gpu` — gate a test that needs CUDA. CPU CI uses `-m "not gpu"`; the GPU unit job uses `-m gpu`.
 - `slow` — gate a test that's expensive enough you'd usually skip it locally. Deselect with `-m "not slow"`.
+- `tiny` — add a GPU test to the fast subset that the `Tiny (GPU)` job runs on one 2xH100 runner: distributed invariance, the GPU loss tests, and short RL and SFT runs. The whole job should stay under 5 minutes, so check the test's time with `--durations=0` before marking it.
 
 ## Pre-Commit Hooks
 
