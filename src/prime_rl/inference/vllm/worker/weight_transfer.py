@@ -7,6 +7,7 @@ from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader import DefaultModelLoader, get_model_loader
 from vllm.model_executor.model_loader.reload import finalize_layerwise_reload, initialize_layerwise_reload
+from vllm.model_executor.model_loader.reload.layerwise import LAYERWISE_INFO, _place_kernel_tensors
 from vllm.model_executor.model_loader.utils import get_draft_load_config
 
 logger = init_logger("vllm.inference.vllm.worker_weight_transfer")
@@ -120,6 +121,19 @@ def load_draft_weights(model_runner, state_iter, vllm_config) -> None:
     )
 
 
+def restore_layerwise_state(model: Module) -> None:
+    """Close a layerwise reload without loading: every layer the reload still holds open gets its
+    serving tensors back, and the weights buffered for it are dropped."""
+    for layer in model.modules():
+        info = LAYERWISE_INFO.get(layer)
+        if info is not None and info.can_load():
+            if info.kernel_tensors is not None:
+                _place_kernel_tensors(layer, info)
+            info.reset()
+    if hasattr(model, "_original_do_torchao_reload"):
+        model._do_torchao_reload = model._original_do_torchao_reload
+
+
 @torch.no_grad()
 def load_weights_checkpoint_layerwise(
     model: Module,
@@ -140,8 +154,14 @@ def load_weights_checkpoint_layerwise(
     ]
     with torch.device(device), set_current_vllm_config(vllm_config):
         initialize_layerwise_reload(model)
-        model.load_weights(state_iter)  # type: ignore
-        finalize_layerwise_reload(model, model_config)
+        try:
+            model.load_weights(state_iter)  # type: ignore
+            finalize_layerwise_reload(model, model_config)
+        except BaseException:
+            # A failed reload leaves the layers it did not complete on the meta device, holding the
+            # weights buffered for them. The layers it completed keep their new weights.
+            restore_layerwise_state(model)
+            raise
         if preserve_tensor_attributes:
             for module in model.modules():
                 rebuild = getattr(module, "_build_fused_kv_buffers", None)

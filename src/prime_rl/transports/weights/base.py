@@ -154,6 +154,7 @@ class WeightReceiver(ABC):
         self.broadcast_dir = broadcast_dir
         self.config = config
         self.admin_plane = admin_plane
+        self.admin_plane.update_weights_timeout = config.update_weights_timeout
         self.model_name = model_name
 
     async def initialize(self) -> None:

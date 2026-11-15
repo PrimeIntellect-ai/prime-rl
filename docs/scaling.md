@@ -290,6 +290,12 @@ Full multi-node configs ship under [`examples/advanced/`](https://github.com/Pri
 
 For inference-only multi-node, set `[deployment] type = "multi_node"` on an inference TOML — each node runs an independent vLLM replica (TP and DP must fit within one node), fronted by a single global router on node 0. Point clients at the router URL the launcher prints.
 
+### NCCL weight broadcast
+
+Every inference GPU receives each NCCL update in full, so the transfer takes the size of the update divided by the sustained rate per GPU. Set `weight_broadcast.update_weights_timeout` (720 s by default) above the measured transfer time: 720 s moves 1.19 TB at 1.65 GB/s.
+
+An NCCL update cannot be replayed. When one fails or times out, the orchestrator stops with an error and leaves the inference engines paused. Restart the inference servers before resuming the run.
+
 ### ModelExpress weight broadcast
 
 See [ModelExpress](model-express.md) for the `modelexpress` weight transport.

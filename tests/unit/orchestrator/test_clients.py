@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
@@ -6,7 +7,7 @@ import httpx
 import pytest
 from verifiers.v1.configs.client import EvalClientConfig
 
-from prime_rl.configs.shared import ClientConfig
+from prime_rl.configs.shared import ClientConfig, NCCLWeightBroadcastConfig
 from prime_rl.orchestrator.clients import (
     AdminPlane,
     _is_retryable_lora_error,
@@ -78,6 +79,7 @@ def test_admin_plane_initializes_nccl():
 
     client.post.assert_awaited_once_with(
         "/init_broadcaster",
+        timeout=httpx.Timeout(connect=10.0, read=1200, write=60.0, pool=10.0),
         json={
             "host": "trainer",
             "port": 29501,
@@ -86,6 +88,83 @@ def test_admin_plane_initializes_nccl():
             "timeout": 1200,
         },
     )
+    asyncio.run(admin_plane.aclose())
+
+
+def fake_engine(statuses: dict[str, list[int]] | None = None):
+    """An admin client that answers a POST with the next status listed for its path, and with 200 after those."""
+    statuses = {path: list(codes) for path, codes in (statuses or {}).items()}
+    client = create_autospec(httpx.AsyncClient, instance=True)
+
+    def post(path, **kwargs):
+        codes = statuses.get(path)
+        return httpx.Response(codes.pop(0) if codes else 200, request=httpx.Request("POST", f"http://engine{path}"))
+
+    client.post.side_effect = post
+    return client
+
+
+def posted_paths(client) -> list[str]:
+    return [call.args[0] for call in client.post.await_args_list]
+
+
+@pytest.mark.parametrize(
+    "status, expectation",
+    [(404, contextlib.nullcontext()), (500, pytest.raises(httpx.HTTPStatusError))],
+)
+def test_admin_plane_only_tolerates_a_missing_init_broadcaster_route(status, expectation):
+    admin_plane = AdminPlane(ClientConfig())
+    client = fake_engine({"/init_broadcaster": [status]})
+    admin_plane.clients = [client]
+
+    with expectation:
+        asyncio.run(admin_plane.initialize_nccl(host="trainer", port=29501, timeout=1200, inference_world_size=1))
+
+    assert posted_paths(client) == ["/init_broadcaster"]
+    asyncio.run(admin_plane.aclose())
+
+
+def test_failed_nccl_update_is_sent_once_and_leaves_the_engines_paused():
+    admin_plane = AdminPlane(ClientConfig())
+    failed, healthy = fake_engine({"/update_weights": [500]}), fake_engine()
+    admin_plane.clients = [failed, healthy]
+
+    with pytest.raises(RuntimeError, match="restart the inference servers"):
+        asyncio.run(admin_plane.update_weights(Path("/broadcasts/step_3"), transport="nccl", step=3))
+
+    assert posted_paths(failed) == ["/pause", "/update_weights"]
+    assert posted_paths(healthy) == ["/pause", "/update_weights"]
+    asyncio.run(admin_plane.aclose())
+
+
+def test_failed_filesystem_update_is_retried_and_resumes_the_engines():
+    admin_plane = AdminPlane(ClientConfig())
+    client = fake_engine({"/update_weights": [500]})
+    admin_plane.clients = [client]
+
+    with patch("prime_rl.orchestrator.clients.asyncio.sleep", new=AsyncMock()):
+        asyncio.run(admin_plane.update_weights(Path("/broadcasts/step_3"), transport="filesystem", step=3))
+
+    assert posted_paths(client) == ["/pause", "/update_weights", "/update_weights", "/resume"]
+    asyncio.run(admin_plane.aclose())
+
+
+def test_weight_broadcast_config_sets_the_update_weights_timeout(tmp_path):
+    from prime_rl.transports.weights import setup_weight_receiver
+
+    assert NCCLWeightBroadcastConfig().update_weights_timeout == 720
+    admin_plane = AdminPlane(ClientConfig())
+    client = fake_engine()
+    admin_plane.clients = [client]
+    receiver = setup_weight_receiver(
+        tmp_path, NCCLWeightBroadcastConfig(update_weights_timeout=1800), admin_plane, "model"
+    )
+    receiver.step_dir(3).mkdir()
+
+    asyncio.run(receiver.receive(3))
+
+    assert posted_paths(client) == ["/pause", "/update_weights", "/resume"]
+    assert client.post.await_args_list[1].kwargs["timeout"].read == 1800
     asyncio.run(admin_plane.aclose())
 
 

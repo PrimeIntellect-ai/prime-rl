@@ -53,6 +53,10 @@ def receive_state_dict(communicator: PyNcclCommunicator) -> Generator[tuple[str,
             offset = 0
             for key, shape, numel in bucket:
                 tensor = concatenated[offset : offset + numel].view(shape)
+                # A view keeps its whole bucket alive for as long as the consumer holds it, and vLLM's
+                # layerwise reload holds an attention layer's tensors until the reload is finalized.
+                if len(bucket) > 1:
+                    tensor = tensor.clone()
                 offset += numel
                 try:
                     yield key, tensor
@@ -142,10 +146,14 @@ class NCCLWeightUpdateWorker(WeightRPCMixin, Worker):
             model = model_runner.model
         assert isinstance(model, Module)
 
-        state_iter = self.nccl_broadcast_receiver.receive_state_dict()
         load_weights_checkpoint_layerwise(
             model,
-            state_iter,
+            self.nccl_broadcast_receiver.receive_state_dict(),
             self.model_runner.model_config,
             self.vllm_config,
         )
+        # A receive buffer is as large as the update's largest tensor. Return the freed buffers to the
+        # driver instead of keeping them in PyTorch's cache until the next update, once every copy out
+        # of them has run: a block released under a kernel that still reads it faults.
+        torch.accelerator.synchronize(self.device)
+        torch.accelerator.empty_cache()

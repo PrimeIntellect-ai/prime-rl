@@ -179,6 +179,10 @@ class AdminPlane:
     after_transfer: Callable[[], Awaitable[None]] | None = None
     """Runs after each policy transfer while the engines are still paused (a draft swap)."""
 
+    update_weights_timeout: float = 720.0
+    """Read timeout in seconds of one engine's weight update, which can take far longer than the other
+    admin ops. The weight receiver sets it from ``weight_broadcast.update_weights_timeout``."""
+
     def __init__(self, client_config: ClientConfig, roles: list[str | None] | None = None):
         self.clients = setup_admin_clients(client_config)
         self.roles = roles
@@ -220,8 +224,12 @@ class AdminPlane:
 
         async def initialize_client(admin_client: AsyncClient, rank_offset: int) -> None:
             try:
-                response = await admin_client.post(
+                # Sent once: a retry would have the workers join the rendezvous a second time.
+                await _admin_post(
+                    admin_client,
                     "/init_broadcaster",
+                    timeout_s=max(ADMIN_TIMEOUT_S, timeout),
+                    retry_errors=False,
                     json={
                         "host": host,
                         "port": port,
@@ -230,12 +238,12 @@ class AdminPlane:
                         "timeout": timeout,
                     },
                 )
-                response.raise_for_status()
             except httpx.HTTPStatusError as error:
-                if error.response.status_code == 404:
-                    get_logger().warning(
-                        "The route /init_broadcaster does not exist. Skipping NCCL broadcast initialization."
-                    )
+                if error.response.status_code != 404:
+                    raise
+                get_logger().warning(
+                    "The route /init_broadcaster does not exist. Skipping NCCL broadcast initialization."
+                )
 
         await asyncio.gather(
             *(
@@ -252,23 +260,41 @@ class AdminPlane:
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
     ) -> None:
-        """Update every inference engine through its configured weight transport."""
+        """Update every inference engine through its configured weight transport.
+
+        An NCCL transfer is sent once, and a failed one leaves the engines paused. The trainer's broadcast
+        cannot be replayed: an engine asked again re-enters the receive and waits for a stream that was
+        already sent. vLLM also raises at the first failed worker without reading the other workers'
+        replies, so every later all-worker RPC of that engine reads a stale reply until it restarts."""
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
+        replayable = transport != "nccl"
 
         pause_times = await _pause_engines(self.clients, step=step, roles=self.roles)
+        resume = True
         try:
             if on_paused is not None:
                 on_paused()
-            transfer_times = await _post_all(
-                self.clients,
-                "/update_weights",
-                json={"weight_dir": weight_dir_posix, "weight_version": step},
-                timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
-            )
+            try:
+                transfer_times = await _post_all(
+                    self.clients,
+                    "/update_weights",
+                    json={"weight_dir": weight_dir_posix, "weight_version": step},
+                    timeout_s=self.update_weights_timeout,
+                    retry_errors=replayable,
+                )
+            except Exception as failure:
+                if replayable:
+                    raise
+                resume = False
+                raise RuntimeError(
+                    f"The NCCL weight update to policy v{step} failed and cannot be retried. "
+                    "The inference engines stay paused: restart the inference servers."
+                ) from failure
             if self.after_transfer is not None:
                 await self.after_transfer()
         finally:
-            resume_times = await _resume_engines(self.clients)
+            if resume:
+                resume_times = await _resume_engines(self.clients)
         self.update_times = {"pause": pause_times, "transfer": transfer_times, "resume": resume_times}
 
     async def update_draft_weights(self, weight_dir: Path) -> None:
@@ -277,7 +303,7 @@ class AdminPlane:
             self.clients,
             "/update_draft_weights",
             json={"weight_dir": weight_dir.as_posix()},
-            timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+            timeout_s=self.update_weights_timeout,
             retry_errors=False,
         )
 
@@ -316,7 +342,7 @@ class AdminPlane:
                 response = await client.post(
                     "/update_weights_from_modelexpress",
                     json={"version_uid": version_uid, "weight_version": step},
-                    timeout=httpx.Timeout(connect=10.0, read=UPDATE_WEIGHTS_TIMEOUT_S, write=60.0, pool=10.0),
+                    timeout=httpx.Timeout(connect=10.0, read=self.update_weights_timeout, write=60.0, pool=10.0),
                 )
                 response.raise_for_status()
                 return time.perf_counter() - start
@@ -544,9 +570,6 @@ def _is_retryable_admin_error(exception: BaseException) -> bool:
 # that tenacity retries. Sized for `/pause`, which drains in-flight requests
 # (mode="keep") and so can legitimately take a while.
 ADMIN_TIMEOUT_S = 300.0
-# `/update_weights` runs a collective NCCL receive across all DP workers, which
-# can take longer than the other admin ops.
-UPDATE_WEIGHTS_TIMEOUT_S = 720.0
 
 
 async def _admin_post(
