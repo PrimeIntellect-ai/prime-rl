@@ -4,6 +4,7 @@ import pytest
 import torch
 from transformers import Qwen3_5ForCausalLM as HFQwen3_5ForCausalLM
 from transformers import Qwen3_5MoeForCausalLM as HFQwen3_5MoeForCausalLM
+from transformers.models.qwen3_5 import modeling_qwen3_5 as hf_modeling_qwen3_5
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import resolve_auto_attn
@@ -186,7 +187,10 @@ def test_forward_backward_and_packing(text_config):
 
 
 @pytest.mark.gpu
-def test_matches_hf(text_config):
+def test_matches_hf(text_config, monkeypatch):
+    # The reference runs HF's PyTorch delta rule rather than the FLA kernel PrimeRL also uses.
+    torch_delta_rule = hf_modeling_qwen3_5.torch_chunk_gated_delta_rule.__wrapped__
+    monkeypatch.setattr(hf_modeling_qwen3_5, "torch_chunk_gated_delta_rule", torch_delta_rule)
     torch.manual_seed(0)
     is_moe = isinstance(text_config, Qwen3_5MoeTextConfig)
     if is_moe:

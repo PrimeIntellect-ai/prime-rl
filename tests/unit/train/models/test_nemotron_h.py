@@ -5,6 +5,7 @@ import torch
 from transformers import AutoConfig
 from transformers import NemotronHConfig as HFNemotronHConfig
 from transformers import NemotronHForCausalLM as HFNemotronHForCausalLM
+from transformers.models.nemotron_h import modeling_nemotron_h as hf_modeling_nemotron_h
 
 from prime_rl.trainer.models import get_custom_causal_lm_cls
 from prime_rl.trainer.models.conversion_ops import view_mapping
@@ -60,12 +61,18 @@ def test_nemotron_h_reverse():
     assert not any("mlp.experts.up_proj" in name for name in converted)
 
 
-def test_nemotron_h_matches_hf(tmp_path):
+def test_nemotron_h_matches_hf(tmp_path, monkeypatch):
+    # The reference runs HF's PyTorch Mamba scan (eval mode skips the fused training kernel) rather than the
+    # mamba-ssm kernel PrimeRL also uses.
+    monkeypatch.setattr(
+        hf_modeling_nemotron_h, "mamba2_chunk_scan", hf_modeling_nemotron_h.mamba2_chunk_scan.__wrapped__
+    )
     torch.manual_seed(0)
     hf_config = HFNemotronHConfig(**_BASE, layers_block_type=["mamba", "moe", "attention", "moe"])
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         hf_model = HFNemotronHForCausalLM._from_config(hf_config)
         prime_model = NemotronHForCausalLM(NemotronHConfig(**_BASE, hybrid_override_pattern="ME*E"))
+    hf_model.eval()
     with torch.no_grad():
         state_dict = hf_checkpoint_state_dict(hf_model, tmp_path)
         prime_model.load_state_dict(prime_model.convert_to_prime(state_dict))
