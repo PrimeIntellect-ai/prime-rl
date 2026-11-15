@@ -4,7 +4,7 @@ from argparse import Namespace
 from typing import Literal
 
 import uvloop
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from starlette.datastructures import State
 from vllm.engine.protocol import EngineClient
@@ -195,12 +195,24 @@ import vllm.v1.utils
 from vllm.entrypoints.launchers.app import build_app as _original_build_app
 from vllm.v1.utils import run_api_server_worker_proc as _original_run_api_server_worker_proc
 
+# vLLM mounts SageMaker's hosting routes at the root path, outside the prefixes its API key
+# guards: /invocations serves the same requests as /v1, and /adapters loads and unloads LoRA
+# adapters. prime-rl uses neither.
+SAGEMAKER_ROUTE_PATHS = frozenset({"/invocations", "/adapters", "/adapters/{adapter_name}"})
+
+
+def drop_sagemaker_routes(app: FastAPI) -> None:
+    app.router.routes[:] = [
+        route for route in app.router.routes if getattr(route, "path", None) not in SAGEMAKER_ROUTE_PATHS
+    ]
+
 
 def custom_build_app(args: Namespace, supported_tasks: tuple, model_config=None):
     """
-    Wrap build_app to include our custom router.
+    Wrap build_app to include our custom router and drop the SageMaker routes.
     """
     app = _original_build_app(args, supported_tasks, model_config)
+    drop_sagemaker_routes(app)
     app.include_router(router)
     return app
 

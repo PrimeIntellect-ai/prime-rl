@@ -61,6 +61,7 @@ from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metric
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
+from prime_rl.orchestrator.trainer_capacity import TrainerCapacity
 from prime_rl.orchestrator.types import (
     DispatchFailure,
     EvalBatch,
@@ -196,6 +197,7 @@ class Orchestrator:
         self.ships = 0
         self.shipped_at: float | None = None
         self.trainer_rate: float | None = None
+        self.trainer_capacity = TrainerCapacity()
 
         # Always assigned by ``setup()``; None-initialized so teardown can run
         # on a partially completed setup with plain attribute checks
@@ -395,6 +397,8 @@ class Orchestrator:
             set_limit=self.dispatcher.set_limit,
             get_inflight=lambda: self.dispatcher.current_inflight,
             on_overload=self.dispatcher.cancel_inflight,
+            get_train_finished=lambda: self.dispatcher.finished_train_rollouts,
+            trainer=self.trainer_capacity,
         )
         # The collector always polls — it feeds the concurrency controller;
         # metrics fan out to every registered monitor when collection is on.
@@ -754,6 +758,8 @@ class Orchestrator:
         trainer_bound = self.ships > 2 and self.sender.last_wait_s >= TRAINER_BOUND_WAIT_S
         self.trainer_rate = batch.cohort.num_traces / (shipped_at - self.shipped_at) if trainer_bound else None
         self.shipped_at = shipped_at
+        self.trainer_capacity.shipped(batch.cohort.num_traces, self.sender.last_requested_at)
+        self.concurrency.trainer_shipped()
         wait_for_policy_time = shipped_at - send_start_time - send_batch_time
         self.train_sink.shipped(batch)
         self.progress.step += 1
@@ -935,6 +941,7 @@ class Orchestrator:
             **disp_drain,
             **watcher_gauges,
             **self.concurrency.gauges(),
+            **self.trainer_capacity.gauges(),
             **self.clients.session_release_gauges(),
         }
         if self.draft_loader is not None:

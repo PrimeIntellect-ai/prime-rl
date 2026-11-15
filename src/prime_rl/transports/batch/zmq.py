@@ -7,7 +7,7 @@ import zmq
 import zmq.asyncio
 
 from prime_rl.configs.shared import ZMQTransportConfig
-from prime_rl.transports.batch.base import BatchReceiver, BatchRequest, BatchSender
+from prime_rl.transports.batch.base import BatchReceiver, BatchRequest, BatchSender, last_requested_at
 from prime_rl.transports.batch.types import MicroBatch
 
 LOG_POLL_INTERVAL_MS = 1000
@@ -92,6 +92,7 @@ class ZMQBatchSender(BatchSender):
         while len(rank_to_request) < request.world_size:
             identity, request = await self._receive_request()
             rank_to_request[request.rank] = (identity, request)
+        self.last_requested_at = last_requested_at([request for _, request in rank_to_request.values()])
         return rank_to_request
 
 

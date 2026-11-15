@@ -5,6 +5,7 @@ from torch.distributed.tensor import DTensor
 from torch.optim import Optimizer
 
 from prime_rl.trainer.optim.base import OffloadOptimizer
+from prime_rl.trainer.utils import empty_pinned
 
 
 class CPUOffloadOptimizer(OffloadOptimizer):
@@ -26,17 +27,22 @@ class CPUOffloadOptimizer(OffloadOptimizer):
             return src.to("cpu", non_blocking=True)
         buffer = self._cpu_buffers.get((param, key))
         if buffer is None or buffer.shape != src.shape or buffer.dtype != src.dtype:
-            buffer = torch.empty(src.shape, dtype=src.dtype, device="cpu", pin_memory=True)
+            buffer = empty_pinned(src.shape, src.dtype)
             self._cpu_buffers[(param, key)] = buffer
         if buffer is not src:
             buffer.copy_(src, non_blocking=True)
         return buffer
 
     def _move_states(self, device: str):
-        """Move optimizer states to CPU or back to GPU (matching each parameter's device)."""
+        """Move optimizer states to CPU or back to GPU (matching each parameter's device).
+
+        `step` stays on the CPU, where non-fused AdamW reads it on the host per parameter.
+        """
         for param in self.optimizer.state:
             state = self.optimizer.state[param]
             for key, value in state.items():
+                if key == "step":
+                    continue
                 if isinstance(value, DTensor):
                     local_tensor = value._local_tensor
                     if device == "cpu":
