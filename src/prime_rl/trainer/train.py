@@ -3,7 +3,6 @@ import prime_rl._compat  # noqa: F401
 import math
 import time
 import asyncio
-from contextlib import nullcontext
 from datetime import timedelta
 
 # Import environment before any other imports
@@ -11,7 +10,7 @@ from datetime import timedelta
 
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
-from torch.profiler import profile, ProfilerActivity, record_function
+from torch.profiler import profile, ProfilerActivity
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.pretrain import PretrainConfig
@@ -24,11 +23,10 @@ from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
+from prime_rl.trainer.micro_batches import run_micro_batches, step_result, to_host
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
-    get_expert_load_stats,
-    get_global_moe_stats,
     is_tt_moe_model,
     reshard_module,
     setup_tokenizer,
@@ -50,10 +48,8 @@ from prime_rl.trainer.sft.data import load_sft_dataset, setup_sft_dataset
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
-    begin_backward,
     broadcast_step_action,
     clip_grad_norm_,
-    finish_backward,
     get_ckpt_disk_metrics,
     get_peak_memory_across_ranks,
     prepare_gradient_offload,
@@ -255,7 +251,6 @@ def train(config: SFTConfig | PretrainConfig):
     cp_enabled = parallel_dims.cp_enabled
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
-    ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
     cp_size = parallel_dims.cp
 
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
@@ -306,8 +301,6 @@ def train(config: SFTConfig | PretrainConfig):
 
         del out
         return loss_sum, token_count
-
-    maybe_record_function = nullcontext
 
     def run_eval_loop(data_iter):
         """Validation forward loop. Returns token-weighted global mean loss."""
@@ -375,6 +368,13 @@ def train(config: SFTConfig | PretrainConfig):
             )
         )
 
+    def logged_micro_batches(micro_batches):
+        for micro_batch in micro_batches:
+            print_sample(
+                micro_batch["input_ids"].flatten().tolist(), micro_batch["loss_mask"].flatten().tolist(), tokenizer
+            )
+            yield micro_batch
+
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
     # A broadcast must land at every step an online eval env is due. The schedule is
@@ -410,7 +410,6 @@ def train(config: SFTConfig | PretrainConfig):
     if config.trace_path:
         logger.info(f"Tracing to {config.trace_path}")
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
-        maybe_record_function = record_function  # noqa: F841 – captured by run_forward_loop closure
     max_peak_memory = 0.0
     controller = Controller(requires_step=False)
     control_server = ControlServer(controller, config.control if world.is_master else None, ckpt_manager.ckpt_dir)
@@ -430,18 +429,13 @@ def train(config: SFTConfig | PretrainConfig):
         )
 
         step_start_time = time.perf_counter()
-        forward_backward_start_time = time.perf_counter()
 
-        step_loss_sum = torch.tensor(0.0, device="cuda")
-        nan_loss_count = torch.tensor(0, device="cuda")
-        is_moe_model = is_tt_moe_model(model)
         run_validation_this_step = config.val is not None and (
             (is_first_step and config.val.eval_on_start)
             or (not is_first_step and progress.step % config.val.interval == 0)
         )
         if gradient_manager is None:
             micro_batches = (next(dataiter) for _ in range(grad_accum_steps))
-            step_local_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
         else:
             micro_batches = [next(dataiter) for _ in range(grad_accum_steps)]
             local_token_count = sum(int(micro_batch["loss_mask"].sum()) for micro_batch in micro_batches)
@@ -458,64 +452,36 @@ def train(config: SFTConfig | PretrainConfig):
                 grad_scale,
                 overlap_optimizer=not run_validation_this_step,
             )
+        if config.log.log_data:
+            micro_batches = logged_micro_batches(micro_batches)
 
-        routing_stats = []
+        loss_tokens = torch.zeros((), dtype=torch.float64, device="cuda")
+
+        def summed_loss(micro_batch: dict) -> torch.Tensor:
+            loss_sum, token_count = compute_loss(micro_batch)
+            loss_tokens.add_(token_count)
+            return loss_sum
+
+        # GPU time: the micro-batch loop only queues work.
+        forward_backward_start, forward_backward_end = (torch.cuda.Event(enable_timing=True) for _ in range(2))
+        forward_backward_start.record()
         perf_counter = get_perf_counter(model)
-        step_local_num_tokens = 0
-        step_local_flops = 0
-        for micro_step, micro_batch in enumerate(micro_batches):
-            step_local_num_tokens += micro_batch["input_ids"].shape[1]
-            step_local_flops += perf_counter.flop_counter(micro_batch["seq_lens"].tolist())
-            if config.log.log_data:
-                print_sample(
-                    micro_batch["input_ids"].flatten().tolist(), micro_batch["loss_mask"].flatten().tolist(), tokenizer
-                )
-
-            with maybe_record_function("forward"):
-                local_loss_sum, batch_token_count = compute_loss(micro_batch)
-
-            if gradient_manager is None:
-                step_local_token_count += batch_token_count
-
-            if torch.isnan(local_loss_sum.detach()):
-                nan_loss_count += 1
-                logger.warning("Local loss is nan, excluding this micro step from backward")
-                scaled_loss = torch.nan_to_num(local_loss_sum, nan=0.0)
-            else:
-                step_loss_sum += local_loss_sum.detach()
-                scaled_loss = local_loss_sum
-
-            if parallel_dims.dp_replicate_enabled and gradient_manager is None:
-                # HSDP keeps the reduce-scattered gradients across micro batches and all-reduces them over the
-                # replicas once, after the last backward
-                model.set_requires_all_reduce(micro_step == grad_accum_steps - 1)
-            with maybe_record_function("backward"):
-                begin_backward(gradient_manager, final_backward=micro_step == grad_accum_steps - 1)
-                scaled_loss.backward()
-                finish_backward(gradient_manager)
-
-            if is_moe_model:
-                routing_stats.append(take_moe_routing_stats(model))
-
-        # Wait for the queued backward kernels so this times GPU work, not kernel launches.
-        torch.cuda.synchronize()
-        forward_backward_time = time.perf_counter() - forward_backward_start_time
-        moe_stats, expert_load_stats = {}, {}
-        if is_moe_model:
-            micro_moe_stats, step_tokens_per_expert = get_global_moe_stats(model, routing_stats, ep_group, dp_cp_group)
-            for name, values in micro_moe_stats.items():
-                moe_stats[f"{name}/mean"] = values.mean()
-                if name != "routing_confidence":
-                    moe_stats[f"{name}/max"] = values.max()
-            expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group)
-
+        step_stats = run_micro_batches(
+            model,
+            micro_batches,
+            summed_loss,
+            grad_accum_steps,
+            parallel_dims,
+            perf_counter,
+            gradient_manager,
+            sums={"loss_tokens": loss_tokens},
+        )
         if gradient_manager is None:
-            global_step_token_count = step_local_token_count.clone()
-            dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
-            global_token_count_val = global_step_token_count.item()
-            if global_token_count_val > 0:
-                grad_scale = parallel_dims.fsdp_gradient_divide_factor / global_token_count_val
-                scale_gradients_(None, model, grad_scale)
+            # The gradients of the summed loss are divided by the step's loss tokens once, after the last backward.
+            tokens = step_stats["loss_tokens"]
+            factor = parallel_dims.fsdp_gradient_divide_factor / tokens.clamp(min=1)
+            scale_gradients_(None, model, torch.where(tokens > 0, factor, 1.0).float())
+        forward_backward_end.record()
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
         # optimizer step (so eval_on_start evaluates untrained weights)
@@ -525,15 +491,6 @@ def train(config: SFTConfig | PretrainConfig):
             # opts out of reshard_after_forward), so clip_grad_norm_ below would skip its grad-less
             # unsharded parameters. Reshard so clipping sees every gradient.
             reshard_module(model)
-
-        # Compute the global mean loss for logging.
-        dist.all_reduce(step_loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        dist.all_reduce(nan_loss_count, op=dist.ReduceOp.SUM)
-        if global_token_count_val > 0:
-            batch_loss = (step_loss_sum / global_token_count_val).item()
-        else:
-            batch_loss = 0.0
-        nan_loss_count = nan_loss_count.item()
 
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
@@ -549,12 +506,16 @@ def train(config: SFTConfig | PretrainConfig):
         current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
 
+        step_stats, norms = to_host(step_stats, {"grad_norm": grad_norm} if grad_norm is not None else {})
+        result = step_result(step_stats, parallel_dims)
+        loss = result.loss_sum / step_stats["loss_tokens"].item() if step_stats["loss_tokens"] > 0 else 0.0
+        grad_norm_value = norms["grad_norm"].item() if norms else None
+        forward_backward_time = forward_backward_start.elapsed_time(forward_backward_end) / 1000
+        if result.nan_count > 0:
+            logger.warning(f"{result.nan_count} micro-batches had a NaN loss, left out of the logged loss")
+
         # Count the step before checkpointing it, so a resume continues the counters from here.
-        # The dp mesh excludes cp, whose ranks hold the same rows.
-        global_counts = torch.tensor([step_local_num_tokens, step_local_flops], dtype=torch.float64, device="cuda")
-        dist.all_reduce(global_counts, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
-        num_tokens, num_flops = int(global_counts[0].item()), global_counts[1].item()
-        progress.total_tokens += num_tokens
+        progress.total_tokens += result.num_tokens
         dataset_progress = get_dataset_progress(dataloader)
         progress.total_samples = dataset_progress["step"]
 
@@ -589,24 +550,26 @@ def train(config: SFTConfig | PretrainConfig):
         # Throughput / MFU per step over the full step wall time, as torchtitan reports them with
         # log_freq=1 (tokens since last log / elapsed time), instead of a smoothed sliding window.
         step_time = time.perf_counter() - step_start_time
-        perf_counter.count_tokens(num_tokens)
-        throughput = perf_counter.get_step_tokens_per_second(num_tokens, step_time)
-        mfu = perf_counter.get_step_mfu(num_flops, step_time)
-        mfu_6dn = perf_counter.get_step_mfu(perf_counter.flop_counter.flops_per_token_6dn * num_tokens, step_time)
+        perf_counter.count_tokens(result.num_tokens)
+        throughput = perf_counter.get_step_tokens_per_second(result.num_tokens, step_time)
+        mfu = perf_counter.get_step_mfu(result.num_flops, step_time)
+        mfu_6dn = perf_counter.get_step_mfu(
+            perf_counter.flop_counter.flops_per_token_6dn * result.num_tokens, step_time
+        )
         peak_memory, non_torch_memory = get_peak_memory_across_ranks()
         max_peak_memory = max(max_peak_memory, peak_memory)
 
         # Log step metrics
-        step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {batch_loss:.4f}"
-        if grad_norm is not None:
-            step_message += f" | Grad. Norm {grad_norm:.4f}"
+        step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {loss:.4f}"
+        if grad_norm_value is not None:
+            step_message += f" | Grad. Norm {grad_norm_value:.4f}"
         step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | MFU 6DN {mfu_6dn:.1f}% | Peak Mem. {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
         for name, label in (
             ("max_vio/mean", "Max Vio"),
             ("ep_imbalance/rank/mean", "EP Imbalance"),
             ("routing_confidence/mean", "Routing Conf."),
         ):
-            if name in moe_stats and (value := moe_stats[name].item()) > 0:
+            if name in result.metrics and (value := result.metrics[name]) > 0:
                 step_message += f" | {label} {value:.4f}"
         logger.success(step_message)
 
@@ -652,14 +615,14 @@ def train(config: SFTConfig | PretrainConfig):
             "optim/lr": current_lr,
             "step": progress.step,
         }
-        if grad_norm is not None:
-            optim_metrics["optim/grad_norm"] = grad_norm.item()
+        if grad_norm_value is not None:
+            optim_metrics["optim/grad_norm"] = grad_norm_value
         asyncio.run(monitors.log(optim_metrics, step=progress.step))
 
         loss_log_metrics = {
-            "loss/mean": batch_loss,
-            "loss/perplexity": math.exp(min(batch_loss, 20)),
-            "loss/nan_count": nan_loss_count,
+            "loss/mean": loss,
+            "loss/perplexity": math.exp(min(loss, 20)),
+            "loss/nan_count": result.nan_count,
             "step": progress.step,
         }
         # Log tensor stats
@@ -680,9 +643,8 @@ def train(config: SFTConfig | PretrainConfig):
         disk_metrics["step"] = progress.step
         asyncio.run(monitors.log(disk_metrics, step=progress.step))
 
-        moe_log_metrics = {name: value.item() for name, value in moe_stats.items()} | expert_load_stats
-        if moe_log_metrics:
-            asyncio.run(monitors.log({**moe_log_metrics, "step": progress.step}, step=progress.step))
+        if result.metrics:
+            asyncio.run(monitors.log({**result.metrics, "step": progress.step}, step=progress.step))
 
         is_first_step = False
 
