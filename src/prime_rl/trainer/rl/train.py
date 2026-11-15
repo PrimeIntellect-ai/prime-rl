@@ -293,8 +293,11 @@ def train(config: TrainerConfig):
         )
     logger.debug(f"Initialized data loader in {format_time(time.perf_counter() - t0)}")
 
-    annotation_writer = AnnotationWriter(
-        parallel_dims, world, config.monitors.file.float_decimals if config.monitors.file else None
+    # Only the file monitor stores annotations, so without it there is nothing to write.
+    annotation_writer = (
+        AnnotationWriter(parallel_dims, world, config.monitors.file.float_decimals)
+        if config.annotations and config.monitors.file
+        else None
     )
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
@@ -667,7 +670,8 @@ def train(config: TrainerConfig):
                     fold_all=False,
                 )
 
-            annotation_writer.export(micro_batch, out)
+            if annotation_writer is not None:
+                annotation_writer.export(micro_batch, out)
 
             if is_moe_model:
                 routing_stats.append(take_moe_routing_stats(model))
@@ -684,7 +688,8 @@ def train(config: TrainerConfig):
                 lambda: mismatch_kl[mismatch_mask].mean().item(),
             )
 
-        annotation_writer.flush()
+        if annotation_writer is not None:
+            annotation_writer.flush()
         # Free this batch before the next one is received and converted
         del micro_batches, micro_batch
         # Invalid sampler evidence fails the step before the optimizer applies its gradients
@@ -699,6 +704,9 @@ def train(config: TrainerConfig):
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
             grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
+
+        # An async checkpoint must finish copying the state before the optimizer step mutates it
+        ckpt_manager.wait_for_staging()
 
         # Update the model parameters
         optimizer.step()
@@ -743,10 +751,13 @@ def train(config: TrainerConfig):
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+            if step_action == "checkpoint" or config.rollout_transport.retain:
+                # The action and the release of retained rollouts both need the checkpoint on storage
+                ckpt_manager.wait()
             dataloader.commit(progress.step, release=is_data_master)
-            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
             if step_action == "checkpoint":
                 controller.mark_saved(progress.step)
+            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
 
             ckpt_manager.maybe_clean()
         else:
@@ -865,6 +876,7 @@ def train(config: TrainerConfig):
     if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+        ckpt_manager.wait()
         dataloader.commit(progress.step, release=is_data_master)
         if step_action is not None:
             controller.mark_saved(progress.step)

@@ -287,6 +287,20 @@ def mega_moe_forward_mxfp8(x, topk_idx, topk_weights, gate_up_proj, down_proj, b
     return y
 
 
+def mxfp8_decoded_weights(weights: MegaMoeMXFP8ExpertWeights) -> tuple[torch.Tensor, torch.Tensor]:
+    """`mxfp8_rounded_weights` decoded from an MXFP8 forward's quantized operands (``[E, 2I, H]`` natural gate/up
+    rows, ``[E, H, I]``) by a kernel, without fp32 temporaries: LLEP decodes the copies it holds."""
+    from deep_gemm.llep import dequant_mxfp8
+
+    (l1, l1_sf), (l2, l2_sf) = weights.l1, weights.l2
+    gate_up = torch.empty(l1.shape, dtype=torch.bfloat16, device=l1.device)
+    down = torch.empty(l2.shape, dtype=torch.bfloat16, device=l2.device)
+    # The scale tensors are MN-major views of `[E, K / 128, MN]` storage
+    dequant_mxfp8(l1, l1_sf.transpose(1, 2), gate_up, interleaved=True)
+    dequant_mxfp8(l2, l2_sf.transpose(1, 2), down)
+    return gate_up, down
+
+
 def mega_moe_backward_mxfp8(dy, x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, dw_dtype, activation_clamp):
     import deep_gemm
 
