@@ -370,6 +370,13 @@ def confined(path: str | Path) -> Path:
     return Path(resolved)
 
 
+def is_ckpt_step_complete(step_dir: Path) -> bool:
+    """Whether a step's trainer checkpoint finished writing. DCP writes ``.metadata`` after every rank's shards, so a
+    trainer checkpoint without it was interrupted mid-write. A step without a trainer checkpoint counts as complete."""
+    trainer_dir = step_dir / "trainer"
+    return not trainer_dir.exists() or (trainer_dir / ".metadata").exists()
+
+
 def is_complete_rl_ckpt(ckpt_dir: Path, orchestrator_ckpt_dir: Path, step: int) -> bool:
     """Whether both halves of an RL run's checkpoint of ``step`` are written: the trainer's
     (its sharded state ends with ``.metadata``) and the orchestrator's."""
@@ -379,14 +386,17 @@ def is_complete_rl_ckpt(ckpt_dir: Path, orchestrator_ckpt_dir: Path, step: int) 
 
 
 def resolve_latest_ckpt_step(ckpt_dir: Path, orchestrator_ckpt_dir: Path | None = None) -> int | None:
-    """Gets the latest checkpoint step from the checkpoint directory. Returns None if no checkpoints are found.
+    """Gets the latest complete checkpoint step from the checkpoint directory. Returns None if no checkpoints are found.
 
     For an RL run, pass ``orchestrator_ckpt_dir``, where the orchestrator writes its half (``ckpt_dir`` holds
     the trainer's). The two halves are written at different times, so a crash can leave a step with only one;
     such a step does not count."""
-    steps = get_all_ckpt_steps(ckpt_dir)
-    if orchestrator_ckpt_dir is not None:
-        steps = [step for step in steps if is_complete_rl_ckpt(ckpt_dir, orchestrator_ckpt_dir, step)]
+    steps = []
+    for step in get_all_ckpt_steps(ckpt_dir):
+        if not is_ckpt_step_complete(get_step_path(ckpt_dir, step)):
+            get_logger().warning(f"Skipping checkpoint step {step} in {ckpt_dir}: its trainer checkpoint is incomplete")
+        elif orchestrator_ckpt_dir is None or is_complete_rl_ckpt(ckpt_dir, orchestrator_ckpt_dir, step):
+            steps.append(step)
     if len(steps) == 0:
         logger = get_logger()
         logger.warning(f"No checkpoints found in {ckpt_dir}. Starting from scratch.")

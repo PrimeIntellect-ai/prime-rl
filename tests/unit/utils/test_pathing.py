@@ -160,3 +160,17 @@ def test_latest_finished_broadcast_skips_an_offer_that_never_finished(tmp_path):
         for marker in markers:
             (step_dir / marker).touch()
     assert latest_finished_broadcast(tmp_path) == 10
+
+
+def test_resolve_latest_ckpt_step_skips_incomplete_trainer_checkpoint(tmp_path):
+    for step in (1, 2, 3):
+        get_step_path(tmp_path, step).mkdir()
+    # Step 1 has only an orchestrator checkpoint, step 2 a finished trainer checkpoint, step 3 one cut off mid-write
+    (get_step_path(tmp_path, 1) / "orchestrator").mkdir()
+    (get_step_path(tmp_path, 2) / "trainer").mkdir()
+    (get_step_path(tmp_path, 2) / "trainer" / ".metadata").touch()
+    (get_step_path(tmp_path, 3) / "trainer").mkdir()
+
+    assert resolve_latest_ckpt_step(tmp_path) == 2
+    (get_step_path(tmp_path, 3) / "trainer" / ".metadata").touch()
+    assert resolve_latest_ckpt_step(tmp_path) == 3

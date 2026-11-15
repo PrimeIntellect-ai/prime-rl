@@ -1,4 +1,5 @@
 import asyncio
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -9,6 +10,7 @@ from torch import Tensor
 
 from prime_rl import monitors
 from prime_rl.monitors.file.traces.update import make_update
+from prime_rl.utils.distributed import all_gather_bytes
 
 
 class AnnotationWriter:
@@ -103,8 +105,9 @@ def gather_streams(
     lengths = [torch.zeros(1, dtype=torch.long, device=device) for _ in range(size)]
     dist.all_gather(lengths, torch.tensor([flat.shape[1]], device=device), group=group)
     lengths = [int(length.item()) for length in lengths]
-    gathered_keys: list[list[tuple[str, int, int]]] | None = [[] for _ in range(size)] if rank == 0 else None
-    dist.gather_object(keys, gathered_keys, group_dst=0, group=group)
+    encoded_keys = json.dumps(keys, separators=(",", ":")).encode()
+    gathered_key_bytes = all_gather_bytes(encoded_keys, group)
+    gathered_keys = [json.loads(payload) for payload in gathered_key_bytes] if rank == 0 else None
 
     width = max(lengths)
     received = None
@@ -121,6 +124,7 @@ def gather_streams(
 
     host = received.cpu().numpy()
     gathered: list[tuple[str, int, np.ndarray, np.ndarray]] = []
+    assert gathered_keys is not None
     for member, member_keys in enumerate(gathered_keys):
         start = 0
         for trace_id, branch_index, length in member_keys:

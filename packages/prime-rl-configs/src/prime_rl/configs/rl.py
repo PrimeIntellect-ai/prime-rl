@@ -99,6 +99,9 @@ class SharedCheckpointConfig(BaseConfig):
     rollouts: bool = False
     """Also checkpoint the orchestrator's finished but unshipped episodes and its running rollouts, so a resumed run continues them (``orchestrator.ckpt.rollouts``)."""
 
+    async_save: bool | None = None
+    """Write trainer checkpoints in the background (see ``trainer.ckpt.async_save``). If None, uses the trainer's default."""
+
 
 class SharedModelConfig(BaseConfig):
     name: str = "Qwen/Qwen3-0.6B"
