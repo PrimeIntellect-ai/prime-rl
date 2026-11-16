@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +10,7 @@ from transformers.utils import cached_file
 from prime_rl.configs.sft import SystemOneColumnsConfig
 from prime_rl.trainer.sft.system_one.data import check_rendered_record
 from prime_rl.trainer.sft.system_one.record import Question, SystemOneRecord, parse_record
+from prime_rl.trainer.sft.system_one.strategies import clef as clef_module
 from prime_rl.trainer.sft.system_one.strategies.clef import ClefFlashStrategy
 from prime_rl.trainer.sft.system_one.strategies.d3 import D3Strategy
 
@@ -200,11 +202,16 @@ def test_clef_defaults(clef_tokenizer, clef):
     assert reads[1][1] == '{"description":"","option_id":"true"}'
 
 
-def test_clef_cuts_the_state(clef_tokenizer, clef):
+def test_clef_cuts_the_state(clef_tokenizer, clef, monkeypatch):
+    warnings = []
+    monkeypatch.setattr(clef_module, "get_logger", lambda: SimpleNamespace(warning=warnings.append))
     questions = {"q": QUESTIONS["outage"]}
     fixed = len(clef.render_record(record(questions, ""), 8192)["input_ids"])
+    assert warnings == []
     rendered = clef.render_record(record(questions, "word " * 1000), fixed + 10)
     assert len(rendered["input_ids"]) == fixed + 10
+    (warning,) = warnings
+    assert re.fullmatch(rf"Record 'r': cutting the last \d+ tokens of its state, .* in {fixed + 10} tokens", warning)
     assert clef_tokenizer.decode(rendered["input_ids"]).endswith(CLEF_END)
     assert clef.render_record(record(questions, ""), fixed - 1) is None
 
@@ -221,10 +228,10 @@ def test_clef_cuts_the_state(clef_tokenizer, clef):
         ({"q": {"type": "choice", "instructions": "?", "criteria": {f"o{i}": None for i in range(27)}}}, {"clef"}),
     ],
 )
-def test_skips_what_it_cannot_render(d3, clef, questions, skipped_by):
-    r = record(questions)
-    for name, strategy in (("d3", d3), ("clef", clef)):
-        assert (strategy.render_record(r, 8192) is None) == (name in skipped_by), name
+@pytest.mark.parametrize("name", ["d3", "clef"])
+def test_skips_what_it_cannot_render(request, name, questions, skipped_by):
+    strategy = request.getfixturevalue(name)
+    assert (strategy.render_record(record(questions), 8192) is None) == (name in skipped_by)
 
 
 VLLM_CASES = [
@@ -251,34 +258,45 @@ def vllm_context(tokenizer, max_model_len, hf_config=None):
     )
 
 
-@pytest.mark.parametrize(
-    "state, questions, seq_len", [*((s, q, 8192) for s, q in VLLM_CASES), ("word " * 20000, QUESTIONS, 32768)]
-)
-def test_matches_vllm(tokenizer, clef_tokenizer, d3, clef, state, questions, seq_len):
+def vllm_strategies():
     strategies = pytest.importorskip("vllm.entrypoints.openai.decisions.strategies")
     if not isinstance(strategies.D3Strategy, type):  # a stand-in module, as on a machine without CUDA
         pytest.skip("vLLM's decision strategies are not installed")
     from vllm.entrypoints.generate.structured_decisions.protocol import StructuredDecisionRequest
     from vllm.entrypoints.generate.structured_decisions.serving import parse_questions
 
-    request = StructuredDecisionRequest.model_validate({"state": state, "questions": questions})
-    r = record(questions, state)
+    return strategies, StructuredDecisionRequest, parse_questions
 
+
+MATCHES_VLLM = pytest.mark.parametrize(
+    "state, questions, seq_len", [*((s, q, 8192) for s, q in VLLM_CASES), ("word " * 20000, QUESTIONS, 32768)]
+)
+
+
+@MATCHES_VLLM
+def test_d3_matches_vllm(tokenizer, d3, state, questions, seq_len):
+    strategies, StructuredDecisionRequest, parse_questions = vllm_strategies()
+    request = StructuredDecisionRequest.model_validate({"state": state, "questions": questions})
     vllm_d3 = strategies.D3Strategy(vllm_context(tokenizer, seq_len, d3_config()))
     asked = parse_questions(request, vllm_d3.limits())
     rendered = vllm_d3.render_state(request.state)
     expected = [vllm_d3._tokens(vllm_d3._prompt(rendered, q, [])) for q in asked]
-    rendered = d3.render_record(r, seq_len)
+    rendered = d3.render_record(record(questions, state), seq_len)
     starts = [sum(rendered["seq_lens"][:n]) for n in range(len(asked))]
     assert [rendered["input_ids"][s : s + n] for s, n in zip(starts, rendered["seq_lens"])] == expected
     assert all(
         vllm_d3._options(q)[1] == ([1, 0] if q.type.name == "noul" else list(range(len(q.options)))) for q in asked
     )
 
+
+@MATCHES_VLLM
+def test_clef_matches_vllm(clef_tokenizer, clef, state, questions, seq_len):
+    strategies, StructuredDecisionRequest, parse_questions = vllm_strategies()
+    request = StructuredDecisionRequest.model_validate({"state": state, "questions": questions})
     vllm_clef = strategies.ClefFlashStrategy(vllm_context(clef_tokenizer, seq_len))
     asked = parse_questions(request, vllm_clef.limits())
     prompt, schema, orders = vllm_clef.encode(asked, vllm_clef.render_state(request.state))
-    rendered = clef.render_record(r, seq_len)
+    rendered = clef.render_record(record(questions, state), seq_len)
     assert rendered["input_ids"] == prompt
     spans = iter((len(prompt) + s, len(prompt) + e) for s, e in schema["option_spans"])
     question_spans = [(len(prompt) + s, len(prompt) + e) for s, e in schema["question_spans"]]
