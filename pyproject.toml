@@ -31,6 +31,8 @@ dependencies = [
     "uvloop>=0.21.0",
     "verifiers[harbor]>=0.4.0",
     "renderers[multimodal]>=0.1.12",
+    "pillow>=13.0.0",
+    "msgpack>=1.2.3",
     "pybase64>=1.4.2",
     "msgspec>=0.18",
     "fastapi>=0.115",
@@ -52,6 +54,11 @@ prime_rl = "prime_rl.inference.patches:apply_shared_vllm_patches"
 
 [project.optional-dependencies]
 gpu = [
+    # Match the CUDA 13.0 runtime headers used by torch and TileLang JIT.
+    "nvidia-cuda-nvcc==13.0.88 ; sys_platform == 'linux'",
+    "nvidia-cuda-crt==13.0.88 ; sys_platform == 'linux'",
+    "nvidia-nvvm==13.0.88 ; sys_platform == 'linux'",
+    "nvidia-cuda-cccl==13.0.85 ; sys_platform == 'linux'",
     "torch>=2.13.0 ; sys_platform == 'linux'",
     "torchvision ; sys_platform == 'linux'",
     "torchaudio ; sys_platform == 'linux'",
@@ -158,6 +165,9 @@ override-dependencies = [
     "nvidia-cutlass-dsl==4.8.0",
     "torch>=2.13.0",
     "openenv-core",
+    # enterprise-ops-gym and mcp-atlas cap datasets<5, which holds huggingface-hub,
+    # filelock and fsspec at versions with known vulnerabilities.
+    "datasets>=5.0.1",
     # TODO: PyPI release of prime-traces with PrimeIntellect-ai/prime#1109 (orjson records) asap.
     "prime-traces @ git+https://github.com/PrimeIntellect-ai/prime@adf8d25c3e34df8e039674fae9e0e4bf9cee27f3#subdirectory=packages/prime-traces",
 ]
