@@ -53,6 +53,16 @@ def test_soft_label_wins_and_unlabelled_questions_have_no_target():
     assert targets[2] == pytest.approx([1 / 3] * 3)  # a sum within 1e-2 of 1 is rescaled
 
 
+@pytest.mark.parametrize(
+    "criteria, expected",
+    [({"true": None}, None), ({"true": "Down.", "false": None}, {"true": "Down."}), (None, None)],
+)
+def test_null_noul_descriptions_are_absent(criteria, expected):
+    question = {"type": "noul", "instructions": "Is a service down?", "criteria": criteria}
+    record, _ = parse_record(row({"outage": question}), COLUMNS)
+    assert record.questions[0].criteria == expected
+
+
 def test_label_columns_may_be_absent_or_null():
     without_soft_label = {key: value for key, value in row(label=LABEL).items() if key != "soft_label"}
     record, labels = parse_record(without_soft_label, COLUMNS)

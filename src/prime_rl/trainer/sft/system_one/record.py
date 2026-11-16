@@ -21,8 +21,9 @@ class Question:
     instructions: Any
     """What to decide, as given: text, or an object or array."""
     criteria: Any
-    """The allowed answers, as given. noul: an optional object describing ``true`` and/or ``false``. choice: option
-    id -> description (or None). score: the level descriptions, lowest level first."""
+    """The allowed answers, as given. noul: an optional object describing ``true`` and/or ``false`` (a null
+    description is dropped, and None when none is left). choice: option id -> description (or None). score: the level
+    descriptions, lowest level first."""
 
     @property
     def options(self) -> list[str]:
@@ -94,6 +95,8 @@ def _parse_question(question_id: str, definition: Any) -> Question:
     if kind == "noul":
         if criteria is not None and (not isinstance(criteria, Mapping) or not set(criteria) <= {"true", "false"}):
             raise ValueError(f"{where}: noul criteria may only describe true and false")
+        if criteria is not None:
+            criteria = {option: text for option, text in criteria.items() if text is not None} or None
     elif kind == "choice":
         if not isinstance(criteria, Mapping) or not 1 <= len(criteria) <= MAX_CHOICE_OPTIONS:
             raise ValueError(f"{where}: choice criteria must map 1 to {MAX_CHOICE_OPTIONS} options to descriptions")
