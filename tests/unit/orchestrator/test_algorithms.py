@@ -8,7 +8,7 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage
 
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
-from prime_rl.orchestrator.algo import EchoAlgorithm, assign_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo import Algorithm, EchoAlgorithm, assign_advantages, build_algorithm, stamp_loss_routing
 from prime_rl.orchestrator.algo.base import iter_trainable_traces
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.transports.batch.types import TrainingSample
@@ -76,6 +76,22 @@ def test_opd_teacher_must_be_a_frozen_endpoint():
         _build(type="opd")
     with pytest.raises(ValueError, match="FrozenModelConfig"):
         _build(type="opd", teacher="policy")
+
+
+def test_custom_algorithm_imports_its_class_only_when_built():
+    # A class from a package the config validator doesn't have parses; it imports when the orchestrator builds it.
+    unresolved = _build(type="custom", import_path="private_env.algo.MyAlgorithm", kwargs={"scale": 2})
+    assert unresolved.kwargs == {"scale": 2}
+    with pytest.raises(ModuleNotFoundError):
+        build_algorithm(unresolved, MagicMock())
+    with pytest.raises(ValueError, match="pattern"):
+        _build(type="custom", import_path="my_algorithm")
+    built = build_algorithm(_build(type="custom", import_path="prime_rl.orchestrator.algo.base.Algorithm"), MagicMock())
+    assert type(built) is Algorithm
+    with pytest.raises(TypeError, match="Algorithm subclass"):
+        build_algorithm(
+            _build(type="custom", import_path="prime_rl.orchestrator.algo.base.iter_trainable_traces"), None
+        )
 
 
 def test_sft_requires_teacher():

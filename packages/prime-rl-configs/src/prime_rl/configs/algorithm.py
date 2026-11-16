@@ -375,6 +375,22 @@ class DebugAlgoConfig(BaseAlgoConfig):
         return self
 
 
+class CustomAlgoConfig(BaseAlgoConfig):
+    type: Literal["custom"] = "custom"
+    """An algorithm that lives outside prime-rl: the :class:`~prime_rl.orchestrator.algo.base.Algorithm`
+    subclass ``import_path`` names, built with this config. Only the path's form is checked here; the class is
+    imported when the orchestrator builds its algorithms, so it may come from a package installed with the
+    env."""
+
+    action_loss_type: ClassVar[ActionLossType] = "rl"
+
+    import_path: str = Field(pattern=r"^[A-Za-z_][\w]*(\.[A-Za-z_][\w]*)+$")
+    """Algorithm class as ``my_module.MyAlgorithm``."""
+
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    """Parameters the class reads from ``config.kwargs``."""
+
+
 AlgoConfig: TypeAlias = Annotated[
     GRPOAlgoConfig
     | EchoAlgoConfig
@@ -384,7 +400,8 @@ AlgoConfig: TypeAlias = Annotated[
     | OPDAlgoConfig
     | OPSDAlgoConfig
     | SFTAlgoConfig
-    | DebugAlgoConfig,
+    | DebugAlgoConfig
+    | CustomAlgoConfig,
     Field(discriminator="type"),
 ]
 """The training algorithm: sampling plus the per-token training signal (credit
@@ -401,7 +418,9 @@ its class defaults are the vetted setting.
 - ``echo`` — GRPO on action tokens + weighted CE on tool-response observation tokens.
 - ``debug`` — the same constant advantage on every sampled token, ignoring
   rewards. Debugging only: for infra work that needs every token trainable.
+- ``custom`` — an ``Algorithm`` subclass outside prime-rl, named by ``import_path``.
 
-A new credit-assignment scheme is a new named algorithm in code (subclass
-``Algorithm``, register it), not a config that points at an import path.
+A credit-assignment scheme others should use is a new named algorithm in code
+(subclass ``Algorithm``, register it); ``custom`` is for schemes that live with
+their env.
 """

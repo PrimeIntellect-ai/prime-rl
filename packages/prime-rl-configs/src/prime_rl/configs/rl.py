@@ -586,8 +586,12 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_score_centering(self):
+        """Have every policy source record the support the rl loss centers over: the replayed sampling mask of
+        truncated sampling, else ``score_centering_k`` i.i.d. draws or the sampler's top ``score_centering_topk``
+        ids (``icepop`` with ``score_centering``)."""
         loss = self.trainer.loss
-        if loss.type != "icepop" or not loss.score_centering:
+        draws = getattr(loss, "score_centering_k", None) is not None
+        if not draws and (loss.type != "icepop" or not loss.score_centering):
             return self
         if not self.orchestrator.policy_samplings:
             raise ValueError("Score centering requires a policy-sampled training source")
@@ -596,10 +600,18 @@ class RLConfig(BaseConfig):
             if sampling.temperature <= 0:
                 raise ValueError("Score centering requires stochastic sampling (temperature > 0)")
             # A replayed support comes back whole with its sampler logprobs, whatever the count
-            k = 1 if sampling.truncates_distribution() else loss.score_centering_topk
+            truncated = sampling.truncates_distribution()
+            if truncated:
+                k = 1
+            else:
+                k = loss.score_centering_k if draws else loss.score_centering_topk
             if sampling.logprobs is not None and sampling.logprobs < k:
                 raise ValueError(f"Score centering needs sampling.logprobs >= {k}")
-            return sampling.model_copy(update={"logprobs": max(sampling.logprobs or 0, k)})
+            update = {"logprobs": max(sampling.logprobs or 0, k)}
+            if draws and not truncated:
+                update["sampler_draws"] = k
+            # Validated, not copied: the sampling config derives its extra_body from sampler_draws.
+            return TrainSamplingConfig.model_validate({**sampling.model_dump(), **update})
 
         self.orchestrator.update_policy_samplings(request_logprobs)
         return self

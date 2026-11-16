@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import numpy as np
 import verifiers.v1 as vf
 
@@ -32,6 +34,11 @@ class Algorithm:
     :meth:`score_group` for cohort-relative work. The train sink compiles the
     annotated traces into transport samples only after admission.
     """
+
+    prune_zero_advantages: ClassVar[bool] = True
+    """Whether the train sink drops sampled tokens with zero advantage from the rl component. An algorithm
+    whose rl loss trains tokens on more than their advantage (a custom loss reading ``loss_weights`` or the
+    sampler support) sets False to keep them."""
 
     def __init__(self, config: AlgoConfig, clients: InferenceClient):
         self.action_loss_type = config.action_loss_type

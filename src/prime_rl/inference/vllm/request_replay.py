@@ -10,6 +10,7 @@ import torch
 
 REPLAY_KEY = "prl_replay"
 SAMPLER_ROWS_KEY = "prl_sampler_rows"
+SAMPLER_DRAWS_KEY = "prl_sampler_draws"
 CAPACITY_ENV = "PRIME_SAMPLING_SUPPORT_CAPACITY"
 _capture: ContextVar[list | None] = ContextVar("prl_capture", default=None)
 _verified: ContextVar["_VerifiedReplay | None"] = ContextVar("prl_verified", default=None)
@@ -33,6 +34,10 @@ def wants_replay(params) -> bool:
 
 def sampler_rows(params) -> int:
     return 0 if params is None else (params.extra_args or {}).get(SAMPLER_ROWS_KEY, 0)
+
+
+def sampler_draws(params) -> bool:
+    return params is not None and bool((params.extra_args or {}).get(SAMPLER_DRAWS_KEY))
 
 
 def patch_request_replay():
@@ -91,8 +96,10 @@ def patch_request_replay():
         if not hasattr(self, "_prime_capture"):
             self._prime_capture = np.zeros(self.sampling_states.max_num_reqs, dtype=bool)
             self._prime_sampler_rows = np.zeros(self.sampling_states.max_num_reqs, dtype=np.int64)
+            self._prime_sampler_draws = np.zeros(self.sampling_states.max_num_reqs, dtype=bool)
         self._prime_capture[req_idx] = wants_replay(sampling_params)
         self._prime_sampler_rows[req_idx] = sampler_rows(sampling_params)
+        self._prime_sampler_draws[req_idx] = sampler_draws(sampling_params)
         return add_request(self, req_idx, sampling_params)
 
     call = Sampler.__call__
@@ -115,7 +122,14 @@ def patch_request_replay():
         keep = torch.from_numpy(replay).pin_memory().to(num_sampled.device, non_blocking=True)
         rows = None
         if num_rows.any():
-            rows = pack_sampler_rows(processed, cu_num_logits, num_sampled, output.sampled_token_ids, num_rows)
+            rows = pack_sampler_rows(
+                processed,
+                cu_num_logits,
+                num_sampled,
+                output.sampled_token_ids,
+                num_rows,
+                self._prime_sampler_draws[indices],
+            )
         output.sampling_mask_tensors = capture_supports(
             processed, cu_num_logits, torch.where(keep, num_sampled, 0), int(os.environ[CAPACITY_ENV]), rows
         )

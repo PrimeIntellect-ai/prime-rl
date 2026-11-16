@@ -204,16 +204,23 @@ def capture_verified_supports(logits, cu_num_logits, num_sampled, replay, rows_p
     return VerifiedSupports([capture_supports(logits, row_starts, committed, capacity)], rows_per_request)
 
 
-def pack_sampler_rows(logits, cu_num_logits, num_sampled, sampled, num_rows):
-    """Per selected request: the sampled token, then the ``num_rows`` top ids of the processed distribution q,
-    each packed with its full-vocabulary processed logprob. The rows copy vLLM's ``[sampled, top...]`` logprob
-    layout, where the sampled id can repeat among the top ids; the client parses each row as vLLM's (repeated
-    ids collapse into one head entry). Returns the selected request indices, packed rows and row sizes."""
+def pack_sampler_rows(logits, cu_num_logits, num_sampled, sampled, num_rows, draws):
+    """Per selected request: the sampled token, then ``num_rows`` ids of the processed distribution q, each
+    packed with its full-vocabulary processed logprob: q's top ids, or, where ``draws`` is set, i.i.d. draws
+    from q (with replacement, from the global generator, so independent of the sampled token). The rows copy
+    vLLM's ``[sampled, top...]`` logprob layout, where the sampled id can repeat among the others. Returns the
+    selected request indices, packed rows and row sizes."""
     selected = np.flatnonzero(num_rows)
     width = int(num_rows.max())
     index = torch.from_numpy(selected).pin_memory().to(logits.device, non_blocking=True)
     x = logits[cu_num_logits[:-1].long()[index]].float()
-    ids = torch.cat([sampled[index].view(-1, 1).long(), x.topk(width).indices], dim=1)
+    alternatives = x.topk(width).indices
+    if draws[selected].any():
+        drawn = torch.from_numpy(draws[selected]).pin_memory().to(x.device, non_blocking=True)
+        alternatives = torch.where(
+            drawn.unsqueeze(-1), torch.multinomial(x.softmax(-1), width, replacement=True), alternatives
+        )
+    ids = torch.cat([sampled[index].view(-1, 1).long(), alternatives], dim=1)
     values = (x.gather(1, ids) - x.logsumexp(-1, keepdim=True)).clamp_min(-9999.0)
     packed = ((values.contiguous().view(torch.int32) ^ NEG_INF_BITS).long() << 32) | ids
     row_counts = (

@@ -59,6 +59,11 @@ class TrainSamplingConfig(BaseConfig):
     logprobs: int | None = Field(None, ge=1)
     """Record this many top sampler probabilities per token, in addition to its sampled logprob."""
 
+    sampler_draws: int | None = Field(None, ge=1)
+    """Record this many i.i.d. draws from the untruncated sampler per token, in place of its top
+    ``logprobs`` ids. Set by the ``rl`` entrypoint for the ``reinforce`` loss's score centering; sent as
+    ``extra_body.extra_args.prl_sampler_draws``."""
+
     # Strictly speaking, extra_body is not a sampling parameter, but it is the
     # easiest way to pass arbitrary extra parameters to the server via verifiers
     extra_body: Annotated[dict[str, Any], Live()] = {}
@@ -66,6 +71,13 @@ class TrainSamplingConfig(BaseConfig):
 
     def truncates_distribution(self) -> bool:
         return self.top_p < 1.0 or self.top_k is not None
+
+    @model_validator(mode="after")
+    def resolve_sampler_draws(self):
+        if self.sampler_draws is not None:
+            extra_args = {**self.extra_body.get("extra_args", {}), "prl_sampler_draws": self.sampler_draws}
+            self.extra_body = {**self.extra_body, "extra_args": extra_args}
+        return self
 
     @model_validator(mode="after")
     def validate_no_extra_body_truncation(self):
@@ -266,8 +278,12 @@ class TrainSourceConfig(EnvConfig):
             | TrainSamplingConfig.model_fields.keys()
             | {"min_p", "logprobs", "return_token_ids", "cache_salt"}
         )
-        sampling = vf.SamplingConfig(**self.sampling.model_dump(exclude_none=True))
-        if getattr(sampling, "extra_args", None) == {"prl_replay": self.sampling.truncates_distribution()}:
+        sampling = vf.SamplingConfig(**self.sampling.model_dump(exclude_none=True, exclude={"sampler_draws"}))
+        extra_args = dict(getattr(sampling, "extra_args", None) or {})
+        if extra_args.pop("prl_sampler_draws", None) == self.sampling.sampler_draws and extra_args in (
+            {},
+            {"prl_replay": self.sampling.truncates_distribution()},
+        ):
             supported.add("extra_args")
         if unsupported := sampling.model_dump(exclude_none=True).keys() - supported:
             raise ValueError(

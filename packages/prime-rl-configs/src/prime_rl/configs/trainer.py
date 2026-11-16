@@ -586,6 +586,11 @@ class IPOLossConfig(BaseConfig):
     adv_tau: float = Field(1.0, ge=0)
     """Temperature for the advantage term."""
 
+    score_centering_k: int | None = Field(None, ge=1)
+    """Center the importance-weighted score under the sampler over each token's recorded support: per token,
+    ``-adv_tau * A * (w(a) grad log p(a) - sum_v u_v w(v) grad log p_v)``, with ``u_v = q_v`` on a replayed
+    sampling mask (exact) or ``u_v = 1/K`` over this many i.i.d. sampler draws under untruncated sampling."""
+
 
 class IcePopLossConfig(BaseConfig):
     type: Literal["icepop"] = "icepop"
@@ -607,11 +612,33 @@ class IcePopLossConfig(BaseConfig):
     Probabilities retain full-vocabulary normalization. With sampling replay, the
     complete recorded support is captured instead."""
 
+    score_centering_k: int | None = Field(None, ge=1)
+    """Center the importance-weighted score under the sampler over each token's recorded support: per token,
+    ``-adv_tau * A * (w(a) grad log p(a) - sum_v u_v w(v) grad log p_v)``, with ``u_v = q_v`` on a replayed
+    sampling mask (exact) or ``u_v = 1/K`` over this many i.i.d. sampler draws under untruncated sampling."""
+
     @model_validator(mode="after")
     def validate_ratio_bounds(self):
         if self.ratio_low > self.ratio_high:
             raise ValueError("ratio_low must not exceed ratio_high")
+        if self.score_centering and self.score_centering_k is not None:
+            raise ValueError("score_centering (top-k head) and score_centering_k (sampler draws) are exclusive")
         return self
+
+
+class ReinforceLossConfig(BaseConfig):
+    """REINFORCE: policy gradient with importance weight 1, its score always centered under the sampler (see
+    ``score_centering_k``). The same loss as ``ipo`` or ``icepop`` with ``score_centering_k`` and no clipping or
+    importance weight."""
+
+    type: Literal["reinforce"] = "reinforce"
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
+
+    score_centering_k: int = Field(16, ge=1)
+    """Sampler draws per token under untruncated sampling, each weighted ``1/K``. Truncated sampling replays its
+    sampling mask and centers exactly."""
 
 
 class CustomLossConfig(BaseConfig):
@@ -623,9 +650,14 @@ class CustomLossConfig(BaseConfig):
     kwargs: dict[str, Any] = Field(default_factory=dict)
     """Kwargs forwarded to the loss function."""
 
+    load_support: bool = False
+    """Pass each token's recorded sampler support to the loss (``LossInputs.support_rows``,
+    ``sampler_support_logprobs``, ``trainer_support_logprobs``). The support is what the rollouts recorded:
+    the replayed sampling mask of truncated sampling, or the sampler's top ``sampling.logprobs`` ids."""
+
 
 LossConfig: TypeAlias = Annotated[
-    IPOLossConfig | IcePopLossConfig | CustomLossConfig,
+    IPOLossConfig | IcePopLossConfig | ReinforceLossConfig | CustomLossConfig,
     Field(discriminator="type"),
 ]
 

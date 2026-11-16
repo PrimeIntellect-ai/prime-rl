@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
@@ -11,6 +12,7 @@ from prime_rl.configs.trainer import (
     IcePopLossConfig,
     IPOLossConfig,
     LossConfig,
+    ReinforceLossConfig,
 )
 from prime_rl.trainer.models.layers.lm_head import TokenSupport, support_replay_mask
 from prime_rl.utils.utils import import_object
@@ -296,6 +298,81 @@ class IcePopLoss:
         return LossOutputs(loss=loss, metrics=metrics)
 
 
+def ipo_weight(config: IPOLossConfig, log_p: Tensor, log_q: Tensor) -> tuple[Tensor, Tensor]:
+    # |p - q| = e^max * -expm1(min - max), without cancellation near p = q.
+    larger, smaller = torch.maximum(log_p, log_q), torch.minimum(log_p, log_q)
+    keep = torch.exp(larger) * -torch.expm1(smaller - larger) <= config.eps
+    log_ratio = (log_p - log_q).clamp(max=math.log(config.max_importance_ratio))
+    return keep, torch.exp(torch.where(keep, log_ratio, 0.0)) * keep
+
+
+def icepop_weight(config: IcePopLossConfig, log_p: Tensor, log_q: Tensor) -> tuple[Tensor, Tensor]:
+    log_ratio = log_p - log_q
+    keep = (log_ratio >= math.log(config.ratio_low)) & (log_ratio <= math.log(config.ratio_high))
+    return keep, torch.exp(torch.where(keep, log_ratio, 0.0)) * keep
+
+
+def reinforce_weight(config: ReinforceLossConfig, log_p: Tensor, log_q: Tensor) -> tuple[Tensor, Tensor]:
+    return torch.ones_like(log_p, dtype=torch.bool), torch.ones_like(log_p)
+
+
+class CenteredRLLoss:
+    """Policy gradient with importance weight ``w`` (set by the loss type: ``ipo``, ``icepop``, or 1 for
+    ``reinforce``), its score centered under the sampler over each token's recorded support:
+    ``-adv_tau * A * (w(a) grad log p(a) - sum_v u_v w(v) grad log p_v)``, with ``u_v = q_v`` on a replayed
+    sampling mask (exact) and ``u_v = 1/K`` over K i.i.d. sampler draws (an unbiased K-sample estimate).
+    Opening the ``ipo`` or ``icepop`` bounds keeps the exact importance weight ``p/q``; tightening them clips
+    the sampled token and the draws alike."""
+
+    def __init__(self, config: IPOLossConfig | IcePopLossConfig | ReinforceLossConfig):
+        self.config = config
+        self.weight_fn = {"ipo": ipo_weight, "icepop": icepop_weight, "reinforce": reinforce_weight}[config.type]
+
+    def loss(self, inputs: LossInputs) -> LossOutputs:
+        mask = inputs.loss_mask
+        logprobs = inputs.trainer_logprobs[mask]
+        inference_logprobs = inputs.inference_logprobs[mask]
+        advantages = self.config.adv_tau * inputs.advantages[mask].detach()
+        if inputs.support_rows is None:
+            raise ValueError(
+                f"The {self.config.type} loss's score centering needs the sampler support of every rl token"
+            )
+        rows = inputs.support_rows.long()
+
+        def row_sum(values: Tensor) -> Tensor:
+            return values.new_zeros(mask.shape[0]).index_add(0, rows, values)
+
+        log_p = inputs.trainer_support_logprobs
+        log_q = inputs.sampler_support_logprobs.detach()
+        count = row_sum(torch.ones_like(log_q))
+        if not bool((count > 0)[mask].all()):
+            raise ValueError(f"The {self.config.type} loss is missing sampler support on rl tokens")
+        u = torch.where(inputs.support_replayed[rows], log_q.exp(), 1.0 / count[rows])
+        with torch.no_grad():
+            keep, w = self.weight_fn(self.config, logprobs.detach(), inference_logprobs)
+            _, support_w = self.weight_fn(self.config, log_p.detach(), log_q)
+        # Gradient w(a) grad log p(a) - sum_v u_v w(v) grad log p_v; the weights are detached.
+        score = (
+            w * torch.exp(logprobs - logprobs.detach())
+            - row_sum(u * support_w * torch.exp(log_p - log_p.detach()))[mask]
+        )
+        per_token_loss = -advantages * score
+        if inputs.loss_weights is not None:
+            per_token_loss = per_token_loss * inputs.loss_weights[mask]
+
+        log_ratio = (logprobs - inference_logprobs).detach()
+        mismatch_kl = _mismatch_kl_from_log_ratio(log_ratio)
+        metrics = {
+            "masked_mismatch_kl": _safe_mean(mismatch_kl, ~keep),
+            "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep),
+            **_importance_ratio_metrics(log_ratio, keep),
+            "is_masked": (~keep).sum() / max(keep.numel(), 1),
+            "score_centering/replayed": inputs.support_replayed[mask].float(),
+            "score_centering/support_mass": row_sum(u * (log_p.detach() - log_q).exp())[mask],
+        }
+        return LossOutputs(loss=per_token_loss.sum(), metrics=metrics)
+
+
 def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
     """
     Ref-KL loss type (on-policy distillation): the reverse KL to the reference
@@ -373,6 +450,10 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> Loss:
     match loss_config:
         case CustomLossConfig():
             return CustomLoss(loss_config)
+        case ReinforceLossConfig():
+            return CenteredRLLoss(loss_config)
+        case IPOLossConfig() | IcePopLossConfig() if loss_config.score_centering_k is not None:
+            return CenteredRLLoss(loss_config)
         case IPOLossConfig():
             return IPOLoss(loss_config)
         case IcePopLossConfig():

@@ -323,6 +323,7 @@ def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
         {"type": "score_centering"},
         {"type": "ipo", "score_centering": True},
         {"type": "icepop", "score_centering_topk": None},
+        {"type": "icepop", "score_centering": True, "score_centering_k": 8},
     ):
         with pytest.raises(ValidationError):
             TrainerConfig.model_validate({"loss": unsupported})
@@ -1464,6 +1465,25 @@ def test_init_from_accepts_a_checkpoint_step_dir():
 def test_init_from_rejects_a_path_that_is_not_a_step_dir(init_from: str):
     with pytest.raises(ValidationError, match="model.init_from must point at a checkpoint step directory"):
         TrainerModelConfig(init_from=init_from)
+
+
+@pytest.mark.parametrize("loss_type", ["reinforce", "icepop", "ipo"])
+@pytest.mark.parametrize(("top_p", "logprobs", "draws"), [(1.0, 8, 8), (0.9, 1, None)])
+def test_draw_centering_records_sampler_draws_unless_it_replays(loss_type, top_p, logprobs, draws):
+    config = RLConfig.model_validate(
+        {
+            "trainer": {"loss": {"type": loss_type, "score_centering_k": 8}},
+            "orchestrator": {
+                "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}, "sampling": {"top_p": top_p}}]}
+            },
+            "inference": {},
+        }
+    )
+    sampling = config.orchestrator.train.source[0].sampling
+    assert sampling.logprobs == logprobs
+    assert sampling.sampler_draws == draws
+    assert sampling.extra_body["extra_args"].get("prl_sampler_draws") == draws
+    assert RLConfig.model_validate_json(config.model_dump_json()) == config
 
 
 def test_score_centering_replays_top_p_alone():

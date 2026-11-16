@@ -444,6 +444,12 @@ def train(config: TrainerConfig):
         step_local_num_tokens = 0
         step_local_flops = 0
         score_centering = config.loss.type == "icepop" and config.loss.score_centering
+        # The rl loss reads each token's sampler support and the trainer's logprobs over it
+        loss_reads_support = (
+            score_centering
+            or getattr(config.loss, "score_centering_k", None) is not None
+            or (config.loss.type == "custom" and config.loss.load_support)
+        )
         score_centering_errors = []
         for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
             step_local_num_tokens += micro_batch["input_ids"].shape[1]
@@ -481,7 +487,7 @@ def train(config: TrainerConfig):
 
             support = label_support = None
             if micro_batch["support_offsets"] is not None and (
-                score_centering or bool(micro_batch["support_replayed"].any())
+                loss_reads_support or bool(micro_batch["support_replayed"].any())
             ):
                 support = TokenSupport(
                     ids=micro_batch["support_ids"],
@@ -491,6 +497,13 @@ def train(config: TrainerConfig):
                     sparse_backward=micro_batch["sparse_head_backward"],
                 ).to("cuda")
                 label_support = support.shift_left()
+            if loss_reads_support and not score_centering and (support is None or support.logprobs is None):
+                rl_mask = loss_mask[0] if rl_weights is None else loss_mask[0] & (rl_weights[0] != 0)
+                if bool(rl_mask.any()):
+                    raise ValueError(
+                        f"The {config.loss.type} rl loss reads the sampler support, but rl tokens arrived without "
+                        "its logprobs: set orchestrator.train.sampling.logprobs"
+                    )
             if score_centering:
                 vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
                 if support is None or support.logprobs is None:
@@ -592,7 +605,7 @@ def train(config: TrainerConfig):
             if cp_enabled:
                 out["logprobs"] = gather_for_cp(out["logprobs"], cp_group)
                 out["entropy"] = gather_for_cp_wo_grad(out["entropy"], cp_size, cp_group)
-                if score_centering and label_support is not None:
+                if loss_reads_support and label_support is not None:
                     out["support_logprobs"] = gather_ragged_for_cp(out["support_logprobs"], cp_shard_entries, cp_group)
 
             vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
@@ -605,7 +618,7 @@ def train(config: TrainerConfig):
             )
 
             trainer_support = None
-            if score_centering and support is not None and support.logprobs is not None:
+            if loss_reads_support and support is not None and support.logprobs is not None:
                 first_row = int(support.offsets[1])
                 trainer_support = torch.cat([out["support_logprobs"].new_zeros(first_row), out["support_logprobs"]])
 

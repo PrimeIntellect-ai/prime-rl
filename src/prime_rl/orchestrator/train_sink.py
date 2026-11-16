@@ -383,7 +383,7 @@ class TrainSink(Reconfigurable):
                         f"env {env_name!r} requested sampler logprobs but returned none. {_KEEP_ARRAYS_HINT}"
                     )
                 stamp_loss_routing(sample, env.algorithm.action_loss_type)
-            if self.config.constant_trainer_batch_size:
+            if self.config.constant_trainer_batch_size and env.algorithm.prune_zero_advantages:
                 samples = [sample for sample in samples if _prune_zero_advantages(sample)]
             if samples:
                 samples_by_trace[trace.id] = samples
@@ -500,6 +500,10 @@ class TrainSink(Reconfigurable):
             + ", ".join(f"{reason}={count}" for reason, count in self.zero_output_units.most_common())
         )
 
+    def _prunes_zero_advantages(self, trace_id: str) -> bool:
+        env_name = episode_env_name(self.episode_by_trace[trace_id])
+        return self.train_envs.get(env_name).algorithm.prune_zero_advantages
+
     async def process_batch(self) -> TrainBatch:
         selected = list(self.pending_batch.items())[: self.batch_size]
 
@@ -513,6 +517,8 @@ class TrainSink(Reconfigurable):
             def prune_selected() -> dict[str, list[TrainingSample]]:
                 pruned = {
                     trace_id: [sample for sample in samples if _prune_zero_advantages(sample)]
+                    if self._prunes_zero_advantages(trace_id)
+                    else samples
                     for trace_id, samples in selected
                 }
                 return {trace_id: samples for trace_id, samples in pruned.items() if samples}

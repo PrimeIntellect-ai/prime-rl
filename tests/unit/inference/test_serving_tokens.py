@@ -155,7 +155,7 @@ def _gpu_capture(logq: dict[int, float], sampled_ids: list[int], replay: bool):
         cu, num_sampled = torch.arange(len(sampled_ids) + 1), torch.ones(len(sampled_ids), dtype=torch.int32)
         sampled = torch.tensor(sampled_ids).view(-1, 1)
         rows = np.full(len(sampled_ids), 4)
-        _, packed, _ = pack_sampler_rows(logits, cu, num_sampled, sampled, rows)
+        _, packed, _ = pack_sampler_rows(logits, cu, num_sampled, sampled, rows, np.zeros(len(sampled_ids), dtype=bool))
     return PackedSamplingMask(
         ids=packed.flatten().numpy(), counts=np.full(len(sampled_ids), packed.shape[1], dtype=np.int32)
     )

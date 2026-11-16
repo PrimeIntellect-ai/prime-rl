@@ -5,6 +5,7 @@ from prime_rl.configs.trainer import (
     CustomLossConfig,
     IcePopLossConfig,
     IPOLossConfig,
+    ReinforceLossConfig,
 )
 from prime_rl.trainer.models.layers.lm_head import TokenSupport
 from prime_rl.trainer.rl.loss import (
@@ -534,3 +535,71 @@ def test_score_centering_replay_matches_exact_supported_gradient(constant_advant
     assert (metrics["score_centering/replayed"] == 1).all()
     if constant_advantage:
         torch.testing.assert_close(actual_grad, torch.zeros_like(logits), atol=1e-7, rtol=0)
+
+
+def test_reinforce_centers_on_sampler_draws_and_replayed_support():
+    # Token 0 carries three i.i.d. draws (one repeated), token 1 a replayed mask {0, 2}.
+    logits = torch.tensor([[0.3, -0.4, 0.1, -0.9], [0.5, 0.2, -0.3, 0.0]], requires_grad=True)
+    logp = logits.log_softmax(-1)
+    draws, mask_ids = [1, 3, 1], [0, 2]
+    q_mask = torch.tensor([0.7, 0.3])
+    advantage = torch.tensor([1.5, -0.5])
+    inputs = LossInputs(
+        trainer_logprobs=logp[[0, 1], [2, 0]],
+        inference_logprobs=torch.tensor([-1.0, -0.4]),
+        ref_logprobs=None,
+        advantages=advantage,
+        loss_mask=torch.ones(2, dtype=torch.bool),
+        trainer_support_logprobs=torch.cat([logp[0, draws], logp[1, mask_ids]]),
+        sampler_support_logprobs=torch.cat([torch.full((3,), -1.2), q_mask.log()]),
+        support_rows=torch.tensor([0, 0, 0, 1, 1]),
+        support_replayed=torch.tensor([False, True]),
+    )
+    actual = setup_rl_loss_fn(ReinforceLossConfig()).loss(inputs).loss
+    # Unclipped: no importance weight, draws weighted 1/K with repeats counted, the mask weighted by q.
+    reference = -advantage[0] * (logp[0, 2] - logp[0, draws].mean()) - advantage[1] * (
+        logp[1, 0] - (q_mask * logp[1, mask_ids]).sum()
+    )
+    assert actual.item() == pytest.approx(0.0, abs=1e-6)
+    actual_gradient = torch.autograd.grad(actual, logits, retain_graph=True)[0]
+    reference_gradient = torch.autograd.grad(reference, logits)[0]
+    torch.testing.assert_close(actual_gradient, reference_gradient)
+
+
+@pytest.mark.parametrize(
+    ("config", "weight"),
+    [
+        # Open bounds keep the exact importance weight p/q on the sampled token and every draw.
+        (IcePopLossConfig(ratio_low=1e-30, ratio_high=1e30, score_centering_k=3), lambda r: r),
+        (IPOLossConfig(eps=1.0, max_importance_ratio=1e30, score_centering_k=3), lambda r: r),
+        # A band masks the sampled token and the draws alike: here it keeps p/q = 0.39 and 2.1, drops 3.9 and 0.5.
+        (
+            IcePopLossConfig(ratio_low=0.3, ratio_high=2.5, score_centering_k=3),
+            lambda r: r * ((r >= 0.3) & (r <= 2.5)),
+        ),
+        (ReinforceLossConfig(score_centering_k=3), lambda r: torch.ones_like(r)),
+    ],
+)
+def test_draw_centering_keeps_the_importance_weight_of_each_loss(config, weight):
+    logits = torch.tensor([0.3, -0.4, 0.1, -0.9], requires_grad=True)
+    logp = logits.log_softmax(-1)
+    q = torch.tensor([0.1, 0.5, 0.15, 0.25])
+    sampled, draws, advantage = 2, [1, 3, 1], torch.tensor([1.5])
+    inputs = LossInputs(
+        trainer_logprobs=logp[[sampled]],
+        inference_logprobs=q[[sampled]].log(),
+        ref_logprobs=None,
+        advantages=advantage,
+        loss_mask=torch.ones(1, dtype=torch.bool),
+        trainer_support_logprobs=logp[draws],
+        sampler_support_logprobs=q[draws].log(),
+        support_rows=torch.zeros(3, dtype=torch.long),
+        support_replayed=torch.zeros(1, dtype=torch.bool),
+    )
+    actual = setup_rl_loss_fn(config).loss(inputs).loss
+    w = weight(logp.detach().exp() / q)
+    reference = -advantage[0] * (w[sampled] * logp[sampled] - sum(w[v] * logp[v] for v in draws) / len(draws))
+    actual_gradient = torch.autograd.grad(actual, logits, retain_graph=True)[0]
+    reference_gradient = torch.autograd.grad(reference, logits)[0]
+    torch.testing.assert_close(actual_gradient, reference_gradient)
+    assert actual_gradient.abs().sum() > 0

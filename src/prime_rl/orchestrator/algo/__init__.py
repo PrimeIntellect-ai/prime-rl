@@ -33,6 +33,7 @@ from prime_rl.orchestrator.algo.opsd import OPSDAlgorithm
 from prime_rl.orchestrator.algo.rae import RAEAlgorithm
 from prime_rl.orchestrator.algo.routing import assign_advantages, stamp_loss_routing
 from prime_rl.orchestrator.algo.sft import SFTDistillAlgorithm
+from prime_rl.utils.utils import import_object
 
 if TYPE_CHECKING:
     from prime_rl.configs.algorithm import AlgoConfig
@@ -54,7 +55,12 @@ ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
 
 
 def build_algorithm(config: AlgoConfig, clients: InferenceClient) -> Algorithm:
-    cls = ALGORITHM_CLASSES[config.type]
+    if config.type == "custom":
+        cls = import_object(config.import_path)
+        if not (isinstance(cls, type) and issubclass(cls, Algorithm)):
+            raise TypeError(f"algo.import_path {config.import_path!r} must name an Algorithm subclass")
+    else:
+        cls = ALGORITHM_CLASSES[config.type]
     # The Algorithm is the runtime of the algorithm config's training signal
     # (its TrainEnv interprets the sampling half). Every algorithm is
     # handed the live policy pool — opsd self-distills against it, others may

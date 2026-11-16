@@ -75,6 +75,7 @@ type = "grpo"  # the default
 | `sft` | *(the teacher)* | `ce` on actions | Hard distillation: a frozen model generates rollouts, the policy trains with CE on its tokens. Needs a frozen `teacher` (the model it samples from). |
 | `opsd` | policy | `ref_kl` on actions | SDFT ([arXiv:2601.19897](https://arxiv.org/abs/2601.19897)): the model is its own reference, conditioned on an expert demonstration. The teacher *is* the live policy (the paper's setting, no extra deployment) — no model to configure. |
 | `echo` | policy | `rl` on actions + weighted `ce` on observations | ECHO: standard GRPO plus a cross-entropy loss on env-provided tokens already present in the rollout, selected by message role (needs the renderer's role attribution). Defaults to tool-response bodies at `alpha = 0.1` (ECHO's λ); set `roles` to train other roles, each at its own weight. |
+| `custom` | policy | `rl` on actions | An `Algorithm` subclass outside prime-rl, named by `import_path`. See [Authoring an Algorithm](#authoring-an-algorithm). |
 
 ### Customizing Components
 
@@ -297,6 +298,30 @@ replayed support; the rest use the head and modeled tail), captured sampler
 `score_centering/logit_correction_l1` (the baseline's logit-gradient L1 norm before advantage
 scaling).
 
+### Score Centering over Sampler Draws
+
+`score_centering_k` on `ipo` or `icepop`, and always on `reinforce`, centers the importance-weighted score
+under the sampler over each token's recorded support:
+`A * (w(a) * grad(log p_a) - sum_v u_v * w(v) * grad(log p_v))`, all weights detached. `w` is the loss type's
+own weight (`ipo`'s capped, masked ratio; `icepop`'s band-masked ratio; 1 for `reinforce`), applied to the
+sampled token and to every support entry alike.
+
+```toml
+[trainer.loss]
+type = "icepop"
+ratio_low = 1e-30   # open bounds: the exact importance weight p/q
+ratio_high = 1e30
+score_centering_k = 16
+```
+
+With untruncated sampling the server records `score_centering_k` i.i.d. draws per token from the processed
+sampler distribution (`sampling.sampler_draws`, set by the launcher), each weighted `u = 1/K`, repeats counted:
+an unbiased K-sample estimate of the centering term whatever the ratio bounds, so clipping is one knob on the
+same loss. With truncated sampling the support is the replayed sampling mask and `u_v = q_v`, so the centering
+is exact. `type = "reinforce"` is the same loss with weight 1 (no importance weight, no trust region).
+Standalone inference servers need `enable_return_sampling_mask = true`, as for IcePop's top-k score centering,
+which `score_centering_k` replaces on `icepop`.
+
 ### Custom Loss
 
 `[trainer.loss] type = "custom"` replaces the `rl` component. The loss is computed **per sequence**: you write a function that takes one sequence's tensors and returns a scalar loss. The trainer iterates and aggregates. `inputs.loss_mask` selects exactly the rl member tokens (for a plain GRPO run, all trainable tokens).
@@ -350,6 +375,13 @@ class LossOutputs:
 ```
 
 Anything you put in `metrics` is averaged across sequences and logged with the other trainer metrics.
+
+With `load_support = true` the loss also receives each token's recorded sampler support: `support_rows` (the
+token each entry belongs to), `sampler_support_logprobs`, `trainer_support_logprobs` and `support_replayed`.
+The support is what the rollouts recorded (set `orchestrator.train.sampling.logprobs`): the replayed sampling
+mask of truncated sampling, or the sampler's top ids.
+
+The import is resolved when the trainer starts, so the function can come from a package installed with the env.
 
 ## Advantage
 
@@ -478,7 +510,7 @@ Both of `kuhn-poker`'s agents late-bind to the run's own model — shared-policy
 
 ### Authoring an Algorithm
 
-There is no config hook that points at user code — a new credit-assignment scheme is a new named algorithm in the repo. Subclass `Algorithm`, assign credit in the scoring hook whose timing fits your signal, and register the class:
+A credit-assignment scheme others should use is a new named algorithm in the repo. Subclass `Algorithm`, assign credit in the scoring hook whose timing fits your signal, and register the class:
 
 ```python
 # src/prime_rl/orchestrator/algo/my_algo.py
@@ -500,6 +532,8 @@ class MyAlgorithm(Algorithm):
 Add a typed `MyAlgoConfig` to `prime_rl.configs.algorithm` and its discriminated union, then register `"my_algo": MyAlgorithm` in `ALGORITHM_CLASSES`. Pick `score_episode` for rollout-local work or model calls, and `score_group` for group-relative credit. `assign_advantages` takes a scalar or a list aligned to the trace graph's sampled tokens.
 
 Curriculum admission and metrics can inspect the resulting graph-native streams after group scoring.
+
+A scheme that lives with its env runs without registering: `type = "custom"` with `import_path = "my_env.MyAlgorithm"` builds the class with its config, whose `kwargs` it reads. The config checks only the path's form; the class is imported when the orchestrator starts. An algorithm whose rl loss trains tokens on more than their advantage (a custom loss reading `loss_weights` or the sampler support) sets `prune_zero_advantages = False`, so the train sink keeps its zero-advantage tokens.
 
 ### Reference Scoring
 
