@@ -1,12 +1,17 @@
 """Qwen3.5 with Open-Jev's decision head (``[model.implementation]``,
 ``import_path = "decision_models.open_jev.model.Qwen3_5Decision"``)."""
 
+from typing import TYPE_CHECKING
+
 import torch
 from torch import Tensor, nn
 from torch.distributed.tensor import DTensor
 from transformers import AutoTokenizer
 
 from prime_rl.trainer.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForCausalLM
+
+if TYPE_CHECKING:
+    from prime_rl.trainer.sft.system_one.data import SystemOneStrategy
 
 
 def token_id(tokenizer, text: str) -> int:
@@ -26,7 +31,7 @@ class Qwen3_5Decision(Qwen3_5ForCausalLM):
         self.decision_head = nn.Linear(self.lm_head.in_features, 1)
 
     @classmethod
-    def system_one_strategy(cls):
+    def system_one_strategy(cls) -> type["SystemOneStrategy"]:
         from decision_models.open_jev.strategy import OpenJevStrategy
 
         return OpenJevStrategy

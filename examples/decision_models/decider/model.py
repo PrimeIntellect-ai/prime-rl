@@ -1,9 +1,14 @@
 """prime-rl's d3 class for a Decider release (``[model.implementation]``,
 ``import_path = "decision_models.decider.model.Decider"``)."""
 
+from typing import TYPE_CHECKING
+
 from transformers import PretrainedConfig
 
 from prime_rl.trainer.models.qwen3_5.modeling_d3 import D3ForSequenceClassification
+
+if TYPE_CHECKING:
+    from prime_rl.trainer.sft.system_one.data import SystemOneStrategy
 
 
 class Decider(D3ForSequenceClassification):
@@ -14,7 +19,7 @@ class Decider(D3ForSequenceClassification):
     FORMAT_VERSIONS = (2,)
 
     @classmethod
-    def system_one_strategy(cls):
+    def system_one_strategy(cls) -> type["SystemOneStrategy"]:
         from decision_models.decider.strategy import DeciderStrategy
 
         return DeciderStrategy
