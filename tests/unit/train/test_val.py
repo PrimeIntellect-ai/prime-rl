@@ -19,8 +19,9 @@ DOCUMENTS = [[range(0, 10), range(10, 30), range(30, 30), range(30, 60)], [range
 
 @pytest.mark.parametrize("num_documents", [None, 4])
 def test_documents_set_scores_every_document_on_its_own(tmp_path: Path, num_documents: int | None):
-    """A documents set scores every document (or the first num_documents) as if it were alone: windows of seq_len scored
-    tokens, none with a token before its own first one, and every token after the document's first scored once."""
+    """A documents set scores every document (or the first num_documents) as if it were alone: windows of seq_len
+    scored tokens, none with a token before its own first one, and every token after the document's first scored
+    once."""
     for index, documents in enumerate(DOCUMENTS):
         tokens = [token for document in documents for token in document]
         np.array(tokens, dtype="<u4").tofile(tmp_path / f"{index:02d}.ds")

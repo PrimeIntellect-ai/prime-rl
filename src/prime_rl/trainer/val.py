@@ -60,7 +60,11 @@ class ValSet:
         def per_item(values: np.ndarray) -> np.ndarray:
             return np.bincount(self.items, weights=values, minlength=self.num_items)
 
-        arrays = {"nll": per_item(-logprobs), "tokens": per_item(tokens).astype(np.int64)}
+        arrays = {
+            "nll": per_item(-logprobs),
+            "tokens": per_item(tokens).astype(np.int64),
+            "greedy_tokens": per_item(hits).astype(np.int64),
+        }
         if num_bytes is not None:
             arrays["bytes"] = per_item(num_bytes).astype(np.int64)
         return perplexity(arrays["nll"], arrays["tokens"], arrays.get("bytes")), arrays
