@@ -409,8 +409,8 @@ soft_label  {"team": {"technical": 0.75, "billing": 0.25}}
 | `type` | `criteria` | Options, in order | Hard label | Target in the example |
 |---|---|---|---|---|
 | `noul` (yes or no) | optional: a description of `true` and/or `false` (null is none) | `false`, `true` | `true` or `false` | `outage`: `[0, 1]` |
-| `choice` | option id → description or null, 1 to 255 options | the option ids as given | an option id | `team`: `[0.75, 0.25]` |
-| `score` | a list of 2 to 10 level descriptions | `0` … `n-1` | a level | `urgency`: `[0, 0, 1]` |
+| `choice` | non-empty option id → description or null, 1 to 255 options | the option ids as given | an option id | `team`: `[0.75, 0.25]` |
+| `score` | a list of 2 to 10 non-empty level descriptions | `0` … `n-1` | a level | `urgency`: `[0, 0, 1]` |
 
 **Write an encoder.** The encoder decides what the model sees: the text, how it splits into attention segments, and which tokens the model's head reads for each question. prime-rl ships none, since the encoder must match the head; it lives in your package as a subclass of `SystemOneEncoder`. It never sees labels.
 

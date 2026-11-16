@@ -98,11 +98,19 @@ def _parse_question(question_id: str, definition: Any) -> Question:
         if criteria is not None:
             criteria = {option: text for option, text in criteria.items() if text is not None} or None
     elif kind == "choice":
-        if not isinstance(criteria, Mapping) or not 1 <= len(criteria) <= MAX_CHOICE_OPTIONS:
-            raise ValueError(f"{where}: choice criteria must map 1 to {MAX_CHOICE_OPTIONS} options to descriptions")
+        if not isinstance(criteria, Mapping) or not 1 <= len(criteria) <= MAX_CHOICE_OPTIONS or "" in criteria:
+            raise ValueError(
+                f"{where}: choice criteria must map 1 to {MAX_CHOICE_OPTIONS} non-empty option ids to descriptions"
+            )
     elif kind == "score":
-        if not isinstance(criteria, list) or not MIN_SCORE_LEVELS <= len(criteria) <= MAX_SCORE_LEVELS:
-            raise ValueError(f"{where}: score criteria must list {MIN_SCORE_LEVELS} to {MAX_SCORE_LEVELS} levels")
+        if (
+            not isinstance(criteria, list)
+            or not MIN_SCORE_LEVELS <= len(criteria) <= MAX_SCORE_LEVELS
+            or "" in criteria
+        ):
+            raise ValueError(
+                f"{where}: score criteria must list {MIN_SCORE_LEVELS} to {MAX_SCORE_LEVELS} non-empty levels"
+            )
     else:
         raise ValueError(f"{where}: type must be noul, choice or score, got {kind!r}")
     return Question(question_id, kind, definition["instructions"], criteria)

@@ -91,6 +91,8 @@ def test_columns_can_be_renamed_and_the_id_falls_back_to_the_split_and_row_index
         ({"q": {"type": "noul"}}, None, None),  # no instructions
         ({"q": {"type": "noul", "instructions": "?", "criteria": {"yes": "y"}}}, None, None),  # noul criteria keys
         ({"q": {"type": "choice", "instructions": "?", "criteria": {}}}, None, None),  # no options
+        ({"q": {"type": "choice", "instructions": "?", "criteria": {"": None}}}, None, None),  # an empty option id
+        ({"q": {"type": "score", "instructions": "?", "criteria": ["low", ""]}}, None, None),  # an empty level
         ({"q": {"type": "score", "instructions": "?", "criteria": ["one"]}}, None, None),  # one level
         ({"q": {"type": "score", "instructions": "?", "criteria": ["level"] * 11}}, None, None),  # too many levels
         (QUESTIONS, {"team": "sales"}, None),  # a label that is not an option
