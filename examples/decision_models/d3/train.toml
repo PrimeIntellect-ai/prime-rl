@@ -19,9 +19,6 @@ splits = ["train"]
 seq_len = 8192  # the longest record has 5,341 tokens
 batch_size = 2
 
-[data.encoder]
-import_path = "prime_rl.trainer.sft.system_one.encoders.d3.D3Encoder"
-
 [loss]
 type = "decision"
 brier_weight = 0.0  # soft cross-entropy alone: d3 published no training recipe
@@ -42,9 +39,6 @@ name = "outputs/typed-decisions-synth-system-one"
 subsets = ["default"]
 splits = ["validation"]
 seq_len = 8192
-
-[val.data.encoder]
-import_path = "prime_rl.trainer.sft.system_one.encoders.d3.D3Encoder"
 
 [ckpt]
 interval = 275

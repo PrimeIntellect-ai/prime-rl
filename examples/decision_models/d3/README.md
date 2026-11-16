@@ -4,7 +4,7 @@
 
 ## Native and example code
 
-The model and the encoder are prime-rl's ([Native Decision Models](../../../docs/training.md#native-decision-models)); this folder holds only the configs. `model.name` is the release as downloaded, which prime-rl builds as `D3ForSequenceClassification`, the class vLLM 0.33 serves d3 with, so the config has no `[model.implementation]`. `[data.encoder]` names the in-tree `D3Encoder`, which builds the prompts of vLLM 0.33's `/v1/systemone`.
+The model class and its strategy are prime-rl's ([Native Decision Models](../../../docs/training.md#native-decision-models)); this folder holds only the configs. `model.name` is the release as downloaded, which prime-rl builds as `D3ForSequenceClassification`, the class vLLM 0.33 serves d3 with, so the config has no `[model.implementation]`. The class declares the in-tree `D3Strategy`, which builds the prompts of vLLM 0.33's `/v1/systemone` and reads the readout as vLLM 0.33's `D3Strategy` does.
 
 | File | What |
 |---|---|

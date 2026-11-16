@@ -4,7 +4,7 @@
 
 ## Native and example code
 
-The model and the encoder are prime-rl's ([Native Decision Models](../../../docs/training.md#native-decision-models)); this folder holds only the configs. `model.name` is the release as downloaded, which prime-rl builds as `ClefFlashForJointSchema`, the class vLLM 0.33 serves Clef-Flash with, so the config has no `[model.implementation]`. `[data.encoder]` names the in-tree `ClefFlashEncoder`, which builds the prompt of vLLM 0.33's `/v1/systemone`.
+The model class and its strategy are prime-rl's ([Native Decision Models](../../../docs/training.md#native-decision-models)); this folder holds only the configs. `model.name` is the release as downloaded, which prime-rl builds as `ClefFlashForJointSchema`, the class vLLM 0.33 serves Clef-Flash with, so the config has no `[model.implementation]`. The class declares the in-tree `ClefFlashStrategy`, which builds the prompt of vLLM 0.33's `/v1/systemone` and runs the joint head on each record as vLLM 0.33's pooler (`JointSchemaPooler`) does.
 
 | File | What |
 |---|---|
@@ -35,4 +35,4 @@ Clef published no training code, so every training choice is this example's:
 - A step is two packed rows of up to 8,192 tokens. Each record is its own attention segment, so it attends only to itself.
 - The vision encoder and the LM head do not train: the records are text, and the loss never calls the LM head.
 
-The encoder cuts a state so that the prompt fits in 8,192 tokens (`data.seq_len`), where vLLM cuts it to fit `min(16384, max_model_len)`; no state of this dataset is cut. Records with images or videos are not supported.
+The strategy cuts a state so that the prompt fits in 8,192 tokens (`data.seq_len`), where vLLM cuts it to fit `min(16384, max_model_len)`; no state of this dataset is cut. Records with images or videos are not supported.

@@ -15,11 +15,8 @@ type = "system_one"
 name = "outputs/typed-decisions-synth-system-one"  # the records (../data/convert_typed_decisions_synth.py)
 subsets = ["default"]
 splits = ["train"]
-seq_len = 8192  # the longest record has 1,609 tokens; the encoder shortens a longer state to fit
+seq_len = 8192  # the longest record has 1,609 tokens; the strategy shortens a longer state to fit
 batch_size = 2
-
-[data.encoder]
-import_path = "prime_rl.trainer.sft.system_one.encoders.clef.ClefFlashEncoder"
 
 [loss]
 type = "decision"
@@ -41,9 +38,6 @@ name = "outputs/typed-decisions-synth-system-one"
 subsets = ["default"]
 splits = ["validation"]
 seq_len = 8192
-
-[val.data.encoder]
-import_path = "prime_rl.trainer.sft.system_one.encoders.clef.ClefFlashEncoder"
 
 [ckpt]
 interval = 145
