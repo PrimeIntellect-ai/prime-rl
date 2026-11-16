@@ -65,10 +65,11 @@ class KimiDeltaAttention(nn.Module):
     @torch.no_grad()
     def reset_parameters(self) -> None:
         # fla's KimiDeltaAttention init with a gate lower bound: dt is log-uniform in [1e-3, 0.1] and dt_bias is
-        # its inverse softplus.
+        # its inverse softplus, computed in float32 and rounded to the parameter's dtype once.
         nn.init.zeros_(self.A_log)
-        self.dt_bias.uniform_(math.log(1e-3), math.log(0.1)).exp_().clamp_(min=1e-4)
-        self.dt_bias.add_(torch.log(-torch.expm1(-self.dt_bias)))
+        dt = torch.empty_like(self.dt_bias, dtype=torch.float32)
+        dt.uniform_(math.log(1e-3), math.log(0.1)).exp_().clamp_(min=1e-4)
+        self.dt_bias.copy_(dt + torch.log(-torch.expm1(-dt)))
 
     def _depthwise_conv(self) -> nn.Conv1d:
         return nn.Conv1d(

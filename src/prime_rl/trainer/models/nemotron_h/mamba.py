@@ -125,10 +125,11 @@ class NemotronHMamba2(nn.Module):
 
     @torch.no_grad()
     def reset_parameters(self) -> None:
-        # dt is log-uniform in [time_step_min, time_step_max]; dt_bias is its inverse softplus.
-        self.dt_bias.uniform_(math.log(self.time_step_min), math.log(self.time_step_max)).exp_()
-        self.dt_bias.clamp_(min=self.time_step_floor)
-        self.dt_bias.add_(torch.log(-torch.expm1(-self.dt_bias)))
+        # dt is log-uniform in [time_step_min, time_step_max]; dt_bias is its inverse softplus, computed in float32 and
+        # rounded to the parameter's dtype once.
+        dt = torch.empty_like(self.dt_bias, dtype=torch.float32)
+        dt.uniform_(math.log(self.time_step_min), math.log(self.time_step_max)).exp_().clamp_(min=self.time_step_floor)
+        self.dt_bias.copy_(dt + torch.log(-torch.expm1(-dt)))
         with implicit_replication():
             self.A_log.copy_(torch.arange(1, self.num_heads + 1, dtype=torch.float32, device=self.A_log.device).log())
         nn.init.ones_(self.D)
