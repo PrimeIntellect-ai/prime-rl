@@ -4,7 +4,7 @@ import pytest
 from datasets import Dataset
 
 from prime_rl.configs.sft import SystemOneColumnsConfig
-from prime_rl.trainer.sft.system_one.data import EncodedRecord, SystemOneDataset, SystemOneEncoder
+from prime_rl.trainer.sft.system_one.data import EncodedRecord, SystemOneDataset, SystemOneEncoder, check_encoded
 from prime_rl.trainer.sft.system_one.record import build_targets, parse_record
 
 COLUMNS = SystemOneColumnsConfig()
@@ -173,9 +173,21 @@ def test_process_builds_sample_in_encoder_option_order():
     }
 
 
-def test_process_raises_on_overlapping_read_spans():
+@pytest.mark.parametrize(
+    "input_ids, seq_lens, reads",
+    [
+        (list(range(10)), [4, 6], [[(1, 3)], [(2, 4)], [(6, 7)]]),  # overlapping spans
+        (list(range(10)), [4, 6], [[(1, 2)], [(3, 5)], [(6, 7)]]),  # a span across two segments
+        ([True, *range(9)], [4, 6], [[(1, 2)], [(2, 4)], [(6, 7)]]),  # a bool token
+        (list(range(10)), [True, 3, 6], [[(1, 2)], [(2, 4)], [(6, 7)]]),  # a bool segment length
+        (list(range(10)), [4, 6], [[(True, 2)], [(2, 4)], [(6, 7)]]),  # a bool span start
+    ],
+)
+def test_check_encoded_rejects_broken_encodings(input_ids, seq_lens, reads):
+    record, _ = parse_record(ROW, COLUMNS)
+    encoded = EncodedRecord(input_ids=input_ids, seq_lens=seq_lens, reads=reads)
     with pytest.raises(ValueError, match="record 'r': the encoder broke the EncodedRecord contract"):
-        _dataset([[(1, 3)], [(2, 4)], [(6, 7)]])._process(ROW)
+        check_encoded(encoded, record)
 
 
 def test_process_skips_record_without_labels():

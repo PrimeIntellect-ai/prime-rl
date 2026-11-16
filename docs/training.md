@@ -476,7 +476,7 @@ seq_len = 4096                    # must equal data.seq_len
 import_path = "my_pkg.encoder.MyEncoder"
 ```
 
-- **Segments.** Each `seq_lens` entry is one attention segment: attention and positions restart at its first token. Records are packed back to back into rows of up to `seq_len * micro_batch_size` tokens, without padding, and no segment spans two records. `data.batch_size` counts budgets of `seq_len` tokens (up to `batch_size` x `seq_len` tokens per step), not records or questions.
+- **Segments.** Each `seq_lens` entry is one attention segment: attention and positions restart at its first token. A read span lies within one segment. Records are packed back to back into rows of up to `seq_len * micro_batch_size` tokens, without padding, and no segment spans two records. `data.batch_size` counts budgets of `seq_len` tokens (up to `batch_size` x `seq_len` tokens per step), not records or questions.
 - **Reads.** `loss_mask` is true on every token of every read span and false elsewhere. There is no next-token shift and `target_ids` is all zeros, so token cross-entropy is refused: `[loss] type = "custom"` is required, with [its limits](#custom-loss).
 - **What the loss receives.** `inputs.batch["sample_data"]` holds one dict per record of the row, in row order. A record starts at the sum of the earlier records' `num_tokens`, and its `reads` count from there. `target` follows `options`, and is `None` for an unlabelled question, which the loss leaves out of its `count`. `inputs.hidden_states[inputs.batch["loss_mask"]]` is every read token of the row, in order. With `MyEncoder` and prompts of 30, 34 and 31 tokens, the example's dict is:
 

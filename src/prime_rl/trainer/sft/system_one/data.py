@@ -1,6 +1,8 @@
 """System One data: an encoder plugin turns each record into tokens, and prime-rl builds the sample around them."""
 
 from abc import ABC, abstractmethod
+from bisect import bisect_left, bisect_right
+from itertools import accumulate
 from typing import NotRequired, TypedDict
 
 from datasets import Dataset, Value
@@ -23,7 +25,7 @@ class EncodedRecord(TypedDict):
     """Attention segments, each > 0, summing to ``len(input_ids)``. Positions restart at 0 in each."""
     reads: list[list[tuple[int, int]]]
     """Per question, in record order: the ``[start, end)`` token spans the head reads, at least one. Spans are
-    non-empty, disjoint and increasing across the whole record."""
+    non-empty, each within one attention segment, disjoint and increasing across the whole record."""
     options: NotRequired[list[list[str]]]
     """Per question: its option ids in the order of the head's logits, when that is not the order of
     ``Question.options``. Targets are reordered to match."""
@@ -46,6 +48,10 @@ class SystemOneEncoder(ABC):
         ``data.seq_len``: a longer encoding is skipped, never truncated."""
 
 
+def _is_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _find_violation(encoded: EncodedRecord, record: SystemOneRecord) -> str | None:
     required, optional = EncodedRecord.__required_keys__, EncodedRecord.__optional_keys__
     if not isinstance(encoded, dict) or not required <= set(encoded) <= required | optional:
@@ -56,21 +62,22 @@ def _find_violation(encoded: EncodedRecord, record: SystemOneRecord) -> str | No
     for key in ("input_ids", "seq_lens", "reads"):
         if not isinstance(encoded[key], list):
             return f"{key} must be a list, got {type(encoded[key]).__name__}"
-    if not all(isinstance(token, int) for token in input_ids):
+    if not all(_is_int(token) for token in input_ids):
         return f"input_ids must hold ints, got {sorted({type(token).__name__ for token in input_ids})}"
-    if not seq_lens or any(not isinstance(seq_len, int) or seq_len <= 0 for seq_len in seq_lens):
+    if not seq_lens or any(not _is_int(seq_len) or seq_len <= 0 for seq_len in seq_lens):
         return f"seq_lens must hold at least one segment, each a positive int, got {seq_lens}"
     if sum(seq_lens) != len(input_ids):
         return f"seq_lens sum to {sum(seq_lens)}, but there are {len(input_ids)} input_ids"
 
     if len(reads) != len(record.questions):
         return f"reads has {len(reads)} entries for {len(record.questions)} questions"
+    segment_ends = list(accumulate(seq_lens))
     previous_end = 0
     for question, spans in zip(record.questions, reads):
         if not isinstance(spans, (list, tuple)) or not spans:
             return f"question {question.id!r}: reads must be a non-empty list of spans, got {spans!r}"
         for span in spans:
-            if not isinstance(span, (list, tuple)) or len(span) != 2 or not all(isinstance(i, int) for i in span):
+            if not isinstance(span, (list, tuple)) or len(span) != 2 or not all(_is_int(i) for i in span):
                 return f"question {question.id!r}: read span {span!r} must be a (start, end) pair of ints"
             start, end = span
             if not previous_end <= start < end <= len(input_ids):
@@ -78,6 +85,8 @@ def _find_violation(encoded: EncodedRecord, record: SystemOneRecord) -> str | No
                     f"question {question.id!r}: read span {span!r} must satisfy {previous_end} <= start < end <= "
                     f"{len(input_ids)} (spans are non-empty, within the record, disjoint and increasing)"
                 )
+            if bisect_right(segment_ends, start) != bisect_left(segment_ends, end):
+                return f"question {question.id!r}: read span {span!r} crosses a segment end, at one of {segment_ends}"
             previous_end = end
 
     if "options" in encoded:
