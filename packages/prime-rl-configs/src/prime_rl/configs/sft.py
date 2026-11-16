@@ -314,6 +314,12 @@ class SFTConfig(SupervisedTrainerConfig):
                 )
             if self.model.lora is not None:
                 raise ValueError(f'loss.type = "decision" is not supported with [model.lora]. {DECISION_MODEL_LORA}')
+            if self.model.quantization is not None:
+                raise ValueError(
+                    'loss.type = "decision" is not supported with [model.quantization]: its FP8 and MXFP8 layers '
+                    "replace every linear layer whose sizes they support, the readout's included, which vLLM does "
+                    "not quantize. Decision models train in full precision."
+                )
         return self
 
     @model_validator(mode="after")
