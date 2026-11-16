@@ -18,6 +18,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [SFT-Specific Knobs](#sft-specific-knobs)
   - [Custom Loss](#custom-loss)
   - [System One Data](#system-one-data)
+  - [Native Decision Models](#native-decision-models)
   - [Important Metrics](#important-metrics-1)
 - [Pretraining](#pretraining)
 - [Checkpointing](#checkpointing)
@@ -412,9 +413,7 @@ soft_label  {"team": {"technical": 0.75, "billing": 0.25}}
 | `choice` | non-empty option id → description or null, 1 to 255 options | the option ids as given | an option id | `team`: `[0.75, 0.25]` |
 | `score` | a list of 2 to 10 distinct non-empty level descriptions | `0` … `n-1` | a level | `urgency`: `[0, 0, 1]` |
 
-**d3 and Clef-Flash.** prime-rl has the classes of the two decision models vLLM 0.33 serves, and builds them from a release used as is as `model.name`, local or on the Hub. It selects the class as vLLM does, by the architecture in `config.json` and a file beside it, which it reads into the config: a `Qwen3_5Model` checkpoint with a `decision_config.json` is d3 (`D3ForSequenceClassification`, `config.decision_config`), and a `Qwen3_5ForConditionalGeneration` checkpoint with a `joint_head_config.json` is Clef-Flash (`ClefFlashForJointSchema`, `config.joint_head_config`). Their readouts are vLLM's: d3's, held and computed in float32, at each question's read token, divided by the temperature of `decision_config.json`; Clef-Flash's joint schema head, once per record. Their weights convert, broadcast and [export](#exporting-checkpoints) under the names vLLM loads. d3 reads `decision_config.json` format version 1, as vLLM does, and needs a tied embedding; with non-causal attention it does not support context parallelism. Clef-Flash needs an untied LM head, which it freezes. vLLM serves both as pooling models only, so they are refused with RL and online evals. A `[model.implementation]` class for such a checkpoint must extend its class, e.g. to read another format version.
-
-For the decision models vLLM serves through `/v1/systemone`, prime-rl ships the code that builds exactly vLLM 0.33's prompts: `prime_rl.trainer.sft.system_one.encoders.d3.D3Encoder` for d3 (its answer codes come from the `decision_config.json` beside the tokenizer) and `prime_rl.trainer.sft.system_one.encoders.clef.ClefFlashEncoder` for Clef-Flash. They skip, with a warning, a record vLLM would refuse, and one whose instructions, option descriptions or score levels are not strings.
+For d3 and Clef-Flash, prime-rl ships both the model class and its strategy: see [Native Decision Models](#native-decision-models).
 
 **Write the model class and its strategy.** A decision model is a model class and its strategy. The strategy decides what the model sees and how its head reads it: `render_request` renders a request into tokens, attention segments and the tokens the head reads for each question, and `option_logits` turns the hidden states at those tokens into each question's logits by calling the model's head. The input format belongs to the model, so the class names its strategy with the classmethod `system_one_strategy`, and the data config names none. For any other decision model, the class is a [custom model class](#sft-specific-knobs) (`[model.implementation]`) that holds the head and its weights; the strategy subclasses `SystemOneStrategy`. In vLLM terms, a read strategy is this strategy (`render_request` and `option_logits`) plus the softmax; the model class keeps the head's weights. A head with one logit per option, read at one token per question:
 
@@ -528,6 +527,36 @@ seq_len = 4096
 ```bash
 uv run sft @ system_one.toml
 ```
+
+### Native Decision Models
+
+prime-rl trains d3 and Clef-Flash, the decision models vLLM 0.33 serves through `/v1/systemone`, as vLLM serves them. The release directory, local or on the Hub, is `model.name` as is: prime-rl selects the class as vLLM does, by the architecture in `config.json` and the file beside it, which it reads into the config. The in-tree encoders build vLLM's prompts:
+
+| Release | Class | `[data.encoder] import_path` |
+|---|---|---|
+| d3: `Qwen3_5Model` with `decision_config.json` | `D3ForSequenceClassification` | `prime_rl.trainer.sft.system_one.encoders.d3.D3Encoder` |
+| Clef-Flash: `Qwen3_5ForConditionalGeneration` with `joint_head_config.json` | `ClefFlashForJointSchema` | `prime_rl.trainer.sft.system_one.encoders.clef.ClefFlashEncoder` |
+
+```toml
+[model]
+name = "/path/to/d3-release"        # no [model.implementation]
+
+[data]
+type = "system_one"
+name = "my-org/tickets-system-one"
+seq_len = 4096
+
+[data.encoder]
+import_path = "prime_rl.trainer.sft.system_one.encoders.d3.D3Encoder"
+
+[loss]
+type = "decision"
+```
+
+- **Prompts.** d3 gets one prompt per question, read at its last token, with the answer codes of the `decision_config.json` beside the tokenizer and the tokenizer's own chat template, whatever `[tokenizer] chat_template` sets; a `[tokenizer] name` other than `model.name` must therefore hold the model's `decision_config.json`. A record's prompts, each holding the whole state, are packed into one sample, so `data.seq_len` must hold their sum or the record is skipped. Clef-Flash gets one prompt per record, read at each question's instruction and option spans, with the state cut so that the prompt fits in `min(16384, data.seq_len)` tokens; vLLM cuts it to fit `min(16384, max_model_len)`, so the prompts are vLLM's when `data.seq_len` equals the served `max_model_len` or both are at least 16384. An encoder skips, with a warning, a record vLLM would refuse, and one whose instructions, option descriptions or score levels are not strings. Two of vLLM's checks differ in the System One format: it ignores other question keys, which vLLM refuses, and it refuses an empty choice id or score level, which vLLM refuses for d3 only.
+- **Readout.** `decision_logits` is vLLM's: d3's readout, held and computed in float32, divided by the temperature of `decision_config.json` (1 when it has none); Clef-Flash's joint schema head, once per record.
+- **Limits.** d3 reads `decision_config.json` format version 1, as vLLM does, and needs a tied embedding; with non-causal attention it does not support context parallelism. Clef-Flash needs an untied LM head, which it freezes. A `[model.implementation]` class for such a release must extend its class, e.g. to read another format version.
+- **Serving.** The [export](#exporting-checkpoints) writes the release's layout, `decision_config.json` and `readout.safetensors` or `joint_head_config.json` and `joint_head.safetensors` beside the shards, so vLLM serves it as it serves the release. For d3, leave `[tokenizer] chat_template` unset: the encoder ignores it, but the export saves the tokenizer with it, and vLLM renders d3's prompts with the saved template. vLLM serves these models as pooling models only, so RL and online evals with them are refused.
 
 ### Important Metrics
 
