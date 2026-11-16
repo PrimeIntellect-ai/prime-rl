@@ -35,7 +35,8 @@ def convert(
     if side_files := get_side_files(checkpoint.model):
         raise ValueError(
             f"{type(checkpoint.model).__name__} keeps weights outside its shards ({', '.join(side_files.values())}), "
-            "which FP8 export does not support"
+            "which FP8 export does not support: its quantization config does not leave out the layers of those files, "
+            "so vLLM would quantize d3's float32 readout (score) with an uninitialized scale, returning wrong logits"
         )
     output_dir = resolve_output_dir(checkpoint, output_dir, "weights-FP8", overwrite)
     modules_to_not_convert: list[str] = []

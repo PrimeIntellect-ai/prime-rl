@@ -134,7 +134,12 @@ def list_shards(model_dir: Path) -> list[str]:
 def convert(input_dir: Path, output_dir: Path | None = None, block_size: int = 128) -> Path:
     input_dir = input_dir.resolve()
     if found := [name for name in DECISION_MODEL_FILES if (input_dir / name).exists()]:
-        raise ValueError(f"{input_dir} is a decision model ({found[0]}), which FP8 conversion does not support")
+        raise ValueError(
+            f"{input_dir} is a decision model ({found[0]}), which FP8 conversion does not support: it would drop the "
+            "readout.safetensors or joint_head.safetensors beside the shards, so vLLM could not load the result, and "
+            "its quantization config does not leave out d3's float32 readout (score), which vLLM would then quantize "
+            "with an uninitialized scale, returning wrong logits"
+        )
     output_dir = output_dir or input_dir.with_name(input_dir.name + "-FP8")
     output_dir.mkdir(parents=True, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
