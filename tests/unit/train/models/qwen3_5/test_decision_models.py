@@ -7,6 +7,7 @@ import json
 import math
 import os
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -18,9 +19,11 @@ import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
 import torch.multiprocessing as mp
 import torch.nn.functional as F
+from datasets import Dataset
 from safetensors.torch import load_file, save_file
-from tokenizers import Tokenizer
+from tokenizers import Regex, Tokenizer
 from tokenizers.models import WordLevel
+from tokenizers.pre_tokenizers import Split
 from torch import nn
 from transformers import AutoConfig, PretrainedConfig, PreTrainedTokenizerFast
 from transformers.models.qwen3_5 import configuration_qwen3_5 as hf_configuration
@@ -28,7 +31,9 @@ from transformers.models.qwen3_5 import modeling_qwen3_5 as hf_modeling
 
 import prime_rl.trainer.parallel_dims as parallel_dims_module
 from prime_rl.configs.trainer import ModelConfig
+from prime_rl.trainer.data import CatDataset, cat_collate
 from prime_rl.trainer.model import (
+    forward,
     get_model,
     load_dcp_from_hf,
     overrides_init_missing_weights,
@@ -37,14 +42,23 @@ from prime_rl.trainer.model import (
 )
 from prime_rl.trainer.models import get_decision_model_cls
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.layers import attn, gated_delta_net
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.qwen3_5 import Qwen3_5Config, Qwen3_5TextConfig, Qwen3_5VisionConfig
-from prime_rl.trainer.models.qwen3_5.clef_joint_schema import JointSchemaHead
+from prime_rl.trainer.models.qwen3_5.clef_joint_schema import (
+    QUESTION_TYPES,
+    JointSchemaHead,
+    schema_indices,
+    segment_mean,
+)
 from prime_rl.trainer.models.qwen3_5.modeling_clef_flash import SCALARS, ClefFlashForJointSchema
 from prime_rl.trainer.models.qwen3_5.modeling_d3 import D3ForSequenceClassification
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.sft.loss import LossInputs, LossOutputs, run_loss_fn
-from prime_rl.trainer.sft.system_one.loss import question_logits
+from prime_rl.trainer.sft.system_one.data import SystemOneDataset
+from prime_rl.trainer.sft.system_one.encoders.clef import ClefFlashEncoder
+from prime_rl.trainer.sft.system_one.encoders.d3 import D3Encoder
+from prime_rl.trainer.sft.system_one.loss import decision_loss, question_logits
 from prime_rl.utils.weights import group_by_layer, load_state_dict, load_state_dict_keys
 
 HIDDEN = 64
@@ -575,3 +589,216 @@ def test_fp32_modules_compute_in_float32_under_fsdp(tmp_path):
         assert result["dtypes"] == [(torch.float32, torch.float32)]
         torch.testing.assert_close(result["logits"], losses[rank].metrics["logits"], rtol=1e-5, atol=1e-5)
         torch.testing.assert_close(result["grad"], model.score.weight.grad, rtol=1e-5, atol=1e-5)
+
+
+# A System One record end to end: encoder -> SystemOneDataset sample -> packed row -> native model -> decision loss.
+
+CHAT_TEMPLATE = (
+    "{% for m in messages %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
+    "{% if add_generation_prompt %}<|im_start|>assistant\n<think>\n\n</think>\n\n{% endif %}"
+)
+QUESTIONS = {
+    "outage": {"type": "noul", "instructions": "Is a service down?", "criteria": {"true": "A service is down."}},
+    "team": {"type": "choice", "instructions": "Who handles it?", "criteria": {"technical": "Bugs", "billing": None}},
+    "urgency": {"type": "score", "instructions": "How urgent?", "criteria": ["Can wait", "This week", "Today"]},
+}
+ROWS = [
+    {"id": "r", "state": "Checkout fails.", "label": {"outage": True, "urgency": 2},
+     "soft_label": {"team": {"billing": 0.25, "technical": 0.75}}},
+    {"id": "s", "state": {"ticket": 7, "text": "Invoice is wrong."}, "label": {"team": "billing", "urgency": 1},
+     "soft_label": None},
+]  # fmt: skip
+
+
+def write_char_tokenizer(directory: Path) -> None:
+    """One token per printable ASCII character or newline, so every id fits the tiny vocabulary, and a Qwen-like chat
+    template."""
+    vocab = {"<unk>": 0, "\n": 1} | {chr(code): code - 30 for code in range(32, 127)}
+    tokenizer = Tokenizer(WordLevel(vocab, unk_token="<unk>"))
+    tokenizer.pre_tokenizer = Split(Regex("[\\s\\S]"), behavior="isolated")
+    PreTrainedTokenizerFast(tokenizer_object=tokenizer, unk_token="<unk>", chat_template=CHAT_TEMPLATE).save_pretrained(
+        directory
+    )
+
+
+def segments(cu_seqlens: torch.Tensor) -> list[tuple[int, int]]:
+    bounds = cu_seqlens.tolist()
+    return list(zip(bounds[:-1], bounds[1:]))
+
+
+def flash_attention_varlen(query, key, value, cu_seqlens, cu_seqlens_k, max_q, max_k, scale, causal, left, right):
+    """flash-attn's varlen forward: each segment attends within itself, causally or not."""
+    groups = query.shape[1] // key.shape[1]
+    key, value = key.repeat_interleave(groups, 1), value.repeat_interleave(groups, 1)
+    outputs = []
+    for start, end in segments(cu_seqlens):
+        q, k, v = (tensor[start:end].transpose(0, 1) for tensor in (query, key, value))
+        outputs.append(F.scaled_dot_product_attention(q, k, v, is_causal=causal, scale=scale).transpose(0, 1))
+    return torch.cat(outputs), None
+
+
+def causal_conv1d(x, weight, bias, activation, cu_seqlens, cp_context):
+    """FLA's causal depthwise convolution, per segment."""
+    assert activation == "silu"
+    outputs = []
+    for start, end in segments(cu_seqlens):
+        segment = x[0, start:end].T[None]
+        convolved = F.conv1d(segment, weight[:, None], bias, padding=weight.shape[-1] - 1, groups=weight.shape[0])
+        outputs.append(F.silu(convolved[0, :, : end - start].T))
+    return torch.cat(outputs)[None], None
+
+
+def chunk_gated_delta_rule(q, k, v, g, beta, use_qk_l2norm_in_kernel, cu_seqlens, cp_context):
+    """FLA's gated delta rule, token by token, its state reset at each segment."""
+    q, k = F.normalize(q.float(), dim=-1) * q.shape[-1] ** -0.5, F.normalize(k.float(), dim=-1)
+    v, g, beta = v.float(), g.float(), beta.float()
+    outputs = torch.zeros_like(v)
+    for start, end in segments(cu_seqlens):
+        state = v.new_zeros(v.shape[2], k.shape[-1], v.shape[-1])
+        for t in range(start, end):
+            state = state * g[0, t].exp()[:, None, None]
+            delta = (v[0, t] - (state * k[0, t, :, :, None]).sum(1)) * beta[0, t, :, None]
+            state = state + k[0, t, :, :, None] * delta[:, None]
+            outputs[0, t] = (state * q[0, t, :, :, None]).sum(1)
+    return outputs, None
+
+
+@pytest.fixture
+def cpu_kernels(monkeypatch):
+    """Torch versions of the flash attention and FLA kernels, which need a GPU."""
+    monkeypatch.setattr(attn, "_flash_attn_2_varlen", flash_attention_varlen)
+    monkeypatch.setattr(gated_delta_net, "causal_conv1d", causal_conv1d)
+    monkeypatch.setattr(gated_delta_net, "chunk_gated_delta_rule", chunk_gated_delta_rule)
+    monkeypatch.setattr(gated_delta_net, "FusedRMSNormGated", hf_modeling.Qwen3_5RMSNormGated)
+
+
+def native_model(directory: Path) -> PreTrainedModelPrimeRL:
+    """The release's class, with its weights, as setup_model builds it."""
+    model = build(directory, device="cpu")
+    inject_prime_lm_head(model)
+    model.load_state_dict(model.convert_to_prime(load_state_dict(directory)), strict=False)
+    if isinstance(model, ClefFlashForJointSchema):
+        model.lexical_embedding.weight.data.copy_(model.lm_head.weight)
+    return model
+
+
+def packed_batch(directory: Path, encoder_cls: type) -> dict:
+    """Both records of ROWS, encoded by the encoder and packed into one row as the SFT dataloader does."""
+    rows = [
+        {key: json.dumps(value) if key != "id" else value for key, value in row.items()}
+        | {"questions": json.dumps(QUESTIONS)}
+        for row in ROWS
+    ]
+    encoder = encoder_cls(PreTrainedTokenizerFast.from_pretrained(directory))
+    dataset = SystemOneDataset(Dataset.from_list(rows), encoder, shuffle=False, seq_len=4096, max_epochs=1)
+    (row,) = CatDataset(dataset, seq_len=4096, pad_to_multiple_of=1)
+    return cat_collate([row])
+
+
+def packed_logits(model, batch: dict) -> list[torch.Tensor]:
+    return forward(
+        model,
+        batch["input_ids"],
+        batch["position_ids"],
+        seq_lens=batch["seq_lens"],
+        hidden_states_fn=lambda hidden_states: question_logits(model, hidden_states, batch),
+    )
+
+
+def hidden_alone(model, input_ids: torch.Tensor) -> torch.Tensor:
+    """The final hidden states of one prompt alone, as vLLM computes them for one request."""
+    return forward(
+        model,
+        input_ids[None],
+        torch.arange(len(input_ids))[None],
+        seq_lens=torch.tensor([len(input_ids)]),
+        hidden_states_fn=lambda hidden_states: hidden_states[0],
+    )
+
+
+def check_decision_loss(model, batch: dict, logits: list[torch.Tensor], trained: nn.Parameter) -> None:
+    questions = [question for record in batch["sample_data"] for question in record["questions"]]
+    labelled = [(vector, question["target"]) for vector, question in zip(logits, questions) if question["target"]]
+    expected = sum(F.cross_entropy(vector, torch.tensor(target)) for vector, target in labelled)
+    outputs = run_loss_fn(partial(decision_loss, brier_weight=0.0), model, batch)
+    assert outputs.count == len(labelled) == 5
+    torch.testing.assert_close(outputs.loss, expected)
+    outputs.loss.backward()
+    assert trained.grad is not None and trained.grad.abs().sum() > 0
+
+
+def test_d3_trains_on_vllms_prompts_end_to_end(tmp_path, cpu_kernels):
+    write_d3_release(tmp_path)
+    write_char_tokenizer(tmp_path)
+    model = native_model(tmp_path)
+    tokenizer = PreTrainedTokenizerFast.from_pretrained(tmp_path)
+    batch = packed_batch(tmp_path, D3Encoder)
+    logits = packed_logits(model, batch)
+
+    # The encoder's option order is the readout's: the j-th logit scores the j-th code, whose line is that option's.
+    lines = {"outage": ["No / false", "A service is down."], "team": ["technical: Bugs", "billing"],
+             "urgency": ["Can wait", "This week", "Today"]}  # fmt: skip
+    options = {"outage": ["false", "true"], "team": ["technical", "billing"], "urgency": ["0", "1", "2"]}
+    input_ids, start, index = batch["input_ids"][0], 0, 0
+    seq_lens, vectors = iter(batch["seq_lens"].tolist()), iter(logits)
+    for record in batch["sample_data"]:
+        for question in record["questions"]:
+            # One segment per question, read at its last token, as vLLM pools each request's last token.
+            end = start + next(seq_lens)
+            assert question["reads"] == [[end - 1 - index, end - index]]
+            prompt = "".join(tokenizer.convert_ids_to_tokens(input_ids[start:end].tolist()))
+            assert question["options"] == options[question["id"]]
+            assert all(f"\n{code}: {line}\n" in prompt for code, line in zip(CODES, lines[question["id"]]))
+
+            # The packed logits are the readout's on the question's prompt alone, as vLLM pools each request on its
+            # own: at its last token, in float32, over the temperature.
+            hidden = hidden_alone(model, input_ids[start:end])[-1]
+            expected = model.score(hidden.float())[: len(question["options"])] / DECISION_CONFIG["temperature"]
+            torch.testing.assert_close(next(vectors), expected)
+            start = end
+        index = start
+    assert next(vectors, None) is None and start == len(input_ids)
+
+    check_decision_loss(model, batch, logits, model.score.weight)
+
+
+def test_clef_trains_on_vllms_prompt_end_to_end(tmp_path, cpu_kernels):
+    write_clef_release(tmp_path)
+    write_char_tokenizer(tmp_path)
+    model = native_model(tmp_path)
+    tokenizer = PreTrainedTokenizerFast.from_pretrained(tmp_path)
+    batch = packed_batch(tmp_path, ClefFlashEncoder)
+    logits = packed_logits(model, batch)
+
+    # The encoder's reads are the head's: the instruction, then each option's JSON in the head's order, which the
+    # targets follow.
+    options = {"outage": ["true", "false"], "team": ["billing", "technical"], "urgency": ["0", "1", "2"]}
+    targets = {"outage": [1.0, 0.0], "team": [0.25, 0.75], "urgency": [0.0, 0.0, 1.0]}
+    input_ids, start, vectors = batch["input_ids"][0], 0, iter(logits)
+    assert batch["seq_lens"].tolist() == [record["num_tokens"] for record in batch["sample_data"]]
+    for record in batch["sample_data"]:
+        ids = input_ids[start : start + record["num_tokens"]]
+        for question in record["questions"]:
+            texts = ["".join(tokenizer.convert_ids_to_tokens(ids[a:b].tolist())) for a, b in question["reads"]]
+            assert texts[0] == QUESTIONS[question["id"]]["instructions"]
+            assert [json.loads(text)["option_id"] for text in texts[1:]] == question["options"]
+            assert question["options"] == options[question["id"]]
+            if record["id"] == "r":
+                assert question["target"] == targets[question["id"]]
+
+        # The packed logits are the head's on the record's prompt alone, as vLLM pools each request on its own (the head
+        # is checked against vLLM's source in test_clef_logits_are_vllms), with the lexical prior from the LM head.
+        questions = record["questions"]
+        types = [QUESTION_TYPES[question["type"]] for question in questions]
+        spans = [tuple(question["reads"][0]) for question in questions]
+        spans += [tuple(span) for question in questions for span in question["reads"][1:]]
+        counts = [len(question["reads"]) - 1 for question in questions]
+        schema, lexical_positions, lexical_spans = schema_indices(types, spans, counts, torch.device("cpu"))
+        lexical = F.embedding(ids[lexical_positions], model.lm_head.weight)
+        lexical = segment_mean(lexical, lexical_spans, schema.span_lengths[len(types) :])
+        for vector in model.pooler.head(hidden_alone(model, ids), lexical, schema).float().split(counts):
+            torch.testing.assert_close(next(vectors), vector)
+        start += record["num_tokens"]
+    assert next(vectors, None) is None and start == len(input_ids)
+
+    check_decision_loss(model, batch, logits, model.pooler.head.residual_gate)
