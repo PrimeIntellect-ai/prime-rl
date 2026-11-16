@@ -373,15 +373,16 @@ def train(config: SFTConfig | PretrainConfig):
         dist.all_reduce(total_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
         dist.all_reduce(nan_count, op=dist.ReduceOp.SUM)
 
-        # Every rank reports the same metric names, since one loss function computes them all; reduce them in one order.
-        for name in sorted(metrics):
-            dist.all_reduce(metrics[name], op=dist.ReduceOp.SUM, group=dp_cp_group)
+        mean_metrics = {}
+        if metrics:
+            # Every rank reports the same metric names, since one loss function computes them all; stack them in one order.
+            names = sorted(metrics)
+            metric_sums = torch.stack([metrics[name] for name in names])
+            dist.all_reduce(metric_sums, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            means = (metric_sums / total_token_count).where(total_token_count > 0, float("nan"))
+            mean_metrics = dict(zip(names, means.tolist()))
 
         mean_loss = (total_loss_sum / total_token_count).item() if total_token_count.item() > 0 else float("nan")
-        mean_metrics = {
-            name: (value / total_token_count).item() if total_token_count.item() > 0 else float("nan")
-            for name, value in metrics.items()
-        }
         return mean_loss, nan_count.item(), mean_metrics
 
     def run_validation(step: int) -> None:
