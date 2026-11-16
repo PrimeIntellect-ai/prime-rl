@@ -63,7 +63,8 @@ class ClefFlashForJointSchema(Qwen3_5ForCausalLM):
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        return any(not name.startswith(PREFIXES) for name in state_dict)
+        """Whether it holds the release's head, which ``joint_head.safetensors`` stores without a prefix."""
+        return "prior_logit_scale" in state_dict
 
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
