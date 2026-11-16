@@ -98,6 +98,8 @@ def test_columns_can_be_renamed_and_the_id_falls_back_to_the_split_and_row_index
         ({"q": {"type": "choice", "instructions": "?", "criteria": {}}}, None, None),  # no options
         ({"q": {"type": "choice", "instructions": "?", "criteria": {"": None}}}, None, None),  # an empty option id
         ({"q": {"type": "score", "instructions": "?", "criteria": ["low", ""]}}, None, None),  # an empty level
+        ({"q": {"type": "score", "instructions": "?", "criteria": [1, "1"]}}, None, None),  # the same level twice
+        ({"": {"type": "noul"}}, None, None),  # an empty question id
         ({"q": {"type": "score", "instructions": "?", "criteria": ["one"]}}, None, None),  # one level
         ({"q": {"type": "score", "instructions": "?", "criteria": ["level"] * 11}}, None, None),  # too many levels
         (QUESTIONS, {"team": "sales"}, None),  # a label that is not an option
@@ -218,5 +220,5 @@ class SkippingEncoder(SystemOneEncoder):
 
 def test_raises_when_every_record_is_skipped():
     dataset = SystemOneDataset(Dataset.from_list([ROW] * 3), SkippingEncoder(None))
-    with pytest.raises(RuntimeError, match="skipped 4 rows in a row"):
+    with pytest.raises(RuntimeError, match="skipped 7 rows in a row"):
         next(iter(dataset))

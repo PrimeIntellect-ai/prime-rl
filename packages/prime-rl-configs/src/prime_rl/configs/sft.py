@@ -124,8 +124,8 @@ class SystemOneColumnsConfig(BaseConfig):
     """Dataset columns of a System One record. Set a field to read a column under another name."""
 
     id: str = "id"
-    """Column with the record id, used in warnings and errors. If the column is absent, the id is the row's subset,
-    split and index within them, joined by ``/``."""
+    """Column with the record id, used in warnings and errors. If the column is absent, the id is the row's subset
+    if any, split and index within them, joined by ``/``."""
 
     state: str = "state"
     """Column with the state to decide on, as JSON text (a text state as a JSON string)."""

@@ -392,7 +392,7 @@ The samples are called one after another, as in RL, so many short samples cost o
 
 `[data] type = "system_one"` trains a decision model: a model that answers typed questions about a state with a distribution over each question's options, read from hidden states at chosen tokens instead of generated as text. A row is a System One record: a state, its questions and their labels. prime-rl parses the record and turns the labels into one target per question, an encoder of yours turns the record into tokens, and a [custom loss](#custom-loss) of yours compares the model's output with the targets. Loading, mixing subsets and splits, shuffling, packing, resume, validation and checkpointing are the SFT trainer's, as for chat data.
 
-**Prepare the records.** prime-rl does not convert datasets; you write the HF dataset. Its columns are `state`, `questions`, and `label` and/or `soft_label`, plus an optional `id` that names the record in warnings and errors (when absent, its subset, split and row index, as `subset/split/index`). All but `id` are string columns of JSON text (write them with `json.dumps`), so a text state is a JSON string; a label column that is null in every row counts as absent. A dataset that stores them under other names maps them in `[data.columns]`, e.g. `state = "ticket"`. One row:
+**Prepare the records.** prime-rl does not convert datasets; you write the HF dataset. Its columns are `state`, `questions`, and `label` and/or `soft_label`, plus an optional `id` that names the record in warnings and errors (when absent, its subset if any, split and row index, joined by `/`). All but `id` are string columns of JSON text (write them with `json.dumps`), so a text state is a JSON string; a label column that is null in every row counts as absent. A dataset that stores them under other names maps them in `[data.columns]`, e.g. `state = "ticket"`. One row:
 
 ```text
 id          r
@@ -404,13 +404,13 @@ label       {"outage": true, "urgency": 2}
 soft_label  {"team": {"technical": 0.75, "billing": 0.25}}
 ```
 
-`questions` maps each question id to its `type`, `instructions` (optional: absent or null is `""`) and `criteria`. `label` maps question ids to hard labels, and `soft_label` maps them to a probability for every option; probabilities that sum to 1 within 0.01 are rescaled to sum to 1. A question's target is its soft label if it has one, else its hard label one-hot, in the order of its options; a question with neither is not trained. vLLM's `/v1/systemone` responses name a noul question's options `yes` and `no`: they are `true` and `false` here.
+`questions` maps each question id (non-empty) to its `type`, `instructions` (optional: absent or null is `""`) and `criteria`. `label` maps question ids to hard labels, and `soft_label` maps them to a probability for every option; probabilities that sum to 1 within 0.01 are rescaled to sum to 1. A question's target is its soft label if it has one, else its hard label one-hot, in the order of its options; a question with neither is not trained. vLLM's `/v1/systemone` responses name a noul question's options `yes` and `no`: they are `true` and `false` here.
 
 | `type` | `criteria` | Options, in order | Hard label | Target in the example |
 |---|---|---|---|---|
 | `noul` (yes or no) | optional: a description of `true` and/or `false` (null is none) | `false`, `true` | `true` or `false` | `outage`: `[0, 1]` |
 | `choice` | non-empty option id → description or null, 1 to 255 options | the option ids as given | an option id | `team`: `[0.75, 0.25]` |
-| `score` | a list of 2 to 10 non-empty level descriptions | `0` … `n-1` | a level | `urgency`: `[0, 0, 1]` |
+| `score` | a list of 2 to 10 distinct non-empty level descriptions | `0` … `n-1` | a level | `urgency`: `[0, 0, 1]` |
 
 **Write an encoder.** The encoder decides what the model sees: the text, how it splits into attention segments, and which tokens the model's head reads for each question. prime-rl ships none, since the encoder must match the head; it lives in your package as a subclass of `SystemOneEncoder`. It never sees labels.
 
@@ -439,7 +439,7 @@ class MyEncoder(SystemOneEncoder):
 ```
 
 - **Lifetime.** The encoder is built in the main process as `MyEncoder(tokenizer, **kwargs)` with the run's tokenizer and `[data.encoder.kwargs]`, at startup and again at each validation; a subclass with its own arguments passes the tokenizer to `super().__init__`. It is copied into every dataloader worker, so keep `__init__` cheap and create heavy state on first call, and it must be deterministic so that a resumed run reads the same samples.
-- **Input.** `record.state` and each question's `instructions` and `criteria` are the decoded JSON; `question.options` are the option ids in the order of the table, and `question.descriptions` their descriptions (`None` where there is none). `max_tokens` is `data.seq_len`: an encoder may shorten its own content to fit, or return `None` to skip the record. A record is also skipped, with a warning, when its encoding is longer than `max_tokens` (prime-rl never truncates a record) or none of its questions has a label. A malformed record raises and stops the run, and so does a data rank that skips more records in a row than the dataset has.
+- **Input.** `record.state` and each question's `instructions` and `criteria` are the decoded JSON (noul criteria without their null descriptions); `question.options` are the option ids in the order of the table, and `question.descriptions` their descriptions (`None` where there is none). `max_tokens` is `data.seq_len`: an encoder may shorten its own content to fit, or return `None` to skip the record. A record is also skipped, with a warning, when its encoding is longer than `max_tokens` (prime-rl never truncates a record) or none of its questions has a label. A malformed record raises and stops the run, and so does a data rank that skips more than twice as many records in a row as the dataset has.
 - **Output.** `input_ids`, `seq_lens`, `reads`, and optionally `options`: per question, the option ids in the order of the head's logits when that is not the order of the table (prime-rl reorders the targets to match). prime-rl checks every encoding against the `EncodedRecord` contract and raises on a violation.
 
 **Configure.** `data.name`, `[data.encoder]` and a [custom loss](#custom-loss) are required:
@@ -488,7 +488,7 @@ import_path = "my_pkg.encoder.MyEncoder"
   ]}
   ```
 
-- **Validation and unused settings.** `[val.data]` takes only its `type` from `[data]`, so both are System One or neither. `val.data.seq_len` defaults to 128 and must equal `data.seq_len`, and `val.data.encoder` must equal `data.encoder`. The encoder owns any chat template, so a non-default `[renderer]` is refused, and per-row template columns such as `reasoning_effort` are not read. `pad_to_seq_len` is refused.
+- **Validation and unused settings.** `[val.data]` takes only a missing `type` from `[data]`; both must be System One or neither. `val.data.seq_len` defaults to 128 and must equal `data.seq_len`, and `val.data.encoder` must equal `data.encoder`. The encoder owns any chat template, so a non-default `[renderer]` is refused, and per-row template columns such as `reasoning_effort` are not read. `pad_to_seq_len` is refused.
 
 **Launch.** The encoder, the loss and the model class must be importable where the trainer runs.
 

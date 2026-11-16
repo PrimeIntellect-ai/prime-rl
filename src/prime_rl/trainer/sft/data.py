@@ -265,10 +265,11 @@ class HFDataset(StatefulIterableDataset):
             # If processed example is None, skip it (e.g. if tokenized sample exceeds context window)
             if processed_example is None:
                 num_skipped += 1
-                if num_skipped > self.num_examples:
+                # Twice the dataset: across a reshuffle, two usable rows can be almost two epochs apart
+                if num_skipped > 2 * self.num_examples:
                     raise RuntimeError(
-                        f"Data rank {self.data_rank} skipped {num_skipped} rows in a row, more than the dataset's "
-                        f"{self.num_examples}, without yielding a sample: every row it reads is skipped."
+                        f"Data rank {self.data_rank} skipped {num_skipped} rows in a row, more than twice the "
+                        f"dataset's {self.num_examples}, without yielding a sample: every row it reads is skipped."
                     )
                 continue
             num_skipped = 0

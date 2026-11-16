@@ -105,9 +105,10 @@ def _parse_question(question_id: str, definition: Any) -> Question:
             not isinstance(criteria, list)
             or not MIN_SCORE_LEVELS <= len(criteria) <= MAX_SCORE_LEVELS
             or "" in criteria
+            or len({str(level) for level in criteria}) != len(criteria)
         ):
             raise ValueError(
-                f"{where}: score criteria must list {MIN_SCORE_LEVELS} to {MAX_SCORE_LEVELS} non-empty levels"
+                f"{where}: score criteria must list {MIN_SCORE_LEVELS} to {MAX_SCORE_LEVELS} distinct non-empty levels"
             )
     else:
         raise ValueError(f"{where}: type must be noul, choice or score, got {kind!r}")
@@ -151,8 +152,8 @@ def parse_record(row: Mapping, columns: SystemOneColumnsConfig) -> tuple[SystemO
     try:
         state = _decode(row, columns.state)
         definitions = _decode(row, columns.questions)
-        if not isinstance(definitions, Mapping) or not definitions:
-            raise ValueError(f"column {columns.questions!r} must hold a non-empty object")
+        if not isinstance(definitions, Mapping) or not definitions or "" in definitions:
+            raise ValueError(f"column {columns.questions!r} must hold a non-empty object with non-empty question ids")
         questions = tuple(_parse_question(question_id, definition) for question_id, definition in definitions.items())
         hard = _decode_labels(row, columns.label, set(definitions))
         soft = _decode_labels(row, columns.soft_label, set(definitions))
