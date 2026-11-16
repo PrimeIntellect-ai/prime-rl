@@ -8,13 +8,13 @@ A Decider release has d3's layout, so prime-rl selects its d3 class for it, `D3F
 
 | File | What |
 |---|---|
-| `model.py` | `Decider`, the `[model.implementation]` class: d3's class reading `decision_config.json` format version 2, Decider's, with its own `decision_logits`, the readout's first rows at each question's marker, not divided by the temperature |
+| `model.py` | `Decider`, the `[model.implementation]` class: d3's class reading `decision_config.json` format version 2 only, Decider's (it refuses a d3 release, format version 1, whose prompts are d3's), with its own `decision_logits`, the readout's first rows at each question's marker, not divided by the temperature, and an export with temperature 1 |
 | `encoder.py` | `DeciderEncoder`: the whole record is one prompt and one attention segment (a system prompt, the state, then every question with its options under the answer codes and a marker), read at each question's marker. The answer codes come from the `decision_config.json` beside the tokenizer's files |
 | `train.toml`, `smoke.toml` | The full fine-tuning run, and a 30-step mechanics check composed after it |
 
 ## vLLM
 
-vLLM 0.33 does not serve Decider: it routes the release to d3's class and refuses its format version 2. A run's [export](../../../docs/training.md#exporting-checkpoints) has d3's layout (`decision_config.json` and `readout.safetensors` beside the shards), which loads for training again with the same `[model.implementation]`. Decider's `joint_config.json` and `source/` are not written, so copy them from the release to use Decider's own code. The export keeps the release's temperature (1.55, in `decision_config.json`), which Decider's code applies to logits trained without it: refit it on held-out data, or set it to 1, before serving the export.
+vLLM 0.33 does not serve Decider: it routes the release to d3's class and refuses its format version 2. A run's [export](../../../docs/training.md#exporting-checkpoints) has d3's layout (`decision_config.json` and `readout.safetensors` beside the shards), which loads for training again with the same `[model.implementation]`. Decider's `joint_config.json` and `source/` are not written, so copy them from the release to use Decider's own code. The export's `decision_config.json` has temperature 1 in place of the release's 1.55, so Decider's code serves the logits as they were trained, uncalibrated; refit the temperature on held-out data to calibrate them.
 
 ## Run
 
@@ -33,7 +33,7 @@ A record's attention segment must hold the record alone: the full-attention laye
 Perplexity published no training recipe, so the recipe is this example's:
 
 - The whole language model and the readout train, at one learning rate (1e-5, untuned, cosine schedule with warmup), with AdamW, weight decay 0.01 and gradient clipping at 1.0. prime-rl keeps the vision encoder frozen, since the data is text.
-- The loss is soft cross-entropy against the dataset's soft labels, without a Brier term, on the readout's logits as they are. Decider divides them by a temperature at inference (1.55, in `decision_config.json`), a calibration fitted to the released weights, which the class leaves out of the logits it trains. This departs on purpose from the `DecisionModel` contract, whose logits include a checkpoint's own temperature. Validation therefore reports the loss of uncalibrated logits.
+- The loss is soft cross-entropy against the dataset's soft labels, without a Brier term, on the readout's logits as they are. Decider divides them by a temperature at inference (1.55, in `decision_config.json`), a calibration fitted to the released weights, which the class leaves out of the logits it trains. This departs on purpose from the `DecisionModel` contract, whose logits include a checkpoint's own temperature, until the export, whose temperature is 1. Validation therefore reports the loss of uncalibrated logits.
 - A step is eight packed rows of up to 2,048 tokens each: about 28 records and 98 questions. A row is short to keep the activations small. In fp32 the 4.2B trained parameters and their gradients take 31 GiB on the GPU; AdamW's two moments take another 31 GiB, which prime-rl keeps in host memory except during the optimizer step (`model.offload = "optimizer"`, its default). None of this is measured.
 
 And the model runs as prime-rl runs it, not as Decider's own code does:
