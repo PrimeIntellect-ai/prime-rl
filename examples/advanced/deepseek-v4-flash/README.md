@@ -51,14 +51,14 @@ FP8 also halves the inference weights (41 GiB vs 79 GiB per GPU), which leaves m
 
 Each replica runs eight data-parallel attention ranks and shards the 256 experts eight ways. All-to-all choice on one 8×H200 node, FP8, `gpu_memory_utilization = 0.85`:
 
-| `all2all_backend` | KV cache per GPU | Startup | 1024 requests, 4k in / 1k out | 2048 requests, 16k in / 512 out |
+| `all2all_backend` | KV cache memory per GPU | Startup | 1024 requests, 4k in / 1k out | 2048 requests, 16k in / 512 out |
 |---|---|---|---|---|
-| `allgather_reducescatter` (vLLM default, used) | 1.3M tokens | 19 min | 248 s | 582 s |
-| `deepep_low_latency` | 12.9M tokens | 9 min | 225 s | 638 s |
+| `allgather_reducescatter` (vLLM default, used) | 67.4 GiB | 19 min | 248 s | 582 s |
+| `deepep_low_latency` | 68.4 GiB | 9 min | 225 s | 638 s |
 | `deepep_high_throughput` | fails at startup (DeepEP CPU recv timeout) | | | |
 | `flashinfer_nvlink_one_sided` | not supported on Hopper | | | |
 
-The recipe keeps the default backend. With `deepep_low_latency`, vLLM computes a wrong MoE output for about 0.1% of tokens and samples nonsense with high confidence, for example `)Skip` at logprob -0.03 where the trainer and a default-backend vLLM both give -45. Those tokens carry most of the trainer/inference mismatch KL: about 0.03 with DeepEP low-latency instead of about 0.005. The same glitch tokens re-scored on FP8 and bf16 servers with the default backend match the trainer. With the default backend, one node holds about 10M KV tokens. For comparison, a bf16 replica (no quantization, default backend) holds 0.56M KV tokens per GPU and takes 339 s and 782 s on the two loads.
+The recipe keeps the default backend. With `deepep_low_latency`, vLLM computes a wrong MoE output for about 0.1% of tokens and samples nonsense with high confidence, for example `)Skip` at logprob -0.03 where the trainer and a default-backend vLLM both give -45. Those tokens carry most of the trainer/inference mismatch KL: about 0.03 with DeepEP low-latency, and 0.0034–0.0039 over five RL steps with the default backend, with no glitch tokens in 1.4M. The same glitch tokens re-scored on FP8 and bf16 servers with the default backend match the trainer. The KV cache memory is the same with both backends. vLLM's logged "KV cache size" in tokens differs about 10×, but only because DeepEP low-latency caps `max_num_batched_tokens` at 256, and vLLM's worst-case estimate reserves a full prefill chunk per request for DeepSeek V4's sliding-window and compressed layers. For comparison, a bf16 replica (no quantization, default backend) has less than half the KV cache memory and takes 339 s and 782 s on the two loads.
 
 ### Scaling
 
