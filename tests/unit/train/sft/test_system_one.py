@@ -63,6 +63,12 @@ def test_null_noul_descriptions_are_absent(criteria, expected):
     assert record.questions[0].criteria == expected
 
 
+def test_instructions_are_optional():
+    questions = {"absent": {"type": "noul"}, "null": {"type": "noul", "instructions": None}}
+    record, _ = parse_record(row(questions), COLUMNS)
+    assert [question.instructions for question in record.questions] == ["", ""]
+
+
 def test_label_columns_may_be_absent_or_null():
     without_soft_label = {key: value for key, value in row(label=LABEL).items() if key != "soft_label"}
     record, labels = parse_record(without_soft_label, COLUMNS)
@@ -88,7 +94,6 @@ def test_columns_can_be_renamed_and_the_id_falls_back_to_the_split_and_row_index
         ({}, None, None),  # no questions
         ({"q": "noul"}, None, None),  # a definition that is not an object
         ({"q": {"type": "rank", "instructions": "?"}}, None, None),  # unknown type
-        ({"q": {"type": "noul"}}, None, None),  # no instructions
         ({"q": {"type": "noul", "instructions": "?", "criteria": {"yes": "y"}}}, None, None),  # noul criteria keys
         ({"q": {"type": "choice", "instructions": "?", "criteria": {}}}, None, None),  # no options
         ({"q": {"type": "choice", "instructions": "?", "criteria": {"": None}}}, None, None),  # an empty option id

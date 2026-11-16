@@ -19,7 +19,7 @@ class Question:
     id: str
     type: QuestionType
     instructions: Any
-    """What to decide, as given: text, or an object or array."""
+    """What to decide, as given: text, or an object or array. Absent or null is ``""``."""
     criteria: Any
     """The allowed answers, as given. noul: an optional object describing ``true`` and/or ``false`` (a null
     description is dropped, and None when none is left). choice: option id -> description (or None). score: the level
@@ -90,8 +90,6 @@ def _parse_question(question_id: str, definition: Any) -> Question:
     if not isinstance(definition, Mapping):
         raise ValueError(f"{where}: the definition must be an object")
     kind, criteria = definition.get("type"), definition.get("criteria")
-    if definition.get("instructions") is None:
-        raise ValueError(f"{where}: instructions are required")
     if kind == "noul":
         if criteria is not None and (not isinstance(criteria, Mapping) or not set(criteria) <= {"true", "false"}):
             raise ValueError(f"{where}: noul criteria may only describe true and false")
@@ -113,7 +111,8 @@ def _parse_question(question_id: str, definition: Any) -> Question:
             )
     else:
         raise ValueError(f"{where}: type must be noul, choice or score, got {kind!r}")
-    return Question(question_id, kind, definition["instructions"], criteria)
+    instructions = definition.get("instructions")
+    return Question(question_id, kind, "" if instructions is None else instructions, criteria)
 
 
 def _hard_label(question: Question, label: Any) -> int:
