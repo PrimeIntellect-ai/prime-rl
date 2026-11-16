@@ -37,7 +37,7 @@ from prime_rl.trainer.model import (
     get_model,
     load_dcp_from_hf,
     overrides_init_missing_weights,
-    refuse_weight_broadcast,
+    refuse_decision_model,
     setup_fsdp,
 )
 from prime_rl.trainer.models import get_decision_model_cls
@@ -444,14 +444,25 @@ def test_clef_logits_are_vllms(tmp_path):
         torch.testing.assert_close(actual, vector)
 
 
-def test_decision_models_are_refused_with_weight_broadcasts(tmp_path):
+def test_decision_models_are_refused_where_they_cannot_train(tmp_path):
     write_d3_release(tmp_path / "d3")
     write_clef_release(tmp_path / "clef")
-    for name in ("d3", "clef"):
-        with pytest.raises(ValueError, match="vLLM serves as a pooling model only"):
-            refuse_weight_broadcast(build(tmp_path / name))
     tiny_config("Qwen3_5ForConditionalGeneration", tied=False).save_pretrained(tmp_path / "qwen")
-    refuse_weight_broadcast(get_model(model_config(tmp_path / "qwen"), device=torch.device("meta")))
+    refusals = [
+        ({}, {"broadcasts_weights": True}, "vLLM serves as a pooling model only"),
+        ({}, {"next_token_loss": True}, "a Clef-Flash release trains as a plain Qwen3.5"),
+        ({"lora": {}}, {}, "Decision models train with full fine-tuning"),
+        ({"quantization": {"type": "fp8"}}, {}, "\\[model.quantization\\] is not supported"),
+    ]
+    for settings, run, error in refusals:
+        for name in ("d3", "clef", "qwen"):
+            config = ModelConfig(name=str(tmp_path / name), attn="flash_attention_2", **settings)
+            model = get_model(config, device=torch.device("meta"))
+            if name == "qwen":
+                refuse_decision_model(model, config, **run)
+                continue
+            with pytest.raises(ValueError, match=error):
+                refuse_decision_model(model, config, **run)
 
 
 @pytest.fixture

@@ -30,6 +30,7 @@ from transformers import AutoConfig, AutoTokenizer, GenerationConfig, Pretrained
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
+from prime_rl.configs.sft import DECISION_MODEL_LORA
 from prime_rl.configs.trainer import (
     ActivationCheckpointConfig,
     CompileConfig,
@@ -1098,15 +1099,36 @@ def resolve_auto_attn(config: ModelConfig) -> None:
     config.attn = resolved
 
 
-def refuse_weight_broadcast(model: nn.Module) -> None:
-    """Raise for a decision model, whose weights cannot be broadcast to the inference engine of RL or online evals."""
+def refuse_decision_model(
+    model: nn.Module, config: ModelConfig, broadcasts_weights: bool = False, next_token_loss: bool = False
+) -> None:
+    """Raise for a decision model in a run that cannot train it: with a next-token loss, weight broadcasts, LoRA or
+    quantization."""
     # Imported here: the System One loss module imports this one.
     from prime_rl.trainer.sft.system_one.loss import DecisionModel
 
-    if isinstance(model, DecisionModel):
+    if not isinstance(model, DecisionModel):
+        return
+    name = type(model).__name__
+    if next_token_loss:
         raise ValueError(
-            f"{type(model).__name__} is a decision model, which vLLM serves as a pooling model only: it cannot take "
+            f'{name} is a decision model, which trains with [loss] type = "decision" or a custom loss, not with the '
+            'next-token loss of pretraining or [loss] type = "ce". A d3 or Clef-Flash release builds it because of the '
+            "decision_config.json or joint_head_config.json beside its config.json. Without its joint_head_config.json, "
+            "a Clef-Flash release trains as a plain Qwen3.5; a d3 release, a bare Qwen3_5Model, has no plain class."
+        )
+    if broadcasts_weights:
+        raise ValueError(
+            f"{name} is a decision model, which vLLM serves as a pooling model only: it cannot take "
             "the weight broadcasts of RL or online evals, whose inference generates. Train it with SFT without [eval]."
+        )
+    if config.lora is not None:
+        raise ValueError(f"{name} is a decision model, so [model.lora] is not supported. {DECISION_MODEL_LORA}")
+    if config.quantization is not None:
+        raise ValueError(
+            f"{name} is a decision model, so [model.quantization] is not supported: its FP8 and MXFP8 layers replace "
+            "every linear layer whose sizes they support, the readout's included (Clef-Flash's joint head; d3's score "
+            "when its code count is a multiple of 128 for FP8 or 32 for MXFP8), which vLLM does not quantize."
         )
 
 
@@ -1116,6 +1138,7 @@ def setup_model(
     loading_from_checkpoint_later: bool = False,
     broadcasts_weights: bool = False,
     needs_decision_logits: bool = False,
+    next_token_loss: bool = False,
 ) -> nn.Module:
     resolve_auto_attn(config)
 
@@ -1131,8 +1154,7 @@ def setup_model(
 
     # Build on the meta device; weights are materialized after FSDP sharding.
     model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
-    if broadcasts_weights:
-        refuse_weight_broadcast(model)
+    refuse_decision_model(model, config, broadcasts_weights, next_token_loss)
     if needs_decision_logits:
         from prime_rl.trainer.sft.system_one.loss import check_decision_model
 
