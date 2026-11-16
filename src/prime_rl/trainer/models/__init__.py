@@ -4,13 +4,14 @@ import json
 from collections import OrderedDict
 from pathlib import Path
 
+from huggingface_hub import _CACHED_NO_EXIST, hf_hub_download, try_to_load_from_cache
+from huggingface_hub.errors import RemoteEntryNotFoundError
 from transformers import AutoConfig
 from transformers.configuration_utils import PretrainedConfig
 from transformers.models.auto.auto_factory import _BaseAutoModelClass, _LazyAutoMapping, auto_class_update
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
-from transformers.utils import cached_file
 
 from prime_rl.trainer.models.afmoe import AfmoeConfig, AfmoeForCausalLM
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
@@ -42,6 +43,7 @@ from prime_rl.trainer.models.qwen3_8_flash_next import (
     Qwen3_8FlashNextTextConfig,
 )
 from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalLM
+from prime_rl.utils.logger import get_logger
 
 # Make custom config discoverable by AutoConfig
 AutoConfig.register("afmoe", AfmoeConfig, exist_ok=True)
@@ -153,6 +155,29 @@ _DECISION_MODELS: dict[tuple[str, str, str], tuple[type[PreTrainedModelPrimeRL],
         "joint_head_config",
     ),
 }
+# Every stock Qwen3.5 checkpoint has Clef-Flash's architecture: a lookup of its file that fails warns, so that their runs
+# go on. A failed lookup of d3's file raises.
+_STOCK_ARCHITECTURES = {("qwen3_5", "Qwen3_5ForConditionalGeneration")}
+
+
+def read_side_file(name: str, file: str) -> dict | None:
+    """The JSON `file` beside the config of the checkpoint at `name` (a local directory or a Hub id), or None when the
+    checkpoint has none. A Hub lookup that fails, e.g. offline or on a 5xx, raises, unless the HF cache records the
+    file or its absence."""
+    if Path(name).is_dir():
+        path = Path(name) / file
+        if not path.is_file():
+            return None
+    elif (cached := try_to_load_from_cache(name, file)) is _CACHED_NO_EXIST:
+        return None
+    elif isinstance(cached, str):
+        path = Path(cached)
+    else:
+        try:
+            path = Path(hf_hub_download(name, file))
+        except RemoteEntryNotFoundError:
+            return None
+    return json.loads(path.read_text())
 
 
 def get_decision_model_cls(model_config: PretrainedConfig, name: str) -> type[PreTrainedModelPrimeRL] | None:
@@ -162,13 +187,18 @@ def get_decision_model_cls(model_config: PretrainedConfig, name: str) -> type[Pr
     for (model_type, architecture, file), (cls, attribute) in _DECISION_MODELS.items():
         if model_config.model_type != model_type or architectures != [architecture]:
             continue
-        # A Hub error reads as a missing file, as for every stock Qwen3.5 checkpoint: a decision run then fails the
-        # decision model check.
-        path = cached_file(
-            name, file, _raise_exceptions_for_missing_entries=False, _raise_exceptions_for_connection_errors=False
-        )
-        if path is not None:
-            setattr(model_config, attribute, json.loads(Path(path).read_text()))
+        try:
+            content = read_side_file(name, file)
+        except OSError as error:
+            if (model_type, architecture) not in _STOCK_ARCHITECTURES:
+                raise OSError(f"Could not look up {file} for {name}, which selects {cls.__name__}: {error}") from error
+            get_logger().warning(
+                f"Could not look up {file} for {name} ({error}): if it is a release of {cls.__name__}, it trains as "
+                "a plain Qwen3.5"
+            )
+            return None
+        if content is not None:
+            setattr(model_config, attribute, content)
             return cls
     return None
 

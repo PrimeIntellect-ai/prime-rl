@@ -20,6 +20,8 @@ import torch.distributed.checkpoint as dcp
 import torch.multiprocessing as mp
 import torch.nn.functional as F
 from datasets import Dataset
+from huggingface_hub import _CACHED_NO_EXIST
+from huggingface_hub.errors import LocalEntryNotFoundError
 from safetensors.torch import load_file, save_file
 from tokenizers import Regex, Tokenizer
 from tokenizers.models import WordLevel
@@ -223,7 +225,7 @@ class Decider(D3ForSequenceClassification):
     FORMAT_VERSIONS = (1, 2)
 
 
-def test_the_release_selects_the_class_vllm_serves_it_with(tmp_path):
+def test_the_release_selects_the_class_vllm_serves_it_with(tmp_path, monkeypatch):
     d3, clef, decider, qwen = (tmp_path / name for name in ("d3", "clef", "decider", "qwen"))
     write_d3_release(d3)
     write_clef_release(clef)
@@ -237,6 +239,18 @@ def test_the_release_selects_the_class_vllm_serves_it_with(tmp_path):
     assert get_model(model_config(d3), device=torch.device("meta")).config.decision_config == DECISION_CONFIG
     assert get_model(model_config(clef), device=torch.device("meta")).config.joint_head_config == JOINT_HEAD_CONFIG
     assert get_decision_model_cls(AutoConfig.from_pretrained(qwen), str(qwen)) is None
+
+    # A failed Hub lookup of d3's file raises; of Clef-Flash's, which every stock Qwen3.5 checkpoint would make, warns.
+    def offline(*args, **kwargs):
+        raise LocalEntryNotFoundError("offline")
+
+    monkeypatch.setattr("prime_rl.trainer.models.hf_hub_download", offline)
+    with pytest.raises(OSError, match="Could not look up decision_config.json for org/d3"):
+        get_decision_model_cls(AutoConfig.from_pretrained(d3), "org/d3")
+    assert get_decision_model_cls(AutoConfig.from_pretrained(qwen), "org/qwen") is None
+    # Offline, a file the HF cache records as absent is no file.
+    monkeypatch.setattr("prime_rl.trainer.models.try_to_load_from_cache", lambda *args, **kwargs: _CACHED_NO_EXIST)
+    assert get_decision_model_cls(AutoConfig.from_pretrained(d3), "org/d3") is None
 
     # vLLM routes Decider to d3 too and refuses its format_version 2; a subclass that reads it extends the d3 class.
     assert vllm_route(decider) == "D3ForSequenceClassification"
