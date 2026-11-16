@@ -1183,7 +1183,6 @@ def setup_model(
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
     broadcasts_weights: bool = False,
-    needs_decision_logits: bool = False,
     next_token_loss: bool = False,
 ) -> nn.Module:
     resolve_auto_attn(config)
@@ -1201,10 +1200,6 @@ def setup_model(
     # Build on the meta device; weights are materialized after FSDP sharding.
     model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
     refuse_decision_model(model, config, broadcasts_weights, next_token_loss)
-    if needs_decision_logits:
-        from prime_rl.trainer.sft.system_one.loss import check_decision_model
-
-        check_decision_model(model)
 
     if config.fusions.enabled and config.lora is not None:
         logger.warning("Skipping runtime model fusions because LoRA targets the unfused projections")

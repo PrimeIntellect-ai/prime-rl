@@ -176,7 +176,6 @@ def train(config: SFTConfig | PretrainConfig):
         parallel_dims,
         loading_from_ckpt_later,
         broadcasts_weights=config.eval is not None,
-        needs_decision_logits=isinstance(config, SFTConfig) and config.loss.type == "decision",
         next_token_loss=isinstance(config, PretrainConfig) or config.loss.type == "ce",
     )
 
