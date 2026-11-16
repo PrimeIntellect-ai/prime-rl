@@ -13,7 +13,7 @@ from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity
 from prime_rl.trainer.ckpt import Progress, ckpt_output_dir, setup_ckpt_manager, setup_model_files
-from prime_rl.utils.pathing import get_ckpt_dir, get_step_path, resolve_latest_ckpt_step
+from prime_rl.utils.pathing import get_ckpt_dir, get_step_path, is_checkpoint_step_dir, resolve_latest_ckpt_step
 from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import CheckpointConfig
@@ -158,7 +158,8 @@ def train(config: SFTConfig | PretrainConfig):
 
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")
-    loading_from_ckpt_later = checkpoint_step is not None or config.model.init.type == "ckpt"
+    from_checkpoint = config.model.init.type == "pretrained" and is_checkpoint_step_dir(config.model.name)
+    loading_from_ckpt_later = checkpoint_step is not None or from_checkpoint
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
 
     if parallel_dims.cp_enabled:
@@ -246,7 +247,7 @@ def train(config: SFTConfig | PretrainConfig):
             f"Resuming from step {checkpoint_step} (total_tokens={progress.total_tokens}, "
             f"total_samples={progress.total_samples}, dataset_state={get_dataset_state(dataloader)})"
         )
-    elif config.model.init.type == "ckpt":
+    elif from_checkpoint:
         ckpt_manager.load_weights(Path(config.model.name) / "trainer", model, [optimizer])
     else:
         logger.info("Starting from scratch")

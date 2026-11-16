@@ -71,6 +71,7 @@ from prime_rl.trainer.utils import get_dcp_group
 from prime_rl.trainer.vlm import get_language_model, get_vision_encoder
 from prime_rl.trainer.world import get_world, wait_for_master
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.pathing import has_step_dir_name, is_checkpoint_step_dir
 from prime_rl.utils.utils import format_time
 from prime_rl.utils.weights import (
     load_state_dict,
@@ -84,8 +85,9 @@ def pre_download_model(model_name: str, *, skip_weights: bool = False) -> None:
 
     With ``skip_weights`` (weights that do not come from the HF model), only config and tokenizer files are fetched.
     """
-    if Path(model_name).exists():
-        get_logger().info(f"Model {model_name} found at local path, skipping download")
+    # A checkpoint step directory (gone by a resume, which reads the run's own copies of its files) is never on the Hub.
+    if Path(model_name).exists() or has_step_dir_name(model_name):
+        get_logger().info(f"Model {model_name} is a local path, skipping download")
         return
     t0 = time.perf_counter()
     if skip_weights:
@@ -470,9 +472,10 @@ def get_model(
 
 
 def use_resumed_model_files(model: ModelConfig, tokenizer: TokenizerConfig, step_dir: Path) -> None:
-    """A ``ckpt`` run resumes with the config.json and tokenizer of the step directory it resumes, which holds copies
-    of its source's (``ModelFiles``), so that source may be gone by then."""
-    if model.init.type != "ckpt" or not (step_dir / "config.json").exists():
+    """A run started from a checkpoint step directory resumes with the config.json and tokenizer of the step directory
+    it resumes, which holds copies (``ModelFiles``), so the source may be gone by then. The source is recognized by its
+    name, since it may no longer exist."""
+    if not has_step_dir_name(model.name) or not (step_dir / "config.json").exists():
         return
     if tokenizer.name == model.name:
         tokenizer.name = str(step_dir)
@@ -480,11 +483,11 @@ def use_resumed_model_files(model: ModelConfig, tokenizer: TokenizerConfig, step
 
 
 def check_ckpt_dir(config: ModelConfig) -> None:
-    """A ``ckpt`` step directory supplies the architecture with its config.json."""
-    if config.init.type == "ckpt" and not (Path(config.name) / "config.json").exists():
+    """A checkpoint step directory supplies the architecture with its config.json."""
+    if is_checkpoint_step_dir(config.name) and not (Path(config.name) / "config.json").exists():
         raise FileNotFoundError(
-            f"model.name {config.name} has no config.json, so the architecture is unknown; copy the model's "
-            "config.json into it"
+            f"Checkpoint step directory {config.name} has no config.json, so the architecture is unknown; copy the "
+            "model's config.json and tokenizer files into it"
         )
 
 

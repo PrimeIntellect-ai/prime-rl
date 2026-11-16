@@ -478,7 +478,7 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
 
 A resume checks that the checkpoint's `config.json` describes the same architecture as `model.name` and stops on a difference before loading. A checkpoint without a `config.json` resumes after a warning, without the check.
 
-A fork continues the other run, so both runs must be of the same kind. To start a new stage from another run's weights, such as RL from an SFT checkpoint, initialize the model from the checkpoint instead (see [Model Initialization](#model-initialization)).
+A fork continues the other run, so both runs must be of the same kind. To start a new stage from another run's weights, such as RL from an SFT checkpoint, set `model.name` to the checkpoint's step directory instead (see [Model Initialization](#model-initialization)).
 
 #### What a resume restores
 
@@ -505,15 +505,13 @@ A resume can add, remove or change train and eval sources.
 | `model.init.type` | Weights | Architecture and tokenizer | Default for |
 |---|---|---|---|
 | `scratch` | The model's own random init, seeded with `model.init.seed` | `model.name` | `uv run pretrain` |
-| `hf` | The weights of `model.name` | `model.name` | `uv run sft`, `uv run rl` |
-| `ckpt` | The trainer checkpoint in `model.name`, a step directory (`.../step_<N>`) of another run | The `config.json` and tokenizer files in that step directory | |
+| `pretrained` | The weights stored at `model.name`: an HF model (Hub id or local directory), or the trainer checkpoint in a step directory (`.../step_<N>`) of another run | `model.name`; for a step directory, its `config.json` and tokenizer files | `uv run sft`, `uv run rl` |
 
-Every type works with every entrypoint, and a `[model.init]` table without `type` keeps the entrypoint's default. In RL, set `name` and `init` in the shared `[model]`. `ckpt` loads only the weights: the run starts at step 0 with a fresh optimizer, scheduler and data. To continue a run with its optimizer, scheduler and data state, use `[resume]` instead, or `--resume.dir` to fork another run of the same kind (see [Resuming a Run](#resuming-a-run)). A model without a from-scratch init fails at startup with `scratch`, naming the parameters its init does not reach. The renderer cannot be picked from a step directory, so a `ckpt` run sets it explicitly; inference's `"auto"` tool-call and reasoning parsers try `tokenizer.name` first, so setting it to the HF model name keeps them. A resumed trainer and the export read the `config.json` and tokenizer from the run's own checkpoint, which holds copies; the RL orchestrator and the inference servers still read `model.name`, so to resume once the source step directory is gone, set `model.name` to one of the run's own step directories.
+Both types work with every entrypoint, and a `[model.init]` table without `type` keeps the entrypoint's default. In RL, set `name` and `init` in the shared `[model]`. The trainer recognizes a step directory by its `trainer/` directory when it loads the weights. A step directory supplies only the weights: the run starts at step 0 with a fresh optimizer, scheduler and data. To continue a run with its optimizer, scheduler and data state, use `[resume]` instead, or `--resume.dir` to fork another run of the same kind (see [Resuming a Run](#resuming-a-run)). A model without a from-scratch init fails at startup with `scratch`, naming the parameters its init does not reach. The renderer cannot be picked from a step directory, so a run from one sets it explicitly; inference's `"auto"` tool-call and reasoning parsers try `tokenizer.name` first, so setting it to the HF model name keeps them. A resumed trainer and the export read the `config.json` and tokenizer from the run's own checkpoint, which holds copies; the RL orchestrator and the inference servers still read `model.name`, so to resume once the source step directory is gone, set `model.name` to one of the run's own step directories.
 
 ```bash
 # SFT from a pretraining checkpoint
-uv run sft @ sft.toml --model.name outputs/my-pretrain/checkpoints/step_5000 --model.init.type ckpt \
-  --renderer.name qwen3
+uv run sft @ sft.toml --model.name outputs/my-pretrain/checkpoints/step_5000 --renderer.name qwen3
 ```
 
 ### Pausing or Checkpointing a Live Run
