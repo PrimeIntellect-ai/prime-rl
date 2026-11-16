@@ -38,6 +38,9 @@ class LossOutputs:
     validation. Every call must return the same names."""
 
 
+RESERVED_METRIC_NAMES = frozenset({"mean", "nan_count", "loss"})
+"""Metric names the trainer logs itself, as ``loss/mean``, ``loss/nan_count`` and ``val/loss``."""
+
 LossFn = Callable[..., LossOutputs]
 """A custom loss: ``my_loss(inputs: LossInputs, **kwargs) -> LossOutputs``, called with ``[loss.kwargs]``."""
 
@@ -51,6 +54,8 @@ def check_metric_names(metrics: dict[str, Tensor], names: list[str] | None) -> l
     """The sorted names of a call's ``metrics``. ``names`` are those of the run's first call (``None`` on that call),
     which every later call must return."""
     call_names = sorted(metrics)
+    if names is None and (reserved := RESERVED_METRIC_NAMES.intersection(call_names)):
+        raise ValueError(f"custom loss metric names {sorted(reserved)} are reserved for the trainer's own metrics")
     if names is not None and call_names != names:
         raise ValueError(f"custom loss metrics must have the same names on every call: {call_names}, first {names}")
     return call_names
