@@ -1518,18 +1518,17 @@ def test_rl_shared_model_init_reaches_the_trainer():
 
 @pytest.mark.parametrize(
     ("init_type", "explicit", "load_format"),
-    [("hf", None, None), ("scratch", None, "dummy"), ("ckpt", None, "dummy"), ("scratch", "auto", "auto")],
+    [("pretrained", None, None), ("scratch", None, "dummy"), ("scratch", "auto", "auto")],
 )
-def test_inference_loads_dummy_weights_unless_the_trainer_starts_from_hf(
+def test_inference_loads_dummy_weights_for_a_scratch_init(
     init_type: str, explicit: str | None, load_format: str | None
 ):
     vllm = {"speculative_config": {"method": "eagle3", "model": "drafts/eagle3"}}
     if explicit is not None:
         vllm["load_format"] = explicit
-    name = "runs/sft/checkpoints/step_500" if init_type == "ckpt" else "Qwen/Qwen3-0.6B"
     config = RLConfig.model_validate(
         {
-            "model": {"name": name, "init": {"type": init_type}},
+            "model": {"init": {"type": init_type}},
             "trainer": {},
             "orchestrator": {
                 "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
@@ -1538,7 +1537,6 @@ def test_inference_loads_dummy_weights_unless_the_trainer_starts_from_hf(
             "inference": {"vllm": vllm},
         }
     )
-    assert config.trainer.model.init.type == init_type
     namespace = config.inference.to_namespace()
     assert getattr(namespace, "load_format", None) == load_format
     draft_load_config = {"load_format": "auto"} if load_format == "dummy" else None
@@ -1551,7 +1549,7 @@ def test_inference_loads_dummy_weights_unless_the_trainer_starts_from_hf(
     [
         ("scratch", {"speculative_config": {"method": "mtp"}}, "reads its draft weights from model.name"),
         ("scratch", {"speculative_config": {"model": "drafts/qwen3-0.6b"}}, "with the target's load format"),
-        ("hf", {"load_format": "dummy", "speculative_config": {"method": "mtp"}}, "reads its draft weights"),
+        ("pretrained", {"load_format": "dummy", "speculative_config": {"method": "mtp"}}, "reads its draft weights"),
     ],
 )
 def test_a_draft_without_its_own_weights_fails_under_a_dummy_target(init_type: str, vllm: dict, match: str):
@@ -1565,20 +1563,6 @@ def test_a_draft_without_its_own_weights_fails_under_a_dummy_target(init_type: s
                     "renderer": {"name": "qwen3"},
                 },
                 "inference": {"vllm": vllm},
-            }
-        )
-
-
-def test_lora_requires_the_hf_init():
-    with pytest.raises(ValidationError, match="LoRA broadcasts only the adapter"):
-        RLConfig.model_validate(
-            {
-                "model": {"name": "runs/sft/checkpoints/step_500", "init": {"type": "ckpt"}},
-                "trainer": {"model": {"lora": {}}},
-                "orchestrator": {
-                    "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
-                    "renderer": {"name": "qwen3"},
-                },
             }
         )
 
