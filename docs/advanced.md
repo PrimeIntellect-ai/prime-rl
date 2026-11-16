@@ -18,7 +18,7 @@ This page covers the specialized features layered on top of the core training st
 
 ## Custom Modeling
 
-The trainer only runs `prime-rl`'s own model implementations, selected from the HF config type. Besides dense Llama, Qwen3 and Qwen3.5, these cover the families below. Other architectures fail at trainer setup.
+The trainer only runs `prime-rl`'s own model implementations, selected from the HF config type (Qwen3.5's decision-model head variants also by `architectures` and the file beside `config.json`). Besides dense Llama, Qwen3 and Qwen3.5, these cover the families below. Other architectures fail at trainer setup.
 
 | Family | HF config types | EP | CP |
 |---|---|---|---|
@@ -27,6 +27,7 @@ The trainer only runs `prime-rl`'s own model implementations, selected from the 
 | Qwen3 MoE | `Qwen/Qwen3-30B-A3B`, … | ✅ | ✅ |
 | Qwen3.5 MoE | `Qwen/Qwen3.5-35B-A3B`, … | ✅ | ✅ |
 | Qwen3.5 VLMs | see [Multimodal training](#multimodal-training) | MoE only | ✅ |
+| Qwen3.5 decision models, SFT only (`D3ForSequenceClassification`, `ClefFlashForJointSchema`) | d3 and Clef-Flash releases: see [Native decision models](training.md#native-decision-models) | — | ✅ (❌ for non-causal d3) |
 | Qwen3.8 Flash Next VLM | `Qwen/Qwen3.8-Flash-Next` | ✅ | ✅ |
 | Laguna | `poolside/Laguna-XS.2` | ✅ | ✅ |
 | MiniMax M2 | `MiniMax/MiniMax-M2` | ✅ | ✅ |
