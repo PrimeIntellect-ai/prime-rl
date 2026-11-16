@@ -84,10 +84,11 @@ def test_d3_prompts(tokenizer):
     ]
 
 
-def test_d3_renders_with_the_release_chat_template(tokenizer):
+def test_d3_refuses_another_chat_template(tokenizer):
     overridden = AutoTokenizer.from_pretrained(D3_NANO)
     overridden.chat_template = "{% for message in messages %}{{ message['content'] }}{% endfor %}"
-    assert D3Encoder(overridden)(record(), 8192) == D3Encoder(tokenizer)(record(), 8192)
+    with pytest.raises(ValueError, match=r"leave \[tokenizer\] chat_template unset"):
+        D3Encoder(overridden)(record(), 8192)
 
 
 @pytest.mark.parametrize(
