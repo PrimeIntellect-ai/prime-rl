@@ -657,7 +657,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     # A module the class lists computes in float32 whatever the root unit's policy, e.g. a readout that inference runs in
     # float32. Its own unit keeps its weights out of the root unit's all-gather.
     fp32_policy = MixedPrecisionPolicy(param_dtype=torch.float32, reduce_dtype=mp_policy.reduce_dtype)
-    for name in getattr(model, "fp32_modules", ()):
+    for name in model.fp32_modules:
         fully_shard(model.get_submodule(name), mesh=hsdp_mesh, **{**fsdp_config, "mp_policy": fp32_policy})
 
     shard_norm_and_lm_head = hasattr(model, "config") and not model.config.tie_word_embeddings

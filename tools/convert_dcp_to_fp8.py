@@ -7,7 +7,6 @@ from pathlib import Path
 
 from convert_bf16_to_fp8 import quantization_config, quantize_state_dict
 from convert_dcp_to_bf16 import (
-    get_side_files,
     open_checkpoint,
     publish_export,
     resolve_output_dir,
@@ -32,7 +31,7 @@ def convert(
     if block_size <= 0:
         raise ValueError("block_size must be positive")
     checkpoint = open_checkpoint(ckpt_dir)
-    if side_files := get_side_files(checkpoint.model):
+    if side_files := checkpoint.model.export_weight_files:
         raise ValueError(
             f"{type(checkpoint.model).__name__} keeps weights outside its shards ({', '.join(side_files.values())}), "
             "which FP8 export does not support: its quantization config does not leave out the layers of those files, "

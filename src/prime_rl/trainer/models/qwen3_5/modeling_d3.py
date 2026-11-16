@@ -31,10 +31,7 @@ class D3ForSequenceClassification(Qwen3_5ForCausalLM):
     """The ``decision_config.json`` format versions the class reads: vLLM 0.33's. A subclass may widen it."""
 
     fp32_modules = ("score",)
-    """Modules FSDP shards in a float32 unit of their own."""
-
     export_weight_files = {"score.": "readout.safetensors"}
-    """Where an export stores the tensors under each prefix, without it, as vLLM's ``secondary_weights`` read them."""
 
     def __init__(self, config) -> None:
         # vLLM's checks (vllm/model_executor/models/config.py, D3ForSequenceClassificationConfig)

@@ -43,7 +43,6 @@ class ClefFlashForJointSchema(Qwen3_5ForCausalLM):
     The LM head is frozen too: the loss never calls it, and the lexical copy stays equal to it. It must be untied."""
 
     export_weight_files = {HEAD: "joint_head.safetensors"}
-    """Where an export stores the tensors under each prefix, without it, as vLLM's ``secondary_weights`` read them."""
 
     def __init__(self, config) -> None:
         name = type(self).__name__

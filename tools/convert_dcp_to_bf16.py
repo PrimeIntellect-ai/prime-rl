@@ -150,17 +150,11 @@ def check_model_holds_checkpoint(model: nn.Module, model_config: ModelConfig, me
         )
 
 
-def get_side_files(model: nn.Module) -> dict[str, str]:
-    """The files a model's class stores apart from the shards, as {state-dict prefix: file name}: vLLM loads them as
-    ``secondary_weights``, with the prefix put back."""
-    return getattr(model, "export_weight_files", {})
-
-
 def get_layers(model: nn.Module) -> list[list[str]]:
     """Group ordinary weights by decoder layer, excluding tied heads, chunked tables and the side files' weights."""
     state = model.state_dict()
     chunked = get_chunked_conversion_ops(model, state)
-    side_prefixes = tuple(get_side_files(model))
+    side_prefixes = tuple(model.export_weight_files)
     keys = [key for key in state if key not in chunked and not key.startswith(side_prefixes)]
     # The trainer ties the head on the top-level config flag, so the export must drop it on the same one.
     if getattr(model.config, "tie_word_embeddings", False):
@@ -271,7 +265,7 @@ def write_weights(
             shards.extend(table_shards)
 
     # Outside the index, which keeps them out of vLLM's primary weights.
-    for prefix, name in get_side_files(checkpoint.model).items():
+    for prefix, name in checkpoint.model.export_weight_files.items():
         tensors = load_layer(checkpoint, [key for key in skeleton if key.startswith(prefix)])
         side_file = {key.removeprefix(prefix): tensor.contiguous() for key, tensor in tensors.items()}
         save_file(side_file, output_dir / name, metadata={"format": "pt"})
@@ -296,7 +290,7 @@ def save_model_assets(
 ) -> None:
     """Save model config, generation config, processor and tokenizer next to the weights."""
     # The JSON files the class's checkpoints keep beside config.json, which the loader read into the config.
-    config_files = model.export_config_files() if hasattr(model, "export_config_files") else {}
+    config_files = model.export_config_files()
     _export_config(model.config)
     model.config.save_pretrained(output_dir)
     for name, content in config_files.items():
