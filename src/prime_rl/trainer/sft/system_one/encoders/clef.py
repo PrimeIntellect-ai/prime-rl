@@ -64,10 +64,11 @@ class ClefFlashEncoder(SystemOneEncoder):
 
     def encode(
         self, questions: tuple[Question, ...], state: str, max_length: int
-    ) -> tuple[list[int], list[list[tuple[int, int]]], list[list[str]]] | None:
-        """The prompt, each question's reads and each question's option ids in the head's order, or None when the
-        questions alone take more than ``max_length`` tokens, where vLLM raises. Unlike vLLM's, the spans count from
-        the prompt's start, and each question's are its instruction's then its options'."""
+    ) -> tuple[list[int], list[list[tuple[int, int]]], list[list[str]], int] | None:
+        """The prompt, each question's reads, each question's option ids in the head's order and the number of state
+        tokens cut, or None when the questions alone take more than ``max_length`` tokens, where vLLM raises. Unlike
+        vLLM's, the spans count from the prompt's start, and each question's are its instruction's then its
+        options'."""
         schema_ids = self._tokens("\n\nSCHEMA FIELDS:\n")
         reads, orders = [], []
         for n, q in enumerate(questions, start=1):
@@ -93,10 +94,12 @@ class ClefFlashEncoder(SystemOneEncoder):
         fixed = len(self.prefix) + len(schema_ids) + len(self.suffix)
         if fixed > max_length:
             return None
-        state_ids = self._tokens(state)[: max_length - fixed]
+        state_ids = self._tokens(state)
+        cut = max(len(state_ids) - (max_length - fixed), 0)
+        state_ids = state_ids[: max_length - fixed]
         prompt = self.prefix + state_ids + schema_ids + self.suffix
         offset = len(self.prefix) + len(state_ids)
-        return prompt, [[(s + offset, e + offset) for s, e in spans] for spans in reads], orders
+        return prompt, [[(s + offset, e + offset) for s, e in spans] for spans in reads], orders, cut
 
     def refusal(self, record: SystemOneRecord) -> str | None:
         """Why vLLM's ClefFlashStrategy would refuse the record's questions, or None."""
@@ -115,5 +118,10 @@ class ClefFlashEncoder(SystemOneEncoder):
         if (encoded := self.encode(record.questions, self._render(record.state), max_length)) is None:
             get_logger().warning(f"Skipping record {record.id!r}: its questions take more than {max_length} tokens")
             return None
-        prompt, reads, options = encoded
+        prompt, reads, options, cut = encoded
+        if cut:
+            get_logger().warning(
+                f"Record {record.id!r}: cutting the last {cut} tokens of its state, so that its prompt fits in "
+                f"{max_length} tokens"
+            )
         return EncodedRecord(input_ids=prompt, seq_lens=[len(prompt)], reads=reads, options=options)
