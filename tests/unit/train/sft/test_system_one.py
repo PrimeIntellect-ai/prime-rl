@@ -45,10 +45,12 @@ def test_parse_record_and_build_targets():
 
 def test_soft_label_wins_and_unlabelled_questions_have_no_target():
     label = {"outage": False, "team": None}  # a null label is no label
-    soft_label = {"outage": {"false": 0.25, "true": 0.75}}
+    soft_label = {"outage": {"false": 0.25, "true": 0.75}, "urgency": {"0": 0.333, "1": 0.333, "2": 0.333}}
     record, labels = parse_record(row(label=label, soft_label=soft_label), COLUMNS)
     assert labels[0].hard == 0
-    assert build_targets(record, labels) == [[0.25, 0.75], None, None]
+    targets = build_targets(record, labels)
+    assert targets[:2] == [[0.25, 0.75], None]
+    assert targets[2] == pytest.approx([1 / 3] * 3)  # a sum within 1e-2 of 1 is rescaled
 
 
 def test_label_columns_may_be_absent_or_null():
@@ -90,6 +92,7 @@ def test_columns_can_be_renamed_and_the_id_falls_back_to_the_row_index():
         (QUESTIONS, None, {"other": {"false": 1.0, "true": 0.0}}),  # an unknown question
         (QUESTIONS, None, {"team": {"technical": 1.0}}),  # a missing option
         (QUESTIONS, None, {"team": {"technical": 0.7, "billing": 0.7}}),  # not a distribution
+        (QUESTIONS, None, {"team": {"technical": 0.5, "billing": 0.48}}),  # a sum more than 1e-2 from 1
         (QUESTIONS, None, {"team": {"technical": 1.5, "billing": -0.5}}),  # a negative probability
         (QUESTIONS, None, {"team": {"technical": "0.5", "billing": 0.5}}),  # not numbers
     ],

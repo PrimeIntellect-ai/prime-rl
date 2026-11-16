@@ -404,7 +404,7 @@ label       {"outage": true, "urgency": 2}
 soft_label  {"team": {"technical": 0.75, "billing": 0.25}}
 ```
 
-`questions` maps each question id to its `type`, `instructions` and `criteria`. `label` maps question ids to hard labels, and `soft_label` maps them to a probability for every option. A question's target is its soft label if it has one, else its hard label one-hot, in the order of its options; a question with neither is not trained.
+`questions` maps each question id to its `type`, `instructions` and `criteria`. `label` maps question ids to hard labels, and `soft_label` maps them to a probability for every option; probabilities that sum to 1 within 0.01 are rescaled to sum to 1. A question's target is its soft label if it has one, else its hard label one-hot, in the order of its options; a question with neither is not trained.
 
 | `type` | `criteria` | Options, in order | Hard label | Target in the example |
 |---|---|---|---|---|

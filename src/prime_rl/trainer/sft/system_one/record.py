@@ -123,9 +123,10 @@ def _soft_label(question: Question, soft_label: Any) -> list[float]:
     values = [soft_label[option] for option in question.options]
     if any(isinstance(p, bool) or not isinstance(p, (int, float)) for p in values):
         raise ValueError(f"{where}: soft label values must be numbers")
-    if any(not math.isfinite(p) or p < 0 for p in values) or not math.isclose(sum(values), 1.0, abs_tol=1e-6):
-        raise ValueError(f"{where}: the soft label must be a distribution")
-    return [float(p) for p in values]
+    total = sum(values)
+    if any(not math.isfinite(p) or p < 0 for p in values) or not math.isclose(total, 1.0, abs_tol=1e-2):
+        raise ValueError(f"{where}: the soft label must be a distribution (its probabilities sum to 1 within 1e-2)")
+    return [p / total for p in values]
 
 
 def parse_record(row: Mapping, columns: SystemOneColumnsConfig) -> tuple[SystemOneRecord, list[Labels]]:
