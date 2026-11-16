@@ -1,6 +1,6 @@
 # d3-nano: full fine-tuning of Qwen3.5-2B with d3's answer-code readout on Typed Decisions Synth, on one GPU. From the
 # repository root (see README.md):
-#     PYTHONPATH=examples uv run sft @ examples/decision_models/d3/train.toml
+#     uv run sft @ examples/decision_models/d3/train.toml
 # Not yet run on a GPU: the learning rate, the schedule and the memory use are unmeasured, and the full-attention
 # layers have not run non-causally in prime-rl's flash-attention kernels.
 mode = "sft"
@@ -9,10 +9,7 @@ mode = "sft"
 max_steps = 550
 
 [model]
-name = "outputs/d3/d3-nano-prime-rl"  # the release's files with the config.json the class reads (write_config.py)
-
-[model.implementation]
-import_path = "decision_models.d3.model.Qwen3_5D3"
+name = "outputs/d3/d3-nano"  # the release as downloaded (or the Hub id): prime-rl builds D3ForSequenceClassification
 
 [data]
 type = "system_one"
@@ -23,7 +20,7 @@ seq_len = 8192  # the longest record has 5,341 tokens
 batch_size = 2
 
 [data.encoder]
-import_path = "decision_models.d3.encoder.D3Encoder"
+import_path = "prime_rl.trainer.sft.system_one.encoders.d3.D3Encoder"
 
 [loss]
 type = "decision"
@@ -47,7 +44,7 @@ splits = ["validation"]
 seq_len = 8192
 
 [val.data.encoder]
-import_path = "decision_models.d3.encoder.D3Encoder"
+import_path = "prime_rl.trainer.sft.system_one.encoders.d3.D3Encoder"
 
 [ckpt]
 interval = 275
