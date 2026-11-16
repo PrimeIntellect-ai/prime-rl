@@ -162,10 +162,13 @@ def write_tokenizer(directory: Path) -> None:
     PreTrainedTokenizerFast(tokenizer_object=tokenizer, eos_token="<eos>").save_pretrained(directory)
 
 
-def write_d3_release(directory: Path, decision_config: dict = DECISION_CONFIG) -> dict[str, torch.Tensor]:
+def write_d3_release(
+    directory: Path, decision_config: dict = DECISION_CONFIG, tied: bool = True
+) -> dict[str, torch.Tensor]:
     """d3-nano's layout: config.json with the bare backbone's architecture and a tied embedding, decision_config.json,
-    the backbone in one model.safetensors without an index or MTP weights, and readout.safetensors {"weight": F32}."""
-    config = tiny_config("Qwen3_5Model", tied=True)
+    the backbone in one model.safetensors without an index or MTP weights, and readout.safetensors {"weight": F32}.
+    Untied, as d3 and d3-flash are, the backbone has no LM head either."""
+    config = tiny_config("Qwen3_5Model", tied=tied)
     config.save_pretrained(directory)
     (directory / "decision_config.json").write_text(json.dumps(decision_config))
     weights = release_backbone(config)
@@ -199,6 +202,9 @@ def write_clef_release(directory: Path) -> dict[str, torch.Tensor]:
     save_file(head, directory / "joint_head.safetensors")
     write_tokenizer(directory)
     return backbone | head
+
+
+WRITE_RELEASE = {"d3": write_d3_release, "d3-untied": partial(write_d3_release, tied=False), "clef": write_clef_release}
 
 
 def build(directory: Path, device: str = "meta") -> PreTrainedModelPrimeRL:
@@ -278,10 +284,9 @@ def test_release_loads_and_converts_to_the_names_vllm_loads(tmp_path, kind):
     # Tied, d3's LM head loads through the embedding; Clef's lexical copy comes from init_missing_weights.
     added = "lm_head.weight" if kind == "d3" else "lexical_embedding.weight"
     assert model.load_state_dict(prime, strict=False) == ([added], [])
-    assert overrides_init_missing_weights(model) == (kind == "clef")
-    if kind == "clef":
-        assert model.init_missing_weights([added]) == {added: model.lm_head.weight}
-        assert model.init_missing_weights([]) == {}
+    assert overrides_init_missing_weights(model) and model.init_missing_weights([]) == {}
+    source = model.lm_head if kind == "clef" else model.get_input_embeddings()
+    assert model.init_missing_weights([added]) == {added: source.weight}
 
     # The HF state dict of the model, as a weight broadcast sends it: every name vLLM's class loads, and only those.
     hf = model.convert_to_hf(dict(model.state_dict()))
@@ -305,9 +310,9 @@ def test_release_loads_and_converts_to_the_names_vllm_loads(tmp_path, kind):
             torch.testing.assert_close(expected, tensor)
 
 
-@pytest.mark.parametrize("kind", ["d3", "clef"])
+@pytest.mark.parametrize("kind", ["d3", "d3-untied", "clef"])
 def test_release_loads_through_the_conversion_cache(tmp_path, monkeypatch, kind):
-    release = (write_d3_release if kind == "d3" else write_clef_release)(tmp_path)
+    release = WRITE_RELEASE[kind](tmp_path)
     monkeypatch.setattr("torch.distributed.barrier", lambda *args, **kwargs: None)
     monkeypatch.setattr("prime_rl.trainer.model.wait_for_master", lambda *args, **kwargs: None)
     monkeypatch.setattr("prime_rl.trainer.model.get_dcp_group", lambda: None)
@@ -322,14 +327,18 @@ def test_release_loads_through_the_conversion_cache(tmp_path, monkeypatch, kind)
     assert (tmp_path / "prime" / ".prime-v1").is_file()
     expected = model.convert_to_prime(dict(release))
     loaded = model.state_dict()
-    added = "lm_head.weight" if kind == "d3" else "lexical_embedding.weight"
+    added = "lexical_embedding.weight" if kind == "clef" else "lm_head.weight"
     assert loaded.keys() - expected.keys() == {added}
     for name in loaded.keys() - {added}:
         torch.testing.assert_close(loaded[name].cpu(), expected[name])
     if kind == "clef":
         assert torch.equal(model.lexical_embedding.weight, model.lm_head.weight)
-    else:
+    elif kind == "d3":
         assert model.lm_head.weight is model.get_input_embeddings().weight
+    else:  # the LM head the release lacks: a frozen copy of the embedding
+        assert model.lm_head.weight is not model.get_input_embeddings().weight
+        assert torch.equal(model.lm_head.weight, model.get_input_embeddings().weight)
+        assert not model.lm_head.weight.requires_grad
 
 
 @pytest.mark.parametrize("temperature", [1.5, None])
@@ -471,11 +480,11 @@ def exporter(monkeypatch):
     return importlib.import_module("convert_dcp_to_bf16")
 
 
-@pytest.mark.parametrize("kind", ["d3", "clef"])
+@pytest.mark.parametrize("kind", ["d3", "d3-untied", "clef"])
 def test_export_is_the_release_layout(tmp_path, exporter, monkeypatch, kind):
     monkeypatch.delenv("PRL_ATTEMPT_CONFIG_DIR", raising=False)
     release_dir = tmp_path / "release"
-    release = (write_d3_release if kind == "d3" else write_clef_release)(release_dir)
+    release = WRITE_RELEASE[kind](release_dir)
     step_dir = tmp_path / "run" / "checkpoints" / "step_1"
     config_dir = tmp_path / "run" / "configs" / "latest" / "resolved"
     config_dir.mkdir(parents=True)
@@ -491,7 +500,7 @@ def test_export_is_the_release_layout(tmp_path, exporter, monkeypatch, kind):
     assert not {"decision_config", "joint_head_config"} & config.keys() and "is_causal" not in config["text_config"]
     index = json.loads((output / "model.safetensors.index.json").read_text())["weight_map"]
     shards = {name: tensor for file in set(index.values()) for name, tensor in load_file(output / file).items()}
-    if kind == "d3":
+    if kind != "clef":
         assert json.loads((output / "decision_config.json").read_text()) == DECISION_CONFIG
         readout = load_file(output / "readout.safetensors")
         assert readout.keys() == {"weight"} and readout["weight"].dtype == torch.float32

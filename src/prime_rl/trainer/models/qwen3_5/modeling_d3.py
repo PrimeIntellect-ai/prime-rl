@@ -18,7 +18,9 @@ class D3ForSequenceClassification(Qwen3_5ForCausalLM):
     which it attaches as ``config.decision_config``, as vLLM does. A release stores the backbone under transformers'
     ``Qwen3_5Model`` names (``language_model.*``, ``visual.*``) and the readout as ``weight`` in
     ``readout.safetensors``. The class's HF names are those vLLM's d3 loads: ``language_model.*``, ``visual.*`` and
-    ``score.weight``, with no LM head. The readout holds and computes in float32, as vLLM's does.
+    ``score.weight``, with no LM head. The readout holds and computes in float32, as vLLM's does. prime-rl's Qwen3.5
+    has an LM head, which d3 never calls: tied, it is the input embedding; untied, as in d3 and d3-flash, which ship
+    none, it is a frozen copy of it, from ``init_missing_weights``.
 
     With ``attention_mode = "noncausal_full_attention"`` the full-attention layers attend in both directions within an
     attention segment; the Gated DeltaNet layers stay causal."""
@@ -51,16 +53,14 @@ class D3ForSequenceClassification(Qwen3_5ForCausalLM):
         codes, token_ids = decision.get("codes"), decision.get("token_ids")
         if not codes or not isinstance(token_ids, list) or len(codes) != len(token_ids):
             raise ValueError("decision_config.json must list one token id per answer code")
-        if not getattr(config, "tie_word_embeddings", False):
-            raise ValueError(
-                f"{name} needs tie_word_embeddings: prime-rl's Qwen3.5 has an LM head, which d3 does not ship"
-            )
 
         text_config = getattr(config, "text_config", config)
         text_config.is_causal = attention_mode == "causal"
         super().__init__(config)
         self.score = nn.Linear(text_config.hidden_size, len(codes), bias=False, dtype=torch.float32)
         self.temperature = float(decision.get("temperature", 1.0))
+        if not getattr(config, "tie_word_embeddings", False):
+            self.lm_head.weight.requires_grad_(False)
 
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:
@@ -97,6 +97,10 @@ class D3ForSequenceClassification(Qwen3_5ForCausalLM):
         if "weight" in state_dict:
             state_dict["score.weight"] = state_dict.pop("weight")
         return super().convert_to_prime(state_dict)
+
+    def init_missing_weights(self, names: list[str]) -> dict[str, Tensor]:
+        """An untied release's LM head: a copy of the loaded input embedding."""
+        return {name: self.get_input_embeddings().weight for name in names if name == "lm_head.weight"}
 
     def export_config_files(self) -> dict[str, dict]:
         """The JSON files an export writes beside ``config.json``. What the loader and the class put on the config is
