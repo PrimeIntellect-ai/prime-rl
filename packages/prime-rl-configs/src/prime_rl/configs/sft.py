@@ -151,6 +151,16 @@ class SystemOneDataConfig(HFDataConfig):
     columns: SystemOneColumnsConfig = SystemOneColumnsConfig()
     """Dataset columns of a record."""
 
+    @model_validator(mode="before")
+    @classmethod
+    def refuse_encoder(cls, data):
+        if isinstance(data, dict) and "encoder" in data:
+            raise ValueError(
+                "[data.encoder] was removed: the model class declares its System One strategy "
+                "(system_one_strategy); delete [data.encoder] and [val.data.encoder]."
+            )
+        return data
+
 
 class SFTCrossEntropyLossConfig(BaseConfig):
     """Token cross-entropy: the stock SFT loss."""

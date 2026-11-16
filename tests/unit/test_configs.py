@@ -1311,6 +1311,17 @@ def test_system_one_data_rejects_token_cross_entropy():
         SFTConfig.model_validate({"data": {"type": "system_one", **SYSTEM_ONE_DATA}})
 
 
+def test_system_one_data_refuses_encoder():
+    with pytest.raises(ValidationError, match=r"system_one_strategy\); delete \[data.encoder\]"):
+        SFTConfig.model_validate(
+            {
+                "data": {"type": "system_one", **SYSTEM_ONE_DATA},
+                "val": {"data": {**SYSTEM_ONE_DATA, "encoder": {"import_path": "my_pkg.MyEncoder"}}},
+                "loss": {"type": "custom", "import_path": "my_pkg.my_loss"},
+            }
+        )
+
+
 def test_orchestrator_explicit_renderer_skips_unmapped_check():
     """Explicit renderer.name bypasses the auto-resolution check — user opted in."""
     config = OrchestratorConfig.model_validate(
