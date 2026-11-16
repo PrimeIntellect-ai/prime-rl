@@ -72,8 +72,8 @@ class PretrainValConfig(BaseValConfig):
     """Directory of the eval sets, one directory per set."""
 
     seq_lens: list[Annotated[int, Field(ge=1)]] | None = None
-    """Context lengths to score every set at: the context limit for ``ctxcont`` sets. Defaults to ``data.seq_len`` of
-    training."""
+    """Context lengths to score every set at: each request is cut to this many input tokens. Defaults to
+    ``data.seq_len`` of training."""
 
     micro_batch_tokens: int | None = Field(None, ge=1)
     """Tokens per packed row of the sets (one forward pass on one GPU). Defaults to the training micro-batch

@@ -180,7 +180,7 @@ def prepare_set(name: str, data_dir: Path, tokenizer: PreTrainedTokenizer, seq_l
     elif kind == "pairs":
         good, bad = table.column("good").to_pylist(), table.column("bad").to_pylist()
         encoded = tokenizer(good + bad, add_special_tokens=False)["input_ids"]
-        # Cut to the window like ctxcont, so every request fits in a row of ``token_budget`` tokens.
+        # Cut to the context length like ctxcont, so every request fits in a row of ``val.micro_batch_tokens`` tokens.
         requests = [([*prefix, *ids][: seq_len + 1], 1) for ids in encoded]
         info = {"num_good": len(good)}
     else:
@@ -202,11 +202,7 @@ class MultiLengthSet:
 
 
 def prepare_multi_length_set(
-    eval_set: str | EvalSetConfig,
-    data_dir: Path,
-    tokenizer: PreTrainedTokenizer,
-    seq_lens: list[int],
-    bos: bool,
+    eval_set: str | EvalSetConfig, data_dir: Path, tokenizer: PreTrainedTokenizer, seq_lens: list[int], bos: bool
 ) -> MultiLengthSet:
     """A set (by name, in ``data_dir``) at every length of ``seq_lens``, or of the set's own ``seq_lens`` when it has
     them."""
@@ -288,13 +284,7 @@ class ValSets:
     """The ``val.sets``, tokenized once at startup and scored on the training model in the training documents'
     format: requests start with BOS if ``bos``."""
 
-    def __init__(
-        self,
-        config: PretrainValConfig,
-        tokenizer: PreTrainedTokenizer,
-        bos: bool,
-        run_dir: Path,
-    ):
+    def __init__(self, config: PretrainValConfig, tokenizer: PreTrainedTokenizer, bos: bool, run_dir: Path):
         start_time = time.perf_counter()
         self.config = config
         self.run_dir = run_dir

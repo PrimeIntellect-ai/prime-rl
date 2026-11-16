@@ -15,7 +15,7 @@ from prime_rl.trainer.pretrain.val_sets import (
 
 
 class CharTokenizer:
-    bos_token_id, eos_token_id = 1, 2
+    bos_token_id = 1
 
     def __call__(self, texts, add_special_tokens=False, return_offsets_mapping=False):
         if isinstance(texts, str):
@@ -23,10 +23,7 @@ class CharTokenizer:
                 "input_ids": [ord(char) for char in texts],
                 "offset_mapping": [(i, i + 1) for i in range(len(texts))],
             }
-        return {
-            "input_ids": [[ord(char) for char in text] for text in texts],
-            "offset_mapping": [[(i, i + 1) for i in range(len(text))] for text in texts],
-        }
+        return {"input_ids": [[ord(char) for char in text] for text in texts]}
 
 
 def test_head_logprobs_chunks_match_the_full_softmax():
@@ -38,7 +35,7 @@ def test_head_logprobs_chunks_match_the_full_softmax():
     assert torch.equal(hits, logits.argmax(-1) == targets)
 
 
-def test_requests_without_bos_start_at_the_text(tmp_path):
+def test_requests_start_at_bos_or_the_text(tmp_path):
     for name, kind, columns in [
         ("cc", "ctxcont", {"context": ["Q:"], "continuation": [" yes"]}),
         ("pairs", "pairs", {"good": ["ab"], "bad": ["ba"]}),

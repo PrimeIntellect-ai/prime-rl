@@ -217,10 +217,7 @@ def train(config: SFTConfig | PretrainConfig):
     val_sets = None
     if isinstance(config, PretrainConfig) and config.val is not None and config.val.sets:
         val_sets = ValSets(
-            config.val,
-            tokenizer,
-            bos=documents_start_with_bos(shards, tokenizer),
-            run_dir=config.run_dir,
+            config.val, tokenizer, bos=documents_start_with_bos(shards, tokenizer), run_dir=config.run_dir
         )
 
     # Optionally, resume training from a checkpoint
