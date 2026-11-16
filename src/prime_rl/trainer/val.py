@@ -22,6 +22,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from prime_rl.configs.supervised import RawValSetConfig, SFTValSetConfig, ValConfig, ValSetConfig
 from prime_rl.trainer.model import forward
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
+from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.pretrain.data import TokenShards, document_windows, pack_windows, special_token_ids
 from prime_rl.trainer.sft.data import RendererResolver, SFTDataset
 from prime_rl.trainer.world import get_world
@@ -175,15 +176,18 @@ def scoring_head_active(model: nn.Module) -> Iterator[None]:
 
 
 def score(
-    model: nn.Module, requests: list[Request], micro_batch_tokens: int, cp_rank: int, cp_size: int
+    model: nn.Module, requests: list[Request], micro_batch_tokens: int, parallel_dims: ParallelDims
 ) -> tuple[np.ndarray, np.ndarray] | None:
     """Summed log-prob and greedy hits of every request's scored tokens, on rank 0 (None on the others). Requests are
-    packed longest first into document-masked rows of at most ``micro_batch_tokens`` tokens (positions restart per
-    request, ``seq_lens`` marks them). The rows are dealt round-robin over the data ranks, which run the same number
-    of forwards (each is an FSDP collective); with CP, every rank scores its contiguous shard of the row. The sums are
-    gathered on rank 0."""
+    packed longest first into document-masked rows of ``micro_batch_tokens`` tokens (positions restart per request,
+    ``seq_lens`` marks them), padded with unscored tokens, so every forward has the same shape. The rows are dealt
+    round-robin over the data-parallel ranks, which run the same number of forwards (each is an FSDP collective);
+    with CP, every rank scores its contiguous shard of the row. The sums are gathered on rank 0."""
     world = get_world()
-    data_rank, data_world_size = world.rank // cp_size, world.world_size // cp_size
+    dp = parallel_dims.get_mesh("dp")
+    data_rank, data_world_size = dp.get_local_rank(), dp.size()
+    cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if parallel_dims.cp_enabled else 0
+    cp_size = parallel_dims.cp
     rows = pack_windows([len(inputs) for inputs, _ in requests], micro_batch_tokens)
     mine = rows[data_rank::data_world_size]
     indices, logprob_sums, hit_sums = [], [], []
@@ -193,7 +197,7 @@ def score(
         inputs = np.concatenate([requests[index][0] for index in row])
         labels = np.concatenate([requests[index][1] for index in row])
         owners = np.where(labels != IGNORE_INDEX, np.repeat(row, lengths), -1)
-        padding = -len(inputs) % cp_size
+        padding = micro_batch_tokens - len(inputs)
         if padding:
             # The row's own tokens, as in training: identical pad tokens would all route to the same MoE experts.
             inputs = np.concatenate([inputs, np.resize(inputs, padding)])
@@ -249,14 +253,13 @@ class Validation:
         config: ValConfig,
         tokenizer: PreTrainedTokenizer,
         renderer: RendererConfig,
+        parallel_dims: ParallelDims,
         run_dir: Path,
-        cp_rank: int,
-        cp_size: int,
     ):
         start_time = time.perf_counter()
         self.config = config
+        self.parallel_dims = parallel_dims
         self.run_dir = run_dir
-        self.cp_rank, self.cp_size = cp_rank, cp_size
         self.sets = [prepare_set(val_set, config.num_samples, tokenizer, renderer) for val_set in config.sets]
         for val_set in self.sets:
             if not val_set.requests:
@@ -278,9 +281,8 @@ class Validation:
     @torch.no_grad()
     def run(self, model: nn.Module, step: int) -> dict[str, float]:
         """Score every set at step ``step``. The metrics are on rank 0 only."""
-        # Eager, also for compiled layers: the packed rows vary in length and would recompile at every forward.
-        with scoring_head_active(model), torch.compiler.set_stance("force_eager"):
-            scored = score(model, self.requests, self.config.micro_batch_tokens, self.cp_rank, self.cp_size)
+        with scoring_head_active(model):
+            scored = score(model, self.requests, self.config.micro_batch_tokens, self.parallel_dims)
         if scored is None:
             return {}
         logprobs, hits = scored

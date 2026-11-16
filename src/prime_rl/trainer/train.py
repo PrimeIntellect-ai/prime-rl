@@ -202,6 +202,10 @@ def train(config: SFTConfig | PretrainConfig):
         )
     dataloader = setup_dataloader(dataset, config.data, config.model.cp)
 
+    validation = None
+    if config.val is not None:
+        validation = Validation(config.val, tokenizer, config.renderer, parallel_dims, config.run_dir)
+
     # Optionally, resume training from a checkpoint
     progress = Progress()
 
@@ -241,10 +245,6 @@ def train(config: SFTConfig | PretrainConfig):
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     cp_size = parallel_dims.cp
-
-    validation = None
-    if config.val is not None:
-        validation = Validation(config.val, tokenizer, config.renderer, config.run_dir, cp_rank, cp_size)
 
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
