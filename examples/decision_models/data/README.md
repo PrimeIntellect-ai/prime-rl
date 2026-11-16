@@ -32,7 +32,7 @@ Each file has the same five string columns:
 |---|---|---|
 | `id` | `state_id` | The case id |
 | `state` | `state` | JSON text; a text state is a JSON string |
-| `questions` | `questions` | JSON text, unchanged: question id → `{type, instructions, criteria}` |
+| `questions` | `questions` | JSON text: question id → `{type, instructions, criteria}`, unchanged except 10 noul descriptions given as `{"description": text}`, which become their text |
 | `label` | `gold` | JSON text, unchanged: question id → an option id, a level, or true/false |
 | `soft_label` | `teacher` | JSON text: question id → option id → probability, the mean of three answers, renormalized to sum to 1. Null in `train_hard` |
 

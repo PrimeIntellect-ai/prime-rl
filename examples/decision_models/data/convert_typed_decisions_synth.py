@@ -37,12 +37,25 @@ def soft_label(teacher: dict) -> dict[str, float]:
     return {option: p / total for option, p in probabilities.items()}
 
 
+def unwrap_descriptions(questions: str) -> str:
+    """The questions, with a noul description given as ``{"description": text}`` (10 questions) as its text."""
+    definitions = json.loads(questions)
+    wrapped = False
+    for definition in definitions.values():
+        criteria = definition.get("criteria")
+        if definition["type"] == "noul" and isinstance(criteria, dict):
+            for option, description in criteria.items():
+                if isinstance(description, dict) and description.keys() == {"description"}:
+                    criteria[option], wrapped = description["description"], True
+    return json.dumps(definitions, ensure_ascii=False) if wrapped else questions
+
+
 def to_record(row: dict) -> dict:
     teacher = json.loads(row["teacher"])
     record = {
         "id": row["state_id"],
         "state": row["state"] if row["state_is_json"] else json.dumps(row["state"]),
-        "questions": row["questions"],
+        "questions": unwrap_descriptions(row["questions"]),
         "label": row["gold"],
         "soft_label": json.dumps({question_id: soft_label(answer) for question_id, answer in teacher.items()}),
     }
