@@ -67,7 +67,7 @@ def question_logits(model: nn.Module, hidden_states: Tensor, batch: Batch) -> li
 
 
 def decision_loss(inputs: LossInputs, brier_weight: float = 0.0) -> LossOutputs:
-    """The loss decision models share (``[loss] import_path = "prime_rl.trainer.sft.system_one.loss.decision_loss"``):
+    """The loss decision models share (``[loss] type = "decision"``):
     soft cross-entropy plus ``brier_weight`` x Brier score between each labelled question's distribution and its
     target, summed and counted per labelled question. Metrics: ``ce``, ``brier`` and ``accuracy`` (the top logit is
     at a top option of the target). The logits are the model's ``question_logits``, cast to float32.

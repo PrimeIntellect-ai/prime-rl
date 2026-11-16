@@ -176,7 +176,20 @@ class SFTCustomLossConfig(PluginConfig):
     type: Literal["custom"] = "custom"
 
 
-SFTLossConfig: TypeAlias = Annotated[SFTCrossEntropyLossConfig | SFTCustomLossConfig, Field(discriminator="type")]
+class SFTDecisionLossConfig(BaseConfig):
+    """The loss of a decision model on System One data (``prime_rl.trainer.sft.system_one.loss.decision_loss``): soft
+    cross-entropy plus ``brier_weight`` x Brier score per labelled question, on the logits of the model class's
+    ``decision_logits``."""
+
+    type: Literal["decision"] = "decision"
+
+    brier_weight: Annotated[float, Field(ge=0)] = 0.0
+    """Weight of the Brier score (the squared error between a question's distribution and its target)."""
+
+
+SFTLossConfig: TypeAlias = Annotated[
+    SFTCrossEntropyLossConfig | SFTCustomLossConfig | SFTDecisionLossConfig, Field(discriminator="type")
+]
 
 
 class SFTValConfig(BaseValConfig):
@@ -233,7 +246,7 @@ class SFTConfig(SupervisedTrainerConfig):
         if self.loss.type == "ce":
             raise ValueError(
                 'data.type = "system_one" cannot train with loss.type = "ce": a record\'s targets are per question, '
-                'not per token. Set [loss] type = "custom".'
+                'not per token. Set [loss] type = "decision".'
             )
         # A resolved config writes the default [renderer] out, so compare with it instead of checking that it was set.
         if self.renderer != AutoRendererConfig():
@@ -275,12 +288,20 @@ class SFTConfig(SupervisedTrainerConfig):
 
     @model_validator(mode="after")
     def validate_loss(self):
-        if self.loss.type != "custom":
+        if self.loss.type == "ce":
             return self
         if self.model.cp > 1 or self.model.vlm is not None or self.model.offload == "full":
             raise ValueError(
-                "a custom loss is not supported with context parallelism, VLM training or model.offload='full'"
+                f'loss.type = "{self.loss.type}" is not supported with context parallelism, VLM training or '
+                "model.offload='full'"
             )
+        if self.loss.type == "decision":
+            if self.data.type != "system_one":
+                raise ValueError(f'loss.type = "decision" needs data.type = "system_one", got "{self.data.type}"')
+            if self.model.implementation is None:
+                raise ValueError(
+                    'loss.type = "decision" needs [model.implementation]: a model class that defines decision_logits'
+                )
         return self
 
     @model_validator(mode="after")

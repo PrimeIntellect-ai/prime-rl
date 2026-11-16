@@ -10,7 +10,7 @@ import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor, nn
 
-from prime_rl.configs.sft import SFTCustomLossConfig
+from prime_rl.configs.sft import SFTCustomLossConfig, SFTDecisionLossConfig
 from prime_rl.trainer.data import Batch
 from prime_rl.trainer.model import forward
 from prime_rl.trainer.models.layers.lm_head import token_logprobs
@@ -63,7 +63,12 @@ LossFn = Callable[..., LossOutputs]
 """A custom loss: ``my_loss(inputs: LossInputs, **kwargs) -> LossOutputs``, called with ``[loss.kwargs]``."""
 
 
-def setup_sft_loss_fn(config: SFTCustomLossConfig) -> Callable[[LossInputs], LossOutputs]:
+def setup_sft_loss_fn(config: SFTCustomLossConfig | SFTDecisionLossConfig) -> Callable[[LossInputs], LossOutputs]:
+    if isinstance(config, SFTDecisionLossConfig):
+        # Imported here: the System One loss module imports this one.
+        from prime_rl.trainer.sft.system_one.loss import decision_loss
+
+        return partial(decision_loss, brier_weight=config.brier_weight)
     fn: LossFn = import_object(config.import_path)
     return partial(fn, **config.kwargs)
 

@@ -334,7 +334,7 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 
 ### Custom Loss
 
-`[loss]` selects the SFT trainer's loss: token cross-entropy (`type = "ce"`, the default) or, with `type = "custom"`, a loss function of yours in its place. The samples are stock SFT's: the chat rendered per `data.columns` and `[loss_mask]`, shifted for next-token prediction (or, with [System One data](#system-one-data), records with read spans and per-question targets). Shuffling, rank sharding, epochs, resume, packing, normalization, clipping, validation and checkpointing stay the trainer's. As with the RL [custom loss](algorithms.md#custom-loss), the trainer calls the function **once per sample**, as `my_loss(inputs, **kwargs)` with the config's `kwargs`, on the backbone's final hidden states of that sample. It returns the sample's summed loss and the count it averages over (e.g. 1 for the sample, or its trained tokens); the trainer sums both over the step's samples, micro-batches and ranks and divides the loss by the count, as it divides the summed cross-entropy by the token count.
+`[loss]` selects the SFT trainer's loss: token cross-entropy (`type = "ce"`, the default), the decision loss for [System One data](#system-one-data) (`type = "decision"`), or, with `type = "custom"`, a loss function of yours in its place. The samples are stock SFT's: the chat rendered per `data.columns` and `[loss_mask]`, shifted for next-token prediction (or, with [System One data](#system-one-data), records with read spans and per-question targets). Shuffling, rank sharding, epochs, resume, packing, normalization, clipping, validation and checkpointing stay the trainer's. As with the RL [custom loss](algorithms.md#custom-loss), the trainer calls the function **once per sample**, as `my_loss(inputs, **kwargs)` with the config's `kwargs`, on the backbone's final hidden states of that sample. It returns the sample's summed loss and the count it averages over (e.g. 1 for the sample, or its trained tokens); the trainer sums both over the step's samples, micro-batches and ranks and divides the loss by the count, as it divides the summed cross-entropy by the token count.
 
 ```python
 # my_module.py
@@ -491,7 +491,7 @@ class MyDecisionModel(Qwen3ForCausalLM):
         return [row[: len(question["options"])] for row, question in zip(logits, questions, strict=True)]
 ```
 
-**Configure.** `data.name`, a model class that declares `system_one_strategy` and a [custom loss](#custom-loss) are required:
+**Configure.** `data.name`, a model class that declares `system_one_strategy` and a loss other than token cross-entropy are required: `type = "decision"` (which also needs `[model.implementation]`) or a [custom loss](#custom-loss), both with the custom loss's limits:
 
 ```toml
 [model]
@@ -507,11 +507,8 @@ seq_len = 4096
 batch_size = 32
 
 [loss]
-type = "custom"
-import_path = "prime_rl.trainer.sft.system_one.loss.decision_loss"
-
-[loss.kwargs]                     # optional
-brier_weight = 0.1
+type = "decision"
+brier_weight = 0.1                # optional, default 0
 
 [val]                             # optional
 interval = 500
@@ -524,7 +521,7 @@ seq_len = 4096
 
 - **Segments.** Each `seq_lens` entry is one attention segment: attention and positions restart at its first token. A read span lies within one segment. Records are packed back to back into rows of up to `seq_len * micro_batch_size` tokens, and no segment spans two records; the padding of `data.pad_to_seq_len` is a segment of its own, which the loss does not see. `data.batch_size` counts budgets of `seq_len` tokens (up to `batch_size` x `seq_len` tokens per step), not records or questions.
 - **Reads.** `loss_mask` is true on every token of every read span and false elsewhere. There is no next-token shift and `target_ids` is all zeros.
-- **The loss.** `decision_loss` is soft cross-entropy plus `brier_weight` (default 0) x Brier score between each labelled question's distribution and its target, computed in float32. It gets the logits from `question_logits(model, hidden_states, batch)`, which calls `decision_logits` on the batch without the targets and raises unless it returns one vector per question with one logit per option. Its `count` is the number of labelled questions, and it logs `ce`, `brier` and `accuracy` (the top logit is at a top option of the target) as `loss/<name>` and `val/<name>`, each a mean over labelled questions. A [custom loss](#custom-loss) of yours can be named in its place: it receives the same batch and needs no `decision_logits`.
+- **The loss.** `[loss] type = "decision"` is `decision_loss` in `prime_rl.trainer.sft.system_one.loss`: soft cross-entropy plus `brier_weight` (default 0) x Brier score between each labelled question's distribution and its target, computed in float32. It gets the logits from `question_logits(model, hidden_states, batch)`, which calls `decision_logits` on the batch without the targets and raises unless it returns one vector per question with one logit per option. Its `count` is the number of labelled questions, and it logs `ce`, `brier` and `accuracy` (the top logit is at a top option of the target) as `loss/<name>` and `val/<name>`, each a mean over labelled questions. A [custom loss](#custom-loss) of yours can be named in its place: it receives the same batch and needs no `decision_logits`.
 - **What the loss receives.** A record is one sample, so the loss is called once per record, on its tokens alone. A record is never cut: one longer than `data.seq_len` is skipped, and a row has room for `data.seq_len * data.micro_batch_size` tokens, so `inputs.truncated` is false. `inputs.sample_data` is the record's dict: per question, in record order, its `options` in the head's order, its `reads` as `[start, end)` spans of the record's tokens (`inputs.hidden_states[start:end]`), and its `target`, which follows `options` and is `None` for an unlabelled question, which the loss leaves out of its `count`. `inputs.hidden_states[inputs.loss_mask]` is every read token of the record, in order. With `MyStrategy` and prompts of 30, 34 and 31 tokens, the example's dict is:
 
   ```python

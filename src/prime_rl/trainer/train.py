@@ -204,8 +204,8 @@ def train(config: SFTConfig | PretrainConfig):
     scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
 
     loss_fn = None
-    if isinstance(config, SFTConfig) and config.loss.type == "custom":
-        logger.info(f"Loading custom loss ({config.loss})")
+    if isinstance(config, SFTConfig) and config.loss.type != "ce":
+        logger.info(f"Loading {config.loss.type} loss ({config.loss})")
         loss_fn = setup_sft_loss_fn(config.loss)
 
     # Set up the dataset and dataloader

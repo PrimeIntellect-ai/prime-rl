@@ -1290,10 +1290,13 @@ def test_system_one_config_roundtrip(tmp_path):
     write_toml(
         tmp_path / "sft.toml",
         {
-            "model": {"name": "not-a-real-org/not-a-real-model"},
+            "model": {
+                "name": "not-a-real-org/not-a-real-model",
+                "implementation": {"import_path": "my_pkg.MyDecisionModel"},
+            },
             "data": data,
             "val": {"data": SYSTEM_ONE_DATA},
-            "loss": {"type": "custom", "import_path": "my_pkg.my_loss"},
+            "loss": {"type": "decision", "brier_weight": 0.1},
         },
     )
     config = cli(SFTConfig, args=["@", str(tmp_path / "sft.toml")])
@@ -1320,6 +1323,14 @@ def test_system_one_data_refuses_encoder():
                 "loss": {"type": "custom", "import_path": "my_pkg.my_loss"},
             }
         )
+
+
+def test_decision_loss_needs_system_one_data_and_a_model_class():
+    implementation = {"implementation": {"import_path": "my_pkg.MyDecisionModel"}}
+    with pytest.raises(ValidationError, match="needs data.type"):
+        SFTConfig.model_validate({"model": implementation, "loss": {"type": "decision"}})
+    with pytest.raises(ValidationError, match="needs \\[model.implementation\\]"):
+        SFTConfig.model_validate({"data": {"type": "system_one", **SYSTEM_ONE_DATA}, "loss": {"type": "decision"}})
 
 
 def test_orchestrator_explicit_renderer_skips_unmapped_check():
