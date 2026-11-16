@@ -469,6 +469,16 @@ def get_model(
     return model
 
 
+def use_resumed_model_files(model: ModelConfig, tokenizer: TokenizerConfig, step_dir: Path) -> None:
+    """A ``ckpt`` run resumes with the config.json and tokenizer of the step directory it resumes, which holds copies
+    of its source's (``ModelFiles``), so that source may be gone by then."""
+    if model.init.type != "ckpt" or not (step_dir / "config.json").exists():
+        return
+    if tokenizer.name == model.name:
+        tokenizer.name = str(step_dir)
+    model.name = str(step_dir)
+
+
 def check_ckpt_dir(config: ModelConfig) -> None:
     """A ``ckpt`` step directory supplies the architecture with its config.json."""
     if config.init.type == "ckpt" and not (Path(config.name) / "config.json").exists():

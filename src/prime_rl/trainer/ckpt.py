@@ -106,11 +106,12 @@ def describe_change(key: str, old: Any, new: Any) -> str:
 
 def architecture_changes(saved: dict, current: dict, config: PretrainedConfig, prefix: str = "") -> list[str]:
     """The fields in which two dumps of ``config`` differ, recursing into sub-configs (e.g. a VLM's ``text_config``)."""
-    # A field only one dump has (e.g. from another transformers version) has the class default in the other.
-    defaults = json.loads(type(config)().to_json_string(use_diff=False))
+    # A field only the current dump has (e.g. added by a newer transformers version) takes the value this version
+    # derives from the saved fields, as layer_types follows num_hidden_layers.
+    filled = {**json.loads(type(config).from_dict(saved).to_json_string(use_diff=False)), **saved}
     changes = []
-    for key in sorted((saved.keys() | current.keys()) - NOT_ARCHITECTURE):
-        old, new = saved.get(key, defaults.get(key)), current.get(key, defaults.get(key))
+    for key in sorted((filled.keys() | current.keys()) - NOT_ARCHITECTURE):
+        old, new = filled.get(key), current.get(key)
         sub_config = getattr(config, key, None)
         if isinstance(sub_config, PretrainedConfig) and isinstance(old, dict) and isinstance(new, dict):
             changes += architecture_changes(old, new, sub_config, f"{prefix}{key}.")
@@ -645,8 +646,13 @@ def setup_ckpt_manager(
 ) -> CheckpointManager:
     """The checkpoint manager always exists: ``resume`` decides whether it loads,
     ``ckpt`` whether it saves (a resume without ``ckpt`` loads but saves nothing)."""
-    ckpt_output_dir = (ckpt_config.output_dir if ckpt_config else None) or output_dir
-    return CheckpointManager(ckpt_output_dir, ckpt_config or CheckpointConfig(), model_files, resume)
+    return CheckpointManager(
+        ckpt_output_dir(output_dir, ckpt_config), ckpt_config or CheckpointConfig(), model_files, resume
+    )
+
+
+def ckpt_output_dir(output_dir: Path, ckpt_config: CheckpointConfig | None) -> Path:
+    return (ckpt_config.output_dir if ckpt_config else None) or output_dir
 
 
 def _load_app_state(
