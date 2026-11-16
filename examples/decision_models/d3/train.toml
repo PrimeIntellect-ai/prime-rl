@@ -1,8 +1,10 @@
-# d3-nano: full fine-tuning of Qwen3.5-2B with d3's answer-code readout on Typed Decisions Synth, on one GPU. From the
-# repository root (see README.md):
+# d3-nano: full fine-tuning of Qwen3.5-2B with d3's answer-code readout on Typed Decisions Synth, on one or two GPUs.
+# From the repository root (see README.md):
 #     uv run sft @ examples/decision_models/d3/train.toml
-# Not yet run on a GPU: the learning rate, the schedule and the memory use are unmeasured, and the full-attention
-# layers have not run non-causally in prime-rl's flash-attention kernels.
+# Ran with these settings on two H100s (--deployment.num-train-gpus 2) at 01abdb16e, before d3's prompts and readout
+# moved into D3Strategy, with the [data.encoder] table that revision required (the prompts were since checked
+# byte-identical on CPU): validation loss 0.9528 -> 0.6737, about 0.8 s a step and 21.5 GiB per GPU, about 10 minutes.
+# On one GPU a step took about 1.5 s and 36.4 GiB.
 mode = "sft"
 # One pass over the 6,682 training records is 543 steps: a step is 2 packed rows of up to 8,192 tokens, and a row holds
 # 6.2 records (21.5 questions, each its own prompt) on average.
@@ -24,10 +26,10 @@ type = "decision"
 brier_weight = 0.0  # soft cross-entropy alone: d3 published no training recipe
 
 [optim]
-lr = 1e-5  # untuned: a conservative starting value for full fine-tuning
+lr = 1e-5  # as run; 2e-5 for 30 steps also trained, 1e-4 for 10 steps collapsed d3 to near-uniform answers
 
 [scheduler]
-type = "cosine"  # untuned, like the learning rate
+type = "cosine"
 warmup_steps = 25
 
 [val]

@@ -12,7 +12,7 @@ The model class and its strategy are prime-rl's ([Native Decision Models](../../
 
 ## vLLM
 
-vLLM 0.33 serves Clef-Flash. The prompt and the head are vLLM's, and a run's [export](../../../docs/training.md#exporting-checkpoints) has the release's layout (`joint_head_config.json` and `joint_head.safetensors` beside the shards), which vLLM 0.33 serves. Serving an export has not been tried.
+vLLM 0.33 serves Clef-Flash. The prompt and the head are vLLM's, and a run's [export](../../../docs/training.md#exporting-checkpoints) has the release's layout (`joint_head_config.json` and `joint_head.safetensors` beside the shards), which vLLM 0.33 serves. On the export of the full run, vLLM's probabilities and the trainer's differ by a median of about 0.001 per question, as much as vLLM's own differ under another batching.
 
 ## Run
 
@@ -24,13 +24,13 @@ uv run hf download Cloudflare/clef-flash --local-dir outputs/clef/clef-flash
 
 The run is one pass over the 6,682 training records in 290 steps of two packed rows, 23 records a step on average. It validates on the 732 validation records before the first step and every 58 steps, the last time on the final step.
 
-Memory is not measured, and by arithmetic the full run does not fit one 80 GB GPU. prime-rl holds each weight in fp32 on the GPU, about 36 GB for 9 billion parameters, with an fp32 gradient next to each trained one, and it moves AdamW's two moments from CPU RAM to the GPU for every optimizer step: up to four fp32 copies at once. On N GPUs (`--deployment.num_train_gpus N`, with `data.batch_size` a multiple of N) each holds 1/N of them. The mechanics check trains 2 layers and is expected to fit one GPU.
+On two H100s (`--deployment.num-train-gpus 2`), before Clef-Flash's prompt and head moved into prime-rl's strategy ([Running a model](../README.md#running-a-model)), the run took about 27 minutes, a step about 4.5 s, and 77.5 of 79.2 GiB per GPU, and the validation loss went from 0.7203 to 0.6362. It does not fit one 80 GB GPU: prime-rl holds each weight in fp32 on the GPU, about 36 GB for 9 billion parameters, with an fp32 gradient next to each trained one, and it moves AdamW's two moments from CPU RAM to the GPU for every optimizer step: up to four fp32 copies at once. On N GPUs (`--deployment.num-train-gpus N`, with `data.batch_size` a multiple of N) each holds 1/N of them. The mechanics check trains 2 layers and is expected to fit one GPU.
 
 ## Differences from Clef
 
 Clef published no training code, so every training choice is this example's:
 
-- The language model and the joint head train at one learning rate (1e-5, untuned, cosine schedule with warmup), with AdamW, weight decay 0.01 and gradient clipping at 1.0.
+- The language model and the joint head train at one learning rate (1e-5, cosine schedule with warmup), with AdamW, weight decay 0.01 and gradient clipping at 1.0.
 - The loss is soft cross-entropy against the soft labels, with no Brier term.
 - A step is two packed rows of up to 8,192 tokens. Each record is its own attention segment, so it attends only to itself.
 - The vision encoder and the LM head do not train: the records are text, and the loss never calls the LM head.

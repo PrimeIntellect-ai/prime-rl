@@ -1,7 +1,10 @@
-# Clef-Flash: full fine-tuning of Qwen3.5-9B with Clef's joint schema head on Typed Decisions Synth. From the repository
-# root (see README.md, which also says what memory it needs):
-#     uv run sft @ examples/decision_models/clef/train.toml
-# Not yet run on a GPU: the learning rate, the schedule and the memory use are unmeasured.
+# Clef-Flash: full fine-tuning of Qwen3.5-9B with Clef's joint schema head on Typed Decisions Synth, on two 80 GB GPUs.
+# From the repository root (see README.md):
+#     uv run sft @ examples/decision_models/clef/train.toml --deployment.num-train-gpus 2
+# Ran with these settings on two H100s at 01abdb16e, before Clef-Flash's prompt and head moved into ClefFlashStrategy,
+# with the [data.encoder] table that revision required (the prompts were since checked byte-identical on CPU):
+# validation loss 0.7203 -> 0.6362, about 4.5 s a step and 77.5 of 79.2 GiB per GPU, about 27 minutes. It does not fit
+# one 80 GB GPU.
 mode = "sft"
 # One pass over the 6,682 training records is 579 packed rows of up to 8,192 tokens, 11.5 records a row on average, and
 # a step is 2 rows.
@@ -23,7 +26,7 @@ type = "decision"
 brier_weight = 0.0  # soft cross-entropy alone: Clef published no training loss
 
 [optim]
-lr = 1e-5  # untuned: a conservative starting value for full fine-tuning
+lr = 1e-5  # as run
 
 [scheduler]
 type = "cosine"

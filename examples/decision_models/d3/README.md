@@ -12,7 +12,7 @@ The model class and its strategy are prime-rl's ([Native Decision Models](../../
 
 ## vLLM
 
-vLLM 0.33 serves d3. The prompts and the readout (in float32, divided by the temperature of `decision_config.json`, 1.0 for d3-nano) are vLLM's, and a run's [export](../../../docs/training.md#exporting-checkpoints) has the release's layout (`decision_config.json` and `readout.safetensors` beside the shards), which vLLM 0.33 serves. Serving an export has not been tried.
+vLLM 0.33 serves d3. The prompts and the readout (in float32, divided by the temperature of `decision_config.json`, 1.0 for d3-nano) are vLLM's, and a run's [export](../../../docs/training.md#exporting-checkpoints) has the release's layout (`decision_config.json` and `readout.safetensors` beside the shards), which vLLM 0.33 serves. On the export of the full run, vLLM's probabilities and the trainer's differ by a median of about 0.001 per question, as much as vLLM's own differ under another batching.
 
 ## Run
 
@@ -22,13 +22,15 @@ Download the release, and prepare the records as [their README](../data/README.m
 uv run hf download vllm-sr/d3-nano --revision 462efc366229ea268cf4eed3738b3fc4415e4817 --local-dir outputs/d3/d3-nano
 ```
 
-The run is 550 steps: one pass over the 6,682 training records (23,319 questions) takes 543, and the last 7 begin a second pass. It validates on the 732 validation records before the first step and every 50 steps, the last time on the final step. The mechanics check keeps Qwen3.5's first four layers, of which the fourth is a full-attention layer. The non-causal full-attention layers have not run in prime-rl's flash-attention kernels.
+The run is 550 steps: one pass over the 6,682 training records (23,319 questions) takes 543, and the last 7 begin a second pass. It validates on the 732 validation records before the first step and every 50 steps, the last time on the final step. The mechanics check keeps Qwen3.5's first four layers, of which the fourth is a full-attention layer.
+
+On two H100s (`--deployment.num-train-gpus 2`), before d3's prompts and readout moved into prime-rl's strategy ([Running a model](../README.md#running-a-model)), the run took about 10 minutes, a step about 0.8 s, and 21.5 GiB per GPU, and the validation loss went from 0.9528 to 0.6737; on one GPU a step took about 1.5 s and 36.4 GiB. On two GPUs those losses covered 719 of the 732 validation records: validation stops when the first rank runs out of packed rows ([System One data](../../../docs/training.md#system-one-data)). On an H100, `attn = "auto"` runs the non-causal full-attention layers in FlashAttention 3.
 
 ## Differences from d3
 
 d3 published no training recipe, so the recipe is this example's:
 
-- The whole language model and the readout train, at one learning rate (1e-5, untuned, cosine schedule with warmup), with AdamW, weight decay 0.01 and gradient clipping at 1.0. prime-rl keeps the vision encoder frozen, since the data is text.
+- The whole language model and the readout train, at one learning rate (1e-5, cosine schedule with warmup; 2e-5 for 30 steps also trained, while 1e-4 for 10 steps collapsed the model to near-uniform answers, validation loss 0.95 to 1.18), with AdamW, weight decay 0.01 and gradient clipping at 1.0. prime-rl keeps the vision encoder frozen, since the data is text.
 - The loss is soft cross-entropy against the dataset's soft labels, without a Brier term.
 - A step is two packed rows of up to 8,192 tokens each: 12.3 records, 43 prompts on average.
 

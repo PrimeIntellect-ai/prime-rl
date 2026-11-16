@@ -1,7 +1,8 @@
 # Decider: full fine-tuning of pplx-decider-flash-v1.2 (Qwen3.5-4B with an answer-code readout) on Typed Decisions
 # Synth, on one GPU. From the repository root (see README.md):
 #     PYTHONPATH=examples uv run sft @ examples/decision_models/decider/train.toml
-# Not yet run on a GPU: the learning rate, the schedule and the memory use are unmeasured.
+# Not run on a GPU, unlike d3's and Clef-Flash's configs: the learning rate, the schedule and the memory use are
+# unmeasured.
 mode = "sft"
 # One pass over the 6,682 training records is 1,903 packed rows of up to 2,048 tokens, 3.5 records on average: 238
 # steps of 8 rows. 240 makes the last step a validation step.

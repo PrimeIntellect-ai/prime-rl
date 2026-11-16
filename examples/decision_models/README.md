@@ -27,7 +27,7 @@ Open-Jev trains on its own dataset. The other three train on Typed Decisions Syn
 
 ## Running a model
 
-From the repository root, on one GPU (Clef-Flash's full run needs more, as its README says). A model's README says what to download and convert; its configs read them where those commands put them. Then the mechanics check, a 30-step run on the first layers with validation and a checkpoint every 10 steps, and the run:
+From the repository root, on one GPU (Clef-Flash's full run needs two, as its README says). A model's README says what to download and convert; its configs read them where those commands put them. Then the mechanics check, a 30-step run on the first layers with validation and a checkpoint every 10 steps, and the run:
 
 ```bash
 uv run sft @ examples/decision_models/<model>/train.toml @ examples/decision_models/<model>/smoke.toml
@@ -38,4 +38,4 @@ A config that names this folder's code (`decision_models.*`) needs `PYTHONPATH=e
 
 A release that stores its weights under other names than prime-rl's is converted on the first load (the mechanics check's, if it runs first) into `prime/` beside its files (or under `model.conversion_dir`), a copy every later load reads. prime-rl never refreshes the copy: delete it when the release's files change, including when an interrupted download is completed. The download stays as it is.
 
-No config has run on a GPU: memory use and the hyperparameters are unmeasured. The records, the strategies, the loss and the configs are checked on CPU.
+d3's and Clef-Flash's configs ran, with these settings, on two H100s (80 GB), and vLLM 0.33 served their exports; their READMEs give the numbers. Clef-Flash's full run does not fit one 80 GB GPU. They ran before prime-rl's d3 and Clef-Flash prompts and readouts moved into their strategies; the prompts were since checked byte-identical on CPU for the 732 validation records and 96 edge records, and the readout code was checked unchanged by reading. Decider's and Open-Jev's configs have not run on a GPU: their memory use and hyperparameters are unmeasured.

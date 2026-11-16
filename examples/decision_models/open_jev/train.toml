@@ -1,6 +1,7 @@
 # Open-Jev-2B: full fine-tuning of Qwen3.5-2B with a decision head, on one GPU. From the repository root:
 #     PYTHONPATH=examples uv run sft @ examples/decision_models/open_jev/train.toml
-# Not yet run on a GPU: the learning rate, the schedule and the memory use are unmeasured.
+# Not run on a GPU, unlike d3's and Clef-Flash's configs: the learning rate, the schedule and the memory use are
+# unmeasured.
 mode = "sft"
 # One pass over the 79,116 training records is 13,677 steps: a step is one packed row of up to 4,096 tokens, 5.8 records
 # on average.
