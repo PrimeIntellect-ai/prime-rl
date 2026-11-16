@@ -305,7 +305,7 @@ def test_release_loads_and_converts_to_the_names_vllm_loads(tmp_path, kind):
             torch.testing.assert_close(expected, tensor)
 
 
-@pytest.mark.parametrize("kind", [pytest.param("d3", marks=pytest.mark.gpu), "clef"])
+@pytest.mark.parametrize("kind", ["d3", "clef"])
 def test_release_loads_through_the_conversion_cache(tmp_path, monkeypatch, kind):
     release = (write_d3_release if kind == "d3" else write_clef_release)(tmp_path)
     monkeypatch.setattr("torch.distributed.barrier", lambda *args, **kwargs: None)
@@ -313,8 +313,10 @@ def test_release_loads_through_the_conversion_cache(tmp_path, monkeypatch, kind)
     monkeypatch.setattr("prime_rl.trainer.model.get_dcp_group", lambda: None)
     config = model_config(tmp_path)
     model = get_model(config, device=torch.device("meta"), dtype=torch.float32)
-    if kind == "clef":  # untied, so it can materialize on the CPU
-        monkeypatch.setattr(model, "to_empty", lambda device: nn.Module.to_empty(model, device="cpu"))
+    # setup_model shards the model before loading it, and to_empty swaps FSDP's DTensor parameters in place, which keeps
+    # a tied head tied; swapping does the same for the plain parameters here.
+    monkeypatch.setattr(torch.__future__, "_swap_module_params_on_conversion", True)
+    monkeypatch.setattr(model, "to_empty", lambda device: nn.Module.to_empty(model, device="cpu"))
     load_dcp_from_hf(model, config)
 
     assert (tmp_path / "prime" / ".prime-v1").is_file()
@@ -326,6 +328,8 @@ def test_release_loads_through_the_conversion_cache(tmp_path, monkeypatch, kind)
         torch.testing.assert_close(loaded[name].cpu(), expected[name])
     if kind == "clef":
         assert torch.equal(model.lexical_embedding.weight, model.lm_head.weight)
+    else:
+        assert model.lm_head.weight is model.get_input_embeddings().weight
 
 
 @pytest.mark.parametrize("temperature", [1.5, None])
