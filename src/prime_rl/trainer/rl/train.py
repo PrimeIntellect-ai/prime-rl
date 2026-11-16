@@ -16,7 +16,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
-from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager, setup_model_files
+from prime_rl.trainer.ckpt import Progress, ckpt_output_dir, setup_ckpt_manager, setup_model_files
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
@@ -62,6 +62,7 @@ from prime_rl.trainer.model import (
     check_ckpt_dir,
     setup_tokenizer,
     take_moe_routing_stats,
+    use_resumed_model_files,
 )
 from prime_rl.trainer.moe_runtime import setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
@@ -95,6 +96,8 @@ from prime_rl.control.server import ControlServer
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
 from prime_rl.utils.pathing import (
+    get_ckpt_dir,
+    get_step_path,
     resolve_latest_ckpt_step,
     resolve_latest_trainer_ckpt_step,
     write_resolved_config,
@@ -171,7 +174,22 @@ def train(config: TrainerConfig):
     parallel_dims = get_parallel_dims(config.model)
 
     # Check for checkpoint to resume from
+    ckpt_dir = get_ckpt_dir(ckpt_output_dir(config.output_dir, config.ckpt))
     checkpoint_step = None
+    if config.resume is not None:
+        if config.resume.dir is not None:
+            checkpoint_step = config.resume.dir_step
+        else:
+            checkpoint_step = config.resume.step
+            if checkpoint_step is None and config.rollout_transport.retain:
+                # A trainer restarted on its own: the orchestrator may be steps ahead.
+                checkpoint_step = resolve_latest_trainer_ckpt_step(ckpt_dir)
+            elif checkpoint_step is None:
+                checkpoint_step = resolve_latest_ckpt_step(ckpt_dir)
+    if checkpoint_step is not None:
+        resume_step_dir = config.resume.dir or get_step_path(ckpt_dir, checkpoint_step)
+        use_resumed_model_files(config.model, config.tokenizer, resume_step_dir)
+
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     check_ckpt_dir(config.model)
     tokenizer = setup_tokenizer(config.tokenizer, config.model.name)
@@ -182,17 +200,6 @@ def train(config: TrainerConfig):
             raise ValueError("Multimodal training requires a model image processor")
     model_files = setup_model_files(config.model, tokenizer, processor)
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt, model_files, resume=config.resume)
-
-    if config.resume is not None:
-        if config.resume.dir is not None:
-            checkpoint_step = config.resume.dir_step
-        else:
-            checkpoint_step = config.resume.step
-            if checkpoint_step is None and config.rollout_transport.retain:
-                # A trainer restarted on its own: the orchestrator may be steps ahead.
-                checkpoint_step = resolve_latest_trainer_ckpt_step(ckpt_manager.ckpt_dir)
-            elif checkpoint_step is None:
-                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
 
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")

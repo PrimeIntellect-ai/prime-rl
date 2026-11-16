@@ -12,8 +12,8 @@ from pathlib import Path
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity
-from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager, setup_model_files
-from prime_rl.utils.pathing import resolve_latest_ckpt_step
+from prime_rl.trainer.ckpt import Progress, ckpt_output_dir, setup_ckpt_manager, setup_model_files
+from prime_rl.utils.pathing import get_ckpt_dir, get_step_path, resolve_latest_ckpt_step
 from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import CheckpointConfig
@@ -34,6 +34,7 @@ from prime_rl.trainer.model import (
     setup_tokenizer,
     setup_model,
     take_moe_routing_stats,
+    use_resumed_model_files,
 )
 from prime_rl.trainer.moe_runtime import setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
@@ -130,6 +131,19 @@ def train(config: SFTConfig | PretrainConfig):
     if parallel_dims.cp_enabled:
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
 
+    ckpt_dir = get_ckpt_dir(ckpt_output_dir(config.run_dir, config.ckpt))
+    checkpoint_step = None
+    if config.resume is not None:
+        if config.resume.dir is not None:
+            checkpoint_step = config.resume.dir_step
+        else:
+            checkpoint_step = config.resume.step
+            if checkpoint_step is None:
+                checkpoint_step = resolve_latest_ckpt_step(ckpt_dir)
+    if checkpoint_step is not None:
+        resume_step_dir = config.resume.dir or get_step_path(ckpt_dir, checkpoint_step)
+        use_resumed_model_files(config.model, config.tokenizer, resume_step_dir)
+
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     check_ckpt_dir(config.model)
     tokenizer = setup_tokenizer(config.tokenizer, config.model.name)
@@ -141,15 +155,6 @@ def train(config: SFTConfig | PretrainConfig):
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     model_files = setup_model_files(config.model, tokenizer, processor)
     ckpt_manager = setup_ckpt_manager(config.run_dir, config.ckpt, model_files, resume=config.resume)
-
-    checkpoint_step = None
-    if config.resume is not None:
-        if config.resume.dir is not None:
-            checkpoint_step = config.resume.dir_step
-        else:
-            checkpoint_step = config.resume.step
-            if checkpoint_step is None:
-                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
 
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")
