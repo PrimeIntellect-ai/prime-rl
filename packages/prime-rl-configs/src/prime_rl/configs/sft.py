@@ -186,8 +186,8 @@ DECISION_MODEL_LORA = (
 
 class SFTDecisionLossConfig(BaseConfig):
     """The loss of a decision model on System One data (``prime_rl.trainer.sft.system_one.loss.decision_loss``): soft
-    cross-entropy plus ``brier_weight`` x Brier score per labelled question, on the logits of the model class's
-    ``decision_logits``."""
+    cross-entropy plus ``brier_weight`` x Brier score per labelled question, on the logits of the ``option_logits`` of
+    the strategy the model class declares."""
 
     type: Literal["decision"] = "decision"
 
@@ -309,7 +309,8 @@ class SFTConfig(SupervisedTrainerConfig):
                 raise ValueError(f'loss.type = "decision" needs data.type = "system_one", got "{self.data.type}"')
             if self.model.implementation is None:
                 raise ValueError(
-                    'loss.type = "decision" needs [model.implementation]: a model class that defines decision_logits'
+                    'loss.type = "decision" needs [model.implementation]: a model class that declares '
+                    "system_one_strategy"
                 )
             if self.model.lora is not None:
                 raise ValueError(f'loss.type = "decision" is not supported with [model.lora]. {DECISION_MODEL_LORA}')

@@ -158,7 +158,8 @@ def test_rejects_columns_that_are_not_json_text(column, value):
 
 
 class StubStrategy(SystemOneStrategy):
-    """Ten tokens in two segments, read at one span per question or two, with noul and choice options reordered."""
+    """Ten tokens in two segments, read at one span per question or two, with noul and choice options reordered. Its
+    logits are the model's own, and it keeps the batch on the model."""
 
     def __init__(self, tokenizer, config, read_spans=None):
         super().__init__(tokenizer, config)
@@ -171,6 +172,11 @@ class StubStrategy(SystemOneStrategy):
             read_spans=self.read_spans,
             options=[["true", "false"], ["billing", "technical"], ["0", "1", "2"]],
         )
+
+    @classmethod
+    def option_logits(cls, model, hidden_states, batch):
+        model.batch = batch
+        return model.logits
 
 
 def _dataset(read_spans) -> SystemOneDataset:
@@ -232,7 +238,7 @@ def test_process_skips_record_without_labels():
     assert _dataset([[(1, 2)], [(2, 4)], [(6, 7)]])._process(row()) is None
 
 
-class SkippingStrategy(SystemOneStrategy):
+class SkippingStrategy(StubStrategy):
     def render_request(self, request, max_tokens):
         return None
 
@@ -244,8 +250,7 @@ def test_raises_when_every_record_is_skipped():
 
 
 class StubDecisionModel:
-    """A readout that returns the logits of the given distributions, in float64 so that the loss has to cast them, and
-    keeps the batch it was called with."""
+    """A model whose logits are those of the given distributions, in float64 so that the loss has to cast them."""
 
     def __init__(self, probs):
         self.logits = [torch.tensor(p, dtype=torch.float64).log().requires_grad_() for p in probs]
@@ -253,10 +258,6 @@ class StubDecisionModel:
     @classmethod
     def system_one_strategy(cls):
         return StubStrategy
-
-    def decision_logits(self, hidden_states, batch):
-        self.batch = batch
-        return self.logits
 
 
 def test_system_one_strategy_cls_requires_a_declared_strategy():
@@ -296,7 +297,7 @@ def test_decision_loss_sums_over_labelled_questions():
     for name, value in expected.items():
         torch.testing.assert_close(outputs.metrics[name], value)
 
-    # The readout gets the records without the targets.
+    # option_logits gets the records without the targets.
     questions = [question for record in model.batch["sample_data"] for question in record["questions"]]
     assert [record["id"] for record in model.batch["sample_data"]] == ["r", "s"]
     assert questions[1] == {"id": "team", "type": "choice", "options": ["billing", "technical"], "reads": [[2, 4]]}
@@ -305,11 +306,14 @@ def test_decision_loss_sums_over_labelled_questions():
 
 def test_decision_loss_rejects_broken_readouts():
     probs = [[0.8, 0.2], [0.75, 0.25], [0.25, 0.25, 0.5], [0.9, 0.1], [0.2, 0.8], [0.5, 0.25, 0.25]]
-    with pytest.raises(ValueError, match=r"5 logit vectors for the 6 questions of records \['r', 's'\]"):
+    with pytest.raises(
+        ValueError,
+        match=r"StubStrategy.option_logits returned 5 logit vectors for the 6 questions of records \['r', 's'\]",
+    ):
         decision_loss(_decision_inputs(StubDecisionModel(probs[:-1])))
     with pytest.raises(ValueError, match=r"record 's', question 'team': .* shape \(3,\) for 2 options"):
         decision_loss(_decision_inputs(StubDecisionModel([*probs[:4], [0.2, 0.3, 0.5], probs[5]])))
-    with pytest.raises(TypeError, match=r"decision_logits.*Linear.*\[model.implementation\]"):
+    with pytest.raises(TypeError, match=r"system_one_strategy.*Linear.*\[model.implementation\]"):
         decision_loss(_decision_inputs(nn.Linear(4, 2)))
 
 

@@ -6,11 +6,12 @@ from itertools import accumulate
 from typing import NotRequired, TypedDict
 
 from datasets import Dataset, Value
+from torch import Tensor, nn
 from transformers import PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.sft import SystemOneColumnsConfig, SystemOneDataConfig
-from prime_rl.trainer.data import Sample
+from prime_rl.trainer.data import Batch, Sample
 from prime_rl.trainer.sft.data import HFDataset
 from prime_rl.trainer.sft.system_one.record import SystemOneRequest, build_targets, parse_record
 from prime_rl.utils.logger import get_logger
@@ -32,8 +33,9 @@ class RenderedRequest(TypedDict):
 
 
 class SystemOneStrategy(ABC):
-    """Base class of System One strategies: how a decision model sees a request. The model class names its strategy
-    with the classmethod ``system_one_strategy``.
+    """Base class of System One strategies: how a decision model sees a request (``render_request``) and reads each
+    question's logits (``option_logits``). The model class names its strategy with the classmethod
+    ``system_one_strategy`` and keeps the head's weights.
 
     Built once in the main process as ``Strategy(tokenizer, config)``, before dataloader workers fork, for training and
     validation; workers share what ``__init__`` builds. It never sees labels, and must be deterministic, so a resumed
@@ -49,6 +51,22 @@ class SystemOneStrategy(ABC):
     def render_request(self, request: SystemOneRequest, max_tokens: int) -> RenderedRequest | None:
         """The request's tokens, attention segments and read spans, or None to skip the record. ``max_tokens`` is
         ``data.seq_len``: a longer rendering is skipped, never truncated."""
+
+    @classmethod
+    @abstractmethod
+    def option_logits(cls, model: nn.Module, hidden_states: Tensor, batch: Batch) -> list[Tensor]:
+        """The logits of every question of one packed row: one 1-D tensor per question, in pack order (records in
+        ``batch["sample_data"]`` order, questions in record order), with one logit per option in the order of the
+        question's ``options``. They are the logits the model trains on: a checkpoint's own temperature, which its
+        server applies, is part of these logits; a calibration fitted after training is not.
+
+        ``hidden_states`` are the backbone's final (post-norm) hidden states, ``(1, tokens, hidden)``. ``batch`` is the
+        micro-batch on the device. It may rely on its ``input_ids``, ``loss_mask`` and ``sample_data``, whose records
+        hold ``id`` and ``num_tokens`` and whose questions hold ``id``, ``type``, ``options`` and ``reads``, and never
+        a ``target``. A record's logits must not depend on the other records of the row.
+
+        Called inside the model's forward pass: read settings from ``model.config``, and call the model's modules
+        rather than reading their weights, on inputs in their weights' dtype. The logits may have any float dtype."""
 
 
 def system_one_strategy_cls(model_cls: type) -> type[SystemOneStrategy]:
