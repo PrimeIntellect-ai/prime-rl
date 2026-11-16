@@ -18,8 +18,8 @@ class DecisionModel(Protocol):
     def decision_logits(self, hidden_states: Tensor, batch: Batch) -> list[Tensor]:
         """The logits of every question of one packed row: one 1-D tensor per question, in pack order (records in
         ``batch["sample_data"]`` order, questions in record order), with one logit per option in the order of the
-        question's ``options``. They are the logits the model trains on: a calibration temperature fitted after
-        training is applied where the model is served, not here.
+        question's ``options``. They are the logits the model trains on: a checkpoint's own temperature, which its
+        server applies, is part of these logits; a calibration fitted after training is not.
 
         ``hidden_states`` are the backbone's final (post-norm) hidden states, ``(1, tokens, hidden)``. ``batch`` is the
         micro-batch on the device. A readout may rely on its ``input_ids``, ``loss_mask`` and ``sample_data``, whose
