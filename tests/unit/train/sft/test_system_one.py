@@ -6,8 +6,8 @@ import torch
 from datasets import Dataset
 from torch import nn
 
-from prime_rl.configs.sft import SystemOneColumnsConfig
-from prime_rl.trainer.sft.loss import LossInputs
+from prime_rl.configs.sft import SFTDecisionLossConfig, SystemOneColumnsConfig
+from prime_rl.trainer.sft.loss import LossInputs, setup_sft_loss_fn
 from prime_rl.trainer.sft.system_one.data import (
     RenderedRequest,
     SystemOneDataset,
@@ -276,7 +276,7 @@ def _decision_inputs(model) -> LossInputs:
 def test_decision_loss_sums_over_labelled_questions():
     # Targets: [1, 0], [0.25, 0.75], [0, 0, 1] in record r; none, [0.5, 0.5], [1, 0, 0] in record s.
     model = StubDecisionModel([[0.8, 0.2], [0.75, 0.25], [0.25, 0.25, 0.5], [0.9, 0.1], [0.2, 0.8], [0.5, 0.25, 0.25]])
-    outputs = decision_loss(_decision_inputs(model), brier_weight=0.1)
+    outputs = setup_sft_loss_fn(SFTDecisionLossConfig(brier_weight=0.1))(_decision_inputs(model))
 
     ce = sum(
         [
