@@ -495,6 +495,7 @@ seq_len = 4096
   ```
 
 - **Validation and unused settings.** `[val.data]` takes only a missing `type` from `[data]`; both must be System One or neither. `val.data.seq_len` defaults to 128 and must equal `data.seq_len`; validation records are rendered by the same strategy. The strategy owns any chat template, so a non-default `[renderer]` is refused, and per-row template columns such as `reasoning_effort` are not read. `pad_to_seq_len` is refused.
+- **Multi-GPU validation.** Validation stops on every rank as soon as one data rank runs out of packed rows, so with several data ranks some validation records can go unscored; one-GPU validation scores every record, and training is unaffected. Ranks can pack different numbers of rows, and no `[val.data]` setting evens them out: for a validation loss over every record, train on one GPU or score the checkpoint separately, and compare validation losses only across runs with the same number of data ranks.
 
 **Launch.** The model class, its strategy and the loss must be importable where the trainer runs.
 
