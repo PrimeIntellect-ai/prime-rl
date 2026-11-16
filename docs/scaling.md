@@ -292,9 +292,15 @@ For inference-only multi-node, set `[deployment] type = "multi_node"` on an infe
 
 ### NCCL weight broadcast
 
-Every inference GPU receives each NCCL update in full, so the transfer takes the size of the update divided by the sustained rate per GPU. Set `weight_broadcast.update_weights_timeout` (720 s by default) above the measured transfer time: 720 s moves 1.19 TB at 1.65 GB/s.
+Every inference GPU receives each NCCL update in full, so the transfer takes the size of the update divided by the sustained rate per GPU. Set `update_weights_timeout` (720 s by default) above the measured transfer time: 720 s moves 1.19 TB at 1.65 GB/s.
 
-An NCCL update cannot be replayed. When one fails or times out, the orchestrator stops with an error and leaves the inference engines paused. Restart the inference servers before resuming the run.
+```toml
+[weight_broadcast]
+type = "nccl"
+update_weights_timeout = 1800
+```
+
+An NCCL update cannot be replayed. When one fails or times out, the orchestrator (for SFT, the online-eval process) stops with an error and leaves the inference engines paused. Restart the inference servers before resuming the run.
 
 ### ModelExpress weight broadcast
 

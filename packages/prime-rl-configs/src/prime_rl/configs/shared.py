@@ -42,7 +42,8 @@ class BaseWeightBroadcastConfig(BaseConfig):
     timeout: int = 3600
     """Timeout in seconds for the broadcast handshake and transfer, including the orchestrator's wait
     for the trainer's startup broadcast. The trainer fails the run when no consumer acknowledges an
-    offered version in time. Raise it for large models on slow shared filesystems."""
+    offered version in time. Raise it for large models on slow shared filesystems. The inference servers'
+    own load of an update is bounded by ``update_weights_timeout``."""
 
     update_weights_timeout: float = Field(720.0, gt=0)
     """Timeout in seconds for one inference server to apply a weight update. It has to exceed the measured
