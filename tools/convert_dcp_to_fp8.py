@@ -31,11 +31,18 @@ def convert(
     if block_size <= 0:
         raise ValueError("block_size must be positive")
     checkpoint = open_checkpoint(ckpt_dir)
-    if side_files := checkpoint.model.export_weight_files:
+    model = checkpoint.model
+    if side_files := model.export_weight_files:
+        fp32_readouts = [prefix.rstrip(".") for prefix in side_files if prefix.rstrip(".") in model.fp32_modules]
+        reason = (
+            f"the quantization config does not leave out its float32 readout ({', '.join(fp32_readouts)}), which vLLM "
+            "would quantize with an uninitialized scale, returning wrong logits"
+            if fp32_readouts
+            else "it is untested, as no vLLM run has served one in FP8"
+        )
         raise ValueError(
-            f"{type(checkpoint.model).__name__} keeps weights outside its shards ({', '.join(side_files.values())}), "
-            "which FP8 export does not support: its quantization config does not leave out the layers of those files, "
-            "so vLLM would quantize d3's float32 readout (score) with an uninitialized scale, returning wrong logits"
+            f"{type(model).__name__} keeps weights outside its shards ({', '.join(side_files.values())}), which FP8 "
+            f"export does not support: {reason}"
         )
     output_dir = resolve_output_dir(checkpoint, output_dir, "weights-FP8", overwrite)
     modules_to_not_convert: list[str] = []

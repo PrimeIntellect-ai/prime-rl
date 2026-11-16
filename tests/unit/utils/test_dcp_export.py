@@ -442,10 +442,10 @@ def test_export_is_the_release_layout(tmp_path, exporter, monkeypatch, kind):
     assert model.is_hf_state_dict(exported) and not model.is_prime_state_dict(exported)
     assert get_decision_model_cls(AutoConfig.from_pretrained(output), str(output)) is type(model)
 
-    # Neither FP8 tool quantizes it: their quantization config does not cover the side files' weights.
-    with pytest.raises(ValueError, match="FP8"):
+    # Neither FP8 tool quantizes it, and only d3's refusal names its float32 readout.
+    with pytest.raises(ValueError, match="float32 readout" if kind != "clef" else "could not load the result$"):
         importlib.import_module("convert_bf16_to_fp8").convert(output)
-    with pytest.raises(ValueError, match="FP8"):
+    with pytest.raises(ValueError, match="float32 readout" if kind != "clef" else "it is untested"):
         importlib.import_module("convert_dcp_to_fp8").convert(step_dir)
 
     # The export takes the side config off a copy: the live config keeps it.
