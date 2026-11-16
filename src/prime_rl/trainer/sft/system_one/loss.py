@@ -74,19 +74,24 @@ def decision_loss(inputs: LossInputs, brier_weight: float = 0.0) -> LossOutputs:
     """
     logits = question_logits(inputs.model, inputs.hidden_states, inputs.batch)
     questions = [question for record in inputs.batch["sample_data"] for question in record["questions"]]
+    labelled = [
+        (question["target"], vector) for question, vector in zip(questions, logits) if question["target"] is not None
+    ]
+    device = inputs.hidden_states.device
 
-    loss = ce = brier = accuracy = torch.zeros((), device=inputs.hidden_states.device)
-    count = 0
-    for question, vector in zip(questions, logits):
-        if question["target"] is None:
-            continue
+    # One host-to-device copy of all targets, so that the loop never waits for the device.
+    host_targets = torch.tensor([p for target, _ in labelled for p in target], dtype=torch.float32)
+    if device.type == "cuda":
+        host_targets = host_targets.pin_memory()
+    targets = host_targets.to(device, non_blocking=True).split([len(target) for target, _ in labelled])
+
+    loss = ce = brier = accuracy = torch.zeros((), device=device)
+    for (_, vector), target in zip(labelled, targets):
         vector = vector.float()
-        target = torch.tensor(question["target"], device=vector.device)
         question_ce = F.cross_entropy(vector, target)
         question_brier = (vector.softmax(-1) - target).square().sum()
         loss = loss + question_ce + brier_weight * question_brier
         ce, brier = ce + question_ce.detach(), brier + question_brier.detach()
         # A top option of the target, not the first one: a tied target is scored the same in any option order.
-        accuracy = accuracy + (target[vector.argmax()] == target.max())
-        count += 1
-    return LossOutputs(loss=loss, count=count, metrics={"ce": ce, "brier": brier, "accuracy": accuracy})
+        accuracy = accuracy + (target.gather(0, vector.argmax(0, keepdim=True)) == target.max()).squeeze(0)
+    return LossOutputs(loss=loss, count=len(labelled), metrics={"ce": ce, "brier": brier, "accuracy": accuracy})
