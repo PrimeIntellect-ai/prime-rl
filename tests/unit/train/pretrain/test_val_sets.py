@@ -40,24 +40,16 @@ def test_head_logprobs_chunks_match_the_full_softmax():
 
 def test_requests_without_bos_start_at_the_text(tmp_path):
     for name, kind, columns in [
-        ("docs", "ppl", {"text": ["hello"]}),
         ("cc", "ctxcont", {"context": ["Q:"], "continuation": [" yes"]}),
         ("pairs", "pairs", {"good": ["ab"], "bad": ["ba"]}),
     ]:
         (tmp_path / name).mkdir()
         pq.write_table(pa.table(columns), tmp_path / name / "test.parquet")
         (tmp_path / name / "meta.json").write_text(json.dumps({"kind": kind}))
-    docs = prepare_set("docs", tmp_path, CharTokenizer(), seq_len=32, bos=False, end_token=2)
-    assert docs.requests == [([ord(char) for char in "hello"] + [2], 1)]
-    assert docs.info["bytes"].tolist() == [4]  # the first character is context only
-    with_bos = prepare_set("docs", tmp_path, CharTokenizer(), seq_len=32, bos=True, end_token=None)
-    assert with_bos.requests == [([1] + [ord(char) for char in "hello"], 1)] and with_bos.info["bytes"].tolist() == [5]
-    ids, start = prepare_set("cc", tmp_path, CharTokenizer(), seq_len=32, bos=False, end_token=2).requests[0]
+    ids, start = prepare_set("cc", tmp_path, CharTokenizer(), seq_len=32, bos=False).requests[0]
     assert ids == [ord(char) for char in "Q: yes"] and start == 2
-    assert prepare_set("pairs", tmp_path, CharTokenizer(), seq_len=32, bos=False, end_token=2).requests[0] == (
-        [97, 98],
-        1,
-    )
+    assert prepare_set("pairs", tmp_path, CharTokenizer(), seq_len=32, bos=False).requests[0] == ([97, 98], 1)
+    assert prepare_set("pairs", tmp_path, CharTokenizer(), seq_len=32, bos=True).requests[0] == ([1, 97, 98], 1)
 
 
 def test_ctxcont_picks_the_likeliest_choice_with_and_without_length_normalization():

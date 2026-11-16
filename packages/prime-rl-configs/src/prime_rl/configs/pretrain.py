@@ -65,15 +65,15 @@ class PretrainValConfig(BaseValConfig):
 
     sets: list[str | EvalSetConfig] = []
     """Log-likelihood eval sets to score, by name (a directory in ``data_dir``) or with their own ``seq_lens``. Each
-    directory holds ``test.parquet`` and ``meta.json`` with the set's ``kind``: ``ppl``, ``ctxcont`` or ``pairs`` (see
+    directory holds ``test.parquet`` and ``meta.json`` with the set's ``kind``: ``ctxcont`` or ``pairs`` (see
     docs/training.md). Logged as ``val/<set>/<metric>@<length>``."""
 
     data_dir: Path | None = None
     """Directory of the eval sets, one directory per set."""
 
     seq_lens: list[Annotated[int, Field(ge=1)]] | None = None
-    """Context lengths to score every set at: the window length for ``ppl`` sets and the context limit for
-    ``ctxcont`` sets. Defaults to ``data.seq_len`` of training."""
+    """Context lengths to score every set at: the context limit for ``ctxcont`` sets. Defaults to ``data.seq_len`` of
+    training."""
 
     micro_batch_tokens: int | None = Field(None, ge=1)
     """Tokens per packed row of the sets (one forward pass on one GPU). Defaults to the training micro-batch
@@ -81,7 +81,7 @@ class PretrainValConfig(BaseValConfig):
     be at least that longest length."""
 
     save_arrays: bool = False
-    """Write the sets' per-document and per-item arrays (npz) and summaries (json) to ``<run_dir>/val/step_N/``."""
+    """Write the sets' per-item arrays (npz) and summaries (json) to ``<run_dir>/val/step_N/``."""
 
     @model_validator(mode="after")
     def validate_sets(self):
