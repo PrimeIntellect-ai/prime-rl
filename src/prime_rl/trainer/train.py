@@ -101,6 +101,19 @@ def train(config: SFTConfig | PretrainConfig):
         logger.info("Initializing heartbeat")
         heart = Heartbeat(config.heartbeat)
 
+    ckpt_dir = get_ckpt_dir(ckpt_output_dir(config.run_dir, config.ckpt))
+    checkpoint_step = None
+    if config.resume is not None:
+        if config.resume.dir is not None:
+            checkpoint_step = config.resume.dir_step
+        else:
+            checkpoint_step = config.resume.step
+            if checkpoint_step is None:
+                checkpoint_step = resolve_latest_ckpt_step(ckpt_dir)
+    if checkpoint_step is not None:
+        resume_step_dir = config.resume.dir or get_step_path(ckpt_dir, checkpoint_step)
+        use_resumed_model_files(config.model, config.tokenizer, resume_step_dir)
+
     # Set precision
     setup_moe_comm_env(config.model)
     setup_torch_distributed(
@@ -130,19 +143,6 @@ def train(config: SFTConfig | PretrainConfig):
 
     if parallel_dims.cp_enabled:
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
-
-    ckpt_dir = get_ckpt_dir(ckpt_output_dir(config.run_dir, config.ckpt))
-    checkpoint_step = None
-    if config.resume is not None:
-        if config.resume.dir is not None:
-            checkpoint_step = config.resume.dir_step
-        else:
-            checkpoint_step = config.resume.step
-            if checkpoint_step is None:
-                checkpoint_step = resolve_latest_ckpt_step(ckpt_dir)
-    if checkpoint_step is not None:
-        resume_step_dir = config.resume.dir or get_step_path(ckpt_dir, checkpoint_step)
-        use_resumed_model_files(config.model, config.tokenizer, resume_step_dir)
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     check_ckpt_dir(config.model)
