@@ -2,7 +2,7 @@
 
 The prompt format (``render``, ``compile_question`` and ``candidate_prompts``) is Open-Jev's, from ``jev/api.py`` of
 https://github.com/Zefan-Cai/Open-Jev at commit bd41188 (MIT, Copyright (c) 2026 Open-Jev contributors; the notice is
-in ../README.md). The released head and the Yes/No initialisation depend on the exact text.
+in README.md). The released head and the Yes/No initialisation depend on the exact text.
 """
 
 import json
