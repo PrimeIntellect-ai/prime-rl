@@ -317,13 +317,13 @@ def test_model_assets_of_a_model_that_cannot_generate(tmp_path, exporter):
     assert not (output / "generation_config.json").exists()
 
 
-def test_a_ckpt_run_exports_without_its_source_step_dir(tmp_path, exporter, monkeypatch):
+def test_a_run_from_a_checkpoint_exports_without_its_source_step_dir(tmp_path, exporter, monkeypatch):
     monkeypatch.delenv("PRL_ATTEMPT_CONFIG_DIR", raising=False)
     source = (tmp_path / "deleted-run" / "checkpoints" / "step_5").as_posix()
     run_dir = tmp_path / "run"
     config_dir = run_dir / "configs" / "latest" / "resolved"
     config_dir.mkdir(parents=True)
-    run_config = {"model": {"name": source, "init": {"type": "ckpt"}}, "tokenizer": {"name": source}}
+    run_config = {"model": {"name": source, "init": {"type": "pretrained"}}, "tokenizer": {"name": source}}
     (config_dir / "trainer.json").write_text(json.dumps(run_config))
     step_dir = run_dir / "checkpoints" / "step_1"
     Qwen3MoeConfig().save_pretrained(step_dir)

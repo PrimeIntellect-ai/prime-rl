@@ -9,7 +9,6 @@ from pydantic import ConfigDict, Field, model_validator
 from pydantic_config import BaseConfig
 
 from prime_rl.configs.shared import EnvVars, LogConfig, SlurmConfig
-from prime_rl.configs.trainer import ModelConfig
 from prime_rl.utils.config import default_output_dir, find_package_resource
 from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_parser
 
@@ -733,28 +732,18 @@ class InferenceConfig(BaseConfig):
 MODEL_NAME_DRAFT_METHODS = ("mtp", "dspark")
 
 
-def setup_trainer_fed_inference(inference: InferenceConfig | None, model: ModelConfig) -> None:
-    """Inference that the trainer sends its weights to. LoRA sends only the adapter, so inference loads the base
-    weights of ``model.name`` itself, which requires ``hf``."""
-    if model.init.type != "hf" and model.lora is not None:
-        raise ValueError(
-            'LoRA broadcasts only the adapter, so inference needs the base weights of model.name: use model.init.type = "hf"'
-        )
-    if inference is not None:
-        setup_dummy_load(inference, model.init.type)
-
-
-def setup_dummy_load(inference: InferenceConfig, init_type: str) -> None:
-    """With weights other than the ones stored at ``model.name`` (``scratch``, ``ckpt``), the server starts with
-    placeholder weights (``load_format = "dummy"``) and gets the trainer's at startup; an explicit ``load_format``
-    wins. With ``hf`` it still loads ``model.name`` from disk: vLLM checks that a load from disk writes every weight,
-    but no weight transfer checks that the trainer's update does, so a weight the update misses keeps its pretrained
-    value instead of a placeholder.
+def setup_dummy_load(inference: InferenceConfig, dummy: bool) -> None:
+    """With ``dummy``, the server starts with placeholder weights (``load_format = "dummy"``), which the trainer's
+    startup broadcast replaces, unless ``load_format`` is set explicitly. That is the case when the trainer's weights
+    are not HF weights stored at ``model.name``: a ``scratch`` init, known from the config, or a checkpoint step
+    directory as ``model.name``, which the inference server detects since only it is sure to see the path. HF weights
+    still load from disk: vLLM checks that a load from disk writes every weight, but no weight transfer checks that the
+    trainer's update does, so a weight the update misses keeps its pretrained value instead of a placeholder.
 
     Under a dummy-loaded target, a speculative draft with its own ``model`` still loads it from disk, except a
     ``draft_model`` draft, which vLLM loads with the target's load format. A draft that reads its weights from
     ``model.name`` (MTP, DSpark without a ``model``) gets none."""
-    if init_type != "hf" and "load_format" not in (inference.vllm.model_extra or {}):
+    if dummy and "load_format" not in (inference.vllm.model_extra or {}):
         inference.vllm.load_format = "dummy"
     if getattr(inference.vllm, "load_format", None) != "dummy":
         return
@@ -771,7 +760,7 @@ def setup_dummy_load(inference: InferenceConfig, init_type: str) -> None:
         if method == "draft_model":
             raise ValueError(
                 'vLLM loads a speculative_config method "draft_model" draft with the target\'s load format, here '
-                'dummy: use a method such as "eagle3", or load the target from disk (model.init.type = "hf", or inference.vllm.load_format = "auto")'
+                'dummy: use a method such as "eagle3", or load the target from disk (HF weights at model.name with model.init.type = "pretrained", or an explicit inference.vllm.load_format)'
             )
         if "model" in draft_keys:
             if "draft_load_config" not in draft_keys:
@@ -780,5 +769,5 @@ def setup_dummy_load(inference: InferenceConfig, init_type: str) -> None:
         if method in MODEL_NAME_DRAFT_METHODS or method.endswith("_mtp"):
             raise ValueError(
                 f'speculative_config method "{method}" reads its draft weights from model.name, which a dummy-loaded '
-                'server does not load: set speculative_config.model to a draft checkpoint, or load the target from disk (model.init.type = "hf", or inference.vllm.load_format = "auto")'
+                'server does not load: set speculative_config.model to a draft checkpoint, or load the target from disk (HF weights at model.name with model.init.type = "pretrained", or an explicit inference.vllm.load_format)'
             )

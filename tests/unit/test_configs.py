@@ -1455,7 +1455,8 @@ def test_score_centering_captures_complete_bounded_support(top_k, top_p):
 
 
 @pytest.mark.parametrize(
-    ("config_cls", "default_type"), [(PretrainConfig, "scratch"), (SFTConfig, "hf"), (TrainerConfig, "hf")]
+    ("config_cls", "default_type"),
+    [(PretrainConfig, "scratch"), (SFTConfig, "pretrained"), (TrainerConfig, "pretrained")],
 )
 def test_model_init_type_defaults_per_entrypoint(tmp_path, config_cls, default_type: str):
     data = {"data": {"paths": [str(tmp_path)]}} if config_cls is PretrainConfig else {}
@@ -1464,10 +1465,16 @@ def test_model_init_type_defaults_per_entrypoint(tmp_path, config_cls, default_t
     assert config_cls.model_validate({**data, "model": {"init": {}}}).model.init.type == default_type
 
 
-def test_model_init_seed_requires_type_scratch():
+def test_model_init_seed_belongs_to_scratch():
     assert SFTConfig.model_validate({"model": {"init": {"type": "scratch", "seed": 1}}}).model.init.seed == 1
-    with pytest.raises(ValidationError, match='model.init.seed applies to type "scratch", not "hf"'):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         SFTConfig.model_validate({"model": {"init": {"seed": 1}}})
+
+
+@pytest.mark.parametrize("init_type", ["hf", "ckpt"])
+def test_model_init_types_of_earlier_versions_fail(init_type: str):
+    with pytest.raises(ValidationError, match="does not match any of the expected tags: 'scratch', 'pretrained'"):
+        SFTConfig.model_validate({"model": {"init": {"type": init_type}}})
 
 
 def test_model_init_scratch_rejects_lora():
@@ -1495,16 +1502,10 @@ def test_inference_parsers_resolve_from_the_tokenizer_name(tokenizer: str | None
         assert config.inference.vllm.tool_call_parser == "hermes"
 
 
-def test_model_init_checkpoint_requires_a_step_dir():
-    TrainerModelConfig(name="runs/sft/checkpoints/step_500", init={"type": "ckpt"})
-    with pytest.raises(ValidationError, match="must point at a checkpoint step directory"):
-        TrainerModelConfig(name="Qwen/Qwen3-0.6B", init={"type": "ckpt"})
-
-
 def test_rl_shared_model_init_reaches_the_trainer():
     config = RLConfig.model_validate(
         {
-            "model": {"name": "runs/sft/checkpoints/step_500", "init": {"type": "ckpt"}},
+            "model": {"init": {"type": "scratch", "seed": 3}},
             "trainer": {},
             "orchestrator": {
                 "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
@@ -1512,23 +1513,22 @@ def test_rl_shared_model_init_reaches_the_trainer():
             },
         }
     )
-    assert config.trainer.model.init.type == "ckpt"
+    assert config.trainer.model.init.type == "scratch" and config.trainer.model.init.seed == 3
 
 
 @pytest.mark.parametrize(
     ("init_type", "explicit", "load_format"),
-    [("hf", None, None), ("scratch", None, "dummy"), ("ckpt", None, "dummy"), ("scratch", "auto", "auto")],
+    [("pretrained", None, None), ("scratch", None, "dummy"), ("scratch", "auto", "auto")],
 )
-def test_inference_loads_dummy_weights_unless_the_trainer_starts_from_hf(
+def test_inference_loads_dummy_weights_for_a_scratch_init(
     init_type: str, explicit: str | None, load_format: str | None
 ):
     vllm = {"speculative_config": {"method": "eagle3", "model": "drafts/eagle3"}}
     if explicit is not None:
         vllm["load_format"] = explicit
-    name = "runs/sft/checkpoints/step_500" if init_type == "ckpt" else "Qwen/Qwen3-0.6B"
     config = RLConfig.model_validate(
         {
-            "model": {"name": name, "init": {"type": init_type}},
+            "model": {"init": {"type": init_type}},
             "trainer": {},
             "orchestrator": {
                 "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
@@ -1537,7 +1537,6 @@ def test_inference_loads_dummy_weights_unless_the_trainer_starts_from_hf(
             "inference": {"vllm": vllm},
         }
     )
-    assert config.trainer.model.init.type == init_type
     namespace = config.inference.to_namespace()
     assert getattr(namespace, "load_format", None) == load_format
     draft_load_config = {"load_format": "auto"} if load_format == "dummy" else None
@@ -1550,7 +1549,7 @@ def test_inference_loads_dummy_weights_unless_the_trainer_starts_from_hf(
     [
         ("scratch", {"speculative_config": {"method": "mtp"}}, "reads its draft weights from model.name"),
         ("scratch", {"speculative_config": {"model": "drafts/qwen3-0.6b"}}, "with the target's load format"),
-        ("hf", {"load_format": "dummy", "speculative_config": {"method": "mtp"}}, "reads its draft weights"),
+        ("pretrained", {"load_format": "dummy", "speculative_config": {"method": "mtp"}}, "reads its draft weights"),
     ],
 )
 def test_a_draft_without_its_own_weights_fails_under_a_dummy_target(init_type: str, vllm: dict, match: str):
@@ -1564,20 +1563,6 @@ def test_a_draft_without_its_own_weights_fails_under_a_dummy_target(init_type: s
                     "renderer": {"name": "qwen3"},
                 },
                 "inference": {"vllm": vllm},
-            }
-        )
-
-
-def test_lora_requires_the_hf_init():
-    with pytest.raises(ValidationError, match="LoRA broadcasts only the adapter"):
-        RLConfig.model_validate(
-            {
-                "model": {"name": "runs/sft/checkpoints/step_500", "init": {"type": "ckpt"}},
-                "trainer": {"model": {"lora": {}}},
-                "orchestrator": {
-                    "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
-                    "renderer": {"name": "qwen3"},
-                },
             }
         )
 

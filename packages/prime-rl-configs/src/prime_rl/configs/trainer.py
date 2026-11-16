@@ -19,7 +19,6 @@ from prime_rl.configs.shared import (
     VLMConfig,
     WeightBroadcastConfig,
     ZMQTransportConfig,
-    validate_step_dir,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir
 
@@ -320,24 +319,26 @@ class MoERuntimeConfig(BaseConfig):
     dispatch: MoEDispatchConfig = TorchMoEDispatchConfig()
 
 
-class InitConfig(BaseConfig):
-    """Where the weights start. A resumed run loads its own checkpoint instead, whatever the type."""
+class ScratchInit(BaseConfig):
+    """The model's own random init (its ``_init_weights``, with the ``initializer_range`` of ``model.name``'s
+    config.json); ``model.name`` supplies only the architecture and the tokenizer."""
 
-    type: Literal["scratch", "hf", "ckpt"] = "hf"
-    """``scratch``: the model's own random init; ``model.name`` supplies the architecture and the tokenizer. ``hf``: the
-    weights of ``model.name``. ``ckpt``: ``model.name`` is a checkpoint step directory (``.../step_<N>``) of
-    another run, whose ``config.json`` and tokenizer files supply the architecture and the tokenizer; only its weights
-    load, and the run starts at step 0 with a fresh optimizer, scheduler and data."""
+    type: Literal["scratch"] = "scratch"
 
     seed: int = 0
-    """Seed for the ``scratch`` init: the same seed gives the same weights."""
+    """Seed of the init: the same seed gives the same weights on the same GPU layout."""
 
-    @model_validator(mode="after")
-    def seed_requires_scratch(self):
-        # Resolved configs write the default seed for every type.
-        if self.type != "scratch" and self.seed != 0:
-            raise ValueError(f'model.init.seed applies to type "scratch", not "{self.type}"')
-        return self
+
+class PretrainedInit(BaseConfig):
+    """The weights stored at ``model.name``: an HF model (Hub id or local directory), or a checkpoint step directory
+    (``.../step_<N>``) of another run, whose ``trainer/`` weights load and whose ``config.json`` and tokenizer files
+    supply the architecture and the tokenizer. A step directory starts the run at step 0 with a fresh optimizer,
+    scheduler and data."""
+
+    type: Literal["pretrained"] = "pretrained"
+
+
+InitConfig: TypeAlias = Annotated[ScratchInit | PretrainedInit, Field(discriminator="type")]
 
 
 class ModelConfig(BaseModelConfig):
@@ -347,8 +348,8 @@ class ModelConfig(BaseModelConfig):
     conversion_dir: Path | None = None
     """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
 
-    init: InitConfig = InitConfig()
-    """Where the weights start."""
+    init: InitConfig = PretrainedInit()
+    """Where the weights start. A resumed run loads its own checkpoint instead, whatever the type."""
 
     seq_len: int = 2048
     """Sequence length the model is trained on."""
@@ -414,12 +415,6 @@ class ModelConfig(BaseModelConfig):
 
     fused_lm_head_token_chunk_size: int | Literal["disabled"] = 8192
     """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. In SFT the fused head computes the summed cross-entropy and its gradients chunk by chunk, holding one chunk's full-vocab logits at a time."""
-
-    @model_validator(mode="after")
-    def validate_checkpoint_name(self):
-        if self.init.type == "ckpt":
-            validate_step_dir(Path(self.name), field='model.name with model.init.type = "ckpt"')
-        return self
 
     @model_validator(mode="after")
     def validate_scratch_lora(self):
