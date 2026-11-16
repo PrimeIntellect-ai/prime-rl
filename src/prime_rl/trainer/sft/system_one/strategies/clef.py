@@ -1,24 +1,28 @@
 # Ported from vLLM 0.33.0, vllm/entrypoints/openai/decisions/strategies.py (Apache-2.0, Copyright contributors to the
 # vLLM project), JointSchemaStrategy and ClefFlashStrategy: the constants (lines 854-857, 861-864, 1142), self.prefix
 # and self.suffix (__init__, 881-888), _render (899-905), _tokens (907-908), _options (998-1020) and encode
-# (1022-1068), with vLLM's names. limits (890-891) is refusal, a skip; media (_render_media, PLACEHOLDERS) is not ported.
-"""Clef-Flash's joint schema prompt, as vLLM 0.33's ``ClefFlashStrategy`` builds it (``[data.encoder]``,
-``import_path = "prime_rl.trainer.sft.system_one.encoders.clef.ClefFlashEncoder"``)."""
+# (1022-1068, as _encode), with vLLM's names. limits (890-891) is refusal, a skip; media (_render_media, PLACEHOLDERS)
+# is not ported.
+"""Clef-Flash's System One strategy, as vLLM 0.33's ``ClefFlashStrategy`` reads Clef-Flash."""
 
 import json
 from typing import Any
 
+from torch import Tensor, nn
+from transformers import PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.trainer.sft.system_one.data import EncodedRecord, SystemOneEncoder
-from prime_rl.trainer.sft.system_one.encoders import find_refusal
+from prime_rl.trainer.data import Batch
+from prime_rl.trainer.models.qwen3_5.clef_joint_schema import QUESTION_TYPES, schema_indices, segment_mean
+from prime_rl.trainer.sft.system_one.data import RenderedRecord, SystemOneStrategy
 from prime_rl.trainer.sft.system_one.record import Question, SystemOneRecord
+from prime_rl.trainer.sft.system_one.strategies import find_refusal
 from prime_rl.utils.logger import get_logger
 
 
-class ClefFlashEncoder(SystemOneEncoder):
-    """The prompt half of vLLM's ClefFlashStrategy. The whole record is one prompt and one attention segment: the
-    state, then every question's schema. A question's reads are its instruction, then one span per option in the
+class ClefFlashStrategy(SystemOneStrategy):
+    """vLLM's ClefFlashStrategy without its softmax. The whole record is one prompt and one attention segment: the
+    state, then every question's schema. A question's read spans are its instruction, then one span per option in the
     head's order. A state that does not fit in ``min(16384, max_tokens)`` tokens is cut, as vLLM cuts it at
     ``min(16384, max_model_len)``."""
 
@@ -33,8 +37,8 @@ class ClefFlashEncoder(SystemOneEncoder):
         "false": "The proposition is false or the answer is no.",
     }
 
-    def __init__(self, tokenizer: PreTrainedTokenizer):
-        super().__init__(tokenizer)
+    def __init__(self, tokenizer: PreTrainedTokenizer, config: PretrainedConfig):
+        super().__init__(tokenizer, config)
         self.prefix = self._tokens(f"<|im_start|>system\n{self.SYSTEM_PROMPT}<|im_end|>\n<|im_start|>user\nSTATE:\n")
         self.suffix = self._tokens(
             "\n<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nJOINT SCHEMA DECISIONS:"
@@ -62,15 +66,15 @@ class ClefFlashEncoder(SystemOneEncoder):
             return sorted(zip(q.options, q.descriptions), key=lambda option: option[0])
         return list(zip(q.options, q.criteria))
 
-    def encode(
+    def _encode(
         self, questions: tuple[Question, ...], state: str, max_length: int
     ) -> tuple[list[int], list[list[tuple[int, int]]], list[list[str]], int] | None:
-        """The prompt, each question's reads, each question's option ids in the head's order and the number of state
-        tokens cut, or None when the questions alone take more than ``max_length`` tokens, where vLLM raises. Unlike
-        vLLM's, the spans count from the prompt's start, and each question's are its instruction's then its
+        """The prompt, each question's read spans, each question's option ids in the head's order and the number of
+        state tokens cut, or None when the questions alone take more than ``max_length`` tokens, where vLLM raises.
+        Unlike vLLM's, the spans count from the prompt's start, and each question's are its instruction's then its
         options'."""
         schema_ids = self._tokens("\n\nSCHEMA FIELDS:\n")
-        reads, orders = [], []
+        read_spans, orders = [], []
         for n, q in enumerate(questions, start=1):
             schema_ids += self._tokens(f"\nFIELD {n}\nID: {q.id}\nTYPE: {q.type}\nINSTRUCTION: ")
             start = len(schema_ids)
@@ -88,7 +92,7 @@ class ClefFlashEncoder(SystemOneEncoder):
                 spans.append((start, len(schema_ids)))
                 schema_ids += self._tokens("\n")
             schema_ids += self._tokens("END FIELD\n")
-            reads.append(spans)
+            read_spans.append(spans)
             orders.append([option_id for option_id, _ in options])
 
         fixed = len(self.prefix) + len(schema_ids) + len(self.suffix)
@@ -99,10 +103,10 @@ class ClefFlashEncoder(SystemOneEncoder):
         state_ids = state_ids[: max_length - fixed]
         prompt = self.prefix + state_ids + schema_ids + self.suffix
         offset = len(self.prefix) + len(state_ids)
-        return prompt, [[(s + offset, e + offset) for s, e in spans] for spans in reads], orders, cut
+        return prompt, [[(s + offset, e + offset) for s, e in spans] for spans in read_spans], orders, cut
 
     def refusal(self, record: SystemOneRecord) -> str | None:
-        """Why the record cannot be encoded as vLLM's ClefFlashStrategy reads it, or None."""
+        """Why the record cannot be rendered as vLLM's ClefFlashStrategy reads it, or None."""
         if (reason := find_refusal(record)) is not None:
             return reason
         for question in record.questions:
@@ -110,18 +114,41 @@ class ClefFlashEncoder(SystemOneEncoder):
                 return f"question {question.id!r}: {len(question.options)} options, more than {self.MAX_OPTIONS}"
         return None
 
-    def __call__(self, record: SystemOneRecord, max_tokens: int) -> EncodedRecord | None:
+    def render_record(self, record: SystemOneRecord, max_tokens: int) -> RenderedRecord | None:
         if (reason := self.refusal(record)) is not None:
             get_logger().warning(f"Skipping record {record.id!r}: {reason}")
             return None
         max_length = min(self.MAX_LENGTH, max_tokens)
-        if (encoded := self.encode(record.questions, self._render(record.state), max_length)) is None:
+        if (encoded := self._encode(record.questions, self._render(record.state), max_length)) is None:
             get_logger().warning(f"Skipping record {record.id!r}: its questions take more than {max_length} tokens")
             return None
-        prompt, reads, options, cut = encoded
+        prompt, read_spans, options, cut = encoded
         if cut:
             get_logger().warning(
                 f"Record {record.id!r}: cutting the last {cut} tokens of its state, so that its prompt fits in "
                 f"{max_length} tokens"
             )
-        return EncodedRecord(input_ids=prompt, seq_lens=[len(prompt)], reads=reads, options=options)
+        return RenderedRecord(input_ids=prompt, seq_lens=[len(prompt)], read_spans=read_spans, options=options)
+
+    @classmethod
+    def option_logits(cls, model: nn.Module, hidden_states: Tensor, batch: Batch) -> list[Tensor]:
+        """The model's joint schema head, ``pooler.head``, once per record on the record's slice of the packed row, as
+        vLLM's pooler runs it once per prompt, with the lexical prior from ``lexical_embedding``. A question's reads
+        are its instruction span, then one span per option, in the order of its ``options``."""
+        logits, start = [], 0
+        for record in batch["sample_data"]:
+            end = start + record["num_tokens"]
+            questions = record["questions"]
+            spans = [tuple(question["reads"][0]) for question in questions]
+            spans += [tuple(span) for question in questions for span in question["reads"][1:]]
+            counts = [len(question["reads"]) - 1 for question in questions]
+            types = [QUESTION_TYPES[question["type"]] for question in questions]
+            schema, lexical_positions, lexical_spans = schema_indices(types, spans, counts, hidden_states.device)
+            option_tokens = batch["input_ids"][0, start:end][lexical_positions]
+            lexical = segment_mean(
+                model.lexical_embedding(option_tokens), lexical_spans, schema.span_lengths[len(questions) :]
+            )
+            record_logits = model.pooler.head(hidden_states[0, start:end], lexical, schema).float()
+            logits += record_logits.split(counts)
+            start = end
+        return logits

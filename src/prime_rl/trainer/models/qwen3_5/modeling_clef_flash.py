@@ -1,19 +1,18 @@
 """Clef-Flash: a Qwen3.5 backbone with Clef's joint schema head, the model vLLM 0.33 serves as
 ``ClefFlashForJointSchema`` (``vllm/model_executor/models/clef_flash.py``)."""
 
+from typing import TYPE_CHECKING
+
 import torch
 from torch import Tensor, nn
 from transformers.configuration_utils import PretrainedConfig
 
-from prime_rl.trainer.data import Batch
 from prime_rl.trainer.models.conversion_ops import Drop, MapValue
-from prime_rl.trainer.models.qwen3_5.clef_joint_schema import (
-    QUESTION_TYPES,
-    JointSchemaHead,
-    schema_indices,
-    segment_mean,
-)
+from prime_rl.trainer.models.qwen3_5.clef_joint_schema import JointSchemaHead
 from prime_rl.trainer.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForCausalLM
+
+if TYPE_CHECKING:
+    from prime_rl.trainer.sft.system_one.data import SystemOneStrategy
 
 HEAD = "pooler.head."
 SCALARS = ("prior_logit_scale", "joint_logit_scale", "residual_gate")
@@ -90,27 +89,12 @@ class ClefFlashForJointSchema(Qwen3_5ForCausalLM):
         """``joint_head_config.json``, taken off `config`, so the exported ``config.json`` is the release's."""
         return {"joint_head_config.json": vars(config).pop("joint_head_config")}
 
-    def decision_logits(self, hidden_states: Tensor, batch: Batch) -> list[Tensor]:
-        """One logit vector per question, in pack order. The head runs once per record, on the record's slice of the
-        packed row, as vLLM runs it once per prompt. A question's reads are its instruction span, then one span per
-        option, in the order of its ``options``."""
-        logits, start = [], 0
-        for record in batch["sample_data"]:
-            end = start + record["num_tokens"]
-            questions = record["questions"]
-            spans = [tuple(question["reads"][0]) for question in questions]
-            spans += [tuple(span) for question in questions for span in question["reads"][1:]]
-            counts = [len(question["reads"]) - 1 for question in questions]
-            types = [QUESTION_TYPES[question["type"]] for question in questions]
-            schema, lexical_positions, lexical_spans = schema_indices(types, spans, counts, hidden_states.device)
-            option_tokens = batch["input_ids"][0, start:end][lexical_positions]
-            lexical = segment_mean(
-                self.lexical_embedding(option_tokens), lexical_spans, schema.span_lengths[len(questions) :]
-            )
-            record_logits = self.pooler.head(hidden_states[0, start:end], lexical, schema).float()
-            logits += record_logits.split(counts)
-            start = end
-        return logits
+    @classmethod
+    def system_one_strategy(cls) -> type["SystemOneStrategy"]:
+        """vLLM's read strategy for Clef-Flash, without its softmax: ``ClefFlashStrategy``."""
+        from prime_rl.trainer.sft.system_one.strategies.clef import ClefFlashStrategy
+
+        return ClefFlashStrategy
 
 
 __all__ = ["ClefFlashForJointSchema"]

@@ -76,7 +76,7 @@ def system_one_strategy_cls(model_cls: type) -> type[SystemOneStrategy]:
         raise ValueError(
             f"System One data trains a decision model, whose class declares system_one_strategy, but "
             f"{model_cls.__name__} does not. For a class of your own ([model.implementation]), define the classmethod "
-            "system_one_strategy."
+            "system_one_strategy; for a d3 or Clef-Flash release, check the side file beside its config.json."
         )
     strategy_cls = model_cls.system_one_strategy()
     if not (isinstance(strategy_cls, type) and issubclass(strategy_cls, SystemOneStrategy)):

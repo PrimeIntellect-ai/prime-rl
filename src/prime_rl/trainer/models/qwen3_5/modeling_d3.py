@@ -2,14 +2,17 @@
 ``D3ForSequenceClassification`` (``vllm/model_executor/models/d3.py``)."""
 
 import math
+from typing import TYPE_CHECKING
 
 import torch
 from torch import Tensor, nn
 from transformers.configuration_utils import PretrainedConfig
 
-from prime_rl.trainer.data import Batch
 from prime_rl.trainer.models.conversion_ops import Drop, PrefixRename
 from prime_rl.trainer.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForCausalLM
+
+if TYPE_CHECKING:
+    from prime_rl.trainer.sft.system_one.data import SystemOneStrategy
 
 ATTENTION_MODES = ("causal", "noncausal_full_attention")
 
@@ -61,7 +64,6 @@ class D3ForSequenceClassification(Qwen3_5ForCausalLM):
         text_config.is_causal = attention_mode == "causal"
         super().__init__(config)
         self.score = nn.Linear(text_config.hidden_size, len(codes), bias=False, dtype=torch.float32)
-        self.temperature = float(temperature)
         if not getattr(config, "tie_word_embeddings", False):
             self.lm_head.weight.requires_grad_(False)
 
@@ -111,14 +113,12 @@ class D3ForSequenceClassification(Qwen3_5ForCausalLM):
         vars(getattr(config, "text_config", config)).pop("is_causal", None)
         return {"decision_config.json": vars(config).pop("decision_config")}
 
-    def decision_logits(self, hidden_states: Tensor, batch: Batch) -> list[Tensor]:
-        """One logit vector per question, in pack order: the scores of the first codes, one per option, at the
-        question's read token, divided by ``decision_config.json``'s temperature (1 when absent), as vLLM's d3 strategy
-        does before its softmax. The encoder reads one token per question, the last of its prompt."""
-        questions = [question for record in batch["sample_data"] for question in record["questions"]]
-        reads = hidden_states[batch["loss_mask"]].float()
-        logits = self.score(reads) / self.temperature
-        return [row[: len(question["options"])] for row, question in zip(logits, questions, strict=True)]
+    @classmethod
+    def system_one_strategy(cls) -> type["SystemOneStrategy"]:
+        """vLLM's read strategy for d3, without its softmax: ``D3Strategy``."""
+        from prime_rl.trainer.sft.system_one.strategies.d3 import D3Strategy
+
+        return D3Strategy
 
 
 __all__ = ["D3ForSequenceClassification"]

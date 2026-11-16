@@ -58,9 +58,7 @@ from prime_rl.trainer.models.qwen3_5.modeling_d3 import D3ForSequenceClassificat
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.sft.loss import LossInputs, LossOutputs, run_loss_fn
 from prime_rl.trainer.sft.system_one.data import SystemOneDataset
-from prime_rl.trainer.sft.system_one.encoders.clef import ClefFlashEncoder
-from prime_rl.trainer.sft.system_one.encoders.d3 import D3Encoder
-from prime_rl.trainer.sft.system_one.loss import decision_loss, question_logits
+from prime_rl.trainer.sft.system_one.loss import checked_option_logits, decision_loss
 from prime_rl.utils.weights import group_by_layer, load_state_dict, load_state_dict_keys
 
 HIDDEN = 64
@@ -370,7 +368,7 @@ def test_d3_logits_are_the_readout_at_the_read_tokens_over_the_temperature(tmp_p
     questions += [{"id": "r", "type": "choice", "options": ["x", "y", "z"], "reads": [[3, 4]]}]
     batch = {"loss_mask": loss_mask, "sample_data": [{"id": 0, "num_tokens": 3, "questions": questions[:1]}]}
     batch["sample_data"].append({"id": 1, "num_tokens": 4, "questions": questions[1:]})
-    logits = question_logits(model, hidden_states, batch)
+    logits = checked_option_logits(model, hidden_states, batch)
 
     # The readout at fp32, divided by the temperature as vLLM's d3 strategy does.
     reads = hidden_states[loss_mask].float() @ model.score.weight.T
@@ -442,7 +440,7 @@ def test_clef_logits_are_vllms(tmp_path):
         }
         for index, (num_tokens, questions) in enumerate(records)
     ]
-    logits = question_logits(model, hidden_states, {"input_ids": input_ids, "sample_data": sample_data})
+    logits = checked_option_logits(model, hidden_states, {"input_ids": input_ids, "sample_data": sample_data})
 
     expected, start = [], 0
     for num_tokens, questions in records:
@@ -636,7 +634,7 @@ def test_fp32_modules_compute_in_float32_under_fsdp(tmp_path):
         torch.testing.assert_close(result["grad"], model.score.weight.grad, rtol=1e-5, atol=1e-5)
 
 
-# A System One record end to end: encoder -> SystemOneDataset sample -> packed row -> native model -> decision loss.
+# A System One record end to end: strategy -> SystemOneDataset sample -> packed row -> native model -> decision loss.
 
 CHAT_TEMPLATE = (
     "{% for m in messages %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
@@ -727,15 +725,16 @@ def native_model(directory: Path) -> PreTrainedModelPrimeRL:
     return model
 
 
-def packed_batch(directory: Path, encoder_cls: type) -> dict:
-    """Both records of ROWS, encoded by the encoder and packed into one row as the SFT dataloader does."""
+def packed_batch(directory: Path, model: PreTrainedModelPrimeRL) -> dict:
+    """Both records of ROWS, rendered by the strategy the model's class declares and packed into one row as the SFT
+    dataloader does."""
     rows = [
         {key: json.dumps(value) if key != "id" else value for key, value in row.items()}
         | {"questions": json.dumps(QUESTIONS)}
         for row in ROWS
     ]
-    encoder = encoder_cls(PreTrainedTokenizerFast.from_pretrained(directory))
-    dataset = SystemOneDataset(Dataset.from_list(rows), encoder, shuffle=False, seq_len=4096, max_epochs=1)
+    strategy = type(model).system_one_strategy()(PreTrainedTokenizerFast.from_pretrained(directory), model.config)
+    dataset = SystemOneDataset(Dataset.from_list(rows), strategy, shuffle=False, seq_len=4096, max_epochs=1)
     (row,) = CatDataset(dataset, seq_len=4096, pad_to_multiple_of=1)
     return cat_collate([row])
 
@@ -746,7 +745,7 @@ def packed_logits(model, batch: dict) -> list[torch.Tensor]:
         batch["input_ids"],
         batch["position_ids"],
         seq_lens=batch["seq_lens"],
-        hidden_states_fn=lambda hidden_states: question_logits(model, hidden_states, batch),
+        hidden_states_fn=lambda hidden_states: checked_option_logits(model, hidden_states, batch),
     )
 
 
@@ -777,10 +776,10 @@ def test_d3_trains_on_vllms_prompts_end_to_end(tmp_path, cpu_kernels):
     write_char_tokenizer(tmp_path)
     model = native_model(tmp_path)
     tokenizer = PreTrainedTokenizerFast.from_pretrained(tmp_path)
-    batch = packed_batch(tmp_path, D3Encoder)
+    batch = packed_batch(tmp_path, model)
     logits = packed_logits(model, batch)
 
-    # The encoder's option order is the readout's: the j-th logit scores the j-th code, whose line is that option's.
+    # The strategy's option order is the readout's: the j-th logit scores the j-th code, whose line is that option's.
     lines = {"outage": ["No / false", "A service is down."], "team": ["technical: Bugs", "billing"],
              "urgency": ["Can wait", "This week", "Today"]}  # fmt: skip
     options = {"outage": ["false", "true"], "team": ["technical", "billing"], "urgency": ["0", "1", "2"]}
@@ -812,10 +811,10 @@ def test_clef_trains_on_vllms_prompt_end_to_end(tmp_path, cpu_kernels):
     write_char_tokenizer(tmp_path)
     model = native_model(tmp_path)
     tokenizer = PreTrainedTokenizerFast.from_pretrained(tmp_path)
-    batch = packed_batch(tmp_path, ClefFlashEncoder)
+    batch = packed_batch(tmp_path, model)
     logits = packed_logits(model, batch)
 
-    # The encoder's reads are the head's: the instruction, then each option's JSON in the head's order, which the
+    # The strategy's read spans are the head's: the instruction, then each option's JSON in the head's order, which the
     # targets follow.
     options = {"outage": ["true", "false"], "team": ["billing", "technical"], "urgency": ["0", "1", "2"]}
     targets = {"outage": [1.0, 0.0], "team": [0.25, 0.75], "urgency": [0.0, 0.0, 1.0]}
