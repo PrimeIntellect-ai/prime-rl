@@ -1,9 +1,9 @@
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import Field
 
-from prime_rl.configs.supervised import BaseDataConfig, BaseValConfig, SupervisedTrainerConfig
+from prime_rl.configs.supervised import BaseDataConfig, SupervisedTrainerConfig
 from prime_rl.configs.trainer import (
     AdamWConfig,
     ConstantSchedulerConfig,
@@ -12,7 +12,6 @@ from prime_rl.configs.trainer import (
     MuonConfig,
     SignSGDConfig,
 )
-from prime_rl.utils.config import BaseConfig
 
 
 class DatatroveDataConfig(BaseDataConfig):
@@ -42,46 +41,6 @@ class PretrainDataConfig(DatatroveDataConfig):
     the document separator. The separator is the special token the training shards' documents end with, detected at
     startup; startup fails if they don't all end with one, unless they start with BOS (then there is nothing to
     mask)."""
-
-
-class HeldOutDataConfig(BaseConfig):
-    name: str
-    """Names the metrics: ``val/<name>/loss`` and ``val/<name>/bpb``."""
-
-    paths: list[Path] = Field(min_length=1)
-    """Folders of datatrove tokenized shards, as for ``data.paths``."""
-
-    seq_len: int | None = Field(None, ge=1)
-    """Context length to score the set at: every document is scored in non-overlapping windows of ``seq_len`` scored
-    tokens. Defaults to the training ``data.seq_len``."""
-
-
-class PretrainValConfig(BaseValConfig):
-    data: list[HeldOutDataConfig] = []
-    """Named sets of held-out shard folders. Every validation scores each document of a set on its own, from its first
-    token, in non-overlapping windows of the set's ``seq_len`` scored tokens (a longer document continues in the next
-    window, without the tokens before). The windows are packed into rows of ``micro_batch_tokens`` tokens."""
-
-    num_samples: int | None = Field(None, ge=1)
-    """Documents per set and validation: the first ``num_samples`` documents of each set (in folder order, then file
-    name order), the same ones every time. If None, every document."""
-
-    micro_batch_tokens: int | None = Field(None, ge=1)
-    """Tokens per packed row of the sets (one forward pass on one GPU). Defaults to the training micro-batch
-    (``data.micro_batch_size * data.seq_len``) or the longest of the sets' context lengths, whichever is larger; must
-    be at least that longest length."""
-
-    def row_len(self) -> int:
-        return self.micro_batch_tokens
-
-    @model_validator(mode="after")
-    def validate_data(self):
-        if not self.data:
-            raise ValueError("[val] scores nothing: add a [[val.data]] set")
-        names = [data.name for data in self.data]
-        if len(set(names)) < len(names):
-            raise ValueError(f"val.data names must be unique: {names}")
-        return self
 
 
 class PretrainAdamWConfig(AdamWConfig):
@@ -121,30 +80,8 @@ class PretrainConfig(SupervisedTrainerConfig):
 
     data: PretrainDataConfig
 
-    val: PretrainValConfig | None = None
-    """Validation on held-out shards. If None, no validation runs."""
-
     optim: PretrainOptimizerConfig = PretrainAdamWConfig()
 
     scheduler: PretrainSchedulerConfig = PretrainLinearSchedulerConfig()
     """Learning rate schedule. Defaults to a linear warmup over 10 steps, then constant: from a random init, Adam's
     first updates at the full learning rate are unstable."""
-
-    # A field validator, so that the shared model validators (CP, Mega MoE) see the validation row size.
-    @field_validator("val")
-    @classmethod
-    def auto_setup_val(cls, val: PretrainValConfig | None, info: ValidationInfo) -> PretrainValConfig | None:
-        if val is None or "data" not in info.data:
-            return val
-        data = info.data["data"]
-        for held_out in val.data:
-            if held_out.seq_len is None:
-                held_out.seq_len = data.seq_len
-        longest = max(held_out.seq_len for held_out in val.data)
-        if val.micro_batch_tokens is None:
-            val.micro_batch_tokens = max(data.micro_batch_size * data.seq_len, longest)
-        elif val.micro_batch_tokens < longest:
-            raise ValueError(
-                f"val.micro_batch_tokens must be at least the longest context length of the sets ({longest})"
-            )
-        return val

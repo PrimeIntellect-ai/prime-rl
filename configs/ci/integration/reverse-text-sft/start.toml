@@ -9,3 +9,13 @@ name = "PrimeIntellect/Qwen3-0.6B"
 name = "PrimeIntellect/Reverse-Text-SFT"
 batch_size = 4
 seq_len = 1024
+
+[val]
+interval = 5
+num_samples = 64
+
+[[val.sets]]
+type = "sft"
+name = "reverse-text"
+path = "PrimeIntellect/Reverse-Text-SFT"
+split = "train"

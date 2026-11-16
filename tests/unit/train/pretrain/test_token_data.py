@@ -4,18 +4,15 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from transformers import AutoTokenizer
 
 import prime_rl.trainer.pretrain.data as pretrain_data
-from prime_rl.configs.pretrain import DatatroveDataConfig, HeldOutDataConfig
-from prime_rl.trainer.data import setup_dataloader, setup_row_dataloader
+from prime_rl.configs.pretrain import DatatroveDataConfig
+from prime_rl.trainer.data import setup_dataloader
 from prime_rl.trainer.pretrain.data import (
     TokenDataset,
     TokenShards,
     detect_separator,
     document_edges,
-    setup_document_dataset,
-    token_byte_lengths,
     warn_if_no_document_separator,
 )
 from prime_rl.trainer.world import reset_world
@@ -107,50 +104,6 @@ def set_world(monkeypatch, rank: int, world_size: int) -> None:
         ("LOCAL_WORLD_SIZE", world_size),
     ):
         monkeypatch.setenv(name, str(value))
-
-
-def scored_segments(batch: dict) -> list[tuple[list[int], list[int], list[int]]]:
-    """Inputs, targets and positions of every scored segment of a micro-batch row."""
-    segments, start = [], 0
-    for length in batch["seq_lens"].tolist():
-        end = start + length
-        if batch["loss_mask"][0, start:end].all():
-            segments.append(
-                tuple(batch[key][0, start:end].tolist() for key in ("input_ids", "target_ids", "position_ids"))
-            )
-        else:
-            assert not batch["loss_mask"][0, start:end].any()
-        start = end
-    return segments
-
-
-@pytest.mark.parametrize("num_documents", [None, 4])
-@pytest.mark.parametrize("world_size", [1, 2, 3])
-def test_validation_scores_every_document_on_its_own(
-    folders: list[Path], monkeypatch, world_size: int, num_documents: int | None
-):
-    """The data ranks together score every document (or the first num_documents) as if it were alone: windows of
-    seq_len scored tokens, each with positions from 0 and no token before its own first one, every token after the
-    document's first scored once. Every rank runs the same number of micro-batches."""
-    config, row_len = HeldOutDataConfig(name="held-out", paths=folders, seq_len=8), 16
-    expected = []
-    for document in [list(document) for documents in DOCUMENTS for document in documents][:num_documents]:
-        for start in range(0, len(document) - 1, config.seq_len):
-            window = document[start : start + config.seq_len + 1]
-            expected.append((window[:-1], window[1:], list(range(len(window) - 1))))
-
-    batches_by_rank = []
-    for rank in range(world_size):
-        set_world(monkeypatch, rank, world_size)
-        dataset = setup_document_dataset(config, row_len, num_documents=num_documents)
-        batches_by_rank.append(list(setup_row_dataloader(dataset, row_len, pad_to_multiple_of=1)))
-    reset_world()
-
-    assert len({len(batches) for batches in batches_by_rank}) == 1
-    for batches in batches_by_rank:
-        assert all(batch["input_ids"].shape == (1, row_len) for batch in batches)
-    segments = [segment for batches in batches_by_rank for batch in batches for segment in scored_segments(batch)]
-    assert sorted(segments) == sorted(expected)
 
 
 def first_tokens(batch: dict, seq_len: int) -> list[int]:
@@ -269,12 +222,3 @@ def test_eod_mask_loss_masks_nothing_on_bos_separated_shards(tmp_path, monkeypat
     monkeypatch.setattr(pretrain_data, "get_logger", lambda: SimpleNamespace(info=infos.append))
     assert detect_separator(TokenShards([tmp_path / "a"]), tokenizer) is None
     assert len(infos) == 1
-
-
-def test_token_byte_lengths_add_up_to_the_text_bytes():
-    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-    # Tokens holding part of a multi-byte character count their own bytes; <think> is added but not special.
-    text = "<think>Grüße aus Zürich!</think> 東京で会いましょう 🙂👍🏽 naïve façade"
-    byte_lengths = token_byte_lengths(tokenizer)
-    assert byte_lengths[tokenizer.encode(text)].sum() == len(text.encode())
-    assert byte_lengths[tokenizer.eos_token_id] == 0

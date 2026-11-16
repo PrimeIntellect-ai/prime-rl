@@ -245,7 +245,7 @@ class SFTDataset(StatefulIterableDataset):
             self.num_examples = min(self.num_examples, self.max_examples)
             self.dataset = self.dataset.take(self.max_examples)
 
-    def _process(self, example: dict) -> dict | None:
+    def process(self, example: dict) -> dict | None:
         def resolve_messages(example: dict) -> list[dict]:
             # `messages` takes precedence over explicit split fields and is interpreted
             # as a whole-chat training sample with an empty prompt. Null-check rather
@@ -402,7 +402,7 @@ class SFTDataset(StatefulIterableDataset):
             example = dataset[(self.step - 1) % self.num_examples]
 
             # Process example
-            processed_example = self._process(cast(dict, example))
+            processed_example = self.process(cast(dict, example))
 
             # If processed example is None, skip it (e.g. if tokenized sample exceeds context window)
             if processed_example is None:
@@ -422,25 +422,26 @@ class SFTDataset(StatefulIterableDataset):
 
 
 def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
-    if not isinstance(data, SFTDataConfig):
-        return
-    if Path(data.name).exists():
-        get_logger().info(f"Data {data.name} found at local path, skipping download")
-        return
+    if isinstance(data, SFTDataConfig):
+        data.name = pre_download_dataset(data.name, data.revision, env_vars)
 
-    dataset_name = data.name
+
+def pre_download_dataset(name: str, revision: str | None, env_vars: dict[str, str]) -> str:
+    """Download HF dataset ``name`` unless it is a local path. Returns its local path."""
+    if Path(name).exists():
+        get_logger().info(f"Data {name} found at local path, skipping download")
+        return name
+
     t0 = time.perf_counter()
-    get_logger().info(f"Pre-downloading data {dataset_name} at revision {data.revision or 'main'}")
+    get_logger().info(f"Pre-downloading data {name} at revision {revision or 'main'}")
     snapshot = snapshot_download(
-        repo_id=dataset_name,
+        repo_id=name,
         repo_type="dataset",
-        revision=data.revision,
+        revision=revision,
         cache_dir=env_vars.get("HF_HUB_CACHE"),
     )
-    data.name = snapshot
-    get_logger().debug(
-        f"Finished pre-downloading data {dataset_name} to {snapshot} in {format_time(time.perf_counter() - t0)}"
-    )
+    get_logger().debug(f"Finished pre-downloading data {name} to {snapshot} in {format_time(time.perf_counter() - t0)}")
+    return snapshot
 
 
 def setup_and_interleave_datasets(

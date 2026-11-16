@@ -7,10 +7,9 @@ from pathlib import Path
 import numpy as np
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.pretrain import DatatroveDataConfig, HeldOutDataConfig
+from prime_rl.configs.pretrain import DatatroveDataConfig
 from prime_rl.trainer.data import StatefulIterableDataset
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.sequence import repeat_to_length
 
 MAX_OPEN_FILES = 256
 
@@ -193,24 +192,24 @@ Window = tuple[int, int, int]
 """File index and the token range ``[start, end)`` of a window in the file."""
 
 
-def document_windows(shards: TokenShards, seq_len: int, num_documents: int | None = None) -> list[Window]:
-    """Every document of ``shards`` as stored (or the first ``num_documents``), cut into non-overlapping windows of
-    ``seq_len`` scored tokens. A window holds up to ``seq_len + 1`` tokens and scores all but its first. The next
+def document_windows(shards: TokenShards, seq_len: int, num_documents: int | None = None) -> list[list[Window]]:
+    """Every document of ``shards`` as stored (or the first ``num_documents``), each cut into non-overlapping windows
+    of ``seq_len`` scored tokens. A window holds up to ``seq_len + 1`` tokens and scores all but its first. The next
     window starts at the last token of the one before and sees none of the tokens before it."""
-    windows, documents = [], 0
+    documents = []
     for file_index in range(len(shards.files)):
         if shards.starts[file_index + 1] == shards.starts[file_index]:
             continue
         _, doc_ends = shards.open(file_index)
         begin = 0
         for end in doc_ends.tolist():
-            if documents == num_documents:
-                return windows
-            documents += 1
-            for window in range(begin, end - 1, seq_len):
-                windows.append((file_index, window, min(window + seq_len + 1, end)))
+            if len(documents) == num_documents:
+                return documents
+            documents.append(
+                [(file_index, window, min(window + seq_len + 1, end)) for window in range(begin, end - 1, seq_len)]
+            )
             begin = end
-    return windows
+    return documents
 
 
 def pack_windows(lengths: list[int], token_budget: int) -> list[list[int]]:
@@ -226,57 +225,6 @@ def pack_windows(lengths: list[int], token_budget: int) -> list[list[int]]:
     if row:
         rows.append(row)
     return rows
-
-
-class DocumentDataset(StatefulIterableDataset):
-    """Rows of ``row_len`` tokens that score every document of held-out shards on its own (`document_windows`). The
-    windows are packed longest first, one segment per window with positions from 0; the rest of a row is unscored
-    padding. Rows are dealt round-robin over the data ranks, and every rank yields the same number of rows, because
-    under FSDP every forward is a collective: a rank short of a row repeats the first one, unscored. Full rows pass
-    through the micro-batch packing unchanged."""
-
-    def __init__(
-        self, shards: TokenShards, seq_len: int, row_len: int, non_dp_size: int = 1, num_documents: int | None = None
-    ):
-        super().__init__(non_dp_size)
-        self.shards = shards
-        self.row_len = row_len
-        self.windows = document_windows(shards, seq_len, num_documents)
-        if not self.windows:
-            raise ValueError("The held-out shards have no document of two or more tokens")
-        self.rows = pack_windows([end - start - 1 for _, start, end in self.windows], row_len)
-
-    def sample(self, row: list[int], scored: bool) -> dict:
-        input_ids, target_ids, seq_lens = [], [], []
-        for index in row:
-            file_index, start, end = self.windows[index]
-            ids = self.shards.open(file_index)[0][start:end].astype(np.int64).tolist()
-            input_ids += ids[:-1]
-            target_ids += ids[1:]
-            seq_lens.append(len(ids) - 1)
-        loss_mask = [scored] * len(input_ids)
-        padding = self.row_len - len(input_ids)
-        if padding > 0:
-            # The row's own tokens, as in CatDataset: identical pad tokens would all route to the same MoE experts.
-            input_ids += repeat_to_length(input_ids, padding)
-            target_ids += [0] * padding
-            loss_mask += [False] * padding
-            seq_lens.append(padding)
-        return {
-            "input_ids": input_ids,
-            "target_ids": target_ids,
-            "position_ids": [position for length in seq_lens for position in range(length)],
-            "loss_mask": loss_mask,
-            "seq_lens": seq_lens,
-            "mm_kwargs": None,
-            "mm_token_type_ids": None,
-        }
-
-    def __iter__(self):
-        self._setup_world_info()
-        mine = self.rows[self.data_rank :: self.data_world_size]
-        for i in range(-(-len(self.rows) // self.data_world_size)):
-            yield self.sample(mine[i], scored=True) if i < len(mine) else self.sample(self.rows[0], scored=False)
 
 
 # Enough documents per folder to catch shards whose documents end differently, at two token reads each.
@@ -354,45 +302,4 @@ def setup_token_dataset(
         document_masking=config.document_masking,
         non_dp_size=non_dp_size,
         eod_mask_token=eod_mask_token,
-    )
-
-
-def setup_document_dataset(
-    config: HeldOutDataConfig, row_len: int, non_dp_size: int = 1, num_documents: int | None = None
-) -> DocumentDataset:
-    return DocumentDataset(
-        TokenShards(config.paths),
-        seq_len=config.seq_len,
-        row_len=row_len,
-        non_dp_size=non_dp_size,
-        num_documents=num_documents,
-    )
-
-
-# The 256 characters byte-level BPE tokenizers (GPT-2, Llama 3, Qwen, DeepSeek) write the bytes as.
-BYTE_CHARS = {chr(c) for c in [*range(33, 127), *range(161, 173), *range(174, 256), *range(256, 324)]}
-
-
-def token_byte_lengths(tokenizer: PreTrainedTokenizer) -> np.ndarray | None:
-    """The UTF-8 bytes of every token id, special tokens 0. None if the tokenizer is not byte-level BPE."""
-    special = special_token_ids(tokenizer)
-    lengths = np.zeros(len(tokenizer), dtype=np.int64)
-    for token_id, token in enumerate(tokenizer.convert_ids_to_tokens(list(range(len(tokenizer))))):
-        if token_id in special:
-            continue
-        if token_id in tokenizer.added_tokens_decoder:
-            # Added tokens hold their text as is, not in the byte alphabet.
-            lengths[token_id] = len(token.encode())
-            continue
-        if not set(token) <= BYTE_CHARS:
-            return None
-        lengths[token_id] = len(token)
-    return lengths
-
-
-def scored_bytes(dataset: DocumentDataset, byte_lengths: np.ndarray) -> int:
-    """The UTF-8 bytes of the tokens ``dataset`` scores: every window's tokens after its first."""
-    return sum(
-        int(byte_lengths[dataset.shards.open(file_index)[0][start + 1 : end]].sum())
-        for file_index, start, end in dataset.windows
     )

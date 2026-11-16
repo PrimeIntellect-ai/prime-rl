@@ -313,6 +313,35 @@ job_name = "my-run"
 
 The shared script passes the trainer rank-0 hostname directly to the online-eval process for NCCL weight broadcasts. Each transfer is synchronous, but eval rollout execution overlaps with later training steps. The allocation remains active while the final eval finishes. Without `max_steps`, online-eval never sees a final broadcast, so the job remains active until walltime. Trainer and online-eval log to one shared W&B run. The trainer creates it, and online-eval finalizes it.
 
+### Validation
+
+`[val]` scores named validation sets on the training model every `val.interval` steps (also before the first step with `val.eval_on_start`), in SFT and in pretraining. Each `[[val.sets]]` table has a `type`, a unique `name`, a `path` and an optional `seq_len` (default: the training `data.seq_len`):
+
+| `type` | `path` | scored |
+|---|---|---|
+| `raw` | folder of datatrove tokenized shards (see [Pretraining](#pretraining)) | every document on its own, from its first token, with the tokens as stored, in non-overlapping windows of `seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it |
+| `sft` | HF dataset name or local directory, with a `split` | every row of the split in order, rendered as SFT renders its training data (`[renderer]`, and the set's `columns` and `loss_mask`); the tokens SFT trains on, cut after `seq_len` input tokens |
+
+```toml
+[val]
+interval = 100
+num_samples = 512          # optional: the first 512 documents or rows of each set; default: all of them
+
+[[val.sets]]
+type = "raw"
+name = "fineweb-edu"
+path = "data/fineweb-edu-val"
+
+[[val.sets]]
+type = "sft"
+name = "reverse-text"
+path = "PrimeIntellect/Reverse-Text-SFT"
+split = "train"
+seq_len = 2048             # optional; default: the training data.seq_len
+```
+
+Every set logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and with a byte-level BPE tokenizer `val/<name>/bpb@<seq_len>`, the bits per UTF-8 byte of the scored tokens (special tokens count 0 bytes), e.g. `val/fineweb-edu/bpb@2k`. With another tokenizer (e.g. SentencePiece), the trainer logs one warning and only the loss. The sets are tokenized once at startup. At every validation, the sequences of all sets are packed longest first into rows of at most `val.micro_batch_tokens` tokens (default: the training micro-batch, `data.seq_len * data.micro_batch_size`, or the longest set `seq_len` if that is longer), with attention and positions restarting at every sequence, and the rows are shared out over the data-parallel ranks. The log-probs are computed in fp32. `val.save_arrays` writes the per-item arrays of every set (summed loss, scored tokens and bytes per document or row) to `<run_dir>/val/step_N/`. An `sft` set needs a typed renderer, also in pretraining. Validation does not support VLM models.
+
 ### SFT-Specific Knobs
 
 | Knob | What it controls |
@@ -321,7 +350,7 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 | `data.batch_size` | Tokens per trainer step (packed) |
 | `data.seq_len` | Per-sample sequence length |
 | `loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |
-| `val.interval` | Run validation every N steps; `val.data` mirrors `data` |
+| `val.sets` | Validation sets, scored every `val.interval` steps; see [Validation](#validation) |
 | `eval.interval` | Run online evals every N steps; see [Online Evals](#online-evals) |
 
 ### Important Metrics
@@ -331,7 +360,7 @@ Pulled from the console log and mirrored to W&B.
 **Progress and loss:**
 
 - `loss/mean`, `loss/perplexity` — main signal. Should decrease through the run.
-- `val/loss`, `val/perplexity` — SFT validation metrics when `[val]` is set, logged every `val.interval` steps; pretraining logs `val/<name>/loss` and `val/<name>/bpb` per held-out set (bpb with byte-level BPE tokenizers).
+- `val/<name>/loss@<seq_len>`, `val/<name>/bpb@<seq_len>` — per validation set when `[val]` is set, logged every `val.interval` steps; see [Validation](#validation).
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
 - `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
@@ -396,17 +425,17 @@ batch_size = 256
 
 [val]                      # optional
 interval = 100
-num_samples = 512          # documents per set and validation; leave out to score every held-out document
+num_samples = 512          # documents per validation; leave out to score every held-out document
 
-[[val.data]]               # one table per held-out set
+[[val.sets]]
+type = "raw"
 name = "fineweb-edu"
-paths = ["data/fineweb-edu-val"]
-seq_len = 2048             # optional: the context length to score at; default: the training data.seq_len
+path = "data/fineweb-edu-val"
 ```
 
 All files in `data.paths` (in folder order, then file name order) form one token pool. Each epoch reads every `seq_len` window of the pool once, in a new random order and from a new random offset drawn from `data.seed`. Attention and positions restart at every document; `data.document_masking = false` makes a window one sequence. In training, the model is not trained to predict the next document's first token: there is no loss where the input is the document separator (`data.eod_mask_loss = false` turns this off). The separator is the special token the training shards' documents end with, detected at startup; shards whose documents start with BOS have nothing to mask. A resumed run reads exactly the windows an uninterrupted run would, also on another number of GPUs, as long as `data.num_workers` stays the same.
 
-Validation scores every document of every `[[val.data]]` set on its own, from its first token, and logs `val/<name>/loss` and, with a byte-level BPE tokenizer, `val/<name>/bpb` (bits per byte), e.g. `val/fineweb-edu/bpb`. A document is cut into non-overlapping windows of the set's `seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it. Every token after a document's first is scored, and no position predicts a token of another document. The windows are packed into rows of `val.micro_batch_tokens` tokens (default: the training micro-batch, `data.seq_len * data.micro_batch_size`, or the longest set `seq_len` if that is longer) and shared out over the data-parallel ranks. `val.num_samples` limits every validation to the first documents of each set, the same ones every time; without it, every validation scores all of them.
+Validation scores every document of the held-out folder on its own, from its first token, and logs `val/fineweb-edu/loss@2k` and `val/fineweb-edu/bpb@2k`; see [Validation](#validation) for the other set types and options.
 
 **Launch.**
 

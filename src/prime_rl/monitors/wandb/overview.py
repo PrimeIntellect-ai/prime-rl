@@ -80,10 +80,9 @@ INFERENCE_PANELS = [
 ]
 
 # SFT flavor: no rollout-based train sections — the training signal is the loss curve.
-SFT_TRAIN_METRICS = ["loss/mean", "loss/perplexity", "val/loss", "val/perplexity", "progress/epoch"]
-# Pretraining logs its held-out sets as val/<name>/loss and val/<name>/bpb.
-PRETRAIN_TRAIN_METRICS = ["loss/mean", "loss/perplexity", "progress/epoch"]
-PRETRAIN_TRAIN_REGEXES = ["val/[^/]+/loss", "val/[^/]+/bpb"]
+SFT_TRAIN_METRICS = ["loss/mean", "loss/perplexity", "progress/epoch"]
+# Validation logs val/<set>/<metric>@<seq_len>, one series per set and length in each panel.
+SFT_TRAIN_REGEXES = ["val/[^/]+/loss@.+", "val/[^/]+/bpb@.+"]
 SFT_STABILITY_METRICS = ["optim/grad_norm", "optim/lr", "loss/nan_count"]
 SFT_PERFORMANCE_METRICS = [
     "perf/mfu",
@@ -153,9 +152,7 @@ def eval_section(name: str, env_pattern: str) -> ws.Section:
 
 
 def build_sections(
-    train_envs: Sequence[str] = (),
-    eval_envs: Sequence[str] = (),
-    flavor: Literal["rl", "sft", "pretrain", "eval"] = "rl",
+    train_envs: Sequence[str] = (), eval_envs: Sequence[str] = (), flavor: Literal["rl", "sft", "eval"] = "rl"
 ) -> list[ws.Section]:
     # A standalone eval run has no training signal: one section per eval env.
     if flavor == "eval":
@@ -164,11 +161,8 @@ def build_sections(
         return [eval_section("eval", ".*")]
     # SFT trains on a dataset, not rollouts: the train section is the loss/perplexity
     # curves, eval sections are the same rollout-based ones as RL.
-    if flavor in ("sft", "pretrain"):
-        if flavor == "sft":
-            sections = [section("train", metrics=SFT_TRAIN_METRICS)]
-        else:
-            sections = [section("train", metrics=PRETRAIN_TRAIN_METRICS, regexes=PRETRAIN_TRAIN_REGEXES)]
+    if flavor == "sft":
+        sections = [section("train", metrics=SFT_TRAIN_METRICS, regexes=SFT_TRAIN_REGEXES)]
         if eval_envs:
             sections += [eval_section(f"eval/{env}", re.escape(env)) for env in eval_envs]
         else:
@@ -239,7 +233,7 @@ def ensure_overview_view(
     name: str = OVERVIEW_NAME,
     train_envs: Sequence[str] = (),
     eval_envs: Sequence[str] = (),
-    flavor: Literal["rl", "sft", "pretrain", "eval"] = "rl",
+    flavor: Literal["rl", "sft", "eval"] = "rl",
 ) -> str | None:
     """Ensure an overview saved view exists for this run's env set. Reuses an existing overview built
     for the same envs; when the env set is new, creates a fresh versioned view (``overview`` →
