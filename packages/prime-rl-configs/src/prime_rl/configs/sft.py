@@ -132,18 +132,8 @@ class SFTConfig(SupervisedTrainerConfig):
     val: SFTValConfig | None = None
     """Validation configuration. If None, no validation runs."""
 
-    # The two CP validators below share the names of SupervisedTrainerConfig's, so they run in their places, and add
-    # the checks of the SFT validation data.
     @model_validator(mode="after")
-    def validate_cp_seq_len(self):
-        super().validate_cp_seq_len()
-        if self.model.cp > 1 and self.val is not None and self.val.data.seq_len % self.model.cp != 0:
-            raise ValueError("Validation sequence length must be divisible by CP degree")
-        return self
-
-    @model_validator(mode="after")
-    def validate_cp_micro_batch_size(self):
-        super().validate_cp_micro_batch_size()
+    def validate_cp_val_micro_batch_size(self):
         if self.model.cp > 1 and self.val is not None and self.val.data.micro_batch_size != 1:
             raise ValueError("Validation micro batch size must be 1 when CP is enabled")
         return self
