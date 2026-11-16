@@ -248,7 +248,7 @@ class StubDecisionModel:
     keeps the batch it was called with."""
 
     def __init__(self, probs):
-        self.logits = [torch.tensor(p, dtype=torch.float64).log() for p in probs]
+        self.logits = [torch.tensor(p, dtype=torch.float64).log().requires_grad_() for p in probs]
 
     @classmethod
     def system_one_strategy(cls):
@@ -305,6 +305,20 @@ def test_decision_loss_rejects_broken_readouts():
         decision_loss(_decision_inputs(StubDecisionModel([*probs[:4], [0.2, 0.3, 0.5], probs[5]])))
     with pytest.raises(TypeError, match=r"decision_logits.*Linear.*\[model.implementation\]"):
         decision_loss(_decision_inputs(nn.Linear(4, 2)))
+
+
+def test_decision_loss_without_labelled_questions_backpropagates_zero():
+    # A probability of 0 is a logit of -inf.
+    model = StubDecisionModel([[1.0, 0.0], [0.75, 0.25], [0.0, 0.0, 1.0], [0.9, 0.1], [0.2, 0.8], [0.5, 0.25, 0.25]])
+    inputs = _decision_inputs(model)
+    for record in inputs.batch["sample_data"]:
+        for question in record["questions"]:
+            question["target"] = None
+    outputs = decision_loss(inputs)
+    outputs.loss.backward()
+
+    assert outputs.count == 0 and outputs.loss.item() == 0.0
+    assert all(torch.equal(logits.grad, torch.zeros_like(logits)) for logits in model.logits)
 
 
 def test_system_one_strategy_cls_requires_a_declared_strategy():

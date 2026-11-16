@@ -85,7 +85,9 @@ def decision_loss(inputs: LossInputs, brier_weight: float = 0.0) -> LossOutputs:
         host_targets = host_targets.pin_memory()
     targets = host_targets.to(device, non_blocking=True).split([len(target) for target, _ in labelled])
 
-    loss = ce = brier = accuracy = torch.zeros((), device=device)
+    # Zero, but on every logit, so that backward runs on a micro-batch without a labelled question.
+    loss = (torch.cat(logits).float() * 0.0).nan_to_num().sum()
+    ce = brier = accuracy = torch.zeros((), device=device)
     for (_, vector), target in zip(labelled, targets):
         vector = vector.float()
         question_ce = F.cross_entropy(vector, target)
