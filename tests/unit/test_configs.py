@@ -177,7 +177,7 @@ def test_pretrain_config_roundtrip(tmp_path):
     assert (warmup.scheduler.warmup_steps, warmup.scheduler.decay_steps) == (100, 0)
 
 
-def test_pretrain_held_out_sets_default_to_the_training_rows(tmp_path):
+def test_pretrain_held_out_set_defaults(tmp_path):
     """[[val.data]] sets are scored at the training seq_len unless they set their own, in rows of
     val.micro_batch_tokens: the training micro-batch or the longest set seq_len, whichever is larger."""
     paths = [str(tmp_path / "tokens")]

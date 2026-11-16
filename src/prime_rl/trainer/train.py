@@ -90,7 +90,7 @@ def train(config: SFTConfig | PretrainConfig):
             output_dir=config.run_dir,
             run_config=config,
             eval_env_names=[source.resolved_name for source in config.eval.source] if config.eval else [],
-            overview_flavor="sft",
+            overview_flavor="pretrain" if isinstance(config, PretrainConfig) else "sft",
         )
     )
 
@@ -214,15 +214,15 @@ def train(config: SFTConfig | PretrainConfig):
             logger.warning("The tokenizer is not byte-level BPE: validation logs no bits per byte")
         val_sets = []
         for data in config.val.data:
-            dataset = setup_document_dataset(
+            held_out = setup_document_dataset(
                 data, config.val.micro_batch_tokens, config.model.cp, config.val.num_samples
             )
-            tokens = sum(end - start - 1 for _, start, end in dataset.windows)
-            num_bytes = scored_bytes(dataset, byte_lengths) if byte_lengths is not None else None
-            val_sets.append((data.name, dataset, tokens, num_bytes))
+            tokens = sum(end - start - 1 for _, start, end in held_out.windows)
+            num_bytes = scored_bytes(held_out, byte_lengths) if byte_lengths is not None else None
+            val_sets.append((data.name, held_out, tokens, num_bytes))
             logger.info(
-                f"Validation set {data.name}: {len(dataset.windows)} windows of held-out documents in "
-                f"{len(dataset.rows)} rows"
+                f"Validation set {data.name}: {len(held_out.windows)} windows of held-out documents in "
+                f"{len(held_out.rows)} rows"
             )
 
     # Optionally, resume training from a checkpoint
@@ -362,9 +362,10 @@ def train(config: SFTConfig | PretrainConfig):
     def run_validation(step: int) -> None:
         if isinstance(config, PretrainConfig):
             metrics = {}
-            for name, dataset, tokens, num_bytes in val_sets:
-                dataloader = setup_row_dataloader(dataset, config.val.micro_batch_tokens, config.model.cp)
-                mean_loss = validation_loss(dataloader, step, name)
+            for name, held_out, tokens, num_bytes in val_sets:
+                mean_loss = validation_loss(
+                    setup_row_dataloader(held_out, held_out.row_len, config.model.cp), step, name
+                )
                 metrics[f"val/{name}/loss"] = mean_loss
                 if num_bytes:
                     metrics[f"val/{name}/bpb"] = mean_loss * tokens / (num_bytes * math.log(2))
