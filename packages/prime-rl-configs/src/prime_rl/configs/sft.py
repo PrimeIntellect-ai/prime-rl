@@ -213,7 +213,8 @@ class SFTConfig(SupervisedTrainerConfig):
     """Validation configuration. If None, no validation runs."""
 
     loss: SFTLossConfig = SFTCrossEntropyLossConfig()
-    """The training loss: token cross-entropy (``type = "ce"``, the default) or a custom loss (``type = "custom"``)."""
+    """The training loss: token cross-entropy (``type = "ce"``, the default), the decision loss for System One data
+    (``type = "decision"``) or a custom loss (``type = "custom"``)."""
 
     @model_validator(mode="before")
     @classmethod
