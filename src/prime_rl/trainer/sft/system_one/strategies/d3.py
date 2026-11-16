@@ -22,8 +22,8 @@ from prime_rl.utils.logger import get_logger
 class D3Strategy(SystemOneStrategy):
     """vLLM's D3Strategy without its softmax. Each question is one d3 prompt in its own attention segment, read at its
     last token, as vLLM sends one classify request per question. The answer codes and the temperature are the model's
-    ``decision_config``, and the chat template is the release's, as vLLM renders it: the strategy raises when
-    ``[tokenizer] chat_template`` sets another."""
+    ``decision_config``, and the chat template is the release's, as vLLM renders it: the strategy raises when the
+    run's tokenizer has another."""
 
     FORMAT_VERSIONS: tuple[int, ...] = (1,)
     """The ``decision_config.json`` format versions the strategy reads: vLLM 0.33's. A subclass for another format
@@ -51,9 +51,11 @@ class D3Strategy(SystemOneStrategy):
             raise ValueError(f"unknown decision prompt {decision['prompt']!r}")
         if tokenizer.chat_template != AutoTokenizer.from_pretrained(config.name_or_path).chat_template:
             raise ValueError(
-                f"[tokenizer] chat_template differs from the chat template of the d3 release at "
-                f"{config.name_or_path!r}, which d3's prompts are rendered with. vLLM renders them with the template "
-                "saved with the model, and the export saves the run's: leave [tokenizer] chat_template unset for d3"
+                f"The run's chat template, [tokenizer] chat_template when set, else that of the tokenizer at "
+                f"{tokenizer.name_or_path!r}, differs from the d3 release's at {config.name_or_path!r}, which d3's "
+                "prompts are rendered with. vLLM renders them with the template saved with the model, and the export "
+                "saves the run's: for d3, leave [tokenizer] chat_template unset and [tokenizer] name unset or a "
+                "tokenizer with the release's template"
             )
         self.codes: list[str] = decision["codes"]
 
