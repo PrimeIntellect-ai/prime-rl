@@ -404,7 +404,7 @@ label       {"outage": true, "urgency": 2}
 soft_label  {"team": {"technical": 0.75, "billing": 0.25}}
 ```
 
-`questions` maps each question id to its `type`, `instructions` (optional: absent or null is `""`) and `criteria`. `label` maps question ids to hard labels, and `soft_label` maps them to a probability for every option; probabilities that sum to 1 within 0.01 are rescaled to sum to 1. A question's target is its soft label if it has one, else its hard label one-hot, in the order of its options; a question with neither is not trained.
+`questions` maps each question id to its `type`, `instructions` (optional: absent or null is `""`) and `criteria`. `label` maps question ids to hard labels, and `soft_label` maps them to a probability for every option; probabilities that sum to 1 within 0.01 are rescaled to sum to 1. A question's target is its soft label if it has one, else its hard label one-hot, in the order of its options; a question with neither is not trained. vLLM's `/v1/systemone` responses name a noul question's options `yes` and `no`: they are `true` and `false` here.
 
 | `type` | `criteria` | Options, in order | Hard label | Target in the example |
 |---|---|---|---|---|
