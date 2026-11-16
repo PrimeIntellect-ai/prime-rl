@@ -259,6 +259,12 @@ class StubDecisionModel:
         return self.logits
 
 
+def test_system_one_strategy_cls_requires_a_declared_strategy():
+    assert system_one_strategy_cls(StubDecisionModel) is StubStrategy
+    with pytest.raises(ValueError, match="object does not"):
+        system_one_strategy_cls(object)
+
+
 def _decision_inputs(model) -> LossInputs:
     """A row of two records. In the second, ``outage`` has no label and the target of ``team`` is tied."""
     second = {**row(label={"urgency": 0}, soft_label={"team": {"billing": 0.5, "technical": 0.5}}), "id": "s"}
@@ -321,7 +327,13 @@ def test_decision_loss_without_labelled_questions_backpropagates_zero():
     assert all(torch.equal(logits.grad, torch.zeros_like(logits)) for logits in model.logits)
 
 
-def test_system_one_strategy_cls_requires_a_declared_strategy():
-    assert system_one_strategy_cls(StubDecisionModel) is StubStrategy
-    with pytest.raises(ValueError, match="object does not"):
-        system_one_strategy_cls(object)
+def test_decision_loss_is_finite_at_minus_inf_on_options_with_target_0():
+    # Probability 0 on false in r's outage and on 0 and 1 in r's urgency, whose targets are 0 there.
+    model = StubDecisionModel([[1.0, 0.0], [0.75, 0.25], [0.0, 0.0, 1.0], [0.9, 0.1], [0.2, 0.8], [0.5, 0.25, 0.25]])
+    outputs = decision_loss(_decision_inputs(model), brier_weight=0.1)
+    outputs.loss.backward()
+
+    ce = -(0.25 * math.log(0.75) + 0.75 * math.log(0.25)) - (0.5 * math.log(0.2) + 0.5 * math.log(0.8)) - math.log(0.5)
+    brier = 0.5 + 0.18 + 0.375
+    torch.testing.assert_close(outputs.loss, torch.tensor(ce + 0.1 * brier))
+    assert all(torch.isfinite(logits.grad).all() for logits in model.logits)

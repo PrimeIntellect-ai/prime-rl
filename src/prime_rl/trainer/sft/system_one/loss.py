@@ -4,7 +4,6 @@ loss such models share."""
 from typing import Protocol, runtime_checkable
 
 import torch
-import torch.nn.functional as F
 from torch import Tensor, nn
 
 from prime_rl.trainer.data import Batch
@@ -90,8 +89,10 @@ def decision_loss(inputs: LossInputs, brier_weight: float = 0.0) -> LossOutputs:
     ce = brier = accuracy = torch.zeros((), device=device)
     for (_, vector), target in zip(labelled, targets):
         vector = vector.float()
-        question_ce = F.cross_entropy(vector, target)
-        question_brier = (vector.softmax(-1) - target).square().sum()
+        logp = vector.log_softmax(-1)
+        # An option with target 0 adds nothing, even at a logit of -inf.
+        question_ce = -torch.where(target > 0, target * logp, 0.0).sum()
+        question_brier = (logp.exp() - target).square().sum()
         loss = loss + question_ce + brier_weight * question_brier
         ce, brier = ce + question_ce.detach(), brier + question_brier.detach()
         # A top option of the target, not the first one: a tied target is scored the same in any option order.
