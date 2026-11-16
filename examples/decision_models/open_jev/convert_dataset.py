@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 from datasets import Dataset
-from decision_models.open_jev.encoder import compile_question
+from decision_models.open_jev.strategy import compile_question
 
 from prime_rl.configs.sft import SystemOneColumnsConfig
 from prime_rl.trainer.sft.system_one.record import Question, parse_record

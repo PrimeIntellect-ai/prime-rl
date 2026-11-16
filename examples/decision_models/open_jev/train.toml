@@ -20,9 +20,6 @@ splits = ["train"]
 seq_len = 4096  # the longest record has 3,091 tokens
 batch_size = 1
 
-[data.encoder]
-import_path = "decision_models.open_jev.encoder.OpenJevEncoder"
-
 [loss]
 type = "decision"
 brier_weight = 0.1  # Open-Jev's
@@ -43,9 +40,6 @@ name = "outputs/open-jev/Open-Jev-system-one"
 subsets = ["release-v2-redistributable"]
 splits = ["validation"]
 seq_len = 4096
-
-[val.data.encoder]
-import_path = "decision_models.open_jev.encoder.OpenJevEncoder"
 
 [ckpt]
 interval = 1370

@@ -1,15 +1,15 @@
 # Open-Jev
 
-[Open-Jev](https://github.com/Zefan-Cai/Open-Jev) is Qwen3.5-2B with a scalar decision head. Every candidate answer of a question is its own yes/no prompt (one prompt for a noul question), and the head scores each prompt from its last token. This folder fine-tunes Qwen3.5-2B in full on Open-Jev's dataset, and is the minimal example of a decision model whose class and encoder are user code.
+[Open-Jev](https://github.com/Zefan-Cai/Open-Jev) is Qwen3.5-2B with a scalar decision head. Every candidate answer of a question is its own yes/no prompt (one prompt for a noul question), and the head scores each prompt from its last token. This folder fine-tunes Qwen3.5-2B in full on Open-Jev's dataset, and is the minimal example of a decision model whose class and strategy are user code.
 
 ## Native and example code
 
-The model class and the encoder are this folder's, named in the config; the loss is prime-rl's (`[loss] type = "decision"`):
+The model class and its strategy are this folder's: the config names the class, which declares the strategy. The loss is prime-rl's (`[loss] type = "decision"`):
 
 | File | What |
 |---|---|
-| `model.py` | `Qwen3_5Decision`, the `[model.implementation]` class: prime-rl's Qwen3.5 plus `decision_head`, a linear layer that scores a prompt, initialised to `lm_head[Yes] - lm_head[No]`. A noul question's logits are `[0, score]`; a choice or score question's are its prompts' scores |
-| `encoder.py` | `OpenJevEncoder`: every option of every question is its own yes/no prompt (one prompt for noul), each its own attention segment, read at its last token |
+| `model.py` | `Qwen3_5Decision`, the `[model.implementation]` class: prime-rl's Qwen3.5 plus `decision_head`, a linear layer that scores a prompt, initialised to `lm_head[Yes] - lm_head[No]`. It declares `OpenJevStrategy` |
+| `strategy.py` | `OpenJevStrategy`. `render_record`: every option of every question is its own yes/no prompt (one prompt for noul), each its own attention segment, read at its last token. `option_logits`: `decision_head` scores each prompt; a noul question's logits are `[0, score]`, a choice or score question's are its prompts' scores |
 | `convert_dataset.py` | Open-Jev's dataset as System One records, one question per record |
 | `train.toml`, `smoke.toml` | The full fine-tuning run, and a 30-step mechanics check composed after it |
 
@@ -39,13 +39,13 @@ The run is 13,700 steps: one pass over the 79,116 training records takes 13,677,
 - The training split is the redistributable one. Open-Jev-2B trained on 1,700 more records, which its dataset does not redistribute.
 - Validation reports the loss on uncalibrated logits. Open-Jev fits a temperature on the calibration split before it evaluates.
 - A question without instructions reads as one with empty instructions, and a null noul description as none; Open-Jev refuses both. Open-Jev's dataset has neither.
-- Instructions or a description that is not text, an object or an array (e.g. a number) makes the encoder raise and stop the run, as Open-Jev raises, where prime-rl's own encoders skip such a record. Open-Jev's dataset has none.
+- Instructions or a description that is not text, an object or an array (e.g. a number) makes the strategy raise and stop the run, as Open-Jev raises, where prime-rl's own strategies skip such a record. Open-Jev's dataset has none.
 
 The prompts, their tokens, the head, its initialisation, the loss (soft cross-entropy plus 0.1 x Brier), AdamW with weight decay 0.01 and gradient clipping at 1.0 are Open-Jev's.
 
 ## Third-party notice
 
-The prompt format in `encoder.py` (`render`, `compile_question`, `candidate_prompts`) is taken from `jev/api.py` of https://github.com/Zefan-Cai/Open-Jev at commit `bd4118882f733574a3250a4b65fe4d884130c08b`, and the head's initialisation in `model.py` follows `jev/model.py` of the same commit. Open-Jev's licence:
+The prompt format in `strategy.py` (`render`, `compile_question`, `candidate_prompts`) is taken from `jev/api.py` of https://github.com/Zefan-Cai/Open-Jev at commit `bd4118882f733574a3250a4b65fe4d884130c08b`, and the head's initialisation in `model.py` follows `jev/model.py` of the same commit. Open-Jev's licence:
 
 ```text
 MIT License
