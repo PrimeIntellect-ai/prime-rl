@@ -214,7 +214,7 @@ def pack_sampler_rows(logits, cu_num_logits, num_sampled, sampled, num_rows):
     index = torch.from_numpy(selected).pin_memory().to(logits.device, non_blocking=True)
     x = logits[cu_num_logits[:-1].long()[index]].float()
     ids = torch.cat([sampled[index].view(-1, 1).long(), x.topk(width).indices], dim=1)
-    # (x - max) - log1p(sum of exp(x - max) over all but one max entry) stays exact for an id with probability near 1
+    # The exact form of max_tail_spread in prime_rl/trainer/models/layers/lm_head.py
     shifted = x.sub_(x.amax(-1, keepdim=True))
     at_max = shifted == 0
     tail = shifted.exp().masked_fill_(at_max, 0.0).sum(-1, keepdim=True) + (at_max.sum(-1, keepdim=True) - 1)
