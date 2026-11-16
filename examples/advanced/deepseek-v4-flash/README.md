@@ -7,7 +7,7 @@ The recipe is a hardware-agnostic base plus one overlay per GPU type under `gpu/
 | Config | What it sets |
 |---|---|
 | [`rl.toml`](rl.toml) | Base: `terminal-lego` + `swelego` training with a linear length penalty, `openthoughts-tblite` evals (avg@4), Muon, batch 256 / group 8, DEP8 inference (one replica per node: attention data parallel, experts sharded 8 ways). Does not parse standalone. |
-| [`gpu/h200.toml`](gpu/h200.toml) | 8×H200 nodes: 4 trainer + 2 inference nodes, blockwise FP8 trainer and online FP8 vLLM, DeepEP low-latency all-to-all, 1024+ rollouts in flight. |
+| [`gpu/h200.toml`](gpu/h200.toml) | 8×H200 nodes: 4 trainer + 2 inference nodes, blockwise FP8 trainer and online FP8 vLLM, vLLM's default all-to-all, 1024+ rollouts in flight. |
 
 ```bash
 uv run rl @ examples/advanced/deepseek-v4-flash/rl.toml @ examples/advanced/deepseek-v4-flash/gpu/h200.toml
@@ -53,12 +53,12 @@ Each replica runs eight data-parallel attention ranks and shards the 256 experts
 
 | `all2all_backend` | KV cache per GPU | Startup | 1024 requests, 4k in / 1k out | 2048 requests, 16k in / 512 out |
 |---|---|---|---|---|
-| `allgather_reducescatter` (vLLM default) | 1.3M tokens | 19 min | 248 s | 582 s |
-| `deepep_low_latency` (used) | 12.9M tokens | 9 min | 225 s | 638 s |
+| `allgather_reducescatter` (vLLM default, used) | 1.3M tokens | 19 min | 248 s | 582 s |
+| `deepep_low_latency` | 12.9M tokens | 9 min | 225 s | 638 s |
 | `deepep_high_throughput` | fails at startup (DeepEP CPU recv timeout) | | | |
 | `flashinfer_nvlink_one_sided` | not supported on Hopper | | | |
 
-With DeepEP low-latency, one node holds about 100M KV tokens, which is roughly 780 full 131k-token contexts. KV cache does not limit concurrency at 1024 rollouts in flight. Prefill-heavy load runs about 10% slower than with the default backend, but multi-turn rollouts gain more from the larger prefix cache. For comparison, a bf16 replica (no quantization, default backend) holds 0.56M KV tokens per GPU and takes 339 s and 782 s on the two loads.
+The recipe keeps the default backend. With `deepep_low_latency`, vLLM computes a wrong MoE output for about 0.1% of tokens and samples nonsense with high confidence, for example `)Skip` at logprob -0.03 where the trainer and a default-backend vLLM both give -45. Those tokens carry most of the trainer/inference mismatch KL: about 0.03 with DeepEP low-latency instead of about 0.005. The same glitch tokens re-scored on FP8 and bf16 servers with the default backend match the trainer. With the default backend, one node holds about 10M KV tokens. For comparison, a bf16 replica (no quantization, default backend) holds 0.56M KV tokens per GPU and takes 339 s and 782 s on the two loads.
 
 ### Scaling
 
@@ -88,7 +88,7 @@ prime login   # or: prime config set-api-key <your-key>
 
 ## Setup
 
-Clone prime-rl onto the shared filesystem and install everything, including the environments and DeepEP (part of the default extras):
+Clone prime-rl onto the shared filesystem and install everything, including the environments:
 
 ```bash
 git clone https://github.com/PrimeIntellect-ai/prime-rl.git /shared/prime-rl

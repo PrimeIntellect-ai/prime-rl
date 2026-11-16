@@ -47,7 +47,6 @@ dtype = "bfloat16"
 quantization = "fp8_per_block"
 # The indexer's top-k key selection is discrete; keep its projections bf16 on both sides.
 quantization_config = { ignore = ["re:.*indexer.*"] }
-# The default allgather/reduce-scatter path reserves activations for every DP rank's tokens and
-# leaves ~1.3M KV tokens per GPU; DeepEP low-latency leaves ~12.9M.
-all2all_backend = "deepep_low_latency"
+# Keep vLLM's default all2all. With `deepep_low_latency` (~10x the KV cache), DeepSeek V4's MoE output
+# is wrong for ~0.1% of tokens, which raises the trainer/inference mismatch KL from ~0.005 to ~0.03.
 gpu_memory_utilization = 0.85
