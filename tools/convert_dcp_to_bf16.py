@@ -136,11 +136,18 @@ def open_checkpoint(ckpt_dir: Path) -> Checkpoint:
     return Checkpoint(dcp_dir, metadata, model, model_config, tokenizer_config)
 
 
+def get_side_files(model: nn.Module) -> dict[str, str]:
+    """The files a model's class stores apart from the shards, as {state-dict prefix: file name}: vLLM loads them as
+    ``secondary_weights``, with the prefix put back."""
+    return getattr(model, "export_weight_files", {})
+
+
 def get_layers(model: nn.Module) -> list[list[str]]:
-    """Group ordinary weights by decoder layer, excluding tied heads and chunked tables."""
+    """Group ordinary weights by decoder layer, excluding tied heads, chunked tables and the side files' weights."""
     state = model.state_dict()
     chunked = get_chunked_conversion_ops(model, state)
-    keys = [key for key in state if key not in chunked]
+    side_prefixes = tuple(get_side_files(model))
+    keys = [key for key in state if key not in chunked and not key.startswith(side_prefixes)]
     # The trainer ties the head on the top-level config flag, so the export must drop it on the same one.
     if getattr(model.config, "tie_word_embeddings", False):
         tied_keys = set(getattr(model, "_tied_weights_keys", None) or ()) | {"lm_head.weight"}
@@ -249,6 +256,12 @@ def write_weights(
         for table_shards in pool.map(write_table, chunked, chunked.values(), table_indices):
             shards.extend(table_shards)
 
+    # Outside the index, which keeps them out of vLLM's primary weights.
+    for prefix, name in get_side_files(checkpoint.model).items():
+        tensors = load_layer(checkpoint, [key for key in skeleton if key.startswith(prefix)])
+        side_file = {key.removeprefix(prefix): tensor.contiguous() for key, tensor in tensors.items()}
+        save_file(side_file, output_dir / name, metadata={"format": "pt"})
+
     weight_map = {key: name for name, sizes in shards for key in sizes}
     total_size = sum(sum(sizes.values()) for _, sizes in shards)
     index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
@@ -268,8 +281,12 @@ def save_model_assets(
     model: nn.Module, model_config: ModelConfig, tokenizer_config: TokenizerConfig, output_dir: Path
 ) -> None:
     """Save model config, generation config, processor and tokenizer next to the weights."""
+    # The JSON files the class's checkpoints keep beside config.json, which the loader read into the config.
+    config_files = model.export_config_files() if hasattr(model, "export_config_files") else {}
     _export_config(model.config)
     model.config.save_pretrained(output_dir)
+    for name, content in config_files.items():
+        (output_dir / name).write_text(json.dumps(content, indent=2) + "\n")
     if getattr(model, "generation_config", None):
         generation_config = deepcopy(model.generation_config)
         generation_config.use_cache = True

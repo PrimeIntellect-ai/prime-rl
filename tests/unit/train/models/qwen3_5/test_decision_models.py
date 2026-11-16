@@ -15,9 +15,10 @@ import numpy as np
 import pytest
 import torch
 import torch.distributed as dist
+import torch.distributed.checkpoint as dcp
 import torch.multiprocessing as mp
 import torch.nn.functional as F
-from safetensors.torch import save_file
+from safetensors.torch import load_file, save_file
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from torch import nn
@@ -433,6 +434,58 @@ def test_decision_models_are_refused_with_weight_broadcasts(tmp_path):
             refuse_weight_broadcast(build(tmp_path / name))
     tiny_config("Qwen3_5ForConditionalGeneration", tied=False).save_pretrained(tmp_path / "qwen")
     refuse_weight_broadcast(get_model(model_config(tmp_path / "qwen"), device=torch.device("meta")))
+
+
+@pytest.fixture
+def exporter(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[5] / "tools"))
+    return importlib.import_module("convert_dcp_to_bf16")
+
+
+@pytest.mark.parametrize("kind", ["d3", "clef"])
+def test_export_is_the_release_layout(tmp_path, exporter, monkeypatch, kind):
+    monkeypatch.delenv("PRL_ATTEMPT_CONFIG_DIR", raising=False)
+    release_dir = tmp_path / "release"
+    release = (write_d3_release if kind == "d3" else write_clef_release)(release_dir)
+    step_dir = tmp_path / "run" / "checkpoints" / "step_1"
+    config_dir = tmp_path / "run" / "configs" / "latest" / "resolved"
+    config_dir.mkdir(parents=True)
+    (config_dir / "sft.json").write_text(json.dumps({"model": {"name": str(release_dir)}, "tokenizer": {}}))
+    model = get_model(model_config(release_dir), device=torch.device("meta"), dtype=torch.float32)
+    state = {name: torch.randn(tensor.shape) for name, tensor in model.state_dict().items()}
+    dcp.save({"app": {"model": state}}, checkpoint_id=step_dir / "trainer", no_dist=True)
+
+    output = exporter.convert(step_dir)
+    assert vllm_route(output) == type(model).__name__
+    config = json.loads((output / "config.json").read_text())
+    assert config["architectures"] == json.loads((release_dir / "config.json").read_text())["architectures"]
+    assert not {"decision_config", "joint_head_config"} & config.keys() and "is_causal" not in config["text_config"]
+    index = json.loads((output / "model.safetensors.index.json").read_text())["weight_map"]
+    shards = {name: tensor for file in set(index.values()) for name, tensor in load_file(output / file).items()}
+    if kind == "d3":
+        assert json.loads((output / "decision_config.json").read_text()) == DECISION_CONFIG
+        readout = load_file(output / "readout.safetensors")
+        assert readout.keys() == {"weight"} and readout["weight"].dtype == torch.float32
+        assert torch.equal(readout["weight"], state["score.weight"])
+        assert shards.keys() == release.keys() - {"weight"}
+    else:
+        assert json.loads((output / "joint_head_config.json").read_text()) == JOINT_HEAD_CONFIG
+        head = load_file(output / "joint_head.safetensors")
+        assert head.keys() == clef_head_weights().keys() and all(head[scalar].shape == () for scalar in SCALARS)
+        assert torch.equal(head["residual_gate"].float(), state["pooler.head.residual_gate"].bfloat16().float()[0])
+        assert shards.keys() == {name for name in release if not name.startswith("mtp.")} - head.keys()
+    assert shards.keys() == index.keys()
+
+    # The export's keys read as a release's, and it selects the same class.
+    exported = dict.fromkeys(load_state_dict_keys(output))
+    assert model.is_hf_state_dict(exported) and not model.is_prime_state_dict(exported)
+    assert get_decision_model_cls(AutoConfig.from_pretrained(output), str(output)) is type(model)
+
+    # Neither FP8 tool quantizes it: their quantization config does not cover the side files' weights.
+    with pytest.raises(ValueError, match="FP8"):
+        importlib.import_module("convert_bf16_to_fp8").convert(output)
+    with pytest.raises(ValueError, match="FP8"):
+        importlib.import_module("convert_dcp_to_fp8").convert(step_dir)
 
 
 class ReadoutConfig(PretrainedConfig):
