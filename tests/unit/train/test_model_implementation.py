@@ -1,12 +1,19 @@
+import os
+import socket
+
 import pytest
 import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
 from pydantic import ValidationError
 from torch import nn
+from torch.distributed.device_mesh import init_device_mesh
+from torch.distributed.fsdp import fully_shard
 from transformers import Qwen3Config
 
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig, TrainerConfig
-from prime_rl.trainer.model import get_model, load_dcp_from_hf
+from prime_rl.trainer.model import get_model, init_missing_weights, load_dcp_from_hf
 from prime_rl.trainer.models.llama.modeling_llama import LlamaForCausalLM
 from prime_rl.trainer.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
 from prime_rl.utils.weights import save_state_dict
@@ -32,18 +39,34 @@ class Qwen3WithInitializedHead(Qwen3WithHead):
         return {"score_head.weight": rows[1:2] - rows[0:1], "score_head.bias": torch.zeros(1)}
 
 
-@pytest.fixture
-def checkpoint(tmp_path):
-    config = Qwen3Config(
+class Qwen3WithRandomHead(Qwen3ForCausalLM):
+    """A three-row head that starts from the loaded LM head plus noise that differs on every rank."""
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.score_head = nn.Linear(config.hidden_size, 3)
+
+    def init_missing_weights(self, names):
+        rows = self.lm_head.weight.full_tensor()
+        torch.manual_seed(dist.get_rank())
+        return {"score_head.weight": rows[:3] + torch.randn(3, rows.shape[1]), "score_head.bias": torch.randn(3)}
+
+
+def tiny_qwen3_config(num_hidden_layers: int = 2) -> Qwen3Config:
+    return Qwen3Config(
         vocab_size=64,
         hidden_size=32,
         intermediate_size=64,
-        num_hidden_layers=2,
+        num_hidden_layers=num_hidden_layers,
         num_attention_heads=4,
         num_key_value_heads=2,
         head_dim=8,
     )
-    config.save_pretrained(tmp_path)
+
+
+@pytest.fixture
+def checkpoint(tmp_path):
+    tiny_qwen3_config().save_pretrained(tmp_path)
     return tmp_path
 
 
@@ -142,3 +165,34 @@ def test_implementation_is_refused_where_it_cannot_be_served():
         ModelConfig(**model, vlm={})
     with pytest.raises(ValidationError, match="takes no kwargs"):
         ModelConfig(implementation={"import_path": f"{__name__}.Qwen3WithHead", "kwargs": {"num_options": 4}})
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _init_missing_weights_under_fsdp(rank: int, world_size: int, port: int) -> None:
+    os.environ["MASTER_ADDR"], os.environ["MASTER_PORT"] = "127.0.0.1", str(port)
+    dist.init_process_group("gloo", rank=rank, world_size=world_size)
+    try:
+        torch.manual_seed(0)
+        model = Qwen3WithRandomHead(tiny_qwen3_config(num_hidden_layers=1))
+        fully_shard(model, mesh=init_device_mesh("cpu", (world_size,)))
+        head = ["score_head.weight", "score_head.bias"]
+        state = model.state_dict()
+        init_missing_weights(model, {name: state[name] for name in head}, f"{__name__}.Qwen3WithRandomHead")
+
+        torch.manual_seed(0)
+        rows = model.lm_head.weight.full_tensor()
+        expected = {"score_head.weight": rows[:3] + torch.randn(3, rows.shape[1]), "score_head.bias": torch.randn(3)}
+        for name in head:
+            torch.testing.assert_close(model.state_dict()[name].full_tensor(), expected[name])
+    finally:
+        dist.destroy_process_group()
+
+
+@pytest.mark.parametrize("world_size", [2, 3])
+def test_init_missing_weights_shards_rank_0s_weights_under_fsdp(world_size):
+    mp.spawn(_init_missing_weights_under_fsdp, args=(world_size, _free_port()), nprocs=world_size, join=True)
