@@ -1,7 +1,7 @@
 # Ported from vLLM 0.33.0, vllm/entrypoints/openai/decisions/strategies.py (Apache-2.0, Copyright contributors to the
 # vLLM project), D3Strategy: the constants (lines 1203-1212), render_state (1235-1238, with state_text 141-142),
 # _options (1240-1271), _prompt (1273-1300, without media) and _tokens (1302-1303), with vLLM's names. The codes are
-# __init__'s (1221-1225), read on first use. limits (1230-1233) is refusal; _options' checks, empty names and
+# __init__'s (1221-1225), read on first use. limits (1230-1233) is refusal, a skip; _options' checks, empty names and
 # MAX_SCORE_LEVELS (1213), are parse_record's.
 """d3's prompts, as vLLM 0.33's ``D3Strategy`` builds them (``[data.encoder]``, ``import_path =
 "prime_rl.trainer.sft.system_one.encoders.d3.D3Encoder"``)."""
@@ -101,7 +101,7 @@ class D3Encoder(SystemOneEncoder):
         return self.tokenizer.encode(text, add_special_tokens=False)
 
     def refusal(self, record: SystemOneRecord) -> str | None:
-        """Why vLLM's D3Strategy would refuse the record, or None."""
+        """Why the record cannot be encoded as vLLM's D3Strategy reads it, or None."""
         if (reason := find_refusal(record)) is not None:
             return reason
         for question in record.questions:

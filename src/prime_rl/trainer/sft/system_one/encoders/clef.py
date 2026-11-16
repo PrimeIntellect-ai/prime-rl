@@ -1,7 +1,7 @@
 # Ported from vLLM 0.33.0, vllm/entrypoints/openai/decisions/strategies.py (Apache-2.0, Copyright contributors to the
 # vLLM project), JointSchemaStrategy and ClefFlashStrategy: the constants (lines 854-857, 861-864, 1142), self.prefix
 # and self.suffix (__init__, 881-888), _render (899-905), _tokens (907-908), _options (998-1020) and encode
-# (1022-1068), with vLLM's names. limits (890-891) is refusal; media (_render_media, PLACEHOLDERS) is not ported.
+# (1022-1068), with vLLM's names. limits (890-891) is refusal, a skip; media (_render_media, PLACEHOLDERS) is not ported.
 """Clef-Flash's joint schema prompt, as vLLM 0.33's ``ClefFlashStrategy`` builds it (``[data.encoder]``,
 ``import_path = "prime_rl.trainer.sft.system_one.encoders.clef.ClefFlashEncoder"``)."""
 
@@ -102,7 +102,7 @@ class ClefFlashEncoder(SystemOneEncoder):
         return prompt, [[(s + offset, e + offset) for s, e in spans] for spans in reads], orders, cut
 
     def refusal(self, record: SystemOneRecord) -> str | None:
-        """Why vLLM's ClefFlashStrategy would refuse the record's questions, or None."""
+        """Why the record cannot be encoded as vLLM's ClefFlashStrategy reads it, or None."""
         if (reason := find_refusal(record)) is not None:
             return reason
         for question in record.questions:

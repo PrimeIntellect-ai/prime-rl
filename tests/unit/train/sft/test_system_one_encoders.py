@@ -190,7 +190,7 @@ def test_clef_cuts_the_state(clef_tokenizer):
 
 
 @pytest.mark.parametrize(
-    "questions, refused_by",
+    "questions, skipped_by",
     [
         ({"q": {"type": "noul", "instructions": {"ask": "Is it?"}}}, {"d3", "clef"}),
         ({"q": {"type": "noul", "instructions": 0}}, {"d3", "clef"}),
@@ -201,10 +201,10 @@ def test_clef_cuts_the_state(clef_tokenizer):
         ({"q": {"type": "choice", "instructions": "?", "criteria": {f"o{i}": None for i in range(27)}}}, {"clef"}),
     ],
 )
-def test_skips_what_vllm_refuses(tokenizer, clef_tokenizer, questions, refused_by):
+def test_skips_what_it_cannot_encode(tokenizer, clef_tokenizer, questions, skipped_by):
     r = record(questions)
     for name, encoder in (("d3", D3Encoder(tokenizer)), ("clef", ClefFlashEncoder(clef_tokenizer))):
-        assert (encoder(r, 8192) is None) == (name in refused_by), name
+        assert (encoder(r, 8192) is None) == (name in skipped_by), name
 
 
 VLLM_CASES = [
