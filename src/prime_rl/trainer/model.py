@@ -1148,8 +1148,8 @@ def resolve_auto_attn(config: ModelConfig) -> None:
 def refuse_decision_model(
     model: nn.Module, config: ModelConfig, broadcasts_weights: bool = False, next_token_loss: bool = False
 ) -> None:
-    """Raise for a decision model in a run that cannot train it: with a next-token loss, weight broadcasts, LoRA or
-    quantization."""
+    """Raise for a decision model in a run that cannot train it: with a next-token loss (pretraining, SFT's ce, RL),
+    weight broadcasts, LoRA or quantization."""
     # Imported here: the System One loss module imports this one.
     from prime_rl.trainer.sft.system_one.loss import DecisionModel
 
@@ -1158,10 +1158,12 @@ def refuse_decision_model(
     name = type(model).__name__
     if next_token_loss:
         raise ValueError(
-            f'{name} is a decision model, which trains with [loss] type = "decision" or a custom loss, not with the '
-            'next-token loss of pretraining or [loss] type = "ce". A d3 or Clef-Flash release builds it because of the '
-            "decision_config.json or joint_head_config.json beside its config.json. Without its joint_head_config.json, "
-            "a Clef-Flash release trains as a plain Qwen3.5; a d3 release, a bare Qwen3_5Model, has no plain class."
+            f'{name} is a decision model, which trains with SFT [loss] type = "decision" or a custom loss, not with a '
+            'loss on the next-token predictions of its LM head: pretraining, SFT [loss] type = "ce" or RL. A d3 '
+            "or Clef-Flash release builds it because of the decision_config.json or joint_head_config.json beside its "
+            "config.json. Without its joint_head_config.json, a Clef-Flash release trains as a plain Qwen3.5; a d3 "
+            "release cannot, since it stores its backbone under transformers' Qwen3_5Model names (language_model.*), "
+            "which prime-rl's plain Qwen3.5 does not load."
         )
     if broadcasts_weights:
         raise ValueError(
