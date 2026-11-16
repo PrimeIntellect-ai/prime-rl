@@ -341,8 +341,9 @@ def monkey_patch_glm5_next_kda_conv_weights():
     reloads copy into parameter storage in place, so updates land in the buffer.
 
     vLLM with https://github.com/vllm-project/vllm/pull/60991 keeps the q/k/v conv weights in one
-    parameter and gives both model classes their own ``process_weights_after_loading``, so there this
-    patch does nothing. Remove it when our minimum vLLM version includes that change.
+    parameter that the conv kernels read directly, so there this patch does nothing: its hook reads
+    attributes that no longer exist and would replace vLLM's own ``process_weights_after_loading``
+    where a model class defines one. Remove it when our minimum vLLM version includes that change.
     """
     from vllm.models.glm5next.common import kda
     from vllm.models.glm5next.common.model import Glm5NextForCausalLM, Glm5NextForConditionalGeneration
