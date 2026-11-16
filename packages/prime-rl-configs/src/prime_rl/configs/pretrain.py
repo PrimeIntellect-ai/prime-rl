@@ -12,6 +12,7 @@ from prime_rl.configs.trainer import (
     LinearSchedulerConfig,
     ModelConfig,
     MuonConfig,
+    ScratchInit,
     SignSGDConfig,
 )
 
@@ -83,12 +84,8 @@ PretrainSchedulerConfig: TypeAlias = Annotated[
 ]
 
 
-class PretrainInitConfig(InitConfig):
-    type: Literal["scratch", "hf", "ckpt"] = "scratch"
-
-
 class PretrainModelConfig(ModelConfig):
-    init: PretrainInitConfig = PretrainInitConfig()
+    init: InitConfig = ScratchInit()
 
 
 class PretrainConfig(SupervisedTrainerConfig):

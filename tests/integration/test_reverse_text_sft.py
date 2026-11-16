@@ -147,8 +147,6 @@ def rl_from_checkpoint_process(
         "1",
         "--model.name",
         (run_dir / "checkpoints" / "step_5").as_posix(),
-        "--model.init.type",
-        "ckpt",
         "--trainer.optim.lr",
         "0",
         # debug never discards rollouts, while GRPO discards most from this barely trained policy and times out
