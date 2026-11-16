@@ -361,7 +361,6 @@ def filter_rl_trainer_tensor_stats_for_wandb(metrics: dict[str, float | int]) ->
         "is_masked/",
         "mismatch_kl/",
         "mismatch_kl_by_staleness/",
-        "logprob_collapse_regime/",
         "masked_mismatch_kl/",
         "unmasked_mismatch_kl/",
         "ref_kl/is_masked/",
