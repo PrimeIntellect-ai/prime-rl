@@ -61,14 +61,14 @@ def test_label_columns_may_be_absent_or_null():
     assert build_targets(record, labels) == [None, None, None]
 
 
-def test_columns_can_be_renamed_and_the_id_falls_back_to_the_row_index():
-    renamed = {"__index": 7, "input": json.dumps({"ticket": 7}), "questions": json.dumps(QUESTIONS)}
+def test_columns_can_be_renamed_and_the_id_falls_back_to_the_split_and_row_index():
+    renamed = {"__split": "train", "__index": 7, "input": json.dumps({"ticket": 7}), "questions": json.dumps(QUESTIONS)}
     renamed["probs"] = json.dumps(SOFT_LABEL)
     columns = SystemOneColumnsConfig(state="input", soft_label="probs")
     record, labels = parse_record(renamed, columns)
-    assert (record.id, record.state) == (7, {"ticket": 7})
+    assert (record.id, record.state) == ("train/7", {"ticket": 7})
     assert labels[1].soft == [0.75, 0.25]
-    with pytest.raises(ValueError, match="record 7: question 'team'"):
+    with pytest.raises(ValueError, match="record 'train/7': question 'team'"):
         parse_record({**renamed, "probs": json.dumps({"team": {"technical": 1.0}})}, columns)
 
 

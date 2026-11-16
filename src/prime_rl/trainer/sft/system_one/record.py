@@ -134,7 +134,10 @@ def parse_record(row: Mapping, columns: SystemOneColumnsConfig) -> tuple[SystemO
 
     The state, questions and label columns hold JSON text. Any question may go without a label.
     """
-    record_id = row[columns.id] if columns.id in row else row.get("__index")
+    if columns.id in row:
+        record_id = row[columns.id]
+    else:
+        record_id = "/".join(str(row[key]) for key in ("__subset", "__split", "__index") if row.get(key) is not None)
     try:
         state = _decode(row, columns.state)
         definitions = _decode(row, columns.questions)
