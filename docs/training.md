@@ -331,7 +331,7 @@ Pulled from the console log and mirrored to W&B.
 **Progress and loss:**
 
 - `loss/mean`, `loss/perplexity` — main signal. Should decrease through the run.
-- `val/loss`, `val/perplexity` — SFT validation metrics when `[val]` is set, logged every `val.interval` steps; pretraining logs `val/<name>/loss@<length>` and `val/<name>/bpb@<length>` per held-out set.
+- `val/loss`, `val/perplexity` — SFT validation metrics when `[val]` is set, logged every `val.interval` steps; pretraining logs `val/<name>/loss` and `val/<name>/bpb` per held-out set.
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
 - `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
@@ -401,13 +401,12 @@ num_samples = 512          # documents per set and validation; leave out to scor
 [[val.data]]               # one table per held-out set
 name = "fineweb-edu"
 paths = ["data/fineweb-edu-val"]
-seq_len = 2048
-seq_lens = [2048, 512]     # optional: the context lengths to score at; default: the training data.seq_len
+seq_len = 2048             # optional: the context length to score at; default: the training data.seq_len
 ```
 
 All files in `data.paths` (in folder order, then file name order) form one token pool. Each epoch reads every `seq_len` window of the pool once, in a new random order and from a new random offset drawn from `data.seed`. Attention and positions restart at every document; `data.document_masking = false` makes a window one sequence. In training, the model is not trained to predict the next document's first token: there is no loss where the input is the document separator (`data.eod_mask_loss = false` turns this off). The separator is the special token the training shards' documents end with, detected at startup; shards whose documents start with BOS have nothing to mask. A resumed run reads exactly the windows an uninterrupted run would, also on another number of GPUs, as long as `data.num_workers` stays the same.
 
-Validation scores every document of every `[[val.data]]` set on its own, from its first token, at each of the set's `seq_lens`, and logs `val/<name>/loss@<length>` and `val/<name>/bpb@<length>` (bits per byte; exact for byte-level BPE tokenizers), e.g. `val/fineweb-edu/loss@2k`. A document is cut into non-overlapping windows of that many scored tokens; a longer document continues in the next window, which does not see the tokens before it. Every token after a document's first is scored, and no position predicts a token of another document. The windows are packed into rows of `seq_len * micro_batch_size` tokens and shared out over the data-parallel ranks. `val.num_samples` limits every validation to the first documents of each set, the same ones every time; without it, every validation scores all of them.
+Validation scores every document of every `[[val.data]]` set on its own, from its first token, and logs `val/<name>/loss` and `val/<name>/bpb` (bits per byte; exact for byte-level BPE tokenizers), e.g. `val/fineweb-edu/bpb`. A document is cut into non-overlapping windows of the set's `seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it. Every token after a document's first is scored, and no position predicts a token of another document. The windows are packed into rows of `val.micro_batch_tokens` tokens (default: the training micro-batch, `data.seq_len * data.micro_batch_size`, or the longest set `seq_len` if that is longer) and shared out over the data-parallel ranks. `val.num_samples` limits every validation to the first documents of each set, the same ones every time; without it, every validation scores all of them.
 
 **Launch.**
 

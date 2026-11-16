@@ -7,8 +7,8 @@ import pytest
 from transformers import AutoTokenizer
 
 import prime_rl.trainer.pretrain.data as pretrain_data
-from prime_rl.configs.pretrain import DatatroveDataConfig
-from prime_rl.trainer.data import setup_dataloader
+from prime_rl.configs.pretrain import DatatroveDataConfig, HeldOutDataConfig
+from prime_rl.trainer.data import setup_dataloader, setup_row_dataloader
 from prime_rl.trainer.pretrain.data import (
     TokenDataset,
     TokenShards,
@@ -132,7 +132,7 @@ def test_validation_scores_every_document_on_its_own(
     """The data ranks together score every document (or the first num_documents) as if it were alone: windows of
     seq_len scored tokens, each with positions from 0 and no token before its own first one, every token after the
     document's first scored once. Every rank runs the same number of micro-batches."""
-    config = DatatroveDataConfig(paths=folders, seq_len=8, batch_size=2, micro_batch_size=2)
+    config, row_len = HeldOutDataConfig(name="held-out", paths=folders, seq_len=8), 16
     expected = []
     for document in [list(document) for documents in DOCUMENTS for document in documents][:num_documents]:
         for start in range(0, len(document) - 1, config.seq_len):
@@ -142,18 +142,13 @@ def test_validation_scores_every_document_on_its_own(
     batches_by_rank = []
     for rank in range(world_size):
         set_world(monkeypatch, rank, world_size)
-        batches_by_rank.append(
-            list(
-                setup_dataloader(
-                    setup_document_dataset(config, config.seq_len, num_documents=num_documents), config, cp=1
-                )
-            )
-        )
+        dataset = setup_document_dataset(config, row_len, num_documents=num_documents)
+        batches_by_rank.append(list(setup_row_dataloader(dataset, row_len, pad_to_multiple_of=1)))
     reset_world()
 
     assert len({len(batches) for batches in batches_by_rank}) == 1
     for batches in batches_by_rank:
-        assert all(batch["input_ids"].shape == (1, config.seq_len * config.micro_batch_size) for batch in batches)
+        assert all(batch["input_ids"].shape == (1, row_len) for batch in batches)
     segments = [segment for batches in batches_by_rank for batch in batches for segment in scored_segments(batch)]
     assert sorted(segments) == sorted(expected)
 

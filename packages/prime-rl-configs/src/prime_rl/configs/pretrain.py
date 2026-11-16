@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from prime_rl.configs.supervised import BaseDataConfig, BaseValConfig, SupervisedTrainerConfig
 from prime_rl.configs.trainer import (
@@ -12,6 +12,7 @@ from prime_rl.configs.trainer import (
     MuonConfig,
     SignSGDConfig,
 )
+from prime_rl.utils.config import BaseConfig
 
 
 class DatatroveDataConfig(BaseDataConfig):
@@ -43,34 +44,35 @@ class PretrainDataConfig(DatatroveDataConfig):
     mask)."""
 
 
-class HeldOutDataConfig(DatatroveDataConfig):
+class HeldOutDataConfig(BaseConfig):
     name: str
-    """Names the metrics: ``val/<name>/loss@<length>`` and ``val/<name>/bpb@<length>``."""
+    """Names the metrics: ``val/<name>/loss`` and ``val/<name>/bpb``."""
 
-    seq_lens: list[Annotated[int, Field(ge=1)]] | None = Field(None, min_length=1)
-    """Context lengths to score the set at, each at most a row (``seq_len * micro_batch_size`` tokens). Defaults to
-    the training ``data.seq_len``."""
+    paths: list[Path] = Field(min_length=1)
+    """Folders of datatrove tokenized shards, as for ``data.paths``."""
 
-    @model_validator(mode="after")
-    def validate_seq_lens(self):
-        if self.seq_lens is not None and len(set(self.seq_lens)) < len(self.seq_lens):
-            raise ValueError(f"val.data {self.name}: seq_lens must be unique")
-        return self
+    seq_len: int | None = Field(None, ge=1)
+    """Context length to score the set at: every document is scored in non-overlapping windows of ``seq_len`` scored
+    tokens. Defaults to the training ``data.seq_len``."""
 
 
 class PretrainValConfig(BaseValConfig):
     data: list[HeldOutDataConfig] = []
     """Named sets of held-out shard folders. Every validation scores each document of a set on its own, from its first
-    token, at each of the set's ``seq_lens``: in non-overlapping windows of that many scored tokens (a longer document
-    continues in the next window, without the tokens before), packed into rows of ``seq_len * micro_batch_size``
-    tokens. ``seed`` and ``document_masking`` do not apply."""
+    token, in non-overlapping windows of the set's ``seq_len`` scored tokens (a longer document continues in the next
+    window, without the tokens before). The windows are packed into rows of ``micro_batch_tokens`` tokens."""
 
     num_samples: int | None = Field(None, ge=1)
     """Documents per set and validation: the first ``num_samples`` documents of each set (in folder order, then file
     name order), the same ones every time. If None, every document."""
 
-    def data_configs(self) -> list[HeldOutDataConfig]:
-        return self.data
+    micro_batch_tokens: int | None = Field(None, ge=1)
+    """Tokens per packed row of the sets (one forward pass on one GPU). Defaults to the training micro-batch
+    (``data.micro_batch_size * data.seq_len``) or the longest of the sets' context lengths, whichever is larger; must
+    be at least that longest length."""
+
+    def row_len(self) -> int:
+        return self.micro_batch_tokens
 
     @model_validator(mode="after")
     def validate_data(self):
@@ -128,13 +130,21 @@ class PretrainConfig(SupervisedTrainerConfig):
     """Learning rate schedule. Defaults to a linear warmup over 10 steps, then constant: from a random init, Adam's
     first updates at the full learning rate are unstable."""
 
-    @model_validator(mode="after")
-    def auto_setup_val_seq_lens(self):
-        for data in self.val.data if self.val is not None else []:
-            if data.seq_lens is None:
-                data.seq_lens = [self.data.seq_len]
-            if max(data.seq_lens) > data.seq_len * data.micro_batch_size:
-                raise ValueError(
-                    f"val.data {data.name}: seq_lens must fit in a row of seq_len * micro_batch_size tokens"
-                )
-        return self
+    # A field validator, so that the shared model validators (CP, Mega MoE) see the validation row size.
+    @field_validator("val")
+    @classmethod
+    def auto_setup_val(cls, val: PretrainValConfig | None, info: ValidationInfo) -> PretrainValConfig | None:
+        if val is None or "data" not in info.data:
+            return val
+        data = info.data["data"]
+        for held_out in val.data:
+            if held_out.seq_len is None:
+                held_out.seq_len = data.seq_len
+        longest = max(held_out.seq_len for held_out in val.data)
+        if val.micro_batch_tokens is None:
+            val.micro_batch_tokens = max(data.micro_batch_size * data.seq_len, longest)
+        elif val.micro_batch_tokens < longest:
+            raise ValueError(
+                f"val.micro_batch_tokens must be at least the longest context length of the sets ({longest})"
+            )
+        return val

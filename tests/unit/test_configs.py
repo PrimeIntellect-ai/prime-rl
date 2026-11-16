@@ -177,6 +177,22 @@ def test_pretrain_config_roundtrip(tmp_path):
     assert (warmup.scheduler.warmup_steps, warmup.scheduler.decay_steps) == (100, 0)
 
 
+def test_pretrain_held_out_sets_default_to_the_training_rows(tmp_path):
+    """[[val.data]] sets are scored at the training seq_len unless they set their own, in rows of
+    val.micro_batch_tokens: the training micro-batch or the longest set seq_len, whichever is larger."""
+    paths = [str(tmp_path / "tokens")]
+    held_out = [{"name": "short", "paths": paths}, {"name": "long", "paths": paths, "seq_len": 4096}]
+    write_toml(
+        tmp_path / "pretrain.toml",
+        {"data": {"paths": paths, "seq_len": 1024, "micro_batch_size": 2}, "val": {"data": held_out}},
+    )
+    args = ["@", str(tmp_path / "pretrain.toml"), "--output-dir", str(tmp_path)]
+    config = cli(PretrainConfig, args=args)
+    assert [data.seq_len for data in config.val.data] == [1024, 4096]
+    assert config.val.micro_batch_tokens == 4096
+    assert not can_parse(PretrainConfig, [*args, "--val.micro-batch-tokens", "2048"])
+
+
 @pytest.mark.parametrize("mode", MODES)
 def test_launch_runs_the_entrypoint_of_the_mode(tmp_path, monkeypatch, mode: str):
     """`uv run launch` reads `mode` from the config files and runs that entrypoint with the same arguments."""

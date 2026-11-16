@@ -36,11 +36,10 @@ from prime_rl.trainer.model import (
 from prime_rl.trainer.moe_runtime import setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.data import get_dataset_progress, get_dataset_state, setup_dataloader
+from prime_rl.trainer.data import get_dataset_progress, get_dataset_state, setup_dataloader, setup_row_dataloader
 from prime_rl.trainer.pretrain.data import (
     TokenShards,
     detect_separator,
-    length_label,
     scored_bytes,
     setup_document_dataset,
     setup_token_dataset,
@@ -215,16 +214,16 @@ def train(config: SFTConfig | PretrainConfig):
             logger.warning("The tokenizer is not byte-level BPE: validation logs no bits per byte")
         val_sets = []
         for data in config.val.data:
-            for seq_len in data.seq_lens:
-                dataset = setup_document_dataset(data, seq_len, config.model.cp, config.val.num_samples)
-                tokens = sum(end - start - 1 for _, start, end in dataset.windows)
-                num_bytes = scored_bytes(dataset, byte_lengths) if byte_lengths is not None else None
-                length = length_label(seq_len)
-                val_sets.append((data.name, length, data, dataset, tokens, num_bytes))
-                logger.info(
-                    f"Validation set {data.name}@{length}: {len(dataset.windows)} windows of held-out documents in "
-                    f"{len(dataset.rows)} rows"
-                )
+            dataset = setup_document_dataset(
+                data, config.val.micro_batch_tokens, config.model.cp, config.val.num_samples
+            )
+            tokens = sum(end - start - 1 for _, start, end in dataset.windows)
+            num_bytes = scored_bytes(dataset, byte_lengths) if byte_lengths is not None else None
+            val_sets.append((data.name, dataset, tokens, num_bytes))
+            logger.info(
+                f"Validation set {data.name}: {len(dataset.windows)} windows of held-out documents in "
+                f"{len(dataset.rows)} rows"
+            )
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -363,11 +362,12 @@ def train(config: SFTConfig | PretrainConfig):
     def run_validation(step: int) -> None:
         if isinstance(config, PretrainConfig):
             metrics = {}
-            for name, length, data, dataset, tokens, num_bytes in val_sets:
-                mean_loss = validation_loss(setup_dataloader(dataset, data, config.model.cp), step, f"{name}@{length}")
-                metrics[f"val/{name}/loss@{length}"] = mean_loss
+            for name, dataset, tokens, num_bytes in val_sets:
+                dataloader = setup_row_dataloader(dataset, config.val.micro_batch_tokens, config.model.cp)
+                mean_loss = validation_loss(dataloader, step, name)
+                metrics[f"val/{name}/loss"] = mean_loss
                 if num_bytes:
-                    metrics[f"val/{name}/bpb@{length}"] = mean_loss * tokens / (num_bytes * math.log(2))
+                    metrics[f"val/{name}/bpb"] = mean_loss * tokens / (num_bytes * math.log(2))
         else:
             val_dataset = setup_sft_dataset(
                 tokenizer,

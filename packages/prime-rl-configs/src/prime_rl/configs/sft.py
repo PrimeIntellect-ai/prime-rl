@@ -133,6 +133,12 @@ class SFTConfig(SupervisedTrainerConfig):
     """Validation configuration. If None, no validation runs."""
 
     @model_validator(mode="after")
+    def validate_cp_val_micro_batch_size(self):
+        if self.model.cp > 1 and self.val is not None and self.val.data.micro_batch_size != 1:
+            raise ValueError("Validation micro batch size must be 1 when CP is enabled")
+        return self
+
+    @model_validator(mode="after")
     def validate_typed_renderer(self):
         """Require a typed renderer whenever SFT renders real samples."""
         if self.data.type == "fake" and self.val is None:

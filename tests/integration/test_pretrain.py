@@ -119,9 +119,7 @@ def test_loss_goes_down(pretrain_process: ProcessResult, run_dir: Path):
 
 
 def test_validation(pretrain_process: ProcessResult, run_dir: Path):
-    lines = trainer_log(run_dir)
-    for length in ("512", "1k"):
-        assert any(f"Validation | Step 10 | reverse-text@{length} | Loss" in line for line in lines)
+    assert any("Validation | Step 10 | reverse-text | Loss" in line for line in trainer_log(run_dir))
 
 
 def test_no_error_resume(pretrain_resume_process: ProcessResult):

@@ -20,6 +20,3 @@ interval = 10
 [[val.data]]
 name = "reverse-text"
 paths = ["set-by-the-test"]
-seq_len = 1024
-micro_batch_size = 2
-seq_lens = [512, 1024]

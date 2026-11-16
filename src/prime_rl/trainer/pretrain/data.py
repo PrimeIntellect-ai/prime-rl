@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.pretrain import DatatroveDataConfig
+from prime_rl.configs.pretrain import DatatroveDataConfig, HeldOutDataConfig
 from prime_rl.trainer.data import StatefulIterableDataset
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.sequence import repeat_to_length
@@ -358,19 +358,15 @@ def setup_token_dataset(
 
 
 def setup_document_dataset(
-    config: DatatroveDataConfig, seq_len: int, non_dp_size: int = 1, num_documents: int | None = None
+    config: HeldOutDataConfig, row_len: int, non_dp_size: int = 1, num_documents: int | None = None
 ) -> DocumentDataset:
     return DocumentDataset(
         TokenShards(config.paths),
-        seq_len=seq_len,
-        row_len=config.seq_len * config.micro_batch_size,
+        seq_len=config.seq_len,
+        row_len=row_len,
         non_dp_size=non_dp_size,
         num_documents=num_documents,
     )
-
-
-def length_label(seq_len: int) -> str:
-    return f"{seq_len // 1024}k" if seq_len % 1024 == 0 else str(seq_len)
 
 
 # The 256 characters byte-level BPE tokenizers (GPT-2, Llama 3, Qwen, DeepSeek) write the bytes as.

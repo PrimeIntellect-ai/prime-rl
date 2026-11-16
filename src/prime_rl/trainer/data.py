@@ -221,12 +221,20 @@ def setup_dataloader(dataset: StatefulIterableDataset, config: BaseDataConfig, c
     row_len = config.seq_len * config.micro_batch_size
     # Rows hold at most `row_len` tokens, so padding to a multiple of it pads every row to exactly `row_len`
     pad_to_multiple_of = row_len if config.pad_to_seq_len else cp
+    return setup_row_dataloader(dataset, row_len, pad_to_multiple_of, config.num_workers)
+
+
+def setup_row_dataloader(
+    dataset: StatefulIterableDataset, row_len: int, pad_to_multiple_of: int, num_workers: int = 1
+) -> StatefulDataLoader:
+    """Batches of one row: ``dataset``'s samples packed into rows of at most ``row_len`` tokens, padded to a multiple
+    of ``pad_to_multiple_of``."""
     packing_dataset = CatDataset(dataset, row_len, pad_to_multiple_of=pad_to_multiple_of)
     return StatefulDataLoader(
         packing_dataset,
         batch_size=1,
         collate_fn=cat_collate,
-        num_workers=config.num_workers,
+        num_workers=num_workers,
         pin_memory=True,
     )
 
