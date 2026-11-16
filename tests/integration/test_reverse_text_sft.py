@@ -153,6 +153,9 @@ def rl_from_checkpoint_process(
         "dummy",
         "--trainer.optim.lr",
         "0",
+        # debug never discards rollouts, while GRPO discards most from this barely trained policy and times out
+        "--orchestrator.train.algo.type",
+        "debug",
         "--monitors.wandb.project",
         wandb_project,
         "--monitors.wandb.name",
