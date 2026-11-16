@@ -137,6 +137,7 @@ class FusedOutputLinear(torch.nn.Linear):
             loss = _ChunkedCrossEntropySumFn.apply(hidden_states, weight, labels, self.chunk_size, self.softcap)
             return PrimeLmOutput(loss=loss)
 
+        assert (temperature > 0).all(), "LM head requires positive temperatures to compute policy logprobs"
         inv_t = 1.0 / temperature.reshape(b * s).contiguous()  # [N]
         support_ids = support_rows = replay = offsets = None
         if support is not None:
