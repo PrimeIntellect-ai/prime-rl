@@ -21,9 +21,6 @@ splits = ["train"]  # trains on the soft labels
 seq_len = 2048  # the longest record has 1,349 tokens
 batch_size = 8  # a step is 8 packed rows, one at a time: about 28 records and 98 questions
 
-[data.encoder]
-import_path = "decision_models.decider.encoder.DeciderEncoder"
-
 [loss]
 type = "decision"
 brier_weight = 0.0  # soft cross-entropy alone: Perplexity published no training recipe
@@ -44,8 +41,5 @@ name = "outputs/typed-decisions-synth-system-one"
 subsets = ["default"]
 splits = ["validation"]
 seq_len = 2048
-
-[val.data.encoder]
-import_path = "decision_models.decider.encoder.DeciderEncoder"
 
 [ckpt]  # one checkpoint, at the end of the run
