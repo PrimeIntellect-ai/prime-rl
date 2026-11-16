@@ -119,6 +119,8 @@ def test_custom_loss_config_rejects_unsupported_setups():
     assert SFTConfig(loss=loss).loss.import_path.endswith("scaled_ce")
     with pytest.raises(ValidationError, match="not supported with context parallelism"):
         SFTConfig(loss=loss, model={"cp": 2})
+    with pytest.raises(ValidationError, match="offload"):
+        SFTConfig(loss=loss, model={"offload": "full"})
 
 
 class HeadsConfig(PretrainedConfig):
