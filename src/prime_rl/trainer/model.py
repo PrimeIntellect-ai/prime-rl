@@ -1115,6 +1115,7 @@ def setup_model(
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
     broadcasts_weights: bool = False,
+    needs_decision_logits: bool = False,
 ) -> nn.Module:
     resolve_auto_attn(config)
 
@@ -1132,6 +1133,10 @@ def setup_model(
     model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
     if broadcasts_weights:
         refuse_weight_broadcast(model)
+    if needs_decision_logits:
+        from prime_rl.trainer.sft.system_one.loss import check_decision_model
+
+        check_decision_model(model)
 
     if config.fusions.enabled and config.lora is not None:
         logger.warning("Skipping runtime model fusions because LoRA targets the unfused projections")

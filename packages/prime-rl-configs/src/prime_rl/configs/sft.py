@@ -307,11 +307,7 @@ class SFTConfig(SupervisedTrainerConfig):
         if self.loss.type == "decision":
             if self.data.type != "system_one":
                 raise ValueError(f'loss.type = "decision" needs data.type = "system_one", got "{self.data.type}"')
-            if self.model.implementation is None:
-                raise ValueError(
-                    'loss.type = "decision" needs [model.implementation]: a model class that declares '
-                    "system_one_strategy"
-                )
+            # Whether the model's class declares system_one_strategy is checked before the trainer builds it.
             if self.model.lora is not None:
                 raise ValueError(f'loss.type = "decision" is not supported with [model.lora]. {DECISION_MODEL_LORA}')
             if self.model.quantization is not None:
