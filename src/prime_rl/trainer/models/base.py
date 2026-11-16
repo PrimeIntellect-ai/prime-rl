@@ -2,6 +2,7 @@ from collections.abc import Iterable
 from typing import Protocol, runtime_checkable
 
 from torch import Tensor, nn
+from transformers.configuration_utils import PretrainedConfig
 from transformers.modeling_utils import PreTrainedModel
 
 from prime_rl.trainer.models.layers.moe import MoE
@@ -83,8 +84,10 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         """
         return False
 
-    def export_config_files(self) -> dict[str, dict]:
-        """The JSON files the export writes beside ``config.json``, as {file name: content}. The default writes none."""
+    def export_config_files(self, config: PretrainedConfig) -> dict[str, dict]:
+        """The JSON files the export writes beside ``config.json``, as {file name: content}. `config` is a copy of the
+        model's config, which the export then saves as ``config.json``: take off it what the loader or the class put on
+        it. The default writes none."""
         return {}
 
     @classmethod

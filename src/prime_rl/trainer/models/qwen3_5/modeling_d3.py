@@ -5,6 +5,7 @@ import math
 
 import torch
 from torch import Tensor, nn
+from transformers.configuration_utils import PretrainedConfig
 
 from prime_rl.trainer.data import Batch
 from prime_rl.trainer.models.conversion_ops import Drop, PrefixRename
@@ -104,11 +105,11 @@ class D3ForSequenceClassification(Qwen3_5ForCausalLM):
         """An untied release's LM head: a copy of the loaded input embedding."""
         return {name: self.get_input_embeddings().weight for name in names if name == "lm_head.weight"}
 
-    def export_config_files(self) -> dict[str, dict]:
-        """The JSON files an export writes beside ``config.json``. What the loader and the class put on the config is
-        taken off it, so the exported ``config.json`` is the release's."""
-        vars(getattr(self.config, "text_config", self.config)).pop("is_causal", None)
-        return {"decision_config.json": vars(self.config).pop("decision_config")}
+    def export_config_files(self, config: PretrainedConfig) -> dict[str, dict]:
+        """``decision_config.json``, taken off `config` with ``is_causal``, so the exported ``config.json`` is the
+        release's."""
+        vars(getattr(config, "text_config", config)).pop("is_causal", None)
+        return {"decision_config.json": vars(config).pop("decision_config")}
 
     def decision_logits(self, hidden_states: Tensor, batch: Batch) -> list[Tensor]:
         """One logit vector per question, in pack order: the scores of the first codes, one per option, at the

@@ -3,6 +3,7 @@
 
 import torch
 from torch import Tensor, nn
+from transformers.configuration_utils import PretrainedConfig
 
 from prime_rl.trainer.data import Batch
 from prime_rl.trainer.models.conversion_ops import Drop, MapValue
@@ -84,10 +85,9 @@ class ClefFlashForJointSchema(Qwen3_5ForCausalLM):
         """The lexical copy of the loaded LM head."""
         return {name: self.lm_head.weight for name in names if name == "lexical_embedding.weight"}
 
-    def export_config_files(self) -> dict[str, dict]:
-        """The JSON files an export writes beside ``config.json``. What the loader put on the config is taken off it,
-        so the exported ``config.json`` is the release's."""
-        return {"joint_head_config.json": vars(self.config).pop("joint_head_config")}
+    def export_config_files(self, config: PretrainedConfig) -> dict[str, dict]:
+        """``joint_head_config.json``, taken off `config`, so the exported ``config.json`` is the release's."""
+        return {"joint_head_config.json": vars(config).pop("joint_head_config")}
 
     def decision_logits(self, hidden_states: Tensor, batch: Batch) -> list[Tensor]:
         """One logit vector per question, in pack order. The head runs once per record, on the record's slice of the

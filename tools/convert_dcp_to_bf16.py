@@ -289,10 +289,10 @@ def save_model_assets(
     model: nn.Module, model_config: ModelConfig, tokenizer_config: TokenizerConfig, output_dir: Path
 ) -> None:
     """Save model config, generation config, processor and tokenizer next to the weights."""
-    # The JSON files the class's checkpoints keep beside config.json, which the loader read into the config.
-    config_files = model.export_config_files()
-    _export_config(model.config)
-    model.config.save_pretrained(output_dir)
+    config = deepcopy(model.config)
+    config_files = model.export_config_files(config)
+    _export_config(config)
+    config.save_pretrained(output_dir)
     for name, content in config_files.items():
         (output_dir / name).write_text(json.dumps(content, indent=2) + "\n")
     if getattr(model, "generation_config", None):
