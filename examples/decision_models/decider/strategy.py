@@ -86,8 +86,9 @@ class DeciderStrategy(D3Strategy):
     FORMAT_VERSIONS = (2,)
 
     def __init__(self, tokenizer, config) -> None:
-        # Not D3Strategy.__init__: its prompt and chat-template checks are d3's. Decider refuses other format versions.
+        # Not D3Strategy.__init__: its prompt and chat-template checks are d3's.
         SystemOneStrategy.__init__(self, tokenizer, config)
+        self.check_format_version(config.decision_config)
         self.codes = config.decision_config["codes"]
         self.marker_id = tokenizer.convert_tokens_to_ids(MARKER)
 
