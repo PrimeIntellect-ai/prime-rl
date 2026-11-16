@@ -328,14 +328,16 @@ def _sparse_logit_backward(
     label_grad = grad_logprobs.float() if grad_logprobs is not None else torch.zeros_like(logprobs)
     entry_grad = grad_support.float() if grad_support is not None else torch.zeros_like(entry_logits)
     device_offsets = offsets.to(device)
-    net = label_grad + segment_sum(entry_grad, device_offsets)
-    replayed_label_entry = replay[rows] & (support_ids == labels[rows])
-    label_total = label_grad + segment_sum(torch.where(replayed_label_entry, entry_grad, 0.0), device_offsets)
+    label_entry = support_ids == labels[rows]
+    label_total = label_grad + segment_sum(torch.where(label_entry, entry_grad, 0.0), device_offsets)
+    rest_grad = segment_sum(torch.where(label_entry, 0.0, entry_grad), device_offsets)
+    net = label_total + rest_grad
+    label_in_replayed_support = replay[rows] & label_entry
     entry_probs = torch.exp((entry_logits - norm_max[rows]) - norm_log_tail[rows])
     entry_grad = torch.where(
-        replayed_label_entry, 0.0, entry_grad - torch.where(replay[rows], entry_probs * net[rows], 0.0)
+        label_in_replayed_support, 0.0, entry_grad - torch.where(replay[rows], entry_probs * net[rows], 0.0)
     )
-    label_grad = torch.where(replay, _label_logit_grad(label_total, net - label_total, logprobs), label_grad)
+    label_grad = torch.where(replay, _label_logit_grad(label_total, rest_grad, logprobs), label_grad)
 
     label_grad = label_grad * inv_temperature
     entry_grad = entry_grad * inv_temperature[rows]
@@ -458,6 +460,8 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 chunk_target = scaled_logits.gather(1, local_idx.unsqueeze(1)).squeeze(1)
                 target_logits = torch.where(in_range, chunk_target, target_logits)
 
+                # A token count equal to the vocab chunk width would otherwise share its symbol and recompile
+                torch._dynamo.mark_static(scaled_logits, 1)
                 m, tail, spread = _merge_max_tail_spread(m, tail, spread, *max_tail_spread(scaled_logits))
 
             log_tail = torch.log1p(tail)
@@ -566,8 +570,8 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             inv_t_chunk = inv_temperature[start:end].unsqueeze(-1)
             max_chunk = norm_max[start:end]
             log_tail_chunk = norm_log_tail[start:end]
-            grad_scale = -grad_chunk
             label_total = grad_chunk
+            rest_grad = torch.zeros_like(grad_chunk)
             grad_head = None
             if support_ids is not None:
                 first, last = int(offsets[start]), int(offsets[end])
@@ -576,10 +580,11 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 if grad_support is not None:
                     grad_head = grad_support[first:last].float()
                     chunk_offsets = (offsets[start : end + 1] - first).to(device)
-                    grad_scale = grad_scale - segment_sum(grad_head, chunk_offsets)
                     label_entry = ids_chunk == labels_chunk[rows_chunk.long()]
                     label_total = label_total + segment_sum(torch.where(label_entry, grad_head, 0.0), chunk_offsets)
-            label_logit_grad = _label_logit_grad(label_total, -grad_scale - label_total, logprobs_chunk)
+                    rest_grad = segment_sum(torch.where(label_entry, 0.0, grad_head), chunk_offsets)
+            grad_scale = -(label_total + rest_grad)
+            label_logit_grad = _label_logit_grad(label_total, rest_grad, logprobs_chunk)
 
             for vocab_start in range(0, vocab, vocab_chunk_size):
                 vocab_end = min(vocab_start + vocab_chunk_size, vocab)
@@ -599,6 +604,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                     in_support[torch.where(in_range, flat, scaled_logits.numel())] = True
                     masked_out = replay_chunk.unsqueeze(-1) & ~in_support[:-1].view(scaled_logits.shape)
                     scaled_logits.masked_fill_(masked_out, float("-inf"))
+                torch._dynamo.mark_static(scaled_logits, 1)
                 grad_logits = _probs(scaled_logits, max_chunk, log_tail_chunk).mul_(grad_scale.unsqueeze(-1))
                 if grad_head is not None:
                     grad_logits.view(-1).index_add_(0, flat, grad_head * in_range)
