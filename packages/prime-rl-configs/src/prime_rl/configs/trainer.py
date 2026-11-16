@@ -343,15 +343,15 @@ InitConfig: TypeAlias = Annotated[ScratchInit | PretrainedInit, Field(discrimina
 
 
 IMPLEMENTATION_NOT_SERVED = (
-    "model.implementation cannot be served: inference loads the broadcast weights into the checkpoint's registered "
-    "architecture, which rejects the modules the class adds"
+    "model.implementation cannot be served: the class has no vLLM counterpart, so its weights cannot be broadcast to "
+    "inference"
 )
 
 
 class ModelImplementationConfig(PluginConfig):
     """The model class to build from the checkpoint at ``model.name``: ``import_path`` names a subclass of prime-rl's
-    class for the checkpoint's architecture. Only the trainer builds it, so it is refused with weight broadcasts to
-    inference (RL, online evals)."""
+    class for the checkpoint's architecture. Only the trainer builds it and it has no vLLM counterpart, so it is refused
+    with weight broadcasts to inference (RL, online evals)."""
 
     @model_validator(mode="after")
     def validate_no_kwargs(self):
