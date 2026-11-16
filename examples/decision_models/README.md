@@ -10,7 +10,7 @@ A decision model is two pieces of user code, named in the config, plus the loss 
 |---|---|---|
 | Encoder | `[data.encoder]` | A `SystemOneEncoder` subclass: a record becomes tokens, attention segments and, per question, the token spans the head reads. It owns its chat template. |
 | Model class | `[model.implementation]` | A subclass of prime-rl's class for the architecture, with the head and a `decision_logits` method. The head's weights come from the checkpoint, or from the class's `init_missing_weights` when the checkpoint has none. |
-| Loss | `[loss] type = "custom"` | `prime_rl.trainer.sft.system_one.loss.decision_loss`, the same function for every model. |
+| Loss | `[loss] type = "decision"` | prime-rl's decision loss, the same for every model. |
 
 `decision_logits` is the model's readout: one logit vector per question of the packed row. Its contract, and what `decision_loss` computes from it, are in [System One Data](../../docs/training.md#system-one-data) and in `DecisionModel` in `src/prime_rl/trainer/sft/system_one/loss.py`.
 
