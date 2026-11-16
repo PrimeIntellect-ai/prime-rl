@@ -1,4 +1,3 @@
-import pickle
 from functools import partial
 from pathlib import Path
 from typing import Callable, Generator
@@ -17,7 +16,7 @@ from prime_rl.trainer.utils import get_world
 from prime_rl.trainer.vlm import get_layer_prefix
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
+from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, encode_tensor_metadata, iter_tensor_buckets
 from prime_rl.utils.weights import get_chunked_conversion_ops, resolve_wire_dtype
 
 
@@ -92,7 +91,7 @@ def broadcast_state_dict(state_dict: dict[str, Tensor], communicator: PyNcclComm
         metadata[dtype] = [(key, value.shape, value.numel()) for key, value in items]
 
     # Send metadata
-    state = pickle.dumps(metadata)
+    state = encode_tensor_metadata(metadata)
     size_tensor = torch.tensor([len(state)], dtype=torch.long).cuda()
     communicator.broadcast(size_tensor, src=0)
     state_tensor = torch.ByteTensor(list(state)).cuda()
