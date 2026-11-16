@@ -147,7 +147,7 @@ def rl_from_checkpoint_process(
         "1",
         "--model.name",
         (run_dir / "checkpoints" / "step_5").as_posix(),
-        "--trainer.model.init.type",
+        "--model.init.type",
         "ckpt",
         "--inference.vllm.load-format",
         "dummy",

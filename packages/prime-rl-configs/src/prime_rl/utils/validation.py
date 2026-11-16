@@ -68,6 +68,7 @@ def propagate_shared_fields(data: Any) -> Any:
         "orchestrator.model.name",
     )
     propagate("model.vlm", "trainer.model.vlm")
+    propagate("model.init", "trainer.model.init")
 
     # [log]
     propagate("log.level", "trainer.log.level", "orchestrator.log.level", "inference.log.level")
