@@ -101,7 +101,7 @@ class Decider(D3ForSequenceClassification):
     FORMAT_VERSIONS = (1, 2)
 
 
-def test_the_release_selects_the_class_vllm_serves_it_with(tmp_path, monkeypatch):
+def test_the_release_selects_the_class_vllm_serves_it_with(tmp_path):
     d3, clef, decider, qwen = (tmp_path / name for name in ("d3", "clef", "decider", "qwen"))
     write_d3_release(d3)
     write_clef_release(clef)
@@ -116,18 +116,6 @@ def test_the_release_selects_the_class_vllm_serves_it_with(tmp_path, monkeypatch
     assert get_model(model_config(clef), device=torch.device("meta")).config.joint_head_config == JOINT_HEAD_CONFIG
     assert get_decision_model_cls(AutoConfig.from_pretrained(qwen), str(qwen)) is None
 
-    # A failed Hub lookup of d3's file raises; of Clef-Flash's, which every stock Qwen3.5 checkpoint would make, warns.
-    def offline(*args, **kwargs):
-        raise LocalEntryNotFoundError("offline")
-
-    monkeypatch.setattr("prime_rl.trainer.model.hf_hub_download", offline)
-    with pytest.raises(OSError, match="Could not look up decision_config.json for org/d3"):
-        get_decision_model_cls(AutoConfig.from_pretrained(d3), "org/d3")
-    assert get_decision_model_cls(AutoConfig.from_pretrained(qwen), "org/qwen") is None
-    # Offline, a file the HF cache records as absent is no file.
-    monkeypatch.setattr("prime_rl.trainer.model.try_to_load_from_cache", lambda *args, **kwargs: _CACHED_NO_EXIST)
-    assert get_decision_model_cls(AutoConfig.from_pretrained(d3), "org/d3") is None
-
     # vLLM routes Decider to d3 too and refuses its format_version 2; a subclass that reads it extends the d3 class.
     assert vllm_route(decider) == "D3ForSequenceClassification"
     with pytest.raises(ValueError, match="unsupported decision_config.json format_version 2"):
@@ -136,6 +124,30 @@ def test_the_release_selects_the_class_vllm_serves_it_with(tmp_path, monkeypatch
     assert type(model) is Decider and model.config.decision_config["format_version"] == 2
     with pytest.raises(TypeError, match="must extend D3ForSequenceClassification"):
         get_model(model_config(d3, "prime_rl.trainer.models.qwen3_5.Qwen3_5ForCausalLM"), device=torch.device("meta"))
+
+
+def test_a_failed_hub_lookup_raises_for_d3_and_warns_for_a_stock_qwen3_5(tmp_path, monkeypatch):
+    """Every stock Qwen3.5 checkpoint looks up Clef-Flash's file, so only that lookup may fail with a warning."""
+    d3, qwen = tmp_path / "d3", tmp_path / "qwen"
+    write_d3_release(d3)
+    tiny_config("Qwen3_5ForConditionalGeneration", tied=False).save_pretrained(qwen)
+    warnings = []
+
+    def offline(*args, **kwargs):
+        raise LocalEntryNotFoundError("offline")
+
+    monkeypatch.setattr("prime_rl.trainer.model.try_to_load_from_cache", lambda *args, **kwargs: None)
+    monkeypatch.setattr("prime_rl.trainer.model.hf_hub_download", offline)
+    monkeypatch.setattr("prime_rl.trainer.model.get_logger", lambda: SimpleNamespace(warning=warnings.append))
+    with pytest.raises(OSError, match="Could not look up decision_config.json for org/d3"):
+        get_decision_model_cls(AutoConfig.from_pretrained(d3), "org/d3")
+    assert warnings == []
+    assert get_decision_model_cls(AutoConfig.from_pretrained(qwen), "org/qwen") is None
+    (warning,) = warnings
+    assert warning.startswith("Could not look up joint_head_config.json for org/qwen") and "plain Qwen3.5" in warning
+    # Offline, a file the HF cache records as absent is no file.
+    monkeypatch.setattr("prime_rl.trainer.model.try_to_load_from_cache", lambda *args, **kwargs: _CACHED_NO_EXIST)
+    assert get_decision_model_cls(AutoConfig.from_pretrained(d3), "org/d3") is None
 
 
 def test_d3_checks_its_decision_config(tmp_path):
