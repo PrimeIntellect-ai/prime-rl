@@ -439,7 +439,6 @@ def fp32_worker(rank: int, world: int, init_file: str, out_dir: str) -> None:
     dist.destroy_process_group()
 
 
-@pytest.mark.gpu
 def test_fp32_modules_compute_in_float32_under_fsdp(tmp_path):
     world = 2
     mp.spawn(fp32_worker, args=(world, str(tmp_path / "rendezvous"), str(tmp_path)), nprocs=world, join=True)
@@ -593,7 +592,6 @@ def check_decision_loss(model, batch: dict, logits: list[torch.Tensor], trained:
     assert trained.grad is not None and trained.grad.abs().sum() > 0
 
 
-@pytest.mark.gpu
 def test_d3_trains_on_vllms_prompts_end_to_end(tmp_path, cpu_kernels):
     write_d3_release(tmp_path)
     write_char_tokenizer(tmp_path)
@@ -629,7 +627,6 @@ def test_d3_trains_on_vllms_prompts_end_to_end(tmp_path, cpu_kernels):
     check_decision_loss(model, batch, logits, model.score.weight)
 
 
-@pytest.mark.gpu
 def test_clef_trains_on_vllms_prompt_end_to_end(tmp_path, cpu_kernels):
     write_clef_release(tmp_path)
     write_char_tokenizer(tmp_path)
