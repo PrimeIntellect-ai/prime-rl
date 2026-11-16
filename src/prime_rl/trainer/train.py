@@ -45,7 +45,7 @@ from prime_rl.trainer.pretrain.data import (
     warn_if_no_document_separator,
 )
 from prime_rl.trainer.sft.data import load_sft_dataset, setup_sft_dataset
-from prime_rl.trainer.sft.loss import run_loss_fn, setup_sft_loss_fn
+from prime_rl.trainer.sft.loss import check_metric_names, run_loss_fn, setup_sft_loss_fn
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
@@ -258,6 +258,7 @@ def train(config: SFTConfig | PretrainConfig):
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     cp_size = parallel_dims.cp
+    metric_names: list[str] | None = None
 
     def compute_loss(micro_batch: dict, metrics: dict | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass returning (loss_sum, token_count) over unmasked tokens, or the custom loss's (loss, count).
@@ -306,10 +307,8 @@ def train(config: SFTConfig | PretrainConfig):
             if metrics is not None:
                 # A NaN micro-batch is left out of the metrics, as it is of the loss; masked on the device, without a sync.
                 nan_loss = torch.isnan(outputs.loss.detach())
-                if metrics and outputs.metrics.keys() != metrics.keys():
-                    raise ValueError(
-                        f"custom loss metrics must have the same names on every call: {sorted(outputs.metrics)}"
-                    )
+                nonlocal metric_names
+                metric_names = check_metric_names(outputs.metrics, metric_names)
                 # Sorted, so that every rank adds them to the step's statistics in the same order
                 for name, value in sorted(outputs.metrics.items()):
                     if value.ndim != 0:
