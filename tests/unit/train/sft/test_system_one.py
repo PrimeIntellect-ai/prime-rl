@@ -180,3 +180,14 @@ def test_process_raises_on_overlapping_read_spans():
 
 def test_process_skips_record_without_labels():
     assert _dataset([[(1, 2)], [(2, 4)], [(6, 7)]])._process(row()) is None
+
+
+class SkippingEncoder(SystemOneEncoder):
+    def __call__(self, record, max_tokens):
+        return None
+
+
+def test_raises_when_every_record_is_skipped():
+    dataset = SystemOneDataset(Dataset.from_list([ROW] * 3), SkippingEncoder(None))
+    with pytest.raises(RuntimeError, match="skipped 4 rows in a row"):
+        next(iter(dataset))

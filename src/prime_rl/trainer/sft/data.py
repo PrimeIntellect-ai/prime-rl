@@ -236,6 +236,7 @@ class HFDataset(StatefulIterableDataset):
     def __iter__(self):
         self._setup_world_info()
         dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
+        num_skipped = 0
         while True:
             self.step += 1
 
@@ -263,7 +264,14 @@ class HFDataset(StatefulIterableDataset):
 
             # If processed example is None, skip it (e.g. if tokenized sample exceeds context window)
             if processed_example is None:
+                num_skipped += 1
+                if num_skipped > self.num_examples:
+                    raise RuntimeError(
+                        f"Data rank {self.data_rank} skipped {num_skipped} rows in a row, more than the dataset's "
+                        f"{self.num_examples}, without yielding a sample: every row it reads is skipped."
+                    )
                 continue
+            num_skipped = 0
 
             # Yield the example
             example = cast(dict, example)

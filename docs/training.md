@@ -488,7 +488,7 @@ import_path = "my_pkg.encoder.MyEncoder"
   ]}
   ```
 
-- **Skips and errors.** A record is skipped when none of its questions has a label (with a warning), when the encoder returns `None`, or when its encoding is longer than `data.seq_len` (with a warning). A malformed record raises and stops the run.
+- **Skips and errors.** A record is skipped when none of its questions has a label (with a warning), when the encoder returns `None`, or when its encoding is longer than `data.seq_len` (with a warning). A malformed record raises and stops the run, and so does a data rank that skips more records in a row than the dataset has.
 - **Validation and unused settings.** `[data]` and `[val.data]` are both System One or neither. `val.data.seq_len` is not inherited: it defaults to 128 and must equal `data.seq_len`, and `val.data.encoder` must equal `data.encoder`. The encoder owns any chat template, so a non-default `[renderer]` is refused, and per-row template columns such as `reasoning_effort` are not read. `pad_to_seq_len` is refused.
 
 **Launch.** The encoder, the loss and the model class must be importable where the trainer runs.
