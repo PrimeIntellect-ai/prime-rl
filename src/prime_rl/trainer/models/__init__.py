@@ -1,11 +1,7 @@
 ## a bit of context here, this basically copy AutoModelForCausalLM from transformers, but use our own model instead
 
-import json
 from collections import OrderedDict
-from pathlib import Path
 
-from huggingface_hub import _CACHED_NO_EXIST, hf_hub_download, try_to_load_from_cache
-from huggingface_hub.errors import RemoteEntryNotFoundError
 from transformers import AutoConfig
 from transformers.configuration_utils import PretrainedConfig
 from transformers.models.auto.auto_factory import _BaseAutoModelClass, _LazyAutoMapping, auto_class_update
@@ -28,6 +24,8 @@ from prime_rl.trainer.models.muse_glimmer import MuseGlimmerConfig, MuseGlimmerF
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM, NemotronHOmniConfig
 from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
 from prime_rl.trainer.models.qwen3_5 import (
+    ClefFlashForJointSchema,
+    D3ForSequenceClassification,
     Qwen3_5Config,
     Qwen3_5ForCausalLM,
     Qwen3_5MoeConfig,
@@ -35,15 +33,12 @@ from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5TextConfig,
     Qwen3_5VisionConfig,
 )
-from prime_rl.trainer.models.qwen3_5.modeling_clef_flash import ClefFlashForJointSchema
-from prime_rl.trainer.models.qwen3_5.modeling_d3 import D3ForSequenceClassification
 from prime_rl.trainer.models.qwen3_8_flash_next import (
     Qwen3_8FlashNextConfig,
     Qwen3_8FlashNextForCausalLM,
     Qwen3_8FlashNextTextConfig,
 )
 from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalLM
-from prime_rl.utils.logger import get_logger
 
 # Make custom config discoverable by AutoConfig
 AutoConfig.register("afmoe", AfmoeConfig, exist_ok=True)
@@ -160,56 +155,12 @@ _DECISION_MODELS: dict[tuple[str, str, str], tuple[type[PreTrainedModelPrimeRL],
 _STOCK_ARCHITECTURES = {("qwen3_5", "Qwen3_5ForConditionalGeneration")}
 
 
-def read_side_file(name: str, file: str) -> dict | None:
-    """The JSON `file` beside the config of the checkpoint at `name` (a local directory or a Hub id), or None when the
-    checkpoint has none. A Hub lookup that fails, e.g. offline or on a 5xx, raises, unless the HF cache records the
-    file or its absence."""
-    if Path(name).is_dir():
-        path = Path(name) / file
-        if not path.is_file():
-            return None
-    elif (cached := try_to_load_from_cache(name, file)) is _CACHED_NO_EXIST:
-        return None
-    elif isinstance(cached, str):
-        path = Path(cached)
-    else:
-        try:
-            path = Path(hf_hub_download(name, file))
-        except RemoteEntryNotFoundError:
-            return None
-    return json.loads(path.read_text())
-
-
-def get_decision_model_cls(model_config: PretrainedConfig, name: str) -> type[PreTrainedModelPrimeRL] | None:
-    """The decision model class vLLM selects for the checkpoint at `name` (a local directory or a Hub id), or None.
-    The file that selects it is read into the config attribute vLLM uses; ``config.architectures`` is left as is."""
-    architectures = getattr(model_config, "architectures", None) or []
-    for (model_type, architecture, file), (cls, attribute) in _DECISION_MODELS.items():
-        if model_config.model_type != model_type or architectures != [architecture]:
-            continue
-        try:
-            content = read_side_file(name, file)
-        except OSError as error:
-            if (model_type, architecture) not in _STOCK_ARCHITECTURES:
-                raise OSError(f"Could not look up {file} for {name}, which selects {cls.__name__}: {error}") from error
-            get_logger().warning(
-                f"Could not look up {file} for {name} ({error}): if it is a release of {cls.__name__}, it trains as "
-                "a plain Qwen3.5"
-            )
-            return None
-        if content is not None:
-            setattr(model_config, attribute, content)
-            return cls
-    return None
-
-
 __all__ = [
     "AutoModelForCausalLMPrimeRL",
     "PreTrainedModelPrimeRL",
     "get_custom_causal_lm_cls",
     "supports_custom_impl",
     "get_custom_vlm_cls",
-    "get_decision_model_cls",
     "PrimeLmOutput",
     "cast_float_and_contiguous",
 ]

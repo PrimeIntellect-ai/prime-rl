@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import shutil
@@ -17,7 +18,8 @@ import torch
 import torch._dynamo
 import torch.distributed as dist
 import torch.nn as nn
-from huggingface_hub import snapshot_download
+from huggingface_hub import _CACHED_NO_EXIST, hf_hub_download, snapshot_download, try_to_load_from_cache
+from huggingface_hub.errors import RemoteEntryNotFoundError
 from jaxtyping import Int
 from torch import Tensor
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
@@ -46,12 +48,13 @@ from prime_rl.trainer.activation_checkpointing import (
 )
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
+    _DECISION_MODELS,
+    _STOCK_ARCHITECTURES,
     AutoModelForCausalLMPrimeRL,
     PrimeLmOutput,
     cast_float_and_contiguous,
     get_custom_causal_lm_cls,
     get_custom_vlm_cls,
-    get_decision_model_cls,
     supports_custom_impl,
 )
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
@@ -106,6 +109,49 @@ def pre_download_model(model_name: str, *, skip_weights: bool = False) -> None:
     get_logger().debug(
         f"Finished pre-downloading model {model_name} to {path} in {format_time(time.perf_counter() - t0)}"
     )
+
+
+def read_side_file(name: str, file: str) -> dict | None:
+    """The JSON `file` beside the config of the checkpoint at `name` (a local directory or a Hub id), or None when the
+    checkpoint has none. A Hub lookup that fails, e.g. offline or on a 5xx, raises, unless the HF cache records the
+    file or its absence."""
+    if Path(name).is_dir():
+        path = Path(name) / file
+        if not path.is_file():
+            return None
+    elif (cached := try_to_load_from_cache(name, file)) is _CACHED_NO_EXIST:
+        return None
+    elif isinstance(cached, str):
+        path = Path(cached)
+    else:
+        try:
+            path = Path(hf_hub_download(name, file))
+        except RemoteEntryNotFoundError:
+            return None
+    return json.loads(path.read_text())
+
+
+def get_decision_model_cls(model_config: PretrainedConfig, name: str) -> type[PreTrainedModelPrimeRL] | None:
+    """The decision model class vLLM selects for the checkpoint at `name` (a local directory or a Hub id), or None.
+    The file that selects it is read into the config attribute vLLM uses; ``config.architectures`` is left as is."""
+    architectures = getattr(model_config, "architectures", None) or []
+    for (model_type, architecture, file), (cls, attribute) in _DECISION_MODELS.items():
+        if model_config.model_type != model_type or architectures != [architecture]:
+            continue
+        try:
+            content = read_side_file(name, file)
+        except OSError as error:
+            if (model_type, architecture) not in _STOCK_ARCHITECTURES:
+                raise OSError(f"Could not look up {file} for {name}, which selects {cls.__name__}: {error}") from error
+            get_logger().warning(
+                f"Could not look up {file} for {name} ({error}): if it is a release of {cls.__name__}, it trains as "
+                "a plain Qwen3.5"
+            )
+            return None
+        if content is not None:
+            setattr(model_config, attribute, content)
+            return cls
+    return None
 
 
 # Add filter to the standard logging module for transformers.modeling_utils to supress the

@@ -5,9 +5,13 @@ from .configuration_qwen3_5 import (
     Qwen3_5TextConfig,
     Qwen3_5VisionConfig,
 )
+from .modeling_clef_flash import ClefFlashForJointSchema
+from .modeling_d3 import D3ForSequenceClassification
 from .modeling_qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5Model, Qwen3_5PreTrainedModel
 
 __all__ = [
+    "ClefFlashForJointSchema",
+    "D3ForSequenceClassification",
     "Qwen3_5Config",
     "Qwen3_5ForCausalLM",
     "Qwen3_5Model",

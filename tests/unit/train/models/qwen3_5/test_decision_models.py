@@ -36,13 +36,13 @@ from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.data import CatDataset, cat_collate
 from prime_rl.trainer.model import (
     forward,
+    get_decision_model_cls,
     get_model,
     load_dcp_from_hf,
     overrides_init_missing_weights,
     refuse_decision_model,
     setup_fsdp,
 )
-from prime_rl.trainer.models import get_decision_model_cls
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers import attn, gated_delta_net
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
@@ -244,12 +244,12 @@ def test_the_release_selects_the_class_vllm_serves_it_with(tmp_path, monkeypatch
     def offline(*args, **kwargs):
         raise LocalEntryNotFoundError("offline")
 
-    monkeypatch.setattr("prime_rl.trainer.models.hf_hub_download", offline)
+    monkeypatch.setattr("prime_rl.trainer.model.hf_hub_download", offline)
     with pytest.raises(OSError, match="Could not look up decision_config.json for org/d3"):
         get_decision_model_cls(AutoConfig.from_pretrained(d3), "org/d3")
     assert get_decision_model_cls(AutoConfig.from_pretrained(qwen), "org/qwen") is None
     # Offline, a file the HF cache records as absent is no file.
-    monkeypatch.setattr("prime_rl.trainer.models.try_to_load_from_cache", lambda *args, **kwargs: _CACHED_NO_EXIST)
+    monkeypatch.setattr("prime_rl.trainer.model.try_to_load_from_cache", lambda *args, **kwargs: _CACHED_NO_EXIST)
     assert get_decision_model_cls(AutoConfig.from_pretrained(d3), "org/d3") is None
 
     # vLLM routes Decider to d3 too and refuses its format_version 2; a subclass that reads it extends the d3 class.
