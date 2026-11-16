@@ -1,6 +1,6 @@
 # Clef-Flash: full fine-tuning of Qwen3.5-9B with Clef's joint schema head on Typed Decisions Synth. From the repository
 # root (see README.md, which also says what memory it needs):
-#     PYTHONPATH=examples uv run sft @ examples/decision_models/clef/train.toml
+#     uv run sft @ examples/decision_models/clef/train.toml
 # Not yet run on a GPU: the learning rate, the schedule and the memory use are unmeasured.
 mode = "sft"
 # One pass over the 6,682 training records is 579 packed rows of up to 8,192 tokens, 11.5 records a row on average, and
@@ -8,21 +8,18 @@ mode = "sft"
 max_steps = 290
 
 [model]
-name = "outputs/clef/clef-flash-prime-rl"  # the release, linked, with the head's sizes in config.json (write_config.py)
-
-[model.implementation]
-import_path = "decision_models.clef.model.Qwen3_5Clef"
+name = "outputs/clef/clef-flash"  # the release as downloaded (or the Hub id): prime-rl builds ClefFlashForJointSchema
 
 [data]
 type = "system_one"
 name = "outputs/typed-decisions-synth-system-one"  # the records (../data/convert_typed_decisions_synth.py)
 subsets = ["default"]
 splits = ["train"]
-seq_len = 8192  # the longest record has 1,609 tokens; Clef shortens a longer state to fit
+seq_len = 8192  # the longest record has 1,609 tokens; the encoder shortens a longer state to fit
 batch_size = 2
 
 [data.encoder]
-import_path = "decision_models.clef.encoder.ClefEncoder"
+import_path = "prime_rl.trainer.sft.system_one.encoders.clef.ClefFlashEncoder"
 
 [loss]
 type = "decision"
@@ -46,7 +43,7 @@ splits = ["validation"]
 seq_len = 8192
 
 [val.data.encoder]
-import_path = "decision_models.clef.encoder.ClefEncoder"
+import_path = "prime_rl.trainer.sft.system_one.encoders.clef.ClefFlashEncoder"
 
 [ckpt]
 interval = 145
