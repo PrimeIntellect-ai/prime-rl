@@ -133,7 +133,21 @@ def open_checkpoint(ckpt_dir: Path) -> Checkpoint:
         model_config.attn = "flash_attention_2"
     logger.info(f"Building {model_config.name} on the meta device for its conversion rules")
     model = get_model(model_config, device=torch.device("meta"), dtype=torch.bfloat16)
+    check_model_holds_checkpoint(model, model_config, metadata)
     return Checkpoint(dcp_dir, metadata, model, model_config, tokenizer_config)
+
+
+def check_model_holds_checkpoint(model: nn.Module, model_config: ModelConfig, metadata: Metadata) -> None:
+    """Raise unless the model has every tensor of the checkpoint: the export writes the model's, so it would leave the
+    others out."""
+    stored = [key.removeprefix("app.model.") for key in metadata.state_dict_metadata if key.startswith("app.model.")]
+    unknown = sorted(set(stored) - model.state_dict().keys())
+    if unknown:
+        raise ValueError(
+            f"{type(model).__name__}, built from {model_config.name}, lacks {len(unknown)} tensors of the checkpoint "
+            f"({', '.join(unknown[:3])}), which the export would leave out. The checkpoint holds another class: for a d3 "
+            "or Clef-Flash release, its decision_config.json or joint_head_config.json must still be beside its config.json."
+        )
 
 
 def get_side_files(model: nn.Module) -> dict[str, str]:

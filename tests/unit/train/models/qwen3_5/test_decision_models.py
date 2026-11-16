@@ -541,6 +541,11 @@ def test_export_is_the_release_layout(tmp_path, exporter, monkeypatch, kind):
     with pytest.raises(ValueError, match="FP8"):
         importlib.import_module("convert_dcp_to_fp8").convert(step_dir)
 
+    # Without the file that selects the class, the export would build a plain Qwen3.5 and leave the readout out.
+    (release_dir / ("joint_head_config.json" if kind == "clef" else "decision_config.json")).unlink()
+    with pytest.raises(ValueError, match="which the export would leave out"):
+        exporter.convert(step_dir)
+
 
 class ReadoutConfig(PretrainedConfig):
     model_type = "decision_readout_test"
