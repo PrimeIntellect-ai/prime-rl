@@ -15,7 +15,7 @@ interval = 5
 num_samples = 64
 
 [[val.sets]]
-type = "sft"
+type = "chat"
 name = "reverse-text"
 path = "PrimeIntellect/Reverse-Text-SFT"
 split = "train"

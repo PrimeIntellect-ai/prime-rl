@@ -19,7 +19,7 @@ from renderers import RendererConfig
 from torch import nn
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.supervised import RawValSetConfig, SFTValSetConfig, ValConfig, ValSetConfig
+from prime_rl.configs.supervised import ChatValSetConfig, DocumentsValSetConfig, ValConfig, ValSetConfig
 from prime_rl.trainer.model import forward
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.parallel_dims import ParallelDims
@@ -66,7 +66,7 @@ class ValSet:
         return perplexity(arrays["nll"], arrays["tokens"], arrays.get("bytes")), arrays
 
 
-def raw_set(config: RawValSetConfig, num_samples: int | None) -> ValSet:
+def documents_set(config: DocumentsValSetConfig, num_samples: int | None) -> ValSet:
     """Every document (or the first ``num_samples``) in windows of ``seq_len`` scored tokens, as stored."""
     shards = TokenShards([config.path])
     documents = document_windows(shards, config.seq_len, num_samples)
@@ -79,14 +79,14 @@ def raw_set(config: RawValSetConfig, num_samples: int | None) -> ValSet:
     return ValSet(config.name, config.seq_len, requests, np.array(items), len(documents))
 
 
-def sft_set(
-    config: SFTValSetConfig, num_samples: int | None, tokenizer: PreTrainedTokenizer, renderer: RendererConfig
+def chat_set(
+    config: ChatValSetConfig, num_samples: int | None, tokenizer: PreTrainedTokenizer, renderer: RendererConfig
 ) -> ValSet:
     """The rows of the split (or the first ``num_samples``), rendered as SFT renders them, with the tokens SFT trains
     on scored and every row cut after ``seq_len`` input tokens. Rows with no scored token in that window are left out,
     as in SFT."""
     dataset = SFTDataset(
-        load_dataset(config.path, split=config.split),
+        load_dataset(config.path, config.subset, split=config.split, revision=config.revision),
         RendererResolver(tokenizer, renderer, columns=config.columns.renderer),
         shuffle=False,
         seq_len=config.seq_len,
@@ -107,9 +107,9 @@ def sft_set(
 def prepare_set(
     config: ValSetConfig, num_samples: int | None, tokenizer: PreTrainedTokenizer, renderer: RendererConfig
 ) -> ValSet:
-    if config.type == "raw":
-        return raw_set(config, num_samples)
-    return sft_set(config, num_samples, tokenizer, renderer)
+    if config.type == "documents":
+        return documents_set(config, num_samples)
+    return chat_set(config, num_samples, tokenizer, renderer)
 
 
 # The 256 characters byte-level BPE tokenizers (GPT-2, Llama 3, Qwen, DeepSeek) write the bytes as.

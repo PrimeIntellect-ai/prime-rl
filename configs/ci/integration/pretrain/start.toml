@@ -1,5 +1,5 @@
 # Qwen3-0.6B trained from scratch on Reverse-Text-SFT as token shards. The test writes the shards and passes their
-# folder as --data.paths and as the path of the raw validation set.
+# folder as --data.paths and as the path of the documents validation set.
 mode = "pretrain"
 max_steps = 20
 
@@ -18,12 +18,12 @@ micro_batch_size = 2
 interval = 10
 
 [[val.sets]]
-type = "raw"
+type = "documents"
 name = "reverse-text"
 path = "set-by-the-test"
 
 [[val.sets]]
-type = "sft"
-name = "reverse-text-sft"
+type = "chat"
+name = "reverse-text-chat"
 path = "PrimeIntellect/Reverse-Text-SFT"
 split = "train"

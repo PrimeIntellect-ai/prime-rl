@@ -97,28 +97,34 @@ class BaseValSetConfig(BaseConfig):
     """Context length: the most input tokens a scored sequence has. Defaults to the training ``data.seq_len``."""
 
 
-class RawValSetConfig(BaseValSetConfig):
+class DocumentsValSetConfig(BaseValSetConfig):
     """Pre-tokenized documents. Every document is scored on its own, from its first token, in non-overlapping windows
     of ``seq_len`` scored tokens: a longer document continues in the next window, which does not see the tokens
     before it."""
 
-    type: Literal["raw"] = "raw"
+    type: Literal["documents"] = "documents"
 
     path: Path
     """Folder of datatrove tokenized shards, as for pretraining's ``data.paths``. The tokens are scored as stored."""
 
 
-class SFTValSetConfig(BaseValSetConfig):
+class ChatValSetConfig(BaseValSetConfig):
     """Conversations, rendered as SFT renders its training data. The tokens SFT trains on (``loss_mask``) are scored,
     and a conversation is cut after ``seq_len`` input tokens."""
 
-    type: Literal["sft"] = "sft"
+    type: Literal["chat"] = "chat"
 
     path: str
     """HF dataset name or local directory, as ``datasets.load_dataset`` takes it."""
 
     split: str
     """Split of the dataset. Its rows are scored in order."""
+
+    subset: str | None = None
+    """Subset (HF config name) of the dataset."""
+
+    revision: str | None = None
+    """HF dataset revision to load. Ignored for a local directory."""
 
     columns: SFTColumnsConfig = SFTColumnsConfig()
     """Dataset columns, as for SFT's ``data.columns``."""
@@ -127,7 +133,7 @@ class SFTValSetConfig(BaseValSetConfig):
     """Which message types are scored."""
 
 
-ValSetConfig: TypeAlias = Annotated[RawValSetConfig | SFTValSetConfig, Field(discriminator="type")]
+ValSetConfig: TypeAlias = Annotated[DocumentsValSetConfig | ChatValSetConfig, Field(discriminator="type")]
 
 
 class ValConfig(BaseConfig):
@@ -191,7 +197,7 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     init_from_scratch: ClassVar[bool] = False
 
     renderer: RendererConfig = AutoRendererConfig()
-    """Renderer config, for SFT data and ``sft`` validation sets. Defaults to auto-selecting from the tokenizer model
+    """Renderer config, for SFT data and ``chat`` validation sets. Defaults to auto-selecting from the tokenizer model
     name."""
 
     data: BaseDataConfig
@@ -464,8 +470,8 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
 
     @model_validator(mode="after")
     def validate_typed_renderer(self):
-        """Require a typed renderer whenever the trainer renders real samples: SFT data or an ``sft`` validation set."""
-        renders_val_sets = self.val is not None and any(val_set.type == "sft" for val_set in self.val.sets)
+        """Require a typed renderer whenever the trainer renders real samples: SFT data or a ``chat`` validation set."""
+        renders_val_sets = self.val is not None and any(val_set.type == "chat" for val_set in self.val.sets)
         if self.data.type != "sft" and not renders_val_sets:
             return self
 

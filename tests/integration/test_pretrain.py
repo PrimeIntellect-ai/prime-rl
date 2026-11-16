@@ -48,10 +48,10 @@ def token_dir(output_dir: Path) -> Path:
 
 
 def val_sets(token_dir: Path) -> list[dict]:
-    """The config's [[val.sets]], the raw one scoring the shards the test wrote."""
+    """The config's [[val.sets]], the documents set scoring the shards the test wrote."""
     config = tomllib.loads(Path("configs/ci/integration/pretrain/start.toml").read_text())
     return [
-        {**val_set, "path": token_dir.as_posix()} if val_set["type"] == "raw" else val_set
+        {**val_set, "path": token_dir.as_posix()} if val_set["type"] == "documents" else val_set
         for val_set in config["val"]["sets"]
     ]
 
@@ -123,7 +123,7 @@ def test_loss_goes_down(pretrain_process: ProcessResult, run_dir: Path):
 
 def test_validation(pretrain_process: ProcessResult, run_dir: Path):
     lines = trainer_log(run_dir)
-    for label in ("reverse-text@1k", "reverse-text-sft@1k"):
+    for label in ("reverse-text@1k", "reverse-text-chat@1k"):
         assert any(f"Validation | Step 10 | {label} | loss" in line for line in lines), label
 
 

@@ -442,7 +442,8 @@ const COMMON_METRICS = ["effective/num_turns/mean", "effective/num_total_tokens/
 const COMMON_REGEXES = ["effective/[^/]+/is_truncated/mean", "all/[^/]+/is_timeout/mean", "all/[^/]+/has_error/mean"];
 const STABILITY_METRICS = ["optim/grad_norm", "entropy/all/mean", "mismatch_kl/all/mean", "kl_ent_ratio/mean"];
 const PERFORMANCE_METRICS = ["perf/mfu", "time/step", "time/wait_for_batch", "time/wait_for_policy"];
-const SFT_TRAIN_METRICS = ["loss/mean", "loss/perplexity", "val/loss", "val/perplexity", "progress/epoch"];
+// a val panel draws one line per validation set (val/<set>/<metric>@<seq_len>)
+const SFT_TRAIN_PANELS = [{ metric: "loss/mean" }, { metric: "loss/perplexity" }, { regex: "val/[^/]+/loss@.+" }, { regex: "val/[^/]+/bpb@.+" }, { metric: "progress/epoch" }];
 // max_vio only exists on MoE models: a regex panel stays away on dense ones
 const SFT_STABILITY_PANELS = [{ metric: "optim/grad_norm" }, { metric: "optim/lr" }, { metric: "loss/nan_count" }, { regex: "max_vio/(mean|max)" }];
 const SFT_PERFORMANCE_METRICS = ["perf/mfu", "perf/throughput", "perf/peak_memory", "time/forward_backward"];
@@ -1459,7 +1460,7 @@ function buildSections(meta) {
   const evalEnvs = meta.eval_envs || [];
   if (meta.type === "sft") {
     // the val panes show once a validation value is logged, not on the config alone
-    sections.push({ name: "train", panels: SFT_TRAIN_METRICS.map((m) => (m.startsWith("val/") ? { regex: escRe(m) } : { metric: m })) });
+    sections.push({ name: "train", panels: SFT_TRAIN_PANELS });
     if (evalEnvs.length) sections.push(...evalEnvs.map((e) => evalSection(`eval/${e}`, escRe(e), true, e)));
     else sections.push(evalSection("eval", ".*"));
     sections.push({ name: "stability", panels: SFT_STABILITY_PANELS });
@@ -1482,7 +1483,7 @@ let activeFilter = null;
 
 /* the overview names its panels for reading and says how each is computed; the raw
    key stays in the panel's hover card, and the metrics tab keeps every key as logged.
-   Group 1 of a pattern is the agent, `$k` the k of avg@k / pass@k */
+   Group 1 of a pattern is the agent (or the validation set), `$k` the k of avg@k / pass@k */
 const PANEL_INFO = [
   [/\/effective\/([^/]+)\/reward\/mean$/, "mean reward", "mean reward over the effective traces of the batch (error-free and trainable), one point per step"],
   [/\/all\/([^/]+)\/reward\/mean$/, "mean reward (all)", "mean reward over every trace of the batch, errored ones counted as zero"],
@@ -1504,8 +1505,8 @@ const PANEL_INFO = [
   ["max_vio/mean", "max vio", "expert load imbalance: the busiest expert's tokens over the balanced load, minus one; mean over layers, the worst layer dashed"],
   ["loss/mean", "loss", "mean training loss of the step"],
   ["loss/perplexity", "perplexity", "perplexity of the training loss"],
-  ["val/loss", "val loss", "mean loss over the validation set"],
-  ["val/perplexity", "val perplexity", "perplexity over the validation set"],
+  [/^val\/([^/]+)\/loss@[^/]+$/, "val loss", "mean loss per scored token of the validation set"],
+  [/^val\/([^/]+)\/bpb@[^/]+$/, "val bpb", "bits per UTF-8 byte of the validation set's scored tokens"],
   ["loss/nan_count", "NaN count", "non-finite losses in the step"],
   ["progress/epoch", "epoch", "passes over the dataset so far"],
   ["progress/num_samples", "total samples", "samples trained on so far"],
@@ -2250,7 +2251,7 @@ function trainTilesHtml() {
   const evalEnvs = (meta.eval_envs || []).filter((e) => !f.env || e === f.env);
   if (meta.type === "sft") {
     trendTiles("loss/mean", () => "loss", fmtNum, { cls: " score", lowerIsBetter: true });
-    trendTiles("val/loss", () => "val loss", fmtNum, { cls: " score", lowerIsBetter: true });
+    trendTiles("val/[^/]+/loss@[^/]+", () => "val loss", fmtNum, { cls: " score", lowerIsBetter: true });
   } else if (f.kinds.train) {
     // with several envs the aggregate is a section of its own, so its tile would only repeat them
     const scopes = envs.length ? envs.map((e) => [`train/${escRe(e)}`, e]) : [["train/agg", "train"]];

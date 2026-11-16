@@ -319,8 +319,8 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 
 | `type` | `path` | scored |
 |---|---|---|
-| `raw` | folder of datatrove tokenized shards (see [Pretraining](#pretraining)) | every document on its own, from its first token, with the tokens as stored, in non-overlapping windows of `seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it |
-| `sft` | HF dataset name or local directory, with a `split` | every row of the split in order, rendered as SFT renders its training data (`[renderer]`, and the set's `columns` and `loss_mask`); the tokens SFT trains on, cut after `seq_len` input tokens |
+| `documents` | folder of datatrove tokenized shards (see [Pretraining](#pretraining)) | every document on its own, from its first token, with the tokens as stored, in non-overlapping windows of `seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it |
+| `chat` | HF dataset name or local directory, with a `split` (and optionally a `subset` and `revision`) | every row of the split in order, rendered as SFT renders its training data (`[renderer]`, and the set's `columns` and `loss_mask`); the tokens SFT trains on, cut after `seq_len` input tokens |
 
 ```toml
 [val]
@@ -328,19 +328,19 @@ interval = 100
 num_samples = 512          # optional: the first 512 documents or rows of each set; default: all of them
 
 [[val.sets]]
-type = "raw"
+type = "documents"
 name = "fineweb-edu"
 path = "data/fineweb-edu-val"
 
 [[val.sets]]
-type = "sft"
+type = "chat"
 name = "reverse-text"
 path = "PrimeIntellect/Reverse-Text-SFT"
 split = "train"
 seq_len = 2048             # optional; default: the training data.seq_len
 ```
 
-Every set logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and with a byte-level BPE tokenizer `val/<name>/bpb@<seq_len>`, the bits per UTF-8 byte of the scored tokens (special tokens count 0 bytes), e.g. `val/fineweb-edu/bpb@2k`. With another tokenizer (e.g. SentencePiece), the trainer logs one warning and only the loss. The sets are tokenized once at startup. At every validation, the sequences of all sets are packed longest first into rows of `val.micro_batch_tokens` tokens (default: the training micro-batch, `data.seq_len * data.micro_batch_size`, or the longest set `seq_len` if that is longer), with attention and positions restarting at every sequence and the rest of a row padded, and the rows are shared out over the data-parallel ranks. The log-probs are computed in fp32. `val.save_arrays` writes the per-item arrays of every set (summed loss, scored tokens and bytes per document or row) to `<run_dir>/val/step_N/`. An `sft` set needs a typed renderer, also in pretraining. Validation does not support VLM models.
+Every set logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and with a byte-level BPE tokenizer `val/<name>/bpb@<seq_len>`, the bits per UTF-8 byte of the scored tokens (special tokens count 0 bytes), e.g. `val/fineweb-edu/bpb@2k`. With another tokenizer (e.g. SentencePiece), the trainer logs one warning and only the loss. The sets are tokenized once at startup. At every validation, the sequences of all sets are packed longest first into rows of `val.micro_batch_tokens` tokens (default: the training micro-batch, `data.seq_len * data.micro_batch_size`, or the longest set `seq_len` if that is longer), with attention and positions restarting at every sequence and the rest of a row padded, and the rows are shared out over the data-parallel ranks. The log-probs are computed in fp32. `val.save_arrays` writes the per-item arrays of every set (summed loss, scored tokens and bytes per document or row) to `<run_dir>/val/step_N/`. A `chat` set needs a typed renderer, also in pretraining. Validation does not support VLM models.
 
 ### SFT-Specific Knobs
 
@@ -428,7 +428,7 @@ interval = 100
 num_samples = 512          # documents per validation; leave out to score every held-out document
 
 [[val.sets]]
-type = "raw"
+type = "documents"
 name = "fineweb-edu"
 path = "data/fineweb-edu-val"
 ```
