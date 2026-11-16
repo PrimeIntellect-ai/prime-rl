@@ -90,7 +90,7 @@ class SFTColumnsConfig(BaseConfig):
 
 
 class BaseValSetConfig(BaseConfig):
-    name: str
+    name: str = Field(pattern=r"^[^/]+$")
     """Names the set's metrics, ``val/<name>/<metric>@<seq_len>``, e.g. ``val/fineweb-edu/bpb@2k``."""
 
     seq_len: int | None = Field(None, ge=1)
@@ -153,7 +153,7 @@ class ValConfig(BaseConfig):
     time. If None, every item."""
 
     micro_batch_tokens: int | None = Field(None, ge=1)
-    """Tokens per packed row of the sets (one forward pass on one GPU). Defaults to the training micro-batch
+    """Tokens per packed row of the sets (one forward pass). Defaults to the training micro-batch
     (``data.seq_len * data.micro_batch_size``) or the longest set ``seq_len``, whichever is larger; must be at least
     that longest ``seq_len``."""
 
@@ -469,6 +469,12 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_vlm_val(self):
+        if self.model.vlm is not None and self.val is not None:
+            raise ValueError("Validation scores text only: [val] does not support VLM models ([model.vlm]).")
+        return self
+
+    @model_validator(mode="after")
     def validate_typed_renderer(self):
         """Require a typed renderer whenever the trainer renders real samples: SFT data or a ``chat`` validation set."""
         renders_val_sets = self.val is not None and any(val_set.type == "chat" for val_set in self.val.sets)
@@ -486,7 +492,8 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
             return self
 
         raise ValueError(
-            f"SFT requires a typed renderer with sampled-token and content attribution, but {reason}. "
+            f"Rendering SFT data or chat validation sets requires a typed renderer with sampled-token and content "
+            f"attribution, but {reason}. "
             "Implement and register the renderer in the renderers package, or explicitly select an existing "
             "typed renderer only when its template is verified to match."
         )

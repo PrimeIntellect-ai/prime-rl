@@ -443,7 +443,7 @@ const COMMON_REGEXES = ["effective/[^/]+/is_truncated/mean", "all/[^/]+/is_timeo
 const STABILITY_METRICS = ["optim/grad_norm", "entropy/all/mean", "mismatch_kl/all/mean", "kl_ent_ratio/mean"];
 const PERFORMANCE_METRICS = ["perf/mfu", "time/step", "time/wait_for_batch", "time/wait_for_policy"];
 // a val panel draws one line per validation set (val/<set>/<metric>@<seq_len>)
-const SFT_TRAIN_PANELS = [{ metric: "loss/mean" }, { metric: "loss/perplexity" }, { regex: "val/[^/]+/loss@.+" }, { regex: "val/[^/]+/bpb@.+" }, { metric: "progress/epoch" }];
+const SFT_TRAIN_PANELS = [{ metric: "loss/mean" }, { metric: "loss/perplexity" }, { metric: "progress/epoch" }, { regex: "val/[^/]+/loss@[^/]+" }, { regex: "val/[^/]+/bpb@[^/]+" }];
 // max_vio only exists on MoE models: a regex panel stays away on dense ones
 const SFT_STABILITY_PANELS = [{ metric: "optim/grad_norm" }, { metric: "optim/lr" }, { metric: "loss/nan_count" }, { regex: "max_vio/(mean|max)" }];
 const SFT_PERFORMANCE_METRICS = ["perf/mfu", "perf/throughput", "perf/peak_memory", "time/forward_backward"];

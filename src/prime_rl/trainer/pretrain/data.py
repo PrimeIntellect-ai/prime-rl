@@ -1,5 +1,4 @@
-"""Pretraining data: datatrove tokenized shards read as one token pool and cut into windows of ``seq_len`` tokens,
-and for validation every held-out document scored on its own."""
+"""Pretraining data: datatrove tokenized shards read as one token pool and cut into windows of ``seq_len`` tokens."""
 
 from collections import OrderedDict
 from pathlib import Path
@@ -186,45 +185,6 @@ def eod_loss_mask(input_ids: list[int], loss_mask: list[bool], eod_token: int | 
     if eod_token is None:
         return loss_mask
     return [keep and token != eod_token for keep, token in zip(loss_mask, input_ids)]
-
-
-Window = tuple[int, int, int]
-"""File index and the token range ``[start, end)`` of a window in the file."""
-
-
-def document_windows(shards: TokenShards, seq_len: int, num_documents: int | None = None) -> list[list[Window]]:
-    """Every document of ``shards`` as stored (or the first ``num_documents``), each cut into non-overlapping windows
-    of ``seq_len`` scored tokens. A window holds up to ``seq_len + 1`` tokens and scores all but its first. The next
-    window starts at the last token of the one before and sees none of the tokens before it."""
-    documents = []
-    for file_index in range(len(shards.files)):
-        if shards.starts[file_index + 1] == shards.starts[file_index]:
-            continue
-        _, doc_ends = shards.open(file_index)
-        begin = 0
-        for end in doc_ends.tolist():
-            if len(documents) == num_documents:
-                return documents
-            documents.append(
-                [(file_index, window, min(window + seq_len + 1, end)) for window in range(begin, end - 1, seq_len)]
-            )
-            begin = end
-    return documents
-
-
-def pack_windows(lengths: list[int], token_budget: int) -> list[list[int]]:
-    """Window indices grouped into rows of at most ``token_budget`` tokens, longest first."""
-    order = sorted(range(len(lengths)), key=lambda i: -lengths[i])
-    rows, row, total = [], [], 0
-    for index in order:
-        if row and total + lengths[index] > token_budget:
-            rows.append(row)
-            row, total = [], 0
-        row.append(index)
-        total += lengths[index]
-    if row:
-        rows.append(row)
-    return rows
 
 
 # Enough documents per folder to catch shards whose documents end differently, at two token reads each.

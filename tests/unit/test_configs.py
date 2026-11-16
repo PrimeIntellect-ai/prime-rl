@@ -182,8 +182,8 @@ def test_val_set_defaults(tmp_path):
     the training micro-batch or the longest set seq_len, whichever is larger."""
     path = str(tmp_path / "tokens")
     val_sets = [
-        {"type": "raw", "name": "short", "path": path},
-        {"type": "raw", "name": "long", "path": path, "seq_len": 4096},
+        {"type": "documents", "name": "short", "path": path},
+        {"type": "documents", "name": "long", "path": path, "seq_len": 4096},
     ]
     write_toml(
         tmp_path / "pretrain.toml",

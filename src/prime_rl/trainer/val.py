@@ -21,19 +21,19 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.supervised import ChatValSetConfig, DocumentsValSetConfig, ValConfig, ValSetConfig
 from prime_rl.trainer.model import forward
+from prime_rl.trainer.models.layers.fp32_linear import fp32_output_mm
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.parallel_dims import ParallelDims
-from prime_rl.trainer.pretrain.data import TokenShards, document_windows, pack_windows, special_token_ids
+from prime_rl.trainer.pretrain.data import TokenShards, special_token_ids
 from prime_rl.trainer.sft.data import RendererResolver, SFTDataset
 from prime_rl.trainer.world import get_world
-from prime_rl.utils.cp import setup_cp_params, shard_for_cp
 from prime_rl.utils.logger import get_logger
 
 Request = tuple[np.ndarray, np.ndarray]
 """Input token ids and their labels: the next token where it is scored, else ``IGNORE_INDEX``."""
 
 
-def perplexity(nll: np.ndarray, tokens: np.ndarray, num_bytes: np.ndarray | None) -> dict[str, float]:
+def loss_and_bpb(nll: np.ndarray, tokens: np.ndarray, num_bytes: np.ndarray | None) -> dict[str, float]:
     """Mean loss per scored token, and bits per UTF-8 byte of the scored tokens when their bytes are known."""
     summary = {"loss": nll.sum() / tokens.sum()}
     if num_bytes is not None:
@@ -67,7 +67,31 @@ class ValSet:
         }
         if num_bytes is not None:
             arrays["bytes"] = per_item(num_bytes).astype(np.int64)
-        return perplexity(arrays["nll"], arrays["tokens"], arrays.get("bytes")), arrays
+        return loss_and_bpb(arrays["nll"], arrays["tokens"], arrays.get("bytes")), arrays
+
+
+Window = tuple[int, int, int]
+"""File index and the token range ``[start, end)`` of a window in the file."""
+
+
+def document_windows(shards: TokenShards, seq_len: int, num_documents: int | None = None) -> list[list[Window]]:
+    """Every document of ``shards`` as stored (or the first ``num_documents``), each cut into non-overlapping windows
+    of ``seq_len`` scored tokens. A window holds up to ``seq_len + 1`` tokens and scores all but its first. The next
+    window starts at the last token of the one before and sees none of the tokens before it."""
+    documents = []
+    for file_index in range(len(shards.files)):
+        if shards.starts[file_index + 1] == shards.starts[file_index]:
+            continue
+        _, doc_ends = shards.open(file_index)
+        begin = 0
+        for end in doc_ends.tolist():
+            if len(documents) == num_documents:
+                return documents
+            documents.append(
+                [(file_index, window, min(window + seq_len + 1, end)) for window in range(begin, end - 1, seq_len)]
+            )
+            begin = end
+    return documents
 
 
 def documents_set(config: DocumentsValSetConfig, num_samples: int | None) -> ValSet:
@@ -77,18 +101,18 @@ def documents_set(config: DocumentsValSetConfig, num_samples: int | None) -> Val
     requests, items = [], []
     for item, windows in enumerate(documents):
         for file_index, start, end in windows:
-            ids = shards.open(file_index)[0][start:end].astype(np.int64)
+            ids = shards.open(file_index)[0][start:end].astype(np.int32)
             requests.append((ids[:-1], ids[1:]))
             items.append(item)
-    return ValSet(config.name, config.seq_len, requests, np.array(items), len(documents))
+    return ValSet(config.name, config.seq_len, requests, np.array(items, dtype=np.int64), len(documents))
 
 
 def chat_set(
     config: ChatValSetConfig, num_samples: int | None, tokenizer: PreTrainedTokenizer, renderer: RendererConfig
 ) -> ValSet:
     """The rows of the split (or the first ``num_samples``), rendered as SFT renders them, with the tokens SFT trains
-    on scored and every row cut after ``seq_len`` input tokens. Rows with no scored token in that window are left out,
-    as in SFT."""
+    on scored and every row cut after ``seq_len`` input tokens. A row with no scored token in that window scores
+    nothing, as SFT skips it."""
     dataset = SFTDataset(
         load_dataset(config.path, config.subset, split=config.split, revision=config.revision),
         RendererResolver(tokenizer, renderer, columns=config.columns.renderer),
@@ -98,14 +122,16 @@ def chat_set(
         max_examples=num_samples,
         columns=config.columns,
     )
-    requests = []
-    for example in dataset.dataset:
+    requests, items = [], []
+    for item, example in enumerate(dataset.dataset):
         sample = dataset.process(example)
         if sample is None:
             continue
-        labels = np.where(sample["loss_mask"], sample["target_ids"], IGNORE_INDEX)
-        requests.append((np.array(sample["input_ids"][: config.seq_len]), labels[: config.seq_len]))
-    return ValSet(config.name, config.seq_len, requests, np.arange(len(requests)), len(requests))
+        inputs = np.array(sample["input_ids"][: config.seq_len], dtype=np.int32)
+        labels = np.where(sample["loss_mask"], sample["target_ids"], IGNORE_INDEX)[: config.seq_len].astype(np.int32)
+        requests.append((inputs, labels))
+        items.append(item)
+    return ValSet(config.name, config.seq_len, requests, np.array(items, dtype=np.int64), len(dataset.dataset))
 
 
 def prepare_set(
@@ -138,14 +164,13 @@ def token_byte_lengths(tokenizer: PreTrainedTokenizer) -> np.ndarray | None:
 
 
 def head_logprobs(hidden, weight, targets, chunk: int = 2048, softcap: float | None = None):
-    """Log-prob and greedy hit of ``targets`` under ``hidden @ weight.T``, in fp32 chunks over tokens, so the
-    fp32 logits stay at ``chunk x vocab``. With ``softcap`` (the head's final-logit soft-cap, as in training) the
-    logits are ``softcap * tanh(logits / softcap)`` first."""
-    weight = weight.float()
+    """Log-prob and greedy hit of ``targets`` under fp32 logits ``hidden @ weight.T``, in chunks over tokens, so the
+    logits stay at ``chunk x vocab``. With ``softcap`` (the head's final-logit soft-cap, as in training) the logits
+    are ``softcap * tanh(logits / softcap)`` first."""
     logprobs, hits = [], []
     # At least one chunk: a CP shard without scored tokens returns empty tensors.
     for start in range(0, max(len(targets), 1), chunk):
-        logits = hidden[start : start + chunk].float() @ weight.T
+        logits = fp32_output_mm(hidden[start : start + chunk], weight)
         if softcap is not None:
             logits = softcap * torch.tanh(logits / softcap)
         target = targets[start : start + chunk]
@@ -156,7 +181,8 @@ def head_logprobs(hidden, weight, targets, chunk: int = 2048, softcap: float | N
 
 def scoring_head(self, hidden_states, labels, temperature=None, support=None):
     """Replaces the forward of prime-rl's LM head: log-prob and greedy hit of every label that is not
-    IGNORE_INDEX, in fp32 without TF32, returned in the ``logprobs`` / ``entropy`` slots of its output dict."""
+    IGNORE_INDEX, from fp32 logits (an fp32 model's without TF32), returned in the ``logprobs`` / ``entropy`` slots
+    of its output dict."""
     hidden = hidden_states.reshape(-1, hidden_states.shape[-1])
     labels = labels.reshape(-1)
     keep = labels != IGNORE_INDEX
@@ -179,22 +205,34 @@ def scoring_head_active(model: nn.Module) -> Iterator[None]:
         del model.lm_head.forward
 
 
-def score(
-    model: nn.Module, requests: list[Request], micro_batch_tokens: int, parallel_dims: ParallelDims
-) -> tuple[np.ndarray, np.ndarray] | None:
-    """Summed log-prob and greedy hits of every request's scored tokens, on rank 0 (None on the others). Requests are
-    packed longest first into document-masked rows of ``micro_batch_tokens`` tokens (positions restart per request,
-    ``seq_lens`` marks them), padded with unscored tokens, so every forward has the same shape. The rows are dealt
-    round-robin over the data-parallel ranks, which run the same number of forwards (each is an FSDP collective);
-    with CP, every rank scores its contiguous shard of the row. The sums are gathered on rank 0."""
-    world = get_world()
-    dp = parallel_dims.get_mesh("dp")
-    data_rank, data_world_size = dp.get_local_rank(), dp.size()
-    cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if parallel_dims.cp_enabled else 0
-    cp_size = parallel_dims.cp
-    rows = pack_windows([len(inputs) for inputs, _ in requests], micro_batch_tokens)
+def pack_rows(lengths: list[int], micro_batch_tokens: int) -> list[list[int]]:
+    """Request indices grouped into rows of at most ``micro_batch_tokens`` tokens, longest first."""
+    order = sorted(range(len(lengths)), key=lambda i: -lengths[i])
+    rows, row, total = [], [], 0
+    for index in order:
+        if row and total + lengths[index] > micro_batch_tokens:
+            rows.append(row)
+            row, total = [], 0
+        row.append(index)
+        total += lengths[index]
+    if row:
+        rows.append(row)
+    return rows
+
+
+def rank_rows(
+    requests: list[Request], micro_batch_tokens: int, data_rank: int, data_world_size: int, cp_rank: int, cp_size: int
+) -> Iterator[tuple[np.ndarray, np.ndarray, np.ndarray, list[int], np.ndarray | None]]:
+    """The rows one rank runs. The requests are packed into document-masked rows of ``micro_batch_tokens`` tokens
+    (positions restart per request, the segment lengths mark them), padded with unscored tokens, so every forward has
+    the same shape. The rows are dealt round-robin over the data ranks, which all run the same number of rows (each
+    forward is an FSDP collective): a rank short of a row runs the first one again, unscored. With CP, a rank holds a
+    contiguous shard of the row, as in training.
+
+    Yields the shard's input ids, position ids and labels, the whole row's segment lengths, and the request of every
+    scored label in the shard (None for a row that is not scored)."""
+    rows = pack_rows([len(inputs) for inputs, _ in requests], micro_batch_tokens)
     mine = rows[data_rank::data_world_size]
-    indices, logprob_sums, hit_sums = [], [], []
     for i in range(-(-len(rows) // data_world_size)):
         row = mine[i] if i < len(mine) else rows[0]
         lengths = [len(requests[index][0]) for index in row]
@@ -208,26 +246,34 @@ def score(
             labels = np.concatenate([labels, np.full(padding, IGNORE_INDEX)])
             owners = np.concatenate([owners, np.full(padding, -1)])
             lengths.append(padding)
-        input_ids = torch.from_numpy(inputs)[None].cuda()
-        position_ids = torch.cat([torch.arange(length) for length in lengths])[None].cuda()
-        label_ids = torch.from_numpy(labels)[None].cuda()
-        if cp_size > 1:
-            input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size)
-            label_ids = shard_for_cp(label_ids, cp_rank=cp_rank, cp_world_size=cp_size)
-            owners = np.split(owners, cp_size)[cp_rank]
+        positions = np.concatenate([np.arange(length) for length in lengths])
+        inputs, positions, labels, owners = (np.split(x, cp_size)[cp_rank] for x in (inputs, positions, labels, owners))
+        yield inputs, positions, labels, lengths, owners[owners >= 0] if i < len(mine) else None
+
+
+def score(
+    model: nn.Module, requests: list[Request], micro_batch_tokens: int, parallel_dims: ParallelDims
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Summed log-prob and greedy hits of every request's scored tokens, on rank 0 (None on the others). Every rank
+    scores its rows (`rank_rows`), and the sums are gathered on rank 0."""
+    world = get_world()
+    dp = parallel_dims.get_mesh("dp")
+    cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if parallel_dims.cp_enabled else 0
+    rows = rank_rows(requests, micro_batch_tokens, dp.get_local_rank(), dp.size(), cp_rank, parallel_dims.cp)
+    indices, logprob_sums, hit_sums = [], [], []
+    for inputs, positions, labels, lengths, owners in rows:
         out = forward(
             model,
-            input_ids,
-            position_ids,
+            torch.from_numpy(inputs.astype(np.int64))[None].cuda(),
+            torch.from_numpy(positions)[None].cuda(),
             seq_lens=torch.tensor(lengths, device="cuda"),
-            labels=label_ids,
-            seq_lens_are_pre_shard=cp_size > 1,
+            labels=torch.from_numpy(labels.astype(np.int64))[None].cuda(),
+            seq_lens_are_pre_shard=parallel_dims.cp_enabled,
         )
-        if i >= len(mine):
+        if owners is None:
             continue
         logprobs, hits = out["logprobs"].double().cpu().numpy(), out["entropy"].cpu().numpy()
-        # The scored tokens of a request are contiguous in the output: one run per owner.
-        owners = owners[owners >= 0]
+        # The scored tokens of a request are contiguous in the output: one run per request.
         starts = np.flatnonzero(np.diff(owners, prepend=-1))
         for start, end in zip(starts, [*starts[1:], len(owners)]):
             indices.append(owners[start])
@@ -269,14 +315,17 @@ class Validation:
             if not val_set.requests:
                 raise ValueError(f"Validation set {val_set.name} has nothing to score")
         self.requests = [request for val_set in self.sets for request in val_set.requests]
-        scored = [labels[labels != IGNORE_INDEX] for _, labels in self.requests]
-        self.tokens = np.array([len(labels) for labels in scored])
         byte_lengths = token_byte_lengths(tokenizer)
         if byte_lengths is None:
             get_logger().warning("The tokenizer is not byte-level BPE: validation logs no bits per byte")
-            self.bytes = None
-        else:
-            self.bytes = np.array([byte_lengths[labels].sum() for labels in scored])
+        tokens, num_bytes = [], []
+        for _, labels in self.requests:
+            scored = labels[labels != IGNORE_INDEX]
+            tokens.append(len(scored))
+            if byte_lengths is not None:
+                num_bytes.append(byte_lengths[scored].sum())
+        self.tokens = np.array(tokens)
+        self.bytes = np.array(num_bytes) if byte_lengths is not None else None
         get_logger().info(
             f"Prepared {len(self.sets)} validation sets ({len(self.requests)} requests, {self.tokens.sum()} scored "
             f"tokens) in {time.perf_counter() - start_time:.0f}s"
@@ -307,5 +356,5 @@ class Validation:
                 out = self.run_dir / "val" / f"step_{step}"
                 out.mkdir(parents=True, exist_ok=True)
                 np.savez(out / f"{label}.npz", **arrays)
-                (out / f"{label}.json").write_text(json.dumps(summary, default=float))
+                (out / f"{label}.json").write_text(json.dumps(summary))
         return metrics

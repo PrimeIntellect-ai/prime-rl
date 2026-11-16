@@ -89,6 +89,4 @@ class SFTConfig(SupervisedTrainerConfig):
             return self
         if self.data.micro_batch_size != 1:
             raise ValueError("VLM SFT requires data.micro_batch_size = 1.")
-        if self.val is not None:
-            raise ValueError("Validation scores text only: VLM SFT does not support [val].")
         return self
