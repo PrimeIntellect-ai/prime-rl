@@ -142,22 +142,14 @@ class SystemOneColumnsConfig(BaseConfig):
     used over its hard label."""
 
 
-class SystemOneEncoderConfig(PluginConfig):
-    """The model's System One encoder: ``import_path`` names a subclass of
-    ``prime_rl.trainer.sft.system_one.data.SystemOneEncoder``, built as ``Encoder(tokenizer, **kwargs)``."""
-
-
 class SystemOneDataConfig(HFDataConfig):
     """System One records: a state and typed questions (noul, choice, score) per row, with hard and/or soft labels.
-    Each question trains toward its label at the token spans the encoder marks for the model's head."""
+    Each question trains toward its label at the token spans that the model's strategy marks for its head."""
 
     type: Literal["system_one"] = "system_one"
 
     columns: SystemOneColumnsConfig = SystemOneColumnsConfig()
     """Dataset columns of a record."""
-
-    encoder: SystemOneEncoderConfig
-    """How a record becomes tokens, attention segments and read spans. It must match the model's head."""
 
 
 class SFTCrossEntropyLossConfig(BaseConfig):
@@ -217,7 +209,7 @@ class SFTConfig(SupervisedTrainerConfig):
 
     @model_validator(mode="after")
     def validate_system_one_data(self):
-        """System One data is used for training and validation alike, with one encoder and one ``seq_len``, a loss
+        """System One data is used for training and validation alike, with one ``seq_len``, a loss
         other than token cross-entropy, no ``[renderer]`` and no padding."""
         data_configs = {"data": self.data}
         if self.val is not None:
@@ -236,8 +228,8 @@ class SFTConfig(SupervisedTrainerConfig):
         # A resolved config writes the default [renderer] out, so compare with it instead of checking that it was set.
         if self.renderer != AutoRendererConfig():
             raise ValueError(
-                '[renderer] is not used with data.type = "system_one": the encoder ([data.encoder]) owns any chat '
-                "template. Remove [renderer]."
+                '[renderer] is not used with data.type = "system_one": the model\'s strategy owns any chat template. '
+                "Remove [renderer]."
             )
         for key, data in data_configs.items():
             if data.pad_to_seq_len:
@@ -245,17 +237,11 @@ class SFTConfig(SupervisedTrainerConfig):
                     f'{key}.pad_to_seq_len is not supported with {key}.type = "system_one": the padding would join a '
                     "record's last attention segment."
                 )
-        if self.val is not None:
-            if self.val.data.encoder != self.data.encoder:
-                raise ValueError(
-                    "val.data.encoder must equal data.encoder: the model has one head, so validation records are "
-                    "encoded like training records."
-                )
-            if self.val.data.seq_len != self.data.seq_len:
-                raise ValueError(
-                    f"val.data.seq_len ({self.val.data.seq_len}) must equal data.seq_len ({self.data.seq_len}): it is "
-                    "the token budget of a record, and [val.data] does not inherit it."
-                )
+        if self.val is not None and self.val.data.seq_len != self.data.seq_len:
+            raise ValueError(
+                f"val.data.seq_len ({self.val.data.seq_len}) must equal data.seq_len ({self.data.seq_len}): it is "
+                "the token budget of a record, and [val.data] does not inherit it."
+            )
         return self
 
     @model_validator(mode="after")

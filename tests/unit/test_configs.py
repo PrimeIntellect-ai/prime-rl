@@ -1280,7 +1280,7 @@ def test_sft_allows_unused_default_renderer_for_fake_data():
     assert config.renderer.name == "default"
 
 
-SYSTEM_ONE_DATA = {"name": "org/records", "seq_len": 4096, "encoder": {"import_path": "my_pkg.MyEncoder"}}
+SYSTEM_ONE_DATA = {"name": "org/records", "seq_len": 4096}
 
 
 def test_system_one_config_roundtrip(tmp_path):

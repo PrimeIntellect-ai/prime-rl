@@ -4,7 +4,13 @@ import pytest
 from datasets import Dataset
 
 from prime_rl.configs.sft import SystemOneColumnsConfig
-from prime_rl.trainer.sft.system_one.data import EncodedRecord, SystemOneDataset, SystemOneEncoder, check_encoded
+from prime_rl.trainer.sft.system_one.data import (
+    RenderedRecord,
+    SystemOneDataset,
+    SystemOneStrategy,
+    check_rendered_record,
+    system_one_strategy_cls,
+)
 from prime_rl.trainer.sft.system_one.record import build_targets, parse_record
 
 COLUMNS = SystemOneColumnsConfig()
@@ -146,27 +152,27 @@ def test_rejects_columns_that_are_not_json_text(column, value):
         parse_record({**row(label=LABEL), column: value}, COLUMNS)
 
 
-class StubEncoder(SystemOneEncoder):
+class StubStrategy(SystemOneStrategy):
     """Ten tokens in two segments, read at one span per question or two, with noul and choice options reordered."""
 
-    def __init__(self, tokenizer, reads):
-        super().__init__(tokenizer)
-        self.reads = reads
+    def __init__(self, tokenizer, config, read_spans=None):
+        super().__init__(tokenizer, config)
+        self.read_spans = read_spans
 
-    def __call__(self, record, max_tokens):
-        return EncodedRecord(
+    def render_record(self, record, max_tokens):
+        return RenderedRecord(
             input_ids=list(range(10, 20)),
             seq_lens=[4, 6],
-            reads=self.reads,
+            read_spans=self.read_spans,
             options=[["true", "false"], ["billing", "technical"], ["0", "1", "2"]],
         )
 
 
-def _dataset(reads) -> SystemOneDataset:
-    return SystemOneDataset(Dataset.from_list([ROW]), StubEncoder(None, reads))
+def _dataset(read_spans) -> SystemOneDataset:
+    return SystemOneDataset(Dataset.from_list([ROW]), StubStrategy(None, None, read_spans))
 
 
-def test_process_builds_sample_in_encoder_option_order():
+def test_process_builds_sample_in_strategy_option_order():
     sample = _dataset([[(1, 2)], [(2, 4)], [(6, 7), (8, 10)]])._process(ROW)
 
     assert sample == {
@@ -202,7 +208,7 @@ def test_process_builds_sample_in_encoder_option_order():
 
 
 @pytest.mark.parametrize(
-    "input_ids, seq_lens, reads",
+    "input_ids, seq_lens, read_spans",
     [
         (list(range(10)), [4, 6], [[(1, 3)], [(2, 4)], [(6, 7)]]),  # overlapping spans
         (list(range(10)), [4, 6], [[(1, 2)], [(3, 5)], [(6, 7)]]),  # a span across two segments
@@ -211,23 +217,35 @@ def test_process_builds_sample_in_encoder_option_order():
         (list(range(10)), [4, 6], [[(True, 2)], [(2, 4)], [(6, 7)]]),  # a bool span start
     ],
 )
-def test_check_encoded_rejects_broken_encodings(input_ids, seq_lens, reads):
+def test_check_rendered_record_rejects_broken_renderings(input_ids, seq_lens, read_spans):
     record, _ = parse_record(ROW, COLUMNS)
-    encoded = EncodedRecord(input_ids=input_ids, seq_lens=seq_lens, reads=reads)
-    with pytest.raises(ValueError, match="record 'r': the encoder broke the EncodedRecord contract"):
-        check_encoded(encoded, record)
+    rendered = RenderedRecord(input_ids=input_ids, seq_lens=seq_lens, read_spans=read_spans)
+    with pytest.raises(ValueError, match="record 'r': the strategy broke the RenderedRecord contract"):
+        check_rendered_record(rendered, record)
 
 
 def test_process_skips_record_without_labels():
     assert _dataset([[(1, 2)], [(2, 4)], [(6, 7)]])._process(row()) is None
 
 
-class SkippingEncoder(SystemOneEncoder):
-    def __call__(self, record, max_tokens):
+class SkippingStrategy(SystemOneStrategy):
+    def render_record(self, record, max_tokens):
         return None
 
 
 def test_raises_when_every_record_is_skipped():
-    dataset = SystemOneDataset(Dataset.from_list([ROW] * 3), SkippingEncoder(None))
+    dataset = SystemOneDataset(Dataset.from_list([ROW] * 3), SkippingStrategy(None, None))
     with pytest.raises(RuntimeError, match="skipped 7 rows in a row"):
         next(iter(dataset))
+
+
+class StubDecisionModel:
+    @classmethod
+    def system_one_strategy(cls):
+        return StubStrategy
+
+
+def test_system_one_strategy_cls_requires_a_declared_strategy():
+    assert system_one_strategy_cls(StubDecisionModel) is StubStrategy
+    with pytest.raises(ValueError, match="object does not"):
+        system_one_strategy_cls(object)
