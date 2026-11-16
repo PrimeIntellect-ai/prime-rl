@@ -254,6 +254,8 @@ def test_d3_checks_its_decision_config(tmp_path):
             ({"pooling": "mean"}, "pooling 'mean'"),
             ({"attention_mode": "bidirectional"}, "attention_mode 'bidirectional'"),
             ({"token_ids": [32]}, "one token id per answer code"),
+            ({"temperature": 0}, "temperature must be a finite number above 0"),
+            ({"temperature": float("inf")}, "temperature must be a finite number above 0"),
         ]
     ):
         write_d3_release(tmp_path / str(index), DECISION_CONFIG | change)

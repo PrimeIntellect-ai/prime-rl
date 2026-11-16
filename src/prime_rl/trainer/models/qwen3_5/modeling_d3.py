@@ -1,6 +1,8 @@
 """Decision 3.0 (d3): a Qwen3.5 backbone with an answer-code readout, the model vLLM 0.33 serves as
 ``D3ForSequenceClassification`` (``vllm/model_executor/models/d3.py``)."""
 
+import math
+
 import torch
 from torch import Tensor, nn
 
@@ -53,12 +55,15 @@ class D3ForSequenceClassification(Qwen3_5ForCausalLM):
         codes, token_ids = decision.get("codes"), decision.get("token_ids")
         if not codes or not isinstance(token_ids, list) or len(codes) != len(token_ids):
             raise ValueError("decision_config.json must list one token id per answer code")
+        temperature = decision.get("temperature", 1.0)
+        if not isinstance(temperature, (int, float)) or not 0 < temperature < math.inf:
+            raise ValueError(f"decision_config.json temperature must be a finite number above 0, got {temperature!r}")
 
         text_config = getattr(config, "text_config", config)
         text_config.is_causal = attention_mode == "causal"
         super().__init__(config)
         self.score = nn.Linear(text_config.hidden_size, len(codes), bias=False, dtype=torch.float32)
-        self.temperature = float(decision.get("temperature", 1.0))
+        self.temperature = float(temperature)
         if not getattr(config, "tie_word_embeddings", False):
             self.lm_head.weight.requires_grad_(False)
 
