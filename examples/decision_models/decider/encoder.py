@@ -7,8 +7,9 @@ compactly for System One questions and text-only records. The released readout d
 """
 
 import json
-from pathlib import Path
 from typing import Any
+
+from transformers.utils import cached_file
 
 from prime_rl.trainer.sft.system_one.data import EncodedRecord, SystemOneEncoder
 from prime_rl.trainer.sft.system_one.record import Question, SystemOneRecord
@@ -79,13 +80,13 @@ class DeciderEncoder(SystemOneEncoder):
     """The whole record is one attention segment: a system and a user turn in the checkpoint's chat template, up to
     where the answer would start, with thinking off. Each question is read at its marker.
 
-    The answer codes are the checkpoint's: ``decision_config.json`` in the directory the tokenizer was loaded from
-    (``model.name``)."""
+    The answer codes are the checkpoint's: the ``decision_config.json`` beside the tokenizer's files, a directory or
+    a Hub id (``model.name`` unless ``[tokenizer] name`` is set)."""
 
     def __init__(self, tokenizer) -> None:
         super().__init__(tokenizer)
-        config = json.loads((Path(tokenizer.name_or_path) / "decision_config.json").read_text())
-        self.codes = config["codes"]
+        with open(cached_file(tokenizer.name_or_path, "decision_config.json")) as file:
+            self.codes = json.load(file)["codes"]
         self.marker_id = tokenizer.convert_tokens_to_ids(MARKER)
 
     def __call__(self, record: SystemOneRecord, max_tokens: int) -> EncodedRecord:

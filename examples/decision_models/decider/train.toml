@@ -8,10 +8,10 @@ mode = "sft"
 max_steps = 240
 
 [model]
-name = "outputs/decider/pplx-decider-flash-v1.2"  # the release: the first load converts it to prime-rl's weight names
+name = "outputs/decider/pplx-decider-flash-v1.2"  # the release as downloaded
 
 [model.implementation]
-import_path = "decision_models.decider.model.Qwen3_5Decider"
+import_path = "decision_models.decider.model.Decider"
 
 [data]
 type = "system_one"

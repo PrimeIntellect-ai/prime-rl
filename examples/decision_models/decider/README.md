@@ -1,35 +1,30 @@
 # Decider
 
-[pplx-decider-flash-v1.2](https://huggingface.co/perplexity-ai/pplx-decider-flash-v1.2) (by Perplexity) is Qwen3.5-4B with an answer-code readout. It answers every question of a record in one prompt: after the state, each question lists its options under short answer codes (`A`, `B`, ...) and ends in a marker token, `<|fim_suffix|>`. The full-attention layers read the prompt in both directions while the Gated DeltaNet layers stay causal, and a linear readout of 255 rows scores the codes at each marker. A question with n options keeps the first n scores. This folder fine-tunes the released model in full on [Typed Decisions Synth](../data/README.md), under the [contract](../README.md#the-contract) of the decision models.
+[pplx-decider-flash-v1.2](https://huggingface.co/perplexity-ai/pplx-decider-flash-v1.2) (by Perplexity) is Qwen3.5-4B with an answer-code readout. It answers every question of a record in one prompt: after the state, each question lists its options under short answer codes (`A`, `B`, ...) and ends in a marker token, `<|fim_suffix|>`. The full-attention layers read the prompt in both directions while the Gated DeltaNet layers stay causal, and a linear readout of 255 rows scores the codes at each marker. A question with n options keeps the first n scores. This folder fine-tunes the released model in full on [Typed Decisions Synth](../data/README.md).
 
-## Files
+## Native and example code
+
+A Decider release has d3's layout, so prime-rl selects its d3 class for it, `D3ForSequenceClassification` ([Native Decision Models](../../../docs/training.md#native-decision-models)), which reads the release's weights and builds its non-causal attention and float32 readout. The rest is this folder's:
 
 | File | What |
 |---|---|
-| `encoder.py` | `DeciderEncoder`: the whole record is one prompt and one attention segment (a system prompt, the state, then every question with its options under the answer codes and a marker), read at each question's marker. The answer codes come from the checkpoint's `decision_config.json` |
-| `model.py` | `Qwen3_5Decider`: prime-rl's Qwen3.5 plus `readout`, with the full-attention layers made non-causal. A question's logits are the readout's first rows at its marker. Its conversion methods put the release's weights under prime-rl's parameter names |
+| `model.py` | `Decider`, the `[model.implementation]` class: d3's class reading `decision_config.json` format version 2, Decider's, with its own `decision_logits`, the readout's first rows at each question's marker, not divided by the temperature |
+| `encoder.py` | `DeciderEncoder`: the whole record is one prompt and one attention segment (a system prompt, the state, then every question with its options under the answer codes and a marker), read at each question's marker. The answer codes come from the `decision_config.json` beside the tokenizer's files |
 | `train.toml`, `smoke.toml` | The full fine-tuning run, and a 30-step mechanics check composed after it |
 
-## Run Decider
+## vLLM
 
-From the repository root, on one GPU. The data, the loss and both configs are checked on CPU; neither config has run on a GPU yet, so memory use and the hyperparameters are unmeasured, and the conversion of the release has run only on a small stand-in, not on the release's weights. Download the release, and prepare the records as [their README](../data/README.md) says (they go to `outputs/typed-decisions-synth-system-one`):
+vLLM 0.33 does not serve Decider: it routes the release to d3's class and refuses its format version 2. A run's [export](../../../docs/training.md#exporting-checkpoints) has d3's layout (`decision_config.json` and `readout.safetensors` beside the shards), which loads for training again with the same `[model.implementation]`. Decider's `joint_config.json` and `source/` are not written, so copy them from the release to use Decider's own code. The export keeps the release's temperature (1.55, in `decision_config.json`), which Decider's code applies to logits trained without it: refit it on held-out data, or set it to 1, before serving the export.
+
+## Run
+
+Download the release, and prepare the records as [their README](../data/README.md) says (they go to `outputs/typed-decisions-synth-system-one`), then run as [Running a model](../README.md#running-a-model) says, with `PYTHONPATH=examples`:
 
 ```bash
 uv run hf download perplexity-ai/pplx-decider-flash-v1.2 --revision 9ff7cf9838e59df461c276b7699d56b244d2af58 --local-dir outputs/decider/pplx-decider-flash-v1.2
 ```
 
-Then the mechanics check, and the run. `PYTHONPATH=examples` makes `decision_models` importable in the trainer:
-
-```bash
-PYTHONPATH=examples uv run sft @ examples/decision_models/decider/train.toml @ examples/decision_models/decider/smoke.toml
-PYTHONPATH=examples uv run sft @ examples/decision_models/decider/train.toml
-```
-
-The run is one pass over the 6,682 training records (23,319 questions) in 240 steps. It validates on the 732 validation records before the first step and every 30 steps, the last step included. The first validation measures the released model. The mechanics check keeps Qwen3.5's first four layers, of which the fourth is a full-attention layer. A run without a Prime API key needs `--no-monitors.prime`.
-
-`model.name` is the release. It holds the backbone as a bare `Qwen3_5Model` (`language_model.*`, `visual.*`) and the readout apart (`readout.safetensors`, key `weight`), and prime-rl loads every parameter by its name in `Qwen3_5Decider` (`model.language_model.*`, `model.visual.*`, `readout.weight`). So the first load converts the release: prime-rl writes a copy of every weight, under the names `Qwen3_5Decider`'s conversion methods give it, to `outputs/decider/pplx-decider-flash-v1.2/prime/` (or under `model.conversion_dir`). Every later load reads that copy, which prime-rl never rebuilds: delete it if the release's files change. Completing an interrupted download is such a change: a run on a download that lacks a backbone shard still writes the copy, without that shard's weights, and every load that needs them fails with `The checkpoint lacks [...]` until the copy is deleted.
-
-The encoder reads `decision_config.json` from the directory the tokenizer is loaded from, which is the release (`model.name`) unless `[tokenizer]` names another.
+The run is one pass over the 6,682 training records (23,319 questions) in 240 steps. It validates on the 732 validation records before the first step and every 30 steps, the last step included. The mechanics check keeps Qwen3.5's first four layers, of which the fourth is a full-attention layer. Only the release's configuration and tokenizer have been loaded on CPU, not its weights.
 
 A record's attention segment must hold the record alone: the full-attention layers are non-causal, so every token of the record would attend to padding in the same segment. prime-rl packs records back to back without padding, and refuses `pad_to_seq_len` for System One data.
 
@@ -38,7 +33,7 @@ A record's attention segment must hold the record alone: the full-attention laye
 Perplexity published no training recipe, so the recipe is this example's:
 
 - The whole language model and the readout train, at one learning rate (1e-5, untuned, cosine schedule with warmup), with AdamW, weight decay 0.01 and gradient clipping at 1.0. prime-rl keeps the vision encoder frozen, since the data is text.
-- The loss is soft cross-entropy against the dataset's soft labels, without a Brier term, on the readout's logits as they are. Decider divides them by a temperature at inference (1.55, in `decision_config.json`), fitted to the released weights. Validation therefore reports the loss of uncalibrated logits.
+- The loss is soft cross-entropy against the dataset's soft labels, without a Brier term, on the readout's logits as they are. Decider divides them by a temperature at inference (1.55, in `decision_config.json`), a calibration fitted to the released weights, which the class leaves out of the logits it trains. This departs on purpose from the `DecisionModel` contract, whose logits include a checkpoint's own temperature. Validation therefore reports the loss of uncalibrated logits.
 - A step is eight packed rows of up to 2,048 tokens each: about 28 records and 98 questions. A row is short to keep the activations small. In fp32 the 4.2B trained parameters and their gradients take 31 GiB on the GPU; AdamW's two moments take another 31 GiB, which prime-rl keeps in host memory except during the optimizer step (`model.offload = "optimizer"`, its default). None of this is measured.
 
 And the model runs as prime-rl runs it, not as Decider's own code does:
@@ -51,7 +46,7 @@ The prompt, its tokens, the answer codes, the attention pattern and the readout 
 
 ## Third-party notice
 
-The prompt format in `encoder.py` is taken from `source/src/pplx_decider/protocol.py` of https://huggingface.co/perplexity-ai/pplx-decider-flash-v1.2, rewritten compactly for System One questions and text-only records, and `model.py` converts that release's weights to prime-rl's parameter names. pplx-decider-flash-v1.2 is licensed under the Apache License, Version 2.0, which is also this repository's licence ([LICENSE](../../../LICENSE)). Its `NOTICE`:
+The prompt format in `encoder.py` is taken from `source/src/pplx_decider/protocol.py` of https://huggingface.co/perplexity-ai/pplx-decider-flash-v1.2, rewritten compactly for System One questions and text-only records. pplx-decider-flash-v1.2 is licensed under the Apache License, Version 2.0, which is also this repository's licence ([LICENSE](../../../LICENSE)). Its `NOTICE`:
 
 ```text
 pplx-decider-flash-v1.2
