@@ -1,7 +1,6 @@
 """d3 and Clef-Flash, the decision models prime-rl builds from their releases as vLLM 0.33 serves them."""
 
 import ast
-import importlib
 import importlib.metadata
 import json
 import math
@@ -16,19 +15,16 @@ import numpy as np
 import pytest
 import torch
 import torch.distributed as dist
-import torch.distributed.checkpoint as dcp
 import torch.multiprocessing as mp
 import torch.nn.functional as F
 from datasets import Dataset
 from huggingface_hub import _CACHED_NO_EXIST
 from huggingface_hub.errors import LocalEntryNotFoundError
-from safetensors.torch import load_file, save_file
 from tokenizers import Regex, Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.pre_tokenizers import Split
 from torch import nn
 from transformers import AutoConfig, PretrainedConfig, PreTrainedTokenizerFast
-from transformers.models.qwen3_5 import configuration_qwen3_5 as hf_configuration
 from transformers.models.qwen3_5 import modeling_qwen3_5 as hf_modeling
 
 import prime_rl.trainer.parallel_dims as parallel_dims_module
@@ -46,10 +42,8 @@ from prime_rl.trainer.model import (
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers import attn, gated_delta_net
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.models.qwen3_5 import Qwen3_5Config, Qwen3_5TextConfig, Qwen3_5VisionConfig
 from prime_rl.trainer.models.qwen3_5.clef_joint_schema import (
     QUESTION_TYPES,
-    JointSchemaHead,
     schema_indices,
     segment_mean,
 )
@@ -60,30 +54,19 @@ from prime_rl.trainer.sft.loss import LossInputs, LossOutputs, run_loss_fn
 from prime_rl.trainer.sft.system_one.data import SystemOneDataset
 from prime_rl.trainer.sft.system_one.loss import checked_option_logits, decision_loss
 from prime_rl.utils.weights import group_by_layer, load_state_dict, load_state_dict_keys
-
-HIDDEN = 64
-CODES = ["A", "B", "C", "D", "E"]
-# d3-nano's decision_config.json, with 5 of its 255 codes and another temperature.
-DECISION_CONFIG = {
-    "format_version": 1,
-    "format_id": "d3-code-readout-v1",
-    "prompt": "d3",
-    "codes": CODES,
-    "token_ids": [32, 33, 34, 35, 36],
-    "temperature": 1.5,
-    "attention_mode": "noncausal_full_attention",
-    "pooling": "last",
-    "max_length": None,
-    "readout_dtype": "float32",
-}
-JOINT_HEAD_CONFIG = {
-    "hidden_size": HIDDEN,
-    "width": 32,
-    "routing_layers": 1,
-    "layers": 1,
-    "heads": 4,
-    "feedforward": 48,
-}
+from tests.unit.train.models.qwen3_5.decision_releases import (
+    CODES,
+    DECISION_CONFIG,
+    HIDDEN,
+    JOINT_HEAD_CONFIG,
+    WRITE_RELEASE,
+    clef_head_weights,
+    model_config,
+    tiny_config,
+    vllm_route,
+    write_clef_release,
+    write_d3_release,
+)
 
 # vLLM 0.33's weight mappers (WeightsMapper.orig_to_new_prefix): D3ForSequenceClassification's (models/d3.py:66-71),
 # which replaces Qwen3.5's, and ClefFlashForJointSchema's, Qwen3.5's (models/qwen3_vl.py:1969-1975 and
@@ -107,116 +90,11 @@ def vllm_name(name: str, mapper: dict[str, str | None]) -> str | None:
     return name
 
 
-def vllm_route(directory: Path) -> str:
-    """The class vLLM 0.33 serves a Qwen3.5 checkpoint with (transformers_utils/model_arch_config_convertor.py:629-650)."""
-    architectures = json.loads((directory / "config.json").read_text())["architectures"]
-    if architectures == ["Qwen3_5ForConditionalGeneration"] and (directory / "joint_head_config.json").exists():
-        return "ClefFlashForJointSchema"
-    if architectures == ["Qwen3_5Model"] and (directory / "decision_config.json").exists():
-        return "D3ForSequenceClassification"
-    return architectures[0]
-
-
-def tiny_config(architecture: str, tied: bool) -> Qwen3_5Config:
-    text_config = Qwen3_5TextConfig(
-        vocab_size=128,
-        hidden_size=HIDDEN,
-        intermediate_size=128,
-        num_hidden_layers=2,
-        layer_types=["linear_attention", "full_attention"],
-        num_attention_heads=4,
-        num_key_value_heads=2,
-        head_dim=16,
-        max_position_embeddings=256,
-        linear_key_head_dim=16,
-        linear_value_head_dim=16,
-        linear_num_key_heads=2,
-        linear_num_value_heads=4,
-        linear_conv_kernel_dim=4,
-        tie_word_embeddings=tied,
-    )
-    vision_config = Qwen3_5VisionConfig(
-        depth=1, hidden_size=32, intermediate_size=64, num_heads=2, out_hidden_size=HIDDEN
-    )
-    return Qwen3_5Config(
-        text_config=text_config,
-        vision_config=vision_config,
-        image_token_id=120,
-        video_token_id=121,
-        vision_start_token_id=122,
-        vision_end_token_id=123,
-        tie_word_embeddings=tied,
-        architectures=[architecture],
-    )
-
-
-def release_backbone(config: Qwen3_5Config) -> dict[str, torch.Tensor]:
-    """A release's backbone, under the names of transformers' class for its architecture."""
-    torch.manual_seed(0)
-    model = getattr(hf_modeling, config.architectures[0])(hf_configuration.Qwen3_5Config(**config.to_dict()))
-    return {name: tensor.detach().clone() for name, tensor in model.state_dict().items()}
-
-
-def write_tokenizer(directory: Path) -> None:
-    tokenizer = Tokenizer(WordLevel({"<eos>": 0, "a": 1}, unk_token="<eos>"))
-    PreTrainedTokenizerFast(tokenizer_object=tokenizer, eos_token="<eos>").save_pretrained(directory)
-
-
-def write_d3_release(
-    directory: Path, decision_config: dict = DECISION_CONFIG, tied: bool = True
-) -> dict[str, torch.Tensor]:
-    """d3-nano's layout: config.json with the bare backbone's architecture and a tied embedding, decision_config.json,
-    the backbone in one model.safetensors without an index or MTP weights, and readout.safetensors {"weight": F32}.
-    Untied, as d3 and d3-flash are, the backbone has no LM head either."""
-    config = tiny_config("Qwen3_5Model", tied=tied)
-    config.save_pretrained(directory)
-    (directory / "decision_config.json").write_text(json.dumps(decision_config))
-    weights = release_backbone(config)
-    save_file(weights, directory / "model.safetensors")
-    readout = {"weight": torch.randn(len(decision_config["codes"]), HIDDEN)}
-    save_file(readout, directory / "readout.safetensors")
-    write_tokenizer(directory)
-    return weights | readout
-
-
-def clef_head_weights() -> dict[str, torch.Tensor]:
-    """A head as joint_head.safetensors stores it: vLLM's names without a prefix, 0-dimensional scalars."""
-    torch.manual_seed(1)
-    head = {name: tensor.detach().clone() for name, tensor in JointSchemaHead(**JOINT_HEAD_CONFIG).state_dict().items()}
-    for scalar in SCALARS:
-        head[scalar] = torch.randn(())
-    return head
-
-
-def write_clef_release(directory: Path) -> dict[str, torch.Tensor]:
-    """Clef-Flash's layout: the Qwen3.5 checkpoint with an untied LM head, its MTP weights and an index, plus
-    joint_head_config.json and joint_head.safetensors."""
-    config = tiny_config("Qwen3_5ForConditionalGeneration", tied=False)
-    config.save_pretrained(directory)
-    (directory / "joint_head_config.json").write_text(json.dumps(JOINT_HEAD_CONFIG))
-    backbone = release_backbone(config) | {"mtp.fc.weight": torch.randn(HIDDEN, 2 * HIDDEN)}
-    save_file(backbone, directory / "model-00001-of-00001.safetensors")
-    index = {"metadata": {}, "weight_map": dict.fromkeys(backbone, "model-00001-of-00001.safetensors")}
-    (directory / "model.safetensors.index.json").write_text(json.dumps(index))
-    head = clef_head_weights()
-    save_file(head, directory / "joint_head.safetensors")
-    write_tokenizer(directory)
-    return backbone | head
-
-
-WRITE_RELEASE = {"d3": write_d3_release, "d3-untied": partial(write_d3_release, tied=False), "clef": write_clef_release}
-
-
 def build(directory: Path, device: str = "meta") -> PreTrainedModelPrimeRL:
     config = AutoConfig.from_pretrained(directory)
     model_cls = get_decision_model_cls(config, str(directory))
     with torch.device(device):
         return model_cls._from_config(config, attn_implementation="flash_attention_2", dtype=torch.float32)
-
-
-def model_config(directory: Path, implementation: str | None = None) -> ModelConfig:
-    implementation = None if implementation is None else {"import_path": implementation}
-    return ModelConfig(name=str(directory), attn="flash_attention_2", implementation=implementation)
 
 
 class Decider(D3ForSequenceClassification):
@@ -488,63 +366,6 @@ def test_decision_models_are_refused_where_they_cannot_train(tmp_path):
                 refuse_decision_model(model, config, **run)
 
 
-@pytest.fixture
-def exporter(monkeypatch):
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[5] / "tools"))
-    return importlib.import_module("convert_dcp_to_bf16")
-
-
-@pytest.mark.parametrize("kind", ["d3", "d3-untied", "clef"])
-def test_export_is_the_release_layout(tmp_path, exporter, monkeypatch, kind):
-    monkeypatch.delenv("PRL_ATTEMPT_CONFIG_DIR", raising=False)
-    release_dir = tmp_path / "release"
-    release = WRITE_RELEASE[kind](release_dir)
-    step_dir = tmp_path / "run" / "checkpoints" / "step_1"
-    config_dir = tmp_path / "run" / "configs" / "latest" / "resolved"
-    config_dir.mkdir(parents=True)
-    (config_dir / "sft.json").write_text(json.dumps({"model": {"name": str(release_dir)}, "tokenizer": {}}))
-    model = get_model(model_config(release_dir), device=torch.device("meta"), dtype=torch.float32)
-    state = {name: torch.randn(tensor.shape) for name, tensor in model.state_dict().items()}
-    dcp.save({"app": {"model": state}}, checkpoint_id=step_dir / "trainer", no_dist=True)
-
-    output = exporter.convert(step_dir)
-    assert vllm_route(output) == type(model).__name__
-    config = json.loads((output / "config.json").read_text())
-    assert config["architectures"] == json.loads((release_dir / "config.json").read_text())["architectures"]
-    assert not {"decision_config", "joint_head_config"} & config.keys() and "is_causal" not in config["text_config"]
-    index = json.loads((output / "model.safetensors.index.json").read_text())["weight_map"]
-    shards = {name: tensor for file in set(index.values()) for name, tensor in load_file(output / file).items()}
-    if kind != "clef":
-        assert json.loads((output / "decision_config.json").read_text()) == DECISION_CONFIG
-        readout = load_file(output / "readout.safetensors")
-        assert readout.keys() == {"weight"} and readout["weight"].dtype == torch.float32
-        assert torch.equal(readout["weight"], state["score.weight"])
-        assert shards.keys() == release.keys() - {"weight"}
-    else:
-        assert json.loads((output / "joint_head_config.json").read_text()) == JOINT_HEAD_CONFIG
-        head = load_file(output / "joint_head.safetensors")
-        assert head.keys() == clef_head_weights().keys() and all(head[scalar].shape == () for scalar in SCALARS)
-        assert torch.equal(head["residual_gate"].float(), state["pooler.head.residual_gate"].bfloat16().float()[0])
-        assert shards.keys() == {name for name in release if not name.startswith("mtp.")} - head.keys()
-    assert shards.keys() == index.keys()
-
-    # The export's keys read as a release's, and it selects the same class.
-    exported = dict.fromkeys(load_state_dict_keys(output))
-    assert model.is_hf_state_dict(exported) and not model.is_prime_state_dict(exported)
-    assert get_decision_model_cls(AutoConfig.from_pretrained(output), str(output)) is type(model)
-
-    # Neither FP8 tool quantizes it: their quantization config does not cover the side files' weights.
-    with pytest.raises(ValueError, match="FP8"):
-        importlib.import_module("convert_bf16_to_fp8").convert(output)
-    with pytest.raises(ValueError, match="FP8"):
-        importlib.import_module("convert_dcp_to_fp8").convert(step_dir)
-
-    # Without the file that selects the class, the export would build a plain Qwen3.5 and leave the readout out.
-    (release_dir / ("joint_head_config.json" if kind == "clef" else "decision_config.json")).unlink()
-    with pytest.raises(ValueError, match="which the export would leave out"):
-        exporter.convert(step_dir)
-
-
 class ReadoutConfig(PretrainedConfig):
     model_type = "decision_readout_test"
 
@@ -618,6 +439,7 @@ def fp32_worker(rank: int, world: int, init_file: str, out_dir: str) -> None:
     dist.destroy_process_group()
 
 
+@pytest.mark.gpu
 def test_fp32_modules_compute_in_float32_under_fsdp(tmp_path):
     world = 2
     mp.spawn(fp32_worker, args=(world, str(tmp_path / "rendezvous"), str(tmp_path)), nprocs=world, join=True)
@@ -771,6 +593,7 @@ def check_decision_loss(model, batch: dict, logits: list[torch.Tensor], trained:
     assert trained.grad is not None and trained.grad.abs().sum() > 0
 
 
+@pytest.mark.gpu
 def test_d3_trains_on_vllms_prompts_end_to_end(tmp_path, cpu_kernels):
     write_d3_release(tmp_path)
     write_char_tokenizer(tmp_path)
@@ -806,6 +629,7 @@ def test_d3_trains_on_vllms_prompts_end_to_end(tmp_path, cpu_kernels):
     check_decision_loss(model, batch, logits, model.score.weight)
 
 
+@pytest.mark.gpu
 def test_clef_trains_on_vllms_prompt_end_to_end(tmp_path, cpu_kernels):
     write_clef_release(tmp_path)
     write_char_tokenizer(tmp_path)
