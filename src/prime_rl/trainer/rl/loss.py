@@ -12,7 +12,13 @@ from prime_rl.configs.trainer import (
     IPOLossConfig,
     LossConfig,
 )
-from prime_rl.trainer.models.layers.lm_head import TokenSupport, label_logprob, max_tail_spread, support_replay_mask
+from prime_rl.trainer.models.layers.lm_head import (
+    TokenSupport,
+    label_log_softmax,
+    label_logprob,
+    max_tail_spread,
+    support_replay_mask,
+)
 from prime_rl.utils.utils import import_object
 
 
@@ -64,13 +70,10 @@ Expected signature for a custom loss:
 
 
 @jaxtyped(typechecker=typechecker)
-@torch.compile(dynamic=True)
 def selective_log_softmax(
     logits: Float[Tensor, "batch seq vocab"], index: Int[Tensor, "batch seq"]
 ) -> Float[Tensor, "batch seq"]:
-    index = index.unsqueeze(-1)
-    rest_logsumexp = logits.scatter(-1, index, float("-inf")).logsumexp(-1)
-    return label_logprob(logits.gather(-1, index).squeeze(-1), rest_logsumexp)
+    return label_log_softmax(logits, index)
 
 
 def _segment_logsumexp(values: Tensor, rows: Tensor, num_rows: int) -> Tensor:
@@ -106,9 +109,8 @@ def selective_log_softmax_with_support(
     replay = support_replay_mask(support, index, rows)
     label_entry = support.ids == index[rows]
     support_rest = _segment_logsumexp(support_logits.masked_fill(label_entry, float("-inf")), rows, support.num_rows)
-    full_rest = logits.scatter(-1, index.unsqueeze(-1), float("-inf")).logsumexp(-1)
     target_logits = logits.gather(-1, index.unsqueeze(-1)).squeeze(-1)
-    logprobs = label_logprob(target_logits, torch.where(replay, support_rest, full_rest))
+    logprobs = torch.where(replay, label_logprob(target_logits, support_rest), label_log_softmax(logits, index))
     logz = target_logits - logprobs
     return logprobs.unsqueeze(0), torch.where(label_entry, logprobs[rows], support_logits - logz[rows])
 

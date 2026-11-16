@@ -215,9 +215,9 @@ def pack_sampler_rows(logits, cu_num_logits, num_sampled, sampled, num_rows):
     x = logits[cu_num_logits[:-1].long()[index]].float()
     ids = torch.cat([sampled[index].view(-1, 1).long(), x.topk(width).indices], dim=1)
     # (x - max) - log1p(sum of exp(x - max) over all but one max entry) stays exact for an id with probability near 1
-    shifted = x - x.amax(-1, keepdim=True)
-    below = shifted < 0
-    tail = torch.where(below, shifted.exp(), 0.0).sum(-1, keepdim=True) + ((~below).sum(-1, keepdim=True) - 1)
+    shifted = x.sub_(x.amax(-1, keepdim=True))
+    at_max = shifted == 0
+    tail = shifted.exp().masked_fill_(at_max, 0.0).sum(-1, keepdim=True) + (at_max.sum(-1, keepdim=True) - 1)
     values = (shifted.gather(1, ids) - torch.log1p(tail)).clamp_min(-9999.0)
     packed = ((values.contiguous().view(torch.int32) ^ NEG_INF_BITS).long() << 32) | ids
     row_counts = (

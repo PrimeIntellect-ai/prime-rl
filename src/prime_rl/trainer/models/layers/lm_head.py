@@ -198,12 +198,9 @@ def label_logprob(label_logits: Tensor, rest_logsumexp: Tensor) -> Tensor:
 
 def cross_entropy_sum(logits: Tensor, labels: Tensor) -> Tensor:
     """Summed fp32 cross-entropy over labels != IGNORE_INDEX."""
-    logits = logits.view(-1, logits.shape[-1]).float()
     labels = labels.reshape(-1)
-    target = labels.clamp(min=0).unsqueeze(-1)
-    rest_logsumexp = logits.scatter(1, target, float("-inf")).logsumexp(-1)
-    nll = -label_logprob(logits.gather(1, target).squeeze(1), rest_logsumexp)
-    return torch.where(labels != IGNORE_INDEX, nll, 0.0).sum()
+    logprobs = label_log_softmax(logits.view(-1, logits.shape[-1]).float(), labels.clamp(min=0))
+    return torch.where(labels != IGNORE_INDEX, -logprobs, 0.0).sum()
 
 
 @torch.compile(dynamic=True)
@@ -223,8 +220,45 @@ def max_tail_spread(logits: Tensor) -> tuple[Tensor, Tensor, Tensor]:
 
 @torch.compile(dynamic=True)
 def _probs(logits: Tensor, norm_max: Tensor, norm_log_tail: Tensor) -> Tensor:
-    """``exp((z - m) - log1p(tail))`` per row, from ``max_tail_spread``'s max and ``log1p(tail)``."""
-    return torch.exp((logits - norm_max.unsqueeze(-1)) - norm_log_tail.unsqueeze(-1))
+    """``exp((z - m) - log1p(tail))`` per row, from ``max_tail_spread``'s max and ``log1p(tail)``, written over
+    ``logits``."""
+    return logits.sub_(norm_max.unsqueeze(-1)).sub_(norm_log_tail.unsqueeze(-1)).exp_()
+
+
+@torch.compile(dynamic=True)
+def _label_log_softmax_forward(logits: Tensor, labels: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    norm_max, tail, _ = max_tail_spread(logits)
+    norm_log_tail = torch.log1p(tail)
+    logprobs = (logits.gather(-1, labels.unsqueeze(-1)).squeeze(-1) - norm_max) - norm_log_tail
+    return norm_max, norm_log_tail, logprobs
+
+
+@torch.compile(dynamic=True)
+def _label_log_softmax_backward(
+    logits: Tensor, labels: Tensor, norm_max: Tensor, norm_log_tail: Tensor, logprobs: Tensor, grad: Tensor
+) -> Tensor:
+    is_label = torch.arange(logits.shape[-1], device=logits.device) == labels.unsqueeze(-1)
+    probs = torch.exp((logits - norm_max.unsqueeze(-1)) - norm_log_tail.unsqueeze(-1))
+    return grad.unsqueeze(-1) * torch.where(is_label, -torch.expm1(logprobs).unsqueeze(-1), -probs)
+
+
+class _LabelLogSoftmaxFn(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, logits: Tensor, labels: Tensor) -> Tensor:  # type: ignore[override]
+        norm_max, norm_log_tail, logprobs = _label_log_softmax_forward(logits, labels)
+        ctx.save_for_backward(logits, labels, norm_max, norm_log_tail, logprobs)
+        return logprobs
+
+    @staticmethod
+    def backward(ctx, grad: Tensor) -> tuple[Tensor, None]:
+        return _label_log_softmax_backward(*ctx.saved_tensors, grad), None
+
+
+def label_log_softmax(logits: Tensor, labels: Tensor) -> Tensor:
+    """``log_softmax(logits)`` at ``labels`` along the last dim, in ``max_tail_spread``'s exact form. Backward keeps
+    only ``logits`` and per-row statistics and writes the gradient in one pass, with ``1 - p = -expm1(logp)`` at the
+    label."""
+    return _LabelLogSoftmaxFn.apply(logits, labels)
 
 
 def _rescaled_spread(m: Tensor, tail: Tensor, spread: Tensor, m_new: Tensor) -> Tensor:
