@@ -439,10 +439,10 @@ class MyEncoder(SystemOneEncoder):
 ```
 
 - **Lifetime.** The encoder is built in the main process as `MyEncoder(tokenizer, **kwargs)` with the run's tokenizer and `[data.encoder.kwargs]`, at startup and again at each validation; a subclass with its own arguments passes the tokenizer to `super().__init__`. It is copied into every dataloader worker, so keep `__init__` cheap and create heavy state on first call, and it must be deterministic so that a resumed run reads the same samples.
-- **Input.** `record.state` and each question's `instructions` and `criteria` are the decoded JSON; `question.options` are the option ids in the order of the table, and `question.descriptions` their descriptions (`None` where there is none). `max_tokens` is `data.seq_len`: an encoder may shorten its own content to fit, or return `None` to skip the record. prime-rl never truncates a record.
+- **Input.** `record.state` and each question's `instructions` and `criteria` are the decoded JSON; `question.options` are the option ids in the order of the table, and `question.descriptions` their descriptions (`None` where there is none). `max_tokens` is `data.seq_len`: an encoder may shorten its own content to fit, or return `None` to skip the record. A record is also skipped, with a warning, when its encoding is longer than `max_tokens` (prime-rl never truncates a record) or none of its questions has a label. A malformed record raises and stops the run, and so does a data rank that skips more records in a row than the dataset has.
 - **Output.** `input_ids`, `seq_lens`, `reads`, and optionally `options`: per question, the option ids in the order of the head's logits when that is not the order of the table (prime-rl reorders the targets to match). prime-rl checks every encoding against the `EncodedRecord` contract and raises on a violation.
 
-**Configure.** `data.name`, `[data.encoder]` and a custom loss are required:
+**Configure.** `data.name`, `[data.encoder]` and a [custom loss](#custom-loss) are required:
 
 ```toml
 [model]
@@ -467,17 +467,17 @@ import_path = "my_pkg.loss.decision_loss"
 [val]                             # optional
 interval = 500
 
-[val.data]                        # type follows [data]; nothing else is copied
+[val.data]
 name = "my-org/tickets-system-one"
 splits = ["validation"]
-seq_len = 4096                    # must equal data.seq_len
+seq_len = 4096
 
-[val.data.encoder]                # must equal [data.encoder]
+[val.data.encoder]
 import_path = "my_pkg.encoder.MyEncoder"
 ```
 
 - **Segments.** Each `seq_lens` entry is one attention segment: attention and positions restart at its first token. A read span lies within one segment. Records are packed back to back into rows of up to `seq_len * micro_batch_size` tokens, without padding, and no segment spans two records. `data.batch_size` counts budgets of `seq_len` tokens (up to `batch_size` x `seq_len` tokens per step), not records or questions.
-- **Reads.** `loss_mask` is true on every token of every read span and false elsewhere. There is no next-token shift and `target_ids` is all zeros, so token cross-entropy is refused: `[loss] type = "custom"` is required, with [its limits](#custom-loss).
+- **Reads.** `loss_mask` is true on every token of every read span and false elsewhere. There is no next-token shift and `target_ids` is all zeros.
 - **What the loss receives.** `inputs.batch["sample_data"]` holds one dict per record of the row, in row order. A record starts at the sum of the earlier records' `num_tokens`, and its `reads` count from there. `target` follows `options`, and is `None` for an unlabelled question, which the loss leaves out of its `count`. `inputs.hidden_states[inputs.batch["loss_mask"]]` is every read token of the row, in order. With `MyEncoder` and prompts of 30, 34 and 31 tokens, the example's dict is:
 
   ```python
@@ -488,8 +488,7 @@ import_path = "my_pkg.encoder.MyEncoder"
   ]}
   ```
 
-- **Skips and errors.** A record is skipped when none of its questions has a label (with a warning), when the encoder returns `None`, or when its encoding is longer than `data.seq_len` (with a warning). A malformed record raises and stops the run, and so does a data rank that skips more records in a row than the dataset has.
-- **Validation and unused settings.** `[data]` and `[val.data]` are both System One or neither. `val.data.seq_len` is not inherited: it defaults to 128 and must equal `data.seq_len`, and `val.data.encoder` must equal `data.encoder`. The encoder owns any chat template, so a non-default `[renderer]` is refused, and per-row template columns such as `reasoning_effort` are not read. `pad_to_seq_len` is refused.
+- **Validation and unused settings.** `[val.data]` takes only its `type` from `[data]`, so both are System One or neither. `val.data.seq_len` defaults to 128 and must equal `data.seq_len`, and `val.data.encoder` must equal `data.encoder`. The encoder owns any chat template, so a non-default `[renderer]` is refused, and per-row template columns such as `reasoning_effort` are not read. `pad_to_seq_len` is refused.
 
 **Launch.** The encoder, the loss and the model class must be importable where the trainer runs.
 

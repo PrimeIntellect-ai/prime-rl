@@ -144,15 +144,12 @@ class SystemOneColumnsConfig(BaseConfig):
 
 class SystemOneEncoderConfig(PluginConfig):
     """The model's System One encoder: ``import_path`` names a subclass of
-    ``prime_rl.trainer.sft.system_one.data.SystemOneEncoder``, built as ``Encoder(tokenizer, **kwargs)`` and
-    called per record as ``encoder(record, max_tokens)``. It returns an ``EncodedRecord``, or None to skip the
-    record. It never sees labels."""
+    ``prime_rl.trainer.sft.system_one.data.SystemOneEncoder``, built as ``Encoder(tokenizer, **kwargs)``."""
 
 
 class SystemOneDataConfig(HFDataConfig):
     """System One records: a state and typed questions (noul, choice, score) per row, with hard and/or soft labels.
-    Each question trains toward its label at the token spans the encoder marks for the model's head. The encoder owns
-    any chat template: ``[renderer]`` is not used, and per-row columns such as ``reasoning_effort`` are not read."""
+    Each question trains toward its label at the token spans the encoder marks for the model's head."""
 
     type: Literal["system_one"] = "system_one"
 
