@@ -56,6 +56,7 @@ class D3ForSequenceClassification(Qwen3_5ForCausalLM):
         codes, token_ids = decision.get("codes"), decision.get("token_ids")
         if not codes or not isinstance(token_ids, list) or len(codes) != len(token_ids):
             raise ValueError("decision_config.json must list one token id per answer code")
+        # Ours: vLLM's strategy divides by float(temperature) without checking it.
         temperature = decision.get("temperature", 1.0)
         if not isinstance(temperature, (int, float)) or not 0 < temperature < math.inf:
             raise ValueError(f"decision_config.json temperature must be a finite number above 0, got {temperature!r}")
