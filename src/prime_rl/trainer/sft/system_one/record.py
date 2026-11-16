@@ -12,6 +12,8 @@ QuestionType = Literal["noul", "choice", "score"]
 
 MAX_CHOICE_OPTIONS = 255
 MIN_SCORE_LEVELS, MAX_SCORE_LEVELS = 2, 10
+# Covers labels rounded to two decimals, for up to 10 options.
+SOFT_LABEL_SUM_TOLERANCE = 0.05
 
 
 @dataclass(frozen=True)
@@ -135,8 +137,12 @@ def _soft_label(question: Question, soft_label: Any) -> list[float]:
     if any(isinstance(p, bool) or not isinstance(p, (int, float)) for p in values):
         raise ValueError(f"{where}: soft label values must be numbers")
     total = sum(values)
-    if any(not math.isfinite(p) or p < 0 for p in values) or not math.isclose(total, 1.0, abs_tol=1e-2):
-        raise ValueError(f"{where}: the soft label must be a distribution (its probabilities sum to 1 within 1e-2)")
+    # The 1e-9 lets a sum of exactly 0.95 or 1.05 in decimal through despite float error.
+    if any(not math.isfinite(p) or p < 0 for p in values) or abs(total - 1) > SOFT_LABEL_SUM_TOLERANCE + 1e-9:
+        raise ValueError(
+            f"{where}: the soft label must be a distribution (non-negative probabilities that sum to 1 within "
+            f"{SOFT_LABEL_SUM_TOLERANCE})"
+        )
     return [p / total for p in values]
 
 
