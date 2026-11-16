@@ -55,13 +55,19 @@ def resolve_run_configs(step_dir: Path) -> tuple[ModelConfig, TokenizerConfig]:
         if path.exists():
             logger.info(f"Reading model config from {path}")
             config = json.loads(path.read_text())
-            model = config["model"]
+            model, tokenizer = config["model"], config["tokenizer"]
+            # A ckpt run's model.name is its source step directory, which may be gone; this step directory holds
+            # copies of its config.json and tokenizer.
+            if model.get("init", {}).get("type") == "ckpt" and (step_dir / "config.json").exists():
+                if tokenizer.get("name") == model["name"]:
+                    tokenizer["name"] = str(step_dir)
+                model["name"] = str(step_dir)
             # Where the weights started does not change the model (older versions: init_from, debug.random_init),
             # and a ckpt init would require its source step directory to still exist.
             for key in ("init", "init_from"):
                 model.pop(key, None)
             model.get("debug", {}).pop("random_init", None)
-            return ModelConfig(**model), TokenizerConfig(**config["tokenizer"])
+            return ModelConfig(**model), TokenizerConfig(**tokenizer)
     raise FileNotFoundError(f"No resolved run config ({' or '.join(RUN_CONFIG_NAMES)}) found under {config_dir}")
 
 

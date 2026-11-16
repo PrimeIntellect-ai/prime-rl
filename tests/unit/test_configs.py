@@ -1501,6 +1501,20 @@ def test_model_init_checkpoint_requires_a_step_dir():
         TrainerModelConfig(name="Qwen/Qwen3-0.6B", init={"type": "ckpt"})
 
 
+def test_rl_shared_model_init_reaches_the_trainer():
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "runs/sft/checkpoints/step_500", "init": {"type": "ckpt"}},
+            "trainer": {},
+            "orchestrator": {
+                "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
+                "renderer": {"name": "qwen3"},
+            },
+        }
+    )
+    assert config.trainer.model.init.type == "ckpt"
+
+
 @pytest.mark.parametrize(
     ("init_type", "explicit", "load_format"),
     [("hf", None, None), ("scratch", None, "dummy"), ("ckpt", None, "dummy"), ("scratch", "auto", "auto")],
