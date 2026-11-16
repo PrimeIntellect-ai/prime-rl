@@ -20,7 +20,7 @@ class Qwen3_5Attention(FlashAttention):
                 head_dim=config.head_dim,
                 num_attention_heads=config.num_attention_heads,
                 num_key_value_heads=config.num_key_value_heads,
-                is_causal=True,
+                is_causal=getattr(config, "is_causal", True),
                 attention_bias=config.attention_bias,
                 output_bias=config.attention_bias,
                 use_qk_norm=False,

@@ -1,6 +1,8 @@
 ## a bit of context here, this basically copy AutoModelForCausalLM from transformers, but use our own model instead
 
+import json
 from collections import OrderedDict
+from pathlib import Path
 
 from transformers import AutoConfig
 from transformers.configuration_utils import PretrainedConfig
@@ -8,6 +10,7 @@ from transformers.models.auto.auto_factory import _BaseAutoModelClass, _LazyAuto
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
+from transformers.utils import cached_file
 
 from prime_rl.trainer.models.afmoe import AfmoeConfig, AfmoeForCausalLM
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
@@ -31,6 +34,8 @@ from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5TextConfig,
     Qwen3_5VisionConfig,
 )
+from prime_rl.trainer.models.qwen3_5.modeling_clef_flash import ClefFlashForJointSchema
+from prime_rl.trainer.models.qwen3_5.modeling_d3 import D3ForSequenceClassification
 from prime_rl.trainer.models.qwen3_8_flash_next import (
     Qwen3_8FlashNextConfig,
     Qwen3_8FlashNextForCausalLM,
@@ -138,12 +143,43 @@ def get_custom_vlm_cls(model_config: PretrainedConfig) -> type | None:
     return _CUSTOM_VLM_MAPPING.get(getattr(model_config, "model_type", None))
 
 
+# The decision models vLLM 0.33 tells apart from their backbone by the checkpoint's architectures and a file beside its
+# config.json, which it attaches to the config (transformers_utils/model_arch_config_convertor.py:622-651):
+# (model_type, architecture, file) -> (class, config attribute).
+_DECISION_MODELS: dict[tuple[str, str, str], tuple[type[PreTrainedModelPrimeRL], str]] = {
+    ("qwen3_5", "Qwen3_5Model", "decision_config.json"): (D3ForSequenceClassification, "decision_config"),
+    ("qwen3_5", "Qwen3_5ForConditionalGeneration", "joint_head_config.json"): (
+        ClefFlashForJointSchema,
+        "joint_head_config",
+    ),
+}
+
+
+def get_decision_model_cls(model_config: PretrainedConfig, name: str) -> type[PreTrainedModelPrimeRL] | None:
+    """The decision model class vLLM selects for the checkpoint at `name` (a local directory or a Hub id), or None.
+    The file that selects it is read into the config attribute vLLM uses; ``config.architectures`` is left as is."""
+    architectures = getattr(model_config, "architectures", None) or []
+    for (model_type, architecture, file), (cls, attribute) in _DECISION_MODELS.items():
+        if model_config.model_type != model_type or architectures != [architecture]:
+            continue
+        # A Hub error reads as a missing file, as for every stock Qwen3.5 checkpoint: a decision run then fails the
+        # decision model check.
+        path = cached_file(
+            name, file, _raise_exceptions_for_missing_entries=False, _raise_exceptions_for_connection_errors=False
+        )
+        if path is not None:
+            setattr(model_config, attribute, json.loads(Path(path).read_text()))
+            return cls
+    return None
+
+
 __all__ = [
     "AutoModelForCausalLMPrimeRL",
     "PreTrainedModelPrimeRL",
     "get_custom_causal_lm_cls",
     "supports_custom_impl",
     "get_custom_vlm_cls",
+    "get_decision_model_cls",
     "PrimeLmOutput",
     "cast_float_and_contiguous",
 ]

@@ -171,7 +171,12 @@ def train(config: SFTConfig | PretrainConfig):
     logger.info(f"Initializing model ({config.model})")
     from_checkpoint = config.model.init.type == "pretrained" and is_checkpoint_step_dir(config.model.name)
     loading_from_ckpt_later = checkpoint_step is not None or from_checkpoint
-    model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
+    model = setup_model(
+        config.model,
+        parallel_dims,
+        loading_from_ckpt_later,
+        broadcasts_weights=config.eval is not None,
+    )
 
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
