@@ -5,7 +5,10 @@ One torchrun launch runs every case in-process. A case builds a tiny random-init
 packed Reverse-Text-SFT rows, and compares the loss, grad norm and every parameter's gradient with a plain unsharded
 copy of the same weights that runs all rows on one GPU.
 
-A case is one line in `CASES`; adding a model is one entry in `TINY_MODELS`. To run the cases without pytest:
+A case is one line in `CASES`. Adding a model is one entry in `TINY_MODELS`, whose checkpoints HF builds, or in
+`TINY_PRIME_RL_MODELS`, whose checkpoints the prime-rl model class builds (archs without an HF implementation). A case
+that raises, for example on a kernel this GPU does not support, fails alone and the other cases still report. To run
+the cases without pytest:
 
     uv run torchrun --nproc-per-node=2 tests/unit/train/test_distributed_invariance.py <output_dir>
 """
@@ -14,6 +17,7 @@ import json
 import math
 import sys
 import time
+import traceback
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
@@ -36,8 +40,13 @@ from prime_rl.trainer.model import (
     setup_model,
     setup_tokenizer,
 )
+from prime_rl.trainer.models import get_custom_causal_lm_cls
+from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.fusions import apply_model_fusions
+from prime_rl.trainer.models.glm_moe_dsa import GlmMoeDsaConfig
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX, inject_prime_lm_head
+from prime_rl.trainer.models.qwen3_5 import Qwen3_5MoeTextConfig
+from prime_rl.trainer.models.qwen3_8_flash_next import Qwen3_8FlashNextTextConfig
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.sft.data import setup_sft_dataset
 from prime_rl.trainer.utils import clip_grad_norm_, scale_gradients_, setup_torch_distributed
@@ -45,6 +54,7 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp
 from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.weights import save_state_dict
 
 pytestmark = [pytest.mark.gpu, pytest.mark.tiny]
 
@@ -72,6 +82,82 @@ TINY_MODELS: dict[str, PretrainedConfig] = {
         **TINY_DIMS, **MOE_DIMS, n_routed_experts=8, n_shared_experts=1, first_k_dense_replace=1, intermediate_size=512
     ),
 }
+# Every layer kind of each arch with small widths and 8 experts. Head counts and head dims stay at the published
+# values where kernels require them: FlashMLA serves 64 or 128 query heads of dim 512, and Qwen's mrope sections cover
+# a quarter of a 256-dim head. DeepSeek-V4 and GLM-5 build with the TileLang backend, whose constructor does not check
+# the GPU; the trainer picks `model.dsa_backend` itself.
+QWEN_MROPE = {
+    "mrope_interleaved": True,
+    "mrope_section": [11, 11, 10],
+    "rope_type": "default",
+    "rope_theta": 10000000,
+    "partial_rotary_factor": 0.25,
+}
+QWEN_NEXT_DIMS = dict(
+    vocab_size=151936,
+    hidden_size=256,
+    num_hidden_layers=2,
+    layer_types=["linear_attention", "full_attention"],
+    num_attention_heads=4,
+    num_key_value_heads=2,
+    head_dim=256,
+    linear_num_key_heads=4,
+    linear_key_head_dim=128,
+    linear_value_head_dim=128,
+    num_experts=8,
+    num_experts_per_tok=2,
+    moe_intermediate_size=128,
+    shared_expert_intermediate_size=128,
+    rope_parameters=QWEN_MROPE,
+    max_position_embeddings=4096,
+    bos_token_id=151643,
+    eos_token_id=151645,
+)
+TINY_PRIME_RL_MODELS: dict[str, PretrainedConfig] = {
+    "qwen3_5_moe": Qwen3_5MoeTextConfig(**QWEN_NEXT_DIMS, linear_num_value_heads=8, tie_word_embeddings=False),
+    "qwen3_8_flash_next": Qwen3_8FlashNextTextConfig(
+        **QWEN_NEXT_DIMS,
+        linear_num_value_heads=12,
+        # A budget below the documents' lengths, so the indexer drops keys
+        indexer_budget=64,
+        hc_lowrank=64,
+        ple_layer_ids=[1],
+        ple_embed_dim=256,
+        ngram_vocab_size_base=4096,
+        split_ngram_parts=4,
+    ),
+    "deepseek_v4": DeepseekV4Config(
+        vocab_size=151936,
+        hidden_size=256,
+        num_hidden_layers=3,
+        layer_types=["sliding_attention", "compressed_sparse_attention", "heavily_compressed_attention"],
+        compress_rates={"compressed_sparse_attention": 4, "heavily_compressed_attention": 128},
+        q_lora_rank=256,
+        o_lora_rank=128,
+        index_topk=64,
+        n_routed_experts=8,
+        num_experts_per_tok=2,
+        moe_intermediate_size=128,
+        num_hash_layers=1,
+        max_position_embeddings=4096,
+        dsa_backend="tilelang",
+    ),
+    "glm_moe_dsa": GlmMoeDsaConfig(
+        vocab_size=151936,
+        hidden_size=256,
+        num_hidden_layers=2,
+        first_k_dense_replace=1,
+        intermediate_size=512,
+        moe_intermediate_size=128,
+        q_lora_rank=256,
+        index_topk=128,
+        n_routed_experts=8,
+        num_experts_per_tok=2,
+        pad_token_id=None,
+        max_position_embeddings=4096,
+        dsa_backend="tilelang",
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -97,6 +183,14 @@ CASES = [
     Case("qwen3_moe-cp2_ep2", "qwen3_moe", cp=2, ep=2),
     Case("qwen3_moe-ep2-compile", "qwen3_moe", ep=2, compile=True),
     Case("glm4_moe-cp2_ep2", "glm4_moe", cp=2, ep=2),
+    Case("qwen3_5_moe-ep2", "qwen3_5_moe", ep=2),
+    Case("qwen3_5_moe-cp2_ep2", "qwen3_5_moe", cp=2, ep=2),
+    Case("qwen3_8_flash_next-ep2", "qwen3_8_flash_next", ep=2),
+    Case("qwen3_8_flash_next-cp2_ep2", "qwen3_8_flash_next", cp=2, ep=2),
+    Case("deepseek_v4-ep2", "deepseek_v4", ep=2),
+    Case("deepseek_v4-cp2_ep2", "deepseek_v4", cp=2, ep=2),
+    Case("glm_moe_dsa-ep2", "glm_moe_dsa", ep=2),
+    Case("glm_moe_dsa-cp2_ep2", "glm_moe_dsa", cp=2, ep=2),
 ]
 
 # Relative errors against the unsharded reference, about 5x the largest seen. "grad" is the worst parameter's.
@@ -119,11 +213,37 @@ def model_config(case: Case, models_dir: Path) -> ModelConfig:
     return config
 
 
-def save_tiny_models(models_dir: Path) -> None:
-    """HF checkpoints, which the trainer converts to its own format on load."""
-    for name, config in TINY_MODELS.items():
-        torch.manual_seed(0)
-        AutoModelForCausalLM.from_config(config).save_pretrained(models_dir / name)
+def save_tiny_model(name: str, models_dir: Path) -> dict:
+    """An HF checkpoint, which the trainer converts to its own format on load. Every rank builds the model, so that a
+    build that fails on this GPU fails on all ranks alike, and the master saves it."""
+    torch.manual_seed(0)
+    if name in TINY_MODELS:
+        model = AutoModelForCausalLM.from_config(TINY_MODELS[name])
+        if get_world().is_master:
+            model.save_pretrained(models_dir / name)
+    else:
+        config = TINY_PRIME_RL_MODELS[name]
+        model = get_custom_causal_lm_cls(config)._from_config(config)
+        init_weights(model)
+        if get_world().is_master:
+            save_state_dict(model.convert_to_hf(model.state_dict()), models_dir / name)
+            config.save_pretrained(models_dir / name)
+    return {}
+
+
+@torch.no_grad()
+def init_weights(model: torch.nn.Module) -> None:
+    """Seeded values for every floating parameter, since `_from_config` leaves some of them uninitialized, and a
+    DeepSeek-V4 hash routing table with distinct experts per token."""
+    for name, param in model.named_parameters():
+        if param.ndim == 1 and name.endswith("norm.weight"):
+            param.fill_(1.0)
+        else:
+            param.normal_(0.0, 0.02)
+    for module in model.modules():
+        if hasattr(module, "tid2eid"):
+            experts = torch.rand(module.tid2eid.shape[0], module.num_experts).argsort(dim=1)
+            module.tid2eid.copy_(experts[:, : module.top_k])
 
 
 def load_rows(tokenizer) -> list[dict]:
@@ -216,6 +336,15 @@ def run_case(config: ModelConfig, parallel_dims, rows: list[dict]) -> dict:
     return {"loss": (loss_sum / num_tokens).item(), "grad_norm": grad_norm.item(), "grads": grads}
 
 
+def isolated(run, *args) -> dict:
+    """The result of `run`, or the error it raised, so that one failing arch does not hide the other cases."""
+    try:
+        return run(*args)
+    except Exception:
+        traceback.print_exc()
+        return {"error": traceback.format_exc()}
+
+
 def relative_errors(result: dict, reference: dict) -> dict:
     assert result["grads"].keys() == reference["grads"].keys()
     grad_errors = {
@@ -235,8 +364,7 @@ def main(output_dir: Path) -> None:
     setup_logger("warning")
     setup_torch_distributed()
     models_dir = output_dir / "models"
-    if get_world().is_master:
-        save_tiny_models(models_dir)
+    built = {name: isolated(save_tiny_model, name, models_dir) for name in sorted({case.model for case in CASES})}
     dist.barrier()
     rows = load_rows(setup_tokenizer(TokenizerConfig(name=TOKENIZER)))
 
@@ -246,7 +374,10 @@ def main(output_dir: Path) -> None:
     references = {}
     for case in CASES:
         if reference_keys[case.name] not in references:
-            references[reference_keys[case.name]] = run_reference(configs[case.name], rows)
+            build = built[case.model]
+            references[reference_keys[case.name]] = (
+                dict(build) if "error" in build else isolated(run_reference, configs[case.name], rows)
+            )
 
     results, layouts = {}, {}
     for case in sorted(CASES, key=lambda case: case.cp):
@@ -256,8 +387,11 @@ def main(output_dir: Path) -> None:
         config = configs[case.name]
         if (case.cp, case.ep) not in layouts:
             layouts[case.cp, case.ep] = get_parallel_dims(config)
-        result = run_case(config, layouts[case.cp, case.ep], rows)
-        results[case.name] = relative_errors(result, references[reference_keys[case.name]])
+        reference = references[reference_keys[case.name]]
+        result = (
+            dict(reference) if "error" in reference else isolated(run_case, config, layouts[case.cp, case.ep], rows)
+        )
+        results[case.name] = result if "error" in result else relative_errors(result, reference)
         results[case.name]["seconds"] = time.perf_counter() - start
         torch.cuda.empty_cache()
 
@@ -280,6 +414,7 @@ def results(run_process, tmp_path_factory: pytest.TempPathFactory) -> dict[str, 
 @pytest.mark.parametrize("case", CASES, ids=[case.name for case in CASES])
 def test_matches_unsharded_reference(results: dict[str, dict], case: Case):
     errors = results[case.name]
+    assert "error" not in errors, errors.get("error")
     tolerances = COMPILE_TOLERANCES if case.compile else TOLERANCES
     for metric, tolerance in tolerances.items():
         assert errors[metric] <= tolerance, f"{metric} relative error {errors[metric]:.1e} > {tolerance:.0e} ({errors})"
