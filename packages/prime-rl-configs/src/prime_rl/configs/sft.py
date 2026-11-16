@@ -176,6 +176,14 @@ class SFTCustomLossConfig(PluginConfig):
     type: Literal["custom"] = "custom"
 
 
+DECISION_MODEL_LORA = (
+    "Decision models train with full fine-tuning. LoRA trains only adapters on linear and expert layers and freezes "
+    "every other parameter, so the readout would stay at its starting weights or get only partial adapters. A LoRA run "
+    "would also leave nothing to serve: decision models are refused with weight broadcasts, the only path that writes "
+    "an adapter, and tools/convert_dcp_to_bf16.py rejects LoRA checkpoints."
+)
+
+
 class SFTDecisionLossConfig(BaseConfig):
     """The loss of a decision model on System One data (``prime_rl.trainer.sft.system_one.loss.decision_loss``): soft
     cross-entropy plus ``brier_weight`` x Brier score per labelled question, on the logits of the model class's
@@ -303,6 +311,8 @@ class SFTConfig(SupervisedTrainerConfig):
                 raise ValueError(
                     'loss.type = "decision" needs [model.implementation]: a model class that defines decision_logits'
                 )
+            if self.model.lora is not None:
+                raise ValueError(f'loss.type = "decision" is not supported with [model.lora]. {DECISION_MODEL_LORA}')
         return self
 
     @model_validator(mode="after")

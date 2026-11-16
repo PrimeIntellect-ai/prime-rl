@@ -1333,6 +1333,13 @@ def test_decision_loss_needs_system_one_data_and_a_model_class():
         SFTConfig.model_validate({"data": {"type": "system_one", **SYSTEM_ONE_DATA}, "loss": {"type": "decision"}})
 
 
+def test_decision_loss_refuses_lora():
+    model = {"implementation": {"import_path": "my_pkg.MyDecisionModel"}, "lora": {}}
+    data = {"type": "system_one", **SYSTEM_ONE_DATA}
+    with pytest.raises(ValidationError, match="not supported with \\[model.lora\\]"):
+        SFTConfig.model_validate({"model": model, "data": data, "loss": {"type": "decision"}})
+
+
 def test_orchestrator_explicit_renderer_skips_unmapped_check():
     """Explicit renderer.name bypasses the auto-resolution check — user opted in."""
     config = OrchestratorConfig.model_validate(
