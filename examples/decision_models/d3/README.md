@@ -12,7 +12,7 @@ The model class and its strategy are prime-rl's ([Native Decision Models](../../
 
 ## vLLM
 
-vLLM 0.33 serves d3. The prompts and the readout (in float32, divided by the temperature of `decision_config.json`, 1.0 for d3-nano) are vLLM's, and a run's [export](../../../docs/training.md#exporting-checkpoints) has the release's layout (`decision_config.json` and `readout.safetensors` beside the shards), which vLLM 0.33 serves. On the export of the full run, vLLM's probabilities and the trainer's differ by a median of about 0.001 per question, as much as vLLM's own differ under another batching.
+vLLM 0.33 serves d3. The prompts and the readout (in float32, divided by the temperature of `decision_config.json`, 1.0 for d3-nano) are vLLM's, and a run's [export](../../../docs/training.md#exporting-checkpoints) has the release's layout (`decision_config.json` and `readout.safetensors` beside the shards), which vLLM 0.33 serves. On the export of the full run, vLLM's probabilities and the trainer's differ by a median of about 0.001 per question, as much as vLLM's own differ under another batching. Serve it with the router off (`router = "None"` in the `uv run inference` config, or `--router None`), or send requests to the engine port: vllm-router re-sorts the JSON keys of a request, which reorders d3's options and state keys, so the served prompts differ from the trained ones.
 
 ## Run
 
