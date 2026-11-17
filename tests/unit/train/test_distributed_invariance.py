@@ -17,11 +17,21 @@ How it works:
   every row's sequence. The ranks sum the loss and token counts, then apply the trainer loop's gradient scaling
   (`scale_gradients_`) and `clip_grad_norm_` for the grad norm.
 - The reference is the same checkpoint as a plain unsharded model on one GPU. It runs all rows in bf16 (FSDP's
-  compute dtype) and accumulates the gradients in fp32. References run first and CP cases last, because CP setup
-  patches the attention classes for the rest of the process.
+  compute dtype) and accumulates the gradients in fp32. It also records the experts every MoE router picks, which the
+  cases replay. References run first and CP cases last, because CP setup patches the attention classes for the rest
+  of the process.
 - The comparison is the relative error of the loss, the grad norm, and every parameter's full gradient (sharded
   gradients are gathered). Parameters that get no gradient, like indexers that reach the loss only through top-k
   indices, are left out on both sides. A gradient that exists on only one side fails the case.
+
+MoE routers pick their top-k experts from near-tied scores. CP and EP change the bf16 numerics slightly, so a few tokens
+pick other experts. That changes the loss and the router gradients by far more than the numerics themselves, and
+differently from run to run, as autotuned kernels pick other configs. The cases therefore replay the reference's
+routing, as RL's router replay does: both sides route every token to the same experts, and the comparison measures
+the sharding. `test_vllm_parity.py` checks the routers' own picks against vLLM's.
+
+The results also report each case's `worst_grad_share`: the norm of the worst parameter's reference gradient over the
+total grad norm. A tiny share means that parameter's gradient nearly cancels, so its relative error is noisy.
 
 Tolerances are about 5x the largest difference seen: loss 1e-5, grad norm 1e-3 and worst parameter gradient 2e-2 in
 eager mode, and 1e-4, 3e-3 and 1e-1 with torch.compile, which fuses bf16 ops differently from the eager reference.
@@ -52,9 +62,11 @@ To run a suite without pytest (it writes `results.json` to the output dir):
 
 import json
 import math
+import re
 import sys
 import time
 import traceback
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
@@ -82,11 +94,13 @@ from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.fusions import apply_model_fusions
 from prime_rl.trainer.models.glm_moe_dsa import GlmMoeDsaConfig
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX, inject_prime_lm_head
+from prime_rl.trainer.models.layers.moe import TokenChoiceTopKRouter
 from prime_rl.trainer.models.qwen3_5 import Qwen3_5MoeTextConfig
 from prime_rl.trainer.models.qwen3_8_flash_next import Qwen3_8FlashNextTextConfig
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.sft.data import setup_sft_dataset
 from prime_rl.trainer.utils import clip_grad_norm_, scale_gradients_, setup_torch_distributed
+from prime_rl.trainer.vlm import get_language_model
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp
@@ -298,15 +312,22 @@ def load_rows(tokenizer) -> list[dict]:
     return list(islice(setup_dataloader(dataset, config, cp=2), NUM_ROWS))
 
 
-def compute_loss(model, row: dict, cp_rank: int, cp_size: int) -> tuple[torch.Tensor, torch.Tensor]:
-    """The SFT trainer's `compute_loss`: summed cross-entropy and token count of this rank's share of a row."""
+def compute_loss(
+    model, row: dict, cp_rank: int, cp_size: int, routed_experts: torch.Tensor | None = None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The SFT trainer's `compute_loss`: summed cross-entropy and token count of this rank's share of a row.
+    `routed_experts` replays an MoE routing, as RL's router replay does."""
     input_ids, position_ids, target_ids, loss_mask = (
         row[key].cuda() for key in ("input_ids", "position_ids", "target_ids", "loss_mask")
     )
+    if routed_experts is not None:
+        routed_experts = routed_experts.cuda()
     if cp_size > 1:
         input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size)
         target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
         loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
+        if routed_experts is not None:
+            routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
     labels = target_ids.masked_fill(~loss_mask, IGNORE_INDEX)
     out = forward(
         model,
@@ -314,9 +335,32 @@ def compute_loss(model, row: dict, cp_rank: int, cp_size: int) -> tuple[torch.Te
         position_ids,
         seq_lens=row["seq_lens"].cuda(),
         labels=labels,
+        routed_experts=routed_experts,
         seq_lens_are_pre_shard=cp_size > 1,
     )
     return out["loss"], loss_mask.sum()
+
+
+def record_routing(model: torch.nn.Module) -> Callable[[], torch.Tensor | None]:
+    """Hooks every MoE router of `model`. The returned function gives the experts the routers picked in the last
+    forward, as the `[1, seq, layers, top_k]` tensor that `routed_experts` takes, or None for a dense model."""
+    picked: dict[int, torch.Tensor] = {}
+    for name, module in model.named_modules():
+        if isinstance(module, TokenChoiceTopKRouter):
+            layer = int(re.search(r"layers\.(\d+)\.", name).group(1))
+            module.register_forward_hook(lambda module, args, output, layer=layer: picked.__setitem__(layer, output[1]))
+    num_layers = len(get_language_model(model).layers)
+
+    def routing() -> torch.Tensor | None:
+        if not picked:
+            return None
+        num_tokens, top_k = next(iter(picked.values())).shape
+        routed_experts = torch.zeros(1, num_tokens, num_layers, top_k, dtype=torch.long)
+        for layer, experts in picked.items():
+            routed_experts[0, :, layer] = experts.cpu()
+        return routed_experts
+
+    return routing
 
 
 def unwrapped_name(name: str) -> str:
@@ -325,7 +369,8 @@ def unwrapped_name(name: str) -> str:
 
 def run_reference(config: ModelConfig, rows: list[dict]) -> dict:
     """All rows through an unsharded model in bf16 (FSDP's compute dtype), accumulating gradients in fp32. Parameters
-    that get no gradient, like the indexers, which reach the loss only through top-k indices, have no entry."""
+    that get no gradient, like the indexers, which reach the loss only through top-k indices, have no entry. Also
+    returns the experts each row routed to, which the cases replay."""
     model = get_model(config, device=torch.device("meta"), dtype=torch.float32)
     if config.fusions.enabled:
         apply_model_fusions(model, config.fusions.enabled)
@@ -336,10 +381,13 @@ def run_reference(config: ModelConfig, rows: list[dict]) -> dict:
     load_dcp_from_hf(model, config)
     for param in model.parameters():
         param.data = param.data.bfloat16()
+    routing = record_routing(model)
     grads: dict[str, torch.Tensor] = {}
+    routes = []
     loss_sum, num_tokens = 0.0, 0
     for row in rows:
         row_loss, row_tokens = compute_loss(model, row, cp_rank=0, cp_size=1)
+        routes.append(routing())
         row_loss.backward()
         loss_sum += row_loss.item()
         num_tokens += row_tokens.item()
@@ -349,12 +397,12 @@ def run_reference(config: ModelConfig, rows: list[dict]) -> dict:
                 param.grad = None
     grads = {name: grad / num_tokens for name, grad in grads.items()}
     grad_norm = torch.linalg.vector_norm(torch.stack([torch.linalg.vector_norm(grad) for grad in grads.values()]))
-    return {"loss": loss_sum / num_tokens, "grad_norm": grad_norm.item(), "grads": grads}
+    return {"loss": loss_sum / num_tokens, "grad_norm": grad_norm.item(), "grads": grads, "routes": routes}
 
 
-def run_case(config: ModelConfig, parallel_dims, rows: list[dict]) -> dict:
+def run_case(config: ModelConfig, parallel_dims, rows: list[dict], routes: list[torch.Tensor | None]) -> dict:
     """One SFT trainer step up to the optimizer: forward and backward over this rank's rows, then the gradient
-    scaling and norm of the trainer loop."""
+    scaling and norm of the trainer loop. MoE models replay the reference's routing of each row."""
     model = setup_model(config, parallel_dims)
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config, parallel_dims)
@@ -362,9 +410,9 @@ def run_case(config: ModelConfig, parallel_dims, rows: list[dict]) -> dict:
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if parallel_dims.cp_enabled else 0
     loss_sum = torch.zeros((), device="cuda")
     num_tokens = torch.zeros((), dtype=torch.int64, device="cuda")
-    for row in rows[dp_mesh.get_local_rank() :: dp_mesh.size()]:
+    for index in range(dp_mesh.get_local_rank(), len(rows), dp_mesh.size()):
         with maybe_activation_offloading(config.ac_offloading, model):
-            row_loss, row_tokens = compute_loss(model, row, cp_rank, parallel_dims.cp)
+            row_loss, row_tokens = compute_loss(model, rows[index], cp_rank, parallel_dims.cp, routes[index])
         row_loss.backward()
         loss_sum += row_loss.detach()
         num_tokens += row_tokens
@@ -402,6 +450,7 @@ def relative_errors(result: dict, reference: dict) -> dict:
         "grad_norm": abs(result["grad_norm"] / reference["grad_norm"] - 1),
         "grad": grad_errors[worst],
         "worst_grad": worst,
+        "worst_grad_share": (torch.linalg.vector_norm(reference["grads"][worst]) / reference["grad_norm"]).item(),
         "one_sided_grads": sorted(result["grads"].keys() ^ reference["grads"].keys()),
     }
 
@@ -435,7 +484,9 @@ def main(output_dir: Path, cases: list[Case]) -> None:
             layouts[case.cp, case.ep] = get_parallel_dims(config)
         reference = references[reference_keys[case.name]]
         result = (
-            dict(reference) if "error" in reference else isolated(run_case, config, layouts[case.cp, case.ep], rows)
+            dict(reference)
+            if "error" in reference
+            else isolated(run_case, config, layouts[case.cp, case.ep], rows, reference["routes"])
         )
         results[case.name] = result if "error" in result else relative_errors(result, reference)
         results[case.name]["seconds"] = time.perf_counter() - start
