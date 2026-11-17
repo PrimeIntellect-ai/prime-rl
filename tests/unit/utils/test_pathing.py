@@ -2,10 +2,13 @@ import pytest
 
 from prime_rl.transports.weights.base import FINISHED_MARKER, SENDER_READY_MARKER, latest_finished_broadcast
 from prime_rl.utils.pathing import (
+    abandon_future_ckpts,
     clean_future_steps,
     create_attempt_dirs,
+    get_all_ckpt_steps,
     get_batch_dir,
     get_broadcast_dir,
+    get_ckpt_dir,
     get_step_path,
     resolve_latest_ckpt_step,
     resolve_latest_trainer_ckpt_step,
@@ -122,6 +125,42 @@ def test_clean_future_steps_rebuilds_resume_broadcast(tmp_path):
     assert not get_step_path(broadcast_dir, 3).exists()
 
 
+def test_abandon_future_ckpts_moves_them_out_of_resume(tmp_path):
+    ckpt_dir = get_ckpt_dir(tmp_path)
+    for step in (1, 2, 3):
+        get_step_path(ckpt_dir, step).mkdir(parents=True)
+
+    abandon_future_ckpts(ckpt_dir, resume_step=1)
+
+    assert get_all_ckpt_steps(ckpt_dir) == [1]
+    assert sorted(path.name for path in (ckpt_dir / "abandoned").glob("*/step_*")) == ["step_2", "step_3"]
+
+
+def test_resolve_latest_ckpt_step_picks_the_newest_complete_step(tmp_path):
+    ckpt_dir = tmp_path / "checkpoints"
+    # step -> files on disk: 25 has no orchestrator checkpoint, 30 no trainer one, 40 a half-written trainer one
+    layout = {
+        10: ["trainer/.metadata", "orchestrator/progress.pt"],
+        20: ["trainer/.metadata", "orchestrator/progress.pt"],
+        25: ["trainer/.metadata"],
+        30: ["orchestrator/progress.pt"],
+        40: ["trainer/__0_0.distcp", "orchestrator/progress.pt"],
+    }
+    for step, files in layout.items():
+        for file in files:
+            path = get_step_path(ckpt_dir, step) / file
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+
+    assert resolve_latest_ckpt_step(ckpt_dir, with_orchestrator=True) == 20
+    assert resolve_latest_ckpt_step(ckpt_dir, with_orchestrator=False) == 25
+    assert resolve_latest_ckpt_step(tmp_path / "missing", with_orchestrator=True) is None
+    # Steps exist but none is complete: raise instead of starting from scratch
+    get_step_path(tmp_path / "incomplete", 10).mkdir(parents=True)
+    with pytest.raises(FileNotFoundError):
+        resolve_latest_ckpt_step(tmp_path / "incomplete", with_orchestrator=False)
+
+
 def test_latest_trainer_checkpoint_skips_steps_without_a_complete_trainer_save(tmp_path):
     assert resolve_latest_trainer_ckpt_step(tmp_path) is None
     (tmp_path / "step_4/trainer").mkdir(parents=True)
@@ -139,17 +178,3 @@ def test_latest_finished_broadcast_skips_an_offer_that_never_finished(tmp_path):
         for marker in markers:
             (step_dir / marker).touch()
     assert latest_finished_broadcast(tmp_path) == 10
-
-
-def test_resolve_latest_ckpt_step_skips_incomplete_trainer_checkpoint(tmp_path):
-    for step in (1, 2, 3):
-        get_step_path(tmp_path, step).mkdir()
-    # Step 1 has only an orchestrator checkpoint, step 2 a finished trainer checkpoint, step 3 one cut off mid-write
-    (get_step_path(tmp_path, 1) / "orchestrator").mkdir()
-    (get_step_path(tmp_path, 2) / "trainer").mkdir()
-    (get_step_path(tmp_path, 2) / "trainer" / ".metadata").touch()
-    (get_step_path(tmp_path, 3) / "trainer").mkdir()
-
-    assert resolve_latest_ckpt_step(tmp_path) == 2
-    (get_step_path(tmp_path, 3) / "trainer" / ".metadata").touch()
-    assert resolve_latest_ckpt_step(tmp_path) == 3

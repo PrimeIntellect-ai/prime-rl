@@ -42,7 +42,7 @@ from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
 from prime_rl.trainer.utils import DCP_TIMEOUT, empty_pinned, get_dcp_group
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
-from prime_rl.utils.pathing import get_all_ckpt_steps, get_ckpt_dir, get_step_path, is_ckpt_step_complete
+from prime_rl.utils.pathing import get_ckpt_dir, get_complete_ckpt_steps, get_step_path
 
 
 @dataclass
@@ -276,8 +276,15 @@ class AppState(Stateful):
 class CheckpointManager:
     """Utility class to save and load trainer checkpoints to resume SFT and RL training."""
 
-    def __init__(self, output_dir: Path, config: CheckpointConfig, resume: ResumeConfig | None = None):
+    def __init__(
+        self,
+        output_dir: Path,
+        config: CheckpointConfig,
+        resume: ResumeConfig | None = None,
+        with_orchestrator: bool = False,
+    ):
         self.config = config
+        self.with_orchestrator = with_orchestrator
         self.skip_optimizer = config.skip_optimizer
         self.ckpt_dir = get_ckpt_dir(output_dir)
         self.logger = get_logger()
@@ -290,11 +297,7 @@ class CheckpointManager:
         self.pending: PendingSave | None = None
 
         # Only complete steps count toward keep_last: a step cut off mid-write before a resume must not displace one
-        all_steps = [
-            step
-            for step in get_all_ckpt_steps(self.ckpt_dir)
-            if is_ckpt_step_complete(get_step_path(self.ckpt_dir, step))
-        ]
+        all_steps = get_complete_ckpt_steps(self.ckpt_dir, with_orchestrator)
         if resume is not None and resume.step is not None:
             self.ckpt_steps = [s for s in all_steps if s <= resume.step]
         else:
@@ -529,6 +532,9 @@ class CheckpointManager:
                 if step % self.config.keep_interval == 0:
                     steps_to_keep.add(step)
 
+        # Keep the resume point: the newest complete step
+        steps_to_keep.update(get_complete_ckpt_steps(self.ckpt_dir, self.with_orchestrator)[-1:])
+
         # Delete steps not in steps_to_keep (only master rank deletes to avoid race condition)
         ckpt_steps_to_delete = [step for step in self.ckpt_steps if step not in steps_to_keep]
         if self.world.is_master:
@@ -547,11 +553,13 @@ def setup_ckpt_manager(
     output_dir: Path,
     ckpt_config: CheckpointConfig | None,
     resume: ResumeConfig | None = None,
+    with_orchestrator: bool = False,
 ) -> CheckpointManager:
     """The checkpoint manager always exists: ``resume`` decides whether it loads,
-    ``ckpt`` whether it saves (a resume without ``ckpt`` loads but saves nothing)."""
+    ``ckpt`` whether it saves (a resume without ``ckpt`` loads but saves nothing).
+    ``with_orchestrator``: a step is complete only once the orchestrator saved it too (RL)."""
     ckpt_output_dir = (ckpt_config.output_dir if ckpt_config else None) or output_dir
-    return CheckpointManager(ckpt_output_dir, ckpt_config or CheckpointConfig(), resume)
+    return CheckpointManager(ckpt_output_dir, ckpt_config or CheckpointConfig(), resume, with_orchestrator)
 
 
 def _load_app_state(
