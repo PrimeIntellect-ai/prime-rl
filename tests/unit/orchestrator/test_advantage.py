@@ -9,7 +9,7 @@ from prime_rl.configs.algorithm import (
     LinearSubagentLengthPenaltyConfig,
     MaxRLAlgoConfig,
 )
-from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm, _length_penalty_tokens
+from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm, _length_penalty_tokens, _root_latency
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.algo.routing import assign_advantages
 from prime_rl.orchestrator.trajectories import trace_to_samples
@@ -441,6 +441,69 @@ def test_length_penalty_ignores_discarded_compactions(penalty_type, term):
 # --------------------------------------------------------------------------
 # assign_advantages: scalar broadcast over the rollout's trainable tokens.
 # --------------------------------------------------------------------------
+
+
+def _agent_tree_episode(tool_seconds: float | None) -> vf.Episode:
+    """A root agent that compacts after spawning a subagent, with the tool time its
+    harness reported. Calls carry their agent's session, the root's being the trace's."""
+    episode = _build_episode(1.0, sampled_lengths=[1])
+    trace = episode.traces[0]
+    trace.nodes.clear()
+    trace.calls.clear()
+
+    def turn(session_id, input_tokens, output_tokens):
+        prompt_id = len(trace.nodes)
+        trace.nodes.append(vf.MessageNode(message=vf.UserMessage(content="q")))
+        trace.nodes.append(
+            vf.MessageNode(
+                parent=prompt_id,
+                message=vf.AssistantMessage(content="a"),
+                sampled=True,
+                token_ids=[1] * output_tokens,
+                mask=[True] * output_tokens,
+            )
+        )
+        trace.calls.append(
+            vf.ModelCall(
+                node=prompt_id + 1,
+                usage=vf.Usage(prompt_tokens=input_tokens, completion_tokens=output_tokens),
+                acp=vf.ACPInfo(request_id=f"r{prompt_id}", agent_session_id=session_id),
+            )
+        )
+
+    turn(trace.id, 100, 200)
+    turn("child", 50, 400)
+    # The root's compacted context is a new physical branch of the same session.
+    turn(trace.id, 320, 100)
+    if tool_seconds is not None:
+        trace.record_metric("tool_seconds", tool_seconds)
+    return episode
+
+
+def test_latency_is_root_tool_time_plus_estimated_root_inference():
+    trace = _agent_tree_episode(tool_seconds=30.0).traces[0]
+    # 300 root output tokens at 100 tok/s; the subagent's 400 are not the root's wait.
+    assert _root_latency(trace, 100.0) == pytest.approx(33.0)
+    restored = vf.WireTrace.model_validate_json(trace.model_dump_json())
+    assert _root_latency(restored, 100.0) == pytest.approx(33.0)
+
+
+def test_linear_latency_term_penalizes_longer_tool_time():
+    group = [_agent_tree_episode(tool_seconds=10.0), _agent_tree_episode(tool_seconds=30.0)]
+    cfg = LinearLengthPenaltyConfig(
+        num_output_tokens_weight=0.0, num_input_tokens_weight=0.0, num_turns_weight=0.0, latency_weight=0.2
+    )
+    # Latencies 13s and 33s: penalties 0.2 * 13/33 and 0.2, centered on their mean.
+    advantage = 0.2 * (1 - 13 / 33) / 2
+    assert _grpo(group, length_penalty=cfg) == pytest.approx([advantage, -advantage], abs=1e-6)
+
+
+def test_linear_latency_term_requires_reported_tool_time():
+    group = [_agent_tree_episode(tool_seconds=10.0), _agent_tree_episode(tool_seconds=None)]
+    with pytest.raises(ValueError, match="tool_seconds"):
+        _grpo(group, length_penalty=LinearLengthPenaltyConfig(latency_weight=0.2))
+    # Without the latency term the metric is not needed.
+    _grpo(group, length_penalty=LinearLengthPenaltyConfig())
 
 
 def test_assign_advantages_broadcasts_scalar():
