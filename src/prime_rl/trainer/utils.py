@@ -239,8 +239,11 @@ def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: b
     # sub-groups (dp/cp/ep) are created via new_group without a timeout and fall
     # back to torch's 10-minute module default — dist_timeout_seconds silently
     # never reached the PGs doing the real work (watchdogs at 600s). Patch the
-    # module default so every subsequently created PG inherits it.
+    # module defaults so every subsequently created PG inherits it. NCCL groups
+    # read `default_pg_nccl_timeout`, not `default_pg_timeout` (which only
+    # covers the other backends), so both must be set.
     dist.distributed_c10d.default_pg_timeout = timeout
+    dist.distributed_c10d.default_pg_nccl_timeout = timeout
 
     dist.init_process_group(backend=backend, timeout=timeout, device_id=device_id)
     get_logger().debug(f"Initialized torch distributed in {format_time(time.perf_counter() - t0)}")
