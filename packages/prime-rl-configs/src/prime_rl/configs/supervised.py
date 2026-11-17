@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 from pydantic import Field, model_validator
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
-from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.inference import InferenceConfig, setup_dummy_load
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
@@ -202,6 +202,10 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
                     "make sure to set --enable_lora and --max-lora-rank.",
                     stacklevel=2,
                 )
+
+        # A scratch init reaches the server with the trainer's startup broadcast.
+        if self.inference is not None:
+            setup_dummy_load(self.inference, self.model.init.type == "scratch")
 
         if self.weight_broadcast is None:
             if self.model.lora is not None or self.inference is None:

@@ -509,9 +509,18 @@ A resume can add, remove or change train and eval sources.
 
 Both types work with every entrypoint, and a `[model.init]` table without `type` keeps the entrypoint's default. In RL, set `name` and `init` in the shared `[model]`. The trainer recognizes a step directory by its `trainer/` directory when it loads the weights. A step directory supplies only the weights: the run starts at step 0 with a fresh optimizer, scheduler and data. To continue a run with its optimizer, scheduler and data state, use `[resume]` instead, or `--resume.dir` to fork another run of the same kind (see [Resuming a Run](#resuming-a-run)). A model without a from-scratch init fails at startup with `scratch`, naming the parameters its init does not reach. The renderer cannot be picked from a step directory, so a run from one sets it explicitly; inference's `"auto"` tool-call and reasoning parsers try `tokenizer.name` first, so setting it to the HF model name keeps them. A resumed trainer and the export read the `config.json` and tokenizer from the run's own checkpoint, which holds copies; the RL orchestrator and the inference servers still read `model.name`, so to resume once the source step directory is gone, set `model.name` to one of the run's own step directories.
 
+The trainer sends its weights to inference (RL, SFT online evals) at startup. When those weights are not HF weights stored at `model.name` (`scratch`, or a checkpoint step directory as `model.name`, which the inference server recognizes when it starts), the inference server starts with placeholder weights (`inference.vllm.load_format = "dummy"`) instead of loading them from disk.
+
+- LoRA sends only the adapter, so inference loads the base weights itself, and LoRA needs HF weights at `model.name`.
+- A speculative draft with its own `model` still loads from disk. A `draft_model` draft (vLLM loads it with the target's load format) and a draft that reads its weights from `model.name` (MTP, DSpark without a `model`) are rejected.
+- Setting `inference.vllm.load_format` explicitly overrides this.
+
 ```bash
 # SFT from a pretraining checkpoint
 uv run sft @ sft.toml --model.name outputs/my-pretrain/checkpoints/step_5000 --renderer.name qwen3
+
+# RL from an SFT checkpoint
+uv run rl @ rl.toml --model.name outputs/my-sft/checkpoints/step_500 --orchestrator.renderer.name qwen3
 ```
 
 ### Pausing or Checkpointing a Live Run
