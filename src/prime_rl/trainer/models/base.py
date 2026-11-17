@@ -175,6 +175,11 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         """
         return state_dict
 
+    def _init_weights(self, module: nn.Module) -> None:
+        super()._init_weights(module)
+        if isinstance(module, MoE):
+            module.init_weights(self.config.get_text_config().initializer_range, module.tokens_per_expert.device)
+
     def init_buffers_post_meta(self) -> None:
         """
         Initialize buffers that are not in the state dict after loading with meta device.

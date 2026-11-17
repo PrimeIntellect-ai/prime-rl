@@ -1,7 +1,22 @@
 import logging.config
 import os
 
-from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.inference import InferenceConfig, setup_dummy_load
+from prime_rl.utils.pathing import is_checkpoint_step_dir
+
+
+def setup_model_source(config: InferenceConfig) -> None:
+    """A checkpoint step directory as ``model.name`` holds no HF weights: vLLM builds the model from its config.json and
+    starts with placeholder weights, which the trainer's startup broadcast replaces."""
+    if not is_checkpoint_step_dir(config.vllm.model):
+        return
+    if config.vllm.enable_lora:
+        raise ValueError(
+            f"LoRA sends only the adapter, so inference loads the base weights from model.name, but {config.vllm.model} "
+            "is a checkpoint step directory without HF weights: export it with tools/convert_dcp_to_bf16.py and set "
+            "model.name to the export"
+        )
+    setup_dummy_load(config, dummy=True)
 
 
 def setup_vllm_env(config: InferenceConfig):
