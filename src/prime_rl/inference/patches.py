@@ -24,8 +24,6 @@ def apply_shared_vllm_patches():
     monkey_patch_clamp_kv_offload_loads_for_routed_experts()
     monkey_patch_routed_experts_cut_loaded_prefix_hits()
     monkey_patch_kv_xfer_finished_tolerate_freed()
-    monkey_patch_online_fp8_parameter_cast()
-    monkey_patch_online_mxfp8_moe_keep_kernel_on_reload()
     monkey_patch_strip_routed_experts_from_chat()
     monkey_patch_skip_prompt_routing_for_chat()
     monkey_patch_dp_coordinator_startup_timeout()
@@ -289,73 +287,6 @@ def monkey_patch_aux_output_store():
     aux_worker.BlockObjectStore = _RoomyBlockObjectStore
 
 
-def monkey_patch_online_mxfp8_moe_keep_kernel_on_reload():
-    """Keep the boot-time online-MXFP8 MoE kernel across weight reloads.
-
-    ``Mxfp8OnlineMoEMethod._setup_kernel`` rebuilds ``moe_quant_config`` and ``moe_kernel`` on every
-    reload. Decode replays CUDA graphs captured against the boot-time kernel, so once the old
-    kernel is dropped the graphs read freed memory for tensors only it referenced, and decode
-    samples sporadic garbage tokens that eager prefill (and the trainer) do not reproduce. The
-    boot-time kernel references the layer's original parameters, which layerwise reload refills
-    in place, so on reload we only install the new weights and keep the kernel.
-
-    Upstream fix: https://github.com/vllm-project/vllm/pull/62406; remove this patch when our
-    minimum vLLM version includes it.
-    """
-    from vllm.model_executor.layers.fused_moe.oracle.fp8 import convert_to_fp8_moe_kernel_format
-    from vllm.model_executor.layers.quantization.online.mxfp8 import Mxfp8OnlineMoEMethod
-    from vllm.model_executor.utils import replace_parameter
-
-    original_setup_kernel = Mxfp8OnlineMoEMethod._setup_kernel
-    if getattr(original_setup_kernel, "_prime_rl_keeps_kernel", False):
-        return
-
-    def _setup_kernel(self, layer, w13, w2, w13_scale, w2_scale, w13_input_scale, w2_input_scale):
-        if getattr(self, "moe_kernel", None) is None:
-            return original_setup_kernel(self, layer, w13, w2, w13_scale, w2_scale, w13_input_scale, w2_input_scale)
-        w13, w2, w13_scale, w2_scale = convert_to_fp8_moe_kernel_format(
-            fp8_backend=self.fp8_backend,
-            layer=layer,
-            w13=w13,
-            w2=w2,
-            w13_scale=w13_scale,
-            w2_scale=w2_scale,
-            w13_input_scale=w13_input_scale,
-            w2_input_scale=w2_input_scale,
-        )
-        replace_parameter(layer, "w13_weight", w13)
-        replace_parameter(layer, "w2_weight", w2)
-        replace_parameter(layer, f"w13_{self.weight_scale_name}", w13_scale)
-        replace_parameter(layer, f"w2_{self.weight_scale_name}", w2_scale)
-
-    _setup_kernel._prime_rl_keeps_kernel = True
-    Mxfp8OnlineMoEMethod._setup_kernel = _setup_kernel
-
-
-def monkey_patch_online_fp8_parameter_cast():
-    """Pass plain tensors to vLLM's compiled block-FP8 caster.
-
-    Layerwise reload restores ``ModelWeightParameter`` objects before online
-    quantization. TorchDynamo recursively dispatches that tensor subclass while
-    tracing ``per_block_cast_to_fp8``. ``Parameter.data`` shares storage but is
-    a plain tensor, matching the input accepted during the initial model load.
-    """
-    from torch.nn import Parameter
-    from vllm.model_executor.layers.quantization.online import fp8
-
-    original_cast = fp8.per_block_cast_to_fp8
-    if getattr(original_cast, "_prime_rl_unwraps_parameters", False):
-        return
-
-    def _per_block_cast_to_fp8(x, *args, **kwargs):
-        if isinstance(x, Parameter):
-            x = x.data
-        return original_cast(x, *args, **kwargs)
-
-    _per_block_cast_to_fp8._prime_rl_unwraps_parameters = True
-    fp8.per_block_cast_to_fp8 = _per_block_cast_to_fp8
-
-
 def monkey_patch_kv_xfer_finished_tolerate_freed():
     """Tolerate KV-transfer finish notifications for already-freed requests.
 
@@ -396,8 +327,9 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
         for req_id in kv_connector_output.finished_recving or ():
             logger.debug("Finished recving KV transfer for request %s", req_id)
             # Stale notification for a request freed earlier this step (e.g. an
-            # aborted request whose send completion freed it). Nothing to do.
+            # aborted request whose send completion freed it): only its load slot is left.
             if req_id not in self.requests:
+                self._aborted_kv_loads.discard(req_id)
                 continue
             req = self.requests[req_id]
             if req.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
@@ -457,7 +389,7 @@ def monkey_patch_minimax_m2_think_end_passthrough():
 def monkey_patch_routed_experts_with_pd_connectors():
     """Let vLLM's routed-experts capture (AuxOutput connector) run on NIXL P/D instances.
 
-    vLLM (0.33 included) rejects routed-experts capture with P/D connectors, because a decode instance never
+    vLLM (0.34 included) rejects routed-experts capture with P/D connectors, because a decode instance never
     computes a remotely prefilled prompt, so it has no rows for it. This carries our upstream fix
     (AuxOutput patch 02): a request on a decode instance emits rows only from its first forward on
     this instance, and the worker does not buffer the
