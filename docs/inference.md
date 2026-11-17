@@ -282,7 +282,7 @@ Mooncake keys a block by model, parallel rank and content hash only. Roles that 
 
 > **Experimental.** Off by default and not used by any example config. Validated so far: P/D with HiSparse on decode, router replay and sampling replay on, on a small random DSA model (statistical checks only). Not validated yet: a real GLM-5.x long-prompt (40k+) quality A/B, aggregated HiSparse against the trainer forward pass, and preemption or failed KV loads with HiSparse.
 
-HiSparse (vLLM, DSA sparse-MLA models such as GLM-5.x) keeps the sparse-MLA KV in a pinned host pool. Decode attention reads per-request GPU buffers that hold the indexer top-k rows. This frees GPU memory for many more concurrent decode sequences.
+HiSparse (vLLM, DSA sparse-MLA models such as GLM-5.x; vLLM does not support DeepSeek-V4's compressed sparse MLA) keeps the sparse-MLA KV in a pinned host pool. Decode attention reads per-request GPU buffers that hold the indexer top-k rows. This frees GPU memory for many more concurrent decode sequences.
 
 ```toml
 [inference.hisparse]
