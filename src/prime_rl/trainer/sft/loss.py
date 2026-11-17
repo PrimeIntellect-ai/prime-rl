@@ -76,7 +76,7 @@ def run_loss_fn(loss_fn: Callable[[LossInputs], LossOutputs], model: nn.Module, 
         batch[key][0, :num_tokens] for key in ("input_ids", "position_ids", "target_ids", "loss_mask")
     )
 
-    def loss(hidden_states: Tensor) -> dict:
+    def loss(hidden_states: Tensor) -> LossOutputs:
         hidden_states = hidden_states[0, :num_tokens]
         row_logprobs = cache(lambda: token_logprobs(model.lm_head, hidden_states[None], target_ids[None])[0])
 
@@ -102,14 +102,10 @@ def run_loss_fn(loss_fn: Callable[[LossInputs], LossOutputs], model: nn.Module, 
         for output in outputs:
             for name, values in output.metrics.items():
                 metrics.setdefault(name, []).append(values.detach().reshape(-1))
-        # A dict, not the dataclass: FSDP hooks backward onto the tensors of the forward's output pytree.
-        return {
-            "loss": sum(output.loss for output in outputs),
-            "count": sum(output.count for output in outputs),
-            "metrics": {name: torch.cat(values) for name, values in metrics.items()},
-        }
+        return LossOutputs(
+            loss=sum(output.loss for output in outputs),
+            count=sum(output.count for output in outputs),
+            metrics={name: torch.cat(values) for name, values in metrics.items()},
+        )
 
-    outputs = forward(
-        model, batch["input_ids"], batch["position_ids"], seq_lens=batch["seq_lens"], hidden_states_fn=loss
-    )
-    return LossOutputs(**outputs)
+    return forward(model, batch["input_ids"], batch["position_ids"], seq_lens=batch["seq_lens"], hidden_states_fn=loss)
