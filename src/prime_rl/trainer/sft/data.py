@@ -30,9 +30,10 @@ class FakeDataset(StatefulIterableDataset):
         length: Literal["fixed", "variable"] = "fixed",
         input_ids: Literal["increasing", "random"] = "random",
         seed: int = 0,
-        non_dp_size: int = 1,
+        dp_rank: int = 0,
+        dp_size: int = 1,
     ):
-        super().__init__(non_dp_size)
+        super().__init__(dp_rank, dp_size)
         self.vocab_size = vocab_size
         self.seq_len = seq_len
         self.length = length
@@ -212,14 +213,15 @@ class SFTDataset(StatefulIterableDataset):
         shuffle: bool = True,
         seed: int = 0,
         seq_len: int = 128,
-        non_dp_size: int = 1,
+        dp_rank: int = 0,
+        dp_size: int = 1,
         loss_mask_config: LossMaskConfig = LossMaskConfig(),
         max_examples: int | None = None,
         max_epochs: int | None = None,
         multimodal: bool = False,
         columns: SFTColumnsConfig = SFTColumnsConfig(),
     ):
-        super().__init__(non_dp_size)
+        super().__init__(dp_rank, dp_size)
         self.logger = get_logger()
         self.dataset = dataset
         self.num_examples = len(self.dataset)
@@ -519,8 +521,9 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
 def setup_sft_dataset(
     tokenizer: PreTrainedTokenizer,
     config: DataConfig,
-    non_dp_size: int = 1,
     *,
+    dp_rank: int = 0,
+    dp_size: int = 1,
     max_epochs: int | None = None,
     raw_dataset: Dataset | None = None,
     renderer_config: RendererConfig | None = None,
@@ -534,7 +537,8 @@ def setup_sft_dataset(
             length=config.length,
             input_ids=config.input_ids,
             seed=config.seed,
-            non_dp_size=non_dp_size,
+            dp_rank=dp_rank,
+            dp_size=dp_size,
         )
     elif config.type == "sft":
         if renderer_config is None:
@@ -549,7 +553,8 @@ def setup_sft_dataset(
             seed=config.seed,
             seq_len=config.seq_len,
             loss_mask_config=config.loss_mask,
-            non_dp_size=non_dp_size,
+            dp_rank=dp_rank,
+            dp_size=dp_size,
             max_epochs=max_epochs,
             multimodal=multimodal,
             columns=config.columns,

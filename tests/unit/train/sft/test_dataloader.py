@@ -11,14 +11,15 @@ from prime_rl.trainer.sft.data import FakeDataset, SFTDataset
 from prime_rl.trainer.world import reset_world
 
 
-def setup_fake_dataloader(config: FakeDataConfig, non_dp_size: int = 1):
+def setup_fake_dataloader(config: FakeDataConfig, dp_rank: int = 0, dp_size: int = 1):
     dataset = FakeDataset(
         vocab_size=32,
         seq_len=config.seq_len,
         length=config.length,
         input_ids=config.input_ids,
         seed=config.seed,
-        non_dp_size=non_dp_size,
+        dp_rank=dp_rank,
+        dp_size=dp_size,
     )
     return dataset, setup_dataloader(dataset, config, cp=1)
 
@@ -60,7 +61,7 @@ def test_fake_dataset_multi_rank_state(rank: int, non_dp_size: int):
 
     # Setup stateful dataloader
     config = FakeDataConfig(length="fixed", input_ids="increasing", batch_size=1)
-    _, dataloader = setup_fake_dataloader(config, non_dp_size)
+    _, dataloader = setup_fake_dataloader(config, rank // non_dp_size, 2 // non_dp_size)
     dataiter = iter(dataloader)
 
     # Initial state
@@ -186,7 +187,8 @@ def test_dataloader_shards_across_ranks_and_workers(
                 lambda _: dummy_renderer,
                 shuffle=False,
                 seq_len=config.seq_len,
-                non_dp_size=non_dp_size,
+                dp_rank=rank // non_dp_size,
+                dp_size=data_world_size,
             )
             return setup_dataloader(dataset, config, cp=1)
 

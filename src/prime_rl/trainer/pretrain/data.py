@@ -139,10 +139,11 @@ class TokenDataset(StatefulIterableDataset):
         shards: TokenShards,
         seq_len: int,
         document_masking: bool = True,
-        non_dp_size: int = 1,
+        dp_rank: int = 0,
+        dp_size: int = 1,
         eod_mask_token: int | None = None,
     ):
-        super().__init__(non_dp_size)
+        super().__init__(dp_rank, dp_size)
         if shards.num_tokens < seq_len:
             raise ValueError(f"The token pool has {shards.num_tokens} tokens, fewer than seq_len ({seq_len})")
         self.shards = shards
@@ -236,9 +237,15 @@ class DocumentDataset(StatefulIterableDataset):
     through the micro-batch packing unchanged."""
 
     def __init__(
-        self, shards: TokenShards, seq_len: int, row_len: int, non_dp_size: int = 1, num_documents: int | None = None
+        self,
+        shards: TokenShards,
+        seq_len: int,
+        row_len: int,
+        dp_rank: int = 0,
+        dp_size: int = 1,
+        num_documents: int | None = None,
     ):
-        super().__init__(non_dp_size)
+        super().__init__(dp_rank, dp_size)
         self.shards = shards
         self.row_len = row_len
         self.windows = document_windows(shards, seq_len, num_documents)
@@ -346,24 +353,26 @@ def warn_if_no_document_separator(shards: TokenShards, tokenizer: PreTrainedToke
 
 
 def setup_token_dataset(
-    config: DatatroveDataConfig, non_dp_size: int = 1, eod_mask_token: int | None = None
+    config: DatatroveDataConfig, dp_rank: int = 0, dp_size: int = 1, eod_mask_token: int | None = None
 ) -> TokenDataset:
     return TokenDataset(
         TokenShards(config.paths, seed=config.seed),
         seq_len=config.seq_len,
         document_masking=config.document_masking,
-        non_dp_size=non_dp_size,
+        dp_rank=dp_rank,
+        dp_size=dp_size,
         eod_mask_token=eod_mask_token,
     )
 
 
 def setup_document_dataset(
-    config: DatatroveDataConfig, non_dp_size: int = 1, num_documents: int | None = None
+    config: DatatroveDataConfig, dp_rank: int = 0, dp_size: int = 1, num_documents: int | None = None
 ) -> DocumentDataset:
     return DocumentDataset(
         TokenShards(config.paths),
         seq_len=config.seq_len,
         row_len=config.seq_len * config.micro_batch_size,
-        non_dp_size=non_dp_size,
+        dp_rank=dp_rank,
+        dp_size=dp_size,
         num_documents=num_documents,
     )
