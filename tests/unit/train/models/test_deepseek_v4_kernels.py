@@ -21,7 +21,18 @@ from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_compressor_pool import (
     dsv4_compressor_pool,
 )
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_mhc_pre import fused_mhc_pre
-from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_rope, dsv4_rope
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import (
+    VLLM_INDEXER_FP8_AMAX_FLOOR,
+    _unfused_indexer_q_rope_quant,
+    dsv4_indexer_q_rope_quant,
+    dsv4_q_norm_rope,
+    dsv4_rope,
+)
+from prime_rl.trainer.models.kernels.fp8_indexer import (
+    fp8_indexer,
+    fp8_indexer_prequantized,
+    per_token_group_quant_fp8,
+)
 from prime_rl.trainer.models.layers.fp8_linear import (
     Float8BlockwiseGroupedLinear,
     replace_linear_with_fp8_blockwise_linear,
@@ -660,6 +671,17 @@ def _rope_table(n_rows: int) -> torch.Tensor:
     return torch.cat([freqs.cos(), freqs.sin()], dim=-1).cuda()
 
 
+def _q_norm_rope_fp64(q: torch.Tensor, cos_sin: torch.Tensor, positions: torch.Tensor, eps: float) -> torch.Tensor:
+    """`dsv4_q_norm_rope` in fp64 with torch ops, for `q` of shape `(..., tokens, heads, head_dim)`."""
+    normed = q * torch.rsqrt(q.square().mean(-1, keepdim=True) + eps)
+    table = cos_sin.double()[positions][:, None]
+    cos, sin = table.chunk(2, dim=-1)
+    rope = normed[..., -ROPE_DIM:]
+    x1, x2 = rope[..., 0::2], rope[..., 1::2]
+    rotated = torch.stack([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1).flatten(-2)
+    return torch.cat([normed[..., :-ROPE_DIM], rotated], dim=-1)
+
+
 @pytest.mark.parametrize("inverse", [False, True], ids=["forward", "inverse"])
 def test_dsv4_rope_matches_vllm_bit_for_bit(inverse):
     """The kernel and vLLM's in-place `rotary_embedding` op agree on every bit, nope channels included.
@@ -683,10 +705,10 @@ def test_dsv4_rope_matches_vllm_bit_for_bit(inverse):
 
 
 def test_q_norm_rope_matches_vllm_fused_prefill_kernel():
-    """q matches vLLM's fused prefill q norm + RoPE to the last ulp, and the kv rotation bit for bit.
+    """q and the kv rotation match vLLM's fused prefill q norm + RoPE bit for bit.
 
-    vLLM rounds q to bf16 once after an fp32 RMSNorm and rotation, as `dsv4_q_norm_rope` does. The norm's
-    reduction order differs, so a few elements per million land one ulp apart.
+    `dsv4_q_norm_rope` runs the out-of-place variant of the kernel vLLM serves with, so this pins its
+    arguments to those of the in-place serving call.
     """
     pytest.importorskip("vllm._custom_ops")
     positions = _rope_positions()
@@ -703,17 +725,16 @@ def test_q_norm_rope_matches_vllm_fused_prefill_kernel():
     )
     rotated_q = dsv4_q_norm_rope(q, cos_sin, positions, eps)
 
-    assert (rotated_q != expected_q).float().mean() < 1e-5
-    _assert_relative(rotated_q, expected_q, torch.finfo(torch.bfloat16).eps, "q")
+    assert torch.equal(rotated_q, expected_q)
     rotated_kv = dsv4_rope(kv.clone().unsqueeze(1), cos_sin, positions)
     assert torch.equal(rotated_kv, kv_cache.view(n_tokens, 1, head_dim))
 
 
 def test_q_norm_rope_matches_the_composed_norm_and_rotation():
-    """Bit for bit with an fp32 RMSNorm, the rotation and one bf16 cast, eager and compiled.
+    """Matches an fp32 RMSNorm, the rotation and one bf16 cast, and compiles to the same bits as eager.
 
-    Gradients agree with the composed ops to bf16 precision rather than bit for bit: the composed
-    backward carries an fp32 gradient through the rotation, where `dsv4_q_norm_rope` keeps it in bf16.
+    The norm's reduction order differs from the composed ops', so a few elements per million land one
+    ulp apart. The gradient is as close to an fp64 reference as rounding that reference to bf16 is.
     """
     positions = _rope_positions()
     cos_sin = _rope_table(int(positions.max()) + 1)
@@ -734,10 +755,60 @@ def test_q_norm_rope_matches_the_composed_norm_and_rotation():
         (out.float() * weight).sum().backward()
 
     assert fused.dtype == torch.bfloat16
-    assert torch.equal(fused, expected)
+    assert (fused != expected).float().mean() < 1e-5
+    _assert_relative(fused, expected, torch.finfo(torch.bfloat16).eps, "q")
     assert torch.equal(compiled, fused)
     assert torch.equal(compiled_leaf.grad, fused_leaf.grad)
     _assert_relative(fused_leaf.grad, composed_leaf.grad, torch.finfo(torch.bfloat16).eps, "q gradient")
+
+    reference_leaf = leaf.double().requires_grad_(True)
+    reference_out = _q_norm_rope_fp64(reference_leaf, cos_sin, positions, eps)
+    (reference_out * weight.to(torch.bfloat16).double()).sum().backward()
+    reference_grad = reference_leaf.grad
+    rounding_floor = (reference_grad.to(torch.bfloat16).double() - reference_grad).square().mean().sqrt()
+    fused_error = (fused_leaf.grad.double() - reference_grad).square().mean().sqrt()
+    assert fused_error <= 1.01 * rounding_floor, f"gradient rms error {fused_error} vs rounding {rounding_floor}"
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9,
+    reason="the indexer quantizes to Triton fp8e4nv (e4m3), only supported on Hopper (SM90) and newer",
+)
+def test_indexer_q_rope_quant_is_bit_for_bit_with_the_unfused_pair():
+    """vLLM's fused indexer q RoPE + quant and the fallback both write exactly what the unfused pair writes.
+
+    A quantized value or folded scale that moved by a bit could move a pick at a top-k boundary, so both
+    are checked bit for bit, then the picks `fp8_indexer_prequantized` makes from them against
+    `fp8_indexer`'s on the rotated query. Token `t` reads the first `(t + 1) // compress_rate` keys, more
+    than `index_topk` in the later half, so the selection has to discard some.
+    """
+    positions = _rope_positions()
+    cos_sin = _rope_table(int(positions.max()) + 1)
+    n_tokens, heads, head_dim = positions.numel(), V4FLASH_MODEL["index_n_heads"], V4FLASH_MODEL["index_head_dim"]
+    topk, compress_rate = V4FLASH_MODEL["index_topk"], V4FLASH_MODEL["compress_rates"]["compressed_sparse_attention"]
+    q = torch.randn(n_tokens, heads, head_dim, device="cuda", dtype=torch.bfloat16)
+    w = torch.randn(n_tokens, heads, device="cuda", dtype=torch.bfloat16)
+    k = torch.randn(n_tokens // compress_rate, head_dim, device="cuda", dtype=torch.bfloat16)
+    ks = torch.zeros(n_tokens, device="cuda", dtype=torch.int32)
+    ke = ((torch.arange(n_tokens, device="cuda") + 1) // compress_rate).int()
+
+    rotated = dsv4_rope(q, cos_sin, positions)
+    expected_q, q_scales = per_token_group_quant_fp8(
+        rotated.reshape(-1, head_dim), group_size=head_dim, eps=VLLM_INDEXER_FP8_AMAX_FLOOR
+    )
+    expected_q, expected_w = expected_q.view(q.shape), w * q_scales.view(n_tokens, heads)
+
+    fused_q, fused_w = dsv4_indexer_q_rope_quant(q, cos_sin, positions, w)
+    assert torch.equal(fused_q.view(torch.uint8), expected_q.view(torch.uint8))
+    assert torch.equal(fused_w, expected_w)
+
+    fallback_q, fallback_w = _unfused_indexer_q_rope_quant(q, cos_sin, positions, w)
+    assert torch.equal(fallback_q.view(torch.uint8), expected_q.view(torch.uint8))
+    assert torch.equal(fallback_w, expected_w)
+
+    expected_picks = fp8_indexer(rotated, k, w, ks, ke, topk, amax_floor=VLLM_INDEXER_FP8_AMAX_FLOOR)
+    fused_picks = fp8_indexer_prequantized(fused_q, k, fused_w, ks, ke, topk, amax_floor=VLLM_INDEXER_FP8_AMAX_FLOOR)
+    assert torch.equal(fused_picks, expected_picks)
 
 
 O_GROUPS = V4FLASH_MODEL["o_groups"]
