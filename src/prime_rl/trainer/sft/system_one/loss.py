@@ -35,7 +35,8 @@ def check_decision_model(model: nn.Module) -> None:
 
 def checked_option_logits(inputs: LossInputs) -> list[Tensor]:
     """The logits of one record's questions: the ``option_logits`` of the model's strategy on the record without its
-    targets, checked to be one vector per question with one logit per option."""
+    targets, checked to be one vector per question with one logit per option. It needs no labels, so evaluation code
+    can call it on the ``LossInputs`` of one record rendered with ``render_sample`` and run alone."""
     check_decision_model(inputs.model)
     record = inputs.sample_data
     if record is None:
