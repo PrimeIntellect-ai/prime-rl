@@ -1,0 +1,3 @@
+# BF16 with router replay: separates replay's effect from quantization's.
+[trainer]
+enable_router_replay = true

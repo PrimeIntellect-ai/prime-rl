@@ -1,0 +1,4 @@
+# Speed: FSDP all-gathers the routed experts quantized. Numerics are identical to nvfp4.toml.
+[trainer.model.moe.compute]
+type = "nvfp4"
+quantized_all_gather = true

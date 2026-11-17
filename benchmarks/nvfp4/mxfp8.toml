@@ -1,0 +1,3 @@
+# Baseline: every routed expert in MXFP8, the comparison Thinking Machines report against.
+[trainer.model.moe.compute]
+type = "mxfp8"

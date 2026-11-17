@@ -135,9 +135,16 @@ class BF16ExpertCompute(GroupedGemmExpertCompute):
 class DeepGemmFP8ExpertCompute(GroupedGemmExpertCompute):
     def __init__(self) -> None:
         from prime_rl.trainer.models.kernels.fp8_utils import GROUP_ALIGNMENT
+        from prime_rl.trainer.models.layers.fp8_expert_weights import Fp8ExpertWeight, prequantized_grouped_fp8_gemm
         from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
 
-        super().__init__(grouped_fp8_gemm, token_group_alignment=GROUP_ALIGNMENT)
+        def gemm(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
+            # A weight FSDP all-gathered as FP8 blocks (`fp8_all_gather`) is used as is.
+            if isinstance(weight, Fp8ExpertWeight):
+                return prequantized_grouped_fp8_gemm(x, weight, offs)
+            return grouped_fp8_gemm(x, weight, offs)
+
+        super().__init__(gemm, token_group_alignment=GROUP_ALIGNMENT)
 
 
 class NVFP4ExpertCompute(GroupedGemmExpertCompute):
@@ -146,12 +153,17 @@ class NVFP4ExpertCompute(GroupedGemmExpertCompute):
     the routed rows to the GEMM as its activation operand."""
 
     def __init__(self, kernel: ModuleType, quantized_dispatch: bool = True) -> None:
-        super().__init__(
-            lambda x, weight, offsets, activations=None: kernel.grouped_gemm(
-                x, weight, offs=offsets, activations=activations
-            ),
-            token_group_alignment=kernel.TOKEN_GROUP_ALIGNMENT,
-        )
+        from prime_rl.trainer.models.layers.nvfp4_expert_weights import NVFP4ExpertWeight
+
+        def gemm(x: torch.Tensor, weight: torch.Tensor, offsets: torch.Tensor, activations=None) -> torch.Tensor:
+            # A weight FSDP all-gathered quantized (`quantized_all_gather`) is used as is.
+            quantized = None
+            if isinstance(weight, NVFP4ExpertWeight):
+                assert weight._transposed
+                quantized = kernel.QuantizedExpertWeight.from_tensors(weight.quantized)
+            return kernel.grouped_gemm(x, weight, offs=offsets, weight_quantized=quantized, activations=activations)
+
+        super().__init__(gemm, token_group_alignment=kernel.TOKEN_GROUP_ALIGNMENT)
         self.kernel = kernel
         if not quantized_dispatch:
             self.encode_tokens = None  # BF16 tokens through dispatch, quantized by the GEMM
@@ -165,6 +177,11 @@ class NVFP4ExpertCompute(GroupedGemmExpertCompute):
         from prime_kernels.nvfp4_moe.dispatch import NVFP4Tokens, group_tokens
 
         return group_tokens(NVFP4Tokens(*unpack_nvfp4_tokens(encoded, dim)), offsets)
+
+    def quantize_weight(self, weight_rows: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        """An ``[experts, out, in]`` weight shard as the tensors the GEMMs read: what FSDP all-gathers with
+        ``quantized_all_gather``."""
+        return self.kernel.quantize_expert_weight(weight_rows).tensors()
 
     def validate(self, experts: "GroupedExperts") -> None:
         """Gate and up projections share one set of weight scales, so they must be fused; the kernel tiles in
