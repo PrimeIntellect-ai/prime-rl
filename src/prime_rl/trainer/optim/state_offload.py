@@ -232,11 +232,16 @@ class CPUOffloadOptimizer(OffloadOptimizer):
         return buffer
 
     def _move_states(self, device: str):
-        """Move optimizer states to CPU or back to GPU (matching each parameter's device)."""
+        """Move optimizer states to CPU or back to GPU (matching each parameter's device).
+
+        `step` stays on the CPU, where non-fused AdamW reads it on the host per parameter.
+        """
         self.wait()
         for param in self.optimizer.state:
             state = self.optimizer.state[param]
             for key, value in state.items():
+                if key == "step":
+                    continue
                 if not isinstance(value, torch.Tensor):
                     continue
                 local = _local(value)
