@@ -142,11 +142,6 @@ def load_weights_checkpoint_layerwise(
         initialize_layerwise_reload(model)
         model.load_weights(state_iter)  # type: ignore
         finalize_layerwise_reload(model, model_config)
-        if preserve_tensor_attributes:
-            for module in model.modules():
-                rebuild = getattr(module, "_build_fused_kv_buffers", None)
-                if rebuild is not None:
-                    rebuild()
         for module, name, original in tensor_attributes:
             updated = getattr(module, name)
             if updated is not original:
