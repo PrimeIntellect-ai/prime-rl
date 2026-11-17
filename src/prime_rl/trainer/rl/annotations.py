@@ -10,7 +10,7 @@ from torch import Tensor
 
 from prime_rl import monitors
 from prime_rl.monitors.file.traces.update import make_update
-from prime_rl.utils.distributed import all_gather_bytes
+from prime_rl.utils.distributed import accelerator_collective_device, all_gather_bytes
 
 
 class AnnotationWriter:
@@ -94,7 +94,7 @@ def gather_streams(
     per member, padded to the longest member, which the receiver copies to host once
     and splits into views."""
     rank, size = dist.get_rank(group), dist.get_world_size(group)
-    device = torch.device("cuda", torch.cuda.current_device()) if dist.get_backend(group) == "nccl" else None
+    device = accelerator_collective_device(group)
     keys = [(trace_id, branch_index, len(logprobs)) for trace_id, branch_index, logprobs, _ in streams]
     flat = (
         np.concatenate([np.stack([logprobs, entropies]) for _, _, logprobs, entropies in streams], axis=1)

@@ -11,6 +11,7 @@ from pathlib import Path
 # ruff: noqa: I001
 
 from prime_rl.transports.weights import latest_finished_broadcast, prune_broadcasts_beyond, setup_weight_sender
+from prime_rl.utils.device import DEVICE_TYPE, device_module
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import numpy as np
 import torch
@@ -264,7 +265,7 @@ def train(config: TrainerConfig):
         setup_context_parallel(model, config.model, parallel_dims)
 
     is_moe_model = is_tt_moe_model(model)
-    staleness_bin_edges = torch.tensor(STALENESS_BIN_EDGES, dtype=torch.int16, device="cuda")
+    staleness_bin_edges = torch.tensor(STALENESS_BIN_EDGES, dtype=torch.int16, device=DEVICE_TYPE)
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
 
     # Fresh adapter init after FSDP materialization (the pretrained checkpoint
@@ -322,7 +323,9 @@ def train(config: TrainerConfig):
     maybe_record_function = nullcontext
     if config.trace_path:
         logger.info(f"Tracing to {config.trace_path}")
-        prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
+        prof = profile(
+            activities=[ProfilerActivity.CPU, getattr(ProfilerActivity, DEVICE_TYPE.upper())], record_shapes=True
+        ).__enter__()
         maybe_record_function = record_function
     start_step = progress.step
     # One rank per data rank releases its micro batches' arrays.
@@ -339,7 +342,7 @@ def train(config: TrainerConfig):
     control_server.start()
     while True:
         # Reset peak memory stats
-        torch.cuda.reset_peak_memory_stats()
+        device_module.reset_peak_memory_stats()
         if gc_handler is not None:
             gc_handler.run(progress.step)
         is_last_step = config.max_steps is not None and progress.step >= config.max_steps
@@ -380,7 +383,7 @@ def train(config: TrainerConfig):
         if not config.data.fake:
             # Ranks that share a data rank train the same micro batches, so they must drop
             # the same ones even when only one of them failed to fetch.
-            failed = torch.zeros(dataloader.dp_world_size, len(micro_batches), device="cuda")
+            failed = torch.zeros(dataloader.dp_world_size, len(micro_batches), device=DEVICE_TYPE)
             failed[dataloader.dp_rank, dataloader.failed_micro_batches] = 1
             dist.all_reduce(failed, op=dist.ReduceOp.MAX)
             # An NCCL all-reduce returns once it is enqueued, not once every rank joined it.
@@ -438,7 +441,7 @@ def train(config: TrainerConfig):
             if micro_batch["ref_kl_weights"] is not None:
                 local_ref_kl_scale += int((micro_batch["ref_kl_weights"] != 0).sum())
         global_scales = torch.tensor(
-            [local_rl_scale, local_ce_scale, local_ref_kl_scale], dtype=torch.float64, device="cuda"
+            [local_rl_scale, local_ce_scale, local_ref_kl_scale], dtype=torch.float64, device=DEVICE_TYPE
         )
         dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
         dist.all_reduce(global_scales, op=dist.ReduceOp.SUM, group=dp_cp_group)
@@ -464,10 +467,10 @@ def train(config: TrainerConfig):
         for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
             step_local_num_tokens += micro_batch["input_ids"].shape[1]
             step_local_flops += perf_counter.flop_counter(micro_batch["seq_lens"].tolist())
-            input_ids = micro_batch["input_ids"].to("cuda")
-            position_ids = micro_batch["position_ids"].to("cuda")
-            advantages = micro_batch["advantages"].to("cuda")
-            loss_mask = micro_batch["loss_mask"].to("cuda")
+            input_ids = micro_batch["input_ids"].to(DEVICE_TYPE)
+            position_ids = micro_batch["position_ids"].to(DEVICE_TYPE)
+            advantages = micro_batch["advantages"].to(DEVICE_TYPE)
+            loss_mask = micro_batch["loss_mask"].to(DEVICE_TYPE)
             # Each token's env: the sequences' env names spread over their lengths
             env_names = sorted(set(micro_batch["env_names"]))
             env_ids = torch.from_numpy(
@@ -475,13 +478,15 @@ def train(config: TrainerConfig):
                     np.array([env_names.index(name) for name in micro_batch["env_names"]], dtype=np.int64),
                     micro_batch["sequence_lengths"],
                 )
-            ).to("cuda")
-            inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
-            ref_logprobs = micro_batch["ref_logprobs"].to("cuda") if micro_batch["ref_logprobs"] is not None else None
-            rl_weights = micro_batch["rl_weights"].to("cuda") if micro_batch["rl_weights"] is not None else None
-            ce_weights = micro_batch["ce_weights"].to("cuda") if micro_batch["ce_weights"] is not None else None
+            ).to(DEVICE_TYPE)
+            inference_logprobs = micro_batch["inference_logprobs"].to(DEVICE_TYPE)
+            ref_logprobs = (
+                micro_batch["ref_logprobs"].to(DEVICE_TYPE) if micro_batch["ref_logprobs"] is not None else None
+            )
+            rl_weights = micro_batch["rl_weights"].to(DEVICE_TYPE) if micro_batch["rl_weights"] is not None else None
+            ce_weights = micro_batch["ce_weights"].to(DEVICE_TYPE) if micro_batch["ce_weights"] is not None else None
             ref_kl_weights = (
-                micro_batch["ref_kl_weights"].to("cuda") if micro_batch["ref_kl_weights"] is not None else None
+                micro_batch["ref_kl_weights"].to(DEVICE_TYPE) if micro_batch["ref_kl_weights"] is not None else None
             )
             # Stays on the host in its wire dtype (uint8/uint16) until after the CP shard below
             routed_experts = micro_batch["routed_experts"]
@@ -505,7 +510,7 @@ def train(config: TrainerConfig):
                     replayed=micro_batch["support_replayed"],
                     logprobs=micro_batch["support_logprobs"],
                     sparse_backward=micro_batch["sparse_head_backward"],
-                ).to("cuda")
+                ).to(DEVICE_TYPE)
                 label_support = support.shift_left()
             if score_centering:
                 vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
@@ -530,14 +535,14 @@ def train(config: TrainerConfig):
 
             mm_kwargs = micro_batch.pop("mm_kwargs")
             if mm_kwargs is not None:
-                mm_kwargs = {key: value.to("cuda") for key, value in mm_kwargs.items()}
+                mm_kwargs = {key: value.to(DEVICE_TYPE) for key, value in mm_kwargs.items()}
             mm_token_type_ids = (
-                micro_batch["mm_token_type_ids"].to("cuda")
+                micro_batch["mm_token_type_ids"].to(DEVICE_TYPE)
                 if micro_batch.get("mm_token_type_ids") is not None
                 else None
             )
 
-            seq_lens = micro_batch["seq_lens"].to("cuda")
+            seq_lens = micro_batch["seq_lens"].to(DEVICE_TYPE)
 
             labels = shift_tensor_left(input_ids)
 
@@ -561,9 +566,9 @@ def train(config: TrainerConfig):
                     label_support = label_support.rows(cp_rank * shard_len, (cp_rank + 1) * shard_len)
 
             if routed_experts is not None:
-                routed_experts = routed_experts.to("cuda").int()
+                routed_experts = routed_experts.to(DEVICE_TYPE).int()
 
-            temperatures = micro_batch["temperatures"].to("cuda")
+            temperatures = micro_batch["temperatures"].to(DEVICE_TYPE)
 
             # Shard temperatures for context parallelism if enabled
             if cp_enabled:
@@ -676,7 +681,7 @@ def train(config: TrainerConfig):
                 mismatch_kl = _mismatch_kl_from_log_ratio(out["logprobs"] - inference_logprobs)
             tensor_stats.add("mismatch_kl", mismatch_kl, mismatch_mask, env_ids, env_names)
             if micro_batch["staleness"] is not None:
-                staleness = micro_batch["staleness"].to("cuda")
+                staleness = micro_batch["staleness"].to(DEVICE_TYPE)
                 tensor_stats.add(
                     "mismatch_kl_by_staleness",
                     mismatch_kl,
@@ -747,14 +752,14 @@ def train(config: TrainerConfig):
             # so a still-running kernel holding a cached block (e.g. the
             # optimizer step's tail) faults with an illegal memory access
             # once its block is freed under it.
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
+            device_module.synchronize()
+            device_module.empty_cache()
             weight_sender.broadcast(model, step=progress.step)
             broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
 
         # Count the step before checkpointing it, so a resume continues the counters from here.
         # The dp mesh excludes cp, whose ranks hold the same rows.
-        global_counts = torch.tensor([step_local_num_tokens, step_local_flops], dtype=torch.float64, device="cuda")
+        global_counts = torch.tensor([step_local_num_tokens, step_local_flops], dtype=torch.float64, device=DEVICE_TYPE)
         dist.all_reduce(global_counts, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
         num_tokens, num_flops = int(global_counts[0].item()), global_counts[1].item()
         progress.total_tokens += num_tokens
