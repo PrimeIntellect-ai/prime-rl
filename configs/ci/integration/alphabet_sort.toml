@@ -37,7 +37,9 @@ env.taskset.max_names_per_turn = 3
 env.taskset.task.similarity_power = 4
 env.taskset.task.power_per_turn = false
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1
 
 [inference]
 

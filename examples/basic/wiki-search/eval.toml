@@ -20,4 +20,6 @@ max_completion_tokens = 512
 name = "wiki-search"
 env.taskset.id = "wiki-search"
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1

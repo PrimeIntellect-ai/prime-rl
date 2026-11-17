@@ -283,7 +283,9 @@ limit = 32
 name = "reverse-text"
 env.taskset.id = "reverse-text"
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1
 
 [inference]
 

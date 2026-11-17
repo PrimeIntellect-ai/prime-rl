@@ -72,7 +72,9 @@ ratio = 0.3
 curriculum = { gates = { zero_advantage = { type = "advantage_range" } } }
 env.taskset.id = "i3_math"
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1
 
 [[orchestrator.train.source]]
 name = "logic"
@@ -81,7 +83,9 @@ curriculum = { gates = { zero_advantage = { type = "advantage_range" } } }
 env.taskset.id = "i3_logic"
 env.taskset.filter.max = 0.874
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1
 
 [[orchestrator.train.source]]
 name = "code"
@@ -89,7 +93,9 @@ ratio = 0.2
 curriculum = { gates = { zero_advantage = { type = "advantage_range" } } }
 env.taskset.id = "i3_code"
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1
 
 [orchestrator.eval]
 interval = 25
@@ -104,7 +110,9 @@ env.agent.runtime.labels = ["intellect-3.1", "swe-bench-verified"]
 name = "aime2025"
 env.taskset.id = "aime25"
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1
 
 [inference.vllm]
 tensor_parallel_size = 8

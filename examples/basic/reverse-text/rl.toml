@@ -22,7 +22,9 @@ max_completion_tokens = 128
 name = "reverse-text"
 env.taskset.id = "reverse-text"
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1
 
 [orchestrator.eval]
 interval = 5
@@ -35,7 +37,9 @@ name = "reverse-text-eval"
 select.limit = 256
 env.taskset.id = "reverse-text"
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1
 
 [trainer.optim]
 lr = 3e-6

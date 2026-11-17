@@ -24,7 +24,9 @@ group_size = 16
 name = "wordle"
 env.taskset.id = "wordle"
 env.player.harness.id = "null"
-env.player.runtime.type = "subprocess"
+env.player.runtime.type = "prime"
+env.player.runtime.cpu = 1
+env.player.runtime.memory = 1
 
 [orchestrator.train.sampling]
 max_completion_tokens = 1024

@@ -27,9 +27,13 @@ max_completion_tokens = 512
 name = "kuhn-poker"
 env.taskset.id = "kuhn-poker"
 env.player0.harness.id = "null"
-env.player0.runtime.type = "subprocess"
+env.player0.runtime.type = "prime"
+env.player0.runtime.cpu = 1
+env.player0.runtime.memory = 1
 env.player1.harness.id = "null"
-env.player1.runtime.type = "subprocess"
+env.player1.runtime.type = "prime"
+env.player1.runtime.cpu = 1
+env.player1.runtime.memory = 1
 
 [orchestrator.eval]
 interval = 1
@@ -44,9 +48,13 @@ max_completion_tokens = 512
 name = "kuhn-poker"
 env.taskset.id = "kuhn-poker"
 env.player0.harness.id = "null"
-env.player0.runtime.type = "subprocess"
+env.player0.runtime.type = "prime"
+env.player0.runtime.cpu = 1
+env.player0.runtime.memory = 1
 env.player1.harness.id = "null"
-env.player1.runtime.type = "subprocess"
+env.player1.runtime.type = "prime"
+env.player1.runtime.cpu = 1
+env.player1.runtime.memory = 1
 
 [trainer.optim]
 lr = 3e-6

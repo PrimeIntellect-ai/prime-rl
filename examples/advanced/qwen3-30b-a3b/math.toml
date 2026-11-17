@@ -53,7 +53,9 @@ max_completion_tokens = 32768
 name = "math"
 env.taskset.id = "i3_math"
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1
 
 [orchestrator.eval]
 interval = 25
@@ -62,7 +64,9 @@ interval = 25
 name = "aime2025"
 env.taskset.id = "aime25"
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1
 
 [inference.vllm]
 tensor_parallel_size = 8

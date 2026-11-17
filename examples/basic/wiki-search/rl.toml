@@ -46,7 +46,9 @@ name = "wiki-search"
 curriculum = { gates = { zero_advantage = { type = "advantage_range" } } }
 env.taskset.id = "wiki-search"
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1
 
 [ckpt] # Checkpoint at the end of training
 

@@ -4,7 +4,7 @@ RL on the 30B-A3B MoE across three domains: math, SWE, and agentic tool use. The
 
 | Config | Trains on | Evals on | Runtime | Topology |
 |---|---|---|---|---|
-| [`math.toml`](math.toml) | `i3_math` | `aime2025` (every 25 steps) | `subprocess` — runs locally, no sandbox | 2 train + 2 infer nodes |
+| [`math.toml`](math.toml) | `i3_math` | `aime2025` (every 25 steps) | `prime` — 1 CPU core, 1 GB RAM | 2 train + 2 infer nodes |
 | [`swe.toml`](swe.toml) | `r2e-gym` (`bash` harness) | `swebench-verified` (every 25 steps) | sandbox (Prime Intellect by default) | 2 train + 2 infer nodes |
 | [`tool.toml`](tool.toml) | `general-agent` (colocated tools) | — | `prime` | 1 train + 1 infer node |
 | [`sft/h200/`](sft/h200) | SFT on `PrimeIntellect/INTELLECT-3-SFT-10K` (math) | — | — | 2 train nodes |
@@ -14,7 +14,7 @@ RL on the 30B-A3B MoE across three domains: math, SWE, and agentic tool use. The
 ## Requirements
 
 - A Slurm cluster with 8-GPU nodes and a shared filesystem. This guide assumes the shared filesystem is mounted at `/shared` — adjust to your own path.
-- **Sandboxes** (`swe.toml` and `tool.toml`) — these agents run in [Prime Intellect Sandboxes](https://docs.primeintellect.ai/sandboxes/overview). Install the `prime` CLI separately and log in:
+- **Sandboxes** — all three RL configs run agents in [Prime Intellect Sandboxes](https://docs.primeintellect.ai/sandboxes/overview). Install the `prime` CLI separately and log in:
 
 ```bash
 uv tool install prime
@@ -27,7 +27,7 @@ prime login   # or: prime config set-api-key <your-key>
   - `WANDB_API_KEY` — every config logs to W&B (`[monitors.wandb]`).
   - `HF_TOKEN` — optional; the Qwen checkpoints are public, but a token avoids rate limits.
 
-`math.toml` needs none of the above beyond W&B: its agents run as local subprocesses in the env workers.
+`math.toml` requests 1 CPU core and 1 GB RAM per agent sandbox for both training and evaluation.
 
 ## Setup
 
