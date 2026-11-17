@@ -156,14 +156,15 @@ def _run_op(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor, probe: to
 
 
 def _fake_fp8(a: torch.Tensor, block_rows: int, block_cols: int) -> torch.Tensor:
-    """Round float32 `a` onto the e4m3 grid with one amax scale per `block_rows x block_cols` block."""
+    """Round float32 `a` onto the e4m3 grid with one amax scale per `block_rows x block_cols` block, multiplying by
+    the exact reciprocal of the scale as vLLM does."""
     rows, cols = a.shape
     padded = a.new_zeros(math.ceil(rows / block_rows) * block_rows, math.ceil(cols / block_cols) * block_cols)
     padded[:rows, :cols] = a
     blocks = padded.view(padded.shape[0] // block_rows, block_rows, padded.shape[1] // block_cols, block_cols)
     amax = blocks.abs().amax(dim=(1, 3), keepdim=True).clamp_min(1e-10)
     scale = amax / torch.full_like(amax, 448.0)
-    rounded = (blocks / scale).clamp(-448.0, 448.0).to(torch.float8_e4m3fn).float() * scale
+    rounded = (blocks * (1.0 / scale)).clamp(-448.0, 448.0).to(torch.float8_e4m3fn).float() * scale
     return rounded.view_as(padded)[:rows, :cols]
 
 

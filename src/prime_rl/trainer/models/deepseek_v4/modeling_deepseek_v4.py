@@ -24,7 +24,7 @@ from prime_rl.trainer.models.deepseek_v4.hyperconnections import (
     DeepseekV4HyperConnection,
     DeepseekV4HyperHead,
 )
-from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4MoE
+from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4HashRouter, DeepseekV4MoE
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import MoE
@@ -106,10 +106,10 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
         init_std = self.config.initializer_range
         if isinstance(module, (DeepseekV4Attention, DeepseekV4HyperConnection, DeepseekV4HyperHead)):
             module.init_weights(init_std)
-        elif isinstance(module, DeepseekV4MoE):
-            module.init_weights(init_std, module.tokens_per_expert.device)
         elif isinstance(module, DeepseekV4RotaryEmbedding):
             module.init_buffers_post_meta()
+        elif isinstance(module, DeepseekV4HashRouter):
+            module.init_tid2eid()
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:

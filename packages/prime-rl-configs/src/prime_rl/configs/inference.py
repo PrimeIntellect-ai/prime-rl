@@ -1,4 +1,6 @@
 import json
+import re
+import warnings
 from argparse import Namespace
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
@@ -41,7 +43,7 @@ class VllmConfig(BaseConfig):
     or ``--vllm.max-num-seqs 256``) and passes through to the server verbatim.
 
     Parser fields (``tool_call_parser``, ``reasoning_parser``) default to ``"auto"``,
-    which resolves to a concrete parser name at validation time from the model name.
+    which resolves to a concrete parser name at validation time from the tokenizer name, then the model name.
     Set to ``None`` to disable.
     """
 
@@ -57,10 +59,10 @@ class VllmConfig(BaseConfig):
     """Chat template — a Jinja2 template string or path to a template file. If None, uses the model's default."""
 
     tool_call_parser: str | None = "auto"
-    """Tool-call parser. Set to ``"auto"`` (default) to detect from the model name, or ``None`` to disable."""
+    """Tool-call parser. Set to ``"auto"`` (default) to detect from the tokenizer name, then the model name, or ``None`` to disable."""
 
     reasoning_parser: str | None = "auto"
-    """Parser for extracting reasoning content from model outputs. Set to ``"auto"`` (default) to detect from the model name, or ``None`` to disable."""
+    """Parser for extracting reasoning content from model outputs. Set to ``"auto"`` (default) to detect from the tokenizer name, then the model name, or ``None`` to disable."""
 
     rope_scaling: dict[str, Any] | str | None = None
     """RoPE scaling configuration as a dict (e.g. ``{rope_type="yarn", factor=4.0, original_max_position_embeddings=32768}``)."""
@@ -134,16 +136,30 @@ class VllmConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_resolve_parsers(self):
-        """Resolve ``"auto"`` parser values to concrete parser names from the model name.
+        """Resolve ``"auto"`` parser values to concrete parser names from the tokenizer name, then the model name.
 
         Runs after ``RLConfig.auto_setup_shared_configs`` (mode=before) has
-        propagated the shared ``[model] name`` into ``inference.vllm``, so the
-        name is set even when only the shared block specifies it.
+        propagated the shared ``[model] name`` and ``[tokenizer] name`` into ``inference.vllm``, so the
+        names are set even when only the shared blocks specify them.
         """
-        if self.tool_call_parser == "auto":
-            self.tool_call_parser = resolve_tool_call_parser(self.model)
-        if self.reasoning_parser == "auto":
-            self.reasoning_parser = resolve_reasoning_parser(self.model)
+        tokenizer = (self.model_extra or {}).get("tokenizer")
+        names = [name for name in (tokenizer, self.model) if name]
+        unresolved = []
+        for field, resolve in (
+            ("tool_call_parser", resolve_tool_call_parser),
+            ("reasoning_parser", resolve_reasoning_parser),
+        ):
+            if getattr(self, field) == "auto":
+                parser = next((parser for name in names if (parser := resolve(name))), None)
+                setattr(self, field, parser)
+                if parser is None:
+                    unresolved.append(field)
+        if unresolved and tokenizer is None and not re.fullmatch(r"[\w.-]+/[\w.-]+", self.model):
+            warnings.warn(
+                f"No {' or '.join(unresolved)} matches the local model {self.model}: set tokenizer.name to the HF "
+                "model name to pick them",
+                stacklevel=2,
+            )
         return self
 
     @model_validator(mode="after")
@@ -711,3 +727,47 @@ class InferenceConfig(BaseConfig):
             namespace.kv_transfer_config = kv_transfer_config
 
         return namespace
+
+
+MODEL_NAME_DRAFT_METHODS = ("mtp", "dspark")
+
+
+def setup_dummy_load(inference: InferenceConfig, dummy: bool) -> None:
+    """With ``dummy``, the server starts with placeholder weights (``load_format = "dummy"``), which the trainer's
+    startup broadcast replaces, unless ``load_format`` is set explicitly. That is the case when the trainer's weights
+    are not HF weights stored at ``model.name``: a ``scratch`` init, known from the config, or a checkpoint step
+    directory as ``model.name``, which the inference server detects since only it is sure to see the path. HF weights
+    still load from disk: vLLM checks that a load from disk writes every weight, but no weight transfer checks that the
+    trainer's update does, so a weight the update misses keeps its pretrained value instead of a placeholder.
+
+    Under a dummy-loaded target, a speculative draft with its own ``model`` still loads it from disk, except a
+    ``draft_model`` draft, which vLLM loads with the target's load format. A draft that reads its weights from
+    ``model.name`` (MTP, DSpark without a ``model``) gets none."""
+    if dummy and "load_format" not in (inference.vllm.model_extra or {}):
+        inference.vllm.load_format = "dummy"
+    if getattr(inference.vllm, "load_format", None) != "dummy":
+        return
+    overrides = [inference.vllm.model_extra or {}]
+    if isinstance(inference.deployment, DisaggregatedInferenceDeploymentConfig):
+        overrides += [inference.deployment.prefill_vllm_overrides, inference.deployment.decode_vllm_overrides]
+    for override in overrides:
+        draft = next((value for key, value in override.items() if key.replace("-", "_") == "speculative_config"), None)
+        if not draft:
+            continue
+        draft_keys = {key.replace("-", "_") for key in draft}
+        # vLLM treats a draft with a model but no method as a draft_model draft
+        method = str(draft.get("method") or ("draft_model" if "model" in draft_keys else None))
+        if method == "draft_model":
+            raise ValueError(
+                'vLLM loads a speculative_config method "draft_model" draft with the target\'s load format, here '
+                'dummy: use a method such as "eagle3", or load the target from disk (HF weights at model.name with model.init.type = "pretrained", or an explicit inference.vllm.load_format)'
+            )
+        if "model" in draft_keys:
+            if "draft_load_config" not in draft_keys:
+                draft["draft_load_config"] = {"load_format": "auto"}
+            continue
+        if method in MODEL_NAME_DRAFT_METHODS or method.endswith("_mtp"):
+            raise ValueError(
+                f'speculative_config method "{method}" reads its draft weights from model.name, which a dummy-loaded '
+                'server does not load: set speculative_config.model to a draft checkpoint, or load the target from disk (HF weights at model.name with model.init.type = "pretrained", or an explicit inference.vllm.load_format)'
+            )

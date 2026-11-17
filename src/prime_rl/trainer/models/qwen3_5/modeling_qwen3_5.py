@@ -133,6 +133,11 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL):
     def conversion_chain(cls, config):
         return conversion_chain(config)
 
+    def _init_weights(self, module: nn.Module) -> None:
+        super()._init_weights(module)
+        if isinstance(module, (ZeroCenteredRMSNorm, GatedDeltaNet)):
+            module.reset_parameters()
+
 
 class Qwen3_5Model(Qwen3_5PreTrainedModel):
     def __init__(self, config: Qwen3_5TextConfig) -> None:
