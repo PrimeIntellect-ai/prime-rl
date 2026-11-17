@@ -20,7 +20,6 @@ from prime_rl.configs.shared import (
     VLMConfig,
     WeightBroadcastConfig,
     ZMQTransportConfig,
-    validate_step_dir,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir
 
@@ -98,9 +97,6 @@ class LoRAConfig(BaseConfig):
 class DebugModelConfig(BaseConfig):
     num_layers: int | None = None
     """Override the number of transformer layers (truncates the model)."""
-
-    random_init: bool = False
-    """Randomly initialize the model instead of loading weights."""
 
     force_balanced_routing: bool = False
     """Replace MoE token-choice routing with a round-robin assignment so every expert sees an equal share. Intended for fake-data smoke tests where untrained routing would otherwise OOM under severe imbalance. Gating scores are still gathered from the override indices so the forward pass stays consistent."""
@@ -324,15 +320,61 @@ class MoERuntimeConfig(BaseConfig):
     dispatch: MoEDispatchConfig = TorchMoEDispatchConfig()
 
 
+class ScratchInit(BaseConfig):
+    """The model's own random init (its ``_init_weights``, with the ``initializer_range`` of ``model.name``'s
+    config.json); ``model.name`` supplies only the architecture and the tokenizer."""
+
+    type: Literal["scratch"] = "scratch"
+
+    seed: int = 0
+    """Seed of the init: the same seed gives the same weights on the same GPU layout."""
+
+
+class PretrainedInit(BaseConfig):
+    """The weights stored at ``model.name``: an HF model (Hub id or local directory), or a checkpoint step directory
+    (``.../step_<N>``) of another run, whose ``trainer/`` weights load and whose ``config.json`` and tokenizer files
+    supply the architecture and the tokenizer. A step directory starts the run at step 0 with a fresh optimizer,
+    scheduler and data."""
+
+    type: Literal["pretrained"] = "pretrained"
+
+
+InitConfig: TypeAlias = Annotated[ScratchInit | PretrainedInit, Field(discriminator="type")]
+
+
+IMPLEMENTATION_NOT_SERVED = (
+    "model.implementation cannot be served: the class has no vLLM counterpart, so its weights cannot be broadcast to "
+    "inference"
+)
+
+
+class ModelImplementationConfig(PluginConfig):
+    """The model class to build from the checkpoint at ``model.name``: ``import_path`` names a subclass of prime-rl's
+    class for the checkpoint's architecture. Only the trainer builds it and it has no vLLM counterpart, so it is refused
+    with weight broadcasts to inference (RL, online evals)."""
+
+    @model_validator(mode="after")
+    def validate_no_kwargs(self):
+        if self.kwargs:
+            raise ValueError(
+                "model.implementation takes no kwargs: put the class's hyperparameters in the checkpoint's config.json"
+            )
+        return self
+
+
 class ModelConfig(BaseModelConfig):
     vlm: VLMConfig | None = None
     """VLM configuration. Setting this enables vision-language model support."""
 
+    implementation: ModelImplementationConfig | None = None
+    """The model class to build from the checkpoint at ``name``, for a model that extends a supported one (e.g. an
+    added head). If None, uses prime-rl's class for the checkpoint's architecture."""
+
     conversion_dir: Path | None = None
     """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
 
-    init_from: Path | None = None
-    """Checkpoint step directory (e.g. ``other/run/checkpoints/step_500``) to initialize the weights from instead of ``name``'s, such as an SFT run's checkpoint to start RL from. Only the weights load: the run starts at step 0 with a fresh optimizer, scheduler and data. ``name`` still sets the architecture and tokenizer, and a resumed run loads its own checkpoint instead."""
+    init: InitConfig = PretrainedInit()
+    """Where the weights start. A resumed run loads its own checkpoint instead, whatever the type."""
 
     seq_len: int = 2048
     """Sequence length the model is trained on."""
@@ -400,9 +442,15 @@ class ModelConfig(BaseModelConfig):
     """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. In SFT the fused head computes the summed cross-entropy and its gradients chunk by chunk, holding one chunk's full-vocab logits at a time."""
 
     @model_validator(mode="after")
-    def validate_init_from(self):
-        if self.init_from is not None:
-            validate_step_dir(self.init_from, field="model.init_from")
+    def implementation_without_vlm(self):
+        if self.implementation is not None and self.vlm is not None:
+            raise ValueError("model.implementation is not supported with model.vlm")
+        return self
+
+    @model_validator(mode="after")
+    def validate_scratch_lora(self):
+        if self.init.type == "scratch" and self.lora is not None:
+            raise ValueError('model.lora adapts pretrained weights, which model.init.type = "scratch" does not load')
         return self
 
     @model_validator(mode="after")
@@ -815,6 +863,12 @@ class TrainerConfig(BaseTrainerConfig):
                 f"'{self.weight_broadcast.type}': a restarted trainer cannot rejoin its transfer group. "
                 "Use weight_broadcast.type = 'filesystem'."
             )
+        return self
+
+    @model_validator(mode="after")
+    def implementation_is_not_served(self):
+        if self.model.implementation is not None and self.data.fake is None:
+            raise ValueError(IMPLEMENTATION_NOT_SERVED)
         return self
 
     @model_validator(mode="after")

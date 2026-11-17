@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
-from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.inference import InferenceConfig, setup_dummy_load
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig, SpeculativeDecodingConfig, TrainSamplingConfig
@@ -23,6 +23,7 @@ from prime_rl.configs.shared import (
     WeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
+    InitConfig,
     TokenizerConfig,
     TrainerConfig,
     rl_micro_batch_multiple,
@@ -106,6 +107,9 @@ class SharedModelConfig(BaseConfig):
 
     vlm: "VLMConfig | None" = None
     """VLM configuration. Set this to enable vision-language model support."""
+
+    init: InitConfig | None = None
+    """Where the trainer's weights start. Propagates to ``trainer.model.init``."""
 
 
 class SingleNodeDeploymentConfig(BaseSingleNodeDeploymentConfig):
@@ -427,6 +431,14 @@ class RLConfig(BaseConfig):
                     "orchestrator.monitors.wandb.project": orchestrator_wandb.project,
                 },
             )
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_dummy_load(self):
+        """A scratch init reaches inference with the trainer's startup broadcast, so vLLM loads no weights unless
+        ``inference.vllm.load_format`` is set."""
+        if self.inference is not None:
+            setup_dummy_load(self.inference, self.trainer.model.init.type == "scratch")
         return self
 
     @model_validator(mode="after")
