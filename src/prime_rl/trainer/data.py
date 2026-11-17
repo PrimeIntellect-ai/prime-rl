@@ -150,9 +150,7 @@ class CatDataset(StatefulIterableDataset):
                 if packed_samples["mm_token_type_ids"] is None and sample_mm_type_ids is not None:
                     packed_samples["mm_token_type_ids"] = [np.zeros(seq_len, dtype=np.int64)]
                 if packed_samples["mm_token_type_ids"] is not None:
-                    packed_samples["mm_token_type_ids"].append(
-                        sample_mm_type_ids if sample_mm_type_ids is not None else np.zeros(sample_len, dtype=np.int64)
-                    )
+                    packed_samples["mm_token_type_ids"].append(sample_mm_type_ids)
 
             seq_len += sample_len
 
@@ -184,8 +182,11 @@ class CatDataset(StatefulIterableDataset):
             # Identical pad tokens route to the same MoE experts and can overload one EP rank, so text packs pad with
             # their own tokens. Multimodal packs keep a constant id: a repeated image placeholder would have no feature
             # to receive.
-            padding = np.resize(result["input_ids"], pad_len) if packed["mm_kwargs"] is None else np.zeros(pad_len)
-            result["input_ids"] = np.concatenate([result["input_ids"], padding.astype(np.int64)])
+            if packed["mm_kwargs"] is None:
+                padding = np.resize(result["input_ids"], pad_len)
+            else:
+                padding = np.zeros(pad_len, dtype=np.int64)
+            result["input_ids"] = np.concatenate([result["input_ids"], padding])
             result["position_ids"] = np.concatenate([result["position_ids"], np.arange(pad_len)])
             result["loss_mask"] = np.concatenate([result["loss_mask"], np.zeros(pad_len, dtype=bool)])
             result["target_ids"] = np.concatenate([result["target_ids"], np.zeros(pad_len, dtype=np.int64)])

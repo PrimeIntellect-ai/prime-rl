@@ -641,13 +641,13 @@ class DocumentDataset(StatefulIterableDataset):
         self.rows = pack_windows([end - start - 1 for _, start, end in self.windows], row_len)
 
     def sample(self, row: list[int], scored: bool) -> dict:
-        windows = []
+        window_tokens = []
         for index in row:
             file_index, start, end = self.windows[index]
-            windows.append(self.shards.open(file_index)[0][start:end].astype(np.int64))
-        input_ids = np.concatenate([ids[:-1] for ids in windows])
-        target_ids = np.concatenate([ids[1:] for ids in windows])
-        seq_lens = [len(ids) - 1 for ids in windows]
+            window_tokens.append(self.shards.open(file_index)[0][start:end].astype(np.int64))
+        input_ids = np.concatenate([ids[:-1] for ids in window_tokens])
+        target_ids = np.concatenate([ids[1:] for ids in window_tokens])
+        seq_lens = [len(ids) - 1 for ids in window_tokens]
         loss_mask = np.full(len(input_ids), scored)
         padding = self.row_len - len(input_ids)
         if padding > 0:
