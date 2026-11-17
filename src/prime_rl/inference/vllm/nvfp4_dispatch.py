@@ -3,35 +3,14 @@
 vLLM's online ``nvfp4_per_token`` experts quantize their input after the all2all, so under DP+EP with
 ``all2all_backend = "flashinfer_nvlink_one_sided"`` every token crosses NVLink as bf16 (2 B per element)
 and each receiving rank quantizes it again. Here the sending rank quantizes once and dispatches the FP4
-values, the E4M3 block scales and the FP32 per-token scale, packed after the block scales: 0.28x the
-bf16 bytes and 0.55x those of MXFP8 dispatch. Each token's quantization depends only on that token, so
-the experts receive exactly the inputs they would have computed after receipt.
+values, the E4M3 block scales and the FP32 per-token scale as separate payloads: 0.28x the bf16 bytes and
+0.55x those of MXFP8 dispatch, with no packing or unpacking copies. Each token's quantization depends only
+on that token, so the experts receive exactly the inputs they would have computed after receipt.
 """
 
 import torch
 
 PER_TOKEN_SCALE_BYTES = torch.float32.itemsize
-
-
-def pack_nvfp4_scales(block_scale: torch.Tensor, per_token_scale: torch.Tensor) -> torch.Tensor:
-    """One uint8 row per token: its E4M3 block scales, then its FP32 per-token scale."""
-    num_tokens = per_token_scale.numel()
-    return torch.cat(
-        [
-            block_scale.view(torch.uint8).reshape(num_tokens, -1),
-            per_token_scale.reshape(num_tokens, 1).view(torch.uint8),
-        ],
-        dim=1,
-    )
-
-
-def unpack_nvfp4_scales(packed: torch.Tensor, hidden_dim: int) -> tuple[torch.Tensor, torch.Tensor]:
-    """Inverse of ``pack_nvfp4_scales``: (E4M3 block scales [T, hidden_dim / 16], FP32 scales [T])."""
-    num_block_scales = hidden_dim // 16
-    assert packed.shape[1] == num_block_scales + PER_TOKEN_SCALE_BYTES, packed.shape
-    block_scale = packed[:, :num_block_scales].contiguous().view(torch.float8_e4m3fn)
-    per_token_scale = packed[:, num_block_scales:].contiguous().view(torch.float32).squeeze(1)
-    return block_scale, per_token_scale
 
 
 def patch_nvfp4_per_token_dispatch():
@@ -73,23 +52,31 @@ def patch_nvfp4_per_token_dispatch():
                 max(global_num_tokens_cpu) if global_num_tokens_cpu is not None else a1.shape[0]
             )
             x_q, block_scale, per_token_scale = quantize_nvfp4_per_token_input(a1)
-            received = self.all2all_manager.get_communication().dispatch(
-                x_q.view(torch.uint8),
+            communication = self.all2all_manager.get_communication()
+            # The wrapper's dispatch carries a single scale tensor, so call the primitive with the per-token
+            # scale as its own payload; the wrapper's combine reads the token count its dispatch records.
+            recv = communication.alltoall.dispatch(
                 topk_ids,
-                topk_weights,
-                hidden_states_scale=pack_nvfp4_scales(block_scale, per_token_scale),
-                max_tokens_per_rank=self.runtime_max_tokens_per_rank,
+                [
+                    x_q.view(torch.uint8),
+                    block_scale.view(torch.uint8),
+                    per_token_scale.reshape(-1, 1),
+                    topk_ids,
+                    topk_weights,
+                ],
+                self.runtime_max_tokens_per_rank,
+                invalid_token_expert_id=communication.params.invalid_expert_id,
+                expert_id_payload_index=3,
             )
-            return (
-                received.hidden_states.view(x_q.dtype),
-                received.hidden_states_scale,
-                None,
-                received.topk_ids,
-                received.topk_weights,
-            )
+            communication._tokens_per_rank = self.runtime_max_tokens_per_rank
+            x, scales, token_scales, ids, weights = (t.flatten(0, 1) for t in recv)
+            self.received_per_token_scale = token_scales.squeeze(1)
+            return x.view(x_q.dtype), scales, None, ids, weights
 
     class TrtLlmNvFp4PrequantizedExperts(TrtLlmNvFp4ExpertsModular):
-        """Per-token NVFP4 experts whose input arrives quantized, with its scales packed by the dispatch."""
+        """Per-token NVFP4 experts whose input arrives quantized; the dispatcher holds the per-token scales."""
+
+        dispatcher: Nvfp4PerTokenDispatchPrepareAndFinalize
 
         @property
         def expects_unquantized_inputs(self) -> bool:
@@ -110,7 +97,10 @@ def patch_nvfp4_per_token_dispatch():
             # Mirrors TrtLlmNvFp4ExpertsModular._invoke_kernel; only the input scales differ.
             import flashinfer
 
-            block_scale, per_token_scale = unpack_nvfp4_scales(a1q_scale, self.hidden_dim)
+            per_token_scale = self.dispatcher.received_per_token_scale
+            # The received batch always fits one launch (chunking starts at 300K tokens), so no slicing is needed.
+            assert per_token_scale.shape[0] == hidden_states.shape[0], (per_token_scale.shape, hidden_states.shape)
+            block_scale = a1q_scale.view(torch.float8_e4m3fn)
             defer = output is not None and self._uses_post_gemm2_hook(topk_ids.shape[0])
             flashinfer_output = flashinfer.fused_moe.trtllm_fp4_block_scale_routed_moe(
                 topk_ids=(topk_ids, topk_weights),
@@ -194,6 +184,7 @@ def patch_nvfp4_per_token_dispatch():
         experts = TrtLlmNvFp4PrequantizedExperts(
             moe_config=moe_config, quant_config=moe_quant_config, per_token_activation=True
         )
+        experts.dispatcher = prepare_finalize
         return mk.FusedMoEKernel(prepare_finalize, experts)
 
     nvfp4_oracle.make_nvfp4_moe_kernel = make_nvfp4_moe_kernel
