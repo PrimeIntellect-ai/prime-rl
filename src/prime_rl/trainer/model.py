@@ -7,7 +7,7 @@ import time
 import types
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 # Disable transformers hub kernel interception. Installed hub kernels can otherwise replace
 # modules with implementations that have incompatible CUDA requirements.
@@ -131,9 +131,19 @@ def read_side_file(name: str, file: str) -> dict | None:
     return json.loads(path.read_text())
 
 
-def get_decision_model_cls(model_config: PretrainedConfig, name: str) -> type[PreTrainedModelPrimeRL] | None:
-    """The decision model class vLLM selects for the checkpoint at `name` (a local directory or a Hub id), or None.
-    The file that selects it is read into the config attribute vLLM uses; ``config.architectures`` is left as is."""
+class DecisionModelFile(NamedTuple):
+    """The decision model class a checkpoint selects, and the file beside its config.json that selects it."""
+
+    cls: type[PreTrainedModelPrimeRL]
+    attribute: str
+    """The config attribute vLLM reads the file into."""
+    file: str
+    content: dict
+
+
+def find_decision_model(model_config: PretrainedConfig, name: str) -> DecisionModelFile | None:
+    """The decision model class vLLM selects for the checkpoint at `name` (a local directory or a Hub id), with the file
+    that selects it, or None. `model_config` is left as is."""
     architectures = getattr(model_config, "architectures", None) or []
     for (model_type, architecture, file), (cls, attribute) in _DECISION_MODELS.items():
         if model_config.model_type != model_type or architectures != [architecture]:
@@ -149,9 +159,18 @@ def get_decision_model_cls(model_config: PretrainedConfig, name: str) -> type[Pr
             )
             return None
         if content is not None:
-            setattr(model_config, attribute, content)
-            return cls
+            return DecisionModelFile(cls, attribute, file, content)
     return None
+
+
+def get_decision_model_cls(model_config: PretrainedConfig, name: str) -> type[PreTrainedModelPrimeRL] | None:
+    """The decision model class vLLM selects for the checkpoint at `name` (a local directory or a Hub id), or None.
+    The file that selects it is read into the config attribute vLLM uses; ``config.architectures`` is left as is."""
+    found = find_decision_model(model_config, name)
+    if found is None:
+        return None
+    setattr(model_config, found.attribute, found.content)
+    return found.cls
 
 
 # Add filter to the standard logging module for transformers.modeling_utils to supress the

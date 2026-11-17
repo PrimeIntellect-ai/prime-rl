@@ -5,7 +5,7 @@ import json
 import shutil
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +31,7 @@ from transformers import AutoConfig, GenerationConfig, PretrainedConfig, PreTrai
 from prime_rl.configs.shared import ResumeConfig
 from prime_rl.configs.trainer import CheckpointConfig, ModelConfig
 from prime_rl.trainer.lora import has_lora_layers
+from prime_rl.trainer.model import find_decision_model
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.conversion_ops import view_mapping
 from prime_rl.trainer.models.fusions import (
@@ -56,12 +57,17 @@ class Progress:
 @dataclass
 class ModelFiles:
     """What a checkpoint step directory holds besides the weights, so that it loads as a model name: the model's
-    config.json, the tokenizer, a VLM's processor and the generation config."""
+    config.json, the tokenizer, a VLM's processor, the generation config and the file that selects a decision model's
+    class."""
 
     config: PretrainedConfig
     tokenizer: PreTrainedTokenizerBase
     processor: ProcessorMixin | None
     generation_config: GenerationConfig | None
+    side_files: dict[str, dict] = field(default_factory=dict)
+    """JSON files beside config.json, as {file name: content}: the one that selects a decision model's class (d3's
+    decision_config.json, Clef-Flash's joint_head_config.json), as read from the model, since the loader reads it from
+    a step directory as from a release. ``config`` stays without the attribute the loader reads it into."""
 
     def save(self, directory: Path) -> None:
         directory.mkdir(parents=True, exist_ok=True)
@@ -72,6 +78,8 @@ class ModelFiles:
         if self.processor is not None:
             self.processor.save_pretrained(directory)
         self.tokenizer.save_pretrained(directory)
+        for name, content in self.side_files.items():
+            (directory / name).write_text(json.dumps(content, indent=2) + "\n")
 
 
 def setup_model_files(
@@ -82,7 +90,9 @@ def setup_model_files(
     except OSError:  # Not every model has a generation_config.json
         generation_config = None
     model_config = AutoConfig.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
-    return ModelFiles(model_config, tokenizer, processor, generation_config)
+    decision_model = find_decision_model(model_config, config.name)
+    side_files = {decision_model.file: decision_model.content} if decision_model is not None else {}
+    return ModelFiles(model_config, tokenizer, processor, generation_config, side_files)
 
 
 # Fields of a saved config.json that are metadata, not architecture.

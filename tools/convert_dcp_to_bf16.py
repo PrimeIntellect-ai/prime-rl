@@ -146,7 +146,8 @@ def check_model_holds_checkpoint(model: nn.Module, model_config: ModelConfig, me
         raise ValueError(
             f"{type(model).__name__}, built from {model_config.name}, lacks {len(unknown)} tensors of the checkpoint "
             f"({', '.join(unknown[:3])}), which the export would leave out. The checkpoint holds another class: for a d3 "
-            "or Clef-Flash release, its decision_config.json or joint_head_config.json must still be beside its config.json."
+            "or Clef-Flash release, its decision_config.json or joint_head_config.json must still be beside its config.json "
+            "(a checkpoint step directory as model.name holds a copy of it)."
         )
 
 

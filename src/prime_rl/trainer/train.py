@@ -161,7 +161,8 @@ def train(config: SFTConfig | PretrainConfig):
     ckpt_manager = setup_ckpt_manager(config.run_dir, config.ckpt, model_files, resume=config.resume)
 
     # System One data trains a decision model: find its class's strategy before loading weights. A config of its
-    # own, not model_files.config, which is written into every checkpoint's config.json.
+    # own: resolving the class reads a decision model's file into the config it is given, and model_files.config is
+    # written into every checkpoint's config.json.
     strategy_cls = None
     if isinstance(config, SFTConfig) and config.data.type == "system_one":
         model_config = AutoConfig.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)

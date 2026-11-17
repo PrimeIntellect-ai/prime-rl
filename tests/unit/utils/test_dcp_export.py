@@ -2,6 +2,7 @@ import importlib
 import json
 import os
 import pickle
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -13,9 +14,10 @@ from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from torch.distributed.checkpoint import FileSystemReader
 from torch.distributed.checkpoint.metadata import ChunkStorageMetadata, MetadataIndex, TensorStorageMetadata
-from transformers import AutoConfig, PretrainedConfig, PreTrainedTokenizerFast
+from transformers import AutoConfig, AutoTokenizer, PretrainedConfig, PreTrainedTokenizerFast
 
 from prime_rl.configs.trainer import ModelConfig, TokenizerConfig
+from prime_rl.trainer.ckpt import setup_model_files
 from prime_rl.trainer.model import get_decision_model_cls, get_model
 from prime_rl.trainer.models.layers.ngram import LAYOUT_BUFFERS
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig
@@ -456,3 +458,32 @@ def test_export_is_the_release_layout(tmp_path, exporter, monkeypatch, kind):
     (release_dir / ("joint_head_config.json" if kind == "clef" else "decision_config.json")).unlink()
     with pytest.raises(ValueError, match="which the export would leave out"):
         exporter.convert(step_dir)
+
+
+@pytest.mark.parametrize("kind", ["d3-untied", "clef"])
+def test_a_decision_model_run_from_a_checkpoint_exports_without_its_source(tmp_path, exporter, monkeypatch, kind):
+    """The export of a run whose model.name is a checkpoint step directory, since gone, builds the class from the copy of
+    the release's file in the step directory it exports."""
+    monkeypatch.delenv("PRL_ATTEMPT_CONFIG_DIR", raising=False)
+    release_dir = tmp_path / "release"
+    WRITE_RELEASE[kind](release_dir)
+    source = tmp_path / "deleted-run" / "checkpoints" / "step_5"
+    run_dir = tmp_path / "run"
+    config_dir = run_dir / "configs" / "latest" / "resolved"
+    config_dir.mkdir(parents=True)
+    run_config = {"model": {"name": source.as_posix(), "init": {"type": "pretrained"}}, "tokenizer": {}}
+    (config_dir / "sft.json").write_text(json.dumps(run_config))
+    # The step directory as the trainer writes it, from a run of the release.
+    step_dir = run_dir / "checkpoints" / "step_1"
+    model_config = release_model_config(release_dir)
+    setup_model_files(model_config, AutoTokenizer.from_pretrained(release_dir), None).save(step_dir)
+    model = get_model(model_config, device=torch.device("meta"), dtype=torch.float32)
+    state = {name: torch.randn(tensor.shape) for name, tensor in model.state_dict().items()}
+    dcp.save({"app": {"model": state}}, checkpoint_id=step_dir / "trainer", no_dist=True)
+    shutil.rmtree(release_dir)
+
+    output = exporter.convert(step_dir)
+    assert vllm_route(output) == type(model).__name__
+    file = "joint_head_config.json" if kind == "clef" else "decision_config.json"
+    assert json.loads((output / file).read_text()) == (JOINT_HEAD_CONFIG if kind == "clef" else DECISION_CONFIG)
+    assert get_decision_model_cls(AutoConfig.from_pretrained(output), str(output)) is type(model)

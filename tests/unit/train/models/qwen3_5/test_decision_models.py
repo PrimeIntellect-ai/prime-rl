@@ -24,11 +24,12 @@ from tokenizers import Regex, Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.pre_tokenizers import Split
 from torch import nn
-from transformers import AutoConfig, PretrainedConfig, PreTrainedTokenizerFast
+from transformers import AutoConfig, AutoTokenizer, PretrainedConfig, PreTrainedTokenizerFast
 from transformers.models.qwen3_5 import modeling_qwen3_5 as hf_modeling
 
 import prime_rl.trainer.parallel_dims as parallel_dims_module
 from prime_rl.configs.trainer import ModelConfig
+from prime_rl.trainer.ckpt import setup_model_files
 from prime_rl.trainer.data import CatDataset, cat_collate
 from prime_rl.trainer.model import (
     forward,
@@ -148,6 +149,33 @@ def test_a_failed_hub_lookup_raises_for_d3_and_warns_for_a_stock_qwen3_5(tmp_pat
     # Offline, a file the HF cache records as absent is no file.
     monkeypatch.setattr("prime_rl.trainer.model.try_to_load_from_cache", lambda *args, **kwargs: _CACHED_NO_EXIST)
     assert get_decision_model_cls(AutoConfig.from_pretrained(d3), "org/d3") is None
+
+
+def test_a_checkpoint_step_directory_holds_the_file_that_selects_the_class(tmp_path):
+    """A step directory stands in for model.name (pretrained init, a resume of a step_N model.name, the export), so it
+    keeps the release's file as read; its config.json stays the release's, without the attribute the loader adds."""
+    qwen = tmp_path / "qwen"
+    tiny_config("Qwen3_5ForConditionalGeneration", tied=False).save_pretrained(qwen)
+    tokenizer = PreTrainedTokenizerFast(tokenizer_object=Tokenizer(WordLevel({"<eos>": 0}, unk_token="<eos>")))
+    assert setup_model_files(model_config(qwen), tokenizer, None).side_files == {}
+    for kind, file, attribute in [
+        ("d3", "decision_config.json", "decision_config"),
+        ("clef", "joint_head_config.json", "joint_head_config"),
+    ]:
+        release = tmp_path / kind
+        WRITE_RELEASE[kind](release)
+        files = setup_model_files(model_config(release), AutoTokenizer.from_pretrained(release), None)
+        step_dir = tmp_path / f"{kind}-run" / "checkpoints" / "step_5"
+        files.save(step_dir)
+
+        assert json.loads((step_dir / file).read_text()) == json.loads((release / file).read_text())
+        saved = json.loads((step_dir / "config.json").read_text())
+        assert saved["architectures"] == json.loads((release / "config.json").read_text())["architectures"]
+        assert attribute not in saved and "is_causal" not in saved["text_config"]
+        model = get_model(model_config(step_dir), device=torch.device("meta"))
+        assert type(model) is type(get_model(model_config(release), device=torch.device("meta")))
+        assert getattr(model.config, attribute) == json.loads((release / file).read_text())
+        assert not hasattr(files.config, attribute)
 
 
 def test_d3_checks_its_decision_config(tmp_path):
