@@ -483,7 +483,7 @@ splits = ["validation"]
 seq_len = 4096
 ```
 
-- **Segments.** Each `seq_lens` entry is one attention segment: attention and positions restart at its first token. A read span lies within one segment. Records are packed back to back into rows of up to `seq_len * micro_batch_size` tokens, without padding, and no segment spans two records. `data.batch_size` counts budgets of `seq_len` tokens (up to `batch_size` x `seq_len` tokens per step), not records or questions.
+- **Segments.** Each `seq_lens` entry is one attention segment: attention and positions restart at its first token. A read span lies within one segment. Records are packed back to back into rows of up to `seq_len * micro_batch_size` tokens, and no segment spans two records; the padding of `data.pad_to_seq_len` is a segment of its own, which the loss does not see. `data.batch_size` counts budgets of `seq_len` tokens (up to `batch_size` x `seq_len` tokens per step), not records or questions.
 - **Reads.** `loss_mask` is true on every token of every read span and false elsewhere. There is no next-token shift and `target_ids` is all zeros.
 - **What the loss receives.** A record is one sample, so the loss is called once per record, on its tokens alone. A record is never cut: one longer than `data.seq_len` is skipped, and a row has room for `data.seq_len * data.micro_batch_size` tokens, so `inputs.truncated` is false. `inputs.sample_data` is the record's dict: per question, in record order, its `options` in the head's order, its `reads` as `[start, end)` spans of the record's tokens (`inputs.hidden_states[start:end]`), and its `target`, which follows `options` and is `None` for an unlabelled question, which the loss leaves out of its `count`. `inputs.hidden_states[inputs.loss_mask]` is every read token of the record, in order. With `MyStrategy` and prompts of 30, 34 and 31 tokens, the example's dict is:
 
@@ -495,7 +495,7 @@ seq_len = 4096
   ]}
   ```
 
-- **Validation and unused settings.** `[val.data]` takes only a missing `type` from `[data]`; both must be System One or neither. `val.data.seq_len` defaults to 128 and must equal `data.seq_len`; validation records are rendered by the same strategy. The strategy owns any chat template, so a non-default `[renderer]` is refused, and per-row template columns such as `reasoning_effort` are not read. `pad_to_seq_len` is refused.
+- **Validation and unused settings.** `[val.data]` takes only a missing `type` from `[data]`; both must be System One or neither. `val.data.seq_len` defaults to 128 and must equal `data.seq_len`; validation records are rendered by the same strategy. The strategy owns any chat template, so a non-default `[renderer]` is refused, and per-row template columns such as `reasoning_effort` are not read.
 - **Multi-GPU validation.** Validation stops on every rank as soon as one data rank runs out of packed rows, so with several data ranks some validation records can go unscored; one-GPU validation scores every record, and training is unaffected. Ranks can pack different numbers of rows, and no `[val.data]` setting evens them out: for a validation loss over every record, train on one GPU or score the checkpoint separately, and compare validation losses only across runs with the same number of data ranks.
 
 **Launch.** The model class, its strategy and the loss must be importable where the trainer runs.

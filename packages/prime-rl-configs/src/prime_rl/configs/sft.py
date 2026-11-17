@@ -220,7 +220,7 @@ class SFTConfig(SupervisedTrainerConfig):
     @model_validator(mode="after")
     def validate_system_one_data(self):
         """System One data is used for training and validation alike, with one ``seq_len``, a loss
-        other than token cross-entropy, no ``[renderer]`` and no padding."""
+        other than token cross-entropy and no ``[renderer]``."""
         data_configs = {"data": self.data}
         if self.val is not None:
             data_configs["val.data"] = self.val.data
@@ -241,12 +241,6 @@ class SFTConfig(SupervisedTrainerConfig):
                 '[renderer] is not used with data.type = "system_one": the model\'s strategy owns any chat template. '
                 "Remove [renderer]."
             )
-        for key, data in data_configs.items():
-            if data.pad_to_seq_len:
-                raise ValueError(
-                    f'{key}.pad_to_seq_len is not supported with {key}.type = "system_one": the padding would join a '
-                    "record's last attention segment."
-                )
         if self.val is not None and self.val.data.seq_len != self.data.seq_len:
             raise ValueError(
                 f"val.data.seq_len ({self.val.data.seq_len}) must equal data.seq_len ({self.data.seq_len}): it is "
