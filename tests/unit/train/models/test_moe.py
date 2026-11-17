@@ -417,3 +417,19 @@ def test_encoded_dispatch_delivers_each_expert_its_tokens_and_returns_the_input_
 
     with pytest.raises(ValueError, match="score_before_experts=False"):
         dispatcher.run(x, scores, selected, experts, score_before_experts=True)
+
+
+def test_nvfp4_mega_moe_reads_prime_kernels_block_scales_row_major():
+    from prime_rl.trainer.models.layers.mega_moe import _nvfp4_scale_rows
+
+    # prime-kernels stores block scale (row, column) of each group in 128 x 4 tiles, rows padded to 128
+    groups, rows, k_blocks = 2, 200, 10
+    row_tiles, col_tiles = 2, 3
+    expected = torch.randint(0, 256, (groups, rows, k_blocks), dtype=torch.uint8)
+    tiled = torch.zeros(groups * row_tiles * col_tiles * 512, dtype=torch.uint8)
+    for g in range(groups):
+        for r in range(rows):
+            for c in range(k_blocks):
+                tile = (g * row_tiles + r // 128) * col_tiles + c // 4
+                tiled[tile * 512 + (r % 32) * 16 + (r % 128 // 32) * 4 + c % 4] = expected[g, r, c]
+    assert torch.equal(_nvfp4_scale_rows(tiled, groups, rows, k_blocks), expected)

@@ -1,4 +1,5 @@
 import importlib.util
+from functools import partial
 
 import torch
 from torch import nn
@@ -11,7 +12,6 @@ from prime_rl.configs.trainer import (
     DeepGemmFP8MoEComputeConfig,
     MegaMoeMoEDispatchConfig,
     ModelConfig,
-    MoEComputeConfig,
     MoERuntimeConfig,
     MXFP8MoEComputeConfig,
     NVFP4MoEComputeConfig,
@@ -95,7 +95,7 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
 
 
 def _resolve_mega_moe_compute(
-    moe: MoE, dispatch: MegaMoeMoEDispatchConfig, compute: MoEComputeConfig, group: ProcessGroup, dp_replicate: int
+    moe: MoE, dispatch: MegaMoeMoEDispatchConfig, precision: str, group: ProcessGroup, dp_replicate: int
 ) -> FusedDispatchExpertCompute:
     if dispatch.max_tokens_per_rank is None:
         raise ValueError(
@@ -114,8 +114,8 @@ def _resolve_mega_moe_compute(
     if dispatch.llep is not None:
         from prime_rl.trainer.models.layers.llep_mega_moe import LLEPMegaMoEExpertCompute
 
-        return LLEPMegaMoEExpertCompute(**kwargs, options=dispatch.llep, precision=mega_moe_precision(compute))
-    return MegaMoEExpertCompute(**kwargs, precision=mega_moe_precision(compute))
+        return LLEPMegaMoEExpertCompute(**kwargs, options=dispatch.llep, precision=precision)
+    return MegaMoEExpertCompute(**kwargs, precision=precision)
 
 
 def seed_expert_rounding(config: ModelConfig, step: int) -> None:
@@ -156,11 +156,21 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
             raise ValueError(
                 "Mega MoE dispatch requires an expert-parallel group (model.ep > 1); it has no single-rank mode."
             )
-        # Mega MoE fuses the expert compute into dispatch and runs every MoE layer, in `model.moe.compute`'s precision
-        selected_moes = set(moe_layers)
-        selected_compute = _resolve_mega_moe_compute(
-            moe_layers[0], dispatch, config.moe.compute, ep_mesh.get_group(), config.dp_replicate
+        # Mega MoE fuses the expert compute into dispatch: its kernels run `model.moe.compute`'s precision on every
+        # layer, except NVFP4's, whose remainder layers run Mega MoE in the remainder's precision
+        precision = mega_moe_precision(config.moe.compute)
+        resolve = partial(
+            _resolve_mega_moe_compute,
+            moe_layers[0],
+            dispatch,
+            group=ep_mesh.get_group(),
+            dp_replicate=config.dp_replicate,
         )
+        selected_compute = resolve(precision)
+        if precision != "nvfp4":
+            selected_moes = set(moe_layers)
+        elif selected_moes != set(moe_layers):
+            remainder_compute = resolve(config.moe.compute.remainder)
     else:
         selected_compute = _resolve_expert_compute(config) if selected_moes else remainder_compute
 
@@ -174,9 +184,9 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 "Mega MoE dispatch requires `score_before_experts=False` on the MoE layer "
                 "(router weights are applied at combine time, after both expert GEMMs)."
             )
-        if is_mega_moe:
-            selected_compute.validate_top_k(moe.router.top_k)
         compute = selected_compute if moe in selected_moes else remainder_compute
+        if is_mega_moe:
+            compute.validate_top_k(moe.router.top_k)
         if getattr(compute, "encode_tokens", None) is not None and moe.score_before_experts:
             raise ValueError(
                 "NVFP4 experts dispatch quantized tokens, which needs `score_before_experts=False` on the MoE layer."
