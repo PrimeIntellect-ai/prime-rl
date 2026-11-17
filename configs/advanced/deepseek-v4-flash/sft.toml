@@ -2,7 +2,7 @@
 # `debug.num_layers` truncation) on 4 train nodes. Trainer only: no online eval, no inference
 # node, and so no weight broadcast. Tested on 8xH200. 
 #
-#   uv run sft @ examples/advanced/deepseek-v4-flash/sft.toml --run.name ds-v4-sft-torch-4node
+#   uv run sft @ configs/advanced/deepseek-v4-flash/sft.toml --run.name ds-v4-sft-torch-4node
 #
 # Note: on 4 8xH200 nodes, this config is near the memory limit, using ~94%+ GPU memory. 
 #
