@@ -17,6 +17,7 @@ from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 from prime_rl.configs.inference import InferenceConfig
+from prime_rl.inference.server import setup_model_source
 from prime_rl.utils.specdec import check_draft_swap, local_draft_dir
 
 logger = init_logger("vllm.entrypoints.launchers.api_server.entry")
@@ -258,6 +259,7 @@ def server(config: InferenceConfig):
     if lora_target_modules and not any("expert" in m for m in lora_target_modules):
         os.environ["PRIME_NO_MOE_LORA"] = "1"
 
+    setup_model_source(config)
     namespace = config.to_namespace()
 
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")

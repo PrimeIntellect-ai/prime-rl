@@ -5,6 +5,7 @@ from functools import partial
 import time
 import asyncio
 from datetime import timedelta
+from pathlib import Path
 
 # Import environment before any other imports
 # ruff: noqa: I001
@@ -20,7 +21,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
-from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
+from prime_rl.trainer.ckpt import Progress, ckpt_output_dir, setup_ckpt_manager, setup_model_files
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
@@ -63,7 +64,10 @@ from prime_rl.trainer.model import (
     get_global_moe_stats,
     is_tt_moe_model,
     setup_model,
+    check_ckpt_dir,
+    setup_tokenizer,
     take_moe_routing_stats,
+    use_resumed_model_files,
 )
 from prime_rl.trainer.moe_runtime import setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
@@ -84,7 +88,7 @@ from prime_rl.trainer.utils import (
     get_peak_memory_across_ranks,
     prepare_gradient_offload,
     scale_gradients_,
-    setup_full_cpu_optimizer_offload,
+    setup_cpu_offload,
     setup_torch_distributed,
 )
 from prime_rl.trainer.world import get_world
@@ -97,6 +101,9 @@ from prime_rl.control.server import ControlServer
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
 from prime_rl.utils.pathing import (
+    get_ckpt_dir,
+    get_step_path,
+    is_checkpoint_step_dir,
     resolve_latest_ckpt_step,
     resolve_latest_trainer_ckpt_step,
     write_resolved_config,
@@ -153,14 +160,30 @@ def train(config: TrainerConfig):
         logger.info("Initializing heartbeat")
         heart = Heartbeat(config.heartbeat)
 
+    # Check for checkpoint to resume from
+    ckpt_dir = get_ckpt_dir(ckpt_output_dir(config.output_dir, config.ckpt))
+    checkpoint_step = None
+    if config.resume is not None:
+        if config.resume.dir is not None:
+            checkpoint_step = config.resume.dir_step
+        else:
+            checkpoint_step = config.resume.step
+            if checkpoint_step is None and config.rollout_transport.retain:
+                # A trainer restarted on its own: the orchestrator may be steps ahead.
+                checkpoint_step = resolve_latest_trainer_ckpt_step(ckpt_dir)
+            elif checkpoint_step is None:
+                checkpoint_step = resolve_latest_ckpt_step(ckpt_dir)
+    if checkpoint_step is not None:
+        resume_step_dir = config.resume.dir or get_step_path(ckpt_dir, checkpoint_step)
+        use_resumed_model_files(config.model, config.tokenizer, resume_step_dir)
+
     # Set precision
     setup_moe_comm_env(config.model)
     setup_torch_distributed(
         timeout=timedelta(seconds=config.dist_timeout_seconds),
         enable_gloo=config.model.offload == "full",
     )
-    if config.model.offload == "full":
-        setup_full_cpu_optimizer_offload()
+    setup_cpu_offload(config.model)
     # Configurable to support ROCm/AMD GPUs where reduced precision
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.
@@ -172,26 +195,22 @@ def train(config: TrainerConfig):
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
 
-    # Check for checkpoint to resume from
-    checkpoint_step = None
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt, resume=config.resume)
-
-    if config.resume is not None:
-        if config.resume.dir is not None:
-            checkpoint_step = config.resume.dir_step
-        else:
-            checkpoint_step = config.resume.step
-            if checkpoint_step is None and config.rollout_transport.retain:
-                # A trainer restarted on its own: the orchestrator may be steps ahead.
-                checkpoint_step = resolve_latest_trainer_ckpt_step(ckpt_manager.ckpt_dir)
-            elif checkpoint_step is None:
-                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+    check_ckpt_dir(config.model)
+    tokenizer = setup_tokenizer(config.tokenizer, config.model.name)
+    processor = None
+    if config.model.vlm is not None:
+        processor = setup_processor(config.model)
+        if processor is None:
+            raise ValueError("Multimodal training requires a model image processor")
+    model_files = setup_model_files(config.model, tokenizer, processor)
+    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt, model_files, resume=config.resume)
 
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")
     t0 = time.perf_counter()
-    loading_from_ckpt_later = checkpoint_step is not None or config.model.init_from is not None
+    from_checkpoint = config.model.init.type == "pretrained" and is_checkpoint_step_dir(config.model.name)
+    loading_from_ckpt_later = checkpoint_step is not None or from_checkpoint
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
     logger.debug(f"Initialized model in {format_time(time.perf_counter() - t0)}")
 
@@ -199,9 +218,6 @@ def train(config: TrainerConfig):
     if config.model.vlm is not None:
         if not getattr(model, "supports_packed_multimodal_training", False):
             raise ValueError("Packed multimodal training requires model support")
-        processor = setup_processor(config.model)
-        if processor is None:
-            raise ValueError("Multimodal training requires a model image processor")
         materialize_images = partial(model.materialize_images, processor=processor)
     # A custom loss may put gradient on any token, so only the built-in losses take the sparse head backward
     sparse_backward_allowed = config.loss.type != "custom"
@@ -281,8 +297,8 @@ def train(config: TrainerConfig):
             f"Resuming from step {checkpoint_step} "
             f"(total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
         )
-    elif config.model.init_from is not None:
-        ckpt_manager.load_weights(config.model.init_from / "trainer", model, [optimizer])
+    elif from_checkpoint:
+        ckpt_manager.load_weights(Path(config.model.name) / "trainer", model, [optimizer])
     else:
         logger.info("Starting from scratch")
 

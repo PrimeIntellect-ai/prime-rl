@@ -8,8 +8,11 @@ from prime_rl.configs.trainer import (
     AdamWConfig,
     ConstantSchedulerConfig,
     CosineSchedulerConfig,
+    InitConfig,
     LinearSchedulerConfig,
+    ModelConfig,
     MuonConfig,
+    ScratchInit,
     SignSGDConfig,
 )
 
@@ -81,10 +84,14 @@ PretrainSchedulerConfig: TypeAlias = Annotated[
 ]
 
 
-class PretrainConfig(SupervisedTrainerConfig):
-    """Pretraining: next-token loss on tokenized shards, with the weights initialized from scratch unless resuming."""
+class PretrainModelConfig(ModelConfig):
+    init: InitConfig = ScratchInit()
 
-    init_from_scratch = True
+
+class PretrainConfig(SupervisedTrainerConfig):
+    """Pretraining: next-token loss on tokenized shards, with the weights initialized from scratch by default."""
+
+    model: PretrainModelConfig = PretrainModelConfig()
 
     mode: Literal["pretrain"] | None = None
     """Run kind of this config. ``uv run launch`` picks the entrypoint from it; ``uv run pretrain`` accepts only

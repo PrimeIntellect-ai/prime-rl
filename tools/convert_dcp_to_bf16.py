@@ -29,7 +29,7 @@ from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.conversion_ops import ChunkedConvOp
 from prime_rl.trainer.vlm import setup_processor
 from prime_rl.utils.logger import get_logger, setup_logger
-from prime_rl.utils.pathing import get_config_dir
+from prime_rl.utils.pathing import get_config_dir, has_step_dir_name
 from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
     get_chunked_conversion_ops,
@@ -55,7 +55,19 @@ def resolve_run_configs(step_dir: Path) -> tuple[ModelConfig, TokenizerConfig]:
         if path.exists():
             logger.info(f"Reading model config from {path}")
             config = json.loads(path.read_text())
-            return ModelConfig(**config["model"]), TokenizerConfig(**config["tokenizer"])
+            model, tokenizer = config["model"], config["tokenizer"]
+            # A run started from a checkpoint step directory, which may be gone; this step directory holds copies of
+            # its config.json and tokenizer.
+            if has_step_dir_name(model["name"]) and (step_dir / "config.json").exists():
+                if tokenizer.get("name") == model["name"]:
+                    tokenizer["name"] = str(step_dir)
+                model["name"] = str(step_dir)
+            # Where the weights started does not change the model, and older versions name it otherwise (init_from,
+            # debug.random_init, init types hf and ckpt).
+            for key in ("init", "init_from"):
+                model.pop(key, None)
+            model.get("debug", {}).pop("random_init", None)
+            return ModelConfig(**model), TokenizerConfig(**tokenizer)
     raise FileNotFoundError(f"No resolved run config ({' or '.join(RUN_CONFIG_NAMES)}) found under {config_dir}")
 
 
@@ -269,7 +281,7 @@ def save_model_assets(
         processor.save_pretrained(output_dir)
     if tokenizer_config.name is None:
         tokenizer_config = tokenizer_config.model_copy(update={"name": model_config.name})
-    setup_tokenizer(tokenizer_config).save_pretrained(output_dir)
+    setup_tokenizer(tokenizer_config, model_config.name).save_pretrained(output_dir)
     if Path(model_config.name).is_dir():
         for path in Path(model_config.name).glob("*.py"):
             shutil.copyfile(path, output_dir / path.name)

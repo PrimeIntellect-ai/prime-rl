@@ -1,5 +1,6 @@
 import hashlib
 from collections import defaultdict
+from dataclasses import replace
 from math import prod
 from typing import Iterable, Iterator, Literal
 
@@ -38,7 +39,10 @@ def get_weight_model(model_runner, target: WeightTarget) -> Module:
 
 
 def checkpoint_weights(model: Module, path: str, load_config) -> Iterator[tuple[str, torch.Tensor]]:
-    """Stream an HF-format checkpoint directory with vLLM's default loader."""
+    """Stream an HF-format checkpoint directory with vLLM's default loader, also for a server that started from dummy
+    weights."""
+    if load_config.load_format == "dummy":
+        load_config = replace(load_config, load_format="auto")
     model_loader = get_model_loader(load_config)
     assert isinstance(model_loader, DefaultModelLoader)
     source = DefaultModelLoader.Source(
