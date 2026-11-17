@@ -432,6 +432,10 @@ class Inkling2PreTrainedModel(PreTrainedModelPrimeRL):
                 nn.init.zeros_(param)
         elif isinstance(module, Inkling2ScaledL2Clip):
             nn.init.ones_(module.scale)
+        elif isinstance(module, RMSNorm):
+            nn.init.ones_(module.weight)
+        elif isinstance(module, Inkling2DynamicShortConvolution):
+            nn.init.zeros_(module.static_weight)
         elif isinstance(module, (nn.Linear, nn.Conv1d)):
             nn.init.trunc_normal_(module.weight, mean=0.0, std=std)
         elif isinstance(module, nn.Embedding):
