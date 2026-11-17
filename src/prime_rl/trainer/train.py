@@ -45,10 +45,11 @@ from prime_rl.trainer.pretrain.data import (
     warn_if_no_document_separator,
 )
 from prime_rl.trainer.sft.data import load_sft_dataset, setup_sft_dataset
-from prime_rl.trainer.sft.loss import check_metric_names, run_loss_fn, setup_sft_loss_fn
+from prime_rl.trainer.sft.loss import run_loss_fn, setup_sft_loss_fn
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
+    TensorStats,
     broadcast_step_action,
     clip_grad_norm_,
     get_ckpt_disk_metrics,
@@ -258,10 +259,9 @@ def train(config: SFTConfig | PretrainConfig):
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     cp_size = parallel_dims.cp
-    metric_names: list[str] | None = None
 
-    def compute_custom_loss(micro_batch: dict, metrics: dict) -> tuple[torch.Tensor, torch.Tensor]:
-        """The custom loss's (loss, count) for a micro-batch. Its metric sums are added to ``metrics``."""
+    def compute_custom_loss(micro_batch: dict, stats: TensorStats) -> tuple[torch.Tensor, torch.Tensor]:
+        """The custom loss's (loss, count) for a micro-batch. Its metrics are added to ``stats``."""
         batch = {
             key: micro_batch[key].to("cuda", non_blocking=True)
             for key in ("input_ids", "position_ids", "target_ids", "loss_mask", "seq_lens")
@@ -277,23 +277,16 @@ def train(config: SFTConfig | PretrainConfig):
         if count.ndim != 0 or count.is_floating_point():
             raise TypeError(f"custom loss count must be an integer, got {outputs.count!r}")
         # A NaN micro-batch is left out of the metrics, as it is of the loss; masked on the device, without a sync.
-        nan_loss = torch.isnan(outputs.loss.detach())
-        nonlocal metric_names
-        metric_names = check_metric_names(outputs.metrics, metric_names)
-        # Sorted, so that every rank adds them to the step's statistics in the same order
-        for name, value in sorted(outputs.metrics.items()):
-            if value.ndim != 0:
-                raise ValueError(f"custom loss metric {name!r} must be a scalar tensor, got shape {tuple(value.shape)}")
-            value = value.detach().double().to("cuda")
-            metrics[name] = metrics.get(name, 0.0) + torch.where(nan_loss, 0.0, value)
+        keep = ~torch.isnan(outputs.loss.detach())
+        for name, values in outputs.metrics.items():
+            stats.add(name, values, mask=keep.expand(values.numel()))
         return outputs.loss, count.to(torch.int64)
 
-    def compute_loss(micro_batch: dict, metrics: dict) -> tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass returning (loss_sum, token_count) over unmasked tokens, or the custom loss's (loss, count).
-
-        The custom loss's metric sums for this micro-batch are added to ``metrics``."""
+    def compute_loss(micro_batch: dict, stats: TensorStats | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass returning (loss_sum, token_count) over unmasked tokens, or the custom loss's (loss, count) with
+        its metrics added to ``stats``."""
         if loss_fn is not None:
-            return compute_custom_loss(micro_batch, metrics)
+            return compute_custom_loss(micro_batch, stats)
 
         input_ids = micro_batch["input_ids"].to("cuda", non_blocking=True)
         position_ids = micro_batch["position_ids"].to("cuda", non_blocking=True)
@@ -347,7 +340,7 @@ def train(config: SFTConfig | PretrainConfig):
         total_loss_sum = torch.tensor(0.0, device="cuda")
         total_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
         nan_count = torch.tensor(0, device="cuda")
-        metrics: dict[str, torch.Tensor] = {}
+        stats = TensorStats() if loss_fn is not None else None
 
         # Variable-length packing yields different per-rank batch counts. Under FSDP
         # every forward is a collective, so all ranks must agree on when to stop —
@@ -362,7 +355,7 @@ def train(config: SFTConfig | PretrainConfig):
                 dist.all_reduce(has_data, op=dist.ReduceOp.MIN)
                 if has_data.item() == 0:
                     break
-                loss_sum, token_count = compute_loss(micro_batch, metrics)
+                loss_sum, token_count = compute_loss(micro_batch, stats)
                 if not torch.isnan(loss_sum.detach()):
                     total_loss_sum += loss_sum.detach()
                     total_token_count += token_count
@@ -373,17 +366,10 @@ def train(config: SFTConfig | PretrainConfig):
         dist.all_reduce(total_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
         dist.all_reduce(nan_count, op=dist.ReduceOp.SUM)
 
-        mean_metrics = {}
-        if metrics:
-            # Every rank reports the same metric names, since one loss function computes them all; stack them in one order.
-            names = sorted(metrics)
-            metric_sums = torch.stack([metrics[name] for name in names])
-            dist.all_reduce(metric_sums, op=dist.ReduceOp.SUM, group=dp_cp_group)
-            means = (metric_sums / total_token_count).where(total_token_count > 0, float("nan"))
-            mean_metrics = dict(zip(names, means.tolist()))
-
         mean_loss = (total_loss_sum / total_token_count).item() if total_token_count.item() > 0 else float("nan")
-        return mean_loss, nan_count.item(), mean_metrics
+        # Collective: every rank leaves the loop above together
+        metrics = stats.compute_stats() if stats is not None else {}
+        return mean_loss, nan_count.item(), metrics
 
     def run_validation(step: int) -> None:
         if isinstance(config, PretrainConfig):
@@ -402,7 +388,7 @@ def train(config: SFTConfig | PretrainConfig):
         val_dataloader = setup_dataloader(val_dataset, config.val.data, config.model.cp)
 
         # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
-        mean_loss, nan_count, mean_metrics = run_eval_loop(val_dataloader)
+        mean_loss, nan_count, metrics = run_eval_loop(val_dataloader)
         if is_tt_moe_model(model):
             # Keep validation routing out of the next training step's statistics.
             take_moe_routing_stats(model)
@@ -418,7 +404,7 @@ def train(config: SFTConfig | PretrainConfig):
                     "val/loss": mean_loss,
                     # perplexity is exp(cross-entropy); a custom loss need not be one
                     **({} if loss_fn is not None else {"val/perplexity": math.exp(min(mean_loss, 20))}),
-                    **{f"val/{name}": value for name, value in mean_metrics.items()},
+                    **{f"val/{name}": value for name, value in metrics.items()},
                     "step": step,
                 },
                 step=step,
@@ -468,6 +454,8 @@ def train(config: SFTConfig | PretrainConfig):
         logger.info(f"Tracing to {config.trace_path}")
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
     max_peak_memory = 0.0
+    # A custom loss's metrics over each step
+    loss_stats = TensorStats() if loss_fn is not None else None
     controller = Controller(requires_step=False)
     control_server = ControlServer(controller, config.control if world.is_master else None, ckpt_manager.ckpt_dir)
     control_server.start()
@@ -513,14 +501,10 @@ def train(config: SFTConfig | PretrainConfig):
             micro_batches = logged_micro_batches(micro_batches)
 
         loss_tokens = torch.zeros((), dtype=torch.float64, device="cuda")
-        # run_micro_batches reads these sums after the last micro-batch, so summed_loss can add the custom metrics
-        step_sums = {"loss_tokens": loss_tokens}
-        step_metrics: dict[str, torch.Tensor] = {}
 
         def summed_loss(micro_batch: dict) -> torch.Tensor:
-            loss_sum, token_count = compute_loss(micro_batch, step_metrics)
+            loss_sum, token_count = compute_loss(micro_batch, loss_stats)
             loss_tokens.add_(token_count)
-            step_sums.update({f"metric/{name}": value for name, value in step_metrics.items()})
             return loss_sum
 
         # GPU time: the micro-batch loop only queues work.
@@ -535,7 +519,7 @@ def train(config: SFTConfig | PretrainConfig):
             parallel_dims,
             perf_counter,
             gradient_manager,
-            sums=step_sums,
+            sums={"loss_tokens": loss_tokens},
         )
         if gradient_manager is None:
             # The gradients of the summed loss are divided by the step's loss tokens once, after the last backward.
@@ -572,13 +556,9 @@ def train(config: SFTConfig | PretrainConfig):
         step_stats, norms = to_host(step_stats, {"grad_norm": grad_norm} if grad_norm is not None else {})
         result = step_result(step_stats, parallel_dims)
         loss = result.loss_sum / step_stats["loss_tokens"].item() if step_stats["loss_tokens"] > 0 else 0.0
-        loss_metrics = {
-            f"loss/{name.removeprefix('metric/')}": value.item() / step_stats["loss_tokens"].item()
-            if step_stats["loss_tokens"] > 0
-            else 0.0
-            for name, value in step_stats.items()
-            if name.startswith("metric/")
-        }
+        loss_metrics = {}
+        if loss_stats is not None:  # collective: every rank reaches it once per step
+            loss_metrics = {f"loss/{name}": value for name, value in loss_stats.compute_stats().items()}
         grad_norm_value = norms["grad_norm"].item() if norms else None
         forward_backward_time = forward_backward_start.elapsed_time(forward_backward_end) / 1000
         if result.nan_count > 0:

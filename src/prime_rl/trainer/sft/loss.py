@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import cache, partial
 
+import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor, nn
 
@@ -49,12 +50,10 @@ class LossOutputs:
     count: int | Tensor
     """What the loss is averaged over (e.g. the sample, or its tokens)."""
     metrics: dict[str, Tensor] = field(default_factory=dict)
-    """Summed metrics, divided like the loss and logged as ``loss/<name>`` in training and ``val/<name>`` in
-    validation. Every call must return the same names."""
+    """Values to log, any shape, one value per item (e.g. the sample, or each of its tokens). Each name is logged with
+    the mean, std, min and max of its values over the step's samples and ranks, as ``loss/<name>/{mean,std,min,max}``
+    in training and ``val/<name>/...`` in validation."""
 
-
-RESERVED_METRIC_NAMES = frozenset({"mean", "nan_count", "loss"})
-"""Metric names the trainer logs itself, as ``loss/mean``, ``loss/nan_count`` and ``val/loss``."""
 
 LossFn = Callable[..., LossOutputs]
 """A custom loss: ``my_loss(inputs: LossInputs, **kwargs) -> LossOutputs``, called with ``[loss.kwargs]``."""
@@ -65,22 +64,12 @@ def setup_sft_loss_fn(config: SFTCustomLossConfig) -> Callable[[LossInputs], Los
     return partial(fn, **config.kwargs)
 
 
-def check_metric_names(metrics: dict[str, Tensor], names: list[str] | None) -> list[str]:
-    """The sorted names of a call's ``metrics``. ``names`` are those of the run's first call (``None`` on that call),
-    which every later call must return."""
-    call_names = sorted(metrics)
-    if names is None and (reserved := RESERVED_METRIC_NAMES.intersection(call_names)):
-        raise ValueError(f"custom loss metric names {sorted(reserved)} are reserved for the trainer's own metrics")
-    if names is not None and call_names != names:
-        raise ValueError(f"custom loss metrics must have the same names on every call: {call_names}, first {names}")
-    return call_names
-
-
 def run_loss_fn(loss_fn: Callable[[LossInputs], LossOutputs], model: nn.Module, batch: Batch) -> LossOutputs:
     """The custom loss of one micro-batch: ``loss_fn`` called on each of its samples, inside the model's forward pass on
     the backbone's final hidden states, where stock SFT computes its cross-entropy: FSDP keeps the root unit gathered
-    for it and treats the modules it calls, such as the LM head, as part of the forward. The samples' losses, counts
-    and metrics are summed. ``batch["sample_lens"]`` and ``batch["truncated"]`` are read on the host."""
+    for it and treats the modules it calls, such as the LM head, as part of the forward. The samples' losses and counts
+    are summed, and each metric's values concatenated. ``batch["sample_lens"]`` and ``batch["truncated"]`` are read
+    on the host."""
     sample_lens, truncated = batch["sample_lens"].tolist(), batch["truncated"].tolist()
     num_tokens = sum(sample_lens)
     input_ids, position_ids, target_ids, loss_mask = (
@@ -109,12 +98,16 @@ def run_loss_fn(loss_fn: Callable[[LossInputs], LossOutputs], model: nn.Module, 
             )
             outputs.append(loss_fn(inputs))
             start += sample_len
-        metrics = {}
+        metrics: dict[str, list[Tensor]] = {}
         for output in outputs:
-            for name, value in output.metrics.items():
-                metrics[name] = metrics[name] + value if name in metrics else value
+            for name, values in output.metrics.items():
+                metrics.setdefault(name, []).append(values.detach().reshape(-1))
         # A dict, not the dataclass: FSDP hooks backward onto the tensors of the forward's output pytree.
-        return {"loss": sum(o.loss for o in outputs), "count": sum(o.count for o in outputs), "metrics": metrics}
+        return {
+            "loss": sum(output.loss for output in outputs),
+            "count": sum(output.count for output in outputs),
+            "metrics": {name: torch.cat(values) for name, values in metrics.items()},
+        }
 
     outputs = forward(
         model, batch["input_ids"], batch["position_ids"], seq_lens=batch["seq_lens"], hidden_states_fn=loss

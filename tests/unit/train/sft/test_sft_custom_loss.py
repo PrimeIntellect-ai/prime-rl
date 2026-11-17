@@ -17,7 +17,7 @@ from prime_rl.trainer.model import forward, reshard_module, setup_fsdp
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head, token_logprobs
 from prime_rl.trainer.parallel_dims import get_parallel_dims
-from prime_rl.trainer.sft.loss import LossInputs, LossOutputs, check_metric_names, run_loss_fn, setup_sft_loss_fn
+from prime_rl.trainer.sft.loss import LossInputs, LossOutputs, run_loss_fn, setup_sft_loss_fn
 
 
 def scaled_ce(inputs: LossInputs, scale: float = 1.0) -> LossOutputs:
@@ -86,7 +86,8 @@ def test_custom_loss_calls_the_function_with_its_kwargs():
         labels=batch["target_ids"].masked_fill(~batch["loss_mask"], -100),
     )["loss"]  # fmt: skip
     torch.testing.assert_close(outputs.loss, 2.0 * stock)
-    torch.testing.assert_close(outputs.metrics["ce"], stock.detach())
+    assert outputs.metrics["ce"].shape == (2,)  # one value per sample
+    torch.testing.assert_close(outputs.metrics["ce"].sum(), stock.detach())
     assert outputs.count == 4
     assert len(lm_head_calls) == 2  # once for the micro-batch's two samples, once for the stock loss
 
@@ -113,25 +114,6 @@ def test_custom_loss_is_called_on_each_sample_without_the_padding():
     torch.testing.assert_close(
         sample.target_logprobs(), token_logprobs(model.lm_head, sample.hidden_states[None], sample.target_ids[None])[0]
     )
-
-
-def test_metric_names_are_fixed_by_the_first_call():
-    value = torch.tensor(1.0)
-    names = check_metric_names({"b": value, "a": value}, None)
-    assert names == ["a", "b"]
-    assert check_metric_names({"a": value, "b": value}, names) == names
-    with pytest.raises(ValueError, match="same names on every call"):
-        check_metric_names({"a": value}, names)
-
-    names = check_metric_names({}, None)  # a first call without metrics fixes no metrics
-    with pytest.raises(ValueError, match="same names on every call"):
-        check_metric_names({"a": value}, names)
-
-
-@pytest.mark.parametrize("name", ["mean", "nan_count", "loss"])
-def test_metric_names_logged_by_the_trainer_are_reserved(name):
-    with pytest.raises(ValueError, match="reserved"):
-        check_metric_names({name: torch.tensor(1.0), "ce": torch.tensor(1.0)}, None)
 
 
 @pytest.mark.parametrize("chunk_size", [None, 4])  # the vanilla and the fused LM head
