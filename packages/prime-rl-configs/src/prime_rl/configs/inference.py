@@ -1,4 +1,6 @@
 import json
+import re
+import warnings
 from argparse import Namespace
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
@@ -41,7 +43,7 @@ class VllmConfig(BaseConfig):
     or ``--vllm.max-num-seqs 256``) and passes through to the server verbatim.
 
     Parser fields (``tool_call_parser``, ``reasoning_parser``) default to ``"auto"``,
-    which resolves to a concrete parser name at validation time from the model name.
+    which resolves to a concrete parser name at validation time from the tokenizer name, then the model name.
     Set to ``None`` to disable.
     """
 
@@ -57,10 +59,10 @@ class VllmConfig(BaseConfig):
     """Chat template — a Jinja2 template string or path to a template file. If None, uses the model's default."""
 
     tool_call_parser: str | None = "auto"
-    """Tool-call parser. Set to ``"auto"`` (default) to detect from the model name, or ``None`` to disable."""
+    """Tool-call parser. Set to ``"auto"`` (default) to detect from the tokenizer name, then the model name, or ``None`` to disable."""
 
     reasoning_parser: str | None = "auto"
-    """Parser for extracting reasoning content from model outputs. Set to ``"auto"`` (default) to detect from the model name, or ``None`` to disable."""
+    """Parser for extracting reasoning content from model outputs. Set to ``"auto"`` (default) to detect from the tokenizer name, then the model name, or ``None`` to disable."""
 
     rope_scaling: dict[str, Any] | str | None = None
     """RoPE scaling configuration as a dict (e.g. ``{rope_type="yarn", factor=4.0, original_max_position_embeddings=32768}``)."""
@@ -134,16 +136,30 @@ class VllmConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_resolve_parsers(self):
-        """Resolve ``"auto"`` parser values to concrete parser names from the model name.
+        """Resolve ``"auto"`` parser values to concrete parser names from the tokenizer name, then the model name.
 
         Runs after ``RLConfig.auto_setup_shared_configs`` (mode=before) has
-        propagated the shared ``[model] name`` into ``inference.vllm``, so the
-        name is set even when only the shared block specifies it.
+        propagated the shared ``[model] name`` and ``[tokenizer] name`` into ``inference.vllm``, so the
+        names are set even when only the shared blocks specify them.
         """
-        if self.tool_call_parser == "auto":
-            self.tool_call_parser = resolve_tool_call_parser(self.model)
-        if self.reasoning_parser == "auto":
-            self.reasoning_parser = resolve_reasoning_parser(self.model)
+        tokenizer = (self.model_extra or {}).get("tokenizer")
+        names = [name for name in (tokenizer, self.model) if name]
+        unresolved = []
+        for field, resolve in (
+            ("tool_call_parser", resolve_tool_call_parser),
+            ("reasoning_parser", resolve_reasoning_parser),
+        ):
+            if getattr(self, field) == "auto":
+                parser = next((parser for name in names if (parser := resolve(name))), None)
+                setattr(self, field, parser)
+                if parser is None:
+                    unresolved.append(field)
+        if unresolved and tokenizer is None and not re.fullmatch(r"[\w.-]+/[\w.-]+", self.model):
+            warnings.warn(
+                f"No {' or '.join(unresolved)} matches the local model {self.model}: set tokenizer.name to the HF "
+                "model name to pick them",
+                stacklevel=2,
+            )
         return self
 
     @model_validator(mode="after")
