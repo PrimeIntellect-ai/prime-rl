@@ -1,6 +1,7 @@
 import json
 from collections import Counter
 
+import numpy as np
 import pytest
 import torch
 from datasets import Dataset, interleave_datasets
@@ -19,6 +20,10 @@ _STOP_TOKEN_ID = 1
 
 def _sample_token_ids(value: str) -> list[int]:
     return [ord(char) + 2 for char in value]
+
+
+def _as_lists(sample: dict) -> dict:
+    return {key: value.tolist() if isinstance(value, np.ndarray) else value for key, value in sample.items()}
 
 
 @pytest.fixture(scope="module")
@@ -76,7 +81,7 @@ def test_sft_first_exhausted(build_dummy_dataset, dummy_renderer, max_epochs: in
     num_samples = 0
     sampling_order = []
     for x in dataset:
-        sampling_order.append(x["target_ids"][:-1])
+        sampling_order.append(x["target_ids"][:-1].tolist())
         num_samples += 1
     assert num_samples == max_epochs * min([len(d) for d in ds]) * len(ds)
     assert sampling_order == [_sample_token_ids("a0"), _sample_token_ids("b0")] * max_epochs
@@ -92,7 +97,7 @@ def test_sft_all_exhausted(build_dummy_dataset, dummy_renderer, max_epochs: int)
     num_samples = 0
     sampling_order = []
     for x in dataset:
-        sampling_order.append(x["target_ids"][:-1])
+        sampling_order.append(x["target_ids"][:-1].tolist())
         num_samples += 1
     assert num_samples == max_epochs * max([len(d) for d in ds]) * len(ds)
     print(sampling_order)
@@ -151,13 +156,13 @@ def test_sft_dataset_state(build_dummy_dataset, dummy_renderer):
     # Epoch 1
     for i in range(4):
         sample = next(dataiter)
-        assert sample["target_ids"][:-1] == _sample_token_ids(str(i))
+        assert sample["target_ids"][:-1].tolist() == _sample_token_ids(str(i))
         assert dataset.state_dict() == {"epoch": 0, "step": i + 1}
 
     # Epoch 2
     for i in range(4):
         sample = next(dataiter)
-        assert sample["target_ids"][:-1] == _sample_token_ids(str(i))
+        assert sample["target_ids"][:-1].tolist() == _sample_token_ids(str(i))
         assert dataset.state_dict() == {"epoch": 1, "step": 4 + i + 1}
 
     with pytest.raises(StopIteration):
@@ -180,7 +185,7 @@ def test_sft_dataset_state_resume(build_dummy_dataset, dummy_renderer):
     # Epoch 1
     for i in range(4):
         sample = next(dataiter)
-        assert sample["target_ids"][:-1] == _sample_token_ids(str(i))
+        assert sample["target_ids"][:-1].tolist() == _sample_token_ids(str(i))
         assert dataset.state_dict() == {"epoch": 0, "step": i + 1}
 
     # Resuming from checkpoint cross epoch
@@ -198,7 +203,7 @@ def test_sft_dataset_state_resume(build_dummy_dataset, dummy_renderer):
     # Epoch 2.1
     for i in range(2):
         sample = next(dataiter)
-        assert sample["target_ids"][:-1] == _sample_token_ids(str(i))
+        assert sample["target_ids"][:-1].tolist() == _sample_token_ids(str(i))
         assert dataset.state_dict() == {"epoch": 1, "step": 4 + i + 1}
 
     # Resuming from checkpoint mid epoch
@@ -216,7 +221,7 @@ def test_sft_dataset_state_resume(build_dummy_dataset, dummy_renderer):
     # Epoch 2.2
     for i in range(2, 4):
         sample = next(dataiter)
-        assert sample["target_ids"][:-1] == _sample_token_ids(str(i))
+        assert sample["target_ids"][:-1].tolist() == _sample_token_ids(str(i))
         assert dataset.state_dict() == {"epoch": 1, "step": 4 + i + 1}
 
     with pytest.raises(StopIteration):
@@ -336,7 +341,7 @@ def test_messages_rows_are_equivalent_to_empty_prompt_completion():
         max_examples=1,
     )
 
-    assert next(iter(messages_dataset)) == next(iter(split_dataset))
+    assert _as_lists(next(iter(messages_dataset))) == _as_lists(next(iter(split_dataset)))
 
 
 def test_messages_take_precedence_over_prompt_and_completion():
@@ -362,7 +367,7 @@ def test_messages_take_precedence_over_prompt_and_completion():
         max_examples=1,
     )
 
-    assert next(iter(messages_dataset)) == next(iter(expected_dataset))
+    assert _as_lists(next(iter(messages_dataset))) == _as_lists(next(iter(expected_dataset)))
 
 
 def test_null_messages_falls_back_to_prompt_and_completion():
@@ -383,7 +388,7 @@ def test_null_messages_falls_back_to_prompt_and_completion():
         max_examples=1,
     )
 
-    assert next(iter(mixed_row_dataset)) == next(iter(expected_dataset))
+    assert _as_lists(next(iter(mixed_row_dataset))) == _as_lists(next(iter(expected_dataset)))
 
 
 def test_vlm_truncation_does_not_append_trainable_eos(monkeypatch, dummy_renderer):
@@ -413,13 +418,13 @@ def _sft_sample(
     mm_token_type_ids: list[int] | None = None,
 ) -> dict:
     return {
-        "input_ids": input_ids,
-        "position_ids": list(range(len(input_ids))),
-        "loss_mask": [True] * len(input_ids),
-        "target_ids": [x + 1 for x in input_ids],
+        "input_ids": np.array(input_ids),
+        "position_ids": np.arange(len(input_ids)),
+        "loss_mask": np.ones(len(input_ids), dtype=bool),
+        "target_ids": np.array(input_ids) + 1,
         "seq_lens": [len(input_ids)],
         "mm_kwargs": mm_kwargs,
-        "mm_token_type_ids": mm_token_type_ids,
+        "mm_token_type_ids": np.array(mm_token_type_ids) if mm_token_type_ids is not None else None,
     }
 
 
@@ -449,9 +454,9 @@ def test_cat_dataset_packs_multimodal_samples():
 
     packed = next(iter(dataset))
 
-    assert packed["input_ids"] == [1, 2, 3, 4, 5]
+    assert packed["input_ids"].tolist() == [1, 2, 3, 4, 5]
     assert packed["seq_lens"] == [2, 3]
-    assert packed["mm_token_type_ids"] == [0, 1, 0, 1, 1]
+    assert packed["mm_token_type_ids"].tolist() == [0, 1, 0, 1, 1]
     assert packed["mm_kwargs"]["pixel_values"].shape == (5, 3)
     assert packed["mm_kwargs"]["image_grid_thw"].tolist() == [[1, 1, 2], [1, 1, 3]]
 
@@ -479,13 +484,13 @@ def test_cat_dataset_packs_text_and_multimodal_samples_together():
     packed = next(dataiter)
     text_pack = next(dataiter)
 
-    assert packed["input_ids"] == [1, 2, 3, 4, 0, 0]
-    assert packed["loss_mask"] == [True, True, True, True, False, False]
+    assert packed["input_ids"].tolist() == [1, 2, 3, 4, 0, 0]
+    assert packed["loss_mask"].tolist() == [True, True, True, True, False, False]
     assert packed["seq_lens"] == [1, 2, 3]
     assert packed["mm_kwargs"] is not None
-    assert packed["mm_token_type_ids"] == [0, 0, 1, 0, 0, 0]
-    assert text_pack["input_ids"] == [5, 6, 7, 8, 9, 10]
-    assert text_pack["loss_mask"] == [True] * 6
+    assert packed["mm_token_type_ids"].tolist() == [0, 0, 1, 0, 0, 0]
+    assert text_pack["input_ids"].tolist() == [5, 6, 7, 8, 9, 10]
+    assert text_pack["loss_mask"].tolist() == [True] * 6
     assert text_pack["seq_lens"] == [6]
     assert text_pack["mm_kwargs"] is None
     assert text_pack["mm_token_type_ids"] is None
@@ -584,8 +589,8 @@ def test_sft_dataset_reads_mapped_message_columns(dummy_renderer):
     sample = next(
         iter(SFTDataset(dataset, lambda _: dummy_renderer, columns=SFTColumnsConfig(messages="conversation")))
     )
-    assert sample["input_ids"] == [_BOS_TOKEN_ID, *_sample_token_ids("a0")]
-    assert sample["target_ids"] == [*_sample_token_ids("a0"), _STOP_TOKEN_ID]
+    assert sample["input_ids"].tolist() == [_BOS_TOKEN_ID, *_sample_token_ids("a0")]
+    assert sample["target_ids"].tolist() == [*_sample_token_ids("a0"), _STOP_TOKEN_ID]
 
     with pytest.raises(ValueError, match="'messages' column"):
         next(iter(SFTDataset(dataset, lambda _: dummy_renderer)))
@@ -643,12 +648,12 @@ def test_sft_message_selection(model, layout, column, mask):
     if mask == [0, 0, 0, 0]:
         assert sample is None
         return
-    assert sample["input_ids"] == baseline["input_ids"]
-    assert sample["target_ids"] == baseline["target_ids"]
+    assert sample["input_ids"].tolist() == baseline["input_ids"].tolist()
+    assert sample["target_ids"].tolist() == baseline["target_ids"].tolist()
     if mask is None or all(mask):
-        assert sample["loss_mask"] == baseline["loss_mask"]
+        assert sample["loss_mask"].tolist() == baseline["loss_mask"].tolist()
         return
-    trained = tokenizer.decode([token for token, keep in zip(sample["target_ids"], sample["loss_mask"]) if keep])
+    trained = tokenizer.decode(sample["target_ids"][sample["loss_mask"]].tolist())
     if mask[1]:
         assert "Prefilled" in trained
         assert "Answer" not in trained

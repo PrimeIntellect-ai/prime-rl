@@ -20,7 +20,6 @@ from prime_rl.configs.pretrain import DatatroveDataConfig, PretrainDataConfig
 from prime_rl.trainer.data import StatefulIterableDataset
 from prime_rl.utils.bin_packing import fill_rows
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.sequence import repeat_to_length
 
 # Every step looks up documents in files of every source, so files stay open: up to the soft limit on open files (one
 # descriptor each, some left for the rest), and at most MAX_OPEN_FILES (one memory map each; Linux allows 65530 per
@@ -556,10 +555,10 @@ class TokenDataset(StatefulIterableDataset):
         seq_lens = lengths.tolist() if self.document_masking else [self.sampler.seq_len]
         positions = np.arange(self.sampler.seq_len) - np.repeat(np.cumsum(seq_lens) - seq_lens, seq_lens)
         return {
-            "input_ids": input_ids.tolist(),
-            "target_ids": target_ids.tolist(),
-            "position_ids": positions.tolist(),
-            "loss_mask": loss_mask.tolist(),
+            "input_ids": input_ids,
+            "target_ids": target_ids,
+            "position_ids": positions,
+            "loss_mask": loss_mask,
             "seq_lens": seq_lens,
             "mm_kwargs": None,
             "mm_token_type_ids": None,
@@ -642,25 +641,25 @@ class DocumentDataset(StatefulIterableDataset):
         self.rows = pack_windows([end - start - 1 for _, start, end in self.windows], row_len)
 
     def sample(self, row: list[int], scored: bool) -> dict:
-        input_ids, target_ids, seq_lens = [], [], []
+        windows = []
         for index in row:
             file_index, start, end = self.windows[index]
-            ids = self.shards.open(file_index)[0][start:end].astype(np.int64).tolist()
-            input_ids += ids[:-1]
-            target_ids += ids[1:]
-            seq_lens.append(len(ids) - 1)
-        loss_mask = [scored] * len(input_ids)
+            windows.append(self.shards.open(file_index)[0][start:end].astype(np.int64))
+        input_ids = np.concatenate([ids[:-1] for ids in windows])
+        target_ids = np.concatenate([ids[1:] for ids in windows])
+        seq_lens = [len(ids) - 1 for ids in windows]
+        loss_mask = np.full(len(input_ids), scored)
         padding = self.row_len - len(input_ids)
         if padding > 0:
             # The row's own tokens, as in CatDataset: identical pad tokens would all route to the same MoE experts.
-            input_ids += repeat_to_length(input_ids, padding)
-            target_ids += [0] * padding
-            loss_mask += [False] * padding
+            input_ids = np.concatenate([input_ids, np.resize(input_ids, padding)])
+            target_ids = np.concatenate([target_ids, np.zeros(padding, dtype=np.int64)])
+            loss_mask = np.concatenate([loss_mask, np.zeros(padding, dtype=bool)])
             seq_lens.append(padding)
         return {
             "input_ids": input_ids,
             "target_ids": target_ids,
-            "position_ids": [position for length in seq_lens for position in range(length)],
+            "position_ids": np.arange(len(input_ids)) - np.repeat(np.cumsum(seq_lens) - seq_lens, seq_lens),
             "loss_mask": loss_mask,
             "seq_lens": seq_lens,
             "mm_kwargs": None,

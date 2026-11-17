@@ -1,6 +1,7 @@
 from collections import defaultdict
 from typing import Any, TypedDict
 
+import numpy as np
 import torch
 from jaxtyping import Bool, Int
 from torch import Tensor
@@ -10,17 +11,19 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 
 from prime_rl.configs.supervised import BaseDataConfig
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.sequence import repeat_to_length
 
 
 class Sample(TypedDict):
-    input_ids: list[int]
-    position_ids: list[int]
-    loss_mask: list[bool]
-    target_ids: list[int]
+    """A sample's tokens: ``input_ids``, ``position_ids``, ``target_ids`` and ``mm_token_type_ids`` as int64 arrays,
+    ``loss_mask`` as a bool array."""
+
+    input_ids: np.ndarray
+    position_ids: np.ndarray
+    loss_mask: np.ndarray
+    target_ids: np.ndarray
     seq_lens: list[int]
     mm_kwargs: dict[str, Tensor] | None
-    mm_token_type_ids: list[int] | None
+    mm_token_type_ids: np.ndarray | None
 
 
 class Batch(TypedDict):
@@ -121,18 +124,15 @@ class CatDataset(StatefulIterableDataset):
                 packed_samples["mm_token_type_ids"] = None
                 seq_len = 0
 
-            existing_len = len(packed_samples["input_ids"])
             for key in ("input_ids", "position_ids", "loss_mask", "target_ids"):
-                value = sample[key]
-                assert isinstance(value, list)
-                packed_samples[key].extend(value)
+                packed_samples[key].append(sample[key])
             packed_samples["seq_lens"].extend(sample["seq_lens"])
 
             sample_mm_kwargs = sample.get("mm_kwargs")
             sample_mm_type_ids = sample.get("mm_token_type_ids")
             if sample_mm_kwargs is None:
                 if packed_samples["mm_token_type_ids"] is not None:
-                    packed_samples["mm_token_type_ids"].extend([0] * sample_len)
+                    packed_samples["mm_token_type_ids"].append(np.zeros(sample_len, dtype=np.int64))
             else:
                 if packed_samples["mm_kwargs"] is not None and (
                     (packed_samples["mm_token_type_ids"] is None) != (sample_mm_type_ids is None)
@@ -148,9 +148,11 @@ class CatDataset(StatefulIterableDataset):
                         packed_samples["mm_kwargs"][key] = torch.cat([packed_samples["mm_kwargs"][key], value], dim=0)
 
                 if packed_samples["mm_token_type_ids"] is None and sample_mm_type_ids is not None:
-                    packed_samples["mm_token_type_ids"] = [0] * existing_len
+                    packed_samples["mm_token_type_ids"] = [np.zeros(seq_len, dtype=np.int64)]
                 if packed_samples["mm_token_type_ids"] is not None:
-                    packed_samples["mm_token_type_ids"].extend(sample_mm_type_ids or [0] * sample_len)
+                    packed_samples["mm_token_type_ids"].append(
+                        sample_mm_type_ids if sample_mm_type_ids is not None else np.zeros(sample_len, dtype=np.int64)
+                    )
 
             seq_len += sample_len
 
@@ -166,7 +168,7 @@ class CatDataset(StatefulIterableDataset):
 
     def _finalize_pack(self, packed: dict[str, Any], seq_len: int) -> dict:
         result: dict[str, Any] = {
-            k: packed[k][:seq_len] for k in ("input_ids", "position_ids", "loss_mask", "target_ids")
+            k: np.concatenate(packed[k])[:seq_len] for k in ("input_ids", "position_ids", "loss_mask", "target_ids")
         }
         result["seq_lens"] = []
         remaining = len(result["input_ids"])
@@ -182,17 +184,16 @@ class CatDataset(StatefulIterableDataset):
             # Identical pad tokens route to the same MoE experts and can overload one EP rank, so text packs pad with
             # their own tokens. Multimodal packs keep a constant id: a repeated image placeholder would have no feature
             # to receive.
-            if packed["mm_kwargs"] is None:
-                result["input_ids"].extend(repeat_to_length(result["input_ids"], pad_len))
-            else:
-                result["input_ids"].extend([0] * pad_len)
-            result["position_ids"].extend(range(pad_len))
-            result["loss_mask"].extend([False] * pad_len)
-            result["target_ids"].extend([0] * pad_len)
+            padding = np.resize(result["input_ids"], pad_len) if packed["mm_kwargs"] is None else np.zeros(pad_len)
+            result["input_ids"] = np.concatenate([result["input_ids"], padding.astype(np.int64)])
+            result["position_ids"] = np.concatenate([result["position_ids"], np.arange(pad_len)])
+            result["loss_mask"] = np.concatenate([result["loss_mask"], np.zeros(pad_len, dtype=bool)])
+            result["target_ids"] = np.concatenate([result["target_ids"], np.zeros(pad_len, dtype=np.int64)])
             result["seq_lens"][-1] += pad_len
         result["mm_kwargs"] = packed["mm_kwargs"]
         if packed["mm_token_type_ids"] is not None:
-            result["mm_token_type_ids"] = packed["mm_token_type_ids"][:seq_len] + [0] * pad_len
+            type_ids = np.concatenate(packed["mm_token_type_ids"])[:seq_len]
+            result["mm_token_type_ids"] = np.concatenate([type_ids, np.zeros(pad_len, dtype=np.int64)])
         else:
             result["mm_token_type_ids"] = None
         return result
@@ -204,15 +205,15 @@ def cat_collate(samples: list[Sample]) -> Batch:
     mm_kwargs = sample.get("mm_kwargs")
     mm_token_type_ids = sample.get("mm_token_type_ids")
     return {
-        "input_ids": torch.tensor(sample["input_ids"], dtype=torch.long).unsqueeze(0),
-        "position_ids": torch.tensor(sample["position_ids"], dtype=torch.long).unsqueeze(0),
-        "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool).unsqueeze(0),
-        "target_ids": torch.tensor(sample["target_ids"], dtype=torch.long).unsqueeze(0),
+        "input_ids": torch.from_numpy(sample["input_ids"]).unsqueeze(0),
+        "position_ids": torch.from_numpy(sample["position_ids"]).unsqueeze(0),
+        "loss_mask": torch.from_numpy(sample["loss_mask"]).unsqueeze(0),
+        "target_ids": torch.from_numpy(sample["target_ids"]).unsqueeze(0),
         "seq_lens": torch.tensor(sample["seq_lens"], dtype=torch.long),
         "mm_kwargs": dict(mm_kwargs) if mm_kwargs is not None else None,
-        "mm_token_type_ids": (
-            torch.tensor(mm_token_type_ids, dtype=torch.long).unsqueeze(0) if mm_token_type_ids is not None else None
-        ),
+        "mm_token_type_ids": torch.from_numpy(mm_token_type_ids).unsqueeze(0)
+        if mm_token_type_ids is not None
+        else None,
     }
 
 

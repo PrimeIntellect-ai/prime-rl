@@ -99,7 +99,7 @@ def test_rows_keep_every_prediction_of_a_pass(tmp_path):
     scored, other = Counter(), []
     for row in rows:
         assert len(row["input_ids"]) == sum(row["seq_lens"]) == 16
-        assert row["position_ids"] == [p for n in row["seq_lens"] for p in range(n)]
+        assert row["position_ids"].tolist() == [p for n in row["seq_lens"] for p in range(n)]
         for token, target, score in zip(row["input_ids"], row["target_ids"], row["loss_mask"]):
             if score and (token, target) in within:
                 scored[token, target] += 1
@@ -235,9 +235,7 @@ def test_eod_mask_loss(tmp_path):
     on = take(setup_token_dataset(config, eod_mask_token=eos), 40)
     eos_inputs = word_to_eos = 0
     for plain, masked in zip(off, on):
-        assert {k: v for k, v in plain.items() if k != "loss_mask"} == {
-            k: v for k, v in masked.items() if k != "loss_mask"
-        }
+        assert all(np.array_equal(plain[k], masked[k]) for k in ("input_ids", "target_ids", "position_ids", "seq_lens"))
         for token, target, before, after in zip(
             masked["input_ids"], masked["target_ids"], plain["loss_mask"], masked["loss_mask"]
         ):
