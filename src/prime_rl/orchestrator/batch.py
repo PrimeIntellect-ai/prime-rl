@@ -1,5 +1,6 @@
 import copy
 import heapq
+from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
@@ -665,6 +666,21 @@ def prepare_batch(
     and distribute them so that at each step index, all ranks see the same modality.
     """
     all_samples = [prepare_sample(rollout, seq_len) for rollout in rollouts]
+    # Count each prompt's RL tokens after queue filtering, batch selection and truncation.
+    prompt_token_counts: Counter[str] = Counter()
+    prompt_samples: list[tuple[str, MicroBatch, np.ndarray]] = []
+    for rollout, sample in zip(rollouts, all_samples, strict=True):
+        group_id = rollout.prompt_group_id
+        if group_id is None:
+            continue
+        rl_mask = np.asarray(sample.loss_mask, dtype=bool)
+        if sample.rl_weights is not None:
+            rl_mask = rl_mask & (np.asarray(sample.rl_weights) != 0.0)
+        prompt_token_counts[group_id] += int(np.count_nonzero(rl_mask))
+        prompt_samples.append((group_id, sample, rl_mask))
+    for group_id, sample, rl_mask in prompt_samples:
+        count = prompt_token_counts[group_id]
+        sample.rl_weights = rl_mask.astype(np.float32) / max(count, 1)
 
     micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_train_workers, bin_cost)
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
