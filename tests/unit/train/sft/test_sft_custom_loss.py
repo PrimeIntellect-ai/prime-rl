@@ -7,7 +7,6 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from pydantic import ValidationError
 from torch import nn
-from torch.distributed.tensor import DTensor
 from transformers import PretrainedConfig
 
 import prime_rl.trainer.parallel_dims as parallel_dims_module
@@ -192,6 +191,13 @@ def heads_loss(inputs: LossInputs) -> LossOutputs:
     return LossOutputs(loss=loss, count=mask.sum())
 
 
+def score_loss(inputs: LossInputs) -> LossOutputs:
+    """Calls only the score head, not the LM head."""
+    head = inputs.model.score_head
+    scores = head(inputs.hidden_states[inputs.loss_mask].to(head.weight.dtype)).float()
+    return LossOutputs(loss=scores.square().sum(), count=inputs.loss_mask.sum())
+
+
 def heads_model(tied: bool) -> HeadsModel:
     torch.manual_seed(0)
     model = HeadsModel(HeadsConfig(tie_word_embeddings=tied))
@@ -213,7 +219,7 @@ def heads_batch(rank: int) -> dict:
     }
 
 
-def fsdp_worker(rank: int, world: int, tied: bool, init_file: str, out_dir: str) -> None:
+def fsdp_worker(rank: int, world: int, tied: bool, loss_fn, init_file: str, out_dir: str) -> None:
     os.environ.update(RANK=str(rank), WORLD_SIZE=str(world), LOCAL_RANK=str(rank), LOCAL_WORLD_SIZE=str(world))
     dist.init_process_group("gloo", init_method=f"file://{init_file}", rank=rank, world_size=world)
     parallel_dims_module.device_type = "cpu"  # the mesh is built on CUDA by default
@@ -221,26 +227,38 @@ def fsdp_worker(rank: int, world: int, tied: bool, init_file: str, out_dir: str)
     model = heads_model(tied)
     setup_fsdp(model, config, get_parallel_dims(config))  # prime-rl's real FSDP setup
 
-    run_loss_fn(heads_loss, model, heads_batch(rank)).loss.backward()
-    grads = {name: p.grad.full_tensor() for name, p in model.named_parameters()}
-    with torch.no_grad():  # as in validation, which the trainer follows with reshard_module before clipping
-        run_loss_fn(heads_loss, model, heads_batch(rank))
+    def grads() -> dict:
+        return {name: p.grad.full_tensor() for name, p in model.named_parameters() if p.grad is not None}
+
+    # As in the trainer: a step's backward, then validation (a no-grad forward, then reshard_module before clipping),
+    # then the next step's backward on cleared gradients
+    run_loss_fn(loss_fn, model, heads_batch(rank)).loss.backward()
+    with torch.no_grad():
+        run_loss_fn(loss_fn, model, heads_batch(rank))
     reshard_module(model)
-    resharded = all(isinstance(p, DTensor) for p in model.parameters())
-    torch.save({"grads": grads, "resharded": resharded}, os.path.join(out_dir, f"{rank}.pt"))
+    steps = [grads()]
+    model.zero_grad(set_to_none=True)
+    run_loss_fn(loss_fn, model, heads_batch(rank)).loss.backward()
+    steps.append(grads())
+    torch.save(steps, os.path.join(out_dir, f"{rank}.pt"))
     dist.destroy_process_group()
 
 
+@pytest.mark.parametrize("loss_fn", [heads_loss, score_loss])
 @pytest.mark.parametrize("tied", [True, False])
-def test_custom_loss_under_fsdp(tied, tmp_path):
+def test_custom_loss_under_fsdp(tied, loss_fn, tmp_path):
     world = 2
-    mp.spawn(fsdp_worker, args=(world, tied, str(tmp_path / "rendezvous"), str(tmp_path)), nprocs=world, join=True)
+    args = (world, tied, loss_fn, str(tmp_path / "rendezvous"), str(tmp_path))
+    mp.spawn(fsdp_worker, args=args, nprocs=world, join=True)
 
     # The same micro-batches on one process without FSDP, in bf16 as FSDP computes; FSDP averages over ranks.
     model = heads_model(tied).to(torch.bfloat16)
-    sum(run_loss_fn(heads_loss, model, heads_batch(rank)).loss for rank in range(world)).div(world).backward()
+    sum(run_loss_fn(loss_fn, model, heads_batch(rank)).loss for rank in range(world)).div(world).backward()
+    expected = {name: param.grad.float() for name, param in model.named_parameters() if param.grad is not None}
+    if not tied:  # a tied LM head's weight is listed as the embeddings'
+        assert ("lm_head.weight" in expected) == (loss_fn is heads_loss)
     for rank in range(world):
-        result = torch.load(tmp_path / f"{rank}.pt")
-        assert result["resharded"]  # after a loss without a backward, every FSDP unit reshards
-        for name, param in model.named_parameters():
-            torch.testing.assert_close(result["grads"][name], param.grad.float(), rtol=0.05, atol=0.02)
+        for grads in torch.load(tmp_path / f"{rank}.pt"):
+            assert grads.keys() == expected.keys()
+            for name, grad in expected.items():
+                torch.testing.assert_close(grads[name], grad, rtol=0.05, atol=0.02)
