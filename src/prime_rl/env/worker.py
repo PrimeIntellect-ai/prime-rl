@@ -143,9 +143,15 @@ class EnvWorker:
         # `req.client` and closes it, so a training run's changing model leaves nothing behind.
         ctx = ModelContext(client=req.client, model=req.model, sampling=req.sampling)
         (slot,) = self.env.slots(self._build_task(req.task_data))
+        send_errors: dict[str, Exception] = {}
 
         async def send_delta(delta: dict) -> None:
-            await self.frontend.send_multipart([client_id, request_id, b"delta", pack(delta)], copy=False)
+            try:
+                await self.frontend.send_multipart([client_id, request_id, b"delta", pack(delta)], copy=False)
+            except Exception as error:
+                send_errors[delta["trace"]] = error
+                raise
+            send_errors.pop(delta["trace"], None)
 
         # The gate spans requests: it bounds this worker's episodes in flight. The
         # streamer ships each trace as it changes; the reply below carries only the rest.
@@ -162,6 +168,11 @@ class EnvWorker:
                     keeping.abandon()
                     raise
                 self._kept[request_id] = (hook, episode)
+        # The streamer retries failed sends, but its final flush is also best-effort.
+        # Every returned trace must have reached the client before we report success.
+        for trace in episode.traces:
+            if error := send_errors.get(trace.id):
+                raise RuntimeError(f"Failed to deliver final trace state - {type(error).__name__}: {error}") from error
         return RunResponse(
             head=dump(episode, exclude={"traces"}),
             traces=[
