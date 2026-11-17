@@ -56,6 +56,7 @@ def setup_optimizer(
     offload_overlap_forward: bool = False,
     model: nn.Module | None = None,
     full_offload_dtype_policy: dict[int, tuple[torch.dtype, torch.dtype]] | None = None,
+    accumulate_grads_on_gpu: bool = False,
 ) -> tuple[OptimizerLike, GradientOffloadManager | None]:
     cpu_offload = offload == "optimizer"
     full_offload = offload == "full"
@@ -90,6 +91,7 @@ def setup_optimizer(
             optimizer,
             master_weights=master_weights,
             dp_replicate=parallel_dims.dp_replicate,
+            accumulate_grads_on_gpu=accumulate_grads_on_gpu,
         )
         return optimizer, optimizer._gradient_manager
 
