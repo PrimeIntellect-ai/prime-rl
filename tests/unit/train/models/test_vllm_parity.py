@@ -30,13 +30,13 @@ router replay does, so the result does not depend on the GPU. A pure expert-sele
 check.
 
 Tolerances: the runs are deterministic, so each arch has one clean value. Its `max_abs` and `mismatch_kl` are 2.4-3.5x
-that value. Plain transformers allow 0.02 and 1e-5; clean qwen3 measures 0.008 and 3.5e-6. The DeepSeek-V4, GLM-5,
-GLM-5.3, Qwen3.8 Flash Next and gpt-oss tolerances are provisional: they were measured with substitute kernels, on a
-GPU that does not run their own kernels.
+that value. Plain transformers allow 0.02 and 1e-5; clean qwen3 measures 0.008 and 3.5e-6. DeepSeek-V4, GLM-5.3,
+Qwen3.8 Flash Next and gpt-oss were measured on Hopper, as their kernels need. The GLM-5 tolerances are provisional:
+they were measured with substitute kernels.
 
 What it catches, from bugs injected by hand:
 
-- rope theta x2, attention scale x1.02, SiLU instead of GELU, a 1% final-norm scale (qwen3)
+- rope theta x2, attention scale x1.02, GELU instead of SiLU, a 1% final-norm scale (qwen3)
 - swapped gate/up and permuted query heads in the weight conversion, a dropped k_norm
 - router renormalization and sigmoid bugs, swapped experts, a selection-bias-only bug (through the agreement check)
 - gated delta net `dt_bias` and conv bugs
@@ -115,12 +115,13 @@ TINY_DIMS = dict(
     head_dim=64,
     max_position_embeddings=4096,
 )
+# vLLM's gated delta net kernel on Hopper takes head_dim 128 only
 LINEAR_ATTENTION_DIMS = dict(
     layer_types=["linear_attention", "full_attention"],
     linear_num_key_heads=2,
     linear_num_value_heads=4,
-    linear_key_head_dim=64,
-    linear_value_head_dim=64,
+    linear_key_head_dim=128,
+    linear_value_head_dim=128,
 )
 
 ENGINE_ARGS = dict(
@@ -414,7 +415,7 @@ CASES = [
             num_hash_layers=1,
             architectures=["DeepseekV4ForCausalLM"],
         ),
-        max_abs=0.08,
+        max_abs=0.06,
         mismatch_kl=7e-5,
         post_init=hash_routing_table,
         tiny=True,
@@ -422,8 +423,8 @@ CASES = [
     Case(
         "glm_moe_dsa",
         # GLM-5: sparse MLA with the lightning indexer, a dense layer, then MoE layers; layer 2 reuses layer 1's
-        # selection (IndexShare). Kernels fix kv_lora_rank 512 with a 64-wide RoPE part and 64 heads. index_topk is
-        # below the row lengths, so the indexer selects.
+        # selection (IndexShare). Kernels fix kv_lora_rank 512 with a 64-wide RoPE part and 64 heads, and vLLM's sparse
+        # MLA a multiple of 128 for index_topk. It is below the row lengths, so the indexer selects for later tokens.
         GlmMoeDsaConfig(
             vocab_size=151936,
             hidden_size=256,
@@ -446,7 +447,7 @@ CASES = [
             topk_group=1,
             index_n_heads=32,
             index_head_dim=128,
-            index_topk=64,
+            index_topk=128,
             indexer_types=["full", "full", "shared"],
             index_topk_freq=2,
             index_skip_topk_offset=2,
@@ -501,16 +502,16 @@ CASES = [
             indexer_rope_interleave=True,
             architectures=["Glm5NextForCausalLM"],
         ),
-        max_abs=0.08,
-        mismatch_kl=7e-5,
+        max_abs=0.03,
+        mismatch_kl=1e-5,
         # Prompts shorter than index_topk otherwise take a dense prefill on Hopper, away from the sparse MLA kernel
         engine=dict(attention_config={"sparse_mla_force_mqa": True}),
     ),
     Case(
         "qwen3_8_flash_next",
         qwen3_8_flash_next_config(),
-        max_abs=0.05,
-        mismatch_kl=4e-5,
+        max_abs=0.04,
+        mismatch_kl=3e-5,
     ),
     Case(
         "nemotron_h",
@@ -567,8 +568,8 @@ CASES = [
             sliding_window=32,
             architectures=["GptOssForCausalLM"],
         ),
-        max_abs=0.05,
-        mismatch_kl=2e-5,
+        max_abs=0.02,
+        mismatch_kl=1e-5,
         post_init=weigh_sinks,
     ),
 ]
