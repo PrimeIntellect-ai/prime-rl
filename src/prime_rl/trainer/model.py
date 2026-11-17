@@ -377,6 +377,32 @@ def get_implementation_cls(
     return cls
 
 
+def get_model_cls(config: ModelConfig, model_config: PretrainedConfig) -> type:
+    """The class ``get_model`` builds for the checkpoint, checked against ``model.cp`` and ``model.vlm``."""
+    implementation_cls = None
+    if config.implementation is not None:
+        implementation_cls = get_implementation_cls(config.implementation, model_config)
+    custom_vlm_cls = get_custom_vlm_cls(model_config) if implementation_cls is None else None
+    if implementation_cls is None and custom_vlm_cls is None and not supports_custom_impl(model_config):
+        raise ValueError(
+            f"{model_config.model_type!r} has no PrimeRL model implementation. "
+            "The trainer only supports the architectures in prime_rl.trainer.models."
+        )
+
+    # Queried here so a misconfigured job dies at setup rather than at the first forward.
+    if config.cp > 1:
+        cp_model_cls = implementation_cls or custom_vlm_cls or get_custom_causal_lm_cls(model_config)
+        cp_blocker = cp_model_cls.cp_blocker(model_config, config.cp)
+        if cp_blocker is not None:
+            raise ValueError(f"{model_config.model_type!r} cannot train with context parallelism: {cp_blocker}")
+
+    if config.vlm is not None and custom_vlm_cls is None:
+        raise ValueError(
+            f"VLM training requires a registered PrimeRL VLM implementation; {model_config.model_type!r} has none."
+        )
+    return implementation_cls or custom_vlm_cls or AutoModelForCausalLMPrimeRL
+
+
 def get_model(
     config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
 ) -> nn.Module:
@@ -455,31 +481,8 @@ def get_model(
         if getattr(target_config, "layer_types", None) is not None:
             target_config.layer_types = target_config.layer_types[:num_hidden_layers]
 
-    implementation_cls = None
-    if config.implementation is not None:
-        implementation_cls = get_implementation_cls(config.implementation, model_config)
-    custom_vlm_cls = get_custom_vlm_cls(model_config) if implementation_cls is None else None
-    if implementation_cls is None and custom_vlm_cls is None and not supports_custom_impl(model_config):
-        raise ValueError(
-            f"{model_config.model_type!r} has no PrimeRL model implementation. "
-            "The trainer only supports the architectures in prime_rl.trainer.models."
-        )
-
-    # Queried here so a misconfigured job dies at setup rather than at the first forward.
-    if config.cp > 1:
-        cp_model_cls = implementation_cls or custom_vlm_cls or get_custom_causal_lm_cls(model_config)
-        cp_blocker = cp_model_cls.cp_blocker(model_config, config.cp)
-        if cp_blocker is not None:
-            raise ValueError(f"{model_config.model_type!r} cannot train with context parallelism: {cp_blocker}")
-
-    if config.vlm is not None and custom_vlm_cls is None:
-        raise ValueError(
-            f"VLM training requires a registered PrimeRL VLM implementation; {model_config.model_type!r} has none."
-        )
-
+    model_cls = get_model_cls(config, model_config)
     with device:
-        model_cls = implementation_cls or custom_vlm_cls or AutoModelForCausalLMPrimeRL
-
         load_model_start_time = time.perf_counter()
         if device == torch.device("meta"):
             logger.info(f"Loading model {config.name} using {model_cls.__name__} to meta device")

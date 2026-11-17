@@ -179,6 +179,7 @@ class TokenDataset(StatefulIterableDataset):
                 "seq_lens": seq_lens,
                 "mm_kwargs": None,
                 "mm_token_type_ids": None,
+                "sample_data": None,
             }
 
 
@@ -270,6 +271,7 @@ class DocumentDataset(StatefulIterableDataset):
             "seq_lens": seq_lens,
             "mm_kwargs": None,
             "mm_token_type_ids": None,
+            "sample_data": None,
         }
 
     def __iter__(self):

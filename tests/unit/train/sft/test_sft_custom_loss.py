@@ -93,7 +93,7 @@ def test_custom_loss_calls_the_function_with_its_kwargs():
 
 def test_custom_loss_is_called_on_each_sample_without_the_padding():
     model = tiny_causal_lm()
-    batch = {**padded_batch(), "truncated": torch.tensor([False, True])}
+    batch = {**padded_batch(), "truncated": torch.tensor([False, True]), "sample_data": ["a", "b"]}
     hidden_states = model.backbone(batch["input_ids"], batch["position_ids"]).last_hidden_state[0]
     samples = []
 
@@ -107,6 +107,7 @@ def test_custom_loss_is_called_on_each_sample_without_the_padding():
     assert [sample.target_ids.tolist() for sample in samples] == [[2, 3, 4], [5, 6]]
     assert [sample.loss_mask.tolist() for sample in samples] == [[True, True, False], [True, True]]
     assert [sample.truncated for sample in samples] == [False, True]
+    assert [sample.sample_data for sample in samples] == ["a", "b"]
     torch.testing.assert_close(samples[1].hidden_states, hidden_states[3:5])
     # a slice of the micro-batch's log-probabilities, equal to those of the sample on its own
     sample = samples[1]

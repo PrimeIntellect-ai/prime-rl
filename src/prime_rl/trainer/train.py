@@ -28,6 +28,7 @@ from prime_rl.trainer.micro_batches import run_micro_batches, step_result, to_ho
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
+    get_model_cls,
     is_tt_moe_model,
     reshard_module,
     check_ckpt_dir,
@@ -49,6 +50,7 @@ from prime_rl.trainer.pretrain.data import (
 )
 from prime_rl.trainer.sft.data import load_sft_dataset, setup_sft_dataset
 from prime_rl.trainer.sft.loss import run_loss_fn, setup_sft_loss_fn
+from prime_rl.trainer.sft.system_one.data import system_one_strategy_cls
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
@@ -71,6 +73,7 @@ from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.utils import clean_exit
 import torch.distributed as dist
+from transformers import AutoConfig
 
 
 @clean_exit
@@ -157,6 +160,13 @@ def train(config: SFTConfig | PretrainConfig):
     model_files = setup_model_files(config.model, tokenizer, processor)
     ckpt_manager = setup_ckpt_manager(config.run_dir, config.ckpt, model_files, resume=config.resume)
 
+    # System One data trains a decision model: find its class's strategy before loading weights. A config of its
+    # own, not model_files.config, which is written into every checkpoint's config.json.
+    strategy_cls = None
+    if isinstance(config, SFTConfig) and config.data.type == "system_one":
+        model_config = AutoConfig.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
+        strategy_cls = system_one_strategy_cls(get_model_cls(config.model, model_config))
+
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")
     from_checkpoint = config.model.init.type == "pretrained" and is_checkpoint_step_dir(config.model.name)
@@ -168,6 +178,8 @@ def train(config: SFTConfig | PretrainConfig):
 
     if config.model.lora is not None:
         get_lora_state().reset_adapter_parameters()
+
+    strategy = strategy_cls(tokenizer, model.config) if strategy_cls is not None else None
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -215,6 +227,7 @@ def train(config: SFTConfig | PretrainConfig):
             renderer_config=config.renderer,
             processor=processor,
             multimodal=multimodal,
+            strategy=strategy,
         )
     dataloader = setup_dataloader(dataset, config.data, config.model.cp)
 
@@ -275,8 +288,9 @@ def train(config: SFTConfig | PretrainConfig):
             key: micro_batch[key].to("cuda", non_blocking=True)
             for key in ("input_ids", "position_ids", "target_ids", "loss_mask", "seq_lens")
         }
-        # Where the samples are, read on the host
+        # Where the samples are, read on the host, and what the dataset attached to each
         batch["sample_lens"], batch["truncated"] = micro_batch["sample_lens"], micro_batch["truncated"]
+        batch["sample_data"] = micro_batch["sample_data"]
         with maybe_activation_offloading(config.model.ac_offloading, model):
             outputs = run_loss_fn(loss_fn, model, batch)
         if isinstance(outputs.count, int):  # filled on the device: a host int copied over would sync
@@ -393,6 +407,7 @@ def train(config: SFTConfig | PretrainConfig):
                 renderer_config=config.renderer,
                 processor=processor,
                 multimodal=multimodal,
+                strategy=strategy,
             )
         val_dataloader = setup_dataloader(val_dataset, config.val.data, config.model.cp)
 
