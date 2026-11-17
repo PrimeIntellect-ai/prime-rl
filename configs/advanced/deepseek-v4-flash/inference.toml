@@ -2,7 +2,7 @@
 # checkpoint at all, independent of the trainer? Uses vLLM's own native DeepSeek V4 support, not
 # this repo's trainer port. Run directly on one allocated 8xH200 node (no [slurm] block):
 #
-#   uv run inference @ examples/advanced/deepseek-v4-flash/inference.toml
+#   uv run inference @ configs/advanced/deepseek-v4-flash/inference.toml
 #
 # Then check /health and a /v1/chat/completions request from another shell on the same node, and
 # confirm a coherent response before trusting the model for a real run.
