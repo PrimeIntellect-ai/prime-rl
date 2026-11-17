@@ -369,6 +369,7 @@ class LossInputs:                                  # one sample, without the row
     target_ids: Int[Tensor, "seq"]                 # each position's next token
     loss_mask: Bool[Tensor, "seq"]                 # the tokens to train on
     truncated: bool                                # packing cut the sample's tail
+    sample_data: Any                               # what the dataset attached, e.g. a System One record; else None
 
     def target_logprobs(self) -> Float[Tensor, "seq"]: ...  # log p(target_ids) through the LM head
 
@@ -484,10 +485,10 @@ seq_len = 4096
 
 - **Segments.** Each `seq_lens` entry is one attention segment: attention and positions restart at its first token. A read span lies within one segment. Records are packed back to back into rows of up to `seq_len * micro_batch_size` tokens, without padding, and no segment spans two records. `data.batch_size` counts budgets of `seq_len` tokens (up to `batch_size` x `seq_len` tokens per step), not records or questions.
 - **Reads.** `loss_mask` is true on every token of every read span and false elsewhere. There is no next-token shift and `target_ids` is all zeros.
-- **What the loss receives.** `inputs.batch["sample_data"]` holds one dict per record of the row, in row order. A record starts at the sum of the earlier records' `num_tokens`, and its `reads` count from there. `target` follows `options`, and is `None` for an unlabelled question, which the loss leaves out of its `count`. `inputs.hidden_states[inputs.batch["loss_mask"]]` is every read token of the row, in order. With `MyStrategy` and prompts of 30, 34 and 31 tokens, the example's dict is:
+- **What the loss receives.** A record is one sample, so the loss is called once per record, on its tokens alone. A record is never cut: one longer than `data.seq_len` is skipped, and a row has room for `data.seq_len * data.micro_batch_size` tokens, so `inputs.truncated` is false. `inputs.sample_data` is the record's dict: per question, in record order, its `options` in the head's order, its `reads` as `[start, end)` spans of the record's tokens (`inputs.hidden_states[start:end]`), and its `target`, which follows `options` and is `None` for an unlabelled question, which the loss leaves out of its `count`. `inputs.hidden_states[inputs.loss_mask]` is every read token of the record, in order. With `MyStrategy` and prompts of 30, 34 and 31 tokens, the example's dict is:
 
   ```python
-  {"id": "r", "num_tokens": 95, "questions": [
+  {"id": "r", "questions": [
       {"id": "outage", "type": "noul", "options": ["false", "true"], "reads": [[29, 30]], "target": [0.0, 1.0]},
       {"id": "team", "type": "choice", "options": ["technical", "billing"], "reads": [[63, 64]], "target": [0.75, 0.25]},
       {"id": "urgency", "type": "score", "options": ["0", "1", "2"], "reads": [[94, 95]], "target": [0.0, 0.0, 1.0]},

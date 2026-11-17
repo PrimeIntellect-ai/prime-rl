@@ -40,6 +40,7 @@ class Batch(TypedDict):
     mm_kwargs: dict[str, Tensor] | None
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
     sample_data: list[Any] | None
+    """Each sample's ``Sample.sample_data``, in the order of ``sample_lens``; None when the dataset attaches none."""
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
@@ -184,11 +185,6 @@ class CatDataset(StatefulIterableDataset):
             yield self._finalize_pack(packed_samples, self.seq_len)
 
     def _finalize_pack(self, packed: dict[str, Any], seq_len: int) -> dict:
-        if packed["sample_data"] is not None and len(packed["input_ids"]) > seq_len:
-            raise ValueError(
-                f"Cannot truncate a sample that carries sample_data: it has {len(packed['input_ids'])} tokens "
-                f"and a row holds {seq_len}"
-            )
         result: dict[str, Any] = {
             k: packed[k][:seq_len] for k in ("input_ids", "position_ids", "loss_mask", "target_ids")
         }

@@ -18,7 +18,7 @@ from prime_rl.utils.logger import get_logger
 
 class RenderedRecord(TypedDict):
     """What a strategy renders for one record: its tokens, and where the model's head reads each question.
-    prime-rl checks it and derives the positions, the loss mask and the batch's ``sample_data`` from it."""
+    prime-rl checks it and derives the positions, the loss mask and the sample's ``sample_data`` from it."""
 
     input_ids: list[int]
     seq_lens: list[int]
@@ -160,7 +160,7 @@ def build_sample(rendered: RenderedRecord, record: SystemOneRecord, targets: lis
         "target_ids": [0] * num_tokens,
         "mm_kwargs": None,
         "mm_token_type_ids": None,
-        "sample_data": {"id": record.id, "num_tokens": num_tokens, "questions": questions},
+        "sample_data": {"id": record.id, "questions": questions},
     }
 
 

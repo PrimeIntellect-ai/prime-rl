@@ -4,6 +4,7 @@ unchanged."""
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import cache, partial
+from typing import Any
 
 import torch
 from jaxtyping import Bool, Float, Int
@@ -30,6 +31,9 @@ class LossInputs:
     loss_mask: Bool[Tensor, "seq"]
     truncated: bool
     """Whether packing cut the sample's tail: only a sample longer than a whole row, which is then alone in it."""
+    sample_data: Any = None
+    """What the dataset attached to the sample (``Sample.sample_data``), such as a System One record's questions and
+    targets; None for chat data."""
     _target_logprobs: Callable[[], Tensor] | None = field(default=None, repr=False)
 
     def target_logprobs(self) -> Float[Tensor, "seq"]:
@@ -71,6 +75,9 @@ def run_loss_fn(loss_fn: Callable[[LossInputs], LossOutputs], model: nn.Module, 
     are summed, and each metric's values concatenated. ``batch["sample_lens"]`` and ``batch["truncated"]`` are read
     on the host."""
     sample_lens, truncated = batch["sample_lens"].tolist(), batch["truncated"].tolist()
+    sample_data = batch.get("sample_data")
+    if sample_data is None:
+        sample_data = [None] * len(sample_lens)
     num_tokens = sum(sample_lens)
     input_ids, position_ids, target_ids, loss_mask = (
         batch[key][0, :num_tokens] for key in ("input_ids", "position_ids", "target_ids", "loss_mask")
@@ -84,7 +91,7 @@ def run_loss_fn(loss_fn: Callable[[LossInputs], LossOutputs], model: nn.Module, 
             return row_logprobs()[span]
 
         outputs, start = [], 0
-        for sample_len, cut in zip(sample_lens, truncated, strict=True):
+        for sample_len, cut, data in zip(sample_lens, truncated, sample_data, strict=True):
             span = slice(start, start + sample_len)
             inputs = LossInputs(
                 model=model,
@@ -94,6 +101,7 @@ def run_loss_fn(loss_fn: Callable[[LossInputs], LossOutputs], model: nn.Module, 
                 target_ids=target_ids[span],
                 loss_mask=loss_mask[span],
                 truncated=cut,
+                sample_data=data,
                 _target_logprobs=partial(sample_logprobs, span),
             )
             outputs.append(loss_fn(inputs))

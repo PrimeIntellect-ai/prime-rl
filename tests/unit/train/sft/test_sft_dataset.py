@@ -561,11 +561,13 @@ def test_cat_dataset_resumes_a_pending_sample_with_its_sample_data():
     assert packed["sample_data"] == ["b", "c"]
 
 
-def test_cat_dataset_refuses_to_truncate_a_sample_with_sample_data():
-    dataset = CatDataset([{**_sft_sample([1, 2, 3, 4, 5]), "sample_data": "a"}], seq_len=4, pad_to_multiple_of=1)
+def test_cat_dataset_keeps_the_sample_data_of_a_truncated_sample():
+    samples = [{**_sft_sample([1, 2, 3, 4, 5]), "sample_data": "a"}, {**_sft_sample([6]), "sample_data": "b"}]
 
-    with pytest.raises(ValueError, match="Cannot truncate a sample that carries sample_data"):
-        next(iter(dataset))
+    rows = [cat_collate([row]) for row in CatDataset(samples, seq_len=4, pad_to_multiple_of=4)]
+
+    assert [row["sample_data"] for row in rows] == [["a"], ["b"]]
+    assert [row["truncated"].tolist() for row in rows] == [[True], [False]]
 
 
 CUSTOM_RENDERER_SOURCE = """

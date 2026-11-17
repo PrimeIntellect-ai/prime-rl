@@ -288,8 +288,9 @@ def train(config: SFTConfig | PretrainConfig):
             key: micro_batch[key].to("cuda", non_blocking=True)
             for key in ("input_ids", "position_ids", "target_ids", "loss_mask", "seq_lens")
         }
-        # Where the samples are, read on the host
+        # Where the samples are, read on the host, and what the dataset attached to each
         batch["sample_lens"], batch["truncated"] = micro_batch["sample_lens"], micro_batch["truncated"]
+        batch["sample_data"] = micro_batch["sample_data"]
         with maybe_activation_offloading(config.model.ac_offloading, model):
             outputs = run_loss_fn(loss_fn, model, batch)
         if isinstance(outputs.count, int):  # filled on the device: a host int copied over would sync

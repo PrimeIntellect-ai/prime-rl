@@ -185,7 +185,6 @@ def test_process_builds_sample_in_strategy_option_order():
         "mm_token_type_ids": None,
         "sample_data": {
             "id": "r",
-            "num_tokens": 10,
             "questions": [
                 {"id": "outage", "type": "noul", "options": ["true", "false"], "reads": [[1, 2]], "target": [1.0, 0.0]},
                 {
