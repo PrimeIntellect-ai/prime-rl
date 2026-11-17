@@ -116,6 +116,38 @@ def test_vlm_forward():
 
 
 @pytest.mark.gpu
+def test_vlm_placeholder_token_outside_image_is_text():
+    """An image token id that mm_token_type_ids marks as text (sampled, or in tool text) stays text."""
+    config = get_vlm_config()
+    model = get_model(config)
+    pixel_values, image_grid_thw, n_img_tokens = get_image_inputs(config)
+    text = torch.randint(0, 200, (1, 10), device="cuda")
+    img = torch.full((1, n_img_tokens), config.image_token_id, device="cuda")
+    stray = torch.full((1, 1), config.image_token_id, device="cuda")
+    input_ids = torch.cat([text[:, :5], img, text[:, 5:8], stray, text[:, 8:]], dim=1)
+    mm_token_type_ids = torch.zeros_like(input_ids)
+    mm_token_type_ids[:, 5 : 5 + n_img_tokens] = 1
+    stray_pos = 5 + n_img_tokens + 3
+
+    def logits(ids):
+        return model(
+            input_ids=ids,
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
+            mm_token_type_ids=mm_token_type_ids,
+            seq_lens=get_seq_lens(ids),
+        )["logits"]
+
+    with torch.no_grad():
+        out = logits(input_ids)
+        replaced = input_ids.clone()
+        replaced[:, stray_pos] = 7
+        reference = logits(replaced)
+    assert torch.isfinite(out).all()
+    torch.testing.assert_close(out[:, :stray_pos], reference[:, :stray_pos])
+
+
+@pytest.mark.gpu
 def test_vlm_backward():
     """Gradients flow through both vision scatter and text model."""
     config = get_vlm_config()
