@@ -29,10 +29,11 @@ experts (near-tie flips cost up to 6%). They then compare logprobs with the trai
 router replay does, so the result does not depend on the GPU. A pure expert-selection bug still fails the agreement
 check.
 
-Tolerances: the runs are deterministic, so each arch has one clean value. Its `max_abs` and `mismatch_kl` are 2.4-3.5x
-that value. Plain transformers allow 0.02 and 1e-5; clean qwen3 measures 0.008 and 3.5e-6. DeepSeek-V4, GLM-5.3,
-Qwen3.8 Flash Next and gpt-oss were measured on Hopper, as their kernels need. The GLM-5 tolerances are provisional:
-they were measured with substitute kernels.
+Tolerances: the runs are deterministic, so each arch has one clean value per GPU type. Its `max_abs` and
+`mismatch_kl` are 2.4-3.5x the largest clean value measured on Hopper and on SM120 Blackwell. Plain transformers allow
+0.02 and 1e-5, with more headroom where their clean values are lower; clean qwen3 measures 0.008 and 3.5e-6.
+DeepSeek-V4, GLM-5, GLM-5.3, Qwen3.8 Flash Next and gpt-oss use kernels that SM120 lacks, so their values come from
+Hopper only.
 
 What it catches, from bugs injected by hand:
 
@@ -305,7 +306,7 @@ CASES = [
             architectures=["Qwen3_5MoeForCausalLM"],
         ),
         max_abs=0.18,
-        mismatch_kl=3e-4,
+        mismatch_kl=3.5e-4,
     ),
     Case(
         "afmoe",
@@ -456,8 +457,8 @@ CASES = [
             pad_token_id=151643,
             architectures=["GlmMoeDsaForCausalLM"],
         ),
-        max_abs=0.1,
-        mismatch_kl=1.5e-4,
+        max_abs=0.03,
+        mismatch_kl=1e-5,
         tiny=True,
     ),
     Case(
