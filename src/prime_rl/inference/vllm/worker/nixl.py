@@ -17,7 +17,11 @@ from modelexpress.client import MxClient
 from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 
-from prime_rl.inference.vllm.worker.weight_transfer import WeightRPCMixin, update_mla_absorbed_weights
+from prime_rl.inference.vllm.worker.weight_transfer import (
+    WeightRPCMixin,
+    check_fp8_source,
+    update_mla_absorbed_weights,
+)
 from prime_rl.transports.weights.nixl.agent import (
     MemDesc,
     NixlAgent,
@@ -590,4 +594,5 @@ class NIXLWeightUpdateWorker(WeightRPCMixin, Worker):
             copy.destination_offset,
         )
         value = apply_chain(plan.staging_tensor, plan.replay_ops)
+        check_fp8_source(copy.destination_name, destination.dtype, value.dtype)
         destination.copy_(value)
