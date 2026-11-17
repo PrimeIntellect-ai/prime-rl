@@ -1,0 +1,47 @@
+# d3-nano: full fine-tuning of Qwen3.5-2B with d3's answer-code readout on Typed Decisions Synth, on one or two GPUs.
+# From the repository root (see README.md):
+#     uv run sft @ examples/decision_models/d3/train.toml
+# Ran with these settings on two H100s (--deployment.num-train-gpus 2) at 01abdb16e, before d3's prompts and readout
+# moved into D3Strategy, with the [data.encoder] table that revision required (the prompts were since checked
+# byte-identical on CPU): validation loss 0.9528 -> 0.6737, about 0.8 s a step and 21.5 GiB per GPU, about 10 minutes.
+# On one GPU a step took about 1.5 s and 36.4 GiB.
+mode = "sft"
+# One pass over the 6,682 training records is 543 steps: a step is 2 packed rows of up to 8,192 tokens, and a row holds
+# 6.2 records (21.5 questions, each its own prompt) on average.
+max_steps = 550
+
+[model]
+name = "outputs/d3/d3-nano"  # the release as downloaded (or the Hub id): prime-rl builds D3ForSequenceClassification
+
+[data]
+type = "system_one"
+name = "outputs/typed-decisions-synth-system-one"  # the records (../data/convert_typed_decisions_synth.py)
+subsets = ["default"]
+splits = ["train"]
+seq_len = 8192  # the longest record has 5,341 tokens
+batch_size = 2
+
+[loss]
+type = "decision"
+brier_weight = 0.0  # soft cross-entropy alone: d3 published no training recipe
+
+[optim]
+lr = 1e-5  # as run; 2e-5 for 30 steps also trained, 1e-4 for 10 steps collapsed d3 to near-uniform answers
+
+[scheduler]
+type = "cosine"
+warmup_steps = 25
+
+[val]
+interval = 50
+eval_on_start = true  # the baseline: the released model, before any update
+
+[val.data]
+name = "outputs/typed-decisions-synth-system-one"
+subsets = ["default"]
+splits = ["validation"]
+seq_len = 8192
+
+[ckpt]
+interval = 275
+keep_last = 2

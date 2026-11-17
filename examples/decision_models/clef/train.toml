@@ -1,0 +1,47 @@
+# Clef-Flash: full fine-tuning of Qwen3.5-9B with Clef's joint schema head on Typed Decisions Synth, on two 80 GB GPUs.
+# From the repository root (see README.md):
+#     uv run sft @ examples/decision_models/clef/train.toml --deployment.num-train-gpus 2
+# Ran with these settings on two H100s at 01abdb16e, before Clef-Flash's prompt and head moved into ClefFlashStrategy,
+# with the [data.encoder] table that revision required (the prompts were since checked byte-identical on CPU):
+# validation loss 0.7203 -> 0.6362, about 4.5 s a step and 77.5 of 79.2 GiB per GPU, about 27 minutes. It does not fit
+# one 80 GB GPU.
+mode = "sft"
+# One pass over the 6,682 training records is 579 packed rows of up to 8,192 tokens, 11.5 records a row on average, and
+# a step is 2 rows.
+max_steps = 290
+
+[model]
+name = "outputs/clef/clef-flash"  # the release as downloaded (or the Hub id): prime-rl builds ClefFlashForJointSchema
+
+[data]
+type = "system_one"
+name = "outputs/typed-decisions-synth-system-one"  # the records (../data/convert_typed_decisions_synth.py)
+subsets = ["default"]
+splits = ["train"]
+seq_len = 8192  # the longest record has 1,609 tokens; the strategy shortens a longer state to fit
+batch_size = 2
+
+[loss]
+type = "decision"
+brier_weight = 0.0  # soft cross-entropy alone: Clef published no training loss
+
+[optim]
+lr = 1e-5  # as run
+
+[scheduler]
+type = "cosine"
+warmup_steps = 20
+
+[val]
+interval = 58  # five times after the baseline, the last on the final step
+eval_on_start = true  # the baseline: the released model, before any update
+
+[val.data]
+name = "outputs/typed-decisions-synth-system-one"
+subsets = ["default"]
+splits = ["validation"]
+seq_len = 8192
+
+[ckpt]
+interval = 145
+keep_last = 1
