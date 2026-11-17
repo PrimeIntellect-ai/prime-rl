@@ -261,7 +261,7 @@ class MooncakeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
     """Mooncake distributed store offloading (SLURM only). One ``mooncake_master`` + metadata server runs on the head inference node; every node runs a ``mooncake_client`` contributing its segment to the single shared pool, so prefixes cached on any node are reusable by all. The cpu tier sizes each node's DRAM segment; the optional disk tier adds an SSD tier."""
 
     device_name: str = ""
-    """RDMA device name(s) for the store (empty = auto-detect)."""
+    """Comma-separated RDMA device names for the store. Empty auto-detects every RDMA device, so name the GPU fabric's NICs when nodes also have NICs on another fabric: transfers routed to an unreachable NIC fail."""
 
     lease_ttl_s: float = Field(30.0, gt=0)
     """How long the master protects a newly written or read KV object from eviction (``-default_kv_lease_ttl``).

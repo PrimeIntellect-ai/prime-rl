@@ -17,6 +17,9 @@
     mkdir -p "$MC_DIR"
     export PYTHONHASHSEED=0
     export MOONCAKE_CONFIG_PATH="$MC_DIR/config.json"
+    # Mooncake registers GPU KV caches with ibv_reg_mr unless told otherwise, which needs the
+    # nvidia_peermem module; without it every put fails (AddressNotRegistered), so use DMA-BUF.
+    [ -d /sys/module/nvidia_peermem ] || export WITH_NVIDIA_PEERMEM=0
     # The head inference node (first in the nodelist) hosts the one master + metadata server.
     MC_HEAD=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -1)
     MC_MASTER="$MC_HEAD:50051"
