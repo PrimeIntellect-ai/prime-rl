@@ -7,6 +7,10 @@ description: Monitor a local or SLURM prime-rl training run — find the output 
 
 For a managed Model Factory run ID or dashboard link, use the [model-factory skill](../../model-factory/SKILL.md) for `prime train` status, logs, metrics, and stop commands.
 
+For metric comparisons, plots, or post-restart performance, read
+[analyzing runs](references/analyze-runs.md). It covers component-specific steps,
+checkpoint lineage, pipeline warmup, and aggregation across attempts.
+
 ## Runbook
 
 ### On launch
