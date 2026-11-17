@@ -174,8 +174,11 @@ def load_weights_checkpoint_layerwise(
     with torch.device(device), set_current_vllm_config(vllm_config):
         initialize_layerwise_reload(model)
         _guard_fp8_params(model)
-        model.load_weights(state_iter)  # type: ignore
-        finalize_layerwise_reload(model, model_config)
+        try:
+            model.load_weights(state_iter)  # type: ignore
+        finally:
+            # Also on a rejected load: put the stashed kernel tensors back instead of serving params left on meta
+            finalize_layerwise_reload(model, model_config)
         if preserve_tensor_attributes:
             for module in model.modules():
                 rebuild = getattr(module, "_build_fused_kv_buffers", None)
