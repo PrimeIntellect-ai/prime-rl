@@ -17,7 +17,11 @@ from modelexpress.client import MxClient
 from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 
-from prime_rl.inference.vllm.worker.weight_transfer import WeightRPCMixin, update_mla_absorbed_weights
+from prime_rl.inference.vllm.worker.weight_transfer import (
+    WeightRPCMixin,
+    restore_layerwise_state,
+    update_mla_absorbed_weights,
+)
 from prime_rl.transports.weights.nixl.agent import (
     MemDesc,
     NixlAgent,
@@ -197,7 +201,7 @@ class NIXLWeightUpdateWorker(WeightRPCMixin, Worker):
                     for tensor, loader in reversed(original_loaders):
                         tensor.weight_loader = loader
                 finally:
-                    self._restore_layerwise_state(model)
+                    restore_layerwise_state(model)
 
         regular = [copy for copies in regular_by_layer.values() for copy in copies]
         return regular + persistent
@@ -217,19 +221,6 @@ class NIXLWeightUpdateWorker(WeightRPCMixin, Worker):
                 recorder.active_destination = None
 
         return recording_loader
-
-    @staticmethod
-    def _restore_layerwise_state(model: nn.Module) -> None:
-        from vllm.model_executor.model_loader.reload.layerwise import LAYERWISE_INFO, _place_kernel_tensors
-
-        for layer in model.modules():
-            info = LAYERWISE_INFO.get(layer)
-            if info is not None and info.can_load():
-                if info.kernel_tensors is not None:
-                    _place_kernel_tensors(layer, info)
-                info.reset()
-        if hasattr(model, "_original_do_torchao_reload"):
-            model._do_torchao_reload = model._original_do_torchao_reload
 
     def build_transfer_plan(
         self,

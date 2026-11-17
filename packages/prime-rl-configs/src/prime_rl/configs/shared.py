@@ -42,7 +42,14 @@ class BaseWeightBroadcastConfig(BaseConfig):
     timeout: int = 3600
     """Timeout in seconds for the broadcast handshake and transfer, including the orchestrator's wait
     for the trainer's startup broadcast. The trainer fails the run when no consumer acknowledges an
-    offered version in time. Raise it for large models on slow shared filesystems."""
+    offered version in time. Raise it for large models on slow shared filesystems. The inference servers'
+    own load of an update is bounded by ``update_weights_timeout``."""
+
+    update_weights_timeout: float = Field(720.0, gt=0)
+    """Timeout in seconds for one inference server to apply a weight update. It has to exceed the measured
+    transfer time: an update that times out fails, and a failed NCCL update is not retried, so the inference
+    servers have to be restarted. Over NCCL every inference GPU receives the full update, so the transfer
+    takes the update's size divided by the sustained rate per GPU (1.19 TB at 1.65 GB/s is 720 s)."""
 
 
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):

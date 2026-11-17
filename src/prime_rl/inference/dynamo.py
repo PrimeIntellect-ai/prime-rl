@@ -13,7 +13,6 @@ from pydantic import BaseModel, Field
 from prime_rl.configs.shared import ClientConfig, PolicyClientConfig
 from prime_rl.orchestrator.clients import (
     ADMIN_TIMEOUT_S,
-    UPDATE_WEIGHTS_TIMEOUT_S,
     AdminPlane,
     _admin_post,
     check_health,
@@ -367,7 +366,7 @@ class DynamoAdminPlane(AdminPlane):
                 await self._collective_rpc(
                     self.clients[0],
                     method="update_weights_from_path",
-                    timeout=UPDATE_WEIGHTS_TIMEOUT_S,
+                    timeout=self.update_weights_timeout,
                     args=[weight_dir.as_posix()],
                 )
             except BaseException as failure:
