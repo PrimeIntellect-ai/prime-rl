@@ -1,9 +1,14 @@
 import json
+import math
+from dataclasses import replace
 
 import pytest
+import torch
 from datasets import Dataset
+from torch import nn
 
-from prime_rl.configs.sft import SystemOneColumnsConfig
+from prime_rl.configs.sft import SFTDecisionLossConfig, SystemOneColumnsConfig
+from prime_rl.trainer.sft.loss import LossInputs, setup_sft_loss_fn
 from prime_rl.trainer.sft.system_one.data import (
     RenderedRequest,
     SystemOneDataset,
@@ -11,6 +16,7 @@ from prime_rl.trainer.sft.system_one.data import (
     check_rendered_request,
     system_one_strategy_cls,
 )
+from prime_rl.trainer.sft.system_one.loss import decision_loss
 from prime_rl.trainer.sft.system_one.record import build_targets, parse_record
 
 COLUMNS = SystemOneColumnsConfig()
@@ -153,7 +159,8 @@ def test_rejects_columns_that_are_not_json_text(column, value):
 
 
 class StubStrategy(SystemOneStrategy):
-    """Ten tokens in two segments, read at one span per question or two, with noul and choice options reordered."""
+    """Ten tokens in two segments, read at one span per question or two, with noul and choice options reordered. Its
+    logits are the model's own for the record, and it keeps its inputs on the model."""
 
     def __init__(self, tokenizer, config, read_spans=None):
         super().__init__(tokenizer, config)
@@ -166,6 +173,11 @@ class StubStrategy(SystemOneStrategy):
             read_spans=self.read_spans,
             options=[["true", "false"], ["billing", "technical"], ["0", "1", "2"]],
         )
+
+    @classmethod
+    def option_logits(cls, inputs):
+        inputs.model.seen.append(inputs)
+        return inputs.model.record_logits[inputs.sample_data["id"]]
 
 
 def _dataset(read_spans) -> SystemOneDataset:
@@ -227,7 +239,7 @@ def test_process_skips_record_without_labels():
     assert _dataset([[(1, 2)], [(2, 4)], [(6, 7)]])._process(row()) is None
 
 
-class SkippingStrategy(SystemOneStrategy):
+class SkippingStrategy(StubStrategy):
     def render_request(self, request, max_tokens):
         return None
 
@@ -239,6 +251,14 @@ def test_raises_when_every_record_is_skipped():
 
 
 class StubDecisionModel:
+    """A model whose logits are those of the given distributions, the first three for record r and the rest for s, in
+    float64 so that the loss has to cast them."""
+
+    def __init__(self, probs):
+        self.logits = [torch.tensor(p, dtype=torch.float64).log().requires_grad_() for p in probs]
+        self.record_logits = {"r": self.logits[:3], "s": self.logits[3:]}
+        self.seen = []
+
     @classmethod
     def system_one_strategy(cls):
         return StubStrategy
@@ -248,3 +268,93 @@ def test_system_one_strategy_cls_requires_a_declared_strategy():
     assert system_one_strategy_cls(StubDecisionModel) is StubStrategy
     with pytest.raises(ValueError, match="object does not"):
         system_one_strategy_cls(object)
+
+
+def _decision_inputs(model) -> list[LossInputs]:
+    """Two records, each a sample. In the second, ``outage`` has no label and the target of ``team`` is tied."""
+    second = {**row(label={"urgency": 0}, soft_label={"team": {"billing": 0.5, "technical": 0.5}}), "id": "s"}
+    dataset = _dataset([[(1, 2)], [(2, 4)], [(6, 7), (8, 10)]])
+    samples = [dataset._process(example) for example in (ROW, second)]
+    return [
+        LossInputs(
+            model=model,
+            hidden_states=torch.zeros(10, 4),
+            **{key: torch.tensor(sample[key]) for key in ("input_ids", "position_ids", "target_ids", "loss_mask")},
+            truncated=False,
+            sample_data=sample["sample_data"],
+        )
+        for sample in samples
+    ]
+
+
+def test_decision_loss_sums_over_labelled_questions():
+    # Targets: [1, 0], [0.25, 0.75], [0, 0, 1] in record r; none, [0.5, 0.5], [1, 0, 0] in record s.
+    model = StubDecisionModel([[0.8, 0.2], [0.75, 0.25], [0.25, 0.25, 0.5], [0.9, 0.1], [0.2, 0.8], [0.5, 0.25, 0.25]])
+    loss_fn = setup_sft_loss_fn(SFTDecisionLossConfig(brier_weight=0.1))
+    r, s = (loss_fn(inputs) for inputs in _decision_inputs(model))
+
+    ce = [
+        -math.log(0.8),
+        -(0.25 * math.log(0.75) + 0.75 * math.log(0.25)),
+        -math.log(0.5),
+        -(0.5 * math.log(0.2) + 0.5 * math.log(0.8)),
+        -math.log(0.5),
+    ]
+    brier = [0.08, 0.5, 0.375, 0.18, 0.375]
+    assert (r.count, s.count) == (3, 2) and isinstance(r.count, int)
+    torch.testing.assert_close(r.loss + s.loss, torch.tensor(sum(ce) + 0.1 * sum(brier)))
+    # One value per labelled question. Accuracy: team is wrong in r, and right in s at either option of its tied target.
+    expected = {"ce": ce, "brier": brier, "accuracy": [1.0, 0.0, 1.0, 1.0, 1.0]}
+    assert r.metrics.keys() == s.metrics.keys() == expected.keys()
+    for name, values in expected.items():
+        torch.testing.assert_close(torch.cat([r.metrics[name], s.metrics[name]]), torch.tensor(values))
+
+    # option_logits gets each record without the targets.
+    assert [inputs.sample_data["id"] for inputs in model.seen] == ["r", "s"]
+    questions = [question for inputs in model.seen for question in inputs.sample_data["questions"]]
+    assert questions[1] == {"id": "team", "type": "choice", "options": ["billing", "technical"], "reads": [[2, 4]]}
+    assert all("target" not in question for question in questions)
+
+
+def test_decision_loss_rejects_broken_readouts():
+    probs = [[0.8, 0.2], [0.75, 0.25], [0.25, 0.25, 0.5], [0.9, 0.1], [0.2, 0.8], [0.5, 0.25, 0.25]]
+    _, s = _decision_inputs(StubDecisionModel(probs[:-1]))
+    with pytest.raises(
+        ValueError, match=r"StubStrategy.option_logits returned 2 logit vectors for the 3 questions of record 's'"
+    ):
+        decision_loss(s)
+    _, s = _decision_inputs(StubDecisionModel([*probs[:4], [0.2, 0.3, 0.5], probs[5]]))
+    with pytest.raises(ValueError, match=r"record 's', question 'team': .* shape \(3,\) for 2 options"):
+        decision_loss(s)
+    r, _ = _decision_inputs(StubDecisionModel(probs))
+    with pytest.raises(ValueError, match="record 'r' was cut by packing"):
+        decision_loss(replace(r, truncated=True))
+    with pytest.raises(TypeError, match=r"system_one_strategy.*Linear.*\[model.implementation\]"):
+        decision_loss(_decision_inputs(nn.Linear(4, 2))[0])
+
+
+def test_decision_loss_without_labelled_questions_backpropagates_zero():
+    # A probability of 0 is a logit of -inf.
+    model = StubDecisionModel([[1.0, 0.0], [0.75, 0.25], [0.0, 0.0, 1.0], [0.9, 0.1], [0.2, 0.8], [0.5, 0.25, 0.25]])
+    outputs = []
+    for inputs in _decision_inputs(model):
+        for question in inputs.sample_data["questions"]:
+            question["target"] = None
+        outputs.append(decision_loss(inputs))
+    sum(output.loss for output in outputs).backward()
+
+    assert all(output.count == 0 and output.loss.item() == 0.0 for output in outputs)
+    assert all(values.numel() == 0 for output in outputs for values in output.metrics.values())
+    assert all(torch.equal(logits.grad, torch.zeros_like(logits)) for logits in model.logits)
+
+
+def test_decision_loss_is_finite_at_minus_inf_on_options_with_target_0():
+    # Probability 0 on false in r's outage and on 0 and 1 in r's urgency, whose targets are 0 there.
+    model = StubDecisionModel([[1.0, 0.0], [0.75, 0.25], [0.0, 0.0, 1.0], [0.9, 0.1], [0.2, 0.8], [0.5, 0.25, 0.25]])
+    loss = sum(decision_loss(inputs, brier_weight=0.1).loss for inputs in _decision_inputs(model))
+    loss.backward()
+
+    ce = -(0.25 * math.log(0.75) + 0.75 * math.log(0.25)) - (0.5 * math.log(0.2) + 0.5 * math.log(0.8)) - math.log(0.5)
+    brier = 0.5 + 0.18 + 0.375
+    torch.testing.assert_close(loss, torch.tensor(ce + 0.1 * brier))
+    assert all(torch.isfinite(logits.grad).all() for logits in model.logits)
