@@ -8,8 +8,8 @@ from transformers import AutoTokenizer
 from transformers.utils import cached_file
 
 from prime_rl.configs.sft import SystemOneColumnsConfig
-from prime_rl.trainer.sft.system_one.data import check_rendered_record
-from prime_rl.trainer.sft.system_one.record import Question, SystemOneRecord, parse_record
+from prime_rl.trainer.sft.system_one.data import check_rendered_request
+from prime_rl.trainer.sft.system_one.record import Question, SystemOneRequest, parse_record
 from prime_rl.trainer.sft.system_one.strategies import clef as clef_module
 from prime_rl.trainer.sft.system_one.strategies.clef import ClefFlashStrategy
 from prime_rl.trainer.sft.system_one.strategies.d3 import D3Strategy
@@ -82,7 +82,7 @@ def clef(clef_tokenizer):
     return ClefFlashStrategy(clef_tokenizer, SimpleNamespace(name_or_path=CLEF_FLASH))
 
 
-def record(questions=QUESTIONS, state="Checkout fails."):
+def make_request(questions=QUESTIONS, state="Checkout fails."):
     row = {"id": "r", "state": json.dumps(state), "questions": json.dumps(questions)}
     return parse_record(row, SystemOneColumnsConfig())[0]
 
@@ -96,12 +96,12 @@ def segments(tokenizer, rendered):
 
 
 def test_d3_prompts(tokenizer, d3):
-    r = record()
-    rendered = d3.render_record(r, 8192)
-    check_rendered_record(rendered, r)
+    r = make_request()
+    rendered = d3.render_request(r, 8192)
+    check_rendered_request(rendered, r)
     ends = [sum(rendered["seq_lens"][: n + 1]) for n in range(3)]
     assert rendered["read_spans"] == [[(end - 1, end)] for end in ends]
-    assert "options" not in rendered  # the codes' order is the record's: noul false, true
+    assert "options" not in rendered  # the codes' order is the request's: noul false, true
     assert rendered["input_ids"][: ends[0]] == D3_OUTAGE_IDS
     state = "State:\nCheckout fails.\n\n"
     assert segments(tokenizer, rendered) == [
@@ -125,7 +125,7 @@ def test_d3_refuses_another_chat_template_or_format(tokenizer):
     [(None, "(empty)"), ("", "(empty)"), ({"b": [1, None], "a": "ü"}, '{"b": [1, null], "a": "ü"}'), (3.5, "3.5")],
 )
 def test_d3_renders_state(tokenizer, d3, state, text):
-    (prompt,) = segments(tokenizer, d3.render_record(record({"q": QUESTIONS["outage"]}, state), 8192))
+    (prompt,) = segments(tokenizer, d3.render_request(make_request({"q": QUESTIONS["outage"]}, state), 8192))
     assert prompt.startswith(f"{D3_SYSTEM}State:\n{text}\n\nQuestion:\n")
 
 
@@ -135,16 +135,16 @@ def test_d3_defaults(tokenizer, d3):
         Question("blank", "noul", "Is it?", {"true": "", "false": None}),
         Question("pick", "choice", "Pick", {"a": "", "b": None}),
     )
-    texts = segments(tokenizer, d3.render_record(SystemOneRecord("r", "x", questions), 8192))
+    texts = segments(tokenizer, d3.render_request(SystemOneRequest("r", "x", questions), 8192))
     assert "Question:\nChoose the best matching option.\n\nOptions:\nA: No / false\nB: Yes / true\n" in texts[0]
     assert "Options:\nA: No / false\nB: Yes / true\n" in texts[1]
     assert "Options:\nA: a: \nB: b\n" in texts[2]
 
 
 def test_clef_prompt(clef_tokenizer, clef):
-    r = record()
-    rendered = clef.render_record(r, 8192)
-    check_rendered_record(rendered, r)
+    r = make_request()
+    rendered = clef.render_request(r, 8192)
+    check_rendered_request(rendered, r)
     assert rendered["seq_lens"] == [len(rendered["input_ids"])]
     assert rendered["options"] == [["true", "false"], ["billing", "technical"], ["0", "1", "2"]]
     noul = (
@@ -177,20 +177,20 @@ def test_clef_prompt(clef_tokenizer, clef):
 
 
 def test_clef_token_ids(clef):
-    rendered = clef.render_record(record({"outage": QUESTIONS["outage"]}, {"b": 1, "a": "ü"}), 8192)
+    rendered = clef.render_request(make_request({"outage": QUESTIONS["outage"]}, {"b": 1, "a": "ü"}), 8192)
     assert rendered["input_ids"] == CLEF_NOUL_IDS
     assert rendered["read_spans"] == [[(70, 75), (86, 99), (105, 123)]]
 
 
 @pytest.mark.parametrize("state, text", [(None, "null"), ("", ""), ([1, {"b": 2, "a": None}], '[1,{"a":null,"b":2}]')])
 def test_clef_renders_state(clef_tokenizer, clef, state, text):
-    rendered = clef.render_record(record({"q": QUESTIONS["outage"]}, state), 8192)
+    rendered = clef.render_request(make_request({"q": QUESTIONS["outage"]}, state), 8192)
     assert clef_tokenizer.decode(rendered["input_ids"]).startswith(f"{CLEF_SYSTEM}{text}\n\nSCHEMA FIELDS:\n")
 
 
 def test_clef_defaults(clef_tokenizer, clef):
     questions = (Question("plain", "noul", "", {"true": None}), Question("blank", "noul", "?", {"true": ""}))
-    rendered = clef.render_record(SystemOneRecord("r", "x", questions), 8192)
+    rendered = clef.render_request(SystemOneRequest("r", "x", questions), 8192)
     reads = [
         [clef_tokenizer.decode(rendered["input_ids"][start:end]) for start, end in spans]
         for spans in rendered["read_spans"]
@@ -206,14 +206,14 @@ def test_clef_cuts_the_state(clef_tokenizer, clef, monkeypatch):
     warnings = []
     monkeypatch.setattr(clef_module, "get_logger", lambda: SimpleNamespace(warning=warnings.append))
     questions = {"q": QUESTIONS["outage"]}
-    fixed = len(clef.render_record(record(questions, ""), 8192)["input_ids"])
+    fixed = len(clef.render_request(make_request(questions, ""), 8192)["input_ids"])
     assert warnings == []
-    rendered = clef.render_record(record(questions, "word " * 1000), fixed + 10)
+    rendered = clef.render_request(make_request(questions, "word " * 1000), fixed + 10)
     assert len(rendered["input_ids"]) == fixed + 10
     (warning,) = warnings
     assert re.fullmatch(rf"Record 'r': cutting the last \d+ tokens of its state, .* in {fixed + 10} tokens", warning)
     assert clef_tokenizer.decode(rendered["input_ids"]).endswith(CLEF_END)
-    assert clef.render_record(record(questions, ""), fixed - 1) is None
+    assert clef.render_request(make_request(questions, ""), fixed - 1) is None
 
 
 @pytest.mark.parametrize(
@@ -231,7 +231,7 @@ def test_clef_cuts_the_state(clef_tokenizer, clef, monkeypatch):
 @pytest.mark.parametrize("name", ["d3", "clef"])
 def test_skips_what_it_cannot_render(request, name, questions, skipped_by):
     strategy = request.getfixturevalue(name)
-    assert (strategy.render_record(record(questions), 8192) is None) == (name in skipped_by)
+    assert (strategy.render_request(make_request(questions), 8192) is None) == (name in skipped_by)
 
 
 VLLM_CASES = [
@@ -281,7 +281,7 @@ def test_d3_matches_vllm(tokenizer, d3, state, questions, seq_len):
     asked = parse_questions(request, vllm_d3.limits())
     rendered = vllm_d3.render_state(request.state)
     expected = [vllm_d3._tokens(vllm_d3._prompt(rendered, q, [])) for q in asked]
-    rendered = d3.render_record(record(questions, state), seq_len)
+    rendered = d3.render_request(make_request(questions, state), seq_len)
     starts = [sum(rendered["seq_lens"][:n]) for n in range(len(asked))]
     assert [rendered["input_ids"][s : s + n] for s, n in zip(starts, rendered["seq_lens"])] == expected
     assert all(
@@ -296,7 +296,7 @@ def test_clef_matches_vllm(clef_tokenizer, clef, state, questions, seq_len):
     vllm_clef = strategies.ClefFlashStrategy(vllm_context(clef_tokenizer, seq_len))
     asked = parse_questions(request, vllm_clef.limits())
     prompt, schema, orders = vllm_clef.encode(asked, vllm_clef.render_state(request.state))
-    rendered = clef.render_record(record(questions, state), seq_len)
+    rendered = clef.render_request(make_request(questions, state), seq_len)
     assert rendered["input_ids"] == prompt
     spans = iter((len(prompt) + s, len(prompt) + e) for s, e in schema["option_spans"])
     question_spans = [(len(prompt) + s, len(prompt) + e) for s, e in schema["question_spans"]]

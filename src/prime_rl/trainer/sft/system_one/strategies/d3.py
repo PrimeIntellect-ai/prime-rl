@@ -13,8 +13,8 @@ from transformers import AutoTokenizer, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.sft.loss import LossInputs
-from prime_rl.trainer.sft.system_one.data import RenderedRecord, SystemOneStrategy
-from prime_rl.trainer.sft.system_one.record import Question, SystemOneRecord
+from prime_rl.trainer.sft.system_one.data import RenderedRequest, SystemOneStrategy
+from prime_rl.trainer.sft.system_one.record import Question, SystemOneRequest
 from prime_rl.trainer.sft.system_one.strategies import find_refusal
 from prime_rl.utils.logger import get_logger
 
@@ -108,28 +108,28 @@ class D3Strategy(SystemOneStrategy):
     def _tokens(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False)
 
-    def refusal(self, record: SystemOneRecord) -> str | None:
-        """Why the record cannot be rendered as vLLM's D3Strategy reads it, or None."""
-        if (reason := find_refusal(record)) is not None:
+    def refusal(self, request: SystemOneRequest) -> str | None:
+        """Why the request cannot be rendered as vLLM's D3Strategy reads it, or None."""
+        if (reason := find_refusal(request)) is not None:
             return reason
-        for question in record.questions:
+        for question in request.questions:
             where = f"question {question.id!r}"
             if len(question.options) > len(self.codes):
                 return f"{where}: {len(question.options)} options, more than the model's {len(self.codes)} codes"
         return None
 
-    def render_record(self, record: SystemOneRecord, max_tokens: int) -> RenderedRecord | None:
-        if (reason := self.refusal(record)) is not None:
-            get_logger().warning(f"Skipping record {record.id!r}: {reason}")
+    def render_request(self, request: SystemOneRequest, max_tokens: int) -> RenderedRequest | None:
+        if (reason := self.refusal(request)) is not None:
+            get_logger().warning(f"Skipping record {request.id!r}: {reason}")
             return None
-        state = self.render_state(record.state)
+        state = self.render_state(request.state)
         input_ids, seq_lens, read_spans = [], [], []
-        for q in record.questions:
+        for q in request.questions:
             ids = self._tokens(self._prompt(state, q))
             input_ids += ids
             seq_lens.append(len(ids))
             read_spans.append([(len(input_ids) - 1, len(input_ids))])
-        return RenderedRecord(input_ids=input_ids, seq_lens=seq_lens, read_spans=read_spans)
+        return RenderedRequest(input_ids=input_ids, seq_lens=seq_lens, read_spans=read_spans)
 
     @classmethod
     def option_logits(cls, inputs: LossInputs) -> list[Tensor]:

@@ -14,14 +14,14 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.models.qwen3_5.clef_joint_schema import QUESTION_TYPES, schema_indices, segment_mean
 from prime_rl.trainer.sft.loss import LossInputs
-from prime_rl.trainer.sft.system_one.data import RenderedRecord, SystemOneStrategy
-from prime_rl.trainer.sft.system_one.record import Question, SystemOneRecord
+from prime_rl.trainer.sft.system_one.data import RenderedRequest, SystemOneStrategy
+from prime_rl.trainer.sft.system_one.record import Question, SystemOneRequest
 from prime_rl.trainer.sft.system_one.strategies import find_refusal
 from prime_rl.utils.logger import get_logger
 
 
 class ClefFlashStrategy(SystemOneStrategy):
-    """vLLM's ClefFlashStrategy without its softmax. The whole record is one prompt and one attention segment: the
+    """vLLM's ClefFlashStrategy without its softmax. The whole request is one prompt and one attention segment: the
     state, then every question's schema. A question's read spans are its instruction, then one span per option in the
     head's order. A state that does not fit in ``min(16384, max_tokens)`` tokens is cut, as vLLM cuts it at
     ``min(16384, max_model_len)``."""
@@ -105,30 +105,30 @@ class ClefFlashStrategy(SystemOneStrategy):
         offset = len(self.prefix) + len(state_ids)
         return prompt, [[(s + offset, e + offset) for s, e in spans] for spans in read_spans], orders, cut
 
-    def refusal(self, record: SystemOneRecord) -> str | None:
-        """Why the record cannot be rendered as vLLM's ClefFlashStrategy reads it, or None."""
-        if (reason := find_refusal(record)) is not None:
+    def refusal(self, request: SystemOneRequest) -> str | None:
+        """Why the request cannot be rendered as vLLM's ClefFlashStrategy reads it, or None."""
+        if (reason := find_refusal(request)) is not None:
             return reason
-        for question in record.questions:
+        for question in request.questions:
             if len(question.options) > self.MAX_OPTIONS:
                 return f"question {question.id!r}: {len(question.options)} options, more than {self.MAX_OPTIONS}"
         return None
 
-    def render_record(self, record: SystemOneRecord, max_tokens: int) -> RenderedRecord | None:
-        if (reason := self.refusal(record)) is not None:
-            get_logger().warning(f"Skipping record {record.id!r}: {reason}")
+    def render_request(self, request: SystemOneRequest, max_tokens: int) -> RenderedRequest | None:
+        if (reason := self.refusal(request)) is not None:
+            get_logger().warning(f"Skipping record {request.id!r}: {reason}")
             return None
         max_length = min(self.MAX_LENGTH, max_tokens)
-        if (encoded := self._encode(record.questions, self._render(record.state), max_length)) is None:
-            get_logger().warning(f"Skipping record {record.id!r}: its questions take more than {max_length} tokens")
+        if (encoded := self._encode(request.questions, self._render(request.state), max_length)) is None:
+            get_logger().warning(f"Skipping record {request.id!r}: its questions take more than {max_length} tokens")
             return None
         prompt, read_spans, options, cut = encoded
         if cut:
             get_logger().warning(
-                f"Record {record.id!r}: cutting the last {cut} tokens of its state, so that its prompt fits in "
+                f"Record {request.id!r}: cutting the last {cut} tokens of its state, so that its prompt fits in "
                 f"{max_length} tokens"
             )
-        return RenderedRecord(input_ids=prompt, seq_lens=[len(prompt)], read_spans=read_spans, options=options)
+        return RenderedRequest(input_ids=prompt, seq_lens=[len(prompt)], read_spans=read_spans, options=options)
 
     @classmethod
     def option_logits(cls, inputs: LossInputs) -> list[Tensor]:
