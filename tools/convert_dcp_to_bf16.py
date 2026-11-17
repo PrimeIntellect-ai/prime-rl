@@ -133,14 +133,30 @@ def open_checkpoint(ckpt_dir: Path) -> Checkpoint:
         model_config.attn = "flash_attention_2"
     logger.info(f"Building {model_config.name} on the meta device for its conversion rules")
     model = get_model(model_config, device=torch.device("meta"), dtype=torch.bfloat16)
+    check_model_holds_checkpoint(model, model_config, metadata)
     return Checkpoint(dcp_dir, metadata, model, model_config, tokenizer_config)
 
 
+def check_model_holds_checkpoint(model: nn.Module, model_config: ModelConfig, metadata: Metadata) -> None:
+    """Raise unless the model has every tensor of the checkpoint: the export writes the model's, so it would leave the
+    others out."""
+    stored = [key.removeprefix("app.model.") for key in metadata.state_dict_metadata if key.startswith("app.model.")]
+    unknown = sorted(set(stored) - model.state_dict().keys())
+    if unknown:
+        raise ValueError(
+            f"{type(model).__name__}, built from {model_config.name}, lacks {len(unknown)} tensors of the checkpoint "
+            f"({', '.join(unknown[:3])}), which the export would leave out. The checkpoint holds another class: for a d3 "
+            "or Clef-Flash release, its decision_config.json or joint_head_config.json must still be beside its config.json "
+            "(a checkpoint step directory as model.name holds a copy of it)."
+        )
+
+
 def get_layers(model: nn.Module) -> list[list[str]]:
-    """Group ordinary weights by decoder layer, excluding tied heads and chunked tables."""
+    """Group ordinary weights by decoder layer, excluding tied heads, chunked tables and the side files' weights."""
     state = model.state_dict()
     chunked = get_chunked_conversion_ops(model, state)
-    keys = [key for key in state if key not in chunked]
+    side_prefixes = tuple(model.export_weight_files)
+    keys = [key for key in state if key not in chunked and not key.startswith(side_prefixes)]
     # The trainer ties the head on the top-level config flag, so the export must drop it on the same one.
     if getattr(model.config, "tie_word_embeddings", False):
         tied_keys = set(getattr(model, "_tied_weights_keys", None) or ()) | {"lm_head.weight"}
@@ -249,6 +265,12 @@ def write_weights(
         for table_shards in pool.map(write_table, chunked, chunked.values(), table_indices):
             shards.extend(table_shards)
 
+    # Outside the index, which keeps them out of vLLM's primary weights.
+    for prefix, name in checkpoint.model.export_weight_files.items():
+        tensors = load_layer(checkpoint, [key for key in skeleton if key.startswith(prefix)])
+        side_file = {key.removeprefix(prefix): tensor.contiguous() for key, tensor in tensors.items()}
+        save_file(side_file, output_dir / name, metadata={"format": "pt"})
+
     weight_map = {key: name for name, sizes in shards for key in sizes}
     total_size = sum(sum(sizes.values()) for _, sizes in shards)
     index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
@@ -268,8 +290,12 @@ def save_model_assets(
     model: nn.Module, model_config: ModelConfig, tokenizer_config: TokenizerConfig, output_dir: Path
 ) -> None:
     """Save model config, generation config, processor and tokenizer next to the weights."""
-    _export_config(model.config)
-    model.config.save_pretrained(output_dir)
+    config = deepcopy(model.config)
+    config_files = model.export_config_files(config)
+    _export_config(config)
+    config.save_pretrained(output_dir)
+    for name, content in config_files.items():
+        (output_dir / name).write_text(json.dumps(content, indent=2) + "\n")
     if getattr(model, "generation_config", None):
         generation_config = deepcopy(model.generation_config)
         generation_config.use_cache = True

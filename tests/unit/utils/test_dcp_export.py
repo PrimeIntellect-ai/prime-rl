@@ -2,6 +2,7 @@ import importlib
 import json
 import os
 import pickle
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -13,14 +14,25 @@ from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from torch.distributed.checkpoint import FileSystemReader
 from torch.distributed.checkpoint.metadata import ChunkStorageMetadata, MetadataIndex, TensorStorageMetadata
-from transformers import PretrainedConfig, PreTrainedTokenizerFast
+from transformers import AutoConfig, AutoTokenizer, PretrainedConfig, PreTrainedTokenizerFast
 
 from prime_rl.configs.trainer import ModelConfig, TokenizerConfig
-from prime_rl.trainer.model import get_model
+from prime_rl.trainer.ckpt import setup_model_files
+from prime_rl.trainer.model import get_decision_model_cls, get_model
 from prime_rl.trainer.models.layers.ngram import LAYOUT_BUFFERS
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig
+from prime_rl.trainer.models.qwen3_5.modeling_clef_flash import SCALARS
 from prime_rl.trainer.models.qwen3_8_flash_next import Qwen3_8FlashNextForCausalLM, Qwen3_8FlashNextTextConfig
 from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalLM
+from prime_rl.utils.weights import load_state_dict_keys
+from tests.unit.train.models.qwen3_5.decision_releases import (
+    DECISION_CONFIG,
+    JOINT_HEAD_CONFIG,
+    WRITE_RELEASE,
+    clef_head_weights,
+    vllm_route,
+)
+from tests.unit.train.models.qwen3_5.decision_releases import model_config as release_model_config
 
 
 @pytest.fixture
@@ -391,3 +403,87 @@ def test_convert_exports_a_run_checkpoint_end_to_end(tmp_path, exporter, monkeyp
     assert all(quantized[f"{name}.weight"].dtype == torch.float8_e4m3fn for name in scaled)
     assert all(quantized[f"{name}.weight"].dtype == torch.bfloat16 for name in quantization["modules_to_not_convert"])
     assert quantized.keys() - {f"{name}.weight_scale_inv" for name in scaled} == tensors.keys()
+
+
+@pytest.mark.parametrize("kind", ["d3", "d3-untied", "clef"])
+def test_export_is_the_release_layout(tmp_path, exporter, monkeypatch, kind):
+    monkeypatch.delenv("PRL_ATTEMPT_CONFIG_DIR", raising=False)
+    release_dir = tmp_path / "release"
+    release = WRITE_RELEASE[kind](release_dir)
+    step_dir = tmp_path / "run" / "checkpoints" / "step_1"
+    config_dir = tmp_path / "run" / "configs" / "latest" / "resolved"
+    config_dir.mkdir(parents=True)
+    (config_dir / "sft.json").write_text(json.dumps({"model": {"name": str(release_dir)}, "tokenizer": {}}))
+    model = get_model(release_model_config(release_dir), device=torch.device("meta"), dtype=torch.float32)
+    state = {name: torch.randn(tensor.shape) for name, tensor in model.state_dict().items()}
+    dcp.save({"app": {"model": state}}, checkpoint_id=step_dir / "trainer", no_dist=True)
+
+    output = exporter.convert(step_dir)
+    assert vllm_route(output) == type(model).__name__
+    config = json.loads((output / "config.json").read_text())
+    assert config["architectures"] == json.loads((release_dir / "config.json").read_text())["architectures"]
+    assert not {"decision_config", "joint_head_config"} & config.keys() and "is_causal" not in config["text_config"]
+    index = json.loads((output / "model.safetensors.index.json").read_text())["weight_map"]
+    shards = {name: tensor for file in set(index.values()) for name, tensor in load_file(output / file).items()}
+    if kind != "clef":
+        assert json.loads((output / "decision_config.json").read_text()) == DECISION_CONFIG
+        readout = load_file(output / "readout.safetensors")
+        assert readout.keys() == {"weight"} and readout["weight"].dtype == torch.float32
+        assert torch.equal(readout["weight"], state["score.weight"])
+        assert shards.keys() == release.keys() - {"weight"}
+    else:
+        assert json.loads((output / "joint_head_config.json").read_text()) == JOINT_HEAD_CONFIG
+        head = load_file(output / "joint_head.safetensors")
+        assert head.keys() == clef_head_weights().keys() and all(head[scalar].shape == () for scalar in SCALARS)
+        assert torch.equal(head["residual_gate"].float(), state["pooler.head.residual_gate"].bfloat16().float()[0])
+        assert shards.keys() == {name for name in release if not name.startswith("mtp.")} - head.keys()
+    assert shards.keys() == index.keys()
+
+    # The export's keys read as a release's, and it selects the same class.
+    exported = dict.fromkeys(load_state_dict_keys(output))
+    assert model.is_hf_state_dict(exported) and not model.is_prime_state_dict(exported)
+    assert get_decision_model_cls(AutoConfig.from_pretrained(output), str(output)) is type(model)
+
+    # Neither FP8 tool quantizes it, and only d3's refusal names its float32 readout.
+    with pytest.raises(ValueError, match="float32 readout" if kind != "clef" else "could not load the result$"):
+        importlib.import_module("convert_bf16_to_fp8").convert(output)
+    with pytest.raises(ValueError, match="float32 readout" if kind != "clef" else "it is untested"):
+        importlib.import_module("convert_dcp_to_fp8").convert(step_dir)
+
+    # The export takes the side config off a copy: the live config keeps it.
+    exporter.save_model_assets(model, release_model_config(release_dir), TokenizerConfig(), tmp_path / "assets")
+    assert hasattr(model.config, "joint_head_config" if kind == "clef" else "decision_config")
+
+    # Without the file that selects the class, the export would build a plain Qwen3.5 and leave the readout out.
+    (release_dir / ("joint_head_config.json" if kind == "clef" else "decision_config.json")).unlink()
+    with pytest.raises(ValueError, match="which the export would leave out"):
+        exporter.convert(step_dir)
+
+
+@pytest.mark.parametrize("kind", ["d3-untied", "clef"])
+def test_a_decision_model_run_from_a_checkpoint_exports_without_its_source(tmp_path, exporter, monkeypatch, kind):
+    """The export of a run whose model.name is a checkpoint step directory, since gone, builds the class from the copy of
+    the release's file in the step directory it exports."""
+    monkeypatch.delenv("PRL_ATTEMPT_CONFIG_DIR", raising=False)
+    release_dir = tmp_path / "release"
+    WRITE_RELEASE[kind](release_dir)
+    source = tmp_path / "deleted-run" / "checkpoints" / "step_5"
+    run_dir = tmp_path / "run"
+    config_dir = run_dir / "configs" / "latest" / "resolved"
+    config_dir.mkdir(parents=True)
+    run_config = {"model": {"name": source.as_posix(), "init": {"type": "pretrained"}}, "tokenizer": {}}
+    (config_dir / "sft.json").write_text(json.dumps(run_config))
+    # The step directory as the trainer writes it, from a run of the release.
+    step_dir = run_dir / "checkpoints" / "step_1"
+    model_config = release_model_config(release_dir)
+    setup_model_files(model_config, AutoTokenizer.from_pretrained(release_dir), None).save(step_dir)
+    model = get_model(model_config, device=torch.device("meta"), dtype=torch.float32)
+    state = {name: torch.randn(tensor.shape) for name, tensor in model.state_dict().items()}
+    dcp.save({"app": {"model": state}}, checkpoint_id=step_dir / "trainer", no_dist=True)
+    shutil.rmtree(release_dir)
+
+    output = exporter.convert(step_dir)
+    assert vllm_route(output) == type(model).__name__
+    file = "joint_head_config.json" if kind == "clef" else "decision_config.json"
+    assert json.loads((output / file).read_text()) == (JOINT_HEAD_CONFIG if kind == "clef" else DECISION_CONFIG)
+    assert get_decision_model_cls(AutoConfig.from_pretrained(output), str(output)) is type(model)

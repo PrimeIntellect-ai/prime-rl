@@ -18,6 +18,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [SFT-Specific Knobs](#sft-specific-knobs)
   - [Custom Loss](#custom-loss)
   - [System One Data](#system-one-data)
+  - [Native Decision Models](#native-decision-models)
   - [Important Metrics](#important-metrics-1)
 - [Pretraining](#pretraining)
 - [Checkpointing](#checkpointing)
@@ -390,7 +391,7 @@ The samples are called one after another, as in RL, so many short samples cost o
 
 ### System One Data
 
-`[data] type = "system_one"` trains a decision model: a model that answers typed questions about a state with a distribution over each question's options, read from hidden states at chosen tokens instead of generated as text. A row is a System One record: a state, its questions and their labels. prime-rl parses the record into its request (the state and questions, without labels) and one target per question, the model's strategy renders the request into tokens and reads each question's logits from the hidden states with the model's head, and the decision loss (`[loss] type = "decision"`) compares them with the targets. Loading, mixing subsets and splits, shuffling, packing, resume, validation and checkpointing are the SFT trainer's, as for chat data.
+`[data] type = "system_one"` trains a decision model: a model that answers typed questions about a state with a distribution over each question's options, read from hidden states at chosen tokens instead of generated as text. A row is a System One record: a state, its questions and their labels. prime-rl parses the record into its request (the state and questions, without labels) and one target per question, the strategy the model's class declares renders the request into tokens and reads each question's logits from the hidden states, and the decision loss (`[loss] type = "decision"`) compares them with the targets. Loading, mixing subsets and splits, shuffling, packing, resume, validation and checkpointing are the SFT trainer's, as for chat data.
 
 **Prepare the records.** prime-rl does not convert datasets; you write the HF dataset. Its columns are `state`, `questions`, and `label` and/or `soft_label`, plus an optional `id` that names the record in warnings and errors (when absent, its subset if any, split and row index, joined by `/`). All but `id` are string columns of JSON text (write them with `json.dumps`), so a text state is a JSON string; a label column that is null in every row counts as absent. A dataset that stores them under other names maps them in `[data.columns]`, e.g. `state = "ticket"`. One row:
 
@@ -412,7 +413,9 @@ soft_label  {"team": {"technical": 0.75, "billing": 0.25}}
 | `choice` | non-empty option id → description or null, 1 to 255 options | the option ids as given | an option id | `team`: `[0.75, 0.25]` |
 | `score` | a list of 2 to 10 distinct non-empty level descriptions | `0` … `n-1` | a level | `urgency`: `[0, 0, 1]` |
 
-**Write the model class and its strategy.** A decision model is a model class and its strategy. The strategy decides what the model sees and how its head reads it: `render_request` renders a request into tokens, attention segments and the tokens the head reads for each question, and `option_logits` turns the hidden states at those tokens into each question's logits by calling the model's head. The input format belongs to the model, so the class names its strategy with the classmethod `system_one_strategy`, and the data config names none. The class is a [custom model class](#sft-specific-knobs) (`[model.implementation]`) that holds the head and its weights; the strategy subclasses `SystemOneStrategy`. In vLLM terms, a read strategy is this strategy (`render_request` and `option_logits`) plus the softmax; the model class keeps the head's weights. A head with one logit per option, read at one token per question:
+For d3 and Clef-Flash, prime-rl ships the model classes and their strategies: see [Native Decision Models](#native-decision-models).
+
+**Write the model class and its strategy.** A decision model is a model class and its strategy. The strategy decides what the model sees and how its head reads it: `render_request` renders a request into tokens, attention segments and the tokens the head reads for each question, and `option_logits` turns the hidden states at those tokens into each question's logits by calling the model's head. The input format belongs to the model, so the class names its strategy with the classmethod `system_one_strategy`, and the data config names none. For any other decision model, the class is a [custom model class](#sft-specific-knobs) (`[model.implementation]`) that holds the head and its weights; the strategy subclasses `SystemOneStrategy`. In vLLM terms, a read strategy is this strategy (`render_request` and `option_logits`) plus the softmax; the model class keeps the head's weights. A head with one logit per option, read at one token per question:
 
 ```python
 # my_pkg/model.py
@@ -475,7 +478,7 @@ class MyStrategy(SystemOneStrategy):
 - **Output.** `input_ids`, `seq_lens`, `read_spans`, and optionally `options`: per question, the option ids in the order of the head's logits when that is not the order of the table (prime-rl reorders the targets to match). prime-rl checks every rendering against the `RenderedRequest` contract and raises on a violation.
 - **Readout.** `option_logits(inputs)` is a classmethod, called by the decision loss once per record inside the forward pass with no strategy instance, so it reads any setting from `inputs.model.config`. `inputs` is the record as a [custom loss](#custom-loss) sees it (`LossInputs`, see "What the loss receives" below), without the targets: `hidden_states` are the backbone's final (post-norm) hidden states of the record's tokens alone, and `sample_data` is the record's dict. It returns one 1-D logit vector per question of the record, in record order, with one logit per option in the order of the question's `options`. They are the logits the model trains on: a checkpoint's own temperature, which its server applies, is part of these logits; a calibration fitted after training is not. It calls the model's modules rather than reading their weights, on inputs in their weights' dtype; the logits may have any float dtype. A decision model is the `DecisionModel` protocol in `prime_rl.trainer.sft.system_one.loss`, which the class satisfies by declaring `system_one_strategy`, without importing or inheriting it.
 
-**Configure.** `data.name`, a model class that declares `system_one_strategy` and a loss other than token cross-entropy are required: `type = "decision"` (which also needs `[model.implementation]`) or a [custom loss](#custom-loss), both with the custom loss's limits:
+**Configure.** `data.name` and a loss other than token cross-entropy are required: `type = "decision"` or a [custom loss](#custom-loss), both with the custom loss's limits. The model's class must declare `system_one_strategy`, which the trainer checks before it builds the model: d3's and Clef-Flash's do, and a `[model.implementation]` class of yours must:
 
 ```toml
 [model]
@@ -524,6 +527,37 @@ seq_len = 4096
 ```bash
 uv run sft @ system_one.toml
 ```
+
+### Native Decision Models
+
+prime-rl trains d3 and Clef-Flash, the decision models vLLM 0.33 serves through `/v1/systemone`, as vLLM serves them. The release directory, local or on the Hub, is `model.name` as is: prime-rl selects the class as vLLM does, by the architecture in `config.json` and the file beside it, which it reads into the config. Each class declares the in-tree strategy that reads it as vLLM does:
+
+| Release | Class | Strategy |
+|---|---|---|
+| d3: `Qwen3_5Model` with `decision_config.json` | `D3ForSequenceClassification` | `prime_rl.trainer.sft.system_one.strategies.d3.D3Strategy` |
+| Clef-Flash: `Qwen3_5ForConditionalGeneration` with `joint_head_config.json` | `ClefFlashForJointSchema` | `prime_rl.trainer.sft.system_one.strategies.clef.ClefFlashStrategy` |
+
+```toml
+[model]
+name = "/path/to/d3-release"        # no [model.implementation]
+
+[data]
+type = "system_one"
+name = "my-org/tickets-system-one"
+seq_len = 4096
+
+[loss]
+type = "decision"
+```
+
+- **vLLM's read strategy.** vLLM's read strategy is prime-rl's strategy (`render_request` and `option_logits`) plus the decision loss's softmax; the model class keeps the head's weights. `render_request` builds vLLM's prompts under vLLM's names (`render_state`, `_options`, `_prompt`, `_tokens`, and Clef-Flash's `_encode`, vLLM's `encode`).
+- **Prompts.** d3 gets one prompt per question, read at its last token, with the answer codes of the model's `decision_config.json` and the release's chat template. vLLM renders d3's prompts with the chat template saved with the model, and the export saves the run's, so the strategy raises when the run's template, that of `[tokenizer] chat_template` or else of the tokenizer at `[tokenizer] name`, is another: for d3, leave `[tokenizer] chat_template` unset, and `[tokenizer] name` unset or a tokenizer with the release's template. A record's prompts, each holding the whole state, are packed into one sample, so `data.seq_len` must hold their sum or the record is skipped. Clef-Flash gets one prompt per request, read at each question's instruction and option spans, with the state cut so that the prompt fits in `min(16384, data.seq_len)` tokens; vLLM cuts it to fit `min(16384, max_model_len)`, so the prompts are vLLM's when `data.seq_len` equals the served `max_model_len` or both are at least 16384. The strategy logs a warning for each record whose state it cuts, and since `val.data.seq_len` must equal `data.seq_len`, validation prompts are cut as training prompts are. Most requests vLLM refuses come from malformed records, and those raise when they are parsed, which stops the run. Two checks differ: question keys other than `type`, `instructions` and `criteria` are ignored, where vLLM refuses them, and an empty choice id or score level raises for both models, where vLLM refuses it for d3 only. The strategies skip, with a warning, only a record whose request they cannot render as vLLM reads it: one with more than 64 questions, more options than d3's codes or Clef-Flash's 26, instructions, option descriptions or score levels that are not strings (vLLM would render them with `str()`), or, for Clef-Flash, questions that alone do not fit.
+- **Readout.** `option_logits` is vLLM's readout: d3's `score`, held and computed in float32, divided by the temperature of `decision_config.json` (1 when it has none); Clef-Flash's joint schema head, once per record.
+- **Conversion.** The first load writes a converted copy of the release's weights into `prime/` beside it (or under `model.conversion_dir`) and later loads read that copy, so delete it when the release's files or prime-rl's d3 or Clef-Flash conversion change.
+- **Checkpoints.** Each checkpoint step directory holds a copy of the release's `decision_config.json` or `joint_head_config.json` beside its `config.json`, which stays the release's, so the step directory selects the class as the release does wherever it stands in for `model.name`: as `model.name` with `model.init.type = "pretrained"`, on a resume of such a run, and in the export. Since `config.json` does not describe the file, a resume also stops when the checkpoint's copy differs from the file at `model.name`.
+- **Limits.** d3 reads `decision_config.json` format version 1, as vLLM does. Neither model trains with context parallelism: SFT supports it only with `[loss] type = "ce"`, which decision models refuse. An untied d3 release (d3, d3-flash) ships no LM head, which prime-rl's Qwen3.5 has: the class fills it with a frozen copy of the input embedding, which the export leaves out. Clef-Flash needs an untied LM head, which it freezes. With `model.init.type = "scratch"`, d3 starts from its class's init, the readout included, and an untied d3's frozen LM head stays at that init (d3 never calls it, and the export leaves it out); Clef-Flash is refused, since its head's lexical prior reads the frozen LM head. A `[model.implementation]` class for such a release must extend its class, e.g. to read another format version, and declare a strategy that reads it: `D3Strategy` reads format version 1 only, so a strategy for another format widens `FORMAT_VERSIONS`, and calls `check_format_version` when it overrides `__init__` because d3's prompt and chat-template checks do not apply.
+- **Refused.** With any decision model, these classes or a `[model.implementation]` one, and under any loss, the trainer refuses `[model.lora]`, as the decision loss does (decision models train with full fine-tuning), `[model.quantization]`, whose FP8 and MXFP8 layers replace every linear layer whose sizes they support, the readout's included (Clef-Flash's joint head; d3's score when its code count is a multiple of 128 for FP8 or 32 for MXFP8), which vLLM does not quantize, and the next-token loss of pretraining, `[loss] type = "ce"` and RL. A Clef-Flash release trains as a plain Qwen3.5 without its `joint_head_config.json`; a d3 release cannot, since it stores its backbone under transformers' `Qwen3_5Model` names (`language_model.*`), which prime-rl's plain Qwen3.5 does not load.
+- **Serving.** The [export](#exporting-checkpoints) writes the release's layout, `decision_config.json` and `readout.safetensors` or `joint_head_config.json` and `joint_head.safetensors` beside the shards, so vLLM serves it as it serves the release. Serve it without the router (`router = "None"` in the `uv run inference` config, or `--router None`, which runs the engine on `server.port`), or send requests to the engine port (`backend_port`): vllm-router re-sorts the JSON keys of a request, which reorders d3's options and state keys and Clef-Flash's questions, so the served prompts differ from the trained ones. vLLM serves these models as pooling models only, so RL and online evals with them are refused.
 
 ### Important Metrics
 
@@ -624,7 +658,7 @@ Checkpointing is split across processes because the orchestrator and trainer can
 | Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<run_dir>/checkpoints/step_{n}/trainer/` |
 | Orchestrator | Progress, per-env data state | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
-| Trainer, orchestrator, inference | The model's `config.json` and `generation_config.json`, the tokenizer files and a VLM's processor files | `<run_dir>/checkpoints/step_{n}/` |
+| Trainer, orchestrator, inference | The model's `config.json` and `generation_config.json`, the tokenizer files, a VLM's processor files and a [decision model](#native-decision-models)'s `decision_config.json` or `joint_head_config.json` | `<run_dir>/checkpoints/step_{n}/` |
 
 ### Enabling Checkpoints
 
@@ -801,7 +835,7 @@ N-gram tables are read one stored DCP chunk at a time (one per training rank) an
 
 The export is staged in a hidden directory next to the output directory and renamed into place when complete, so the output's parent must be writable, a mount point cannot itself be the output directory, and replacing an existing export needs disk for both until the old one is removed. A failed or interrupted publish restores the previous export. An existing non-empty directory other than the default export dir is only replaced with `--overwrite`.
 
-The exported directory loads directly into `uv run inference --vllm.model <dir>` or any HF consumer, unless the run used `model.implementation`: the export then rebuilds that class (its package must be importable), holds its added modules and names the base architecture in `config.json`, so loading it for training again takes the same `model.implementation`; the class has no vLLM counterpart, so vLLM cannot serve the export. Quantize it to blockwise FP8 (DeepSeek/GLM format, loads natively in vLLM) with `tools/convert_bf16_to_fp8.py <dir>`, or go straight from the checkpoint with `tools/convert_dcp_to_fp8.py <ckpt_dir>` (streams decoder layers on CPU and writes only `<ckpt_dir>/weights-FP8`, with no intermediate BF16 export; `--workers` controls concurrency, and `--device cuda` enables GPU quantization instead of the default CPU); dequantize an fp8-only release (e.g. GLM-5-FP8) for training with `tools/convert_fp8_to_bf16.py <dir>`.
+A d3 or Clef-Flash checkpoint exports as its release is laid out: `config.json` keeps the release's architecture, and the class writes its files beside the shards (`decision_config.json` and `readout.safetensors`, or `joint_head_config.json` and `joint_head.safetensors`), so vLLM serves the export as it serves the release. The export builds the class from `model.name` again and raises when the checkpoint holds tensors that class lacks, e.g. when the file that selects d3 or Clef-Flash is no longer beside the release's `config.json`. The FP8 tools below refuse it: `convert_bf16_to_fp8.py` would drop the side files (`readout.safetensors`, `joint_head.safetensors`), so vLLM could not load its output, and neither tool leaves d3's float32 readout (`score`) out of the quantization config, so vLLM would quantize it with an uninitialized scale and return wrong logits; `convert_dcp_to_fp8.py` refuses Clef-Flash too, since no vLLM run has served its FP8 export. The exported directory loads directly into `uv run inference --vllm.model <dir>` or any HF consumer, unless the run used `model.implementation`: the export then rebuilds that class (its package must be importable), holds its added modules and names the base architecture in `config.json`, so loading it for training again takes the same `model.implementation`; the class has no vLLM counterpart, so vLLM cannot serve the export. Quantize it to blockwise FP8 (DeepSeek/GLM format, loads natively in vLLM) with `tools/convert_bf16_to_fp8.py <dir>`, or go straight from the checkpoint with `tools/convert_dcp_to_fp8.py <ckpt_dir>` (streams decoder layers on CPU and writes only `<ckpt_dir>/weights-FP8`, with no intermediate BF16 export; `--workers` controls concurrency, and `--device cuda` enables GPU quantization instead of the default CPU); dequantize an fp8-only release (e.g. GLM-5-FP8) for training with `tools/convert_fp8_to_bf16.py <dir>`.
 
 ## Observability
 

@@ -206,7 +206,13 @@ def train(config: TrainerConfig):
     t0 = time.perf_counter()
     from_checkpoint = config.model.init.type == "pretrained" and is_checkpoint_step_dir(config.model.name)
     loading_from_ckpt_later = checkpoint_step is not None or from_checkpoint
-    model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
+    model = setup_model(
+        config.model,
+        parallel_dims,
+        loading_from_ckpt_later,
+        broadcasts_weights=not config.data.fake,
+        next_token_loss=True,
+    )
     logger.debug(f"Initialized model in {format_time(time.perf_counter() - t0)}")
 
     materialize_images = None

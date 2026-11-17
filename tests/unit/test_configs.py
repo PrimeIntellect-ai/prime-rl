@@ -1325,12 +1325,11 @@ def test_system_one_data_refuses_encoder():
         )
 
 
-def test_decision_loss_needs_system_one_data_and_a_model_class():
-    implementation = {"implementation": {"import_path": "my_pkg.MyDecisionModel"}}
+def test_decision_loss_needs_system_one_data():
     with pytest.raises(ValidationError, match="needs data.type"):
-        SFTConfig.model_validate({"model": implementation, "loss": {"type": "decision"}})
-    with pytest.raises(ValidationError, match="needs \\[model.implementation\\]"):
-        SFTConfig.model_validate({"data": {"type": "system_one", **SYSTEM_ONE_DATA}, "loss": {"type": "decision"}})
+        SFTConfig.model_validate({"loss": {"type": "decision"}})
+    # The model's class, which a decision model release selects, is checked before the trainer builds it.
+    SFTConfig.model_validate({"data": {"type": "system_one", **SYSTEM_ONE_DATA}, "loss": {"type": "decision"}})
 
 
 def test_decision_loss_refuses_lora():

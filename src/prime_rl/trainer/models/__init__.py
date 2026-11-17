@@ -24,6 +24,8 @@ from prime_rl.trainer.models.muse_glimmer import MuseGlimmerConfig, MuseGlimmerF
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM, NemotronHOmniConfig
 from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
 from prime_rl.trainer.models.qwen3_5 import (
+    ClefFlashForJointSchema,
+    D3ForSequenceClassification,
     Qwen3_5Config,
     Qwen3_5ForCausalLM,
     Qwen3_5MoeConfig,
@@ -136,6 +138,21 @@ _CUSTOM_VLM_MAPPING: dict[str, type] = {
 def get_custom_vlm_cls(model_config: PretrainedConfig) -> type | None:
     """Return the custom PrimeRL VLM class for this config, or None if unsupported."""
     return _CUSTOM_VLM_MAPPING.get(getattr(model_config, "model_type", None))
+
+
+# The decision models vLLM 0.33 tells apart from their backbone by the checkpoint's architectures and a file beside its
+# config.json, which it attaches to the config (transformers_utils/model_arch_config_convertor.py:622-651):
+# (model_type, architecture, file) -> (class, config attribute).
+_DECISION_MODELS: dict[tuple[str, str, str], tuple[type[PreTrainedModelPrimeRL], str]] = {
+    ("qwen3_5", "Qwen3_5Model", "decision_config.json"): (D3ForSequenceClassification, "decision_config"),
+    ("qwen3_5", "Qwen3_5ForConditionalGeneration", "joint_head_config.json"): (
+        ClefFlashForJointSchema,
+        "joint_head_config",
+    ),
+}
+# Every stock Qwen3.5 checkpoint has Clef-Flash's architecture: a lookup of its file that fails warns, so that their runs
+# go on. A failed lookup of d3's file raises.
+_STOCK_ARCHITECTURES = {("qwen3_5", "Qwen3_5ForConditionalGeneration")}
 
 
 __all__ = [

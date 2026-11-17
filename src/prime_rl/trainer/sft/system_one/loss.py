@@ -13,9 +13,9 @@ from prime_rl.trainer.sft.system_one.data import SystemOneStrategy
 
 @runtime_checkable
 class DecisionModel(Protocol):
-    """What the class of a decision model (``[model.implementation]``) declares: its strategy, which renders requests
-    and reads each question's logits with the class's modules. A class satisfies it by defining the classmethod,
-    without inheriting from it."""
+    """What the class of a decision model (d3's, Clef-Flash's or ``[model.implementation]``'s) declares: its strategy,
+    which renders requests and reads each question's logits with the class's modules. A class satisfies it by defining
+    the classmethod, without inheriting from it."""
 
     @classmethod
     def system_one_strategy(cls) -> type[SystemOneStrategy]:
@@ -29,7 +29,8 @@ def check_decision_model(model: nn.Module) -> None:
     if not isinstance(model, DecisionModel):
         raise TypeError(
             f"The decision loss needs a model whose class declares system_one_strategy, and {type(model).__name__} "
-            "does not: name a class that declares it in [model.implementation]"
+            "does not: load a decision model release prime-rl builds (d3, Clef-Flash), or name a class that declares "
+            "it in [model.implementation]"
         )
 
 

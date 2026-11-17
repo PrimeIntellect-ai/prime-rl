@@ -76,7 +76,7 @@ Bringing up a new model family is three steps: implement the modeling code, regi
 
 ### Implement the Modeling Code
 
-Drop the modeling code under `src/prime_rl/trainer/models/<arch>/` (HF-compatible config, modeling, and weight conversion). Mirror the layout of an existing family — `glm4_moe/` or `qwen3_moe/` are good starting points.
+Drop the modeling code under `src/prime_rl/trainer/models/<arch>/` (HF-compatible config, modeling, and weight conversion). Mirror the layout of an existing family — `glm4_moe/` or `qwen3_moe/` are good starting points. A head variant that shares its family's HF config type (Qwen3.5's `D3ForSequenceClassification`) subclasses the family's class in the family's directory and is registered in `_DECISION_MODELS` (`models/__init__.py`) by `model_type`, `architectures` and the file beside `config.json`, as vLLM selects it.
 
 ### Register a Mini Preset
 

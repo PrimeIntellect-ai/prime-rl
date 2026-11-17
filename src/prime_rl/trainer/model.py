@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import shutil
@@ -6,7 +7,7 @@ import time
 import types
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 # Disable transformers hub kernel interception. Installed hub kernels can otherwise replace
 # modules with implementations that have incompatible CUDA requirements.
@@ -17,7 +18,8 @@ import torch
 import torch._dynamo
 import torch.distributed as dist
 import torch.nn as nn
-from huggingface_hub import snapshot_download
+from huggingface_hub import _CACHED_NO_EXIST, hf_hub_download, snapshot_download, try_to_load_from_cache
+from huggingface_hub.errors import RemoteEntryNotFoundError
 from jaxtyping import Int
 from torch import Tensor
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
@@ -30,6 +32,7 @@ from transformers import AutoConfig, AutoTokenizer, GenerationConfig, Pretrained
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
+from prime_rl.configs.sft import DECISION_MODEL_LORA
 from prime_rl.configs.trainer import (
     ActivationCheckpointConfig,
     CompileConfig,
@@ -45,6 +48,8 @@ from prime_rl.trainer.activation_checkpointing import (
 )
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
+    _DECISION_MODELS,
+    _STOCK_ARCHITECTURES,
     AutoModelForCausalLMPrimeRL,
     PrimeLmOutput,
     cast_float_and_contiguous,
@@ -104,6 +109,68 @@ def pre_download_model(model_name: str, *, skip_weights: bool = False) -> None:
     get_logger().debug(
         f"Finished pre-downloading model {model_name} to {path} in {format_time(time.perf_counter() - t0)}"
     )
+
+
+def read_side_file(name: str, file: str) -> dict | None:
+    """The JSON `file` beside the config of the checkpoint at `name` (a local directory or a Hub id), or None when the
+    checkpoint has none. A Hub lookup that fails, e.g. offline or on a 5xx, raises, unless the HF cache records the
+    file or its absence."""
+    if Path(name).is_dir():
+        path = Path(name) / file
+        if not path.is_file():
+            return None
+    elif (cached := try_to_load_from_cache(name, file)) is _CACHED_NO_EXIST:
+        return None
+    elif isinstance(cached, str):
+        path = Path(cached)
+    else:
+        try:
+            path = Path(hf_hub_download(name, file))
+        except RemoteEntryNotFoundError:
+            return None
+    return json.loads(path.read_text())
+
+
+class DecisionModelFile(NamedTuple):
+    """The decision model class a checkpoint selects, and the file beside its config.json that selects it."""
+
+    cls: type[PreTrainedModelPrimeRL]
+    attribute: str
+    """The config attribute vLLM reads the file into."""
+    file: str
+    content: dict
+
+
+def find_decision_model(model_config: PretrainedConfig, name: str) -> DecisionModelFile | None:
+    """The decision model class vLLM selects for the checkpoint at `name` (a local directory or a Hub id), with the file
+    that selects it, or None. `model_config` is left as is."""
+    architectures = getattr(model_config, "architectures", None) or []
+    for (model_type, architecture, file), (cls, attribute) in _DECISION_MODELS.items():
+        if model_config.model_type != model_type or architectures != [architecture]:
+            continue
+        try:
+            content = read_side_file(name, file)
+        except OSError as error:
+            if (model_type, architecture) not in _STOCK_ARCHITECTURES:
+                raise OSError(f"Could not look up {file} for {name}, which selects {cls.__name__}: {error}") from error
+            get_logger().warning(
+                f"Could not look up {file} for {name} ({error}): if it is a release of {cls.__name__}, it trains as "
+                "a plain Qwen3.5"
+            )
+            return None
+        if content is not None:
+            return DecisionModelFile(cls, attribute, file, content)
+    return None
+
+
+def get_decision_model_cls(model_config: PretrainedConfig, name: str) -> type[PreTrainedModelPrimeRL] | None:
+    """The decision model class vLLM selects for the checkpoint at `name` (a local directory or a Hub id), or None.
+    The file that selects it is read into the config attribute vLLM uses; ``config.architectures`` is left as is."""
+    found = find_decision_model(model_config, name)
+    if found is None:
+        return None
+    setattr(model_config, found.attribute, found.content)
+    return found.cls
 
 
 # Add filter to the standard logging module for transformers.modeling_utils to supress the
@@ -355,9 +422,10 @@ def get_expert_load_stats(tokens_per_expert: Tensor, group: dist.ProcessGroup) -
 
 
 def get_implementation_cls(
-    config: ModelImplementationConfig, model_config: PretrainedConfig
+    config: ModelImplementationConfig, model_config: PretrainedConfig, decision_cls: type | None = None
 ) -> type[PreTrainedModelPrimeRL]:
-    """The class ``model.implementation`` names, checked to extend prime-rl's class for the checkpoint's architecture."""
+    """The class ``model.implementation`` names, checked to extend prime-rl's class for the checkpoint's architecture,
+    or the decision model class `decision_cls` the checkpoint selects."""
     try:
         cls = import_object(config.import_path)
     except (ImportError, AttributeError, ValueError) as error:
@@ -366,6 +434,13 @@ def get_implementation_cls(
         raise TypeError(
             f"model.implementation must name a PreTrainedModelPrimeRL subclass, got {config.import_path!r} ({cls!r})"
         )
+    if decision_cls is not None:
+        if not issubclass(cls, decision_cls):
+            raise TypeError(
+                f"model.implementation must extend {decision_cls.__name__}, the class of the checkpoint, "
+                f"got {config.import_path!r}"
+            )
+        return cls
     base_classes = [get_custom_vlm_cls(model_config)]
     if supports_custom_impl(model_config):
         base_classes.append(get_custom_causal_lm_cls(model_config))
@@ -379,11 +454,14 @@ def get_implementation_cls(
 
 def get_model_cls(config: ModelConfig, model_config: PretrainedConfig) -> type:
     """The class ``get_model`` builds for the checkpoint, checked against ``model.cp`` and ``model.vlm``."""
+    # Read even with an implementation, which may extend the decision model class.
+    decision_cls = get_decision_model_cls(model_config, config.name)
     implementation_cls = None
     if config.implementation is not None:
-        implementation_cls = get_implementation_cls(config.implementation, model_config)
-    custom_vlm_cls = get_custom_vlm_cls(model_config) if implementation_cls is None else None
-    if implementation_cls is None and custom_vlm_cls is None and not supports_custom_impl(model_config):
+        implementation_cls = get_implementation_cls(config.implementation, model_config, decision_cls)
+    model_class = implementation_cls or decision_cls
+    custom_vlm_cls = get_custom_vlm_cls(model_config) if model_class is None else None
+    if model_class is None and custom_vlm_cls is None and not supports_custom_impl(model_config):
         raise ValueError(
             f"{model_config.model_type!r} has no PrimeRL model implementation. "
             "The trainer only supports the architectures in prime_rl.trainer.models."
@@ -391,7 +469,7 @@ def get_model_cls(config: ModelConfig, model_config: PretrainedConfig) -> type:
 
     # Queried here so a misconfigured job dies at setup rather than at the first forward.
     if config.cp > 1:
-        cp_model_cls = implementation_cls or custom_vlm_cls or get_custom_causal_lm_cls(model_config)
+        cp_model_cls = model_class or custom_vlm_cls or get_custom_causal_lm_cls(model_config)
         cp_blocker = cp_model_cls.cp_blocker(model_config, config.cp)
         if cp_blocker is not None:
             raise ValueError(f"{model_config.model_type!r} cannot train with context parallelism: {cp_blocker}")
@@ -400,7 +478,7 @@ def get_model_cls(config: ModelConfig, model_config: PretrainedConfig) -> type:
         raise ValueError(
             f"VLM training requires a registered PrimeRL VLM implementation; {model_config.model_type!r} has none."
         )
-    return implementation_cls or custom_vlm_cls or AutoModelForCausalLMPrimeRL
+    return model_class or custom_vlm_cls or AutoModelForCausalLMPrimeRL
 
 
 def get_model(
@@ -641,6 +719,12 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             # data-parallel size. That is already the dense parameters' default divisor.
             transformer_block.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
 
+    # A module the class lists computes in float32 whatever the root unit's policy, e.g. a readout that inference runs in
+    # float32. Its own unit keeps its weights out of the root unit's all-gather.
+    fp32_policy = MixedPrecisionPolicy(param_dtype=torch.float32, reduce_dtype=mp_policy.reduce_dtype)
+    for name in model.fp32_modules:
+        fully_shard(model.get_submodule(name), mesh=hsdp_mesh, **{**fsdp_config, "mp_policy": fp32_policy})
+
     shard_norm_and_lm_head = hasattr(model, "config") and not model.config.tie_word_embeddings
     final_module = (
         getattr(language_model, "norm", None)
@@ -761,6 +845,12 @@ def initialize_from_scratch(model: nn.Module, seed: int) -> None:
         )
 
 
+def overrides_init_missing_weights(model: nn.Module) -> bool:
+    """Whether the model's class gives weights its checkpoint lacks."""
+    method = getattr(type(model), "init_missing_weights", None)
+    return method is not None and method is not PreTrainedModelPrimeRL.init_missing_weights
+
+
 @torch.no_grad()
 def init_missing_weights(model: PreTrainedModelPrimeRL, missing: dict[str, Tensor], import_path: str) -> None:
     """Fill `missing`, the state-dict entries the checkpoint lacks, with the weights the model's
@@ -869,7 +959,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
         )
         state_dict.pop("lm_head.weight")
     missing: dict[str, Tensor] = {}
-    if config.implementation is not None:
+    if config.implementation is not None or overrides_init_missing_weights(model):
         # The class may add parameters that the checkpoint lacks: it gives their weights after the load.
         checkpoint_keys = set(load_state_dict_keys(snapshot_path))
         # A packed parameter's logical weights stay in the strict load: the write-back below needs them all.
@@ -882,7 +972,9 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     )
     write_back_loaded_packed_parameters(model, state_dict)
     if missing:
-        init_missing_weights(model, missing, config.implementation.import_path)
+        cls = type(model)
+        import_path = config.implementation.import_path if config.implementation else f"{cls.__module__}.{cls.__name__}"
+        init_missing_weights(model, missing, import_path)
 
     logger.debug(f"Loaded weights using HF DCP in {format_time(time.perf_counter() - load_dcp_start_time)}")
 
@@ -1072,10 +1164,54 @@ def resolve_auto_attn(config: ModelConfig) -> None:
     config.attn = resolved
 
 
+def refuse_decision_model(
+    model: nn.Module, config: ModelConfig, broadcasts_weights: bool = False, next_token_loss: bool = False
+) -> None:
+    """Raise for a decision model in a run that cannot train it: with a next-token loss (pretraining, SFT's ce, RL),
+    weight broadcasts, LoRA or quantization, and for Clef-Flash from scratch."""
+    # Imported here: the System One loss module imports this one.
+    from prime_rl.trainer.models.qwen3_5.modeling_clef_flash import ClefFlashForJointSchema
+    from prime_rl.trainer.sft.system_one.loss import DecisionModel
+
+    if not isinstance(model, DecisionModel):
+        return
+    name = type(model).__name__
+    if next_token_loss:
+        raise ValueError(
+            f'{name} is a decision model, which trains with SFT [loss] type = "decision" or a custom loss, not with a '
+            'loss on the next-token predictions of its LM head: pretraining, SFT [loss] type = "ce" or RL. A d3 '
+            "or Clef-Flash release builds it because of the decision_config.json or joint_head_config.json beside its "
+            "config.json. Without its joint_head_config.json, a Clef-Flash release trains as a plain Qwen3.5; a d3 "
+            "release cannot, since it stores its backbone under transformers' Qwen3_5Model names (language_model.*), "
+            "which prime-rl's plain Qwen3.5 does not load."
+        )
+    if broadcasts_weights:
+        raise ValueError(
+            f"{name} is a decision model, which vLLM serves as a pooling model only: it cannot take "
+            "the weight broadcasts of RL or online evals, whose inference generates. Train it with SFT without [eval]."
+        )
+    if config.lora is not None:
+        raise ValueError(f"{name} is a decision model, so [model.lora] is not supported. {DECISION_MODEL_LORA}")
+    if config.quantization is not None:
+        raise ValueError(
+            f"{name} is a decision model, so [model.quantization] is not supported: its FP8 and MXFP8 layers replace "
+            "every linear layer whose sizes they support, the readout's included (Clef-Flash's joint head; d3's score "
+            "when its code count is a multiple of 128 for FP8 or 32 for MXFP8), which vLLM does not quantize."
+        )
+    if config.init.type == "scratch" and isinstance(model, ClefFlashForJointSchema):
+        raise ValueError(
+            f'{name} does not support model.init.type = "scratch": it freezes the LM head, whose rows its head\'s '
+            "lexical prior reads, and its init does not reach the head's scalars. Start from a release "
+            '(model.init.type = "pretrained").'
+        )
+
+
 def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
+    broadcasts_weights: bool = False,
+    next_token_loss: bool = False,
 ) -> nn.Module:
     resolve_auto_attn(config)
 
@@ -1091,6 +1227,7 @@ def setup_model(
 
     # Build on the meta device; weights are materialized after FSDP sharding.
     model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
+    refuse_decision_model(model, config, broadcasts_weights, next_token_loss)
 
     if config.fusions.enabled and config.lora is not None:
         logger.warning("Skipping runtime model fusions because LoRA targets the unfused projections")

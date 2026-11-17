@@ -1,0 +1,795 @@
+"""d3 and Clef-Flash, the decision models prime-rl builds from their releases as vLLM 0.33 serves them."""
+
+import ast
+import importlib.metadata
+import json
+import math
+import os
+from dataclasses import dataclass
+from functools import partial
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import numpy as np
+import pytest
+import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
+import torch.nn.functional as F
+from datasets import Dataset
+from huggingface_hub import _CACHED_NO_EXIST
+from huggingface_hub.errors import LocalEntryNotFoundError
+from tokenizers import Regex, Tokenizer
+from tokenizers.models import WordLevel
+from tokenizers.pre_tokenizers import Split
+from torch import nn
+from transformers import AutoConfig, AutoTokenizer, PretrainedConfig, PreTrainedTokenizerFast
+from transformers.models.qwen3_5 import modeling_qwen3_5 as hf_modeling
+
+import prime_rl.trainer.parallel_dims as parallel_dims_module
+from prime_rl.configs.trainer import ModelConfig
+from prime_rl.trainer.ckpt import check_side_files, setup_model_files
+from prime_rl.trainer.data import CatDataset, cat_collate
+from prime_rl.trainer.model import (
+    forward,
+    get_decision_model_cls,
+    get_model,
+    initialize_from_scratch,
+    load_dcp_from_hf,
+    overrides_init_missing_weights,
+    refuse_decision_model,
+    setup_fsdp,
+)
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.layers import attn, gated_delta_net
+from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
+from prime_rl.trainer.models.qwen3_5.clef_joint_schema import (
+    QUESTION_TYPES,
+    schema_indices,
+    segment_mean,
+)
+from prime_rl.trainer.models.qwen3_5.modeling_clef_flash import SCALARS, ClefFlashForJointSchema
+from prime_rl.trainer.models.qwen3_5.modeling_d3 import D3ForSequenceClassification
+from prime_rl.trainer.parallel_dims import get_parallel_dims
+from prime_rl.trainer.sft.loss import LossInputs, LossOutputs, run_loss_fn
+from prime_rl.trainer.sft.system_one.data import SystemOneDataset
+from prime_rl.trainer.sft.system_one.loss import checked_option_logits, decision_loss
+from prime_rl.utils.weights import group_by_layer, load_state_dict, load_state_dict_keys
+from tests.unit.train.models.qwen3_5.decision_releases import (
+    CODES,
+    DECISION_CONFIG,
+    HIDDEN,
+    JOINT_HEAD_CONFIG,
+    WRITE_RELEASE,
+    clef_head_weights,
+    model_config,
+    tiny_config,
+    vllm_route,
+    write_clef_release,
+    write_d3_release,
+)
+
+# vLLM 0.33's weight mappers (WeightsMapper.orig_to_new_prefix): D3ForSequenceClassification's (models/d3.py:66-71),
+# which replaces Qwen3.5's, and ClefFlashForJointSchema's, Qwen3.5's (models/qwen3_vl.py:1969-1975 and
+# models/qwen3_5.py:476-479). A name no prefix maps keeps its name, and vLLM raises for one that names no parameter
+# (models/utils.py:440-448).
+D3_MAPPER = {"language_model.": "language_model.model.", "mtp.": None}
+CLEF_MAPPER = {
+    "model.visual.": "visual.",
+    "lm_head.": "language_model.lm_head.",
+    "model.language_model.": "language_model.model.",
+    "mtp.": None,
+}
+
+
+def vllm_name(name: str, mapper: dict[str, str | None]) -> str | None:
+    for prefix, new in mapper.items():
+        if name.startswith(prefix):
+            if new is None:
+                return None
+            name = name.replace(prefix, new, 1)
+    return name
+
+
+def build(directory: Path, device: str = "meta") -> PreTrainedModelPrimeRL:
+    config = AutoConfig.from_pretrained(directory)
+    model_cls = get_decision_model_cls(config, str(directory))
+    with torch.device(device):
+        return model_cls._from_config(config, attn_implementation="flash_attention_2", dtype=torch.float32)
+
+
+class Decider(D3ForSequenceClassification):
+    FORMAT_VERSIONS = (1, 2)
+
+
+def test_the_release_selects_the_class_vllm_serves_it_with(tmp_path):
+    d3, clef, decider, qwen = (tmp_path / name for name in ("d3", "clef", "decider", "qwen"))
+    write_d3_release(d3)
+    write_clef_release(clef)
+    write_d3_release(decider, DECISION_CONFIG | {"format_version": 2})
+    tiny_config("Qwen3_5ForConditionalGeneration", tied=False).save_pretrained(qwen)
+
+    for directory, expected in [(d3, D3ForSequenceClassification), (clef, ClefFlashForJointSchema)]:
+        model = get_model(model_config(directory), device=torch.device("meta"))
+        assert type(model) is expected and vllm_route(directory) == expected.__name__
+        assert model.config.architectures == json.loads((directory / "config.json").read_text())["architectures"]
+    assert get_model(model_config(d3), device=torch.device("meta")).config.decision_config == DECISION_CONFIG
+    assert get_model(model_config(clef), device=torch.device("meta")).config.joint_head_config == JOINT_HEAD_CONFIG
+    assert get_decision_model_cls(AutoConfig.from_pretrained(qwen), str(qwen)) is None
+
+    # vLLM routes Decider to d3 too and refuses its format_version 2; a subclass that reads it extends the d3 class.
+    assert vllm_route(decider) == "D3ForSequenceClassification"
+    with pytest.raises(ValueError, match="unsupported decision_config.json format_version 2"):
+        get_model(model_config(decider), device=torch.device("meta"))
+    model = get_model(model_config(decider, f"{__name__}.Decider"), device=torch.device("meta"))
+    assert type(model) is Decider and model.config.decision_config["format_version"] == 2
+    with pytest.raises(TypeError, match="must extend D3ForSequenceClassification"):
+        get_model(model_config(d3, "prime_rl.trainer.models.qwen3_5.Qwen3_5ForCausalLM"), device=torch.device("meta"))
+
+
+def test_a_failed_hub_lookup_raises_for_d3_and_warns_for_a_stock_qwen3_5(tmp_path, monkeypatch):
+    """Every stock Qwen3.5 checkpoint looks up Clef-Flash's file, so only that lookup may fail with a warning."""
+    d3, qwen = tmp_path / "d3", tmp_path / "qwen"
+    write_d3_release(d3)
+    tiny_config("Qwen3_5ForConditionalGeneration", tied=False).save_pretrained(qwen)
+    warnings = []
+
+    def offline(*args, **kwargs):
+        raise LocalEntryNotFoundError("offline")
+
+    monkeypatch.setattr("prime_rl.trainer.model.try_to_load_from_cache", lambda *args, **kwargs: None)
+    monkeypatch.setattr("prime_rl.trainer.model.hf_hub_download", offline)
+    monkeypatch.setattr("prime_rl.trainer.model.get_logger", lambda: SimpleNamespace(warning=warnings.append))
+    with pytest.raises(OSError, match="Could not look up decision_config.json for org/d3"):
+        get_decision_model_cls(AutoConfig.from_pretrained(d3), "org/d3")
+    assert warnings == []
+    assert get_decision_model_cls(AutoConfig.from_pretrained(qwen), "org/qwen") is None
+    (warning,) = warnings
+    assert warning.startswith("Could not look up joint_head_config.json for org/qwen") and "plain Qwen3.5" in warning
+    # Offline, a file the HF cache records as absent is no file.
+    monkeypatch.setattr("prime_rl.trainer.model.try_to_load_from_cache", lambda *args, **kwargs: _CACHED_NO_EXIST)
+    assert get_decision_model_cls(AutoConfig.from_pretrained(d3), "org/d3") is None
+
+
+def test_a_checkpoint_step_directory_holds_the_file_that_selects_the_class(tmp_path):
+    """A step directory stands in for model.name (pretrained init, a resume of a step_N model.name, the export), so it
+    keeps the release's file as read; its config.json stays the release's, without the attribute the loader adds."""
+    qwen = tmp_path / "qwen"
+    tiny_config("Qwen3_5ForConditionalGeneration", tied=False).save_pretrained(qwen)
+    tokenizer = PreTrainedTokenizerFast(tokenizer_object=Tokenizer(WordLevel({"<eos>": 0}, unk_token="<eos>")))
+    assert setup_model_files(model_config(qwen), tokenizer, None).side_files == {}
+    for kind, file, attribute in [
+        ("d3", "decision_config.json", "decision_config"),
+        ("clef", "joint_head_config.json", "joint_head_config"),
+    ]:
+        release = tmp_path / kind
+        WRITE_RELEASE[kind](release)
+        files = setup_model_files(model_config(release), AutoTokenizer.from_pretrained(release), None)
+        step_dir = tmp_path / f"{kind}-run" / "checkpoints" / "step_5"
+        files.save(step_dir)
+
+        assert json.loads((step_dir / file).read_text()) == json.loads((release / file).read_text())
+        saved = json.loads((step_dir / "config.json").read_text())
+        assert saved["architectures"] == json.loads((release / "config.json").read_text())["architectures"]
+        assert attribute not in saved and "is_causal" not in saved["text_config"]
+        model = get_model(model_config(step_dir), device=torch.device("meta"))
+        assert type(model) is type(get_model(model_config(release), device=torch.device("meta")))
+        assert getattr(model.config, attribute) == json.loads((release / file).read_text())
+        assert not hasattr(files.config, attribute)
+
+
+def test_a_resume_checks_the_file_that_selects_the_class(tmp_path):
+    """config.json does not describe the decision model, so a resume compares the file too."""
+    step_dir = tmp_path / "step_5"
+    write_d3_release(step_dir)
+    check_side_files({"decision_config.json": DECISION_CONFIG}, step_dir)
+    check_side_files({}, tmp_path)  # no config.json: not checked, as the architecture is not
+    codes = DECISION_CONFIG | {"codes": ["V", "W", "X", "Y", "Z"]}
+    with pytest.raises(ValueError, match="saved with another decision_config.json than model.name's"):
+        check_side_files({"decision_config.json": codes}, step_dir)
+    with pytest.raises(ValueError, match="saved with a decision_config.json, which model.name lacks"):
+        check_side_files({}, step_dir)
+    with pytest.raises(ValueError, match="saved without the joint_head_config.json that model.name has"):
+        check_side_files({"decision_config.json": DECISION_CONFIG, "joint_head_config.json": {}}, step_dir)
+
+
+def test_d3_checks_its_decision_config(tmp_path):
+    for index, (change, error) in enumerate(
+        [
+            ({"pooling": "mean"}, "pooling 'mean'"),
+            ({"attention_mode": "bidirectional"}, "attention_mode 'bidirectional'"),
+            ({"token_ids": [32]}, "one token id per answer code"),
+            ({"temperature": 0}, "temperature must be a finite number above 0"),
+            ({"temperature": float("inf")}, "temperature must be a finite number above 0"),
+        ]
+    ):
+        write_d3_release(tmp_path / str(index), DECISION_CONFIG | change)
+        with pytest.raises(ValueError, match=error):
+            build(tmp_path / str(index))
+
+    write_d3_release(tmp_path / "d3")
+    model = build(tmp_path / "d3")
+    full_attention = [layer.self_attn for layer in model.model.language_model.layers if hasattr(layer, "self_attn")]
+    assert full_attention and not any(attention.is_causal for attention in full_attention)
+    assert model.score.weight.dtype == torch.float32 and model.score.weight.shape == (len(CODES), HIDDEN)
+    assert model.cp_blocker(model.config, 2) is not None
+    write_d3_release(tmp_path / "causal", DECISION_CONFIG | {"attention_mode": "causal"})
+    assert all(layer.self_attn.is_causal for layer in build(tmp_path / "causal").model.language_model.layers[1:])
+
+
+@pytest.mark.parametrize("kind", ["d3", "clef"])
+def test_release_loads_and_converts_to_the_names_vllm_loads(tmp_path, kind):
+    release = (write_d3_release if kind == "d3" else write_clef_release)(tmp_path)
+    model = build(tmp_path, device="cpu")
+    model_keys = dict.fromkeys(model.state_dict())
+
+    # The loader's test (load_dcp_from_hf) for converting the release once.
+    release_keys = dict.fromkeys(load_state_dict_keys(tmp_path))
+    assert model.is_hf_state_dict(release_keys) and not model.is_prime_state_dict(release_keys)
+    assert model.is_prime_state_dict(model_keys) and not model.is_hf_state_dict(model_keys)
+    prime = model.convert_to_prime(load_state_dict(tmp_path))
+    # Tied, d3's LM head loads through the embedding; Clef's lexical copy comes from init_missing_weights.
+    added = "lm_head.weight" if kind == "d3" else "lexical_embedding.weight"
+    assert model.load_state_dict(prime, strict=False) == ([added], [])
+    assert overrides_init_missing_weights(model) and model.init_missing_weights([]) == {}
+    source = model.lm_head if kind == "clef" else model.get_input_embeddings()
+    assert model.init_missing_weights([added]) == {added: source.weight}
+
+    # The HF state dict of the model, as a weight broadcast sends it: every name vLLM's class loads, and only those.
+    hf = model.convert_to_hf(dict(model.state_dict()))
+    if kind == "d3":
+        assert hf.keys() == {name for name in release if name != "weight"} | {"score.weight"}
+        torch.testing.assert_close(hf["score.weight"], release["weight"])
+        mapped = {vllm_name(name, D3_MAPPER) for name in hf}
+        assert all(name == "score.weight" or name.startswith(("language_model.model.", "visual.")) for name in mapped)
+        # An NCCL broadcast converts each layer's weights apart, so every group must read as prime.
+        assert all(model.is_prime_state_dict(group) for group in group_by_layer(model.state_dict()).values())
+    else:
+        head = {f"pooler.head.{name}" for name in clef_head_weights()}
+        assert hf.keys() == {name for name in release if not name.startswith("mtp.")} - set(clef_head_weights()) | head
+        assert all(hf[f"pooler.head.{scalar}"].shape == () for scalar in SCALARS)
+        mapped = {vllm_name(name, CLEF_MAPPER) for name in hf}
+        namespaces = ("visual.", "language_model.model.", "language_model.lm_head.", "pooler.head.")
+        assert all(name.startswith(namespaces) for name in mapped)
+    for name, tensor in release.items():
+        expected = hf.get("score.weight" if name == "weight" else name, hf.get(f"pooler.head.{name}"))
+        if expected is not None:
+            torch.testing.assert_close(expected, tensor)
+
+
+@pytest.mark.parametrize("kind", ["d3", "d3-untied", "clef"])
+def test_release_loads_through_the_conversion_cache(tmp_path, monkeypatch, kind):
+    release = WRITE_RELEASE[kind](tmp_path)
+    monkeypatch.setattr("torch.distributed.barrier", lambda *args, **kwargs: None)
+    monkeypatch.setattr("prime_rl.trainer.model.wait_for_master", lambda *args, **kwargs: None)
+    monkeypatch.setattr("prime_rl.trainer.model.get_dcp_group", lambda: None)
+    config = model_config(tmp_path)
+    model = get_model(config, device=torch.device("meta"), dtype=torch.float32)
+    # setup_model shards the model before loading it, and to_empty swaps FSDP's DTensor parameters in place, which keeps
+    # a tied head tied; swapping does the same for the plain parameters here.
+    monkeypatch.setattr(torch.__future__, "_swap_module_params_on_conversion", True)
+    monkeypatch.setattr(model, "to_empty", lambda device: nn.Module.to_empty(model, device="cpu"))
+    load_dcp_from_hf(model, config)
+
+    assert (tmp_path / "prime" / ".prime-v1").is_file()
+    expected = model.convert_to_prime(dict(release))
+    loaded = model.state_dict()
+    added = "lexical_embedding.weight" if kind == "clef" else "lm_head.weight"
+    assert loaded.keys() - expected.keys() == {added}
+    for name in loaded.keys() - {added}:
+        torch.testing.assert_close(loaded[name].cpu(), expected[name])
+    if kind == "clef":
+        assert torch.equal(model.lexical_embedding.weight, model.lm_head.weight)
+    elif kind == "d3":
+        assert model.lm_head.weight is model.get_input_embeddings().weight
+    else:  # the LM head the release lacks: a frozen copy of the embedding
+        assert model.lm_head.weight is not model.get_input_embeddings().weight
+        assert torch.equal(model.lm_head.weight, model.get_input_embeddings().weight)
+        assert not model.lm_head.weight.requires_grad
+
+
+def record_inputs(
+    model: nn.Module,
+    hidden_states: torch.Tensor,
+    record: dict,
+    loss_mask: torch.Tensor | None = None,
+    input_ids: torch.Tensor | None = None,
+) -> LossInputs:
+    """One record as the trainer hands it to the loss, from its hidden states alone."""
+    zeros = torch.zeros(len(hidden_states), dtype=torch.long)
+    return LossInputs(
+        model=model,
+        hidden_states=hidden_states,
+        input_ids=zeros if input_ids is None else input_ids,
+        position_ids=torch.arange(len(hidden_states)),
+        target_ids=zeros,
+        loss_mask=torch.zeros_like(zeros, dtype=torch.bool) if loss_mask is None else loss_mask,
+        truncated=False,
+        sample_data=record,
+    )
+
+
+@pytest.mark.parametrize("temperature", [1.5, None])
+def test_d3_logits_are_the_readout_at_the_read_tokens_over_the_temperature(tmp_path, temperature):
+    decision_config = DECISION_CONFIG | {"temperature": temperature}
+    if temperature is None:  # vLLM's d3 strategy then divides by 1
+        del decision_config["temperature"]
+    write_d3_release(tmp_path, decision_config)
+    model = build(tmp_path, device="cpu")
+    hidden_states = torch.randn(4, HIDDEN, dtype=torch.bfloat16)
+    loss_mask = torch.tensor([False, True, False, True])
+    questions = [{"id": "q", "type": "noul", "options": ["false", "true"], "reads": [[1, 2]]}]
+    questions += [{"id": "r", "type": "choice", "options": ["x", "y", "z"], "reads": [[3, 4]]}]
+    logits = checked_option_logits(record_inputs(model, hidden_states, {"id": 0, "questions": questions}, loss_mask))
+
+    # The readout at fp32, divided by the temperature as vLLM's d3 strategy does.
+    reads = hidden_states[loss_mask].float() @ model.score.weight.T
+    assert [vector.dtype for vector in logits] == [torch.float32] * 2
+    torch.testing.assert_close(logits[0], reads[0, :2] / (temperature or 1.0))
+    torch.testing.assert_close(logits[1], reads[1, :3] / (temperature or 1.0))
+
+
+def vllm_joint_schema() -> dict[str, Any]:
+    """vLLM's joint schema head, its schema parsing and its index building, taken out of its source with ast so that
+    nothing of vLLM is imported."""
+    try:
+        path = Path(
+            importlib.metadata.distribution("vllm").locate_file("vllm/model_executor/models/clef_joint_schema.py")
+        )
+    except importlib.metadata.PackageNotFoundError:
+        pytest.skip("needs vLLM's source")
+    if not path.is_file():
+        pytest.skip(f"the installed vLLM has no {path.name}")
+    nodes = []
+    for node in ast.parse(path.read_text()).body:
+        if isinstance(node, ast.Assign) and node.targets[0].id in ("NUM_QUESTION_TYPES", "MAX_LOGIT_SCALE"):
+            nodes.append(node)
+        elif isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name in (
+            "segment_mean",
+            "SchemaIndices",
+            "EvidenceRoutingLayer",
+            "JointSchemaHead",
+            "parse_joint_schema",
+        ):
+            nodes.append(node)
+        elif isinstance(node, ast.ClassDef) and node.name == "JointSchemaPooler":
+            (indices,) = [item for item in node.body if isinstance(item, ast.FunctionDef) and item.name == "_indices"]
+            indices.decorator_list = []
+            nodes.append(indices)
+    namespace = {"math": math, "np": np, "torch": torch, "nn": nn, "F": F, "dataclass": dataclass, "Any": Any}
+    namespace["async_tensor_h2d"] = lambda data, device, dtype=None: torch.as_tensor(data, device=device, dtype=dtype)
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), "exec"), namespace)
+    return namespace
+
+
+def test_clef_logits_are_vllms(tmp_path):
+    vllm = vllm_joint_schema()
+    write_clef_release(tmp_path)
+    model = build(tmp_path, device="cpu")
+    model.load_state_dict(model.convert_to_prime(load_state_dict(tmp_path)), strict=False)
+    model.lexical_embedding.weight.data.copy_(model.lm_head.weight)
+    vllm_head = vllm["JointSchemaHead"](**JOINT_HEAD_CONFIG)
+    vllm_head.load_state_dict(clef_head_weights())
+    assert vllm_head.state_dict().keys() == {
+        name.removeprefix("pooler.head.") for name in model.pooler.head.state_dict()
+    }
+
+    # Two records: noul and choice questions, then a score question.
+    records = [
+        (12, [("noul", [(1, 3), (4, 5), (6, 8)]), ("choice", [(8, 9), (9, 10), (10, 11), (11, 12)])]),
+        (9, [("score", [(0, 2), (3, 4), (5, 6), (7, 9)])]),
+    ]
+    input_ids = torch.randint(0, 128, (1, 21))
+    hidden_states = torch.randn(1, 21, HIDDEN)
+    logits, start = [], 0
+    for index, (num_tokens, questions) in enumerate(records):
+        record = {
+            "id": index,
+            "questions": [
+                {"id": f"q{q}", "type": kind, "options": [f"o{o}" for o in range(len(spans) - 1)], "reads": spans}
+                for q, (kind, spans) in enumerate(questions)
+            ],
+        }
+        span = slice(start, start + num_tokens)
+        logits += checked_option_logits(
+            record_inputs(model, hidden_states[0, span], record, input_ids=input_ids[0, span])
+        )
+        start += num_tokens
+
+    expected, start = [], 0
+    for num_tokens, questions in records:
+        # The request vLLM's Clef strategy sends for the record's prompt: spans count from the prompt's end.
+        schema = {
+            "question_types": [{"noul": 0, "choice": 1, "score": 2}[kind] for kind, _ in questions],
+            "question_spans": [[spans[0][0] - num_tokens, spans[0][1] - num_tokens] for _, spans in questions],
+            "option_spans": [[a - num_tokens, b - num_tokens] for _, spans in questions for a, b in spans[1:]],
+            "option_counts": [len(spans) - 1 for _, spans in questions],
+        }
+        types, spans, counts = vllm["parse_joint_schema"]({"joint_schema": schema}, num_tokens)
+        indices, lexical_ids, lexical_span_ids = vllm["_indices"](types, spans, counts, torch.device("cpu"))
+        token_ids = input_ids[0, start : start + num_tokens]
+        lexical = vllm["segment_mean"](
+            F.embedding(token_ids[lexical_ids], model.lm_head.weight),
+            lexical_span_ids,
+            indices.span_lengths[len(types) :],
+        )
+        record_logits = vllm_head(hidden_states[0, start : start + num_tokens], lexical, indices).float()
+        expected += record_logits.split(counts)
+        start += num_tokens
+    assert len(logits) == len(expected) == 3
+    for actual, vector in zip(logits, expected):
+        torch.testing.assert_close(actual, vector)
+
+
+def test_decision_models_are_refused_where_they_cannot_train(tmp_path):
+    write_d3_release(tmp_path / "d3")
+    write_clef_release(tmp_path / "clef")
+    tiny_config("Qwen3_5ForConditionalGeneration", tied=False).save_pretrained(tmp_path / "qwen")
+    refusals = [
+        ({}, {"broadcasts_weights": True}, "vLLM serves as a pooling model only"),
+        ({}, {"next_token_loss": True}, "a Clef-Flash release trains as a plain Qwen3.5"),
+        ({"lora": {}}, {}, "Decision models train with full fine-tuning"),
+        ({"quantization": {"type": "fp8"}}, {}, "\\[model.quantization\\] is not supported"),
+    ]
+    for settings, run, error in refusals:
+        for name in ("d3", "clef", "qwen"):
+            config = ModelConfig(name=str(tmp_path / name), attn="flash_attention_2", **settings)
+            model = get_model(config, device=torch.device("meta"))
+            if name == "qwen":
+                refuse_decision_model(model, config, **run)
+                continue
+            with pytest.raises(ValueError, match=error):
+                refuse_decision_model(model, config, **run)
+
+    # From scratch, only Clef-Flash is refused (test_scratch_init_of_the_decision_models).
+    for name in ("d3", "clef", "qwen"):
+        config = ModelConfig(name=str(tmp_path / name), attn="flash_attention_2", init={"type": "scratch"})
+        model = get_model(config, device=torch.device("meta"))
+        if name != "clef":
+            refuse_decision_model(model, config)
+            continue
+        with pytest.raises(ValueError, match='ClefFlashForJointSchema does not support model.init.type = "scratch"'):
+            refuse_decision_model(model, config)
+
+
+@pytest.mark.parametrize("kind", ["d3", "d3-untied", "clef"])
+def test_scratch_init_of_the_decision_models(tmp_path, monkeypatch, kind):
+    """model.init.type = "scratch" on the CPU: d3's init reaches its float32 readout; Clef-Flash's misses its head's
+    scalars, which refuse_decision_model refuses before."""
+    WRITE_RELEASE[kind](tmp_path)
+    model = build(tmp_path)
+    monkeypatch.setattr(model, "to_empty", lambda **kwargs: nn.Module.to_empty(model, device="cpu"))
+    monkeypatch.setattr("torch.distributed.barrier", lambda *args, **kwargs: None)
+    if kind == "clef":
+        with pytest.raises(RuntimeError, match="its init does not reach pooler.head.prior_logit_scale"):
+            initialize_from_scratch(model, seed=0)
+        return
+    initialize_from_scratch(model, seed=0)
+    assert model.score.weight.dtype == torch.float32 and model.score.weight.std() > 0
+
+
+class ReadoutConfig(PretrainedConfig):
+    model_type = "decision_readout_test"
+
+
+class Backbone(nn.Module):
+    def __init__(self, vocab: int, hidden: int):
+        super().__init__()
+        self.embed_tokens = nn.Embedding(vocab, hidden)
+        self.layers = nn.ModuleList([nn.Linear(hidden, hidden), nn.Linear(hidden, hidden)])
+        self.norm = nn.LayerNorm(hidden)
+
+    def forward(self, input_ids, position_ids, *, seq_lens, seq_lens_are_pre_shard=False):
+        hidden_states = self.embed_tokens(input_ids)
+        for layer in self.layers:
+            hidden_states = hidden_states + torch.tanh(layer(hidden_states))
+        return SimpleNamespace(last_hidden_state=self.norm(hidden_states))
+
+
+class ReadoutModel(PreTrainedModelPrimeRL):
+    """A tied causal LM with d3's float32 readout."""
+
+    config_class = ReadoutConfig
+    fp32_modules = ("score",)
+
+    def __init__(self, config, vocab: int = 32, hidden: int = 8):
+        super().__init__(config)
+        self.model = Backbone(vocab, hidden)
+        self.lm_head = nn.Linear(hidden, vocab, bias=False)
+        self.lm_head.weight = self.model.embed_tokens.weight
+        self.score = nn.Linear(hidden, 5, bias=False, dtype=torch.float32)
+
+    def init_buffers_post_meta(self):
+        pass
+
+
+def readout_model() -> ReadoutModel:
+    torch.manual_seed(0)
+    model = ReadoutModel(ReadoutConfig(tie_word_embeddings=True))
+    inject_prime_lm_head(model)
+    return model
+
+
+def readout_loss(inputs: LossInputs) -> LossOutputs:
+    logits = inputs.model.score(inputs.hidden_states[inputs.loss_mask].float())
+    return LossOutputs(loss=logits.logsumexp(-1).sum(), count=1, metrics={"logits": logits.detach().sum()})
+
+
+def readout_batch(rank: int) -> dict:
+    input_ids = torch.randint(0, 32, (1, 6), generator=torch.Generator().manual_seed(rank))
+    loss_mask = torch.tensor([[False, False, True, False, False, True]])
+    return {"input_ids": input_ids, "position_ids": torch.tensor([[0, 1, 2, 0, 1, 2]]), "seq_lens": torch.tensor([3, 3]),
+            "loss_mask": loss_mask, "target_ids": torch.zeros_like(input_ids), "sample_lens": torch.tensor([3, 3]),
+            "truncated": torch.tensor([False, False])}  # fmt: skip
+
+
+def fp32_worker(rank: int, world: int, init_file: str, out_dir: str) -> None:
+    os.environ.update(RANK=str(rank), WORLD_SIZE=str(world), LOCAL_RANK=str(rank), LOCAL_WORLD_SIZE=str(world))
+    dist.init_process_group("gloo", init_method=f"file://{init_file}", rank=rank, world_size=world)
+    parallel_dims_module.device_type = "cpu"  # the mesh is built on CUDA by default
+    config = ModelConfig(name="readout", ep=1, compile=None)
+    model = readout_model()
+    setup_fsdp(model, config, get_parallel_dims(config))  # prime-rl's real FSDP setup
+
+    dtypes = []
+    model.score.register_forward_hook(lambda module, args, output: dtypes.append((module.weight.dtype, output.dtype)))
+    outputs = run_loss_fn(readout_loss, model, readout_batch(rank))
+    outputs.loss.backward()
+    grad = model.score.weight.grad.full_tensor()
+    torch.save(
+        {"dtypes": dtypes, "grad": grad, "logits": outputs.metrics["logits"]}, os.path.join(out_dir, f"{rank}.pt")
+    )
+    dist.destroy_process_group()
+
+
+def test_fp32_modules_compute_in_float32_under_fsdp(tmp_path):
+    world = 2
+    mp.spawn(fp32_worker, args=(world, str(tmp_path / "rendezvous"), str(tmp_path)), nprocs=world, join=True)
+
+    # One process without FSDP: the backbone in bf16, as the root unit computes it, and the readout in float32.
+    model = readout_model()
+    model.model.to(torch.bfloat16)
+    losses = [run_loss_fn(readout_loss, model, readout_batch(rank)) for rank in range(world)]
+    sum(outputs.loss for outputs in losses).div(world).backward()
+    for rank in range(world):
+        result = torch.load(tmp_path / f"{rank}.pt")
+        assert result["dtypes"] == [(torch.float32, torch.float32)] * 2  # once per sample
+        torch.testing.assert_close(result["logits"], losses[rank].metrics["logits"], rtol=1e-5, atol=1e-5)
+        torch.testing.assert_close(result["grad"], model.score.weight.grad, rtol=1e-5, atol=1e-5)
+
+
+# A System One record end to end: strategy -> SystemOneDataset sample -> packed row -> native model -> decision loss.
+
+CHAT_TEMPLATE = (
+    "{% for m in messages %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
+    "{% if add_generation_prompt %}<|im_start|>assistant\n<think>\n\n</think>\n\n{% endif %}"
+)
+QUESTIONS = {
+    "outage": {"type": "noul", "instructions": "Is a service down?", "criteria": {"true": "A service is down."}},
+    "team": {"type": "choice", "instructions": "Who handles it?", "criteria": {"technical": "Bugs", "billing": None}},
+    "urgency": {"type": "score", "instructions": "How urgent?", "criteria": ["Can wait", "This week", "Today"]},
+}
+ROWS = [
+    {"id": "r", "state": "Checkout fails.", "label": {"outage": True, "urgency": 2},
+     "soft_label": {"team": {"billing": 0.25, "technical": 0.75}}},
+    {"id": "s", "state": {"ticket": 7, "text": "Invoice is wrong."}, "label": {"team": "billing", "urgency": 1},
+     "soft_label": None},
+]  # fmt: skip
+
+
+def write_char_tokenizer(directory: Path) -> None:
+    """One token per printable ASCII character or newline, so every id fits the tiny vocabulary, and a Qwen-like chat
+    template."""
+    vocab = {"<unk>": 0, "\n": 1} | {chr(code): code - 30 for code in range(32, 127)}
+    tokenizer = Tokenizer(WordLevel(vocab, unk_token="<unk>"))
+    tokenizer.pre_tokenizer = Split(Regex("[\\s\\S]"), behavior="isolated")
+    PreTrainedTokenizerFast(tokenizer_object=tokenizer, unk_token="<unk>", chat_template=CHAT_TEMPLATE).save_pretrained(
+        directory
+    )
+
+
+def segments(cu_seqlens: torch.Tensor) -> list[tuple[int, int]]:
+    bounds = cu_seqlens.tolist()
+    return list(zip(bounds[:-1], bounds[1:]))
+
+
+def flash_attention_varlen(query, key, value, cu_seqlens, cu_seqlens_k, max_q, max_k, scale, causal, left, right):
+    """flash-attn's varlen forward: each segment attends within itself, causally or not."""
+    groups = query.shape[1] // key.shape[1]
+    key, value = key.repeat_interleave(groups, 1), value.repeat_interleave(groups, 1)
+    outputs = []
+    for start, end in segments(cu_seqlens):
+        q, k, v = (tensor[start:end].transpose(0, 1) for tensor in (query, key, value))
+        outputs.append(F.scaled_dot_product_attention(q, k, v, is_causal=causal, scale=scale).transpose(0, 1))
+    return torch.cat(outputs), None
+
+
+def causal_conv1d(x, weight, bias, activation, cu_seqlens, cp_context):
+    """FLA's causal depthwise convolution, per segment."""
+    assert activation == "silu"
+    outputs = []
+    for start, end in segments(cu_seqlens):
+        segment = x[0, start:end].T[None]
+        convolved = F.conv1d(segment, weight[:, None], bias, padding=weight.shape[-1] - 1, groups=weight.shape[0])
+        outputs.append(F.silu(convolved[0, :, : end - start].T))
+    return torch.cat(outputs)[None], None
+
+
+def chunk_gated_delta_rule(q, k, v, g, beta, use_qk_l2norm_in_kernel, cu_seqlens, cp_context):
+    """FLA's gated delta rule, token by token, its state reset at each segment."""
+    q, k = F.normalize(q.float(), dim=-1) * q.shape[-1] ** -0.5, F.normalize(k.float(), dim=-1)
+    v, g, beta = v.float(), g.float(), beta.float()
+    outputs = torch.zeros_like(v)
+    for start, end in segments(cu_seqlens):
+        state = v.new_zeros(v.shape[2], k.shape[-1], v.shape[-1])
+        for t in range(start, end):
+            state = state * g[0, t].exp()[:, None, None]
+            delta = (v[0, t] - (state * k[0, t, :, :, None]).sum(1)) * beta[0, t, :, None]
+            state = state + k[0, t, :, :, None] * delta[:, None]
+            outputs[0, t] = (state * q[0, t, :, :, None]).sum(1)
+    return outputs, None
+
+
+@pytest.fixture
+def cpu_kernels(monkeypatch):
+    """Torch versions of the flash attention and FLA kernels, which need a GPU."""
+    monkeypatch.setattr(attn, "_flash_attn_2_varlen", flash_attention_varlen)
+    monkeypatch.setattr(gated_delta_net, "causal_conv1d", causal_conv1d)
+    monkeypatch.setattr(gated_delta_net, "chunk_gated_delta_rule", chunk_gated_delta_rule)
+    monkeypatch.setattr(gated_delta_net, "FusedRMSNormGated", hf_modeling.Qwen3_5RMSNormGated)
+
+
+def native_model(directory: Path) -> PreTrainedModelPrimeRL:
+    """The release's class, with its weights, as setup_model builds it."""
+    model = build(directory, device="cpu")
+    inject_prime_lm_head(model)
+    model.load_state_dict(model.convert_to_prime(load_state_dict(directory)), strict=False)
+    if isinstance(model, ClefFlashForJointSchema):
+        model.lexical_embedding.weight.data.copy_(model.lm_head.weight)
+    return model
+
+
+PADDING = 37
+
+
+def packed_batch(directory: Path, model: PreTrainedModelPrimeRL, padded: bool) -> dict:
+    """Both records of ROWS, rendered by the strategy the model's class declares and packed into one row as the SFT
+    dataloader does; ``padded``, the row is PADDING tokens longer than the records and padded as pad_to_seq_len pads."""
+    rows = [
+        {key: json.dumps(value) if key != "id" else value for key, value in row.items()}
+        | {"questions": json.dumps(QUESTIONS)}
+        for row in ROWS
+    ]
+    strategy = type(model).system_one_strategy()(PreTrainedTokenizerFast.from_pretrained(directory), model.config)
+
+    def pack(row_len: int, pad_to_multiple_of: int) -> dict:
+        dataset = SystemOneDataset(Dataset.from_list(rows), strategy, shuffle=False, seq_len=4096, max_epochs=1)
+        (row,) = CatDataset(dataset, seq_len=row_len, pad_to_multiple_of=pad_to_multiple_of)
+        return row
+
+    row = pack(4096, 1)
+    if padded:
+        row_len = len(row["input_ids"]) + PADDING
+        row = pack(row_len, row_len)
+    return cat_collate([row])
+
+
+def packed_logits(model, batch: dict) -> list[torch.Tensor]:
+    """Every question's logits, in pack order, read from the packed row record by record as the trainer calls the
+    loss."""
+    logits = []
+
+    def read(inputs: LossInputs) -> LossOutputs:
+        logits.extend(checked_option_logits(inputs))
+        return LossOutputs(loss=inputs.hidden_states.sum() * 0.0, count=0)
+
+    run_loss_fn(read, model, batch)
+    return logits
+
+
+def hidden_alone(model, input_ids: torch.Tensor) -> torch.Tensor:
+    """The final hidden states of one prompt alone, as vLLM computes them for one request."""
+    return forward(
+        model,
+        input_ids[None],
+        torch.arange(len(input_ids))[None],
+        seq_lens=torch.tensor([len(input_ids)]),
+        hidden_states_fn=lambda hidden_states: hidden_states[0],
+    )
+
+
+def check_decision_loss(model, batch: dict, logits: list[torch.Tensor], trained: nn.Parameter) -> None:
+    questions = [question for record in batch["sample_data"] for question in record["questions"]]
+    labelled = [(vector, question["target"]) for vector, question in zip(logits, questions) if question["target"]]
+    expected = sum(F.cross_entropy(vector, torch.tensor(target)) for vector, target in labelled)
+    outputs = run_loss_fn(partial(decision_loss, brier_weight=0.0), model, batch)
+    assert outputs.count == len(labelled) == 5
+    torch.testing.assert_close(outputs.loss, expected)
+    outputs.loss.backward()
+    assert trained.grad is not None and trained.grad.abs().sum() > 0
+
+
+@pytest.mark.parametrize("padded", [False, True])
+def test_d3_trains_on_vllms_prompts_end_to_end(tmp_path, cpu_kernels, padded):
+    write_d3_release(tmp_path)
+    write_char_tokenizer(tmp_path)
+    model = native_model(tmp_path)
+    tokenizer = PreTrainedTokenizerFast.from_pretrained(tmp_path)
+    batch = packed_batch(tmp_path, model, padded)
+    logits = packed_logits(model, batch)
+
+    # The strategy's option order is the readout's: the j-th logit scores the j-th code, whose line is that option's.
+    lines = {"outage": ["No / false", "A service is down."], "team": ["technical: Bugs", "billing"],
+             "urgency": ["Can wait", "This week", "Today"]}  # fmt: skip
+    options = {"outage": ["false", "true"], "team": ["technical", "billing"], "urgency": ["0", "1", "2"]}
+    input_ids, start, index = batch["input_ids"][0], 0, 0
+    seq_lens, vectors = iter(batch["seq_lens"].tolist()), iter(logits)
+    sample_lens = iter(batch["sample_lens"].tolist())
+    for record in batch["sample_data"]:
+        for question in record["questions"]:
+            # One segment per question, read at its last token, as vLLM pools each request's last token.
+            end = start + next(seq_lens)
+            assert question["reads"] == [[end - 1 - index, end - index]]
+            prompt = "".join(tokenizer.convert_ids_to_tokens(input_ids[start:end].tolist()))
+            assert question["options"] == options[question["id"]]
+            assert all(f"\n{code}: {line}\n" in prompt for code, line in zip(CODES, lines[question["id"]]))
+
+            # The packed logits are the readout's on the question's prompt alone, as vLLM pools each request on its
+            # own: at its last token, in float32, over the temperature. d3 attends both ways, so this also checks that
+            # the padding is not in the last prompt's segment.
+            hidden = hidden_alone(model, input_ids[start:end])[-1]
+            expected = model.score(hidden.float())[: len(question["options"])] / DECISION_CONFIG["temperature"]
+            torch.testing.assert_close(next(vectors), expected)
+            start = end
+        assert start - index == next(sample_lens)
+        index = start
+    assert next(vectors, None) is None and next(sample_lens, None) is None
+    # The padding, if any, is a segment of its own after the records.
+    assert list(seq_lens) == [PADDING] * padded and start + PADDING * padded == len(input_ids)
+
+    check_decision_loss(model, batch, logits, model.score.weight)
+
+
+@pytest.mark.parametrize("padded", [False, True])
+def test_clef_trains_on_vllms_prompt_end_to_end(tmp_path, cpu_kernels, padded):
+    write_clef_release(tmp_path)
+    write_char_tokenizer(tmp_path)
+    model = native_model(tmp_path)
+    tokenizer = PreTrainedTokenizerFast.from_pretrained(tmp_path)
+    batch = packed_batch(tmp_path, model, padded)
+    logits = packed_logits(model, batch)
+
+    # The strategy's read spans are the head's: the instruction, then each option's JSON in the head's order, which the
+    # targets follow.
+    options = {"outage": ["true", "false"], "team": ["billing", "technical"], "urgency": ["0", "1", "2"]}
+    targets = {"outage": [1.0, 0.0], "team": [0.25, 0.75], "urgency": [0.0, 0.0, 1.0]}
+    input_ids, start, vectors = batch["input_ids"][0], 0, iter(logits)
+    # One segment per record, then the padding's, if any.
+    assert batch["seq_lens"].tolist() == batch["sample_lens"].tolist() + [PADDING] * padded
+    for record, num_tokens in zip(batch["sample_data"], batch["sample_lens"].tolist(), strict=True):
+        ids = input_ids[start : start + num_tokens]
+        for question in record["questions"]:
+            texts = ["".join(tokenizer.convert_ids_to_tokens(ids[a:b].tolist())) for a, b in question["reads"]]
+            assert texts[0] == QUESTIONS[question["id"]]["instructions"]
+            assert [json.loads(text)["option_id"] for text in texts[1:]] == question["options"]
+            assert question["options"] == options[question["id"]]
+            if record["id"] == "r":
+                assert question["target"] == targets[question["id"]]
+
+        # The packed logits are the head's on the record's prompt alone, as vLLM pools each request on its own (the head
+        # is checked against vLLM's source in test_clef_logits_are_vllms), with the lexical prior from the LM head.
+        questions = record["questions"]
+        types = [QUESTION_TYPES[question["type"]] for question in questions]
+        spans = [tuple(question["reads"][0]) for question in questions]
+        spans += [tuple(span) for question in questions for span in question["reads"][1:]]
+        counts = [len(question["reads"]) - 1 for question in questions]
+        schema, lexical_positions, lexical_spans = schema_indices(types, spans, counts, torch.device("cpu"))
+        lexical = F.embedding(ids[lexical_positions], model.lm_head.weight)
+        lexical = segment_mean(lexical, lexical_spans, schema.span_lengths[len(types) :])
+        for vector in model.pooler.head(hidden_alone(model, ids), lexical, schema).float().split(counts):
+            torch.testing.assert_close(next(vectors), vector)
+        start += num_tokens
+    assert next(vectors, None) is None and start + PADDING * padded == len(input_ids)
+
+    check_decision_loss(model, batch, logits, model.pooler.head.residual_gate)

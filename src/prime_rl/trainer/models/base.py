@@ -2,6 +2,7 @@ from collections.abc import Iterable
 from typing import Protocol, runtime_checkable
 
 from torch import Tensor, nn
+from transformers.configuration_utils import PretrainedConfig
 from transformers.modeling_utils import PreTrainedModel
 
 from prime_rl.trainer.models.layers.moe import MoE
@@ -54,6 +55,14 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
 
     cp_context: CPContext = CPContext()
 
+    fp32_modules: tuple[str, ...] = ()
+    """Submodules FSDP shards in a float32 unit of their own, which computes in float32 whatever the mixed-precision
+    policy, e.g. a readout that inference runs in float32."""
+
+    export_weight_files: dict[str, str] = {}
+    """Tensors the export stores outside the shards, as {state-dict prefix: file name}, without the prefix, as vLLM's
+    ``secondary_weights`` read them."""
+
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:
         """Why this architecture cannot train at context-parallel degree `cp`, or ``None`` if it can.
@@ -74,6 +83,12 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         Runtime upcasts for training or inference do not change the wire dtype.
         """
         return False
+
+    def export_config_files(self, config: PretrainedConfig) -> dict[str, dict]:
+        """The JSON files the export writes beside ``config.json``, as {file name: content}. `config` is a copy of the
+        model's config, which the export then saves as ``config.json``: take off it what the loader or the class put on
+        it. The default writes none."""
+        return {}
 
     @classmethod
     def from_config(cls, config, trust_remote_code: bool = False, **kwargs):

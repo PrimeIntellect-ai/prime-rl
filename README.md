@@ -50,6 +50,7 @@ The trainer runs the PrimeRL model implementations under `src/prime_rl/trainer/m
 | Qwen3 MoE (`qwen3_moe`) | `Qwen/Qwen3-30B-A3B`, … | yes | ✅ | ✅ |
 | Qwen3.5 MoE (`qwen3_5_moe`) | `Qwen/Qwen3.5-35B-A3B`, … | yes | ✅ | ✅ |
 | Qwen3.5 VLMs | see [advanced.md](docs/advanced.md#multimodal-training) (`qwen3_5`, `qwen3_5_moe`) | MoE only on MoE VLMs | MoE only | ✅ |
+| Qwen3.5 decision models, SFT only (`D3ForSequenceClassification`, `ClefFlashForJointSchema`) | d3 and Clef-Flash releases, selected by `architectures` and the file beside `config.json`: see [training.md](docs/training.md#native-decision-models) | no | — | ❌ |
 | Qwen3.8 Flash Next VLM (`qwen4_exp`) | `Qwen/Qwen3.8-Flash-Next` | yes | ✅ | ✅ |
 | Poolside Laguna (`laguna`) | `poolside/Laguna-XS.2` | yes | ✅ | ✅ |
 | MiniMax M2 (`minimax_m2`) | `MiniMax/MiniMax-M2` | yes | ✅ | ✅ |
