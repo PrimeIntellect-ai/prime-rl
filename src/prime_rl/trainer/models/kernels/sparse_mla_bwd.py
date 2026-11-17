@@ -407,7 +407,16 @@ def cudnn_sparse_mla_backward(
 
         workspace_bytes = flash_attn_bwd_sm100_workspace_size(B * S, B * S_kv, D_qk, H)
         workspace = torch.empty(workspace_bytes, dtype=torch.uint8, device=q.device)
-        dq, dkv, _ = flash_attn_bwd_sm100(*args, no_sink, flat_indices, softmax_scale=sm_scale, workspace=workspace)
+        dq, dkv, _ = flash_attn_bwd_sm100(
+            *args,
+            no_sink,
+            flat_indices,
+            softmax_scale=sm_scale,
+            dq=torch.empty_like(args[0]),
+            dkv=torch.empty_like(args[1]),
+            workspace=workspace,
+            d_sink=torch.empty_like(no_sink),
+        )
     return dq.view_as(q), dkv.view_as(kv)
 
 

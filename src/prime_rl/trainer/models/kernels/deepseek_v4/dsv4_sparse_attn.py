@@ -336,7 +336,10 @@ def cudnn_flashmla_backward(
             flat_indices,
             softmax_scale=sm_scale,
             topk_length=topk_length,
+            dq=torch.empty_like(flat_tensors[0]),
+            dkv=torch.empty_like(flat_tensors[1]),
             workspace=torch.empty(workspace_bytes, dtype=torch.uint8, device=q.device),
+            d_sink=torch.empty_like(no_sink),
             max_slots=cudnn_flashmla_slot_width(max_slots),
         )
     delta = preprocess(heads, dim)(out, grad_out)
