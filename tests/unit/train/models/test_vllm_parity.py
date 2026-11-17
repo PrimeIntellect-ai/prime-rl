@@ -49,7 +49,8 @@ Cases with `known_bug` run as strict xfails, so a fix shows up as a failure unti
 - Laguna: vLLM 0.33 never loads its `e_score_correction_bias` on weight updates, so 75% of routes differ.
 - MiniMax-M2: vLLM 0.33's layerwise reload crashes on its `functools.partial` QK-norm weight loaders.
 
-Cases with `tiny=True` (qwen3, qwen3_moe, DeepSeek-V4, GLM-5) also run in the tiny GPU subset.
+Cases with `tiny=True` (qwen3, qwen3_moe, GLM-5) also run in the tiny GPU subset. DeepSeek-V4 takes ~100 s to compile
+its kernels in a fresh process, so it runs only in the full GPU suite.
 
 Adding an arch is one `Case`, with these fields:
 
@@ -419,7 +420,6 @@ CASES = [
         max_abs=0.06,
         mismatch_kl=7e-5,
         post_init=hash_routing_table,
-        tiny=True,
     ),
     Case(
         "glm_moe_dsa",

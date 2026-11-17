@@ -35,22 +35,25 @@ the sharding. `test_vllm_parity.py` checks the routers' own picks against vLLM's
 The results also report each case's `worst_grad_share`: the norm of the worst parameter's reference gradient over the
 total grad norm. A tiny share means that parameter's gradient nearly cancels, so its relative error is noisy.
 
-Tolerances are about 5x the largest difference seen: loss 1e-5, grad norm 1e-3 and worst parameter gradient 2e-2 in
-eager mode, and 1e-4, 3e-3 and 1e-1 with torch.compile, which fuses bf16 ops differently from the eager reference. A case
-can raise one with a measured reason (`Case.tolerances`): GatedDeltaNet under CP moves the loss more than attention.
-Observed: dp2 is exact up to ~1e-8, CP and EP gradients differ by up to ~5e-3, and compiled MoE router gradients by up
-to ~4e-2. Bugs injected by hand each failed exactly the affected cases: a Ulysses all-to-all backward without the
-exchange, a wrong FSDP gradient divide factor on EP blocks, and every CP rank using the first shard's position ids.
+Tolerances are about 5x the largest difference seen on the Llama, Qwen3 and GLM-4 archs: loss 1e-5, grad norm 1e-3
+and worst parameter gradient 2e-2 in eager mode, and 1e-4, 3e-3 and 1e-1 with torch.compile, which fuses bf16 ops
+differently from the eager reference. A case can raise one with a measured reason (`Case.tolerances`): GatedDeltaNet
+under CP moves the loss more than attention. Observed: dp2 is exact up to ~1e-8, eager CP and EP gradients differ by up
+to ~5e-3 on those archs and ~1e-2 on the newer ones, and compiled cases by up to ~1.3e-2. DeepSeek-V4's backward is not
+deterministic: on H200 its ep2 case has two reproducible numeric modes, and in the worse one an expert gradient is
+1.8e-2 off, close to the tolerance. Bugs injected by hand each failed exactly the affected cases: a Ulysses all-to-all
+backward without the exchange, a wrong FSDP gradient divide factor on EP blocks, and every CP rank using the first
+shard's position ids.
 
-There are two suites, each one launch. `tiny` (`CASES`) runs in the tiny GPU subset in well under a minute.
-`recent_archs` (`RECENT_ARCH_CASES`: Qwen3.5 MoE, Qwen3.8 Flash Next, DeepSeek-V4, GLM-5) runs only in the full GPU
-suite: in a fresh process, their kernels take minutes to compile (the cuDNN sparse-attention backward, DeepGEMM,
-TileLang, FLA's Triton autotuning).
+There are two suites, each one launch. `tiny` (`CASES`) runs in the tiny GPU subset in about 40 s. `full`
+(`FULL_SUITE_CASES`) runs only in the full GPU suite. It holds the cases that take too long to compile in a fresh
+process: Qwen3-MoE with torch.compile (~25 s), and Qwen3.5 MoE, Qwen3.8 Flash Next, DeepSeek-V4 and GLM-5, whose
+kernels take minutes (the cuDNN sparse-attention backward, DeepGEMM, TileLang, FLA's Triton autotuning).
 
 A case that raises, for example on a kernel the GPU does not support, fails alone and the other cases still report.
 If only one rank raises, the other waits in a collective until the launch timeout.
 
-Adding a case is one line in `CASES` or `RECENT_ARCH_CASES`. Adding a model is one config:
+Adding a case is one line in `CASES` or `FULL_SUITE_CASES`. Adding a model is one config:
 
 - In `TINY_MODELS` for archs that HF implements. HF builds and saves the checkpoint.
 - In `TINY_PRIME_RL_MODELS` for the others. The prime-rl model class builds the checkpoint with seeded weights
@@ -60,7 +63,7 @@ Keep the vocabulary, every layer kind, and the head shapes the kernels need; shr
 
 To run a suite without pytest (it writes `results.json` to the output dir):
 
-    uv run torchrun --nproc-per-node=2 tests/unit/train/test_distributed_invariance.py <output_dir> tiny|recent_archs
+    uv run torchrun --nproc-per-node=2 tests/unit/train/test_distributed_invariance.py <output_dir> tiny|full
 """
 
 import json
@@ -238,7 +241,6 @@ CASES = [
     Case("qwen3_moe-dp2", "qwen3_moe"),
     Case("qwen3_moe-ep2", "qwen3_moe", ep=2),
     Case("qwen3_moe-cp2_ep2", "qwen3_moe", cp=2, ep=2),
-    Case("qwen3_moe-ep2-compile", "qwen3_moe", ep=2, compile=True),
     Case("glm4_moe-cp2_ep2", "glm4_moe", cp=2, ep=2),
 ]
 # GatedDeltaNet passes its recurrent state across the CP cut. The document that straddles the cut then differs by up
@@ -246,9 +248,10 @@ CASES = [
 # moves the loss by ~1e-5 (1.4e-5 measured for Qwen3.5 MoE with cp2 and identical routing). Attention CP moves it by
 # ~1e-8, which the default loss tolerance is calibrated on.
 GATED_DELTA_NET_CP_TOLERANCES = {"loss": 1e-4}
-# Their kernels take minutes to compile in a fresh process (the cuDNN sparse-attention backward, DeepGEMM, TileLang,
-# FLA's Triton autotuning), which the tiny subset cannot afford
-RECENT_ARCH_CASES = [
+# Too slow to compile in a fresh process for the tiny subset: torch.compile of the MoE layers takes ~25 s, and the
+# newer archs' kernels take minutes (the cuDNN sparse-attention backward, DeepGEMM, TileLang, FLA's Triton autotuning)
+FULL_SUITE_CASES = [
+    Case("qwen3_moe-ep2-compile", "qwen3_moe", ep=2, compile=True),
     Case("qwen3_5_moe-ep2", "qwen3_5_moe", ep=2),
     Case("qwen3_5_moe-cp2_ep2", "qwen3_5_moe", cp=2, ep=2, tolerances=GATED_DELTA_NET_CP_TOLERANCES),
     Case("qwen3_8_flash_next-ep2", "qwen3_8_flash_next", ep=2),
@@ -258,8 +261,8 @@ RECENT_ARCH_CASES = [
     Case("glm_moe_dsa-ep2", "glm_moe_dsa", ep=2),
     Case("glm_moe_dsa-cp2_ep2", "glm_moe_dsa", cp=2, ep=2),
 ]
-SUITES = {"tiny": CASES, "recent_archs": RECENT_ARCH_CASES}
-TIMEOUTS = {"tiny": 5 * 60, "recent_archs": 20 * 60}
+SUITES = {"tiny": CASES, "full": FULL_SUITE_CASES}
+TIMEOUTS = {"tiny": 5 * 60, "full": 20 * 60}
 
 # Relative errors against the unsharded reference, about 5x the largest seen. "grad" is the worst parameter's.
 TOLERANCES = {"loss": 1e-5, "grad_norm": 1e-3, "grad": 2e-2}
@@ -541,8 +544,8 @@ def tiny_results(run_process, tmp_path_factory: pytest.TempPathFactory) -> dict[
 
 
 @pytest.fixture(scope="module")
-def recent_arch_results(run_process, tmp_path_factory: pytest.TempPathFactory) -> dict[str, dict]:
-    return launch("recent_archs", run_process, tmp_path_factory)
+def full_suite_results(run_process, tmp_path_factory: pytest.TempPathFactory) -> dict[str, dict]:
+    return launch("full", run_process, tmp_path_factory)
 
 
 def check(errors: dict, case: Case) -> None:
@@ -559,9 +562,9 @@ def test_matches_unsharded_reference(tiny_results: dict[str, dict], case: Case):
     check(tiny_results[case.name], case)
 
 
-@pytest.mark.parametrize("case", RECENT_ARCH_CASES, ids=[case.name for case in RECENT_ARCH_CASES])
-def test_recent_arch_matches_unsharded_reference(recent_arch_results: dict[str, dict], case: Case):
-    check(recent_arch_results[case.name], case)
+@pytest.mark.parametrize("case", FULL_SUITE_CASES, ids=[case.name for case in FULL_SUITE_CASES])
+def test_full_suite_matches_unsharded_reference(full_suite_results: dict[str, dict], case: Case):
+    check(full_suite_results[case.name], case)
 
 
 if __name__ == "__main__":
