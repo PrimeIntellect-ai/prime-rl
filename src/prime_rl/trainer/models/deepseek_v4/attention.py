@@ -105,7 +105,7 @@ cannot be constructed. It runs once per model forward.
 Context parallelism splits the queries across ranks: every field above has one entry per query
 token and so covers this rank's `n_queries` tokens, while `compression_layouts` covers all
 `total_tokens` of the sequence and its token indices count from the start of the whole sequence.
-A rank receives from its left neighbor only the few hundred tokens its own windows and entries
+A rank receives from the ranks before it only the few hundred tokens its own windows and entries
 reach back into (`CPHalo`), pools only the entries whose last token it holds (`EntryShard`), and
 all-gathers those pooled entries. The entries come back in sequence order, so entry indices stay
 global, while window indices count from the first halo token.
@@ -125,6 +125,7 @@ surplus pick cost only their loads.
 """
 
 from dataclasses import dataclass
+from itertools import accumulate
 
 import torch
 import torch.distributed as dist
@@ -254,11 +255,11 @@ class EntryShard:
 
     A rank owns the entries whose last source token it holds. Entries are numbered in order of
     their last source token, so a rank owns one contiguous run of them, at most
-    `capacity = ceil(n_queries / compress_rate)` long. Every rank pools its run into a buffer of
-    `capacity` slots, so the buffers all-gather at one size, and `gathered_row` picks the
-    sequence's entries back out of the gathered buffers in order. A padding slot pools the first
-    halo row (on the cuDNN path, an output row past `cu_entries[-1]`), and `gathered_row` never
-    selects it.
+    `ceil(n_queries / compress_rate)` long. Every rank pools its run into a buffer of `capacity`
+    slots, that bound but at least 2, so the buffers all-gather at one size, and `gathered_row`
+    picks the sequence's entries back out of the gathered buffers in order. A padding slot pools
+    the first halo row (on the cuDNN path, an output row past `cu_entries[-1]`), and
+    `gathered_row` never selects it.
     """
 
     entry_tok_idx: Tensor  # (capacity, compress_rate) int64 - source token per slot, from this rank's first halo row
@@ -274,7 +275,8 @@ class EntryShard:
     ) -> "EntryShard":
         device = layout.entry_tok_idx.device
         n_entries, compress_rate = layout.entry_tok_idx.shape
-        capacity = -(-n_queries // compress_rate)
+        # A size of 1 would compile a graph of its own: torch.compile specializes a dynamic size on it.
+        capacity = max(-(-n_queries // compress_rate), 2)
 
         owner = layout.entry_tok_idx[:, -1] // n_queries
         ranks = torch.arange(cp_world_size + 1, device=device)
@@ -317,9 +319,9 @@ class EntryShard:
         ends = clip_end[visible_idx]
         prev_end = torch.cat([starts.new_full((1,), view_start), ends[:-1]])
         gaps = (starts - prev_end).clamp(min=0)
-        # Rank 0 receives the last rank's tail, which no index reaches: one padding tile covers it.
-        ring = starts.new_full((1,), halo_rows - min(q_start, halo_rows))
-        tile_lens = torch.cat([ring, torch.stack([gaps, ends - starts], dim=1).reshape(-1)])
+        # No index reaches the zero halo rows before the sequence start: one padding tile covers them.
+        before_start = starts.new_full((1,), halo_rows - min(q_start, halo_rows))
+        tile_lens = torch.cat([before_start, torch.stack([gaps, ends - starts], dim=1).reshape(-1)])
         tile_lens = tile_lens[tile_lens > 0]
         cu_seqlens = torch.nn.functional.pad(tile_lens.cumsum(0), (1, 0)).to(torch.int32)
         cu_entries = torch.nn.functional.pad((tile_lens // compress_rate).cumsum(0), (1, 0)).to(torch.int32)
@@ -349,8 +351,10 @@ class CPHalo:
     entry can start `compress_rate - 1` tokens before its shard, and the window before that entry
     is read too: by the overlapping series of a two-series compressor, and at every rate by the
     cuDNN pooling, which starts the owned run one entry early. Each rank receives those rows of
-    every per-token tensor it needs from its left neighbor, so the window keys and the compressor
-    projections are read as `rows + n_queries` tokens starting at `cp_rank * n_queries - rows`.
+    every per-token tensor it needs from the ranks before it, as many as hold them when shards are
+    shorter than `rows`, so the window keys and the compressor projections are read as
+    `rows + n_queries` tokens starting at `cp_rank * n_queries - rows`. Rows before the sequence
+    start are zeros.
     """
 
     rows: int
@@ -359,18 +363,42 @@ class CPHalo:
     entry_shards: dict[int, EntryShard]  # keyed by compress rate
 
     def prepend(self, x: Tensor, group_name: str) -> Tensor:
-        """`x` (batch, n_queries, ...) with the left neighbor's last `rows` tokens in front of it.
+        """`x` (batch, n_queries, ...) with the `rows` tokens before it in front of it.
 
-        A ring shift: rank 0 receives the last rank's tail, which no index reaches. The gradient
-        of the received rows flows back to the neighbor that sent them.
+        One all-to-all around the ring: every rank sends the rank `hops` places after it the tail
+        of its shard that lies within `rows` tokens of that rank's shard, so the halo arrives from
+        as many earlier ranks as hold it, in sequence order. Rows that wrap past the last rank are
+        dropped, and the halo rows before the sequence start are zeros. Every rank's split sizes
+        are the same set, symbolic in `n_queries`, so every rank compiles the same graph and issues
+        its collectives in the same order, and the exchange neither syncs nor recompiles on the row
+        length. The gradient of the received rows flows back to the ranks that sent them.
         """
-        left = (self.cp_rank - 1) % self.cp_world_size
-        right = (self.cp_rank + 1) % self.cp_world_size
-        recv = [self.rows if rank == left else 0 for rank in range(self.cp_world_size)]
-        send = [self.rows if rank == right else 0 for rank in range(self.cp_world_size)]
-        tail = x[:, -self.rows :].movedim(1, 0).contiguous()
-        halo = funcol.wait_tensor(torch.ops._c10d_functional.all_to_all_single(tail, recv, send, group_name))
-        return torch.cat([halo.movedim(0, 1), x], dim=1)
+        n_queries = x.shape[1]
+
+        def rows_from(hops: int) -> int:
+            """How many of the shard `hops` ranks back lie within `rows` tokens of this rank's shard."""
+            if hops == 0:
+                return 0
+            return torch.sym_max(0, torch.sym_min(n_queries, self.rows - (hops - 1) * n_queries))
+
+        ranks = range(self.cp_world_size)
+        send = [rows_from((rank - self.cp_rank) % self.cp_world_size) for rank in ranks]
+        recv = [rows_from((self.cp_rank - rank) % self.cp_world_size) for rank in ranks]
+        # Whether a split size is 0 or 1 depends on the row length, and torch.compile guards on both
+        # for a tensor of that size. So only the totals, at least `min(n_queries, rows)`, size a
+        # tensor: each sent row finds its token from where its destination's block ends.
+        tokens = x.movedim(1, 0).flatten(1)
+        block_ends = list(accumulate(send))
+        sent_row = torch.arange(block_ends[-1], device=x.device)
+        block_end = torch.zeros_like(sent_row)
+        for end in reversed(block_ends):
+            block_end = block_end.masked_fill(sent_row < end, end)
+        tails = tokens[sent_row + n_queries - block_end]
+        received = funcol.wait_tensor(torch.ops._c10d_functional.all_to_all_single(tails, recv, send, group_name))
+        # The ranks before this one sent the halo's last `before` rows, ahead of the wrapped rows.
+        before = sum(recv[: self.cp_rank])
+        halo = torch.cat([received.new_zeros(self.rows, received.shape[1]), received])[before : before + self.rows]
+        return torch.cat([halo.unflatten(1, (x.shape[0], *x.shape[2:])).movedim(0, 1), x], dim=1)
 
     def cudnn_pool_size(self, compress_rate: int) -> int:
         """Output rows of the cuDNN pooling over the halo view, covering `cu_entries[-1]` and every `pool_row`.
@@ -460,9 +488,6 @@ class PackedContext:
         cp_halo = None
         if cp_world_size > 1:
             halo_rows = max([config.sliding_window - 1, *(2 * rate - 1 for rate in compress_rates)])
-            assert n_queries >= halo_rows, (
-                f"each CP rank holds {n_queries} tokens, fewer than the {halo_rows}-token halo it sends on"
-            )
             cp_halo = CPHalo(
                 rows=halo_rows,
                 cp_rank=cp_rank,
