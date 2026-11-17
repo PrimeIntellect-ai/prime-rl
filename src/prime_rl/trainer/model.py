@@ -1168,8 +1168,9 @@ def refuse_decision_model(
     model: nn.Module, config: ModelConfig, broadcasts_weights: bool = False, next_token_loss: bool = False
 ) -> None:
     """Raise for a decision model in a run that cannot train it: with a next-token loss (pretraining, SFT's ce, RL),
-    weight broadcasts, LoRA or quantization."""
+    weight broadcasts, LoRA or quantization, and for Clef-Flash from scratch."""
     # Imported here: the System One loss module imports this one.
+    from prime_rl.trainer.models.qwen3_5.modeling_clef_flash import ClefFlashForJointSchema
     from prime_rl.trainer.sft.system_one.loss import DecisionModel
 
     if not isinstance(model, DecisionModel):
@@ -1196,6 +1197,12 @@ def refuse_decision_model(
             f"{name} is a decision model, so [model.quantization] is not supported: its FP8 and MXFP8 layers replace "
             "every linear layer whose sizes they support, the readout's included (Clef-Flash's joint head; d3's score "
             "when its code count is a multiple of 128 for FP8 or 32 for MXFP8), which vLLM does not quantize."
+        )
+    if config.init.type == "scratch" and isinstance(model, ClefFlashForJointSchema):
+        raise ValueError(
+            f'{name} does not support model.init.type = "scratch": it freezes the LM head, whose rows its head\'s '
+            "lexical prior reads, and its init does not reach the head's scalars. Start from a release "
+            '(model.init.type = "pretrained").'
         )
 
 

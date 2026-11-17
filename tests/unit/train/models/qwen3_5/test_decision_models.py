@@ -35,6 +35,7 @@ from prime_rl.trainer.model import (
     forward,
     get_decision_model_cls,
     get_model,
+    initialize_from_scratch,
     load_dcp_from_hf,
     overrides_init_missing_weights,
     refuse_decision_model,
@@ -440,6 +441,32 @@ def test_decision_models_are_refused_where_they_cannot_train(tmp_path):
                 continue
             with pytest.raises(ValueError, match=error):
                 refuse_decision_model(model, config, **run)
+
+    # From scratch, only Clef-Flash is refused (test_scratch_init_of_the_decision_models).
+    for name in ("d3", "clef", "qwen"):
+        config = ModelConfig(name=str(tmp_path / name), attn="flash_attention_2", init={"type": "scratch"})
+        model = get_model(config, device=torch.device("meta"))
+        if name != "clef":
+            refuse_decision_model(model, config)
+            continue
+        with pytest.raises(ValueError, match='ClefFlashForJointSchema does not support model.init.type = "scratch"'):
+            refuse_decision_model(model, config)
+
+
+@pytest.mark.parametrize("kind", ["d3", "d3-untied", "clef"])
+def test_scratch_init_of_the_decision_models(tmp_path, monkeypatch, kind):
+    """model.init.type = "scratch" on the CPU: d3's init reaches its float32 readout; Clef-Flash's misses its head's
+    scalars, which refuse_decision_model refuses before."""
+    WRITE_RELEASE[kind](tmp_path)
+    model = build(tmp_path)
+    monkeypatch.setattr(model, "to_empty", lambda **kwargs: nn.Module.to_empty(model, device="cpu"))
+    monkeypatch.setattr("torch.distributed.barrier", lambda *args, **kwargs: None)
+    if kind == "clef":
+        with pytest.raises(RuntimeError, match="its init does not reach pooler.head.prior_logit_scale"):
+            initialize_from_scratch(model, seed=0)
+        return
+    initialize_from_scratch(model, seed=0)
+    assert model.score.weight.dtype == torch.float32 and model.score.weight.std() > 0
 
 
 class ReadoutConfig(PretrainedConfig):
