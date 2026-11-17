@@ -50,7 +50,7 @@ def assert_states_offloaded(optimizer: CPUOffloadOptimizer) -> None:
     for param in optimizer.state:
         for key, value in optimizer.state[param].items():
             assert value.device.type == "cpu", f"state '{key}' on {value.device}, expected cpu"
-            assert value.is_pinned(), f"state '{key}' not pinned"
+            assert key == "step" or value.is_pinned(), f"state '{key}' not pinned"
 
 
 def assert_state_dicts_equal(saved: dict, restored: dict) -> None:
@@ -106,6 +106,16 @@ def test_state_dict_round_trip_is_exact_and_training_continues(trained_pair: Tra
     run_steps(trained_pair.reference_model, trained_pair.reference_optimizer, num_steps=1, seed=2)
     run_steps(trained_pair.offloaded_model, optimizer, num_steps=1, seed=2)
     assert_params_equal(trained_pair.reference_model, trained_pair.offloaded_model)
+
+
+def test_offloaded_step_does_not_synchronize(trained_pair: TrainedPair) -> None:
+    model, optimizer = trained_pair.offloaded_model, trained_pair.offloaded_optimizer
+    model(torch.randn(16, 64, device="cuda")).square().mean().backward()
+    torch.cuda.set_sync_debug_mode("error")
+    try:
+        optimizer.step()
+    finally:
+        torch.cuda.set_sync_debug_mode("default")
 
 
 def test_offload_reuses_pinned_buffers_across_steps() -> None:
