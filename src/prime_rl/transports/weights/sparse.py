@@ -140,6 +140,10 @@ class SparseDeltaEncoder:
             segments[owner[id(base)]].append((tensor.storage_offset(), name))
             self.hf_tensors[name] = (list(tensor.shape), str(tensor.dtype).removeprefix("torch."))
         self.segments = {fqn: sorted(segs) for fqn, segs in segments.items()}
+        # A tied name the HF checkpoint omits (e.g. lm_head.weight) has no slices to write or check
+        self.aliases = defaultdict(
+            list, {key: [a for a in names if self.key_fqn[a] in self.segments] for key, names in self.aliases.items()}
+        )
         self.numel = {fqn: tensor.numel() for fqn, tensor in meta.items()}
         # fqn -> (fp8 mode, columns) of trainer tensors held in fp8, quantized as one [rows, columns] matrix: "fp32" or
         # "ue8m0" (128x128 blocks, fp32 scales) or "mxfp8" (1x32 blocks, e8m0 scales)
