@@ -5,12 +5,12 @@ One torchrun launch runs every case in-process. A case builds a tiny random-init
 packed Reverse-Text-SFT rows, and compares the loss, grad norm and every parameter's gradient with a plain unsharded
 copy of the same weights that runs all rows on one GPU.
 
-A case is one line in `CASES`. Adding a model is one entry in `TINY_MODELS`, whose checkpoints HF builds, or in
-`TINY_PRIME_RL_MODELS`, whose checkpoints the prime-rl model class builds (archs without an HF implementation). A case
-that raises, for example on a kernel this GPU does not support, fails alone and the other cases still report. To run
-the cases without pytest:
+A case is one line in `CASES` (the tiny GPU subset) or `RECENT_ARCH_CASES` (the full GPU suite). Adding a model is
+one entry in `TINY_MODELS`, whose checkpoints HF builds, or in `TINY_PRIME_RL_MODELS`, whose checkpoints the prime-rl
+model class builds (archs without an HF implementation). A case that raises, for example on a kernel this GPU does not
+support, fails alone and the other cases still report. To run a suite without pytest:
 
-    uv run torchrun --nproc-per-node=2 tests/unit/train/test_distributed_invariance.py <output_dir>
+    uv run torchrun --nproc-per-node=2 tests/unit/train/test_distributed_invariance.py <output_dir> tiny|recent_archs
 """
 
 import json
@@ -56,12 +56,11 @@ from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.weights import save_state_dict
 
-pytestmark = [pytest.mark.gpu, pytest.mark.tiny]
+pytestmark = [pytest.mark.gpu]
 
 TOKENIZER = "Qwen/Qwen3-0.6B"
 NUM_ROWS = 4
 ROW_LEN = 512
-TIMEOUT = 5 * 60
 
 TINY_DIMS = dict(
     # Every model reads the same rows, tokenized with TOKENIZER
@@ -183,6 +182,10 @@ CASES = [
     Case("qwen3_moe-cp2_ep2", "qwen3_moe", cp=2, ep=2),
     Case("qwen3_moe-ep2-compile", "qwen3_moe", ep=2, compile=True),
     Case("glm4_moe-cp2_ep2", "glm4_moe", cp=2, ep=2),
+]
+# Their kernels take minutes to compile in a fresh process (the cuDNN sparse-attention backward, DeepGEMM, TileLang,
+# FLA's Triton autotuning), which the tiny subset cannot afford
+RECENT_ARCH_CASES = [
     Case("qwen3_5_moe-ep2", "qwen3_5_moe", ep=2),
     Case("qwen3_5_moe-cp2_ep2", "qwen3_5_moe", cp=2, ep=2),
     Case("qwen3_8_flash_next-ep2", "qwen3_8_flash_next", ep=2),
@@ -192,6 +195,8 @@ CASES = [
     Case("glm_moe_dsa-ep2", "glm_moe_dsa", ep=2),
     Case("glm_moe_dsa-cp2_ep2", "glm_moe_dsa", cp=2, ep=2),
 ]
+SUITES = {"tiny": CASES, "recent_archs": RECENT_ARCH_CASES}
+TIMEOUTS = {"tiny": 5 * 60, "recent_archs": 20 * 60}
 
 # Relative errors against the unsharded reference, about 5x the largest seen. "grad" is the worst parameter's.
 TOLERANCES = {"loss": 1e-5, "grad_norm": 1e-3, "grad": 2e-2}
@@ -364,19 +369,19 @@ def relative_errors(result: dict, reference: dict) -> dict:
     }
 
 
-def main(output_dir: Path) -> None:
+def main(output_dir: Path, cases: list[Case]) -> None:
     setup_logger("warning")
     setup_torch_distributed()
     models_dir = output_dir / "models"
-    built = {name: isolated(save_tiny_model, name, models_dir) for name in sorted({case.model for case in CASES})}
+    built = {name: isolated(save_tiny_model, name, models_dir) for name in sorted({case.model for case in cases})}
     dist.barrier()
     rows = load_rows(setup_tokenizer(TokenizerConfig(name=TOKENIZER)))
 
-    configs = {case.name: model_config(case, models_dir) for case in CASES}
-    reference_keys = {case.name: (case.model, tuple(configs[case.name].fusions.enabled)) for case in CASES}
+    configs = {case.name: model_config(case, models_dir) for case in cases}
+    reference_keys = {case.name: (case.model, tuple(configs[case.name].fusions.enabled)) for case in cases}
     # Before any CP case: CP setup patches the attention classes for the rest of the process
     references = {}
-    for case in CASES:
+    for case in cases:
         if reference_keys[case.name] not in references:
             build = built[case.model]
             references[reference_keys[case.name]] = (
@@ -384,7 +389,7 @@ def main(output_dir: Path) -> None:
             )
 
     results, layouts = {}, {}
-    for case in sorted(CASES, key=lambda case: case.cp):
+    for case in sorted(cases, key=lambda case: case.cp):
         start = time.perf_counter()
         # Compiled graphs of the previous case's model must not leak into this one, as in a fresh trainer process
         torch._dynamo.reset()
@@ -405,19 +410,26 @@ def main(output_dir: Path) -> None:
     # No destroy_process_group: tearing down the process groups of every layout takes seconds
 
 
-@pytest.fixture(scope="module")
-def results(run_process, tmp_path_factory: pytest.TempPathFactory) -> dict[str, dict]:
+def launch(suite: str, run_process, tmp_path_factory: pytest.TempPathFactory) -> dict[str, dict]:
     if torch.cuda.device_count() < 2:
         pytest.skip("needs 2 GPUs")
-    output_dir = tmp_path_factory.mktemp("distributed-invariance")
-    cmd = ["uv", "run", "torchrun", "--standalone", "--nproc-per-node=2", __file__, output_dir.as_posix()]
-    assert run_process(cmd, timeout=TIMEOUT).returncode == 0
+    output_dir = tmp_path_factory.mktemp(f"distributed-invariance-{suite}")
+    cmd = ["uv", "run", "torchrun", "--standalone", "--nproc-per-node=2", __file__, output_dir.as_posix(), suite]
+    assert run_process(cmd, timeout=TIMEOUTS[suite]).returncode == 0
     return json.loads((output_dir / "results.json").read_text())
 
 
-@pytest.mark.parametrize("case", CASES, ids=[case.name for case in CASES])
-def test_matches_unsharded_reference(results: dict[str, dict], case: Case):
-    errors = results[case.name]
+@pytest.fixture(scope="module")
+def tiny_results(run_process, tmp_path_factory: pytest.TempPathFactory) -> dict[str, dict]:
+    return launch("tiny", run_process, tmp_path_factory)
+
+
+@pytest.fixture(scope="module")
+def recent_arch_results(run_process, tmp_path_factory: pytest.TempPathFactory) -> dict[str, dict]:
+    return launch("recent_archs", run_process, tmp_path_factory)
+
+
+def check(errors: dict, case: Case) -> None:
     assert "error" not in errors, errors.get("error")
     assert not errors["one_sided_grads"], f"gradients on only one side: {errors['one_sided_grads']}"
     tolerances = COMPILE_TOLERANCES if case.compile else TOLERANCES
@@ -425,5 +437,16 @@ def test_matches_unsharded_reference(results: dict[str, dict], case: Case):
         assert errors[metric] <= tolerance, f"{metric} relative error {errors[metric]:.1e} > {tolerance:.0e} ({errors})"
 
 
+@pytest.mark.tiny
+@pytest.mark.parametrize("case", CASES, ids=[case.name for case in CASES])
+def test_matches_unsharded_reference(tiny_results: dict[str, dict], case: Case):
+    check(tiny_results[case.name], case)
+
+
+@pytest.mark.parametrize("case", RECENT_ARCH_CASES, ids=[case.name for case in RECENT_ARCH_CASES])
+def test_recent_arch_matches_unsharded_reference(recent_arch_results: dict[str, dict], case: Case):
+    check(recent_arch_results[case.name], case)
+
+
 if __name__ == "__main__":
-    main(Path(sys.argv[1]))
+    main(Path(sys.argv[1]), SUITES[sys.argv[2]])
