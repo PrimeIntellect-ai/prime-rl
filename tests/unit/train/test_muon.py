@@ -44,10 +44,15 @@ def test_newton_schulz_is_as_accurate_as_bf16(shape):
 
 def test_orthogonalize_packed_matrices_each_on_their_own():
     torch.manual_seed(0)
-    packed = torch.randn(3, 48 + 16 + 16, 32)
-    equal = torch.randn(2, 4 * 8, 32)
-    out_packed, out_equal = orthogonalize([packed, equal], [(48, 16, 16), (8,) * 4], DEFAULT, [1e-8, 1e-8])
-    for out, x, parts in ((out_packed, packed, (48, 16, 16)), (out_equal, equal, (8,) * 4)):
+    partitions = [
+        (48, 16, 16),
+        (8,) * 4,
+        (8,) * 6 + (32,),  # per-head queries and keys, whole values
+        (8, 16) * 3 + (8,),  # MLA [W_UK; W_UV] per head
+    ]
+    matrices = [torch.randn(3, sum(parts), 32) for parts in partitions]
+    outputs = orthogonalize(matrices, partitions, DEFAULT, [1e-8] * len(partitions))
+    for out, x, parts in zip(outputs, matrices, partitions):
         expected = torch.cat([newton_schulz(part, DEFAULT, 1e-8) for part in x.split(parts, dim=-2)], dim=-2)
         torch.testing.assert_close(out, expected, atol=1e-2, rtol=0)
 
@@ -102,15 +107,23 @@ def test_muon_matches_reference():
 
 
 def test_subset_steps_match_the_full_step():
-    """An offloaded step updates one chunk of units at a time, after the trainer has moved on (zero_grad)."""
+    """An offloaded step updates one chunk of units at a time, after the trainer has moved on (zero_grad, a new
+    lr)."""
 
     def train(chunked: bool) -> list[torch.Tensor]:
         torch.manual_seed(0)
-        params = [torch.nn.Parameter(torch.randn(shape)) for shape in [(16, 48), (40, 24), (3, 32, 16), (24,)]]
+        shapes = [(16, 48), (40, 24), (3, 32, 16), (24,), (8,), (32, 8), (20, 8)]
+        params = [torch.nn.Parameter(torch.randn(shape)) for shape in shapes]
+        sinkhorn = dict(algorithm="sinkhorn", weight_decay=0.0, lr_scale=2.0, tau=1e-3, iters=5)
         optimizer = Muon(
-            [dict(params=params[:3], algorithm="muon"), dict(params=params[3:], algorithm="adamw")],
+            [
+                dict(params=params[:3], algorithm="muon"),
+                dict(params=params[3:4], algorithm="adamw"),
+                dict(params=params[4:5], algorithm="adamw", weight_decay=0.0),
+                dict(params=params[5:], **sinkhorn),
+            ],
             lr=0.02,
-            matrix_partitions={params[2]: (16, 16)},
+            matrix_partitions={params[1]: (8, 8, 8, 16), params[2]: (16, 16)},
             bucket_bytes=2048,
         )
         for step in range(3):
@@ -119,11 +132,15 @@ def test_subset_steps_match_the_full_step():
             if chunked and step > 0:
                 subset_step = optimizer.begin_subset_step()
                 optimizer.zero_grad()
+                for group in optimizer.param_groups:
+                    group["lr"] *= 0.5
                 for unit in reversed(subset_step.units):
                     subset_step.step_params(unit)
             else:
                 optimizer.step()
-        assert [group["step"] for group in optimizer.param_groups] == [3, 3]
+                for group in optimizer.param_groups:
+                    group["lr"] *= 0.5
+        assert [group["step"] for group in optimizer.param_groups] == [3, 3, 3, 3]
         return [p.detach() for p in params]
 
     for reference, chunked in zip(train(False), train(True)):

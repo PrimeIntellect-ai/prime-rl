@@ -3,9 +3,10 @@ import torch.nn.functional as F
 from torch import nn
 
 from prime_rl.trainer.models.kernels.qwen3_8_hyper_connection.ops import fused_hc_combine_mix, fused_hc_mix
+from prime_rl.trainer.models.layers.norms import Norm
 
 
-class ExpandedRMSNorm(nn.Module):
+class ExpandedRMSNorm(Norm):
     """RMS-normalize each residual stream with an independent affine weight."""
 
     def __init__(self, hidden_size: int, stream_count: int, eps: float) -> None:

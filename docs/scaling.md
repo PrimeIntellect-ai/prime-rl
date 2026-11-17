@@ -190,6 +190,28 @@ State-only optimizer offload is enabled by default (`model.offload = "optimizer"
 
 Packed parameters (runtime fusions) are orthogonalized per logical matrix. `optim.newton_schulz` picks the iteration schedule and `optim.update_rms` the RMS of each update (0.2, which matches AdamW's learning rates).
 
+Options from the DeepSeek-V4.1 recipe, all off by default:
+
+- `[optim.heads]` orthogonalizes attention projections that hold heads along their rows (queries, keys, values, output gates, MLA up-projections, DeepSeek-V4's grouped `o_a_proj`) per block of `per_block` heads. `split_values = false` keeps value projections whole. Output projections and latent projections stay whole.
+- `optim.decay_bias_and_scales = false` exempts biases and 1-D parameters that are not normalization weights (scales, gates, attention sinks) from weight decay.
+- `[optim.embeddings]` updates the token embeddings, the LM head and n-gram tables with Sinkhorn-balanced momentum (`iters` alternating row/column normalizations, rows below `tau` times the mean row norm masked) instead of AdamW. `ngram_lr_scale` scales the n-gram tables' learning rate.
+
+```toml
+[optim]
+type = "muon"
+update_rms = 0.18
+newton_schulz = "deepseek_v4"
+decay_bias_and_scales = false
+
+[optim.heads]
+per_block = 1
+split_values = false
+
+[optim.embeddings]
+iters = 11
+tau = 1e-3
+```
+
 ### LM Head Chunking
 
 The vanilla LM head materializes a `[batch * seq, vocab]` logits tensor on every step — a major memory tax when the vocabulary is large (often >100K). `fused_lm_head_token_chunk_size` swaps in a custom fused linear + logprob/entropy kernel that streams through `chunk_size` tokens at a time, avoiding the materialization. It defaults to `8192` for RL training:

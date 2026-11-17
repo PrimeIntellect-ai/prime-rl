@@ -1,7 +1,8 @@
 """Muon (https://kellerjordan.github.io/posts/muon/) for FSDP2 and expert-parallel models.
 
 A Muon parameter is updated with its orthogonalized Nesterov momentum, scaled to an RMS of ``update_rms``;
-every other parameter gets AdamW. Orthogonalization needs whole matrices:
+the parameters of Sinkhorn groups (embeddings) get Sinkhorn-balanced momentum, and every other parameter gets
+AdamW. Orthogonalization needs whole matrices:
 
 - A parameter whose matrix dims are not sharded (an expert stack sharded only along the expert dim, a
   replicated or a single-device parameter) is orthogonalized where it lives, as one batch of matrices.
@@ -134,6 +135,27 @@ def _batch(stacks: list[Tensor]) -> Tensor:
     return first.as_strided(size, (first[0].numel(), first.size(-1), 1))
 
 
+@functools.cache
+def _segments(partitions: tuple[int, ...]) -> tuple[tuple[int, tuple[int, ...], int], ...]:
+    """Cut row partitions into runs of a repeated pattern: (first row, pattern, repeats). Each position of a
+    pattern is then one strided batch of matrices, e.g. the heads of queries and keys before a whole value
+    projection, or MLA's [W_UK; W_UV] per head."""
+    segments, i, row = [], 0, 0
+    while i < len(partitions):
+        period, repeats = 1, 1
+        for p in range(1, (len(partitions) - i) // 2 + 1):
+            pattern, r = partitions[i : i + p], 1
+            while partitions[i + r * p : i + (r + 1) * p] == pattern:
+                r += 1
+            if r > 1 and p * r > period * repeats:
+                period, repeats = p, r
+        pattern = partitions[i : i + period]
+        segments.append((row, pattern, repeats))
+        i += period * repeats
+        row += sum(pattern) * repeats
+    return tuple(segments)
+
+
 def orthogonalize(
     matrices: Sequence[Tensor],
     partitions: Sequence[tuple[int, ...]],
@@ -146,21 +168,28 @@ def orthogonalize(
     classes = defaultdict(list)
     for i, (x, parts, epsilon) in enumerate(zip(matrices, partitions, epsilons)):
         x = x.reshape(-1, *x.shape[-2:])
+        n = x.size(-1)
         if len(set(parts)) == 1:
             # Equal partitions are a reshape: [B, P·r, n] -> [B·P, r, n]
-            classes[parts[0], x.size(-1), epsilon].append((i, None, x.reshape(-1, parts[0], x.size(-1))))
-        else:
-            for start, rows, part in zip(_offsets(parts), parts, x.split(parts, dim=-2)):
-                classes[rows, x.size(-1), epsilon].append((i, (start, rows), part))
+            classes[parts[0], n, epsilon].append((i, None, x.reshape(-1, parts[0], n)))
+            continue
+        outputs[i] = torch.empty(matrices[i].shape, dtype=schedule.dtype, device=x.device)
+        output = outputs[i].view(x.shape)
+        for start, pattern, repeats in _segments(tuple(parts)):
+            # [B, repeats, sum(pattern), n]: each position of the pattern is one batch [B·repeats, rows, n]
+            source, target = (
+                t.narrow(-2, start, sum(pattern) * repeats).unflatten(-2, (repeats, sum(pattern))) for t in (x, output)
+            )
+            for offset, rows in zip(_offsets(pattern), pattern):
+                part = source.narrow(-2, offset, rows).reshape(-1, rows, n)
+                classes[rows, n, epsilon].append((i, target.narrow(-2, offset, rows), part))
     for (_, _, epsilon), members in classes.items():
         Y = newton_schulz(_batch([x for _, _, x in members]), schedule, epsilon)
-        for (i, rows, x), y in zip(members, Y.split([x.size(0) for _, _, x in members])):
-            if rows is None:
+        for (i, target, x), y in zip(members, Y.split([x.size(0) for _, _, x in members])):
+            if target is None:
                 outputs[i] = y.reshape(matrices[i].shape)
-                continue
-            if outputs[i] is None:
-                outputs[i] = torch.empty(matrices[i].shape, dtype=y.dtype, device=y.device)
-            outputs[i].view(-1, *matrices[i].shape[-2:]).narrow(-2, *rows).copy_(y)
+            else:
+                target.copy_(y.view(target.shape))
     return outputs
 
 
@@ -293,6 +322,39 @@ def _matrix_sharding(param: Tensor) -> _Sharding | None:
     return _Sharding(placement.dim, group, rank, sizes)
 
 
+def _shard_groups(param: Tensor, dim: int) -> tuple[ProcessGroup, ...]:
+    """Muon's communicators over the mesh dims that shard ``dim`` of ``param``."""
+    if not isinstance(param, DTensor):
+        return ()
+    mesh = param.device_mesh
+    return tuple(
+        _muon_group(mesh, mesh_dim)
+        for mesh_dim, placement in enumerate(param.placements)
+        if isinstance(placement, (Shard, _StridedShard)) and placement.dim == dim and mesh.size(mesh_dim) > 1
+    )
+
+
+def _all_reduce(tensor: Tensor, groups: Sequence[ProcessGroup]) -> Tensor:
+    for group in groups:
+        dist.all_reduce(tensor, group=group)
+    return tensor
+
+
+def _norms(U: Tensor, dim: int, groups: Sequence[ProcessGroup]) -> Tensor:
+    """L2 norms of the local shard ``U`` along ``dim``, summed over the communicators that shard that dim."""
+    return _all_reduce(U.square().sum(dim=dim), groups).sqrt()
+
+
+@dataclass(frozen=True)
+class _Sinkhorn:
+    """A Sinkhorn parameter [m, n] and the communicators that shard its rows and its columns."""
+
+    param: Tensor
+    group: int  # index into param_groups
+    row_shards: tuple[ProcessGroup, ...]
+    column_shards: tuple[ProcessGroup, ...]
+
+
 @dataclass(frozen=True)
 class _Matrix:
     """A Muon parameter: its matrix partitions along dim -2, sharding and update scale."""
@@ -331,11 +393,12 @@ class _Bucket:
 @dataclass(frozen=True)
 class _Plan:
     """The work of one step, in units that update together: buckets of sharded matrices, chunks of local
-    matrices orthogonalized as one batch, and AdamW groups, each one compiled update."""
+    matrices orthogonalized as one batch, AdamW groups, each one compiled update, and Sinkhorn parameters."""
 
     buckets: list[_Bucket]
     local: list[list[_Matrix]]
     adamw: list[tuple[int, list[Tensor]]]  # (param group index, params)
+    sinkhorn: list[_Sinkhorn]
 
     @property
     def units(self) -> list[list[Tensor]]:
@@ -343,6 +406,7 @@ class _Plan:
             [[m.param for m in bucket.sent] for bucket in self.buckets]
             + [[m.param for m in chunk] for chunk in self.local]
             + [params for _, params in self.adamw]
+            + [[s.param] for s in self.sinkhorn]
         )
 
     def restrict(self, params: Iterable[Tensor]) -> "_Plan":
@@ -352,6 +416,7 @@ class _Plan:
             buckets=[bucket for bucket in self.buckets if id(bucket.sent[0].param) in selected],
             local=[chunk for chunk in self.local if id(chunk[0].param) in selected],
             adamw=[(group, params) for group, params in self.adamw if id(params[0]) in selected],
+            sinkhorn=[s for s in self.sinkhorn if id(s.param) in selected],
         )
 
 
@@ -416,6 +481,9 @@ def _adamw_(
 
 
 def _hyperparameters(group: dict) -> dict:
+    if group["algorithm"] == "sinkhorn":
+        # Sinkhorn runs eagerly
+        return {key: group[key] for key in ("lr", "lr_scale", "mu", "epsilon", "tau", "iters")}
     # 0-d CPU tensors, so the compiled updates do not recompile when the scheduler changes the lr
     keys = ("lr", "mu", "beta1", "beta2", "weight_decay", "epsilon", "step")
     return {key: torch.tensor(group[key]) for key in keys} | {"nesterov": group["nesterov"]}
@@ -438,13 +506,17 @@ def _warmup_all_to_all(group: ProcessGroup) -> None:
 
 
 class Muon(Optimizer):
-    """Muon for the param groups with ``algorithm="muon"`` (matrices, ndim >= 2) and AdamW for those with
-    ``algorithm="adamw"``.
+    """Muon for the param groups with ``algorithm="muon"`` (matrices, ndim >= 2), AdamW for those with
+    ``algorithm="adamw"`` and Sinkhorn for those with ``algorithm="sinkhorn"`` (matrices m x n).
 
     Muon: M <- μM + G, U <- orthogonalize(μM + G) (Nesterov) or orthogonalize(M), and
     X <- (1 - lr·λ)X - lr·update_rms·√max(m, n)·U for every matrix m x n. ``matrix_partitions`` maps a
     parameter to the row counts of the matrices packed along its dim -2, each orthogonalized and scaled as its
     own matrix.
+
+    Sinkhorn (DeepSeek-V4.1, Algorithm 1): M <- μM + (1 - μ)G and U = μM + (1 - μ)G, with the rows whose norm is
+    at most ``tau`` times the mean row norm zeroed, then ``iters`` alternating row/column L2 normalizations, and
+    X <- X - lr·lr_scale·update_rms·√n·U, without weight decay.
 
     ``step()`` runs ``begin_subset_step()`` and updates all of its units, so an offloaded step that updates
     one chunk of units at a time (``SupportsSubsetStep``) is bitwise the same step. Units are identical on
@@ -485,12 +557,18 @@ class Muon(Optimizer):
 
         partitions = {param: tuple(sizes) for param, sizes in (matrix_partitions or {}).items()}
         self._matrices: dict[Tensor, _Matrix] = {}
+        self._sinkhorn: dict[Tensor, _Sinkhorn] = {}
         for index, group in enumerate(self.param_groups):
-            if group["algorithm"] not in ("muon", "adamw"):
+            if group["algorithm"] not in ("muon", "adamw", "sinkhorn"):
                 raise ValueError(f"Unknown algorithm {group['algorithm']}")
             if group["algorithm"] == "muon":
                 for param in group["params"]:
                     self._matrices[param] = self._matrix(param, index, partitions.pop(param, (param.size(-2),)))
+            if group["algorithm"] == "sinkhorn":
+                for param in group["params"]:
+                    if param.ndim != 2:
+                        raise ValueError(f"Sinkhorn parameters must be matrices, got shape {tuple(param.shape)}")
+                    self._sinkhorn[param] = _Sinkhorn(param, index, _shard_groups(param, 0), _shard_groups(param, 1))
         if partitions:
             raise ValueError("matrix_partitions has parameters that are not Muon parameters of this optimizer")
 
@@ -571,7 +649,8 @@ class Muon(Optimizer):
             for index, group in enumerate(self.param_groups)
             if group["algorithm"] == "adamw"
         ]
-        return _Plan(buckets, local, [(group, params) for group, params in adamw if params])
+        sinkhorn = [self._sinkhorn[param] for param in params if param in self._sinkhorn]
+        return _Plan(buckets, local, [(group, params) for group, params in adamw if params], sinkhorn)
 
     @torch.no_grad()
     def _run(self, plan: _Plan, hyperparameters: list[dict], grads: dict[Tensor, Tensor]) -> None:
@@ -597,6 +676,8 @@ class Muon(Optimizer):
 
         for group, params in plan.adamw:
             self._adamw(params, hyperparameters[group], grads)
+        for sinkhorn in plan.sinkhorn:
+            self._sinkhorn_update(sinkhorn, hyperparameters[sinkhorn.group], grads)
 
     def _state(self, param: Tensor, *keys: str) -> list[Tensor]:
         """State tensors, read at every use: an offloaded step swaps them for GPU copies between updates."""
@@ -694,3 +775,21 @@ class Muon(Optimizer):
         M, V = zip(*(self._state(param, "momentum", "variance") for param in params))
         X, G = [_local(param) for param in params], [grads[param] for param in params]
         _adamw_(X, G, list(M), list(V), h["lr"], h["beta1"], h["beta2"], h["weight_decay"], h["step"], h["epsilon"])
+
+    def _sinkhorn_update(self, sinkhorn: _Sinkhorn, h: dict, grads: dict[Tensor, Tensor]) -> None:
+        """Sinkhorn on the local shard: row norms all-reduce over the shards of the columns, column norms and the
+        mean row norm over the shards of the rows."""
+        param, rows, columns = sinkhorn.param, sinkhorn.row_shards, sinkhorn.column_shards
+        X, (M,) = _local(param), self._state(param, "momentum")
+        G = grads[param].to(M.dtype)
+        M.lerp_(G, 1 - h["mu"])
+        U = G.lerp(M, h["mu"]).float()
+        row_norms = _norms(U, 1, columns)
+        mean_row_norm = _all_reduce(row_norms.sum(), rows) / param.shape[0]
+        U = U * (row_norms > h["tau"] * mean_row_norm).unsqueeze(1)
+        for k in range(h["iters"]):
+            if k % 2 == 0:
+                U = U / (_norms(U, 1, columns) + h["epsilon"]).unsqueeze(1)
+            else:
+                U = U / (_norms(U, 0, rows) + h["epsilon"]).unsqueeze(0)
+        X.sub_(U.to(X.dtype), alpha=h["lr"] * h["lr_scale"] * self.update_rms * math.sqrt(param.shape[1]))
