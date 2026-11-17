@@ -203,3 +203,21 @@ def test_offloaded_async_save_writes_after_it_returned(tmp_path) -> None:
     finally:
         dist.destroy_process_group()
         get_dcp_group.cache_clear()
+
+
+def test_async_state_dict_finishes_an_overlapped_step_first(monkeypatch):
+    # With offload_overlap_forward, step() returns with chunks still updating; an async save must not copy them half done
+    from prime_rl.trainer.ckpt import AppState
+
+    calls = []
+
+    class Overlapped:
+        def wait(self):
+            calls.append("wait")
+
+    app = AppState(torch.nn.Linear(2, 2), [Overlapped()], None, None)
+    monkeypatch.setattr(
+        AppState, "_build_state_dict", lambda self, cpu_optimizer_state=False: calls.append("build") or {}
+    )
+    app.async_state_dict()
+    assert calls == ["wait", "build"]

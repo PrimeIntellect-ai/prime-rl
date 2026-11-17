@@ -204,6 +204,12 @@ class AppState(Stateful):
     def async_state_dict(self) -> dict[str, Any]:
         """The state dict for an async save. It reads CPU-offloaded optimizer state where it lives, without the GPU
         round trip of ``prepare_checkpoint_save``; the async save copies it to pinned memory before returning."""
+        # An overlapped step may still be updating parameters and writing state back to the CPU: finish it first
+        for optimizer in self.optimizers:
+            if (wait := getattr(optimizer, "wait", None)) is not None:
+                wait()
+        if self._has_cpu_offload() and torch.cuda.is_initialized():
+            torch.cuda.synchronize()
         return self._build_state_dict(cpu_optimizer_state=True)
 
     def state_dict(self) -> dict[str, Any]:
