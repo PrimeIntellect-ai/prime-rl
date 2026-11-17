@@ -34,7 +34,8 @@ The results also report each case's `worst_grad_share`: the norm of the worst pa
 total grad norm. A tiny share means that parameter's gradient nearly cancels, so its relative error is noisy.
 
 Tolerances are about 5x the largest difference seen: loss 1e-5, grad norm 1e-3 and worst parameter gradient 2e-2 in
-eager mode, and 1e-4, 3e-3 and 1e-1 with torch.compile, which fuses bf16 ops differently from the eager reference.
+eager mode, and 1e-4, 3e-3 and 1e-1 with torch.compile, which fuses bf16 ops differently from the eager reference. A case
+can raise one with a measured reason (`Case.tolerances`): GatedDeltaNet under CP moves the loss more than attention.
 Observed: dp2 is exact up to ~1e-8, CP and EP gradients differ by up to ~5e-3, and compiled MoE router gradients by up
 to ~4e-2. Bugs injected by hand each failed exactly the affected cases: a Ulysses all-to-all backward without the
 exchange, a wrong FSDP gradient divide factor on EP blocks, and every CP rank using the first shard's position ids.
@@ -220,6 +221,8 @@ class Case:
     """torch.compile costs seconds per case, so few cases turn it on."""
     overrides: dict = field(default_factory=dict)
     """ModelConfig fields on top of the trainer defaults (full AC with activation offloading, fusions)."""
+    tolerances: dict = field(default_factory=dict)
+    """Tolerances on top of the defaults below, each measured for this case."""
 
 
 CASES = [
@@ -234,13 +237,18 @@ CASES = [
     Case("qwen3_moe-ep2-compile", "qwen3_moe", ep=2, compile=True),
     Case("glm4_moe-cp2_ep2", "glm4_moe", cp=2, ep=2),
 ]
+# GatedDeltaNet passes its recurrent state across the CP cut. The document that straddles the cut then differs by up
+# to ~3e-3 per token on the second rank (bf16, measured on the layer alone; the other documents match exactly), which
+# moves the loss by ~1e-5 (1.4e-5 measured for Qwen3.5 MoE with cp2 and identical routing). Attention CP moves it by
+# ~1e-8, which the default loss tolerance is calibrated on.
+GATED_DELTA_NET_CP_TOLERANCES = {"loss": 1e-4}
 # Their kernels take minutes to compile in a fresh process (the cuDNN sparse-attention backward, DeepGEMM, TileLang,
 # FLA's Triton autotuning), which the tiny subset cannot afford
 RECENT_ARCH_CASES = [
     Case("qwen3_5_moe-ep2", "qwen3_5_moe", ep=2),
-    Case("qwen3_5_moe-cp2_ep2", "qwen3_5_moe", cp=2, ep=2),
+    Case("qwen3_5_moe-cp2_ep2", "qwen3_5_moe", cp=2, ep=2, tolerances=GATED_DELTA_NET_CP_TOLERANCES),
     Case("qwen3_8_flash_next-ep2", "qwen3_8_flash_next", ep=2),
-    Case("qwen3_8_flash_next-cp2_ep2", "qwen3_8_flash_next", cp=2, ep=2),
+    Case("qwen3_8_flash_next-cp2_ep2", "qwen3_8_flash_next", cp=2, ep=2, tolerances=GATED_DELTA_NET_CP_TOLERANCES),
     Case("deepseek_v4-ep2", "deepseek_v4", ep=2),
     Case("deepseek_v4-cp2_ep2", "deepseek_v4", cp=2, ep=2),
     Case("glm_moe_dsa-ep2", "glm_moe_dsa", ep=2),
@@ -520,7 +528,7 @@ def recent_arch_results(run_process, tmp_path_factory: pytest.TempPathFactory) -
 def check(errors: dict, case: Case) -> None:
     assert "error" not in errors, errors.get("error")
     assert not errors["one_sided_grads"], f"gradients on only one side: {errors['one_sided_grads']}"
-    tolerances = COMPILE_TOLERANCES if case.compile else TOLERANCES
+    tolerances = {**(COMPILE_TOLERANCES if case.compile else TOLERANCES), **case.tolerances}
     for metric, tolerance in tolerances.items():
         assert errors[metric] <= tolerance, f"{metric} relative error {errors[metric]:.1e} > {tolerance:.0e} ({errors})"
 
