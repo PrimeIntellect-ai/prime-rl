@@ -18,6 +18,7 @@ from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.inference.server import setup_model_source
+from prime_rl.inference.vllm.nvfp4_linear import register_nvfp4_online_quantization
 from prime_rl.utils.specdec import check_draft_swap, local_draft_dir
 
 logger = init_logger("vllm.entrypoints.launchers.api_server.entry")
@@ -231,6 +232,9 @@ def custom_run_api_server_worker_proc(listen_address, sock, args, client_config=
 vllm.entrypoints.launchers.api_server.entry.init_app_state = custom_init_app_state
 vllm.entrypoints.launchers.api_server.entry.build_app = custom_build_app
 vllm.v1.utils.run_api_server_worker_proc = custom_run_api_server_worker_proc
+# The launcher and every API-server process validate `quantization_config` before vLLM loads
+# general plugins, so the `nvfp4` online shorthand is registered on import.
+register_nvfp4_online_quantization()
 
 
 # Adapted from vllm/entrypoints/cli/serve.py
