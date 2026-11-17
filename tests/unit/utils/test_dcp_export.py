@@ -148,8 +148,16 @@ def test_layer_export_matches_original_hf_weights(tmp_path, exporter, monkeypatc
     checkpoint = exporter.Checkpoint(
         tmp_path, FileSystemReader(tmp_path).read_metadata(), model.to("meta"), None, None, base_dir
     )
+    fp32 = set()
+    if frozen:
+        # A frozen weight kept in FP32 under its PrimeRL name, whose HF name differs (router.gate -> gate)
+        router = "model.layers.0.mlp.router.gate.weight"
+        monkeypatch.setattr(
+            type(model), "keep_in_fp32_for_weight_transfer", classmethod(lambda cls, key: key == router)
+        )
+        fp32 = {"model.layers.0.mlp.gate.weight"}
     expected = {
-        name: tensor.bfloat16() if tensor.is_floating_point() else tensor.clone()
+        name: tensor.clone() if name in fp32 or not tensor.is_floating_point() else tensor.bfloat16()
         for name, tensor in original.items()
         if not (tied and name == "lm_head.weight")
     }

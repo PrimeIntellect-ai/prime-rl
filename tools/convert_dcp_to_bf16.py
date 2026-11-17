@@ -155,8 +155,25 @@ def frozen_keys(checkpoint: Checkpoint) -> set[str]:
     return {key for key in checkpoint.model.state_dict() if f"app.model.{key}" not in stored}
 
 
-def load_base(checkpoint: Checkpoint, names: list[str]) -> dict[str, Tensor]:
-    """HF tensors ``names`` from the base checkpoint, in the export dtypes."""
+def frozen_targets(checkpoint: Checkpoint, keys: list[str]) -> dict[str, Tensor]:
+    """Meta stand-ins of frozen weights in their export dtypes, chosen by PrimeRL name like ``export_dtype``, so the
+    conversion rules carry each dtype to the HF names."""
+    model = checkpoint.model
+    keep_in_fp32 = model.keep_in_fp32_for_weight_transfer if isinstance(model, PreTrainedModelPrimeRL) else None
+    skeleton = model.state_dict()
+
+    def dtype(key: str) -> torch.dtype:
+        if not skeleton[key].is_floating_point():
+            return skeleton[key].dtype
+        if key.endswith("mlp.router.selection_bias"):
+            return torch.float32
+        return resolve_wire_dtype(keep_in_fp32, key, torch.bfloat16)
+
+    return {key: torch.empty(skeleton[key].shape, dtype=dtype(key), device="meta") for key in keys}
+
+
+def load_base(checkpoint: Checkpoint, targets: dict[str, Tensor]) -> dict[str, Tensor]:
+    """The HF tensors named in ``targets`` from the base checkpoint, floats cast to their targets' dtypes."""
     base = checkpoint.base_dir
     if base is None:
         name = checkpoint.model_config.name
@@ -167,15 +184,11 @@ def load_base(checkpoint: Checkpoint, names: list[str]) -> dict[str, Tensor]:
         )
     index_path = base / SAFE_WEIGHTS_INDEX_NAME
     files = json.loads(index_path.read_text())["weight_map"] if index_path.exists() else {}
-    model = checkpoint.model
-    keep_in_fp32 = model.keep_in_fp32_for_weight_transfer if isinstance(model, PreTrainedModelPrimeRL) else None
     tensors = {}
-    for name in names:
+    for name, target in targets.items():
         with safe_open(base / files.get(name, SAFE_WEIGHTS_NAME), framework="pt") as file:
             tensor = file.get_tensor(name)
-        if tensor.is_floating_point() and not name.endswith(("selection_bias", "e_score_correction_bias")):
-            tensor = tensor.to(resolve_wire_dtype(keep_in_fp32, name, torch.bfloat16))
-        tensors[name] = tensor
+        tensors[name] = tensor.to(target.dtype) if tensor.is_floating_point() else tensor
     return tensors
 
 
@@ -239,17 +252,16 @@ def write_weights(
         shard = load_layer(checkpoint, stored) if stored else {}
         if missing := [key for key in keys if key in frozen]:
             # Frozen modules: their HF names from the conversion rules, their values from the base checkpoint
-            names = convert_state_dict_to_hf(checkpoint.model, {key: skeleton[key] for key in missing})
-            shard |= load_base(checkpoint, list(names))
+            shard |= load_base(
+                checkpoint, convert_state_dict_to_hf(checkpoint.model, frozen_targets(checkpoint, missing))
+            )
         return write_shard(index, shard)
 
     def write_table(key: str, op: ChunkedConvOp, index: int) -> list[tuple[str, dict[str, int]]]:
         if key in frozen:
-            packets = op.iter_prime_to_hf(skeleton[key], lambda weight, start, stop: weight[start:stop])
-            return [
-                write_shard(index + offset, load_base(checkpoint, list(packet)))
-                for offset, packet in enumerate(packets)
-            ]
+            target = frozen_targets(checkpoint, [key])[key]
+            packets = op.iter_prime_to_hf(target, lambda weight, start, stop: weight[start:stop])
+            return [write_shard(index + offset, load_base(checkpoint, packet)) for offset, packet in enumerate(packets)]
         # DCP reads a stored chunk in full to serve any of its rows, so read each
         # chunk once and slice the HF shards, which arrive in row order, from it.
         row_ranges = stored_row_ranges(checkpoint, key)
