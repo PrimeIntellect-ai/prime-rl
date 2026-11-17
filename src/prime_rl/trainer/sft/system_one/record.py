@@ -46,8 +46,8 @@ class Question:
 
 
 @dataclass(frozen=True)
-class SystemOneRecord:
-    """What a model sees: no labels."""
+class SystemOneRequest:
+    """What a model sees: the record without its labels."""
 
     id: Any
     state: Any
@@ -146,8 +146,8 @@ def _soft_label(question: Question, soft_label: Any) -> list[float]:
     return [p / total for p in values]
 
 
-def parse_record(row: Mapping, columns: SystemOneColumnsConfig) -> tuple[SystemOneRecord, list[Labels]]:
-    """A dataset row -> the checked record and one ``Labels`` per question, in record order.
+def parse_record(row: Mapping, columns: SystemOneColumnsConfig) -> tuple[SystemOneRequest, list[Labels]]:
+    """A dataset row -> the checked request and one ``Labels`` per question, in request order.
 
     The state, questions and label columns hold JSON text. Any question may go without a label.
     """
@@ -172,14 +172,14 @@ def parse_record(row: Mapping, columns: SystemOneColumnsConfig) -> tuple[SystemO
         ]
     except ValueError as error:
         raise ValueError(f"record {record_id!r}: {error}") from None
-    return SystemOneRecord(record_id, state, questions), labels
+    return SystemOneRequest(record_id, state, questions), labels
 
 
-def build_targets(record: SystemOneRecord, labels: list[Labels]) -> list[list[float] | None]:
+def build_targets(request: SystemOneRequest, labels: list[Labels]) -> list[list[float] | None]:
     """Per question, over its options in canonical order: the soft label if given, else the hard label one-hot,
     else None (the question is not trained)."""
     targets: list[list[float] | None] = []
-    for question, given in zip(record.questions, labels, strict=True):
+    for question, given in zip(request.questions, labels, strict=True):
         if given.soft is not None:
             targets.append(given.soft)
         elif given.hard is not None:

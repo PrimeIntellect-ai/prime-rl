@@ -1,4 +1,4 @@
-"""System One data: the model's strategy renders each record into tokens, and prime-rl builds the sample around them."""
+"""System One data: the model's strategy renders each request into tokens, and prime-rl builds the sample around them."""
 
 from abc import ABC, abstractmethod
 from bisect import bisect_left, bisect_right
@@ -12,19 +12,19 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from prime_rl.configs.sft import SystemOneColumnsConfig, SystemOneDataConfig
 from prime_rl.trainer.data import Sample
 from prime_rl.trainer.sft.data import HFDataset
-from prime_rl.trainer.sft.system_one.record import SystemOneRecord, build_targets, parse_record
+from prime_rl.trainer.sft.system_one.record import SystemOneRequest, build_targets, parse_record
 from prime_rl.utils.logger import get_logger
 
 
-class RenderedRecord(TypedDict):
-    """What a strategy renders for one record: its tokens, and where the model's head reads each question.
+class RenderedRequest(TypedDict):
+    """What a strategy renders for one request: its tokens, and where the model's head reads each question.
     prime-rl checks it and derives the positions, the loss mask and the sample's ``sample_data`` from it."""
 
     input_ids: list[int]
     seq_lens: list[int]
     """Attention segments, each > 0, summing to ``len(input_ids)``. Positions restart at 0 in each."""
     read_spans: list[list[tuple[int, int]]]
-    """Per question, in record order: the ``[start, end)`` token spans the head reads, at least one. Spans are
+    """Per question, in request order: the ``[start, end)`` token spans the head reads, at least one. Spans are
     non-empty, each within one attention segment, disjoint and increasing across the whole record."""
     options: NotRequired[list[list[str]]]
     """Per question: its option ids in the order of the head's logits, when that is not the order of
@@ -32,7 +32,7 @@ class RenderedRecord(TypedDict):
 
 
 class SystemOneStrategy(ABC):
-    """Base class of System One strategies: how a decision model sees a record. The model class names its strategy
+    """Base class of System One strategies: how a decision model sees a request. The model class names its strategy
     with the classmethod ``system_one_strategy``.
 
     Built once in the main process as ``Strategy(tokenizer, config)``, before dataloader workers fork, for training and
@@ -46,8 +46,8 @@ class SystemOneStrategy(ABC):
         """The model's config, with what its loader attached."""
 
     @abstractmethod
-    def render_record(self, record: SystemOneRecord, max_tokens: int) -> RenderedRecord | None:
-        """The record's tokens, attention segments and read spans, or None to skip the record. ``max_tokens`` is
+    def render_request(self, request: SystemOneRequest, max_tokens: int) -> RenderedRequest | None:
+        """The request's tokens, attention segments and read spans, or None to skip the record. ``max_tokens`` is
         ``data.seq_len``: a longer rendering is skipped, never truncated."""
 
 
@@ -71,8 +71,8 @@ def _is_int(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def _find_violation(rendered: RenderedRecord, record: SystemOneRecord) -> str | None:
-    required, optional = RenderedRecord.__required_keys__, RenderedRecord.__optional_keys__
+def _find_violation(rendered: RenderedRequest, request: SystemOneRequest) -> str | None:
+    required, optional = RenderedRequest.__required_keys__, RenderedRequest.__optional_keys__
     if not isinstance(rendered, dict) or not required <= set(rendered) <= required | optional:
         got = sorted(rendered) if isinstance(rendered, dict) else type(rendered).__name__
         return f"expected a dict with input_ids, seq_lens, read_spans and optionally options, got {got}"
@@ -88,11 +88,11 @@ def _find_violation(rendered: RenderedRecord, record: SystemOneRecord) -> str | 
     if sum(seq_lens) != len(input_ids):
         return f"seq_lens sum to {sum(seq_lens)}, but there are {len(input_ids)} input_ids"
 
-    if len(read_spans) != len(record.questions):
-        return f"read_spans has {len(read_spans)} entries for {len(record.questions)} questions"
+    if len(read_spans) != len(request.questions):
+        return f"read_spans has {len(read_spans)} entries for {len(request.questions)} questions"
     segment_ends = list(accumulate(seq_lens))
     previous_end = 0
-    for question, spans in zip(record.questions, read_spans):
+    for question, spans in zip(request.questions, read_spans):
         if not isinstance(spans, (list, tuple)) or not spans:
             return f"question {question.id!r}: read_spans must be a non-empty list of spans, got {spans!r}"
         for span in spans:
@@ -110,9 +110,11 @@ def _find_violation(rendered: RenderedRecord, record: SystemOneRecord) -> str | 
 
     if "options" in rendered:
         options = rendered["options"]
-        if not isinstance(options, list) or len(options) != len(record.questions):
-            return f"options must list the option ids of each of the {len(record.questions)} questions, got {options!r}"
-        for question, order in zip(record.questions, options):
+        if not isinstance(options, list) or len(options) != len(request.questions):
+            return (
+                f"options must list the option ids of each of the {len(request.questions)} questions, got {options!r}"
+            )
+        for question, order in zip(request.questions, options):
             # The canonical options are distinct, so an order of their length that holds each of them is a permutation.
             same_length = isinstance(order, (list, tuple)) and len(order) == len(question.options)
             if not same_length or not all(option in order for option in question.options):
@@ -120,14 +122,14 @@ def _find_violation(rendered: RenderedRecord, record: SystemOneRecord) -> str | 
     return None
 
 
-def check_rendered_record(rendered: RenderedRecord, record: SystemOneRecord) -> None:
-    """Raise ``ValueError`` unless the strategy's rendering keeps the ``RenderedRecord`` contract for this record."""
-    violation = _find_violation(rendered, record)
+def check_rendered_request(rendered: RenderedRequest, request: SystemOneRequest) -> None:
+    """Raise ``ValueError`` unless the strategy's rendering keeps the ``RenderedRequest`` contract for this request."""
+    violation = _find_violation(rendered, request)
     if violation is not None:
-        raise ValueError(f"record {record.id!r}: the strategy broke the RenderedRecord contract: {violation}")
+        raise ValueError(f"record {request.id!r}: the strategy broke the RenderedRequest contract: {violation}")
 
 
-def build_sample(rendered: RenderedRecord, record: SystemOneRecord, targets: list[list[float] | None]) -> Sample:
+def build_sample(rendered: RenderedRequest, request: SystemOneRequest, targets: list[list[float] | None]) -> Sample:
     """A checked rendering and the record's targets (in canonical option order) -> the training sample.
 
     The loss mask marks the read tokens, and ``sample_data`` carries what a loss needs per question: its options,
@@ -135,9 +137,9 @@ def build_sample(rendered: RenderedRecord, record: SystemOneRecord, targets: lis
     """
     num_tokens = len(rendered["input_ids"])
     loss_mask = [False] * num_tokens
-    orders = rendered.get("options", [question.options for question in record.questions])
+    orders = rendered.get("options", [question.options for question in request.questions])
     questions = []
-    for question, spans, order, target in zip(record.questions, rendered["read_spans"], orders, targets, strict=True):
+    for question, spans, order, target in zip(request.questions, rendered["read_spans"], orders, targets, strict=True):
         for start, end in spans:
             loss_mask[start:end] = [True] * (end - start)
         if target is not None:
@@ -160,31 +162,31 @@ def build_sample(rendered: RenderedRecord, record: SystemOneRecord, targets: lis
         "target_ids": [0] * num_tokens,
         "mm_kwargs": None,
         "mm_token_type_ids": None,
-        "sample_data": {"id": record.id, "questions": questions},
+        "sample_data": {"id": request.id, "questions": questions},
     }
 
 
 def render_sample(
     strategy: SystemOneStrategy,
-    record: SystemOneRecord,
+    request: SystemOneRequest,
     seq_len: int,
     targets: list[list[float] | None] | None = None,
 ) -> Sample | None:
-    """The record's sample, or None when the strategy declines the record or its rendering has more than ``seq_len``
+    """The record's sample, or None when the strategy declines the request or its rendering has more than ``seq_len``
     tokens. Without ``targets`` its questions carry none."""
-    rendered = strategy.render_record(record, seq_len)
+    rendered = strategy.render_request(request, seq_len)
     if rendered is None:
-        get_logger().debug(f"Skipping record {record.id!r}: the strategy returned None")
+        get_logger().debug(f"Skipping record {request.id!r}: the strategy returned None")
         return None
     # Checked before the length, so that a broken rendering of an over-long record raises instead of being skipped.
-    check_rendered_record(rendered, record)
+    check_rendered_request(rendered, request)
     if len(rendered["input_ids"]) > seq_len:
         get_logger().warning(
-            f"Skipping record {record.id!r}: its rendering has {len(rendered['input_ids'])} tokens, more than "
+            f"Skipping record {request.id!r}: its rendering has {len(rendered['input_ids'])} tokens, more than "
             f"seq_len ({seq_len}). Records are never truncated."
         )
         return None
-    return build_sample(rendered, record, targets or [None] * len(record.questions))
+    return build_sample(rendered, request, targets or [None] * len(request.questions))
 
 
 class SystemOneDataset(HFDataset):
@@ -236,12 +238,12 @@ class SystemOneDataset(HFDataset):
                 )
 
     def _process(self, example: dict) -> dict | None:
-        record, labels = parse_record(example, self.columns)
-        targets = build_targets(record, labels)
+        request, labels = parse_record(example, self.columns)
+        targets = build_targets(request, labels)
         if all(target is None for target in targets):
-            self.logger.warning(f"Skipping record {record.id!r}: none of its questions has a label")
+            self.logger.warning(f"Skipping record {request.id!r}: none of its questions has a label")
             return None
-        return render_sample(self.strategy, record, self.seq_len, targets)
+        return render_sample(self.strategy, request, self.seq_len, targets)
 
 
 def setup_system_one_dataset(

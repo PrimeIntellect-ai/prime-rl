@@ -390,7 +390,7 @@ The samples are called one after another, as in RL, so many short samples cost o
 
 ### System One Data
 
-`[data] type = "system_one"` trains a decision model: a model that answers typed questions about a state with a distribution over each question's options, read from hidden states at chosen tokens instead of generated as text. A row is a System One record: a state, its questions and their labels. prime-rl parses the record and turns the labels into one target per question, the model's strategy renders the record into tokens, and a [custom loss](#custom-loss) of yours compares the model's output with the targets. Loading, mixing subsets and splits, shuffling, packing, resume, validation and checkpointing are the SFT trainer's, as for chat data.
+`[data] type = "system_one"` trains a decision model: a model that answers typed questions about a state with a distribution over each question's options, read from hidden states at chosen tokens instead of generated as text. A row is a System One record: a state, its questions and their labels. prime-rl parses the record into its request (the state and questions, without labels) and one target per question, the model's strategy renders the request into tokens, and a [custom loss](#custom-loss) of yours compares the model's output with the targets. Loading, mixing subsets and splits, shuffling, packing, resume, validation and checkpointing are the SFT trainer's, as for chat data.
 
 **Prepare the records.** prime-rl does not convert datasets; you write the HF dataset. Its columns are `state`, `questions`, and `label` and/or `soft_label`, plus an optional `id` that names the record in warnings and errors (when absent, its subset if any, split and row index, joined by `/`). All but `id` are string columns of JSON text (write them with `json.dumps`), so a text state is a JSON string; a label column that is null in every row counts as absent. A dataset that stores them under other names maps them in `[data.columns]`, e.g. `state = "ticket"`. One row:
 
@@ -412,7 +412,7 @@ soft_label  {"team": {"technical": 0.75, "billing": 0.25}}
 | `choice` | non-empty option id → description or null, 1 to 255 options | the option ids as given | an option id | `team`: `[0.75, 0.25]` |
 | `score` | a list of 2 to 10 distinct non-empty level descriptions | `0` … `n-1` | a level | `urgency`: `[0, 0, 1]` |
 
-**Write the model class and its strategy.** A decision model is a model class and its strategy. The strategy decides what the model sees: the text, how it splits into attention segments, and which tokens the model's head reads for each question. The input format belongs to the model, so the class names its strategy with the classmethod `system_one_strategy`, and the data config names none. The class is a [custom model class](#sft-specific-knobs) (`[model.implementation]`) that holds the head your loss calls; the strategy subclasses `SystemOneStrategy`. In vLLM terms, `render_record` is the rendering half of a read strategy; the model class keeps the head's weights.
+**Write the model class and its strategy.** A decision model is a model class and its strategy. The strategy decides what the model sees: the text, how it splits into attention segments, and which tokens the model's head reads for each question. The input format belongs to the model, so the class names its strategy with the classmethod `system_one_strategy`, and the data config names none. The class is a [custom model class](#sft-specific-knobs) (`[model.implementation]`) that holds the head your loss calls; the strategy subclasses `SystemOneStrategy`. In vLLM terms, `render_request` is the rendering half of a read strategy; the model class keeps the head's weights.
 
 ```python
 # my_pkg/model.py
@@ -431,29 +431,29 @@ class MyDecisionModel(Qwen3ForCausalLM):
 # my_pkg/strategy.py
 import json
 
-from prime_rl.trainer.sft.system_one.data import RenderedRecord, SystemOneStrategy
-from prime_rl.trainer.sft.system_one.record import SystemOneRecord
+from prime_rl.trainer.sft.system_one.data import RenderedRequest, SystemOneStrategy
+from prime_rl.trainer.sft.system_one.record import SystemOneRequest
 
 
 class MyStrategy(SystemOneStrategy):
     """One prompt per question; the head reads each prompt's last token."""
 
-    def render_record(self, record: SystemOneRecord, max_tokens: int) -> RenderedRecord | None:
+    def render_request(self, request: SystemOneRequest, max_tokens: int) -> RenderedRequest | None:
         input_ids, seq_lens, read_spans = [], [], []
-        state = json.dumps(record.state)
-        for question in record.questions:  # .id, .type, .instructions, .criteria, .options, .descriptions
+        state = json.dumps(request.state)
+        for question in request.questions:  # .id, .type, .instructions, .criteria, .options, .descriptions
             options = ", ".join(question.options)
             prompt = f"State: {state}\nQuestion: {question.instructions}\nOptions: {options}\nAnswer:"
             ids = self.tokenizer.encode(prompt)
             input_ids += ids
             seq_lens.append(len(ids))  # one attention segment per prompt
             read_spans.append([(len(input_ids) - 1, len(input_ids))])  # this question's [start, end) spans
-        return RenderedRecord(input_ids=input_ids, seq_lens=seq_lens, read_spans=read_spans)
+        return RenderedRequest(input_ids=input_ids, seq_lens=seq_lens, read_spans=read_spans)
 ```
 
-- **Lifetime.** The trainer reads the strategy from the model class before it loads any weights, and refuses System One data for a class without `system_one_strategy`. It builds the strategy once in the main process, as `MyStrategy(tokenizer, config)` with the run's tokenizer and the model's config (`self.config`, so the strategy's settings belong in the checkpoint's `config.json`), for training and validation alike, before the dataloader workers fork, so the workers share what `__init__` builds. `render_record` must be deterministic so that a resumed run reads the same samples. It never sees labels.
-- **Input.** `record.state` and each question's `instructions` and `criteria` are the decoded JSON (noul criteria without their null descriptions); `question.options` are the option ids in the order of the table, and `question.descriptions` their descriptions (`None` where there is none). `max_tokens` is `data.seq_len`: a strategy may shorten its own content to fit, or return `None` to skip a record it cannot render. A record is also skipped, with a warning, when its rendering is longer than `max_tokens` (prime-rl never truncates a record) or none of its questions has a label. A malformed record is not skipped: it raises and stops the run before the strategy sees it, e.g. a column that is not JSON text, an empty question id, option id or score level, a repeated score level, a label that is not an option, or a soft label that is not a distribution. A data rank that skips more than twice as many rows in a row as the dataset has also raises.
-- **Output.** `input_ids`, `seq_lens`, `read_spans`, and optionally `options`: per question, the option ids in the order of the head's logits when that is not the order of the table (prime-rl reorders the targets to match). prime-rl checks every rendering against the `RenderedRecord` contract and raises on a violation.
+- **Lifetime.** The trainer reads the strategy from the model class before it loads any weights, and refuses System One data for a class without `system_one_strategy`. It builds the strategy once in the main process, as `MyStrategy(tokenizer, config)` with the run's tokenizer and the model's config (`self.config`, so the strategy's settings belong in the checkpoint's `config.json`), for training and validation alike, before the dataloader workers fork, so the workers share what `__init__` builds. `render_request` must be deterministic so that a resumed run reads the same samples. It never sees labels.
+- **Input.** `request.state` and each question's `instructions` and `criteria` are the decoded JSON (noul criteria without their null descriptions); `question.options` are the option ids in the order of the table, and `question.descriptions` their descriptions (`None` where there is none). `max_tokens` is `data.seq_len`: a strategy may shorten its own content to fit, or return `None` to skip a record whose request it cannot render. A record is also skipped, with a warning, when its rendering is longer than `max_tokens` (prime-rl never truncates a record) or none of its questions has a label. A malformed record is not skipped: it raises and stops the run before the strategy sees it, e.g. a column that is not JSON text, an empty question id, option id or score level, a repeated score level, a label that is not an option, or a soft label that is not a distribution. A data rank that skips more than twice as many rows in a row as the dataset has also raises.
+- **Output.** `input_ids`, `seq_lens`, `read_spans`, and optionally `options`: per question, the option ids in the order of the head's logits when that is not the order of the table (prime-rl reorders the targets to match). prime-rl checks every rendering against the `RenderedRequest` contract and raises on a violation.
 
 **Configure.** `data.name`, a model class that declares `system_one_strategy` and a [custom loss](#custom-loss) are required:
 

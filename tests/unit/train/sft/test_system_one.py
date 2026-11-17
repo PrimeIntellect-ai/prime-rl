@@ -5,10 +5,10 @@ from datasets import Dataset
 
 from prime_rl.configs.sft import SystemOneColumnsConfig
 from prime_rl.trainer.sft.system_one.data import (
-    RenderedRecord,
+    RenderedRequest,
     SystemOneDataset,
     SystemOneStrategy,
-    check_rendered_record,
+    check_rendered_request,
     system_one_strategy_cls,
 )
 from prime_rl.trainer.sft.system_one.record import build_targets, parse_record
@@ -37,24 +37,24 @@ ROW = row(label=LABEL, soft_label=SOFT_LABEL)
 
 
 def test_parse_record_and_build_targets():
-    record, labels = parse_record(ROW, COLUMNS)
-    assert (record.id, record.state) == ("r", "Checkout fails.")
-    assert [q.options for q in record.questions] == [["false", "true"], ["technical", "billing"], ["0", "1", "2"]]
-    assert [q.descriptions for q in record.questions] == [
+    request, labels = parse_record(ROW, COLUMNS)
+    assert (request.id, request.state) == ("r", "Checkout fails.")
+    assert [q.options for q in request.questions] == [["false", "true"], ["technical", "billing"], ["0", "1", "2"]]
+    assert [q.descriptions for q in request.questions] == [
         [None, "A service is down."],
         ["Bugs", None],
         ["Can wait", "This week", "Today"],
     ]
     assert [(given.hard, given.soft) for given in labels] == [(1, None), (None, [0.75, 0.25]), (2, None)]
-    assert build_targets(record, labels) == [[0.0, 1.0], [0.75, 0.25], [0.0, 0.0, 1.0]]
+    assert build_targets(request, labels) == [[0.0, 1.0], [0.75, 0.25], [0.0, 0.0, 1.0]]
 
 
 def test_soft_label_wins_and_unlabelled_questions_have_no_target():
     label = {"outage": False, "team": None}  # a null label is no label
     soft_label = {"outage": {"false": 0.25, "true": 0.75}, "urgency": {"0": 0.33, "1": 0.33, "2": 0.33}}
-    record, labels = parse_record(row(label=label, soft_label=soft_label), COLUMNS)
+    request, labels = parse_record(row(label=label, soft_label=soft_label), COLUMNS)
     assert labels[0].hard == 0
-    targets = build_targets(record, labels)
+    targets = build_targets(request, labels)
     assert targets[:2] == [[0.25, 0.75], None]
     assert targets[2] == pytest.approx([1 / 3] * 3)  # a sum within 0.05 of 1 is rescaled
 
@@ -74,30 +74,30 @@ def test_soft_label_rounded_to_two_decimals_is_rescaled():
 )
 def test_null_noul_descriptions_are_absent(criteria, expected):
     question = {"type": "noul", "instructions": "Is a service down?", "criteria": criteria}
-    record, _ = parse_record(row({"outage": question}), COLUMNS)
-    assert record.questions[0].criteria == expected
+    request, _ = parse_record(row({"outage": question}), COLUMNS)
+    assert request.questions[0].criteria == expected
 
 
 def test_instructions_are_optional():
     questions = {"absent": {"type": "noul"}, "null": {"type": "noul", "instructions": None}}
-    record, _ = parse_record(row(questions), COLUMNS)
-    assert [question.instructions for question in record.questions] == ["", ""]
+    request, _ = parse_record(row(questions), COLUMNS)
+    assert [question.instructions for question in request.questions] == ["", ""]
 
 
 def test_label_columns_may_be_absent_or_null():
     without_soft_label = {key: value for key, value in row(label=LABEL).items() if key != "soft_label"}
-    record, labels = parse_record(without_soft_label, COLUMNS)
-    assert build_targets(record, labels) == [[0.0, 1.0], None, [0.0, 0.0, 1.0]]
-    record, labels = parse_record(row(), COLUMNS)
-    assert build_targets(record, labels) == [None, None, None]
+    request, labels = parse_record(without_soft_label, COLUMNS)
+    assert build_targets(request, labels) == [[0.0, 1.0], None, [0.0, 0.0, 1.0]]
+    request, labels = parse_record(row(), COLUMNS)
+    assert build_targets(request, labels) == [None, None, None]
 
 
 def test_columns_can_be_renamed_and_the_id_falls_back_to_the_split_and_row_index():
     renamed = {"__split": "train", "__index": 7, "input": json.dumps({"ticket": 7}), "questions": json.dumps(QUESTIONS)}
     renamed["probs"] = json.dumps(SOFT_LABEL)
     columns = SystemOneColumnsConfig(state="input", soft_label="probs")
-    record, labels = parse_record(renamed, columns)
-    assert (record.id, record.state) == ("train/7", {"ticket": 7})
+    request, labels = parse_record(renamed, columns)
+    assert (request.id, request.state) == ("train/7", {"ticket": 7})
     assert labels[1].soft == [0.75, 0.25]
     with pytest.raises(ValueError, match="record 'train/7': question 'team'"):
         parse_record({**renamed, "probs": json.dumps({"team": {"technical": 1.0}})}, columns)
@@ -159,8 +159,8 @@ class StubStrategy(SystemOneStrategy):
         super().__init__(tokenizer, config)
         self.read_spans = read_spans
 
-    def render_record(self, record, max_tokens):
-        return RenderedRecord(
+    def render_request(self, request, max_tokens):
+        return RenderedRequest(
             input_ids=list(range(10, 20)),
             seq_lens=[4, 6],
             read_spans=self.read_spans,
@@ -216,11 +216,11 @@ def test_process_builds_sample_in_strategy_option_order():
         (list(range(10)), [4, 6], [[(True, 2)], [(2, 4)], [(6, 7)]]),  # a bool span start
     ],
 )
-def test_check_rendered_record_rejects_broken_renderings(input_ids, seq_lens, read_spans):
-    record, _ = parse_record(ROW, COLUMNS)
-    rendered = RenderedRecord(input_ids=input_ids, seq_lens=seq_lens, read_spans=read_spans)
-    with pytest.raises(ValueError, match="record 'r': the strategy broke the RenderedRecord contract"):
-        check_rendered_record(rendered, record)
+def test_check_rendered_request_rejects_broken_renderings(input_ids, seq_lens, read_spans):
+    request, _ = parse_record(ROW, COLUMNS)
+    rendered = RenderedRequest(input_ids=input_ids, seq_lens=seq_lens, read_spans=read_spans)
+    with pytest.raises(ValueError, match="record 'r': the strategy broke the RenderedRequest contract"):
+        check_rendered_request(rendered, request)
 
 
 def test_process_skips_record_without_labels():
@@ -228,7 +228,7 @@ def test_process_skips_record_without_labels():
 
 
 class SkippingStrategy(SystemOneStrategy):
-    def render_record(self, record, max_tokens):
+    def render_request(self, request, max_tokens):
         return None
 
 
