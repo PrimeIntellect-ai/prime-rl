@@ -109,6 +109,9 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # The branch's training arrays (routing rows, sampling mask, top-k head), kept by an
     # env worker; None when the branch has none.
     payload: PayloadSlice | None = None
+    # Per token, how many model calls computed it on the engines (prefix-cache reads excluded): the weight of its
+    # routing in the trainer's expert counts for EPLB. None counts every token once.
+    engine_weights: np.ndarray | None = None
 
 
 # Per-token streams of a MicroBatch and the dtype each travels as. The orchestrator holds them as
@@ -127,6 +130,7 @@ MICRO_BATCH_DTYPES: dict[str, type[np.generic]] = {
     "ce_weights": np.float32,
     "ref_kl_weights": np.float32,
     "staleness": np.int16,
+    "engine_weights": np.float32,
 }
 
 
@@ -179,3 +183,4 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # (None if it has none). The trainer fetches them into ``routed_experts`` and
     # ``sampler_support``; None if no sequence has arrays.
     payloads: list[PayloadSlice | None] | None = None
+    engine_weights: memoryview | None = None  # see TrainingSample.engine_weights

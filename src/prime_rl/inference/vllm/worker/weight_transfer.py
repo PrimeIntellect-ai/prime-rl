@@ -1,5 +1,5 @@
 import hashlib
-from typing import Iterable, Iterator, Literal
+from typing import TYPE_CHECKING, Iterable, Iterator, Literal
 
 import torch
 from torch.nn import Module
@@ -7,7 +7,17 @@ from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader import DefaultModelLoader, get_model_loader
 from vllm.model_executor.model_loader.reload import finalize_layerwise_reload, initialize_layerwise_reload
+from vllm.model_executor.model_loader.reload.layerwise import get_layerwise_info
 from vllm.model_executor.model_loader.utils import get_draft_load_config
+
+from prime_rl.inference.vllm.eplb import (
+    current_expert_placement,
+    install_trainer_placement,
+    remap_expert_weight_loader,
+)
+
+if TYPE_CHECKING:
+    from vllm.distributed.eplb.eplb_state import EplbState
 
 logger = init_logger("vllm.inference.vllm.worker_weight_transfer")
 
@@ -126,11 +136,14 @@ def load_weights_checkpoint_layerwise(
     state_iter: Iterable[tuple[str, torch.Tensor]],
     model_config,
     vllm_config,
+    eplb_state: "EplbState | None" = None,
+    weight_dir: str | None = None,
     *,
     preserve_tensor_attributes: bool = False,
 ) -> None:
     logger.info("Reloading checkpoint-format weights with vLLM layerwise processing")
     device = next(model.parameters()).device
+    place_experts_from_trainer(eplb_state, model_config, weight_dir)
     # Compiled draft forwards can retain tensor attributes such as fused KV projections.
     tensor_attributes = [
         (module, name, value)
@@ -138,10 +151,33 @@ def load_weights_checkpoint_layerwise(
         for name, value in vars(module).items()
         if preserve_tensor_attributes and isinstance(value, torch.Tensor)
     ]
+    weight_loaders = []
+    moe_kernels = []
     with torch.device(device), set_current_vllm_config(vllm_config):
         initialize_layerwise_reload(model)
-        model.load_weights(state_iter)  # type: ignore
-        finalize_layerwise_reload(model, model_config)
+        if eplb_state is not None:
+            _, layers = current_expert_placement(eplb_state, model_config)
+            for experts, destinations in layers:
+                moe_kernels += stash_moe_kernels([experts])
+                kernel_parameters, _ = get_layerwise_info(experts).kernel_tensors
+                for name, param in experts.named_parameters(recurse=False):
+                    # vLLM reuses these metadata parameters on subsequent reloads.
+                    weight_loaders.append((param, param.weight_loader))
+                    param.weight_loader = remap_expert_weight_loader(param.weight_loader, destinations)
+                    # A layer can finish before the checkpoint stream reaches its
+                    # remaining nonlocal experts. Keep those calls in the completed
+                    # layerwise loader after vLLM restores the kernel parameters.
+                    kernel_param = kernel_parameters[name]
+                    weight_loaders.append((kernel_param, kernel_param.weight_loader))
+                    kernel_param.weight_loader = param.weight_loader
+        try:
+            model.load_weights(state_iter)  # type: ignore
+            finalize_layerwise_reload(model, model_config)
+        finally:
+            # Restored even when the update fails, so a retry does not remap already-physical expert ids
+            for param, loader in weight_loaders:
+                param.weight_loader = loader
+            restore_moe_kernels(moe_kernels)
         if preserve_tensor_attributes:
             for module in model.modules():
                 rebuild = getattr(module, "_build_fused_kv_buffers", None)
@@ -154,6 +190,31 @@ def load_weights_checkpoint_layerwise(
                     raise ValueError(f"Weight reload changed the layout of {type(module).__name__}.{name}")
                 original.copy_(updated)
                 setattr(module, name, original)
+
+
+def stash_moe_kernels(experts_modules) -> list:
+    """The kernels EPLB registered for these routed experts: a reload's quantization rebuilds them against temporary
+    scales, and EPLB's expert moves must keep targeting the ones that reference the live storage."""
+    return [
+        (experts.quant_method, experts.quant_method.moe_quant_config, experts.quant_method.moe_kernel)
+        for experts in experts_modules
+    ]
+
+
+def restore_moe_kernels(moe_kernels: list) -> None:
+    for quant_method, quant_config, kernel in moe_kernels:
+        quant_method.moe_quant_config = quant_config
+        quant_method.moe_kernel = kernel
+
+
+def place_experts_from_trainer(eplb_state: "EplbState | None", model_config, weight_dir: str | None) -> None:
+    """Place the experts by the counts the trainer published with this update, before its weights are written (see
+    ``install_trainer_placement``)."""
+    if eplb_state is None:
+        return
+    moved = install_trainer_placement(eplb_state, model_config, weight_dir)
+    if moved is not None:
+        logger.info("Placed EPLB experts from the trainer's expert counts: %d physical slots changed", moved)
 
 
 @torch.no_grad()

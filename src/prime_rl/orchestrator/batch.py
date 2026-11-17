@@ -23,7 +23,7 @@ from prime_rl.transports.batch.types import (
 # Backfill value per component weight stream when a packed sample doesn't
 # carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
 # means no component (weight 0.0).
-STREAM_FILL = {"rl_weights": 1.0, "ce_weights": 0.0, "ref_kl_weights": 0.0}
+STREAM_FILL = {"rl_weights": 1.0, "ce_weights": 0.0, "ref_kl_weights": 0.0, "engine_weights": 1.0}
 
 
 @dataclass
@@ -210,6 +210,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     mm_token_type_ids = training_example.mm_token_type_ids
     mm_refs = training_example.mm_refs
     staleness = training_example.staleness
+    engine_weights = training_example.engine_weights
     assert training_example.env_name != "all", "env_name='all' is reserved for aggregate metric keys"
 
     # Per-token sampling temperatures (context tokens are masked out, so theirs are don't-care).
@@ -244,6 +245,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
             payload = msgspec.structs.replace(payload, num_tokens=cut)
         if staleness is not None:
             staleness = staleness[:cut]
+        if engine_weights is not None:
+            engine_weights = engine_weights[:cut]
 
     assert (
         len(input_ids)
@@ -262,6 +265,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         ("ce_weights", ce_weights),
         ("ref_kl_weights", ref_kl_weights),
         ("staleness", staleness),
+        ("engine_weights", engine_weights),
     ):
         if stream is not None:
             assert len(stream) == len(input_ids), f"{stream_name}: {len(stream)}"
@@ -286,6 +290,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         branch_indices=[training_example.branch_index if training_example.branch_index is not None else -1],
         payloads=[payload] if payload is not None else None,
         staleness=staleness,
+        engine_weights=engine_weights,
     )
 
 
@@ -591,6 +596,7 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
         "ref_kl_weights",
         "mm_token_type_ids",
         "staleness",
+        "engine_weights",
     )
     for name in ("input_ids", *per_token_fields):
         values = getattr(micro_batch, name)
@@ -626,6 +632,8 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     dummy.rl_weights = None
     dummy.ce_weights = None
     dummy.ref_kl_weights = None
+    # The engines never computed it: no weight in the expert counts
+    dummy.engine_weights = np.zeros(len(dummy.input_ids), dtype=np.float32)
     # Fully loss-masked: fetch only the routing rows the forward pass replays, since
     # replaying sampling masks would be pure wasted work.
     dummy.payloads = (

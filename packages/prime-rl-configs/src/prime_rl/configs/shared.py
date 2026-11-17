@@ -44,6 +44,11 @@ class BaseWeightBroadcastConfig(BaseConfig):
     for the trainer's startup broadcast. The trainer fails the run when no consumer acknowledges an
     offered version in time. Raise it for large models on slow shared filesystems."""
 
+    expert_load_interval: int | None = Field(None, ge=1)
+    """Every this many steps, write the per-layer expert token counts of the steps since the last write into the
+    weight update's step dir, where engines place their experts by them (``inference.vllm.enable_eplb``). Set by
+    ``rl``; None writes none."""
+
 
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"

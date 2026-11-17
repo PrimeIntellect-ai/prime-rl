@@ -115,6 +115,36 @@ def _loss_weights(branch: vf.Branch, name: str, trained_nodes: set[int]) -> np.n
     return weights if weights.any() else None
 
 
+def reports_cache_reads(trace: vf.Trace) -> bool:
+    """Whether every model call of the trace reported its cache reads. Decided per trace: weighting some branches and
+    counting others plainly would count a prefix the branches share more than once."""
+    return all(
+        call.usage is not None and call.usage.cached_input_tokens is not None
+        for branch in trace.branches
+        for call in branch.calls
+    )
+
+
+def engine_weights(trace: vf.Trace, branch: vf.Branch, counted: set[int]) -> np.ndarray:
+    """How many model calls computed each branch token, so the trainer's expert counts (EPLB placement) follow the
+    engines' work: a call prefills its prompt past the prefix the engine served from its cache, and generates its own
+    tokens. A cached prefix counts 0, a prefix prefilled again after an eviction more than once. A call shared with an
+    earlier branch (``counted``) counts there only. Every call must report its cache reads (``reports_cache_reads``)."""
+    starts, offset = {}, 0
+    for node in branch.nodes:
+        starts[id(node)] = offset
+        offset += len(node.token_ids)
+    weights = np.zeros(offset, dtype=np.float32)
+    for call in branch.calls:
+        if call.node in counted:
+            continue
+        counted.add(call.node)
+        node = trace.nodes[call.node]
+        start = starts[id(node)]
+        weights[min(call.usage.cached_input_tokens, start) : start + len(node.token_ids)] += 1
+    return weights
+
+
 def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSample]:
     """Convert a v1 `Trace` into `TrainingSample`s — one per branch.
 
@@ -129,6 +159,8 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
     # Set by the env worker when it keeps the arrays (`prime_rl.transports.payload`).
     references = (trace.info.get(PAYLOAD_INFO_KEY) or {}).get("branches", {})
     trained_loss_nodes: dict[str, set[int]] = {"rl": set(), "ce": set(), "ref_kl": set()}
+    counted_calls: set[int] = set()
+    weigh = reports_cache_reads(trace)
     for branch, mask in iter_trainable_branches(trace):
         token_ids = branch.token_ids
         mm_token_type_ids: np.ndarray | None = None
@@ -153,6 +185,7 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
                 ce_weights=_loss_weights(branch, "ce", trained_loss_nodes["ce"]),
                 ref_kl_weights=_loss_weights(branch, "ref_kl", trained_loss_nodes["ref_kl"]),
                 advantages=branch.advantages,
+                engine_weights=engine_weights(trace, branch, counted_calls) if weigh else None,
                 trace_id=trace.id,
                 branch_index=branch.index,
                 payload=PayloadSlice(

@@ -42,8 +42,18 @@ class NixlAgent:
         self._agent = nixl_agent(name, nixl_agent_config(backends=["UCX"]))
         self._notifications: dict[str, list[bytes]] = {}
 
-    def register_tensor(self, tensor: Tensor) -> None:
-        self._agent.register_memory(tensor, backends=["UCX"])
+    def register_tensor(self, tensor: Tensor) -> Any:
+        """Register ``tensor`` for transfers; returns the registration, for ``deregister``."""
+        return self._agent.register_memory(tensor, backends=["UCX"])
+
+    def deregister(self, registration: Any) -> None:
+        self._agent.deregister_memory(registration, backends=["UCX"])
+
+    def release_read(self, read: PreparedRead) -> None:
+        """Release a prepared READ that will not be posted again, with its descriptor lists."""
+        self._agent.release_xfer_handle(read.handle)
+        self._agent.release_dlist_handle(read.local_descriptors)
+        self._agent.release_dlist_handle(read.remote_descriptors)
 
     def get_metadata(self) -> bytes:
         return self._agent.get_agent_metadata()
