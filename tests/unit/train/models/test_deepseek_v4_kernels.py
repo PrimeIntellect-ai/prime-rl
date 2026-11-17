@@ -20,6 +20,7 @@ from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_compressor_pool import (
     cudnn_pooling_supported,
     dsv4_compressor_pool,
 )
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_mhc import fused_post_bda
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_mhc_pre import fused_mhc_pre
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import (
     VLLM_INDEXER_FP8_AMAX_FLOOR,
@@ -983,6 +984,57 @@ def test_fused_mhc_pre_matches_reference(num_tokens, outputs, fn_dtype, hidden):
     _assert_frobenius_relative(collapsed, ref_collapsed, 1e-2, "collapsed")
     _assert_frobenius_relative(logits, ref_logits, 1e-2, "logits")
     for name, fused, reference in zip(("x", "fn", "scale", "base"), fused_inputs, reference_inputs):
+        _assert_frobenius_relative(fused.grad, reference.grad, 1e-2, f"grad {name}")
+
+
+@pytest.mark.parametrize("outputs", [4, 24])
+@pytest.mark.parametrize("fn_dtype", [torch.float32, torch.bfloat16])
+def test_fused_mhc_pre_backward_ignores_matmul_precision(outputs, fn_dtype):
+    """The mHC input side's backward runs TF32 dots, so its gradients are bit for bit the same at every
+    `matmul_precision`."""
+    hc, hidden, num_tokens = 4, 512, 130
+    x = (torch.randn(1, num_tokens, hc, hidden, device="cuda") * 4).to(torch.bfloat16)
+    fn = (torch.randn(outputs, hc * hidden, device="cuda") * 0.05).to(fn_dtype)
+    scale = torch.rand(outputs, device="cuda") + 0.5
+    base = torch.randn(outputs, device="cuda") * 0.5
+    inputs = _leaves(x, fn, scale, base)
+    collapsed, logits = fused_mhc_pre(*inputs, 1e-6, 1e-6)
+    grad_outputs = (torch.randn_like(collapsed), torch.randn_like(logits))
+
+    initial_precision = torch.get_float32_matmul_precision()
+    grads = {}
+    try:
+        for precision in ("high", "highest"):
+            torch.set_float32_matmul_precision(precision)
+            grads[precision] = torch.autograd.grad((collapsed, logits), inputs, grad_outputs, retain_graph=True)
+    finally:
+        torch.set_float32_matmul_precision(initial_precision)
+
+    for name, high, highest in zip(("x", "fn", "scale", "base"), grads["high"], grads["highest"]):
+        assert torch.equal(high, highest), f"grad {name}"
+
+
+@pytest.mark.parametrize("num_tokens", [1, 37])
+@pytest.mark.parametrize("hc", [2, 4])
+@pytest.mark.parametrize("hidden", [96, 512])
+def test_fused_post_bda_matches_reference(num_tokens, hc, hidden):
+    """Output and every gradient of the fused mHC write-back `comb.T @ residual + post * y`, across hidden blocks."""
+    comb = torch.rand(1, num_tokens, hc, hc, device="cuda")
+    residual = torch.randn(1, num_tokens, hc, hidden, device="cuda").to(torch.bfloat16)
+    post = 2 * torch.rand(1, num_tokens, hc, device="cuda")
+    y = torch.randn(1, num_tokens, hidden, device="cuda").to(torch.bfloat16)
+    grad_out = torch.randn(1, num_tokens, hc, hidden, device="cuda").to(torch.bfloat16)
+    fused_inputs = _leaves(comb, residual, post, y)
+    reference_inputs = _leaves(comb.double(), residual.double(), post.double(), y.double())
+
+    out = fused_post_bda(*fused_inputs)
+    out.backward(grad_out)
+    comb_ref, residual_ref, post_ref, y_ref = reference_inputs
+    ref_out = torch.einsum("btji,btjd->btid", comb_ref, residual_ref) + post_ref.unsqueeze(-1) * y_ref.unsqueeze(-2)
+    ref_out.backward(grad_out.double())
+
+    _assert_frobenius_relative(out, ref_out, 1e-2, "out")
+    for name, fused, reference in zip(("comb", "residual", "post", "y"), fused_inputs, reference_inputs):
         _assert_frobenius_relative(fused.grad, reference.grad, 1e-2, f"grad {name}")
 
 
