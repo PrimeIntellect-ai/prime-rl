@@ -22,7 +22,7 @@ from prime_rl.trainer.models.qwen3_8_flash_next.converting_qwen3_8_flash_next im
 from prime_rl.trainer.models.qwen3_8_flash_next.hyper_connection import ExpandedRMSNorm, HyperConnection
 from prime_rl.trainer.models.qwen3_8_flash_next.moe import SigmoidOutputGatedMoE
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_hasher import Qwen3_8FlashNextNGramHasher
-from prime_rl.trainer.models.qwen3_8_flash_next.position_learning import PositionLearningEnhancement
+from prime_rl.trainer.models.qwen3_8_flash_next.position_learning import PositionLearningEnhancement, ZeroInitConv1d
 from prime_rl.trainer.models.qwen3_8_flash_next.rotary_embedding import RotaryEmbedding, build_mrope_position_ids
 from prime_rl.trainer.models.qwen3_8_flash_next.vision import Qwen3_8FlashNextVisionModel, materialize_qwen_vl_images
 from prime_rl.trainer.vlm import get_language_model
@@ -129,6 +129,13 @@ class Qwen3_8FlashNextPreTrainedModel(PreTrainedModelPrimeRL):
     def conversion_chain(cls, config):
         return conversion_chain(config)
 
+    def _init_weights(self, module: nn.Module) -> None:
+        super()._init_weights(module)
+        if isinstance(module, (ZeroCenteredRMSNorm, ExpandedRMSNorm, ZeroInitConv1d, GatedDeltaNet)):
+            module.reset_parameters()
+        elif isinstance(module, NGramTable):
+            module.init_weights(self.config.get_text_config().initializer_range)
+
 
 class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
     config_class = Qwen3_8FlashNextTextConfig
@@ -165,13 +172,6 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
         )
         self.gradient_checkpointing = False
         self.post_init()
-        for module in self.modules():
-            if isinstance(module, (ZeroCenteredRMSNorm, ExpandedRMSNorm)):
-                module.reset_parameters()
-            elif isinstance(module, PositionLearningEnhancement):
-                module.reset_parameters()
-            elif isinstance(module, NGramTable):
-                module.init_weights(config.initializer_range)
 
     def get_input_embeddings(self) -> nn.Embedding:
         return self.embed_tokens
