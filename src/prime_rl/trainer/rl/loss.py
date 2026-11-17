@@ -163,9 +163,15 @@ class RLLoss:
         return self.config.kl_coeff == 0
 
     def loss(self, inputs: LossInputs) -> LossOutputs:
-        if inputs.support_rows is None:
-            raise ValueError("The RL loss needs the sampler support of every RL token")
         mask = inputs.loss_mask
+        if inputs.support_rows is None:
+            if mask.any():
+                raise ValueError("The RL loss needs the sampler support of every RL token")
+            # A dummy or dropped micro-batch: no RL token and no support, a zero loss that keeps the graph
+            zero = inputs.trainer_logprobs.sum() * 0
+            empty = zero.new_zeros(0)
+            names = ("kl", "score_centering/replayed", "score_centering/support_mass", "score_centering/mask_tv")
+            return LossOutputs(loss=zero, metrics=dict.fromkeys(names, empty))
         rows = inputs.support_rows.long()
 
         def row_sum(values: Tensor) -> Tensor:

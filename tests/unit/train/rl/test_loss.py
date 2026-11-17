@@ -6,6 +6,7 @@ from prime_rl.trainer.models.layers.lm_head import TokenSupport
 from prime_rl.trainer.rl.loss import (
     LossInputs,
     LossOutputs,
+    RLLoss,
     _mismatch_kl_from_log_ratio,
     compute_entropy,
     compute_loss,
@@ -470,3 +471,20 @@ def test_score_centering_replay_matches_exact_supported_gradient(constant_advant
     assert (metrics["score_centering/replayed"] == 1).all()
     if constant_advantage:
         torch.testing.assert_close(actual_grad, torch.zeros_like(logits), atol=1e-7, rtol=0)
+
+
+def test_rl_loss_without_rl_tokens_is_a_zero_loss():
+    # Dummy and dropped micro-batches zero the mask and fetch no sampler support
+    trainer_logprobs = torch.zeros(4, requires_grad=True)
+    inputs = LossInputs(
+        trainer_logprobs=trainer_logprobs,
+        inference_logprobs=torch.zeros(4),
+        ref_logprobs=None,
+        advantages=torch.zeros(4),
+        loss_mask=torch.zeros(4, dtype=torch.bool),
+    )
+    out = RLLoss(ReinforceLossConfig()).loss(inputs)
+    out.loss.backward()
+    assert out.loss.item() == 0 and torch.equal(trainer_logprobs.grad, torch.zeros(4))
+    with pytest.raises(ValueError, match="sampler support"):
+        RLLoss(ReinforceLossConfig()).loss(LossInputs(**{**vars(inputs), "loss_mask": torch.ones(4, dtype=torch.bool)}))
