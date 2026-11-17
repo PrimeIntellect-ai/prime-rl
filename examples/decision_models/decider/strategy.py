@@ -11,7 +11,7 @@ from typing import Any
 
 from torch import Tensor
 
-from prime_rl.trainer.data import Batch
+from prime_rl.trainer.sft.loss import LossInputs
 from prime_rl.trainer.sft.system_one.data import RenderedRecord, SystemOneStrategy
 from prime_rl.trainer.sft.system_one.record import Question, SystemOneRecord
 from prime_rl.trainer.sft.system_one.strategies.d3 import D3Strategy
@@ -105,9 +105,9 @@ class DeciderStrategy(D3Strategy):
         return RenderedRecord(input_ids=input_ids, seq_lens=[len(input_ids)], read_spans=read_spans)
 
     @classmethod
-    def option_logits(cls, model, hidden_states: Tensor, batch: Batch) -> list[Tensor]:
+    def option_logits(cls, inputs: LossInputs) -> list[Tensor]:
         """The readout's first rows, one per option, at the question's marker. Unlike d3's, they are not divided by
         the temperature."""
-        questions = [question for record in batch["sample_data"] for question in record["questions"]]
-        logits = model.score(hidden_states[batch["loss_mask"]].float())
+        questions = inputs.sample_data["questions"]
+        logits = inputs.model.score(inputs.hidden_states[inputs.loss_mask].float())
         return [row[: len(question["options"])] for row, question in zip(logits, questions, strict=True)]

@@ -26,7 +26,7 @@ uv run hf download perplexity-ai/pplx-decider-flash-v1.2 --revision 9ff7cf9838e5
 
 The run is one pass over the 6,682 training records (23,319 questions) in 240 steps. It validates on the 732 validation records before the first step and every 30 steps, the last step included. The mechanics check keeps Qwen3.5's first four layers, of which the fourth is a full-attention layer. Only the release's configuration and tokenizer have been loaded on CPU, not its weights.
 
-A record's attention segment must hold the record alone: the full-attention layers are non-causal, so every token of the record would attend to padding in the same segment. prime-rl packs records back to back without padding, and refuses `pad_to_seq_len` for System One data.
+A record's attention segment must hold the record alone: the full-attention layers are non-causal, so every token of the record would attend to anything else in the same segment. prime-rl gives each record segments of its own, and the padding of `pad_to_seq_len` a segment of its own.
 
 ## Differences from Decider
 

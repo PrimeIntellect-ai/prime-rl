@@ -12,7 +12,7 @@ import torch
 from renderers import Qwen35RendererConfig, create_renderer
 from torch import Tensor
 
-from prime_rl.trainer.data import Batch
+from prime_rl.trainer.sft.loss import LossInputs
 from prime_rl.trainer.sft.system_one.data import RenderedRecord, SystemOneStrategy
 from prime_rl.trainer.sft.system_one.record import Question, SystemOneRecord
 
@@ -69,12 +69,11 @@ class OpenJevStrategy(SystemOneStrategy):
         return RenderedRecord(input_ids=input_ids, seq_lens=seq_lens, read_spans=read_spans)
 
     @classmethod
-    def option_logits(cls, model, hidden_states: Tensor, batch: Batch) -> list[Tensor]:
+    def option_logits(cls, inputs: LossInputs) -> list[Tensor]:
         """``[0, score]`` for a noul question (options ``false``, ``true``), and the candidates' scores for a choice
         or score question."""
-        questions = [question for record in batch["sample_data"] for question in record["questions"]]
-        head = model.decision_head
-        scores = head(hidden_states[batch["loss_mask"]].to(head.weight.dtype)).squeeze(-1)
+        questions, head = inputs.sample_data["questions"], inputs.model.decision_head
+        scores = head(inputs.hidden_states[inputs.loss_mask].to(head.weight.dtype)).squeeze(-1)
         logits = []
         for question, values in zip(questions, scores.split([len(question["reads"]) for question in questions])):
             logits.append(torch.cat([torch.zeros_like(values), values]) if question["type"] == "noul" else values)
