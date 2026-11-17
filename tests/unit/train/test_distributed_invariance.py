@@ -21,8 +21,10 @@ How it works:
   cases replay. References run first and CP cases last, because CP setup patches the attention classes for the rest
   of the process.
 - The comparison is the relative error of the loss, the grad norm, and every parameter's full gradient (sharded
-  gradients are gathered). Parameters that get no gradient, like indexers that reach the loss only through top-k
-  indices, are left out on both sides. A gradient that exists on only one side fails the case.
+  gradients are gathered). A parameter whose gradient nearly cancels (under 0.1% of the total grad norm) is measured
+  against 0.1% of the total grad norm instead, since its own relative error is rounding noise. Parameters that get no
+  gradient, like indexers that reach the loss only through top-k indices, are left out on both sides. A gradient
+  that exists, or is nonzero, on only one side fails the case.
 
 MoE routers pick their top-k experts from near-tied scores. CP and EP change the bf16 numerics slightly, so a few tokens
 pick other experts. That changes the loss and the router gradients by far more than the numerics themselves, and
@@ -446,9 +448,25 @@ def isolated(run, *args) -> dict:
         return {"error": traceback.format_exc()}
 
 
+# A parameter whose gradient nearly cancels over the tokens has a tiny gradient norm, so its relative error measures
+# rounding and the backward's own nondeterminism rather than the sharding. Its error is measured against this share of
+# the total grad norm instead. DeepSeek-V4's mHC gate parameters (shares 1e-7 to 1e-6) differ by up to 1.8e-2 between
+# two runs of the same unsharded reference, and by at most 1.4e-6 of the total grad norm between case and reference.
+MIN_GRAD_SHARE = 1e-3
+
+
+def grad_error(grad: torch.Tensor, ref: torch.Tensor, floor: float) -> float:
+    """The relative error of `grad` against `ref`, dividing by at least `floor`. A gradient that is exactly zero on
+    only one side, as from a layer only one side exercises, is an infinite error."""
+    if not grad.any() or not ref.any():
+        return 0.0 if not grad.any() and not ref.any() else math.inf
+    return torch.linalg.vector_norm(grad - ref).item() / max(torch.linalg.vector_norm(ref).item(), floor)
+
+
 def relative_errors(result: dict, reference: dict) -> dict:
+    floor = MIN_GRAD_SHARE * reference["grad_norm"]
     grad_errors = {
-        name: (torch.linalg.vector_norm(result["grads"][name] - ref) / torch.linalg.vector_norm(ref)).item()
+        name: grad_error(result["grads"][name], ref, floor)
         for name, ref in reference["grads"].items()
         if name in result["grads"]
     }
