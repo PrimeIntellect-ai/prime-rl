@@ -2,18 +2,16 @@
 
 Creates two small NemotronH models (policy + reference), perturbs
 the policy to simulate SFT drift, computes logprobs from both, and
-verifies KL mismatch through the loss pipeline.
+verifies the mismatch KL the trainer logs.
 """
 
 import pytest
 import torch
 
-from prime_rl.configs.trainer import IPOLossConfig
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
 from prime_rl.trainer.rl.loss import (
-    IPOLoss,
-    LossInputs,
+    _mismatch_kl_from_log_ratio,
     selective_log_softmax,
     shift_tensor_right,
 )
@@ -91,21 +89,10 @@ def test_kl_zero_when_identical():
     loss_mask = torch.ones(32, dtype=torch.bool, device="cuda")
     # mask out first token (shifted right padding)
     loss_mask[0] = False
-    advantages = torch.ones(32, device="cuda")
 
     for i in range(logprobs.shape[0]):
-        inputs = LossInputs(
-            trainer_logprobs=logprobs[i],
-            inference_logprobs=logprobs[i],
-            ref_logprobs=None,
-            advantages=advantages,
-            loss_mask=loss_mask,
-        )
-        result = IPOLoss(IPOLossConfig(eps=10.0)).loss(inputs)
-
-        assert result.metrics["unmasked_mismatch_kl"].item() == pytest.approx(0.0, abs=1e-6), (
-            f"Expected zero KL for identical models, got {result.metrics['unmasked_mismatch_kl'].item()}"
-        )
+        kl = _mismatch_kl_from_log_ratio(logprobs[i] - logprobs[i])[loss_mask].mean().item()
+        assert kl == pytest.approx(0.0, abs=1e-6), f"Expected zero KL for identical models, got {kl}"
 
 
 def test_kl_positive_after_perturbation():
@@ -125,18 +112,9 @@ def test_kl_positive_after_perturbation():
 
     loss_mask = torch.ones(32, dtype=torch.bool, device="cuda")
     loss_mask[0] = False
-    advantages = torch.ones(32, device="cuda")
 
     for i in range(ref_logprobs.shape[0]):
-        inputs = LossInputs(
-            trainer_logprobs=policy_logprobs[i],
-            inference_logprobs=ref_logprobs[i],
-            ref_logprobs=None,
-            advantages=advantages,
-            loss_mask=loss_mask,
-        )
-        result = IPOLoss(IPOLossConfig(eps=10.0)).loss(inputs)
-        kl = result.metrics["unmasked_mismatch_kl"].item()
+        kl = _mismatch_kl_from_log_ratio(policy_logprobs[i] - ref_logprobs[i])[loss_mask].mean().item()
 
         assert kl > 0, f"Expected positive KL after perturbation, got {kl}"
         assert kl < 100, f"KL unexpectedly large: {kl}"

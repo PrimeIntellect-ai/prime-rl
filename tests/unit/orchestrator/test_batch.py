@@ -35,7 +35,7 @@ def _sample(**fields) -> TrainingSample:
     )
 
 
-@pytest.mark.parametrize("corruption", [None, "missing", "duplicate", "vocab", "mass", "support_mass", "sampled"])
+@pytest.mark.parametrize("corruption", [None, "missing", "duplicate", "vocab", "support_mass", "sampled"])
 def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
     import torch
 
@@ -61,16 +61,16 @@ def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
     validate_score_centering_data(clean, vocab_size=9)
     if corruption is None:
         validate_score_centering_data(batch([[], head, [(6, 1.0)]], [False, True, True]), vocab_size=9)
+        # Sampler draws may repeat
+        validate_score_centering_data(batch([[], [(3, 0.75), (3, 0.75)], []], [False, False, False]), vocab_size=9)
         return
     match corruption:
         case "missing":
             corrupt = batch([[], head, [(6, 1.0)]], [False, False, True], with_logprobs=False)
         case "duplicate":
-            corrupt = batch([[], [(3, 0.75), (3, 0.25)], []], [False, False, False])
+            corrupt = batch([[], [(3, 0.75), (3, 0.25)], []], [False, True, False])
         case "vocab":
             corrupt = batch([[], [(3, 0.75), (9, 0.25)], []], [False, False, False])
-        case "mass":
-            corrupt = batch([[], [(3, 1.0), (7, 1.0)], []], [False, False, False])
         case "support_mass":
             corrupt = batch([[], [(3, 0.5), (7, 0.25)], []], [False, True, False])
         case "sampled":
@@ -94,6 +94,18 @@ def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
         raise_score_centering_data_errors([errors(clean, device)])
         with pytest.raises(ValueError, match=f"^{error.value}$"):
             raise_score_centering_data_errors([errors(clean, device), errors(corrupt, device)])
+
+
+@pytest.mark.parametrize("generate_samples", [False, True])
+def test_fake_batches_carry_valid_sampler_draws(generate_samples):
+    """Fake-data runs train the default RL loss, which needs a sampler support on every RL token."""
+    from prime_rl.configs.trainer import FakeDataLoaderConfig
+    from prime_rl.trainer.rl.data import FakeDataLoader, validate_score_centering_data
+
+    config = FakeDataLoaderConfig(batch_size=2, generate_samples=generate_samples)
+    for micro_batch in FakeDataLoader(config, seq_len=64, dp_world_size=1).get_batch():
+        assert not micro_batch["support_replayed"].any()
+        validate_score_centering_data(micro_batch, vocab_size=128)
 
 
 @pytest.fixture

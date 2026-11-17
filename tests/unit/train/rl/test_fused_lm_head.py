@@ -5,7 +5,7 @@ import pytest
 import torch
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
-from prime_rl.configs.trainer import IcePopLossConfig
+from prime_rl.configs.trainer import ReinforceLossConfig
 from prime_rl.trainer.models import cast_float_and_contiguous
 from prime_rl.trainer.models.layers.lm_head import (
     FusedOutputLinear,
@@ -15,8 +15,8 @@ from prime_rl.trainer.models.layers.lm_head import (
 )
 from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
 from prime_rl.trainer.rl.loss import (
-    IcePopLoss,
     LossInputs,
+    RLLoss,
     compute_entropy,
     selective_log_softmax_with_support,
     shift_tensor_left,
@@ -82,8 +82,8 @@ def test_fused_head_support_logprobs_gradient(dtype, replay, head_only):
 @pytest.mark.parametrize("replay", [True, False])
 @pytest.mark.parametrize("softcap", [None, 30.0])
 def test_fused_head_sparse_backward_matches_dense(replay, softcap):
-    """Replayed tokens keep the logit gradient on their support; without replay the sparse backward needs a loss
-    whose weights on the label and the support entries cancel per token."""
+    """Replayed tokens keep the logit gradient on their support, KL included; without replay, the loss centered
+    over K draws does without a KL."""
     torch.manual_seed(0)
     n, h, v = 9, 16, 8203
     hidden = torch.randn(1, n, h, device="cuda", requires_grad=True)
@@ -94,31 +94,26 @@ def test_fused_head_sparse_backward_matches_dense(replay, softcap):
         rows = [[(i + 11) % v for i in row] for row in rows]
     support = _token_support(rows, [replay] * n, device="cuda")
     counts = support.offsets.diff().to("cuda")
-    support_rows = support.row_index().long()
-    support = dataclasses.replace(support, logprobs=-counts.float().log()[support_rows])
+    support = dataclasses.replace(support, logprobs=-counts.float().log()[support.row_index().long()])
     temperature = torch.linspace(0.6, 1.4, n, device="cuda").unsqueeze(0)
-    advantages = torch.randn(n, device="cuda", generator=torch.Generator("cuda").manual_seed(1))
+    config = ReinforceLossConfig(kl_coeff=0.1 if replay else 0.0)
+    assert replay or RLLoss(config).sparse_logit_grad
     grads = []
     for sparse in (False, True):
         out = lm(hidden, labels, temperature, dataclasses.replace(support, sparse_backward=sparse))
         logprobs = out["logprobs"][0]
-        if replay:
-            inputs = LossInputs(
-                trainer_logprobs=logprobs,
-                inference_logprobs=logprobs.detach() - 0.1,
-                ref_logprobs=None,
-                advantages=advantages,
-                loss_mask=torch.ones(n, dtype=torch.bool, device="cuda"),
-                trainer_support_logprobs=out["support_logprobs"],
-                sampler_support_logprobs=support.logprobs,
-                support_rows=support.row_index(),
-                support_replayed=support.replayed,
-            )
-            loss = IcePopLoss(IcePopLossConfig(score_centering=True)).loss(inputs).loss
-        else:
-            center = torch.zeros(n, device="cuda").index_add(0, support_rows, out["support_logprobs"]) / counts
-            loss = -(advantages * (logprobs - center)).sum()
-        grads.append(torch.autograd.grad(loss, (hidden, lm.weight)))
+        inputs = LossInputs(
+            trainer_logprobs=logprobs,
+            inference_logprobs=logprobs.detach() - 0.1,
+            ref_logprobs=None,
+            advantages=torch.randn(n, device="cuda", generator=torch.Generator("cuda").manual_seed(1)),
+            loss_mask=torch.ones(n, dtype=torch.bool, device="cuda"),
+            trainer_support_logprobs=out["support_logprobs"],
+            sampler_support_logprobs=support.logprobs,
+            support_rows=support.row_index(),
+            support_replayed=support.replayed,
+        )
+        grads.append(torch.autograd.grad(RLLoss(config).loss(inputs).loss, (hidden, lm.weight)))
     for dense, sparse in zip(*grads, strict=True):
         torch.testing.assert_close(sparse, dense, atol=1e-6, rtol=1e-5)
 
