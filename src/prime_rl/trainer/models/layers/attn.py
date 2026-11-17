@@ -446,8 +446,34 @@ class AttentionConfig:
 # Otherwise, do ABC or something to make the signatures match
 
 
+class _FP8KVFakeQuant(torch.autograd.Function):
+    """Exact rounding forward, identity backward. ``x + (rounded - x).detach()`` is not exact in BF16 once a value
+    saturates: the difference itself rounds."""
+
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, scale: float) -> torch.Tensor:
+        finfo = torch.finfo(torch.float8_e4m3fn)
+        stored = (x.float() / scale).clamp(finfo.min, finfo.max).to(torch.float8_e4m3fn)
+        return (stored.float() * scale).to(x.dtype)
+
+    @staticmethod
+    def backward(ctx, grad: torch.Tensor):
+        return grad, None
+
+
+def fp8_kv_fake_quant(x: torch.Tensor, scale: float) -> torch.Tensor:
+    """``x`` rounded as vLLM's FP8 KV cache stores it (``x / scale`` saturated to E4M3, then rescaled), with a
+    straight-through gradient."""
+    return _FP8KVFakeQuant.apply(x, scale)
+
+
 class FlashAttention(nn.Module):
     """Flash Attention"""
+
+    kv_precision: str = "bf16"
+    """``fp8``: attend over keys and values rounded as vLLM's FP8 KV cache stores them (set by the trainer)."""
+    kv_scale: float = 1.0
+    kv_fp8_query: bool = False
 
     supported_fusions = {"qkv": fuse_qkv_projections}
 
@@ -508,7 +534,14 @@ class FlashAttention(nn.Module):
         return self.qkv_proj(hidden_states).split(self.qkv_sizes, dim=-1)
 
     def _compute_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens, max_seqlen):
-        """Run the flash attention kernel. q/k/v are [total_tokens, heads, dim]."""
+        """Run the flash attention kernel. q/k/v are [total_tokens, heads, dim], after RoPE."""
+        if self.kv_precision == "fp8":
+            # The engines' FP8 KV cache stores keys after RoPE, and values, rounded: attend over the same values. Here
+            # rather than in forward, so subclasses with their own forward (Qwen3.5, Laguna, Muse Glimmer) round too
+            k = fp8_kv_fake_quant(k, self.kv_scale)
+            v = fp8_kv_fake_quant(v, self.kv_scale)
+            if self.kv_fp8_query:
+                q = fp8_kv_fake_quant(q, self.kv_scale)
         kwargs: dict = {"causal": self.is_causal}
         sliding_window = getattr(self, "sliding_window", None)
         if sliding_window is not None:

@@ -138,6 +138,7 @@ from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_kv_fake_quant import (
 )
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_rope, dsv4_rope
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
+from prime_rl.trainer.models.kernels.mxfp4_indexer import mxfp4_indexer_weights
 from prime_rl.trainer.models.layers.attn import quadratic_attention_flops
 from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
@@ -506,6 +507,8 @@ class DeepseekV4Indexer(nn.Module):
         self.head_dim = config.index_head_dim
         self.num_heads = config.index_n_heads
         self.index_topk = config.index_topk
+        # "mxfp4": score as vLLM's MXFP4 indexer cache (`attention_config.indexer_kv_dtype = "mxfp4"`) does
+        self.mxfp4 = getattr(config, "indexer_precision", "fp8") == "mxfp4"
         self.compressor = DeepseekV4Compressor(
             config,
             self.head_dim,
@@ -534,6 +537,8 @@ class DeepseekV4Indexer(nn.Module):
         q = self.q_b_proj(q_residual).view(batch, seq_len, -1, self.head_dim)
         q = dsv4_rope(q, cos_sin_cache, packed.position_ids)
         w = self.weights_proj(hidden_states)
+        if self.mxfp4:
+            w = mxfp4_indexer_weights(w, self.head_dim, self.num_heads)
 
         layout = packed.compression_layouts[self.compressor.compress_rate]
         entry_start = layout.first_entry_of_doc[packed.tok_doc_idx].int()
@@ -549,6 +554,7 @@ class DeepseekV4Indexer(nn.Module):
             self.index_topk,
             amax_floor=VLLM_INDEXER_FP8_AMAX_FLOOR,
             cp_group_name=cp_group.group_name if cp_world_size > 1 else None,
+            mxfp4=self.mxfp4,
         ).unsqueeze(0)
 
         # Mark indices-to-ignore with IGNORE_SLOT
