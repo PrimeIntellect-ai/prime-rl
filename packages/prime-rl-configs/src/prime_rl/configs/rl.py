@@ -99,6 +99,9 @@ class SharedCheckpointConfig(BaseConfig):
     async_save: bool | None = None
     """Write trainer checkpoints in the background (see ``trainer.ckpt.async_save``). If None, uses the trainer's default."""
 
+    remote_dir: str | None = None
+    """Object store URL the trainer checkpoints are uploaded to once on disk, e.g. ``s3://bucket/run/checkpoints``; resume downloads from it."""
+
 
 class SharedModelConfig(BaseConfig):
     name: str = "Qwen/Qwen3-0.6B"

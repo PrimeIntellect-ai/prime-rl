@@ -91,11 +91,7 @@ from prime_rl.control.controller import Controller
 from prime_rl.control.server import ControlServer
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
-from prime_rl.utils.pathing import (
-    resolve_latest_ckpt_step,
-    resolve_latest_trainer_ckpt_step,
-    write_resolved_config,
-)
+from prime_rl.utils.pathing import write_resolved_config
 from prime_rl.utils.utils import clean_exit
 
 
@@ -177,11 +173,10 @@ def train(config: TrainerConfig):
             checkpoint_step = config.resume.dir_step
         else:
             checkpoint_step = config.resume.step
-            if checkpoint_step is None and config.rollout_transport.retain:
-                # A trainer restarted on its own: the orchestrator may be steps ahead.
-                checkpoint_step = resolve_latest_trainer_ckpt_step(ckpt_manager.ckpt_dir)
-            elif checkpoint_step is None:
-                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+            if checkpoint_step is None:
+                checkpoint_step = ckpt_manager.resolve_latest_step(trainer_only=config.rollout_transport.retain)
+            if checkpoint_step is not None:
+                ckpt_manager.prefetch(checkpoint_step)
 
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")
@@ -876,7 +871,7 @@ def train(config: TrainerConfig):
     if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
-        ckpt_manager.wait()
+        ckpt_manager.close()
         dataloader.commit(progress.step, release=is_data_master)
         if step_action is not None:
             controller.mark_saved(progress.step)

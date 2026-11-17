@@ -85,6 +85,7 @@ def propagate_shared_fields(data: Any) -> Any:
     propagate("ckpt.keep_last", "trainer.ckpt.keep_last")
     propagate("ckpt.keep_interval", "trainer.ckpt.keep_interval")
     propagate("ckpt.async_save", "trainer.ckpt.async_save")
+    propagate("ckpt.remote_dir", "trainer.ckpt.remote_dir")
 
     # [monitors.wandb] leaves. (Bare empty ``[monitors.wandb]`` block enablement is at the end.)
     # ``monitors.wandb.name`` flows verbatim to both sub-configs — shared W&B mode is

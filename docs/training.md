@@ -455,6 +455,12 @@ Some things to know:
 - **Completeness.** DCP writes `trainer/.metadata` after every rank has written its shards. A resume skips any step whose trainer checkpoint has no `.metadata`, for example one that was still being written when the job died. `keep_last` and `keep_interval` only count checkpoints that finished writing, so cleanup never deletes the newest finished checkpoint to make room for one that is still in flight.
 - **Failures.** If a background write fails, the trainer raises its error at the next optimizer step, the next save or the end of training, and stops. The final checkpoint, and any checkpoint requested through the control API, is written before the trainer exits or reports it as saved.
 
+#### Remote Checkpoints
+
+`--ckpt.remote-dir s3://bucket/run/checkpoints` (`--trainer.ckpt.remote-dir` also works for `rl`) mirrors trainer checkpoints to an S3-compatible object store. Credentials and the endpoint come from the `AWS_*` environment (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL` for R2). No trainer rank moves checkpoint data: the local rank 0 of each node starts a sync process, which uploads the shards its node's ranks wrote once a step is on disk. Node 0's sync process uploads `.metadata` after every node's shards are in, so a remote step is complete exactly when its `.metadata` is. It then applies `keep_last` and `keep_interval` to the remote and the disk, so a step never leaves the disk before it is uploaded.
+
+On resume, the latest complete step on disk or in the remote is picked. A step that is only in the remote is pulled while the trainer builds its model, each node fetching a share of its files, and the trainer waits for the pull only when it loads the checkpoint. The checkpoint directory must be shared by every node, as for any multi-node checkpoint. The trainer waits for the final upload before it exits, and raises if a sync process failed. Only the trainer checkpoint is mirrored, so `rl` still resumes from the run directory, which needs the orchestrator checkpoint: `rl --resume` fails fast when the remote has a later step than the run directory.
+
 ### Resuming a Run
 
 Re-run the same launch command and pass `--resume` (latest checkpoint) or `--resume.step <N>`. Resuming reuses the run directory, so the run needs a name you can point back at — launch with `--run.name` (or pass the first run's auto-generated name). Make sure `--max-steps` is at least the target final step, not the remaining delta:

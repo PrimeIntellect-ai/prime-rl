@@ -330,6 +330,17 @@ def get_all_ckpt_steps(ckpt_dir: Path) -> list[int]:
     return sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
 
 
+def get_steps_to_keep(steps: list[int], keep_last: int | None, keep_interval: int | None) -> set[int]:
+    """The sorted ``steps`` the retention policy keeps: the last ``keep_last`` and every ``keep_interval``-th. Keeps
+    all of them when both are None."""
+    if keep_last is None and keep_interval is None:
+        return set(steps)
+    steps_to_keep = set(steps[-keep_last:]) if keep_last is not None else set()
+    if keep_interval is not None:
+        steps_to_keep.update(step for step in steps if step % keep_interval == 0)
+    return steps_to_keep
+
+
 def is_ckpt_step_complete(step_dir: Path) -> bool:
     """Whether a step's trainer checkpoint finished writing. DCP writes ``.metadata`` after every rank's shards, so a
     trainer checkpoint without it was interrupted mid-write. A step without a trainer checkpoint counts as complete."""
@@ -471,6 +482,14 @@ def clean_future_steps(output_dir: Path, resume_step: int) -> None:
         )
         for step in steps_to_delete:
             shutil.rmtree(get_step_path(directory, step))
+
+
+def try_rmtree(path: Path) -> None:
+    """Remove a directory tree, logging and skipping on failure."""
+    try:
+        shutil.rmtree(path)
+    except OSError as error:
+        get_logger().warning(f"Failed to remove {path}: {error}, skipping cleanup")
 
 
 def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
