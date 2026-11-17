@@ -1,8 +1,9 @@
 import numpy as np
+from verifiers.v1.delta import dump
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage
 
-from prime_rl.env.delta import dump, pack, unpack
+from prime_rl.env.encoding import pack, unpack
 
 
 def assistant(**fields) -> MessageNode:

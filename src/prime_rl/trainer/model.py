@@ -38,7 +38,10 @@ from prime_rl.configs.trainer import (
     MXFP8Config,
     TokenizerConfig,
 )
-from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
+from prime_rl.trainer.activation_checkpointing import (
+    TokenChunkedCheckpointWrapper,
+    get_activation_checkpoint_wrapper,
+)
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -56,7 +59,7 @@ from prime_rl.trainer.models.fusions import (
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
-from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
+from prime_rl.trainer.models.layers.lm_head import TokenSupport, inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
 from prime_rl.trainer.models.layers.ngram import NGramTable
@@ -203,6 +206,18 @@ def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(config, "num_experts") or hasattr(config, "n_routed_experts")
 
 
+def compute_max_vio_and_routing_confidence(
+    tokens_per_expert: Tensor, routing_confidence_sum: Tensor, top_k: int
+) -> tuple[Tensor, Tensor]:
+    """Max violation and routing confidence of one MoE layer's expert counts (last dimension) and confidence sum.
+    Leading dimensions are batch dimensions."""
+    num_routed_tokens = tokens_per_expert.sum(dim=-1) / top_k
+    loads = tokens_per_expert.sort(dim=-1, descending=True).values[..., top_k:]
+    balanced_load = loads.mean(dim=-1)
+    max_vio = (loads.amax(dim=-1) - balanced_load) / balanced_load
+    return max_vio, routing_confidence_sum / num_routed_tokens
+
+
 def take_moe_routing_stats(model: nn.Module) -> Tensor:
     """This rank's routing counts since the last call, as `[num_moe_layers, num_experts + 4]` (tokens per expert,
     the routing confidence sum, then the router agreement overlap sum, exact match count and token count), and reset
@@ -229,6 +244,34 @@ def take_moe_routing_stats(model: nn.Module) -> Tensor:
     return stats
 
 
+def add_routing_stats(
+    sums: dict[str, Tensor],
+    maxes: dict[str, Tensor],
+    routing_stats: list[Tensor],
+    top_ks: list[int],
+    ep_group: dist.ProcessGroup | None,
+) -> None:
+    """Add the step's expert counts, and the max violation and routing confidence of every micro-batch's
+    `take_moe_routing_stats` snapshot over the EP group's tokens, to the statistics to reduce; with EP, also every
+    micro-batch's EP imbalance per layer."""
+    routing = torch.stack(routing_stats)
+    sums["expert_counts"] = routing[..., :-4].sum(dim=0)
+    if ep_group is not None:
+        dist.all_reduce(routing, group=ep_group)
+    per_layer = [
+        compute_max_vio_and_routing_confidence(layer[..., :-4], layer[..., -4], top_k)
+        for layer, top_k in zip(routing.unbind(dim=1), top_ks, strict=True)
+    ]
+    max_vio, routing_confidence = (torch.stack(stats, dim=1) for stats in zip(*per_layer))
+    maxes["max_vio"] = max_vio.amax(dim=-1)
+    sums["routing_confidence"] = routing_confidence.mean(dim=-1)
+    if ep_group is not None:
+        # Every rank of an EP group holds the same imbalances. A layer waits for the busiest rank of its EP group and,
+        # through its FSDP collectives, for the slowest group: the max over DP groups, with the DP mean beside it.
+        rank_imbalance = compute_ep_imbalance(routing[..., :-4], dist.get_world_size(ep_group))
+        maxes["ep_imbalance/rank"] = sums["ep_imbalance/rank_dp_mean"] = rank_imbalance
+
+
 def get_global_moe_stats(
     model: nn.Module,
     routing_stats: list[Tensor],
@@ -251,13 +294,11 @@ def get_global_moe_stats(
     per_layer_max_vio = []
     per_layer_routing_confidence = []
     for layer_stats, block_mlp in zip(stats.unbind(dim=1), iter_moe_blocks(model)):
-        top_k = block_mlp.router.top_k
-        layer_tokens_per_expert, routing_confidence_sum = layer_stats[:, :-4], layer_stats[:, -4]
-        num_routed_tokens = layer_tokens_per_expert.sum(dim=1) / top_k
-        layer_tokens_per_expert = layer_tokens_per_expert.sort(dim=1, descending=True).values[:, top_k:]
-        balanced_load = layer_tokens_per_expert.mean(dim=1)
-        per_layer_max_vio.append((layer_tokens_per_expert.amax(dim=1) - balanced_load) / balanced_load)
-        per_layer_routing_confidence.append(routing_confidence_sum / num_routed_tokens)
+        max_vio, routing_confidence = compute_max_vio_and_routing_confidence(
+            layer_stats[:, :-4], layer_stats[:, -4], block_mlp.router.top_k
+        )
+        per_layer_max_vio.append(max_vio)
+        per_layer_routing_confidence.append(routing_confidence)
 
     max_stats = [torch.stack(per_layer_max_vio, dim=1).amax(dim=1, keepdim=True)]
     mean_stats = [torch.stack(per_layer_routing_confidence, dim=1).mean(dim=1, keepdim=True)]
@@ -659,14 +700,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 transformer_block.set_modules_to_backward_prefetch([embed_module])
 
 
-def clear_padding_idx(model: nn.Module) -> None:
-    """Pretraining has no padding: a padding index (which falls back to the EOS id) would start that token's
-    embedding at zero and keep it frozen, also after a resume."""
-    for module in model.modules():
-        if isinstance(module, nn.Embedding):
-            module.padding_idx = None
-
-
 @torch.no_grad()
 def initialize_from_scratch(model: nn.Module) -> None:
     """Initialize the weights with the model's own init (``initialize_weights``, which applies its
@@ -858,12 +891,18 @@ def load_lazy_modules() -> None:
 
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
+    # Ops whose output shape depends on input data (DeepEP dispatch) would otherwise graph-break. A graph break
+    # inside an activation-checkpointed block makes Dynamo run the whole block eagerly.
+    torch._dynamo.config.capture_dynamic_output_shape_ops = True
     load_lazy_modules()
     mark_dynamic_args()
     language_model = get_language_model(model)
-    for layer_id in range(len(language_model.layers)):
-        # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+    for layer in language_model.layers:
+        if isinstance(layer, TokenChunkedCheckpointWrapper):
+            layer.compile_chunk(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+        else:
+            # Doing it in-place avoids mangled fqn which can break checkpoint loading
+            layer.compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
     get_logger().info(
         f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
     )
@@ -1020,14 +1059,18 @@ def setup_model(
 
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
+        if config.ac.token_chunk_size is not None and parallel_dims.ep not in (1, parallel_dims.cp):
+            # Every chunk runs the EP all-to-alls. An EP group wider than CP spans ranks holding different rows,
+            # whose chunk counts can differ, so one rank would wait on a collective its peers never start.
+            raise ValueError(
+                f"model.ac.token_chunk_size requires ep == 1 or ep == cp, got ep={parallel_dims.ep}, cp={parallel_dims.cp}"
+            )
         apply_ac(model, config.ac)
     if config.compile is not None:
         apply_compile(model, config.compile)
 
     setup_fsdp(model, config, parallel_dims)
 
-    if init_from_scratch:
-        clear_padding_idx(model)
     if loading_from_checkpoint_later:
         logger.warning(
             "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
@@ -1054,8 +1097,7 @@ def forward(
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
-    sampling_mask: Int[Tensor, "batch seq mask"] | None = None,
-    topk_ids: Int[Tensor, "batch seq head"] | None = None,
+    support: TokenSupport | None = None,
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
     # True when seq_lens holds the full pre-CP-shard document boundaries
@@ -1067,11 +1109,8 @@ def forward(
         "position_ids": position_ids,
         "labels": labels,
         "temperature": temperature,
-        "sampling_mask": sampling_mask,
+        "support": support,
     }
-
-    if topk_ids is not None:
-        kwargs["topk_ids"] = topk_ids
 
     if mm_kwargs:
         kwargs.update(mm_kwargs)

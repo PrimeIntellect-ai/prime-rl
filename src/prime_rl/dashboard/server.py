@@ -22,6 +22,7 @@ from collections import OrderedDict
 from itertools import groupby
 from pathlib import Path
 
+import numpy as np
 import orjson
 
 from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, registry_lock
@@ -29,7 +30,7 @@ from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, g
 from prime_rl.monitors.file.traces.chunks import open_chunk
 from prime_rl.monitors.file.traces.index import summarize_episode
 from prime_rl.monitors.file.traces.live import LiveFolds, live_etag, live_path, live_rows, stage
-from prime_rl.monitors.file.traces.update import branch_node_paths, fold_trace_updates
+from prime_rl.monitors.file.traces.update import STREAM_FIELDS, branch_node_paths, fold_trace_updates
 from prime_rl.utils.config import default_output_dir
 from prime_rl.utils.pathing import get_eval_plan_path, get_file_monitor_dir, get_platform_run_path
 from prime_rl.utils.process import set_proc_title
@@ -886,6 +887,27 @@ def annotation_index(run_dir: Path) -> dict[str, dict]:
     return index
 
 
+def resolve_stream_refs(stream: Path, update: dict) -> None:
+    """An update's stream refs, decoded from the ``.bin`` chunks beside its line into
+    float lists with NaN as None. A ref past the end of a truncated chunk reads as no
+    value: fold_trace_updates skips a None stream, while a ref dict left in place
+    would slice it and raise."""
+    for branch in update.get("branches") or []:
+        for field in STREAM_FIELDS:
+            ref = branch.get(field)
+            if not isinstance(ref, dict):
+                continue
+            nbytes = ref["count"] * np.dtype(np.float32).itemsize
+            with open_chunk(stream, ref["bin"], ".bin") as f:
+                f.seek(ref["offset"])
+                data = f.read(nbytes)
+            if len(data) < nbytes:
+                branch[field] = None
+                continue
+            values = np.frombuffer(data, dtype=np.float32)
+            branch[field] = orjson.loads(orjson.dumps(values, option=orjson.OPT_SERIALIZE_NUMPY))
+
+
 def trace_updates(run_dir: Path, trace_id: str) -> list[dict]:
     """Every update recorded against one trace, read by seeking to each record."""
     entry = annotation_index(run_dir).get(trace_id)
@@ -894,7 +916,9 @@ def trace_updates(run_dir: Path, trace_id: str) -> list[dict]:
         try:
             with open_chunk(stream, chunk) as f:
                 f.seek(offset)
-                updates.append(orjson.loads(f.readline()))
+                update = orjson.loads(f.readline())
+            resolve_stream_refs(stream, update)
+            updates.append(update)
         except (OSError, orjson.JSONDecodeError):
             continue
     return updates
