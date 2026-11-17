@@ -63,10 +63,6 @@ class LayerWeightTransferPlan:
     copies: list[TensorCopyPlan]
     persistent_copies: list[TensorCopyPlan]
 
-    @property
-    def destination_names(self) -> set[str]:
-        return {plan.recorded_copy.destination_name for plan in self.copies}
-
 
 @dataclass
 class WeightTransferGroup:
@@ -496,7 +492,6 @@ class NIXLWeightUpdateWorker(WeightRPCMixin, Worker):
             initialize_layerwise_reload,
         )
         from vllm.model_executor.model_loader.reload.meta import materialize_layer
-        from vllm.model_executor.model_loader.reload.utils import get_layer_tensors
 
         model = self.raw_model
         cancelled = Event()
@@ -538,11 +533,6 @@ class NIXLWeightUpdateWorker(WeightRPCMixin, Worker):
 
                 info = LAYERWISE_INFO[layer]
                 materialize_layer(layer, info)
-                # Match loader semantics for destinations with unwritten padding.
-                destination_names = layer_plan.destination_names
-                for name, tensor in get_layer_tensors(layer).items():
-                    if name in destination_names and not tensor.is_meta:
-                        tensor.zero_()
                 for copy_plan in layer_plan.copies:
                     self.replay_tensor_copy(copy_plan)
                 for copy_plan in layer_plan.persistent_copies:
