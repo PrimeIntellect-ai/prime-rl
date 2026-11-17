@@ -128,6 +128,18 @@ watch_trainer() {
 }
 {%- endif %}
 
+{%- if max_requeues and smoke_test %}
+
+# This node's leftovers of a failed run (torchrun workers run in their own sessions, out of the launcher's process
+# group); multi-node and inference templates define their own, on every node.
+node_cleanup() {
+    pkill -9 -f "[t]orchrun" 2>/dev/null || true
+    pkill -9 -f "[p]ython.*prime_rl" 2>/dev/null || true
+    pkill -9 -f "[v]llm" 2>/dev/null || true
+    sleep 2
+}
+{%- endif %}
+
 # Run the job's main command; requeue the job if it fails.
 launch() {
     local pid code=0
@@ -158,7 +170,7 @@ launch() {
         echo "Job failed with exit code $code"
 {%- if smoke_test %}
         # Leftovers of the failed run must not fail the smoke test of a healthy node
-        ! declare -F node_cleanup > /dev/null || node_cleanup || true
+        node_cleanup || true
         smoke_test || true
 {%- endif %}
         requeue failure $BAD_NODES
