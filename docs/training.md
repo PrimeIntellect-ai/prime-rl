@@ -336,6 +336,7 @@ Pulled from the console log and mirrored to W&B.
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
 - `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
+- `progress/<source>/{num_tokens,unique_tokens,repetitions,mean_segment_length}` — pretraining sources (see [Pretraining](#pretraining)).
 
 **Stability and optimization:**
 
@@ -381,7 +382,7 @@ LocalPipelineExecutor(
 ).run()
 ```
 
-**Configure.** Only `data.paths` is required:
+**Configure.** Only `data.sources` (a name and a folder each) is required:
 
 ```toml
 mode = "pretrain"          # optional; lets `uv run launch` run this config
@@ -391,9 +392,19 @@ max_steps = 1000
 name = "Qwen/Qwen3-0.6B"   # only the architecture is read
 
 [data]
-paths = ["data/fineweb-edu"]
 seq_len = 2048
 batch_size = 256
+
+[[data.sources]]
+name = "web"
+path = "data/fineweb-edu"
+weight = 0.7               # share of the training tokens; leave out on all sources for natural shares
+
+[[data.sources]]
+name = "code"
+path = "data/code"
+weight = 0.3
+repetitions = 4            # optional: every token seen 4 times, so a subset of 0.3 x the run's tokens / 4
 
 [val]                      # optional
 interval = 100
@@ -404,7 +415,15 @@ paths = ["data/fineweb-edu-val"]
 seq_len = 2048
 ```
 
-All files in `data.paths` (in folder order, then file name order) form one token pool. Each epoch reads every `seq_len` window of the pool once, in a new random order and from a new random offset drawn from `data.seed`. Attention and positions restart at every document; `data.document_masking = false` makes a window one sequence. In training, the model is not trained to predict the next document's first token: there is no loss where the input is the document separator (`data.eod_mask_loss = false` turns this off). The separator is the special token the training shards' documents end with, detected at startup; shards whose documents start with BOS have nothing to mask. A resumed run reads exactly the windows an uninterrupted run would, also on another number of GPUs, as long as `data.num_workers` stays the same.
+**Mixture.** A source's `weight` is its share of the training tokens. Set it on every source (the weights sum to 1) or on none: then every source gets its natural share, its tokens over the tokens of all sources. `[[data.phases]]` gives the whole mixture from its `start_step` on (`weights = { web = 0.5, code = 0.5 }`: every source, summing to 1; 0 stops a source), e.g. an annealing mix for the last steps. The sources take turns without randomness, by due time as in weighted fair queuing: documents (and pieces) come in the order of their source's tokens in the phase before them divided by the source's weight, so every step holds the mixture up to about one document or piece per source.
+
+**Repetitions.** `repetitions` (1 or more, fractional allowed) is how often every token of a source is seen over the run, the run's tokens being `max_steps * batch_size * seq_len`. Without it, the whole source is used and its repetitions follow from its weight. With it, the source uses a fixed subset of `weight * the run's tokens / repetitions` tokens (with phases, the source's weight in every phase times the phase's tokens): the first documents and pieces of an order drawn from `data.seed` and the source's name, up to one more than that. A smaller subset is a prefix of a larger one. Startup fails if the source is too small for its subset (raise repetitions, lower the weight, or train fewer steps) or the subset would hold fewer than `seq_len` tokens, and `repetitions` needs `max_steps`.
+
+**Sampling.** A source's units are its documents; a document longer than `seq_len` is cut into pieces of `seq_len` tokens (the last one shorter), each a unit of its own. A pass over a source (or its subset) reads all its units once, in an order drawn from `data.seed`, the source's name and the pass, computed unit by unit without a table; the next pass starts as soon as the source runs out, also within a step, so a fractional `repetitions` reads part of the subset once more. A step takes the next `batch_size * seq_len` tokens of units; the unit that crosses the end is cut, and its rest opens the next step. The step's units go into its rows longest first, each into the fullest row with room for it (best fit); the ones that fit nowhere are cut to fill the gaps, so every row holds exactly `seq_len` tokens, without padding. The units of a row come in a random order. Attention and positions restart at every unit (`data.document_masking = false` makes a row one sequence). A unit's last token predicts its document's next token, also where the document was cut, so no prediction within a document is lost; at a document's end it predicts the first token of the next unit in its row if that unit starts a document, and nothing otherwise. With `data.eod_mask_loss` (on by default), positions whose input is the separator have no loss: their target is the first token of another document. Positions whose target is the separator stay in the loss, so the model learns to end a document.
+
+Every rank plans every step and reads its own rows, so a step reads the same rows on any number of GPUs. `data.batch_size` must be a multiple of the data-parallel size times `data.num_workers` times `data.micro_batch_size`, so that every dataloader worker reads whole micro-batches of every step. The checkpoint holds the sampler's position, a few numbers: every source's documents and tokens read, in all and in the phase, and the rest of the cut unit. A resumed run continues it exactly, also on another number of GPUs, as long as `data.num_workers` stays the same. It must keep the data settings the plan depends on (`data.seq_len`, `data.batch_size`, `data.seed`, the sources' names, folders and files, the weights and phases, `repetitions`, and `max_steps` if a source has repetitions); otherwise it stops with an error that names what changed, and `ckpt.skip_dataloader` starts the data over. Without repetitions, `max_steps` may be raised. Phases count the steps of the data, which restart with `ckpt.skip_dataloader`. At the first start, rank 0 reads the documents longer than `seq_len` off every source's document index, and the subsets, into `<run_dir>/data/`, which the other ranks and later starts map. Empty shard files are skipped. The startup log gives every source's weight, tokens, tokens used and repetitions (given or implied).
+
+`progress/<name>/num_tokens` is a source's tokens read so far, `progress/<name>/unique_tokens` the unique ones among them (at most its subset's or its own tokens), and `progress/<name>/repetitions` their ratio; `progress/unique_tokens` and `progress/repetitions` are the same over all sources. `progress/<name>/mean_segment_length` and `progress/mean_segment_length` are the mean length of the contiguous pieces of documents in the step's rows (after the cuts), per source and over all of them. `progress/epoch` is the fraction of all sources' tokens read.
 
 Validation scores every document in `val.data.paths` on its own, from its first token, and logs the mean loss over all scored tokens as `val/loss`. A document is cut into non-overlapping windows of `val.data.seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it. Every token after a document's first is scored, and no position predicts a token of another document. The windows are packed into rows of `val.data.seq_len * val.data.micro_batch_size` tokens and shared out over the data-parallel ranks. `val.num_samples` limits every validation to the first documents of the held-out shards, the same ones every time; without it, every validation scores all of them.
 
