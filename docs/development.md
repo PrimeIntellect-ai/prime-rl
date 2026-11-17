@@ -44,7 +44,8 @@ uv run playwright install --only-shell chromium            # browser for the int
 | Workflow | Trigger | What runs | Where |
 |---|---|---|---|
 | [`tests.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/tests.yml) | CPU jobs: every PR + push to `main`. `gsm8k_eval`: relevant changes in non-draft PRs, every push to `main`, manual dispatch | CPU: `pytest tests/unit -m "not gpu"`, plus a slim-wheel install check that `prime-rl-configs` imports cleanly without heavy deps (no torch / vllm / transformers / wandb / verifiers / datasets / liger / loguru in `sys.modules`). Separate hosted `gsm8k_eval` job | `ubuntu-latest` |
-| [`gpu.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/gpu.yml) | On a PR: applying the `gpu-ci` label (Triage or higher). Also every merge to `main` and manual dispatch | Full GPU suite: `pytest tests/unit -m gpu`, a `Tiny (GPU)` job with the fast subset (`pytest tests/unit tests/integration -m tiny`), plus RL/SFT integration scenarios (`reverse_text`, `reverse_text_sft`, `reverse_text_sft_lora`, `reverse_text_lora`, `reverse_text_moe`, `reverse_text_rl_opd`, `reverse_text_rl_sft`, `alphabet_sort`) with `max-parallel: 5` | Self-hosted `prime-rl-2xh100` k8s scale set (2xH100); `ubuntu-latest` for the trigger check |
+| [`gpu-tiny.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/gpu-tiny.yml) | Every push to a non-draft PR from this repo (opened, synchronized, reopened, marked ready for review). Also every merge to `main` and manual dispatch | `Tiny (GPU)`: the fast GPU subset, `pytest tests/unit tests/integration -m tiny` (distributed invariance, GPU loss tests, short RL and SFT runs) | Self-hosted `prime-rl-2xh100` k8s scale set (2xH100) |
+| [`gpu.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/gpu.yml) | On a PR: applying the `gpu-ci` label (Triage or higher). Also every merge to `main` and manual dispatch | Full GPU suite: `pytest tests/unit -m gpu`, plus RL/SFT integration scenarios (`reverse_text`, `reverse_text_sft`, `reverse_text_sft_lora`, `reverse_text_lora`, `reverse_text_moe`, `reverse_text_rl_opd`, `reverse_text_rl_sft`, `alphabet_sort`) with `max-parallel: 5` | Self-hosted `prime-rl-2xh100` k8s scale set (2xH100); `ubuntu-latest` for the trigger check |
 | [`regression.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/regression.yml) | 03:00 PST daily + manual `workflow_dispatch` (`suite` picks one suite; `eval_config` picks one eval config); `eval` also on PRs that touch it | `parallel`: `tests/regression/test_parallel_invariance.py`. `eval`: every `tests/regression/configs/eval/*.toml` (gsm8k, PI-TerminalBench2.1) against Prime Inference, each compared against its baseline in `tests/regression/baselines/eval/`. Nightly and manual runs post one Slack message per config through the `SLACK_WEBHOOK_URL` secret | `eval`: `ubuntu-latest`. `parallel`: `prime-rl-4xh100` |
 
 GPU jobs run on self-hosted k8s runner scale sets. Each job gets a fresh container. Target one with its label in `runs-on`:
@@ -54,7 +55,7 @@ GPU jobs run on self-hosted k8s runner scale sets. Each job gets a fresh contain
 | `prime-rl-2xh100` | 2xH100 |
 | `prime-rl-4xh100` | 4xH100 |
 
-Pushes to a PR do not run GPU jobs. To run the GPU suite on a PR's current commit, apply the `gpu-ci` label (drafts included). The workflow removes the label when it starts, so re-apply it to run again after new pushes or to retry. A new trigger cancels the PR's queued or in-flight GPU run. Fork PRs cannot run GPU CI: a maintainer can push the branch to this repo and label that PR. A PR with merge conflicts cannot run it until the conflicts are resolved.
+Every push to a non-draft PR runs the `Tiny (GPU)` job, and a newer push cancels the PR's queued or in-flight Tiny run. Draft PRs run no GPU jobs. To run the full GPU suite on a PR's current commit, apply the `gpu-ci` label (drafts included). The workflow removes the label when it starts, so re-apply it to run again after new pushes or to retry. A new label trigger cancels the PR's queued or in-flight full-suite run. Fork PRs cannot run GPU CI: a maintainer can push the branch to this repo and label that PR. A PR with merge conflicts cannot run it until the conflicts are resolved.
 
 ### Markers
 
@@ -62,7 +63,7 @@ Three pytest markers are declared in `pyproject.toml` (`addopts = "--strict-mark
 
 - `gpu` — gate a test that needs CUDA. CPU CI uses `-m "not gpu"`; the GPU unit job uses `-m gpu`.
 - `slow` — gate a test that's expensive enough you'd usually skip it locally. Deselect with `-m "not slow"`.
-- `tiny` — add a GPU test to the fast subset that the `Tiny (GPU)` job runs on one 2xH100 runner: distributed invariance, the GPU loss tests, and short RL and SFT runs. The whole job should stay under 5 minutes, so check the test's time with `--durations=0` before marking it.
+- `tiny` — add a GPU test to the fast subset that the `Tiny (GPU)` job runs on one 2xH100 runner for every push to a non-draft PR: distributed invariance, the GPU loss tests, and short RL and SFT runs. The whole job should stay under 5 minutes, so check the test's time with `--durations=0` before marking it.
 
 ## Pre-Commit Hooks
 

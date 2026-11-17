@@ -89,63 +89,6 @@ jobs:
           PYTEST_OUTPUT_DIR: /tmp/outputs
         run: uv run pytest tests/unit -m gpu
 
-  tiny-gpu:
-    name: Tiny (GPU)
-    needs: gate
-    runs-on: prime-rl-2xh100
-    container:
-      image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
-      options: --gpus all
-    timeout-minutes: 15
-    steps:
-      - name: Install Git
-        run: |
-          apt-get update
-          apt-get install -y git
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          submodules: false
-          persist-credentials: false
-      - parallel:
-          - name: Init public submodules
-            env:
-              GITHUB_TOKEN: ${{ github.token }}
-            run: |
-              git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
-              git config --global url."https://github.com/".insteadOf "git@github.com:"
-              git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
-          - name: Install uv
-            uses: astral-sh/setup-uv@v10.0.1
-            with:
-              enable-cache: false
-      - name: Install dependencies
-        timeout-minutes: 20
-        env:
-          UV_LOCK_TIMEOUT: "600"
-          UV_HTTP_RETRIES: "8"
-        run: uv sync --all-extras --all-packages --locked
-      - name: Run tiny tests
-        env:
-          USERNAME_CI: CI_RUNNER
-          UV_NO_SYNC: "1"
-          WANDB_MODE: offline
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          GITHUB_REF_NAME: ${{ github.ref_name }}
-          GITHUB_HEAD_REF: ${{ github.head_ref }}
-          PYTEST_OUTPUT_DIR: /tmp/outputs
-          VLLM_WORKER_MULTIPROC_METHOD: spawn
-        run: uv run pytest tests/unit tests/integration -m tiny -vv --durations=0
-      - name: Upload run logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: tiny-logs
-          path: /tmp/outputs/**/*.log
-          retention-days: 7
-          if-no-files-found: ignore
-
   integration:
     name: Integration / ${{ matrix.name }}
     needs: gate
