@@ -1,6 +1,6 @@
 # DeepSeek V4 stack on B200: correctness and step time
 
-On one 8x B200 node, the five-PR stack (#4354 to #4358) passes every correctness check that touches it. On a 6-layer DeepSeek V4 Flash proxy it cuts `time/forward_backward` by about 4.5% with default flags, about 6% with the halo exchange on, and about 9.5% with halo plus the selective AC module targets below, which cost about 7 GiB more peak memory.
+On one 8x B200 node, the five-PR stack (#4354 to #4358) passes every correctness check that touches it. On a 6-layer DeepSeek V4 Flash proxy it cuts `time/forward_backward` by about 4.5% with default flags, about 6% with the halo exchange on, and about 9.5% with halo plus the selective AC module targets below, which cost about 5 GiB more peak memory once #4356's import leak (below) is fixed.
 
 All numbers come from 8x B200 (SM100) nodes, torch 2.14.0+cu130, driver 580.196.07. The stack was measured after reverting f2b06271e (the SM90 admission for the cuDNN compressor kernels).
 
@@ -29,11 +29,20 @@ Each arm includes every PR below it in the stack. Values are the mean of two run
 | naux | tip, halo | 9.00 | 8.44 | -6.2% | 0.4% | 112.2 |
 | naux | tip, default flags | 9.00 | 8.61 | -4.4% | 0.4% | 114.0 |
 
+The rows above ran before #4356's vLLM import leak was fixed. The fixed tip (96dd0e9bc), one run each on one more node, with no same-node main:
+
+| node | arm | arm (s) | peak GiB |
+|---|---|---|---|
+| nfix | tip, halo | 8.52 | 108.1 |
+| nfix | tip, halo + SAC targets | 8.15 | 113.0 |
+
+The fix lowers peak memory by about 4 GiB at #4356 and above and moves no compute. The fixed-tip step times are within about 1% of the pre-fix tip on other nodes, within the cross-node spread.
+
 Main peaks at 110.8 GiB. `perf/peak_memory` is the maximum over ranks of reserved plus non-torch memory, not allocated bytes.
 
 - Per PR, from the differences between nodes: about -0.8% for #4354, -1.8% for #4355 with halo on, -1.7% for #4356, -1.8% for #4357, and no measurable change for #4358 without targets. These cross-node increments carry about 0.5% of noise.
 - Halo on against halo off, at the tip on one node: about -2.0% in time and -1.8 GiB in peak memory.
-- SAC targets on top of halo: about -3.3% more, for about +6.7 GiB.
+- SAC targets on top of halo: about -3.3% more, for about +4.9 GiB after the leak fix (+6.7 GiB before it).
 - The proxy rows hold about one document each, the case the cuDNN compressor targets.
 
 Per-run tables: `results/`.
@@ -64,3 +73,7 @@ Under MXFP8 the linears show the policy `aten::mm` with MXTensor operands, so th
 
 - The CP parity cases needed `torch._inductor.config.emulate_precision_casts = True`. Without it, one cp 4 case of the torch compressor backend under compile failed: Inductor keeps the pooling's bf16 softmax weights unrounded inside fused kernels, and the halo and gather graphs fuse differently.
 - The fp8 indexer failure (`test_selection_matches_float64_on_quantized_inputs`) is a test tolerance on SM100: DeepGEMM's `fp8_fp4_mqa_logits` returns bf16 logits there, which the test's fp32 threshold does not allow for.
+
+## #4356 memory leak
+
+Before the fix, #4356 raised peak memory by about 3.1 GiB (109.1 to 112.2 GiB). Importing vLLM's fused indexer op inside the training forward reaches a vLLM module that stores a caught exception, with its traceback, in a module global. The traceback kept the first step's forward frames alive, pinning about 4.3 GiB of activations per rank for the whole run. Allocator history dumps (`profiling/memory_peak.py`, rank 0, steps 2 and 3) show the allocated peak rising from 89.6 to 93.9 GiB, all of it in blocks allocated in step 1's forward and still live at the step-3 peak. Importing vLLM at module load (18734be97) brings the allocated peak back to 89.6 GiB.
