@@ -422,6 +422,7 @@ Checkpointing is split across processes because the orchestrator and trainer can
 | Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<run_dir>/checkpoints/step_{n}/trainer/` |
 | Orchestrator | Progress, per-env data state | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
+| Trainer, orchestrator, inference | The model's `config.json` and `generation_config.json`, the tokenizer files and a VLM's processor files | `<run_dir>/checkpoints/step_{n}/` |
 
 ### Enabling Checkpoints
 
@@ -473,6 +474,8 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --resume.step 10 --run.name my-run
 uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
 ```
+
+A resume checks that the checkpoint's `config.json` describes the same architecture as `model.name` and stops on a difference before loading. A checkpoint without a `config.json` resumes after a warning, without the check.
 
 A fork continues the other run, so both runs must be of the same kind. To start a new stage from another run's weights, such as RL from an SFT checkpoint, set `trainer.model.init_from` instead. It loads only the weights, and the run starts at step 0 with a fresh optimizer, scheduler and orchestrator. `model.name` still sets the architecture and tokenizer.
 
