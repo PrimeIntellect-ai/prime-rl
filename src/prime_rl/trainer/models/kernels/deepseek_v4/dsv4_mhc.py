@@ -25,8 +25,8 @@
 #
 # Triton kernels vendored from NVIDIA/Megatron-LM under the BSD-3-clause license
 # reproduced above, megatron/core/fusions/fused_mhc_kernels.py at commit bb5dfd08f,
-# trimmed to the Sinkhorn-Knopp and h_post_bda fusions and rewrapped as the
-# `prime_rl::dsv4_mhc_*` custom ops.
+# trimmed to the Sinkhorn-Knopp and h_post_bda forward fusions and rewrapped as the
+# `prime_rl::dsv4_mhc_*` custom ops. The h_post_bda backward is prime-rl's own.
 
 import math
 
@@ -285,174 +285,58 @@ def _triton_h_post_bda_fwd(
 
 @triton.autotune(
     configs=[
-        triton.Config({"BLOCK_C": bc, "BLOCK_S": bs}, num_warps=nw)
-        for bc in (64, 128, 256, 512)
-        for bs in (1, 2, 4, 8)
+        triton.Config({"BLOCK_S": bs, "BLOCK_C": bc}, num_warps=nw, num_stages=ns)
+        for bs in (1, 2, 4)
+        for bc in (128, 256, 512)
         for nw in (2, 4, 8)
+        for ns in (2, 3)
     ],
     key=["C", "N"],
 )
 @triton.jit
-def _triton_hpb_bwd_g_x_orig_kernel(
+def _post_bda_bwd_kernel(
     go_ptr,
     hr_ptr,
+    orig_ptr,
     hp_ptr,
+    x_ptr,
+    g_hr_ptr,
     g_orig_ptr,
+    g_hp_ptr,
     g_x_ptr,
     sb,
     C: tl.constexpr,
     N: tl.constexpr,
-    stride_go_s,
-    stride_go_n,
-    stride_go_c,
-    stride_hr_s,
-    stride_hr_i,
-    stride_hr_j,
-    stride_orig_s,
-    stride_orig_n,
-    stride_orig_c,
-    BLOCK_C: tl.constexpr,
     BLOCK_S: tl.constexpr,
-):
-    """g_x = hp @ go, g_orig = hr @ go."""
-    pid_s = tl.program_id(0)
-    pid_c = tl.program_id(1)
-    offs_s = pid_s * BLOCK_S + tl.arange(0, BLOCK_S)
-    offs_c = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
-    mask_s = offs_s < sb
-    mask_c = offs_c < C
-    mask_2d = mask_s[:, None] & mask_c[None, :]
-
-    g_x_acc = tl.zeros((BLOCK_S, BLOCK_C), dtype=tl.float32)
-    for j in tl.static_range(N):
-        go_j = tl.load(
-            go_ptr + offs_s[:, None] * stride_go_s + j * stride_go_n + offs_c[None, :],
-            mask=mask_2d,
-            other=0.0,
-        ).to(tl.float32)
-        hp_j = tl.load(hp_ptr + offs_s * N + j, mask=mask_s, other=0.0).to(tl.float32)
-        g_x_acc += hp_j[:, None] * go_j
-    tl.store(
-        g_x_ptr + offs_s[:, None] * C + offs_c[None, :],
-        g_x_acc.to(g_x_ptr.dtype.element_ty),
-        mask=mask_2d,
-    )
-
-    for i in tl.static_range(N):
-        g_orig_i = tl.zeros((BLOCK_S, BLOCK_C), dtype=tl.float32)
-        for j in tl.static_range(N):
-            go_j = tl.load(
-                go_ptr + offs_s[:, None] * stride_go_s + j * stride_go_n + offs_c[None, :],
-                mask=mask_2d,
-                other=0.0,
-            ).to(tl.float32)
-            hr_ij = tl.load(
-                hr_ptr + offs_s * stride_hr_s + i * stride_hr_i + j * stride_hr_j,
-                mask=mask_s,
-                other=0.0,
-            ).to(tl.float32)
-            g_orig_i += hr_ij[:, None] * go_j
-        tl.store(
-            g_orig_ptr + offs_s[:, None] * stride_orig_s + i * stride_orig_n + offs_c[None, :],
-            g_orig_i.to(g_orig_ptr.dtype.element_ty),
-            mask=mask_2d,
-        )
-
-
-@triton.autotune(
-    configs=[
-        triton.Config({"BLOCK_C": bc, "BLOCK_S": bs}, num_warps=nw)
-        for bc in (64, 128, 256, 512)
-        for bs in (1, 2, 4, 8)
-        for nw in (2, 4, 8)
-    ],
-    key=["C", "N"],
-)
-@triton.jit
-def _triton_hpb_bwd_g_hp_hr_kernel(
-    go_ptr,
-    orig_ptr,
-    x_ptr,
-    bias_ptr,
-    g_hr_ptr,
-    g_hp_ptr,
-    sb,
-    C: tl.constexpr,
-    N: tl.constexpr,
-    stride_go_s,
-    stride_go_n,
-    stride_go_c,
-    stride_orig_s,
-    stride_orig_n,
-    stride_orig_c,
-    stride_hr_s,
-    stride_hr_i,
-    stride_hr_j,
-    HAS_BIAS: tl.constexpr,
     BLOCK_C: tl.constexpr,
-    BLOCK_S: tl.constexpr,
 ):
-    """g_hp = sum_c go*(x+bias), g_hr = orig @ go.T."""
-    pid_s = tl.program_id(0)
-    offs_s = pid_s * BLOCK_S + tl.arange(0, BLOCK_S)
-    mask_s = offs_s < sb
-
-    g_hp_acc = tl.zeros((BLOCK_S, N), dtype=tl.float32)
-    g_hr_acc = tl.zeros((BLOCK_S, N * N), dtype=tl.float32)
-
-    for c_start in range(0, C, BLOCK_C):
-        offs_c = c_start + tl.arange(0, BLOCK_C)
-        mask_c = offs_c < C
-        mask_2d = mask_s[:, None] & mask_c[None, :]
-
-        x_tile = tl.load(x_ptr + offs_s[:, None] * C + offs_c[None, :], mask=mask_2d, other=0.0).to(tl.float32)
-        if HAS_BIAS:
-            bias_tile = tl.load(bias_ptr + offs_c, mask=mask_c, other=0.0).to(tl.float32)
-            x_tile += bias_tile[None, :]
-
-        for i in tl.static_range(N):
-            go_i = tl.load(
-                go_ptr + offs_s[:, None] * stride_go_s + i * stride_go_n + offs_c[None, :],
-                mask=mask_2d,
-                other=0.0,
-            ).to(tl.float32)
-            dot_hp = tl.sum(go_i * x_tile, axis=1)
-            g_hp_acc += tl.where(
-                tl.arange(0, N)[None, :] == i,
-                dot_hp[:, None],
-                tl.zeros((BLOCK_S, N), dtype=tl.float32),
-            )
-            for j in tl.static_range(N):
-                orig_j = tl.load(
-                    orig_ptr + offs_s[:, None] * stride_orig_s + j * stride_orig_n + offs_c[None, :],
-                    mask=mask_2d,
-                    other=0.0,
-                ).to(tl.float32)
-                dot_hr = tl.sum(go_i * orig_j, axis=1)
-                g_hr_acc += tl.where(
-                    tl.arange(0, N * N)[None, :] == j * N + i,
-                    dot_hr[:, None],
-                    tl.zeros((BLOCK_S, N * N), dtype=tl.float32),
-                )
-
+    """All four gradients of `out = hr.T @ orig + hp * x` from one read of `go`, `orig` and `x`, the single-kernel
+    design of DeepSeek's TileKernels `mhc_post_bwd`: `g_x = hp @ go`, `g_orig = hr @ go`, and the per-token
+    reductions `g_hp = go . x` and `g_hr = orig @ go.T` accumulated over hidden chunks."""
+    rows = (tl.program_id(0) * BLOCK_S + tl.arange(0, BLOCK_S)).to(tl.int64)
+    mask_s = rows < sb
     offs_n = tl.arange(0, N)
-    tl.store(
-        g_hp_ptr + offs_s[:, None] * N + offs_n[None, :],
-        g_hp_acc.to(g_hp_ptr.dtype.element_ty),
-        mask=mask_s[:, None],
-    )
-
-    # N is expected to stay small for mHC, so this simple extraction is acceptable.
-    nn_offs = tl.arange(0, N * N)
-    for i in tl.static_range(N):
-        for j in tl.static_range(N):
-            col_mask = (nn_offs == (i * N + j)).to(tl.float32)
-            val = tl.sum(g_hr_acc * col_mask[None, :], axis=1)
-            tl.store(
-                g_hr_ptr + offs_s * stride_hr_s + i * stride_hr_i + j * stride_hr_j,
-                val.to(g_hr_ptr.dtype.element_ty),
-                mask=mask_s,
-            )
+    mix = rows[:, None, None] * N * N + offs_n[None, :, None] * N + offs_n[None, None, :]
+    hr = tl.load(hr_ptr + mix, mask=mask_s[:, None, None], other=0.0).to(tl.float32)
+    hp = tl.load(hp_ptr + rows[:, None] * N + offs_n[None, :], mask=mask_s[:, None], other=0.0).to(tl.float32)
+    acc_hr = tl.zeros((BLOCK_S, N, N), dtype=tl.float32)
+    acc_hp = tl.zeros((BLOCK_S, N), dtype=tl.float32)
+    for c0 in range(0, C, BLOCK_C):
+        offs_c = c0 + tl.arange(0, BLOCK_C)
+        mask_2d = mask_s[:, None] & (offs_c < C)[None, :]
+        mask_3d = mask_2d[:, None, :]
+        streams = rows[:, None, None] * N * C + offs_n[None, :, None] * C + offs_c[None, None, :]
+        go = tl.load(go_ptr + streams, mask=mask_3d, other=0.0).to(tl.float32)
+        orig = tl.load(orig_ptr + streams, mask=mask_3d, other=0.0).to(tl.float32)
+        x = tl.load(x_ptr + rows[:, None] * C + offs_c[None, :], mask=mask_2d, other=0.0).to(tl.float32)
+        g_x = tl.sum(hp[:, :, None] * go, axis=1)
+        tl.store(g_x_ptr + rows[:, None] * C + offs_c[None, :], g_x.to(g_x_ptr.dtype.element_ty), mask=mask_2d)
+        g_orig = tl.sum(hr[:, :, :, None] * go[:, None, :, :], axis=2)
+        tl.store(g_orig_ptr + streams, g_orig.to(g_orig_ptr.dtype.element_ty), mask=mask_3d)
+        acc_hp += tl.sum(go * x[:, None, :], axis=2)
+        acc_hr += tl.sum(orig[:, :, None, :] * go[:, None, :, :], axis=3)
+    tl.store(g_hp_ptr + rows[:, None] * N + offs_n[None, :], acc_hp.to(g_hp_ptr.dtype.element_ty), mask=mask_s[:, None])
+    tl.store(g_hr_ptr + mix, acc_hr.to(g_hr_ptr.dtype.element_ty), mask=mask_s[:, None, None])
 
 
 def _triton_h_post_bda_bwd(
@@ -471,54 +355,19 @@ def _triton_h_post_bda_bwd(
     g_hp = torch.empty(sb, n, dtype=h_post.dtype, device=dev)
     g_x = torch.empty(sb, C, dtype=x.dtype, device=dev)
 
-    go_flat = grad_output.contiguous().view(sb, n, C)
-    hr_flat = h_res.contiguous().view(sb, n, n)
-    orig_flat = original_residual.contiguous().view(sb, n, C)
-    hp_flat = h_post.contiguous().view(sb, n)
-    x_flat = x.contiguous().view(sb, C)
-
-    grid_a = lambda META: (triton.cdiv(sb, META["BLOCK_S"]), triton.cdiv(C, META["BLOCK_C"]))
-    _triton_hpb_bwd_g_x_orig_kernel[grid_a](
-        go_flat,
-        hr_flat,
-        hp_flat,
+    _post_bda_bwd_kernel[lambda META: (triton.cdiv(sb, META["BLOCK_S"]),)](
+        grad_output.contiguous(),
+        h_res.contiguous(),
+        original_residual.contiguous(),
+        h_post.contiguous(),
+        x.contiguous(),
+        g_hr,
         g_res,
+        g_hp,
         g_x,
         sb,
         C,
         n,
-        go_flat.stride(0),
-        go_flat.stride(1),
-        go_flat.stride(2),
-        hr_flat.stride(0),
-        hr_flat.stride(1),
-        hr_flat.stride(2),
-        g_res.stride(0),
-        g_res.stride(1),
-        g_res.stride(2),
-    )
-
-    grid_b = lambda META: (triton.cdiv(sb, META["BLOCK_S"]),)
-    _triton_hpb_bwd_g_hp_hr_kernel[grid_b](
-        go_flat,
-        orig_flat,
-        x_flat,
-        x_flat,
-        g_hr,
-        g_hp,
-        sb,
-        C,
-        n,
-        go_flat.stride(0),
-        go_flat.stride(1),
-        go_flat.stride(2),
-        orig_flat.stride(0),
-        orig_flat.stride(1),
-        orig_flat.stride(2),
-        g_hr.stride(0),
-        g_hr.stride(1),
-        g_hr.stride(2),
-        HAS_BIAS=False,
     )
 
     return (
