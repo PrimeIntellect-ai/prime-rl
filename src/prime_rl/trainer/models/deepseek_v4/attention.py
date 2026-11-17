@@ -102,16 +102,13 @@ That window is enumerated per document by `window_indices`, and every rotation i
 an input, so a position that disagrees with a document boundary or a window slot that spans one
 cannot be constructed. It runs once per model forward.
 
-Context parallelism splits the queries across ranks and leaves everything else alone: every field
-above has one entry per query token and so covers this rank's `n_queries` tokens, while
-`compression_layouts` covers all `total_tokens` of the sequence. Token indices always count from
-the start of the whole sequence.
-
-That all-gathers every per-token tensor a key or entry is built from. With `cp_kv_exchange =
-"halo"`, a rank instead receives from its left neighbor only the few hundred tokens its own
-windows and entries reach back into (`CPHalo`), pools only the entries whose last token it holds
-(`EntryShard`), and all-gathers those pooled entries. The entries come back in sequence order, so
-entry indices stay global, while window indices count from the first halo token.
+Context parallelism splits the queries across ranks: every field above has one entry per query
+token and so covers this rank's `n_queries` tokens, while `compression_layouts` covers all
+`total_tokens` of the sequence and its token indices count from the start of the whole sequence.
+A rank receives from its left neighbor only the few hundred tokens its own windows and entries
+reach back into (`CPHalo`), pools only the entries whose last token it holds (`EntryShard`), and
+all-gathers those pooled entries. The entries come back in sequence order, so entry indices stay
+global, while window indices count from the first halo token.
 
 [The Index Contract]
 
@@ -396,19 +393,18 @@ class PackedContext:
     `entry_local_idx` cannot be compared against. `build` derives every field from one `seq_lens`,
     so neither is reachable. It runs once per model forward.
 
-    Context parallelism gives each rank a contiguous run of `n_queries` tokens to use as queries
-    and a full copy of the keys, so every field but `compression_layouts` has one entry per query
-    token and covers this rank's run alone, while `compression_layouts` covers the whole sequence.
-    Token indices always count from the start of the whole sequence, never from this rank's run.
-    Under halo exchange (`cp_halo`), a rank holds only its run and the `cp_halo.rows` tokens
-    before it, and `window_indices` count from the first of those rows instead.
+    Context parallelism gives each rank a contiguous run of `n_queries` tokens to use as queries,
+    and as keys that run plus the `cp_halo.rows` tokens before it. Every field but
+    `compression_layouts` has one entry per query token and covers this rank's run alone, while
+    `compression_layouts` covers the whole sequence and counts tokens from its start.
+    `window_indices` count from the first halo row, which without CP is the sequence's first token.
     """
 
     position_ids: Tensor  # (1, n_queries) int64 - token position within its own document
     tok_doc_idx: Tensor  # (n_queries,) int64 - which document each query token belongs to
     window_indices: Tensor  # (n_queries, sliding_window) int32 - key token per window slot, IGNORE_SLOT if unused
     compression_layouts: dict[int, CompressionLayout]  # keyed by compress rate
-    cp_halo: CPHalo | None = None  # set when CP ranks exchange halos instead of all-gathering the row
+    cp_halo: CPHalo | None = None  # set under context parallelism
 
     @classmethod
     def build(
@@ -427,9 +423,8 @@ class PackedContext:
         padding included: both packers fold their padding into the last document.
 
         `seq_lens` always describes the whole sequence. `cp_rank` and `cp_world_size` say which
-        contiguous shard of it this rank holds the queries of; the keys, the entries and the index
-        values addressing them stay global, so only the query side narrows. The config's
-        `cp_kv_exchange = "halo"` narrows the window keys to the shard and its halo as well.
+        contiguous shard of it this rank holds the queries of. The window keys narrow to the shard
+        and its halo, while the entries and the index values addressing them stay global.
         """
         config = rotary_emb.config
         # Read the width before `seq_lens` moves: on a CPU `seq_lens` that costs no device sync.
@@ -463,7 +458,7 @@ class PackedContext:
             rate: CompressionLayout.build(cu_seqlens=cu_seqlens, compress_rate=rate) for rate in compress_rates
         }
         cp_halo = None
-        if cp_world_size > 1 and config.cp_kv_exchange == "halo":
+        if cp_world_size > 1:
             halo_rows = max([config.sliding_window - 1, *(2 * rate - 1 for rate in compress_rates)])
             assert n_queries >= halo_rows, (
                 f"each CP rank holds {n_queries} tokens, fewer than the {halo_rows}-token halo it sends on"
@@ -521,9 +516,8 @@ class SparseAttnInputs:
     Every index must be a real key in `[0, n_positions)` or `IGNORE_SLOT` (-1), which marks an absent
     key, which `build` enforces.
 
-    Under context parallelism the token half of `kv_buf` is still the whole global stream, `S`
-    being every token of the packed row, while `indices` has one entry per query token this rank
-    holds. Under halo exchange the token half is this rank's tokens and the halo before them.
+    Under context parallelism the token half of `kv_buf` is this rank's tokens and the halo before
+    them, while `indices` has one entry per query token this rank holds.
     """
 
     kv_buf: Tensor  # (batch, n_positions, 1, head_dim)
@@ -546,8 +540,8 @@ class SparseAttnInputs:
         assert (compressed_kv is None) == (top_k_indices is None), (
             "compressed_kv and top_k_indices describe the same entries: pass both or neither"
         )
-        # The two counts differ under CP: the queries are this rank's, while the keys are the whole
-        # row's, or under halo exchange this rank's tokens and the halo before them.
+        # The two counts differ under CP: the queries are this rank's, while the keys are this
+        # rank's tokens and the halo before them.
         batch, _, n_tokens, _ = kv.shape
         n_queries = window_indices.shape[0]
         assert top_k_indices is None or top_k_indices.shape[1] == n_queries, (
@@ -636,17 +630,11 @@ class DeepseekV4Compressor(nn.Module):
             torch.cat([previous_gate, window_gate[..., self.head_dim :]], dim=2),
         )
 
-    def _fetch(
-        self, proj: torch.Tensor, packed: PackedContext, cp_group: dist.ProcessGroup | None, cp_world_size: int
-    ) -> torch.Tensor:
-        """`proj` at every token the pooling reads: the halo view under halo exchange, else the whole
-        row, gathered over the ranks when CP shards it.
-        """
-        if packed.cp_halo is not None:
-            return packed.cp_halo.prepend(proj, cp_group.group_name)
-        if cp_world_size > 1:
-            return gather_for_cp(proj, cp_group)
-        return proj
+    def _fetch(self, proj: torch.Tensor, packed: PackedContext, cp_group: dist.ProcessGroup | None) -> torch.Tensor:
+        """`proj` at every token the pooling reads: this rank's tokens, after the halo under CP."""
+        if packed.cp_halo is None:
+            return proj
+        return packed.cp_halo.prepend(proj, cp_group.group_name)
 
     def _pool(self, proj: torch.Tensor, entry_tok_idx: torch.Tensor, entry_local_idx: torch.Tensor) -> torch.Tensor:
         """Pool `proj` `(batch, tokens, 2 * n_series * head_dim)`, its kv and gate projections side by
@@ -696,7 +684,6 @@ class DeepseekV4Compressor(nn.Module):
         hidden_states: torch.Tensor,
         packed: PackedContext,
         cp_group: dist.ProcessGroup | None = None,
-        cp_world_size: int = 1,
     ) -> torch.Tensor:
         """Compress `(batch, seq_len, hidden_size)` to `(batch, n_entries, head_dim)`."""
         if packed.cp_halo is not None:
@@ -713,8 +700,8 @@ class DeepseekV4Compressor(nn.Module):
         if self.cudnn_pooling and hidden_states.dtype == torch.bfloat16:
             # Fetched apart, kv and gate each arrive contiguous, as the kernels read them.
             pooled = self._pool_cudnn(
-                self._fetch(kv, packed, cp_group, cp_world_size),
-                self._fetch(gate, packed, cp_group, cp_world_size),
+                self._fetch(kv, packed, cp_group),
+                self._fetch(gate, packed, cp_group),
                 cu_seqlens,
                 cu_entries,
                 out_rows,
@@ -722,7 +709,7 @@ class DeepseekV4Compressor(nn.Module):
             if pool_row is not None:
                 pooled = pooled[:, pool_row]
         else:
-            proj = self._fetch(torch.cat([kv, gate], dim=-1), packed, cp_group, cp_world_size)
+            proj = self._fetch(torch.cat([kv, gate], dim=-1), packed, cp_group)
             pooled = self._pool(proj, entry_tok_idx, entry_local_idx)
         compressed = self.kv_norm(pooled)
 
@@ -781,7 +768,7 @@ class DeepseekV4Indexer(nn.Module):
     ) -> torch.Tensor:
         batch, seq_len, _ = hidden_states.shape
         assert batch == 1, f"the indexer needs a packed batch of size 1, got {batch}"
-        compressed_kv = self.compressor.compress(hidden_states, packed, cp_group=cp_group, cp_world_size=cp_world_size)
+        compressed_kv = self.compressor.compress(hidden_states, packed, cp_group=cp_group)
         n_entries = compressed_kv.shape[1]
 
         cos_sin_cache = self.compressor.rotary_emb.cos_sin_cache(self.compressor.rope_layer_type)
@@ -841,7 +828,7 @@ class DeepseekV4CSACompressor(DeepseekV4Compressor):
         cp_group: dist.ProcessGroup | None = None,
         cp_world_size: int = 1,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        compressed_kv = self.compress(hidden_states, packed, cp_group=cp_group, cp_world_size=cp_world_size)
+        compressed_kv = self.compress(hidden_states, packed, cp_group=cp_group)
         # The indexer reads the same layout: it compresses the same source windows at a narrower
         # head dim, so its entry `e` and this compressor's entry `e` are the same window.
         picks = self.indexer(hidden_states, q_residual, packed, cp_group=cp_group, cp_world_size=cp_world_size)
@@ -882,7 +869,7 @@ class DeepseekV4HCACompressor(DeepseekV4Compressor):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """`q_residual` is part of the compressor contract but unused: HCA has no indexer."""
         batch = hidden_states.shape[0]
-        compressed_kv = self.compress(hidden_states, packed, cp_group=cp_group, cp_world_size=cp_world_size)
+        compressed_kv = self.compress(hidden_states, packed, cp_group=cp_group)
 
         layout = packed.compression_layouts[self.compress_rate]
         # `threshold` counts entries within the query's own document, so it selects how far into
@@ -997,7 +984,7 @@ class DeepseekV4Attention(nn.Module):
         #
         # - `b`: batch
         # - `t`: token in this rank's query shard
-        # - `T`: token in the whole packed row, which is `t` unless CP is on
+        # - `T`: key token, the halo then this rank's tokens under CP, else `t`
         # - `h`: attention head
         # - `d`: head_dim
         # - `e`: compressed entry
@@ -1016,15 +1003,7 @@ class DeepseekV4Attention(nn.Module):
         kv = dsv4_rope(kv, cos_sin_cache, packed.position_ids)
         if self.kv_precision == "fp8":
             kv = dsv4_swa_kv_fake_quant(kv, self.config.qk_rope_head_dim)
-        gather_kv = self.cp_context.cp_enabled and packed.cp_halo is None
-        if gather_kv:
-            # Launch on NCCL's communication stream; query/compressor work does not read KV.
-            kv = torch.ops._c10d_functional.all_gather_into_tensor(
-                kv.movedim(1, 0).contiguous(),
-                self.cp_context.cp_world_size,
-                self.cp_context.cp_group.group_name,
-            )
-        elif packed.cp_halo is not None:
+        if packed.cp_halo is not None:
             kv = packed.cp_halo.prepend(kv, self.cp_context.cp_group.group_name)  # (b, halo + t, 1, d)
 
         q_residual = self.q_a_norm(self.q_a_proj(hidden_states))  # (b, t, r)
@@ -1048,8 +1027,6 @@ class DeepseekV4Attention(nn.Module):
         if self.kv_precision == "fp8" and compressed_kv is not None:
             # Not the sliding-window fake quant: vLLM's compressor store floors the scale, not the amax.
             compressed_kv = dsv4_compressed_kv_fake_quant(compressed_kv, self.config.qk_rope_head_dim)
-        if gather_kv:
-            kv = funcol.wait_tensor(kv).movedim(0, 1).contiguous()  # (b, T, 1, d)
         kv = kv.transpose(1, 2)  # (b, 1, T, d)
         inputs = SparseAttnInputs.build(
             kv=kv,

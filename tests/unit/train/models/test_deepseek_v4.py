@@ -1,4 +1,3 @@
-import copy
 import os
 import re
 
@@ -587,50 +586,45 @@ HALO_CP_DOCS = (5, 30, 13, 1, 22, 26, 43, 3, 49)
 # before them from rank 0 too.
 HALO_CP2_DOCS = (5, 30, 13, 1, 22, 69, 3, 49)
 # Under CP a parameter gradient is the sum of the ranks' bf16 partial gradients, which rounds
-# differently from the one-GPU sum by a few bf16 steps of the tensor's scale. The all-gather
-# exchange's projection gradients show the same deviation.
+# differently from the one-GPU sum by a few bf16 steps of the tensor's scale.
 HALO_PARAM_GRAD_RTOL = 1e-2
 
 
 def test_halo_shards_give_every_entry_and_window_slot_exactly_once():
-    """Under halo exchange each CP rank pools only the entries whose last token it holds and reads
-    its window keys from its own tokens plus the halo before them. Together the ranks must pool
-    every entry of the row exactly once, from the same source tokens and at the same position, and
-    `gathered_row` must find each entry in the all-gathered slots. Every window slot must name the
-    same token it names under all-gather.
+    """Each CP rank pools only the entries whose last token it holds and reads its window keys from
+    its own tokens plus the halo before them. Together the ranks must pool every entry of the row
+    exactly once, from the same source tokens and at the same position, and `gathered_row` must
+    find each entry in the all-gathered slots. Every window slot must name the same token it names
+    on one GPU.
     """
     cp_world_size, n_queries = 8, sum(HALO_CP_DOCS) // 8
-    halo_config = copy.deepcopy(MODEL_CONFIG)
-    halo_config.cp_kv_exchange = "halo"
     with torch.device("cuda"):
-        rotaries = {
-            "all_gather": DeepseekV4RotaryEmbedding(MODEL_CONFIG),
-            "halo": DeepseekV4RotaryEmbedding(halo_config),
-        }
+        rotary = DeepseekV4RotaryEmbedding(MODEL_CONFIG)
 
-    def build(mode: str, cp_rank: int) -> PackedContext:
+    def build(cp_rank: int, cp_world_size: int) -> PackedContext:
         return PackedContext.build(
-            rotary_emb=rotaries[mode],
+            rotary_emb=rotary,
             seq_lens=torch.tensor(HALO_CP_DOCS),
             device=torch.device("cuda"),
             cp_rank=cp_rank,
             cp_world_size=cp_world_size,
         )
 
-    gathered = [build("all_gather", rank) for rank in range(cp_world_size)]
-    halo = [build("halo", rank) for rank in range(cp_world_size)]
+    whole = build(0, 1)
+    assert whole.cp_halo is None
+    halo = [build(rank, cp_world_size) for rank in range(cp_world_size)]
     rows = halo[0].cp_halo.rows
     assert rows == 2 * HCA_COMPRESS_RATE - 1
 
-    for rank, (whole, local) in enumerate(zip(gathered, halo)):
-        assert whole.cp_halo is None
+    for rank, local in enumerate(halo):
         key_start = rank * n_queries - rows
+        expected = whole.window_indices[rank * n_queries : (rank + 1) * n_queries]
         valid = local.window_indices >= 0
-        assert torch.equal(valid, whole.window_indices >= 0)
-        assert torch.equal(local.window_indices[valid] + key_start, whole.window_indices[valid])
+        assert torch.equal(valid, expected >= 0)
+        assert torch.equal(local.window_indices[valid] + key_start, expected[valid])
         assert local.window_indices.max() < rows + n_queries
 
-    for rate, layout in gathered[0].compression_layouts.items():
+    for rate, layout in whole.compression_layouts.items():
         capacity = -(-n_queries // rate)
         pooled_tok_idx = torch.full((cp_world_size * capacity, rate), -1, device="cuda")
         pooled_local_idx = torch.full((cp_world_size * capacity,), -1, device="cuda")
@@ -665,21 +659,19 @@ def cp_process_group():
 
 @pytest.mark.parametrize("layer_idx", [CSA_LAYER, HCA_LAYER])
 def test_halo_compress_returns_the_whole_rows_entries(cp_process_group, layer_idx):
-    """Under halo exchange every CP rank pools a share of the entries, and `compress` must still
-    hand back every entry of the row, as one GPU computes them from the whole row. The backward
-    must hand this rank's tokens and the compressor's parameters the one-GPU gradients too. Each
-    rank holds every entry and the entries' all-gather sums the ranks' gradients in its backward,
-    so each rank backpropagates `1 / cp_world_size` of the loss. The checks wait until every
-    collective has run, so a rank that fails one cannot leave the other hanging. Plain pytest
+    """Every CP rank pools a share of the entries, and `compress` must still hand back every entry
+    of the row, as one GPU computes them from the whole row. The backward must hand this rank's
+    tokens and the compressor's parameters the one-GPU gradients too. Each rank holds every entry
+    and the entries' all-gather sums the ranks' gradients in its backward, so each rank
+    backpropagates `1 / cp_world_size` of the loss. The checks wait until every collective has
+    run, so a rank that fails one cannot leave the other hanging. Plain pytest
     skips it, run it with `torchrun --nproc-per-node=2 -m pytest
     tests/unit/train/models/test_deepseek_v4.py -k test_halo_compress_returns_the_whole_rows_entries`.
     """
     cp_rank, cp_world_size = dist.get_rank(), dist.get_world_size()
-    halo_config = copy.deepcopy(MODEL_CONFIG)
-    halo_config.cp_kv_exchange = "halo"
     with torch.device("cuda"), default_dtype(torch.bfloat16):
-        rotary = DeepseekV4RotaryEmbedding(halo_config)
-        compressor = DeepseekV4Attention(halo_config, layer_idx, rotary).compressor
+        rotary = DeepseekV4RotaryEmbedding(MODEL_CONFIG)
+        compressor = DeepseekV4Attention(MODEL_CONFIG, layer_idx, rotary).compressor
     _randomize(compressor)
     seq_lens = torch.tensor(HALO_CP2_DOCS)
     hidden_states = torch.randn(1, sum(HALO_CP2_DOCS), MODEL["hidden_size"], device="cuda", dtype=torch.bfloat16)
@@ -703,12 +695,7 @@ def test_halo_compress_returns_the_whole_rows_entries(cp_process_group, layer_id
     (expected * grad_output).sum().backward()
     expected_grads = _take_grads(compressor)
 
-    actual = compressor.compress(
-        shard_input,
-        packed(cp_rank, cp_world_size),
-        cp_group=cp_process_group,
-        cp_world_size=cp_world_size,
-    )
+    actual = compressor.compress(shard_input, packed(cp_rank, cp_world_size), cp_group=cp_process_group)
     ((actual * grad_output).sum() / cp_world_size).backward()
     for param in compressor.parameters():
         if param.grad is not None:
