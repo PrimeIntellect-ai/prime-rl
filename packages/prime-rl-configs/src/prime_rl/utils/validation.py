@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 
@@ -121,6 +122,20 @@ def propagate_shared_fields(data: Any) -> Any:
     )
 
     propagate("resume", "trainer.resume", "orchestrator.resume")
+
+    # [val] and [eval] are written once, at the top level, as in SFT and pretraining. A sub-config value is only
+    # accepted when it repeats the shared one, as a written resolved config does.
+    for shared_path, target in (("val", "trainer.val"), ("eval", "orchestrator.eval")):
+        value, sub_value = get(shared_path), get(target)
+        if sub_value is not None and sub_value != value:
+            raise ValueError(f"Set [{shared_path}] instead of [{target}]: the rl entrypoint fills {target} from it")
+        if value is not None:
+            fill(target, copy.deepcopy(value))
+
+    # Chat validation sets render like the policy's rollouts.
+    orchestrator_renderer = get("orchestrator.renderer")
+    if orchestrator_renderer is not None:
+        fill("trainer.renderer", copy.deepcopy(orchestrator_renderer))
 
     # [rollout_transport] → both sub-configs (host is launcher-injected for zmq multi-node).
     propagate("rollout_transport", "trainer.rollout_transport", "orchestrator.rollout_transport")

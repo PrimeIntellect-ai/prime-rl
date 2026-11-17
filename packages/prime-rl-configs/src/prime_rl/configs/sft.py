@@ -2,7 +2,8 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
-from prime_rl.configs.supervised import BaseDataConfig, LossMaskConfig, SFTColumnsConfig, SupervisedTrainerConfig
+from prime_rl.configs.supervised import BaseDataConfig, SupervisedTrainerConfig
+from prime_rl.configs.val import LossMaskConfig, SFTColumnsConfig
 
 
 class FakeDataConfig(BaseDataConfig):

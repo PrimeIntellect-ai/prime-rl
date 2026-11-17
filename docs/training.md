@@ -115,7 +115,8 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `[orchestrator.train.algo]` | Training algorithm — its `type` names it (`grpo` default, `max_rl`, `rae`, `hierarchical_grpo`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |
 | `trainer.model.freeze_moe_router` | Freeze MoE router gates (default `true` for RL, `false` for SFT). Router updates in RL shift the trainer's expert choices away from the ones inference sampled, amplifying the train-inference mismatch, so RL keeps the pretrained router. Set `false` to train it. |
 | `[[orchestrator.train.source]]` | Training sources. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Training sources](configuration.md#training-sources-orchestratortrainsource). |
-| `[[orchestrator.eval.source]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). |
+| `[[eval.source]]` + `eval.interval` | Online eval environments and cadence (default every 100 steps); see [Online Evals](#online-evals). |
+| `[[val.sets]]` + `val.interval` | Validation sets scored on the trainer's weights; see [Validation](#validation). |
 
 **Monitoring:**
 
@@ -172,7 +173,7 @@ Pulled from the console logs and mirrored to W&B.
 - `is_timeout/{all,env}/mean` — share of rollouts stopped by a stage deadline (`setup`/`agent`/`finalize`/`scoring` `_timeout`). Training counts a timed-out rollout as an error, so it stays out of the batch; eval scores it.
 - `num_turns/{all,env}/mean` — for multi-turn envs.
 - `empty_rollouts/{all,env}`, `errored_rollouts/{all,env}` — non-zero is fine in small numbers; sustained > 5% is a smell.
-- `eval/{env}/{avg@k,pass@k}` — eval scores when `[orchestrator.eval]` is set.
+- `eval/{env}/{avg@k,pass@k}` — eval scores when `[eval]` is set.
 
 **Stability** (trainer):
 
@@ -271,7 +272,7 @@ The run streams to the Prime Intellect platform by default — see [Prime](#prim
 
 ### Online Evals
 
-`uv run sft` can evaluate the model on rollout-based envs as it trains, reusing the RL orchestrator's eval machinery. Configure an `[eval]` block — the same shape as `[orchestrator.eval]`: multiple `[[eval.source]]` envs with per-source `interval` / `select` / `group_size` / sampling overrides — plus an `[inference]` block for the vLLM server:
+`uv run sft` and `uv run pretrain` can evaluate the model on rollout-based envs as it trains, reusing the RL orchestrator's eval machinery. Configure an `[eval]` block — the same block as in an `rl` config: multiple `[[eval.source]]` envs with per-source `interval` / `select` / `group_size` / sampling overrides — plus an `[inference]` block for the vLLM server:
 
 ```toml
 [eval]
@@ -316,7 +317,7 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 
 ### Validation
 
-`[val]` scores named validation sets on the training model every `val.interval` steps (also before the first step with `val.eval_on_start`), in SFT and in pretraining. Each `[[val.sets]]` table has a `type`, a unique `name`, a `path` and an optional `seq_len` (default: the training `data.seq_len`):
+`[val]` scores named validation sets on the training model every `val.interval` steps (also before the first step with `val.eval_on_start`), in SFT, pretraining and RL. It runs after a step's forward and backward passes, before the optimizer step. Each `[[val.sets]]` table has a `type`, a unique `name`, a `path` and an optional `seq_len` (default: the training sequence length, `data.seq_len` in SFT and pretraining and `model.seq_len` in RL):
 
 | `type` | `path` | scored |
 |---|---|---|
@@ -341,7 +342,7 @@ split = "train"
 seq_len = 2048             # optional; default: the training data.seq_len
 ```
 
-Every set logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and with a byte-level BPE tokenizer `val/<name>/bpb@<seq_len>`, the bits per UTF-8 byte of the scored tokens (special tokens count 0 bytes), e.g. `val/fineweb-edu/bpb@2k`. With another tokenizer (e.g. SentencePiece), the trainer logs one warning and only the loss. The sets are tokenized once at startup. At every validation, the sequences of all sets are packed longest first into rows of `val.micro_batch_tokens` tokens (default: the training micro-batch, `data.seq_len * data.micro_batch_size`, or the longest set `seq_len` if that is longer, rounded up to a multiple of `model.cp`), with attention and positions restarting at every sequence and the rest of a row padded, and the rows are shared out over the data-parallel ranks. The log-probs are computed in fp32. `val.save_arrays` writes the per-item arrays of every set (summed loss, scored tokens, greedy hits and bytes per document or row) to `<run_dir>/val/step_N/`. A `chat` set needs a typed renderer, also in pretraining. Validation does not support VLM models.
+Every set logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and with a byte-level BPE tokenizer `val/<name>/bpb@<seq_len>`, the bits per UTF-8 byte of the scored tokens (special tokens count 0 bytes), e.g. `val/fineweb-edu/bpb@2k`. With another tokenizer (e.g. SentencePiece), the trainer logs one warning and only the loss. The sets are tokenized once at startup. At every validation, the sequences of all sets are packed longest first into rows of `val.micro_batch_tokens` tokens (default: the training micro-batch, `data.seq_len * data.micro_batch_size` in SFT and pretraining and `model.seq_len` in RL, or the longest set `seq_len` if that is longer, rounded up to a multiple of `model.cp`), with attention and positions restarting at every sequence and the rest of a row padded, and the rows are shared out over the data-parallel ranks. The log-probs are computed in fp32. `val.save_arrays` writes the per-item arrays of every set (summed loss, scored tokens, greedy hits and bytes per document or row) to `<run_dir>/val/step_N/`. A `chat` set needs a typed renderer, also in pretraining. An `rl` config takes `[val]` at the top level, like `[eval]`; its `chat` sets use `trainer.renderer`, which defaults to `orchestrator.renderer`, so they render like the policy's rollouts. Validation does not support VLM models.
 
 ### SFT-Specific Knobs
 
@@ -437,6 +438,8 @@ path = "data/fineweb-edu-val"
 All files in `data.paths` (in folder order, then file name order) form one token pool. Each epoch reads every `seq_len` window of the pool once, in a new random order and from a new random offset drawn from `data.seed`. Attention and positions restart at every document; `data.document_masking = false` makes a window one sequence. In training, the model is not trained to predict the next document's first token: there is no loss where the input is the document separator (`data.eod_mask_loss = false` turns this off). The separator is the special token the training shards' documents end with, detected at startup; shards whose documents start with BOS have nothing to mask. A resumed run reads exactly the windows an uninterrupted run would, also on another number of GPUs, as long as `data.num_workers` stays the same.
 
 Validation scores every document of the held-out folder on its own, from its first token, and logs `val/fineweb-edu/loss@2k` and `val/fineweb-edu/bpb@2k`; see [Validation](#validation) for the other set types and options.
+
+[Online evals](#online-evals) work as in SFT, from the first step: with a scratch init, the inference server starts without weights and receives them with the trainer's startup broadcast. An untrained model has no chat template of its own to rely on, so set one with `inference.vllm.chat_template` (a Jinja template string or a file path); `configs/ci/integration/pretrain/eval.toml` is an example.
 
 **Launch.**
 

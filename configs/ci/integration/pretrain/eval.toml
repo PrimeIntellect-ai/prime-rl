@@ -1,0 +1,41 @@
+# Online evals while pretraining Qwen3-0.6B from scratch: the inference server starts without weights and evaluates
+# the trainer's broadcasts at steps 0, 1 and 2. The test writes the token shards and passes their folder as --data.paths.
+mode = "pretrain"
+max_steps = 2
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B"
+
+[data]
+paths = ["set-by-the-test"]
+seq_len = 1024
+batch_size = 8
+micro_batch_size = 2
+
+[weight_broadcast]
+# NCCL weight broadcast crashes the trainer on the CI GPU runners (see configs/ci/integration/reverse-text/start.toml).
+type = "filesystem"
+
+[eval]
+interval = 1
+
+[eval.select]
+limit = 16
+
+[eval.sampling]
+max_completion_tokens = 32
+
+[[eval.source]]
+name = "reverse-text"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[inference.vllm]
+# A user-provided chat template, as an untrained model needs one.
+chat_template = """{% for message in messages %}{{ message['role'] }}: {{ message['content'] }}
+{% endfor %}{% if add_generation_prompt %}assistant: {% endif %}"""
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1

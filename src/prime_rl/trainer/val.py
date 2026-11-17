@@ -19,8 +19,8 @@ from renderers import RendererConfig
 from torch import nn
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.supervised import ChatValSetConfig, DocumentsValSetConfig, ValConfig, ValSetConfig
-from prime_rl.trainer.model import forward
+from prime_rl.configs.val import ChatValSetConfig, DocumentsValSetConfig, ValConfig, ValSetConfig
+from prime_rl.trainer.model import forward, is_tt_moe_model, reshard_module, take_moe_routing_stats
 from prime_rl.trainer.models.layers.fp32_linear import fp32_output_mm
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.parallel_dims import ParallelDims
@@ -334,8 +334,15 @@ class Validation:
     @torch.no_grad()
     def run(self, model: nn.Module, step: int) -> dict[str, float]:
         """Score every set at step ``step``. The metrics are on rank 0 only."""
+        # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
         with scoring_head_active(model):
             scored = score(model, self.requests, self.config.micro_batch_tokens, self.parallel_dims)
+        if is_tt_moe_model(model):
+            # Keep validation routing out of the next training step's statistics.
+            take_moe_routing_stats(model)
+        # The no-grad forward leaves the [lm_head, norm] FSDP2 group unsharded (it opts out of reshard_after_forward),
+        # so a gradient clip would skip its grad-less unsharded parameters.
+        reshard_module(model)
         if scored is None:
             return {}
         logprobs, hits = scored

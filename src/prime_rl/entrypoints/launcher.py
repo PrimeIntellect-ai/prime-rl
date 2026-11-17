@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from prime_rl.configs.eval import SFTOnlineEvalConfig
+from prime_rl.configs.eval import OnlineEvalProcessConfig
 from prime_rl.configs.orchestrator import OnlineEvalSourceConfig
 from prime_rl.configs.shared import LogConfig
 from prime_rl.configs.supervised import SupervisedTrainerConfig
@@ -66,7 +66,7 @@ def resolve_resume_step(config: SupervisedTrainerConfig) -> int | None:
     return resolve_latest_ckpt_step(get_ckpt_dir(get_ckpt_base(config)))
 
 
-def build_online_eval_config(config: SupervisedTrainerConfig) -> SFTOnlineEvalConfig:
+def build_online_eval_config(config: SupervisedTrainerConfig) -> OnlineEvalProcessConfig:
     """The online-eval process's config: the resolved ``[eval]`` block with the run-level
     fields filled from the SFT config. The launcher spawns the env worker pools itself; the
     online-eval process finds each one through the address it publishes in the shared
@@ -88,7 +88,7 @@ def build_online_eval_config(config: SupervisedTrainerConfig) -> SFTOnlineEvalCo
         log=LogConfig(level=config.log.level, json_logging=config.log.json_logging),
         monitors=config.monitors,
     )
-    return SFTOnlineEvalConfig(**{**eval_config.model_dump(exclude=set(run_fields)), **run_fields})
+    return OnlineEvalProcessConfig(**{**eval_config.model_dump(), **run_fields})
 
 
 def config_components(

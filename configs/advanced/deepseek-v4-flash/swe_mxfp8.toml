@@ -91,11 +91,11 @@ env.agent.harness.id = "bash"
 env.agent.harness.compaction.summarize_at_tokens = 98304
 env.agent.runtime.labels = ["dsv4-swe-mxfp8"]
 
-[orchestrator.eval]
+[eval]
 interval = 50
 skip_first_step = true
 
-[[orchestrator.eval.source]]
+[[eval.source]]
 name = "swebench-verified"
 env.taskset.id = "swebench-verified"
 env.agent.harness.id = "bash"

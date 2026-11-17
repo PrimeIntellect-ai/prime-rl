@@ -23,7 +23,7 @@ from pathlib import Path
 import verifiers.v1 as vf
 
 from prime_rl import monitors
-from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
+from prime_rl.configs.eval import EvalConfig, OnlineEvalProcessConfig
 from prime_rl.control.server import serve
 from prime_rl.eval.control import create_app
 from prime_rl.orchestrator import live
@@ -53,7 +53,7 @@ POLL_INTERVAL_S = 2.0
 
 
 class EvalRunner:
-    def __init__(self, config: EvalConfig | SFTOnlineEvalConfig, *, run_dir: Path) -> None:
+    def __init__(self, config: EvalConfig | OnlineEvalProcessConfig, *, run_dir: Path) -> None:
         self.config = config
         self.run_dir = run_dir
         intercept_vf_logging(logger="verifiers.v1", level=config.log.level)
@@ -100,7 +100,7 @@ class EvalRunner:
         await self.admin_plane.wait_for_ready(config.model)
         get_logger().info("Inference pool ready")
 
-        intervals = config.intervals if isinstance(config, SFTOnlineEvalConfig) else None
+        intervals = config.intervals if isinstance(config, OnlineEvalProcessConfig) else None
         self.eval_source = EvalSource(
             self.eval_envs, intervals=intervals, skip_first_step=skip_first_step, is_resumed=is_resumed
         )
@@ -118,7 +118,7 @@ class EvalRunner:
             eval_source=self.eval_source,
             policy_clients=self.clients,
             policy=self.policy,
-            policy_weights_change=isinstance(config, SFTOnlineEvalConfig),
+            policy_weights_change=isinstance(config, OnlineEvalProcessConfig),
             progress=None,
             initial_max_inflight=self.concurrency.max_inflight,
             max_inflight_ceiling=config.concurrency.max_inflight,

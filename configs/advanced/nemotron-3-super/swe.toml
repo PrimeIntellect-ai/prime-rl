@@ -81,10 +81,10 @@ env.agent.harness.id = "rlm"
 env.agent.harness.compaction.summarize_at_tokens = 98304
 env.agent.runtime.labels = ["nemotron-3-super-swe"]
 
-[orchestrator.eval]
+[eval]
 interval = 20
 
-[[orchestrator.eval.source]]
+[[eval.source]]
 name = "swebench-verified"
 env.taskset.id = "swebench-verified"
 env.agent.harness.id = "rlm"

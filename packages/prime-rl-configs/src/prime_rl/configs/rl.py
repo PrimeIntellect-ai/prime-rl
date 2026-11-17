@@ -8,7 +8,12 @@ from pydantic import Field, model_validator
 from prime_rl.configs.inference import InferenceConfig, setup_dummy_load
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig
-from prime_rl.configs.orchestrator import OrchestratorConfig, SpeculativeDecodingConfig, TrainSamplingConfig
+from prime_rl.configs.orchestrator import (
+    OnlineEvalConfig,
+    OrchestratorConfig,
+    SpeculativeDecodingConfig,
+    TrainSamplingConfig,
+)
 from prime_rl.configs.shared import (
     BaseMultiNodeDeploymentConfig,
     BaseSingleNodeDeploymentConfig,
@@ -28,6 +33,7 @@ from prime_rl.configs.trainer import (
     TrainerConfig,
     rl_micro_batch_multiple,
 )
+from prime_rl.configs.val import ValConfig
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 from prime_rl.utils.validation import check_derived, propagate_shared_fields
 
@@ -230,6 +236,12 @@ class RLConfig(BaseConfig):
 
     seq_len: int | None = None
     """Shared sequence length. Propagates to ``trainer.model.seq_len`` and ``orchestrator.seq_len`` only when those values were not explicitly set; explicit per-component values always win."""
+
+    val: ValConfig | None = None
+    """Validation of the trainer's weights, as in SFT and pretraining. Fills ``trainer.val``, which is not set directly. If None, no validation runs."""
+
+    eval: OnlineEvalConfig | None = None
+    """Online evals, as in SFT and pretraining, run by the orchestrator on the policy the train rollouts see. Fills ``orchestrator.eval``, which is not set directly. If None, no online evals run."""
 
     weight_broadcast: WeightBroadcastConfig | None = None
 
@@ -854,6 +866,13 @@ class RLConfig(BaseConfig):
                     self.slurm.template_path = templates_dir / "single_node_rl.sbatch.j2"
                 else:
                     self.slurm.template_path = templates_dir / "multi_node_rl.sbatch.j2"
+        return self
+
+    @model_validator(mode="after")
+    def sync_val_and_eval(self):
+        """``val`` and ``eval`` hold what the trainer and the orchestrator resolved, so a written config re-parses."""
+        self.val = self.trainer.val
+        self.eval = self.orchestrator.eval
         return self
 
     ### Warnings
