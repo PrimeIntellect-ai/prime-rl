@@ -6,7 +6,7 @@ inference engine. It sets no task: you add sources, algorithm and optimizer with
 
 | Model | Hardware | Trainer | Inference replica | Trainer tok/s | Status |
 |---|---|---|---|---|---|
-| [Qwen3.6-35B-A3B](qwen3.6-35b-a3b/) | 8x H200 | 1 node (ep 8, cp 4) | 1 node (tp 2, dp 4), ~3 per trainer node | 21.7k (scaleswe) | 5-step smoke run |
+| [Qwen3.6-35B-A3B](qwen3.6-35b-a3b/) | 8x H200 | 1 node (ep 8, cp 4) | 3 × 1 node (tp 2, dp 4) | 21.7k (scaleswe) | 5-step smoke run |
 
 ## Run a recipe
 
@@ -16,9 +16,8 @@ Put the recipe first and the task second:
 uv run rl @ recipes/qwen3.6-35b-a3b/h200.toml @ recipes/tasks/swe.toml
 ```
 
-Each recipe starts one inference replica. Add replicas with `--deployment.num-infer-replicas N`.
-Agentic tasks spend most of their time in tool calls, so they usually need several replicas per
-trainer node; `meta.toml` gives the measured suggestion.
+Each recipe sets the inference replicas that kept the trainer busy on its smoke task. Change
+them with `--deployment.num-infer-replicas N`.
 
 Hosted training (`prime train run`) takes one file. A recipe and a task never set the same
 table, so you can join them:

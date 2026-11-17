@@ -46,8 +46,8 @@ truncation, no timeouts, no preemptions.
   sample on average.
 - Real routing is uneven (EP imbalance ~1.3, max violation ~4.3). Peak memory is 8–27 GiB
   above the balanced-routing sweep.
-- The trainer computes 27% of the time and waits for batches the rest. Use about 3 inference
-  replicas per trainer node for this task.
+- The trainer computes 27% of the time and waits for batches the rest. The recipe therefore
+  sets 3 inference replicas; that setting was not run.
 - Inference over the last 29 min: 914 output tok/s per GPU, 21.4k uncached prefill tok/s per
   GPU, 74% prefix-cache hit rate, up to 1,019 running requests, KV cache at most 73% full.
 - vLLM startup with real weights: 442 s.

@@ -14,8 +14,6 @@ measured = "2026-11-17"
 prime_rl_commit = "505b59b28"
 results = "benchmarks/recipes/qwen3.6-35b-a3b/results-h200.md"
 smoke_run = "5 steps on recipes/tasks/swe.toml (scaleswe), batch 64, 1 trainer + 1 inference node"
-# Trainer nodes are idle ~75% of the time with one replica on scaleswe.
-suggested_infer_replicas_per_trainer_node = 3
 
 [h200.trainer]
 nodes = 1
@@ -27,6 +25,7 @@ headroom_gib = 25.8
 
 [h200.inference]
 nodes_per_replica = 1
+replicas = 3
 layout = "tp 2, dp 4"
 output_tokens_per_s_per_gpu_scaleswe = 914
 uncached_prefill_tokens_per_s_per_gpu_scaleswe = 21417

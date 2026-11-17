@@ -1,5 +1,5 @@
-# Qwen3.6-35B-A3B RL at 256k context on 8x H200 nodes: one trainer node and one inference
-# node per replica. Add a task config with the sources, algorithm and optimizer:
+# Qwen3.6-35B-A3B RL at 256k context on 8x H200 nodes: one trainer node and three one-node
+# inference replicas. Add a task config with the sources, algorithm and optimizer:
 #
 #   uv run rl @ recipes/qwen3.6-35b-a3b/h200.toml @ recipes/tasks/swe.toml
 #
@@ -14,7 +14,8 @@ name = "Qwen/Qwen3.6-35B-A3B"
 type = "multi_node"
 num_train_nodes = 1
 num_infer_nodes = 1
-num_infer_replicas = 1
+# With one replica, the trainer waited for batches 73% of the time on scaleswe.
+num_infer_replicas = 3
 
 [slurm]
 

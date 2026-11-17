@@ -96,6 +96,6 @@ Each lever costs throughput. Turn on only what the fit needs.
   peak was 8–27 GiB above the sweep. Read the peak of every smoke step, not only step 1.
 - The inference bench is closed-loop: below its saturation point it reports offered load, not
   capacity. The smoke run gives the real per-GPU rates. Record them and the trainer's
-  `time/wait_for_batch` share, which sets the suggested inference replicas per trainer node.
+  `time/wait_for_batch` share, and set `num_infer_replicas` so the trainer stays busy.
 - The logged MFU counts attention as non-causal. At long context it overstates real MFU by
   almost 2x.
