@@ -13,7 +13,7 @@ from prime_rl.trainer.sft.system_one.data import SystemOneStrategy
 
 @runtime_checkable
 class DecisionModel(Protocol):
-    """What the class of a decision model (``[model.implementation]``) declares: its strategy, which renders records
+    """What the class of a decision model (``[model.implementation]``) declares: its strategy, which renders requests
     and reads each question's logits with the class's modules. A class satisfies it by defining the classmethod,
     without inheriting from it."""
 
@@ -36,7 +36,7 @@ def check_decision_model(model: nn.Module) -> None:
 def checked_option_logits(inputs: LossInputs) -> list[Tensor]:
     """The logits of one record's questions: the ``option_logits`` of the model's strategy on the record without its
     targets, checked to be one vector per question with one logit per option. It needs no labels, so evaluation code
-    can call it on the ``LossInputs`` of one record rendered with ``render_sample`` and run alone."""
+    can call it on the ``LossInputs`` of one request rendered with ``render_sample`` and run alone."""
     check_decision_model(inputs.model)
     record = inputs.sample_data
     if record is None:
