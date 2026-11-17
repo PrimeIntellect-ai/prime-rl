@@ -154,8 +154,8 @@ class ValConfig(BaseConfig):
 
     micro_batch_tokens: int | None = Field(None, ge=1)
     """Tokens per packed row of the sets (one forward pass). Defaults to the training micro-batch
-    (``data.seq_len * data.micro_batch_size``) or the longest set ``seq_len``, whichever is larger; must be at least
-    that longest ``seq_len``."""
+    (``data.seq_len * data.micro_batch_size``) or the longest set ``seq_len``, whichever is larger, rounded up to a
+    multiple of ``model.cp``; must be at least that longest ``seq_len``."""
 
     save_arrays: bool = False
     """Write the per-item arrays (npz) and summary (json) of every set to ``<run_dir>/val/step_N/``."""
@@ -439,7 +439,8 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
                 val_set.seq_len = self.data.seq_len
         longest = max(val_set.seq_len for val_set in self.val.sets)
         if self.val.micro_batch_tokens is None:
-            self.val.micro_batch_tokens = max(self.data.seq_len * self.data.micro_batch_size, longest)
+            row_len = max(self.data.seq_len * self.data.micro_batch_size, longest)
+            self.val.micro_batch_tokens = -(-row_len // self.model.cp) * self.model.cp
         elif self.val.micro_batch_tokens < longest:
             raise ValueError(f"val.micro_batch_tokens must be at least the longest set seq_len ({longest})")
         return self

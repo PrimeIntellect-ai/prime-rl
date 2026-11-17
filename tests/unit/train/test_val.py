@@ -87,7 +87,8 @@ def test_chat_set_scores_the_tokens_sft_trains_on(tmp_path: Path):
     (sample,) = islice(setup_sft_dataset(tokenizer, data, renderer_config=renderer), 1)
 
     config = ChatValSetConfig(name="chat", path=str(tmp_path), split="train", seq_len=1024)
-    ((inputs, labels),) = chat_set(config, None, tokenizer, renderer).requests
+    # num_samples above the split's size scores every row.
+    ((inputs, labels),) = chat_set(config, 5, tokenizer, renderer).requests
     assert inputs.tolist() == sample["input_ids"]
     expected = [
         target if trained else IGNORE_INDEX for target, trained in zip(sample["target_ids"], sample["loss_mask"])

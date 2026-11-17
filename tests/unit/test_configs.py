@@ -219,7 +219,8 @@ def test_pretrain_config_roundtrip(tmp_path):
 
 def test_val_set_defaults(tmp_path):
     """[[val.sets]] are scored at the training seq_len unless they set their own, in rows of val.micro_batch_tokens:
-    the training micro-batch or the longest set seq_len, whichever is larger."""
+    the training micro-batch or the longest set seq_len, whichever is larger, rounded up to a multiple of the CP
+    degree."""
     path = str(tmp_path / "tokens")
     val_sets = [
         {"type": "documents", "name": "short", "path": path},
@@ -234,6 +235,9 @@ def test_val_set_defaults(tmp_path):
     assert [val_set.seq_len for val_set in config.val.sets] == [1024, 4096]
     assert config.val.micro_batch_tokens == 4096
     assert not can_parse(PretrainConfig, [*args, "--val.micro-batch-tokens", "2048"])
+    odd_set = json.dumps([{**val_sets[1], "seq_len": 4097}])
+    cp_args = [*args, "--model.cp", "2", "--data.micro-batch-size", "1", "--val.sets", odd_set]
+    assert cli(PretrainConfig, args=cp_args).val.micro_batch_tokens == 4098
 
 
 @pytest.mark.parametrize("mode", MODES)

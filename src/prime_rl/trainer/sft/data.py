@@ -243,7 +243,7 @@ class SFTDataset(StatefulIterableDataset):
         # If specified, select a subset of the dataset
         if self.max_examples is not None:
             self.num_examples = min(self.num_examples, self.max_examples)
-            self.dataset = self.dataset.take(self.max_examples)
+            self.dataset = self.dataset.take(self.num_examples)
 
     def process(self, example: dict) -> dict | None:
         def resolve_messages(example: dict) -> list[dict]:
