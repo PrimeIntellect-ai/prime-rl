@@ -24,6 +24,7 @@ from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.pretrain.data import TokenShards, special_token_ids
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.device import DEVICE_TYPE
 from prime_rl.utils.logger import get_logger
 
 Request = tuple[np.ndarray, np.ndarray]
@@ -224,10 +225,10 @@ def score(
     for inputs, positions, labels, lengths, owners in rows:
         out = forward(
             model,
-            torch.from_numpy(inputs.astype(np.int64))[None].cuda(),
-            torch.from_numpy(positions)[None].cuda(),
-            seq_lens=torch.tensor(lengths, device="cuda"),
-            labels=torch.from_numpy(labels.astype(np.int64))[None].cuda(),
+            torch.from_numpy(inputs.astype(np.int64))[None].to(DEVICE_TYPE),
+            torch.from_numpy(positions)[None].to(DEVICE_TYPE),
+            seq_lens=torch.tensor(lengths, device=DEVICE_TYPE),
+            labels=torch.from_numpy(labels.astype(np.int64))[None].to(DEVICE_TYPE),
             seq_lens_are_pre_shard=parallel_dims.cp_enabled,
         )
         if owners is None:
@@ -238,7 +239,7 @@ def score(
         for start, end in zip(starts, [*starts[1:], len(owners)]):
             sums[0, owners[start]] += logprobs[start:end].sum()
             sums[1, owners[start]] += hits[start:end].sum()
-    total = torch.from_numpy(sums).cuda()
+    total = torch.from_numpy(sums).to(DEVICE_TYPE)
     dist.reduce(total, dst=0)
     if not world.is_master:
         return None

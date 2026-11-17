@@ -10,6 +10,7 @@ from prime_rl.trainer.optim import OptimizerLike
 from prime_rl.trainer.rl.data import TensorMicroBatch
 from prime_rl.trainer.utils import get_peak_memory_across_ranks
 from prime_rl.trainer.vlm import get_language_model
+from prime_rl.utils.device import device_module
 from prime_rl.utils.logger import format_time, get_logger
 
 
@@ -108,7 +109,7 @@ def warmup(
     first batch arrives. `forward_backward` is the training step's forward and backward. Returns the time it took."""
     logger = get_logger()
     logger.info("Warming up the trainer")
-    torch.cuda.reset_peak_memory_stats()
+    device_module.reset_peak_memory_stats()
     start_time = time.perf_counter()
     generator = torch.Generator().manual_seed(0)
     micro_batches = [
@@ -119,11 +120,11 @@ def warmup(
     forward_backward(micro_batches, prepare=lambda micro_batch: micro_batch, overlap_optimizer=False, annotate=False)
     del micro_batches
     optimizer.zero_grad()
-    torch.cuda.synchronize()
+    device_module.synchronize()
 
     peak_memory, _, _ = get_peak_memory_across_ranks()
-    torch.cuda.empty_cache()
-    torch.cuda.reset_peak_memory_stats()
+    device_module.empty_cache()
+    device_module.reset_peak_memory_stats()
     warmup_time = time.perf_counter() - start_time
     logger.info(f"Warmed up the trainer in {format_time(warmup_time)} (peak memory {peak_memory:.1f} GiB)")
     return warmup_time
