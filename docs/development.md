@@ -35,6 +35,7 @@ uv run pytest tests/integration -v                         # integration only
 uv run pytest -v -m "not gpu"                              # CPU-only subset (mirrors CPU CI)
 uv run pytest -v -m gpu                                    # GPU-only subset
 uv run pytest tests/integration/test_reverse_text.py -vvs  # one specific scenario
+uv run playwright install --only-shell chromium            # browser for the integration dashboard smoke tests
 ```
 
 ### CI Workflows

@@ -42,6 +42,14 @@ uv run rl @ base.toml --trainer @ trainer.toml                 # mixed
 
 > Mind the space: `@ path/to/x.toml`, not `@path/to/x.toml`.
 
+A checked-in TOML that only parses on top of a base is an overlay. Document how to compose it with a launch command in its header comment, using repo-relative paths:
+
+```toml
+#   uv run rl @ examples/advanced/glm-4.5-air/swe-budget.toml @ examples/advanced/glm-4.5-air/swe-2-node.toml
+```
+
+CI parses every such command with its entrypoint's config class, and fails on an overlay that no command covers.
+
 ## CLI Overrides
 
 CLI flags mirror the TOML tree using dots:

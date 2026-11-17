@@ -6,9 +6,10 @@
   burst-capped so a raised (or drained) cap never lands all its prefills at
   once.
 - Optional rate limiting via ``AsyncLimiter(dispatch_per_minute, 60)``, one token per episode.
-- A finished train rollout keeps its permit until the trainer takes it, past a
-  buffer of ``BUFFERED_BATCHES`` batches (``held_permits``), so the finished
-  backlog cannot grow until its tokens age past ``max_staleness``. While the
+- A finished train rollout of a complete group keeps its permit until the
+  trainer takes it, past a buffer of ``BUFFERED_BATCHES`` batches
+  (``held_permits``), so the finished backlog cannot grow until its tokens age
+  past ``max_staleness``. While the
   trainer is the bottleneck, train episodes in flight are also held to what
   keeps it fed (``trainer_target``). Both only block opening train groups; eval
   and open groups schedule as before, and the concurrency controller sees only
@@ -187,14 +188,15 @@ class Dispatcher:
         # Called around each weight update: the engines pause after ``on_pause`` and are live again at ``on_resume``
         self.on_pause = on_pause
         self.on_resume = on_resume
-        # The consumer's finished train rollouts the trainer has not taken yet (``out_q`` excluded), the live
+        # The consumer's finished train rollouts of complete groups not taken yet (``out_q`` excluded), the live
         # batch size, and the rollouts per second the trainer takes while it is the bottleneck (else None); all
         # unset without a trainer
         self.unconsumed_train_rollouts = unconsumed_train_rollouts
         self.batch_size = batch_size
         self.trainer_rate = trainer_rate
-        # Rollouts of the train episodes waiting in ``out_q``
+        # Rollouts of the train episodes waiting in ``out_q``, and of every train episode finished so far
         self.queued_train_rollouts = 0
+        self.finished_train_rollouts = 0
         # Average seconds from dispatch to completion of a train episode
         self.generation_s: float | None = None
 
@@ -273,8 +275,8 @@ class Dispatcher:
 
     @property
     def held_permits(self) -> int:
-        """Permits still held by finished train rollouts: those beyond ``BUFFERED_BATCHES`` batches that the
-        trainer has not taken yet."""
+        """Permits still held by finished train rollouts of complete groups: those beyond ``BUFFERED_BATCHES``
+        batches that the trainer has not taken yet."""
         if self.unconsumed_train_rollouts is None or self.batch_size is None:
             return 0
         waiting = self.queued_train_rollouts + self.unconsumed_train_rollouts()
@@ -795,6 +797,7 @@ class Dispatcher:
         episode.record_run(run)
         if meta.kind == "train":
             self.queued_train_rollouts += len(episode.traces)
+            self.finished_train_rollouts += len(episode.traces)
         await self.out_q.put(episode)
 
     async def get(self) -> DispatchResult:

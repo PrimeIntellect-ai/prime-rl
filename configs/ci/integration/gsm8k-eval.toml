@@ -1,5 +1,7 @@
 # CI eval smoke: gsm8k with the null harness in Prime sandboxes against
 # Prime Inference. Requires PRIME_API_KEY; no GPU needed.
+# Uses the dedicated CI deployment, like the eval regression suite.
+model = "internal/deepseek-v4.1-flash-1017-ci"
 dashboard = false
 
 [select]

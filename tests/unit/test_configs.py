@@ -1,6 +1,7 @@
 import importlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Annotated, Literal, get_args
@@ -53,6 +54,36 @@ def get_config_files() -> list[Path]:
     return [path for root in roots for path in root.rglob("*.toml")]
 
 
+ENTRYPOINT_CONFIGS = {
+    "rl": RLConfig,
+    "trainer": TrainerConfig,
+    "sft": SFTConfig,
+    "pretrain": PretrainConfig,
+    "orchestrator": OrchestratorConfig,
+    "inference": InferenceConfig,
+    "env-worker-pool": EnvWorkerPoolConfig,
+    "eval": EvalConfig,
+}
+
+# A launch command in a config's comments, e.g. `#   uv run rl @ base.toml @ overlay.toml --max-steps 5`.
+# Only the `@` file stack counts; lines with placeholders instead of TOML paths don't match.
+LAUNCH_COMMAND = re.compile(r"^#\s*uv run ([\w-]+)((?:\s+@\s+\S+\.toml)+)")
+
+
+def get_launch_commands() -> list[tuple[str, str, list[Path]]]:
+    """(location, entrypoint, config stack) for each launch command documented in a config file."""
+    commands = []
+    for config_file in get_config_files():
+        for number, line in enumerate(config_file.read_text().splitlines(), start=1):
+            if match := LAUNCH_COMMAND.match(line):
+                stack = [Path(path) for path in match[2].split()[1::2]]
+                commands.append((f"{config_file.as_posix()}:{number}", match[1], stack))
+    return commands
+
+
+LAUNCH_COMMANDS = get_launch_commands()
+
+
 def can_parse(config_cls: type, args: list[str]) -> bool:
     """Whether `cli` parses the given `@` config file args into `config_cls`."""
     try:
@@ -64,23 +95,32 @@ def can_parse(config_cls: type, args: list[str]) -> bool:
 
 @pytest.mark.parametrize("config_file", get_config_files(), ids=lambda x: x.as_posix())
 def test_load_configs(config_file: Path):
-    """Tests that all config files can be loaded by at least one config class.
+    """Tests that every config file parses on its own into at least one config class, or is an overlay.
 
-    A file that no class parses standalone is an overlay — a checked-in config that only carries
-    the deltas over a shared base (e.g. the glm-4.5-air budget variants over
-    `swe-budget.toml`). Retry those composed with each sibling TOML as the base: the
-    documented `@ base.toml @ overlay.toml` left-to-right merge (docs/configuration.md,
-    "TOML Composition").
+    An overlay only carries the deltas over a base (e.g. the glm-4.5-air budget variants over
+    `swe-budget.toml`). It must be part of a launch command documented in a config's comments,
+    which `test_launch_commands` parses.
     """
-    could_parse = [can_parse(config_cls, ["@", config_file.as_posix()]) for config_cls in CONFIG_CLASSES]
-    if not any(could_parse):
-        sibling_bases = sorted(p for p in config_file.parent.glob("*.toml") if p != config_file)
-        could_parse = [
-            can_parse(config_cls, ["@", base.as_posix(), "@", config_file.as_posix()])
-            for base in sibling_bases
-            for config_cls in CONFIG_CLASSES
-        ]
-    assert any(could_parse), f"No config class could be parsed from {config_file}"
+    if any(config_file in stack for _, _, stack in LAUNCH_COMMANDS):
+        return
+    assert any(can_parse(config_cls, ["@", config_file.as_posix()]) for config_cls in CONFIG_CLASSES), (
+        f"{config_file} parses into no config class on its own. If it is an overlay, document how to "
+        f"compose it in a header comment, e.g. `#   uv run rl @ base.toml @ {config_file.as_posix()}`."
+    )
+
+
+@pytest.mark.parametrize(
+    ("entrypoint", "stack"),
+    [(entrypoint, stack) for _, entrypoint, stack in LAUNCH_COMMANDS],
+    ids=[location for location, _, _ in LAUNCH_COMMANDS],
+)
+def test_launch_commands(entrypoint: str, stack: list[Path]):
+    """Tests that each launch command documented in a config file parses with its entrypoint's config class."""
+    assert entrypoint in ENTRYPOINT_CONFIGS, f"Unknown entrypoint `{entrypoint}`"
+    missing = [path for path in stack if not path.is_file()]
+    assert not missing, f"Launch command references missing files: {missing}"
+    args = [arg for path in stack for arg in ("@", path.as_posix())]
+    cli(ENTRYPOINT_CONFIGS[entrypoint], args=args)
 
 
 class NestedConfig(BaseConfig):
@@ -425,6 +465,10 @@ def test_moe_compute_apply_to_cli(selection, selected):
                 },
             },
             "MXFP8 transport requires",
+        ),
+        (
+            {"ep": 8, "moe": {"dispatch": {"type": "mega_moe", "precision": "mxfp8", "llep": {}}}},
+            "llep requires",
         ),
     ],
 )
@@ -781,7 +825,7 @@ def test_policy_sampling_is_validated_before_rollouts(sampling, agent_sampling, 
     if frozen:
         source["algo"] = {
             "type": "sft",
-            "sampling": {"source": {"name": "teacher", "base_url": "http://localhost:8000/v1"}},
+            "teacher": {"name": "teacher", "base_url": "http://localhost:8000/v1"},
         }
     if rejected and not frozen:
         with pytest.raises(ValidationError, match="sampling"):
