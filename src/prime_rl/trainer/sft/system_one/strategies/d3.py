@@ -8,11 +8,11 @@
 import json
 from typing import Any
 
-from torch import Tensor, nn
+from torch import Tensor
 from transformers import AutoTokenizer, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.trainer.data import Batch
+from prime_rl.trainer.sft.loss import LossInputs
 from prime_rl.trainer.sft.system_one.data import RenderedRecord, SystemOneStrategy
 from prime_rl.trainer.sft.system_one.record import Question, SystemOneRecord
 from prime_rl.trainer.sft.system_one.strategies import find_refusal
@@ -132,10 +132,10 @@ class D3Strategy(SystemOneStrategy):
         return RenderedRecord(input_ids=input_ids, seq_lens=seq_lens, read_spans=read_spans)
 
     @classmethod
-    def option_logits(cls, model: nn.Module, hidden_states: Tensor, batch: Batch) -> list[Tensor]:
+    def option_logits(cls, inputs: LossInputs) -> list[Tensor]:
         """The model's ``score`` at each question's read token, in float32: the first codes, one per option, divided
         by ``decision_config``'s temperature (1 when absent), as vLLM's read does before its softmax."""
-        questions = [question for record in batch["sample_data"] for question in record["questions"]]
+        model, questions = inputs.model, inputs.sample_data["questions"]
         temperature = float(model.config.decision_config.get("temperature", 1.0))
-        logits = model.score(hidden_states[batch["loss_mask"]].float()) / temperature
+        logits = model.score(inputs.hidden_states[inputs.loss_mask].float()) / temperature
         return [row[: len(question["options"])] for row, question in zip(logits, questions, strict=True)]

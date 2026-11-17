@@ -8,12 +8,12 @@
 import json
 from typing import Any
 
-from torch import Tensor, nn
+from torch import Tensor
 from transformers import PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.trainer.data import Batch
 from prime_rl.trainer.models.qwen3_5.clef_joint_schema import QUESTION_TYPES, schema_indices, segment_mean
+from prime_rl.trainer.sft.loss import LossInputs
 from prime_rl.trainer.sft.system_one.data import RenderedRecord, SystemOneStrategy
 from prime_rl.trainer.sft.system_one.record import Question, SystemOneRecord
 from prime_rl.trainer.sft.system_one.strategies import find_refusal
@@ -131,24 +131,19 @@ class ClefFlashStrategy(SystemOneStrategy):
         return RenderedRecord(input_ids=prompt, seq_lens=[len(prompt)], read_spans=read_spans, options=options)
 
     @classmethod
-    def option_logits(cls, model: nn.Module, hidden_states: Tensor, batch: Batch) -> list[Tensor]:
-        """The model's joint schema head, ``pooler.head``, once per record on the record's slice of the packed row, as
-        vLLM's pooler runs it once per prompt, with the lexical prior from ``lexical_embedding``. A question's reads
-        are its instruction span, then one span per option, in the order of its ``options``."""
-        logits, start = [], 0
-        for record in batch["sample_data"]:
-            end = start + record["num_tokens"]
-            questions = record["questions"]
-            spans = [tuple(question["reads"][0]) for question in questions]
-            spans += [tuple(span) for question in questions for span in question["reads"][1:]]
-            counts = [len(question["reads"]) - 1 for question in questions]
-            types = [QUESTION_TYPES[question["type"]] for question in questions]
-            schema, lexical_positions, lexical_spans = schema_indices(types, spans, counts, hidden_states.device)
-            option_tokens = batch["input_ids"][0, start:end][lexical_positions]
-            lexical = segment_mean(
-                model.lexical_embedding(option_tokens), lexical_spans, schema.span_lengths[len(questions) :]
-            )
-            record_logits = model.pooler.head(hidden_states[0, start:end], lexical, schema).float()
-            logits += record_logits.split(counts)
-            start = end
-        return logits
+    def option_logits(cls, inputs: LossInputs) -> list[Tensor]:
+        """The model's joint schema head, ``pooler.head``, on the record's hidden states, as vLLM's pooler runs it once
+        per prompt, with the lexical prior from ``lexical_embedding``. A question's reads are its instruction span,
+        then one span per option, in the order of its ``options``."""
+        model, questions = inputs.model, inputs.sample_data["questions"]
+        spans = [tuple(question["reads"][0]) for question in questions]
+        spans += [tuple(span) for question in questions for span in question["reads"][1:]]
+        counts = [len(question["reads"]) - 1 for question in questions]
+        types = [QUESTION_TYPES[question["type"]] for question in questions]
+        schema, lexical_positions, lexical_spans = schema_indices(types, spans, counts, inputs.hidden_states.device)
+        lexical = segment_mean(
+            model.lexical_embedding(inputs.input_ids[lexical_positions]),
+            lexical_spans,
+            schema.span_lengths[len(questions) :],
+        )
+        return list(model.pooler.head(inputs.hidden_states, lexical, schema).float().split(counts))

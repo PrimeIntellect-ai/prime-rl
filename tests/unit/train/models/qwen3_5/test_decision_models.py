@@ -245,6 +245,27 @@ def test_release_loads_through_the_conversion_cache(tmp_path, monkeypatch, kind)
         assert not model.lm_head.weight.requires_grad
 
 
+def record_inputs(
+    model: nn.Module,
+    hidden_states: torch.Tensor,
+    record: dict,
+    loss_mask: torch.Tensor | None = None,
+    input_ids: torch.Tensor | None = None,
+) -> LossInputs:
+    """One record as the trainer hands it to the loss, from its hidden states alone."""
+    zeros = torch.zeros(len(hidden_states), dtype=torch.long)
+    return LossInputs(
+        model=model,
+        hidden_states=hidden_states,
+        input_ids=zeros if input_ids is None else input_ids,
+        position_ids=torch.arange(len(hidden_states)),
+        target_ids=zeros,
+        loss_mask=torch.zeros_like(zeros, dtype=torch.bool) if loss_mask is None else loss_mask,
+        truncated=False,
+        sample_data=record,
+    )
+
+
 @pytest.mark.parametrize("temperature", [1.5, None])
 def test_d3_logits_are_the_readout_at_the_read_tokens_over_the_temperature(tmp_path, temperature):
     decision_config = DECISION_CONFIG | {"temperature": temperature}
@@ -252,13 +273,11 @@ def test_d3_logits_are_the_readout_at_the_read_tokens_over_the_temperature(tmp_p
         del decision_config["temperature"]
     write_d3_release(tmp_path, decision_config)
     model = build(tmp_path, device="cpu")
-    hidden_states = torch.randn(1, 7, HIDDEN, dtype=torch.bfloat16)
-    loss_mask = torch.tensor([[False, False, True, False, False, False, True]])
-    questions = [{"id": "q", "type": "noul", "options": ["false", "true"], "reads": [[2, 3]]}]
+    hidden_states = torch.randn(4, HIDDEN, dtype=torch.bfloat16)
+    loss_mask = torch.tensor([False, True, False, True])
+    questions = [{"id": "q", "type": "noul", "options": ["false", "true"], "reads": [[1, 2]]}]
     questions += [{"id": "r", "type": "choice", "options": ["x", "y", "z"], "reads": [[3, 4]]}]
-    batch = {"loss_mask": loss_mask, "sample_data": [{"id": 0, "num_tokens": 3, "questions": questions[:1]}]}
-    batch["sample_data"].append({"id": 1, "num_tokens": 4, "questions": questions[1:]})
-    logits = checked_option_logits(model, hidden_states, batch)
+    logits = checked_option_logits(record_inputs(model, hidden_states, {"id": 0, "questions": questions}, loss_mask))
 
     # The readout at fp32, divided by the temperature as vLLM's d3 strategy does.
     reads = hidden_states[loss_mask].float() @ model.score.weight.T
@@ -312,25 +331,27 @@ def test_clef_logits_are_vllms(tmp_path):
         name.removeprefix("pooler.head.") for name in model.pooler.head.state_dict()
     }
 
-    # Two records packed in one row: noul and choice questions, then a score question.
+    # Two records: noul and choice questions, then a score question.
     records = [
         (12, [("noul", [(1, 3), (4, 5), (6, 8)]), ("choice", [(8, 9), (9, 10), (10, 11), (11, 12)])]),
         (9, [("score", [(0, 2), (3, 4), (5, 6), (7, 9)])]),
     ]
     input_ids = torch.randint(0, 128, (1, 21))
     hidden_states = torch.randn(1, 21, HIDDEN)
-    sample_data = [
-        {
+    logits, start = [], 0
+    for index, (num_tokens, questions) in enumerate(records):
+        record = {
             "id": index,
-            "num_tokens": num_tokens,
             "questions": [
                 {"id": f"q{q}", "type": kind, "options": [f"o{o}" for o in range(len(spans) - 1)], "reads": spans}
                 for q, (kind, spans) in enumerate(questions)
             ],
         }
-        for index, (num_tokens, questions) in enumerate(records)
-    ]
-    logits = checked_option_logits(model, hidden_states, {"input_ids": input_ids, "sample_data": sample_data})
+        span = slice(start, start + num_tokens)
+        logits += checked_option_logits(
+            record_inputs(model, hidden_states[0, span], record, input_ids=input_ids[0, span])
+        )
+        start += num_tokens
 
     expected, start = [], 0
     for num_tokens, questions in records:
@@ -421,7 +442,7 @@ def readout_model() -> ReadoutModel:
 
 
 def readout_loss(inputs: LossInputs) -> LossOutputs:
-    logits = inputs.model.score(inputs.hidden_states[inputs.batch["loss_mask"]].float())
+    logits = inputs.model.score(inputs.hidden_states[inputs.loss_mask].float())
     return LossOutputs(loss=logits.logsumexp(-1).sum(), count=1, metrics={"logits": logits.detach().sum()})
 
 
@@ -429,7 +450,8 @@ def readout_batch(rank: int) -> dict:
     input_ids = torch.randint(0, 32, (1, 6), generator=torch.Generator().manual_seed(rank))
     loss_mask = torch.tensor([[False, False, True, False, False, True]])
     return {"input_ids": input_ids, "position_ids": torch.tensor([[0, 1, 2, 0, 1, 2]]), "seq_lens": torch.tensor([3, 3]),
-            "loss_mask": loss_mask}  # fmt: skip
+            "loss_mask": loss_mask, "target_ids": torch.zeros_like(input_ids), "sample_lens": torch.tensor([3, 3]),
+            "truncated": torch.tensor([False, False])}  # fmt: skip
 
 
 def fp32_worker(rank: int, world: int, init_file: str, out_dir: str) -> None:
@@ -462,7 +484,7 @@ def test_fp32_modules_compute_in_float32_under_fsdp(tmp_path):
     sum(outputs.loss for outputs in losses).div(world).backward()
     for rank in range(world):
         result = torch.load(tmp_path / f"{rank}.pt")
-        assert result["dtypes"] == [(torch.float32, torch.float32)]
+        assert result["dtypes"] == [(torch.float32, torch.float32)] * 2  # once per sample
         torch.testing.assert_close(result["logits"], losses[rank].metrics["logits"], rtol=1e-5, atol=1e-5)
         torch.testing.assert_close(result["grad"], model.score.weight.grad, rtol=1e-5, atol=1e-5)
 
@@ -558,28 +580,42 @@ def native_model(directory: Path) -> PreTrainedModelPrimeRL:
     return model
 
 
-def packed_batch(directory: Path, model: PreTrainedModelPrimeRL) -> dict:
+PADDING = 37
+
+
+def packed_batch(directory: Path, model: PreTrainedModelPrimeRL, padded: bool) -> dict:
     """Both records of ROWS, rendered by the strategy the model's class declares and packed into one row as the SFT
-    dataloader does."""
+    dataloader does; ``padded``, the row is PADDING tokens longer than the records and padded as pad_to_seq_len pads."""
     rows = [
         {key: json.dumps(value) if key != "id" else value for key, value in row.items()}
         | {"questions": json.dumps(QUESTIONS)}
         for row in ROWS
     ]
     strategy = type(model).system_one_strategy()(PreTrainedTokenizerFast.from_pretrained(directory), model.config)
-    dataset = SystemOneDataset(Dataset.from_list(rows), strategy, shuffle=False, seq_len=4096, max_epochs=1)
-    (row,) = CatDataset(dataset, seq_len=4096, pad_to_multiple_of=1)
+
+    def pack(row_len: int, pad_to_multiple_of: int) -> dict:
+        dataset = SystemOneDataset(Dataset.from_list(rows), strategy, shuffle=False, seq_len=4096, max_epochs=1)
+        (row,) = CatDataset(dataset, seq_len=row_len, pad_to_multiple_of=pad_to_multiple_of)
+        return row
+
+    row = pack(4096, 1)
+    if padded:
+        row_len = len(row["input_ids"]) + PADDING
+        row = pack(row_len, row_len)
     return cat_collate([row])
 
 
 def packed_logits(model, batch: dict) -> list[torch.Tensor]:
-    return forward(
-        model,
-        batch["input_ids"],
-        batch["position_ids"],
-        seq_lens=batch["seq_lens"],
-        hidden_states_fn=lambda hidden_states: checked_option_logits(model, hidden_states, batch),
-    )
+    """Every question's logits, in pack order, read from the packed row record by record as the trainer calls the
+    loss."""
+    logits = []
+
+    def read(inputs: LossInputs) -> LossOutputs:
+        logits.extend(checked_option_logits(inputs))
+        return LossOutputs(loss=inputs.hidden_states.sum() * 0.0, count=0)
+
+    run_loss_fn(read, model, batch)
+    return logits
 
 
 def hidden_alone(model, input_ids: torch.Tensor) -> torch.Tensor:
@@ -604,12 +640,13 @@ def check_decision_loss(model, batch: dict, logits: list[torch.Tensor], trained:
     assert trained.grad is not None and trained.grad.abs().sum() > 0
 
 
-def test_d3_trains_on_vllms_prompts_end_to_end(tmp_path, cpu_kernels):
+@pytest.mark.parametrize("padded", [False, True])
+def test_d3_trains_on_vllms_prompts_end_to_end(tmp_path, cpu_kernels, padded):
     write_d3_release(tmp_path)
     write_char_tokenizer(tmp_path)
     model = native_model(tmp_path)
     tokenizer = PreTrainedTokenizerFast.from_pretrained(tmp_path)
-    batch = packed_batch(tmp_path, model)
+    batch = packed_batch(tmp_path, model, padded)
     logits = packed_logits(model, batch)
 
     # The strategy's option order is the readout's: the j-th logit scores the j-th code, whose line is that option's.
@@ -618,6 +655,7 @@ def test_d3_trains_on_vllms_prompts_end_to_end(tmp_path, cpu_kernels):
     options = {"outage": ["false", "true"], "team": ["technical", "billing"], "urgency": ["0", "1", "2"]}
     input_ids, start, index = batch["input_ids"][0], 0, 0
     seq_lens, vectors = iter(batch["seq_lens"].tolist()), iter(logits)
+    sample_lens = iter(batch["sample_lens"].tolist())
     for record in batch["sample_data"]:
         for question in record["questions"]:
             # One segment per question, read at its last token, as vLLM pools each request's last token.
@@ -628,23 +666,28 @@ def test_d3_trains_on_vllms_prompts_end_to_end(tmp_path, cpu_kernels):
             assert all(f"\n{code}: {line}\n" in prompt for code, line in zip(CODES, lines[question["id"]]))
 
             # The packed logits are the readout's on the question's prompt alone, as vLLM pools each request on its
-            # own: at its last token, in float32, over the temperature.
+            # own: at its last token, in float32, over the temperature. d3 attends both ways, so this also checks that
+            # the padding is not in the last prompt's segment.
             hidden = hidden_alone(model, input_ids[start:end])[-1]
             expected = model.score(hidden.float())[: len(question["options"])] / DECISION_CONFIG["temperature"]
             torch.testing.assert_close(next(vectors), expected)
             start = end
+        assert start - index == next(sample_lens)
         index = start
-    assert next(vectors, None) is None and start == len(input_ids)
+    assert next(vectors, None) is None and next(sample_lens, None) is None
+    # The padding, if any, is a segment of its own after the records.
+    assert list(seq_lens) == [PADDING] * padded and start + PADDING * padded == len(input_ids)
 
     check_decision_loss(model, batch, logits, model.score.weight)
 
 
-def test_clef_trains_on_vllms_prompt_end_to_end(tmp_path, cpu_kernels):
+@pytest.mark.parametrize("padded", [False, True])
+def test_clef_trains_on_vllms_prompt_end_to_end(tmp_path, cpu_kernels, padded):
     write_clef_release(tmp_path)
     write_char_tokenizer(tmp_path)
     model = native_model(tmp_path)
     tokenizer = PreTrainedTokenizerFast.from_pretrained(tmp_path)
-    batch = packed_batch(tmp_path, model)
+    batch = packed_batch(tmp_path, model, padded)
     logits = packed_logits(model, batch)
 
     # The strategy's read spans are the head's: the instruction, then each option's JSON in the head's order, which the
@@ -652,9 +695,10 @@ def test_clef_trains_on_vllms_prompt_end_to_end(tmp_path, cpu_kernels):
     options = {"outage": ["true", "false"], "team": ["billing", "technical"], "urgency": ["0", "1", "2"]}
     targets = {"outage": [1.0, 0.0], "team": [0.25, 0.75], "urgency": [0.0, 0.0, 1.0]}
     input_ids, start, vectors = batch["input_ids"][0], 0, iter(logits)
-    assert batch["seq_lens"].tolist() == [record["num_tokens"] for record in batch["sample_data"]]
-    for record in batch["sample_data"]:
-        ids = input_ids[start : start + record["num_tokens"]]
+    # One segment per record, then the padding's, if any.
+    assert batch["seq_lens"].tolist() == batch["sample_lens"].tolist() + [PADDING] * padded
+    for record, num_tokens in zip(batch["sample_data"], batch["sample_lens"].tolist(), strict=True):
+        ids = input_ids[start : start + num_tokens]
         for question in record["questions"]:
             texts = ["".join(tokenizer.convert_ids_to_tokens(ids[a:b].tolist())) for a, b in question["reads"]]
             assert texts[0] == QUESTIONS[question["id"]]["instructions"]
@@ -675,7 +719,7 @@ def test_clef_trains_on_vllms_prompt_end_to_end(tmp_path, cpu_kernels):
         lexical = segment_mean(lexical, lexical_spans, schema.span_lengths[len(types) :])
         for vector in model.pooler.head(hidden_alone(model, ids), lexical, schema).float().split(counts):
             torch.testing.assert_close(next(vectors), vector)
-        start += record["num_tokens"]
-    assert next(vectors, None) is None and start == len(input_ids)
+        start += num_tokens
+    assert next(vectors, None) is None and start + PADDING * padded == len(input_ids)
 
     check_decision_loss(model, batch, logits, model.pooler.head.residual_gate)
