@@ -68,16 +68,18 @@ def test_load_configs(config_file: Path):
 
     A file that no class parses standalone is an overlay — a checked-in config that only carries
     the deltas over a shared base (e.g. the glm-4.5-air budget variants over
-    `swe-budget.toml`). Retry those composed with each sibling TOML as the base: the
-    documented `@ base.toml @ overlay.toml` left-to-right merge (docs/configuration.md,
-    "TOML Composition").
+    `swe-budget.toml`, or deepseek-v4-flash's `gpu/h200.toml` over `rl.toml`). Retry those
+    composed with each TOML in the same or the parent directory as the base: the documented
+    `@ base.toml @ overlay.toml` left-to-right merge (docs/configuration.md, "TOML Composition").
     """
     could_parse = [can_parse(config_cls, ["@", config_file.as_posix()]) for config_cls in CONFIG_CLASSES]
     if not any(could_parse):
-        sibling_bases = sorted(p for p in config_file.parent.glob("*.toml") if p != config_file)
+        bases = sorted(
+            p for d in (config_file.parent, config_file.parent.parent) for p in d.glob("*.toml") if p != config_file
+        )
         could_parse = [
             can_parse(config_cls, ["@", base.as_posix(), "@", config_file.as_posix()])
-            for base in sibling_bases
+            for base in bases
             for config_cls in CONFIG_CLASSES
         ]
     assert any(could_parse), f"No config class could be parsed from {config_file}"
