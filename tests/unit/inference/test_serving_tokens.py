@@ -136,6 +136,12 @@ async def test_replay_mask_rows_dropped_by_capacity_fail_the_request():
             pass
 
 
+def _rows_by_id(ids_per_row: list[list[int]], logprobs_per_row: list[list[float]]):
+    """Sort each row by token id, since rows are sets and only native heads come ranked by probability."""
+    rows = [sorted(zip(ids, logprobs)) for ids, logprobs in zip(ids_per_row, logprobs_per_row)]
+    return [[i for i, _ in row] for row in rows], [[p for _, p in row] for row in rows]
+
+
 def _gpu_capture(logq: dict[int, float], sampled_ids: list[int], replay: bool):
     """The packed int64 mask the patched sampler hands to the server (pinned host copies need CUDA)."""
     logits = torch.full((len(sampled_ids), 8), -torch.inf)
@@ -256,7 +262,7 @@ async def test_gpu_capture_matches_native_evidence_and_metadata(flat, routed):
             choice.pop("compact_logprobs", None)
         payload.pop("created")
         responses.append(payload)
-    evidence = [(np.round(logprobs, 6).tolist(), *heads) for logprobs, *heads in evidence]
+    evidence = [(np.round(logprobs, 6).tolist(), *_rows_by_id(ids, values)) for logprobs, ids, values in evidence]
     assert all(item[0] == evidence[0][0] and item[1] == evidence[0][1] for item in evidence)
     np.testing.assert_allclose(np.array(evidence[-1][2]), np.array(evidence[0][2]), atol=1e-6)
     assert evidence[0][1] == [[1, 2, 3]] * 2

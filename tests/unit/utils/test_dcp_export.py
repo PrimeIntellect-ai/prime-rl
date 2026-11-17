@@ -15,9 +15,10 @@ from torch.distributed.checkpoint import FileSystemReader
 from torch.distributed.checkpoint.metadata import ChunkStorageMetadata, MetadataIndex, TensorStorageMetadata
 from transformers import PretrainedConfig, PreTrainedTokenizerFast
 
-from prime_rl.configs.trainer import ModelConfig
+from prime_rl.configs.trainer import ModelConfig, TokenizerConfig
 from prime_rl.trainer.model import get_model
 from prime_rl.trainer.models.layers.ngram import LAYOUT_BUFFERS
+from prime_rl.trainer.models.nemotron_h import NemotronHConfig
 from prime_rl.trainer.models.qwen3_8_flash_next import Qwen3_8FlashNextForCausalLM, Qwen3_8FlashNextTextConfig
 from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalLM
 
@@ -286,6 +287,34 @@ def test_publish_succeeds_when_the_previous_export_cannot_be_removed(tmp_path, e
     exporter.publish_export(staging, output)
     assert (output / "model.safetensors").read_bytes() == b"new"
     assert (next(tmp_path.glob(".weights-backup-*/export")) / "model.safetensors").read_bytes() == b"old"
+
+
+def test_model_assets_of_a_model_that_cannot_generate(tmp_path, exporter):
+    """NemotronH does not inherit GenerationMixin, so it has no generation config: the export writes the rest."""
+    model_dir = tmp_path / "model"
+    NemotronHConfig(
+        vocab_size=32,
+        hidden_size=16,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=8,
+        intermediate_size=32,
+        expand=2,
+        mamba_num_heads=2,
+        mamba_head_dim=16,
+        ssm_state_size=16,
+        n_groups=1,
+        hybrid_override_pattern="M*",
+    ).save_pretrained(model_dir)
+    tokenizer = Tokenizer(WordLevel({"<eos>": 0, "a": 1}, unk_token="<eos>"))
+    PreTrainedTokenizerFast(tokenizer_object=tokenizer, eos_token="<eos>").save_pretrained(model_dir)
+    model_config = ModelConfig(name=str(model_dir), attn="flash_attention_2")
+    model = get_model(model_config, device=torch.device("meta"), dtype=torch.float32)
+    assert not hasattr(model, "generation_config")
+    output = tmp_path / "export"
+    exporter.save_model_assets(model, model_config, TokenizerConfig(), output)
+    assert (output / "config.json").is_file() and (output / "tokenizer.json").is_file()
+    assert not (output / "generation_config.json").exists()
 
 
 def test_convert_exports_a_run_checkpoint_end_to_end(tmp_path, exporter, monkeypatch):
