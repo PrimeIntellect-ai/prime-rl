@@ -102,10 +102,13 @@ That window is enumerated per document by `window_indices`, and every rotation i
 an input, so a position that disagrees with a document boundary or a window slot that spans one
 cannot be constructed. It runs once per model forward.
 
-Context parallelism splits the queries across ranks and leaves everything else alone: every field
-above has one entry per query token and so covers this rank's `n_queries` tokens, while
-`compression_layouts` covers all `total_tokens` of the sequence. Token indices always count from
-the start of the whole sequence.
+Context parallelism splits the queries across ranks: every field above has one entry per query
+token and so covers this rank's `n_queries` tokens, while `compression_layouts` covers all
+`total_tokens` of the sequence and its token indices count from the start of the whole sequence.
+A rank receives from the ranks before it only the few hundred tokens its own windows and entries
+reach back into (`CPHalo`), pools only the entries whose last token it holds (`EntryShard`), and
+all-gathers those pooled entries. The entries come back in sequence order, so entry indices stay
+global, while window indices count from the first halo token.
 
 [The Index Contract]
 
@@ -122,6 +125,7 @@ surplus pick cost only their loads.
 """
 
 from dataclasses import dataclass
+from itertools import accumulate
 
 import torch
 import torch.distributed as dist
@@ -246,6 +250,167 @@ class CompressionLayout:
 
 
 @dataclass(frozen=True)
+class EntryShard:
+    """One CP rank's share of one compress rate's entries under halo exchange.
+
+    A rank owns the entries whose last source token it holds. Entries are numbered in order of
+    their last source token, so a rank owns one contiguous run of them, at most
+    `ceil(n_queries / compress_rate)` long. Every rank pools its run into a buffer of `capacity`
+    slots, that bound but at least 2, so the buffers all-gather at one size, and `gathered_row`
+    picks the sequence's entries back out of the gathered buffers in order. A padding slot pools
+    the first halo row (on the cuDNN path, an output row past `cu_entries[-1]`), and
+    `gathered_row` never selects it.
+    """
+
+    entry_tok_idx: Tensor  # (capacity, compress_rate) int64 - source token per slot, from this rank's first halo row
+    entry_local_idx: Tensor  # (capacity,) int64 - entry index within its own document, 0 on a padding slot
+    gathered_row: Tensor  # (n_entries,) int64 - each entry's row in the all-gathered (cp_world_size * capacity) slots
+    cu_seqlens: Tensor  # (n_tiles + 1,) int32 - the halo view tiled by its documents, for the cuDNN pooling
+    cu_entries: Tensor  # (n_tiles + 1,) int32 - first pooled entry of each tile, then the entry count
+    pool_row: Tensor  # (capacity,) int64 - cuDNN pooling output row each capacity slot reads
+
+    @classmethod
+    def build(
+        cls, *, layout: CompressionLayout, n_queries: int, halo_rows: int, cp_rank: int, cp_world_size: int
+    ) -> "EntryShard":
+        device = layout.entry_tok_idx.device
+        n_entries, compress_rate = layout.entry_tok_idx.shape
+        # A size of 1 would compile a graph of its own: torch.compile specializes a dynamic size on it.
+        capacity = max(-(-n_queries // compress_rate), 2)
+
+        owner = layout.entry_tok_idx[:, -1] // n_queries
+        ranks = torch.arange(cp_world_size + 1, device=device)
+        first_owned = torch.searchsorted(owner, ranks)
+        slot = torch.arange(capacity, device=device)
+        is_owned = slot < first_owned[cp_rank + 1] - first_owned[cp_rank]
+        # Appending one row gives a padding slot something to read even when the row has no entries.
+        entry = torch.where(is_owned, first_owned[cp_rank] + slot, n_entries)
+        entry_tok_idx = torch.cat([layout.entry_tok_idx, layout.entry_tok_idx.new_zeros(1, compress_rate)])[entry]
+        halo_start = cp_rank * n_queries - halo_rows
+        entry_tok_idx = torch.where(is_owned[:, None], entry_tok_idx - halo_start, 0)
+        entry_local_idx = torch.cat([layout.entry_local_idx, layout.entry_local_idx.new_zeros(1)])[entry]
+        gathered_row = owner * capacity + torch.arange(n_entries, device=device) - first_owned[owner]
+
+        q_start = cp_rank * n_queries
+        n_owned = first_owned[cp_rank + 1] - first_owned[cp_rank]
+        doc_start = layout.cu_seqlens[:-1].long()
+        doc_end = layout.cu_seqlens[1:].long()
+        view_start = max(q_start - halo_rows, 0)
+        view_end = q_start + n_queries
+        visible = (doc_end > view_start) & (doc_start < view_end)
+        clip_start = doc_start.clamp(min=view_start)
+        clip_end = doc_end.clamp(max=view_end)
+        # The document holding the first owned entry starts its tile `compress_rate` tokens
+        # earlier, at the entry before it, so the cuDNN kernel reads that entry's overlapping
+        # series from the halo instead of masking it as the tile's first entry.
+        first_owned_entry = first_owned[cp_rank]
+        if n_entries > 0:
+            clamped = first_owned_entry.clamp(max=n_entries - 1)
+            pulled_doc = layout.entry_doc_idx[clamped]
+            pulled_start = layout.entry_tok_idx[clamped, 0] - compress_rate
+            pullback = (n_owned > 0) & (first_owned_entry - layout.first_entry_of_doc[pulled_doc] >= 1)
+        else:
+            pulled_doc = first_owned_entry.new_zeros(())
+            pulled_start = first_owned_entry
+            pullback = doc_start.new_zeros((), dtype=torch.bool)
+        is_pulled = visible & pullback & (torch.arange(doc_start.shape[0], device=device) == pulled_doc)
+        visible_idx = visible.nonzero().squeeze(1)
+        starts = torch.where(is_pulled[visible_idx], pulled_start, clip_start[visible_idx])
+        ends = clip_end[visible_idx]
+        prev_end = torch.cat([starts.new_full((1,), view_start), ends[:-1]])
+        gaps = (starts - prev_end).clamp(min=0)
+        # No index reaches the zero halo rows before the sequence start: one padding tile covers them.
+        before_start = starts.new_full((1,), halo_rows - min(q_start, halo_rows))
+        tile_lens = torch.cat([before_start, torch.stack([gaps, ends - starts], dim=1).reshape(-1)])
+        tile_lens = tile_lens[tile_lens > 0]
+        cu_seqlens = torch.nn.functional.pad(tile_lens.cumsum(0), (1, 0)).to(torch.int32)
+        cu_entries = torch.nn.functional.pad((tile_lens // compress_rate).cumsum(0), (1, 0)).to(torch.int32)
+        # The tiles pooled in front of the owned run belong to the halo and are read past; the
+        # cuDNN output carries `capacity` rows plus them, and `CPHalo.cudnn_pool_size` covers both.
+        pool_row = torch.arange(capacity, device=device) + cu_entries[-1] - n_owned
+
+        # `capacity` follows this rank's row length and `n_entries` the document lengths.
+        for tensor in (entry_tok_idx, entry_local_idx, gathered_row, cu_seqlens, cu_entries, pool_row):
+            torch._dynamo.maybe_mark_dynamic(tensor, 0)
+        return cls(
+            entry_tok_idx=entry_tok_idx,
+            entry_local_idx=entry_local_idx,
+            gathered_row=gathered_row,
+            cu_seqlens=cu_seqlens,
+            cu_entries=cu_entries,
+            pool_row=pool_row,
+        )
+
+
+@dataclass(frozen=True)
+class CPHalo:
+    """What a CP rank needs to attend from its own shard plus the `rows` tokens before it.
+
+    `rows` covers the furthest any query or entry reaches back: a sliding window's
+    `sliding_window - 1` tokens, or `2 * compress_rate - 1` for a compressor. A rank's first owned
+    entry can start `compress_rate - 1` tokens before its shard, and the window before that entry
+    is read too: by the overlapping series of a two-series compressor, and at every rate by the
+    cuDNN pooling, which starts the owned run one entry early. Each rank receives those rows of
+    every per-token tensor it needs from the ranks before it, as many as hold them when shards are
+    shorter than `rows`, so the window keys and the compressor projections are read as
+    `rows + n_queries` tokens starting at `cp_rank * n_queries - rows`. Rows before the sequence
+    start are zeros.
+    """
+
+    rows: int
+    cp_rank: int
+    cp_world_size: int
+    entry_shards: dict[int, EntryShard]  # keyed by compress rate
+
+    def prepend(self, x: Tensor, group_name: str) -> Tensor:
+        """`x` (batch, n_queries, ...) with the `rows` tokens before it in front of it.
+
+        One all-to-all around the ring: every rank sends the rank `hops` places after it the tail
+        of its shard that lies within `rows` tokens of that rank's shard, so the halo arrives from
+        as many earlier ranks as hold it, in sequence order. Rows that wrap past the last rank are
+        dropped, and the halo rows before the sequence start are zeros. Every rank's split sizes
+        are the same set, symbolic in `n_queries`, so every rank compiles the same graph and issues
+        its collectives in the same order, and the exchange neither syncs nor recompiles on the row
+        length. The gradient of the received rows flows back to the ranks that sent them.
+        """
+        n_queries = x.shape[1]
+
+        def rows_from(hops: int) -> int:
+            """How many of the shard `hops` ranks back lie within `rows` tokens of this rank's shard."""
+            if hops == 0:
+                return 0
+            return torch.sym_max(0, torch.sym_min(n_queries, self.rows - (hops - 1) * n_queries))
+
+        ranks = range(self.cp_world_size)
+        send = [rows_from((rank - self.cp_rank) % self.cp_world_size) for rank in ranks]
+        recv = [rows_from((self.cp_rank - rank) % self.cp_world_size) for rank in ranks]
+        # Whether a split size is 0 or 1 depends on the row length, and torch.compile guards on both
+        # for a tensor of that size. So only the totals, at least `min(n_queries, rows)`, size a
+        # tensor: each sent row finds its token from where its destination's block ends.
+        tokens = x.movedim(1, 0).flatten(1)
+        block_ends = list(accumulate(send))
+        sent_row = torch.arange(block_ends[-1], device=x.device)
+        block_end = torch.zeros_like(sent_row)
+        for end in reversed(block_ends):
+            block_end = block_end.masked_fill(sent_row < end, end)
+        tails = tokens[sent_row + n_queries - block_end]
+        received = funcol.wait_tensor(torch.ops._c10d_functional.all_to_all_single(tails, recv, send, group_name))
+        # The ranks before this one sent the halo's last `before` rows, ahead of the wrapped rows.
+        before = sum(recv[: self.cp_rank])
+        halo = torch.cat([received.new_zeros(self.rows, received.shape[1]), received])[before : before + self.rows]
+        return torch.cat([halo.unflatten(1, (x.shape[0], *x.shape[2:])).movedim(0, 1), x], dim=1)
+
+    def cudnn_pool_size(self, compress_rate: int) -> int:
+        """Output rows of the cuDNN pooling over the halo view, covering `cu_entries[-1]` and every `pool_row`.
+
+        The shard's `capacity` slots plus the entries pooled in front of the owned run, which lie in
+        at most `rows + compress_rate - 1` tokens.
+        """
+        capacity = self.entry_shards[compress_rate].entry_tok_idx.shape[0]
+        return capacity + -(-self.rows // compress_rate)
+
+
+@dataclass(frozen=True)
 class PackedContext:
     """Everything an attention layer needs to know about the packed row it is running on.
 
@@ -256,16 +421,18 @@ class PackedContext:
     `entry_local_idx` cannot be compared against. `build` derives every field from one `seq_lens`,
     so neither is reachable. It runs once per model forward.
 
-    Context parallelism gives each rank a contiguous run of `n_queries` tokens to use as queries
-    and a full copy of the keys, so every field but `compression_layouts` has one entry per query
-    token and covers this rank's run alone, while `compression_layouts` covers the whole sequence.
-    Token indices always count from the start of the whole sequence, never from this rank's run.
+    Context parallelism gives each rank a contiguous run of `n_queries` tokens to use as queries,
+    and as keys that run plus the `cp_halo.rows` tokens before it. Every field but
+    `compression_layouts` has one entry per query token and covers this rank's run alone, while
+    `compression_layouts` covers the whole sequence and counts tokens from its start.
+    `window_indices` count from the first halo row, which without CP is the sequence's first token.
     """
 
     position_ids: Tensor  # (1, n_queries) int64 - token position within its own document
     tok_doc_idx: Tensor  # (n_queries,) int64 - which document each query token belongs to
-    window_indices: Tensor  # (n_queries, sliding_window) int32 - global token per window slot, IGNORE_SLOT if unused
+    window_indices: Tensor  # (n_queries, sliding_window) int32 - key token per window slot, IGNORE_SLOT if unused
     compression_layouts: dict[int, CompressionLayout]  # keyed by compress rate
+    cp_halo: CPHalo | None = None  # set under context parallelism
 
     @classmethod
     def build(
@@ -284,8 +451,8 @@ class PackedContext:
         padding included: both packers fold their padding into the last document.
 
         `seq_lens` always describes the whole sequence. `cp_rank` and `cp_world_size` say which
-        contiguous shard of it this rank holds the queries of; the keys, the entries and the index
-        values addressing them stay global, so only the query side narrows.
+        contiguous shard of it this rank holds the queries of. The window keys narrow to the shard
+        and its halo, while the entries and the index values addressing them stay global.
         """
         config = rotary_emb.config
         # Read the width before `seq_lens` moves: on a CPU `seq_lens` that costs no device sync.
@@ -315,11 +482,34 @@ class PackedContext:
         # document's start, which is what `causal_threshold` and the entry rotation count in.
         position_ids = (tok_idx - cu_seqlens[tok_doc_idx])[None]
 
+        compression_layouts = {
+            rate: CompressionLayout.build(cu_seqlens=cu_seqlens, compress_rate=rate) for rate in compress_rates
+        }
+        cp_halo = None
+        if cp_world_size > 1:
+            halo_rows = max([config.sliding_window - 1, *(2 * rate - 1 for rate in compress_rates)])
+            cp_halo = CPHalo(
+                rows=halo_rows,
+                cp_rank=cp_rank,
+                cp_world_size=cp_world_size,
+                entry_shards={
+                    rate: EntryShard.build(
+                        layout=layout,
+                        n_queries=n_queries,
+                        halo_rows=halo_rows,
+                        cp_rank=cp_rank,
+                        cp_world_size=cp_world_size,
+                    )
+                    for rate, layout in compression_layouts.items()
+                },
+            )
+        key_start = q_start - cp_halo.rows if cp_halo is not None else 0
+
         # A token attends the last `sliding_window` positions (itself included), clipped to its own
         # document.
         window_base = torch.maximum(tok_idx - position_ids[0], tok_idx - config.sliding_window + 1)
         slots = window_base[:, None] + torch.arange(config.sliding_window, device=device)[None, :]
-        window_indices = torch.where(slots <= tok_idx[:, None], slots, IGNORE_SLOT).to(torch.int32)
+        window_indices = torch.where(slots <= tok_idx[:, None], slots - key_start, IGNORE_SLOT).to(torch.int32)
 
         # `n_queries` follows this rank's row length. `position_ids` is a view, and dynamo guards its base too.
         torch._dynamo.maybe_mark_dynamic(position_ids, 1)
@@ -330,10 +520,9 @@ class PackedContext:
         return cls(
             position_ids=position_ids,
             tok_doc_idx=tok_doc_idx,
-            compression_layouts={
-                rate: CompressionLayout.build(cu_seqlens=cu_seqlens, compress_rate=rate) for rate in compress_rates
-            },
+            compression_layouts=compression_layouts,
             window_indices=window_indices,
+            cp_halo=cp_halo,
         )
 
 
@@ -352,9 +541,8 @@ class SparseAttnInputs:
     Every index must be a real key in `[0, n_positions)` or `IGNORE_SLOT` (-1), which marks an absent
     key, which `build` enforces.
 
-    Under context parallelism the token half of `kv_buf` is still the whole global stream, `S`
-    being every token of the packed row, while `indices` has one entry per query token this rank
-    holds.
+    Under context parallelism the token half of `kv_buf` is this rank's tokens and the halo before
+    them, while `indices` has one entry per query token this rank holds.
     """
 
     kv_buf: Tensor  # (batch, n_positions, 1, head_dim)
@@ -377,7 +565,8 @@ class SparseAttnInputs:
         assert (compressed_kv is None) == (top_k_indices is None), (
             "compressed_kv and top_k_indices describe the same entries: pass both or neither"
         )
-        # The two counts differ under CP: the keys are global and the queries are this rank's.
+        # The two counts differ under CP: the queries are this rank's, while the keys are this
+        # rank's tokens and the halo before them.
         batch, _, n_tokens, _ = kv.shape
         n_queries = window_indices.shape[0]
         assert top_k_indices is None or top_k_indices.shape[1] == n_queries, (
@@ -466,11 +655,11 @@ class DeepseekV4Compressor(nn.Module):
             torch.cat([previous_gate, window_gate[..., self.head_dim :]], dim=2),
         )
 
-    def _fetch(self, proj: torch.Tensor, cp_group: dist.ProcessGroup | None, cp_world_size: int) -> torch.Tensor:
-        """`proj` at every token the pooling reads: the whole row, gathered over the ranks when CP shards it."""
-        if cp_world_size > 1:
-            return gather_for_cp(proj, cp_group)
-        return proj
+    def _fetch(self, proj: torch.Tensor, packed: PackedContext, cp_group: dist.ProcessGroup | None) -> torch.Tensor:
+        """`proj` at every token the pooling reads: this rank's tokens, after the halo under CP."""
+        if packed.cp_halo is None:
+            return proj
+        return packed.cp_halo.prepend(proj, cp_group.group_name)
 
     def _pool(self, proj: torch.Tensor, entry_tok_idx: torch.Tensor, entry_local_idx: torch.Tensor) -> torch.Tensor:
         """Pool `proj` `(batch, tokens, 2 * n_series * head_dim)`, its kv and gate projections side by
@@ -520,28 +709,41 @@ class DeepseekV4Compressor(nn.Module):
         hidden_states: torch.Tensor,
         packed: PackedContext,
         cp_group: dist.ProcessGroup | None = None,
-        cp_world_size: int = 1,
     ) -> torch.Tensor:
         """Compress `(batch, seq_len, hidden_size)` to `(batch, n_entries, head_dim)`."""
-        layout = packed.compression_layouts[self.compress_rate]
+        if packed.cp_halo is not None:
+            shard = packed.cp_halo.entry_shards[self.compress_rate]
+            cu_seqlens, cu_entries, pool_row = shard.cu_seqlens, shard.cu_entries, shard.pool_row
+            entry_tok_idx, entry_local_idx = shard.entry_tok_idx, shard.entry_local_idx
+            out_rows = packed.cp_halo.cudnn_pool_size(self.compress_rate)
+        else:
+            layout = packed.compression_layouts[self.compress_rate]
+            cu_seqlens, cu_entries, pool_row = layout.cu_seqlens, layout.cu_entries, None
+            entry_tok_idx, entry_local_idx = layout.entry_tok_idx, layout.entry_local_idx
+            out_rows = layout.entry_tok_idx.shape[0]
         kv, gate = self.kv_proj(hidden_states), self.gate_proj(hidden_states)
         if self.cudnn_pooling and hidden_states.dtype == torch.bfloat16:
             # Fetched apart, kv and gate each arrive contiguous, as the kernels read them.
             pooled = self._pool_cudnn(
-                self._fetch(kv, cp_group, cp_world_size),
-                self._fetch(gate, cp_group, cp_world_size),
-                layout.cu_seqlens,
-                layout.cu_entries,
-                layout.entry_tok_idx.shape[0],
+                self._fetch(kv, packed, cp_group),
+                self._fetch(gate, packed, cp_group),
+                cu_seqlens,
+                cu_entries,
+                out_rows,
             )
+            if pool_row is not None:
+                pooled = pooled[:, pool_row]
         else:
-            proj = self._fetch(torch.cat([kv, gate], dim=-1), cp_group, cp_world_size)
-            pooled = self._pool(proj, layout.entry_tok_idx, layout.entry_local_idx)
+            proj = self._fetch(torch.cat([kv, gate], dim=-1), packed, cp_group)
+            pooled = self._pool(proj, entry_tok_idx, entry_local_idx)
         compressed = self.kv_norm(pooled)
 
-        entry_first_tok_pos = layout.entry_local_idx * self.compress_rate
+        entry_first_tok_pos = entry_local_idx * self.compress_rate
         cos_sin_cache = self.rotary_emb.cos_sin_cache(self.rope_layer_type)
-        return dsv4_rope(compressed.unsqueeze(2), cos_sin_cache, entry_first_tok_pos).squeeze(2)
+        compressed = dsv4_rope(compressed.unsqueeze(2), cos_sin_cache, entry_first_tok_pos).squeeze(2)
+        if packed.cp_halo is not None:
+            compressed = gather_for_cp(compressed, cp_group)[:, shard.gathered_row]
+        return compressed
 
     def causal_threshold(self, position_ids: torch.Tensor) -> torch.Tensor:
         """Number of compressed entries that query `t` may read, shaped like `position_ids`.
@@ -591,7 +793,7 @@ class DeepseekV4Indexer(nn.Module):
     ) -> torch.Tensor:
         batch, seq_len, _ = hidden_states.shape
         assert batch == 1, f"the indexer needs a packed batch of size 1, got {batch}"
-        compressed_kv = self.compressor.compress(hidden_states, packed, cp_group=cp_group, cp_world_size=cp_world_size)
+        compressed_kv = self.compressor.compress(hidden_states, packed, cp_group=cp_group)
         n_entries = compressed_kv.shape[1]
 
         cos_sin_cache = self.compressor.rotary_emb.cos_sin_cache(self.compressor.rope_layer_type)
@@ -651,7 +853,7 @@ class DeepseekV4CSACompressor(DeepseekV4Compressor):
         cp_group: dist.ProcessGroup | None = None,
         cp_world_size: int = 1,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        compressed_kv = self.compress(hidden_states, packed, cp_group=cp_group, cp_world_size=cp_world_size)
+        compressed_kv = self.compress(hidden_states, packed, cp_group=cp_group)
         # The indexer reads the same layout: it compresses the same source windows at a narrower
         # head dim, so its entry `e` and this compressor's entry `e` are the same window.
         picks = self.indexer(hidden_states, q_residual, packed, cp_group=cp_group, cp_world_size=cp_world_size)
@@ -692,7 +894,7 @@ class DeepseekV4HCACompressor(DeepseekV4Compressor):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """`q_residual` is part of the compressor contract but unused: HCA has no indexer."""
         batch = hidden_states.shape[0]
-        compressed_kv = self.compress(hidden_states, packed, cp_group=cp_group, cp_world_size=cp_world_size)
+        compressed_kv = self.compress(hidden_states, packed, cp_group=cp_group)
 
         layout = packed.compression_layouts[self.compress_rate]
         # `threshold` counts entries within the query's own document, so it selects how far into
@@ -807,7 +1009,7 @@ class DeepseekV4Attention(nn.Module):
         #
         # - `b`: batch
         # - `t`: token in this rank's query shard
-        # - `T`: token in the whole packed row, which is `t` unless CP is on
+        # - `T`: key token, the halo then this rank's tokens under CP, else `t`
         # - `h`: attention head
         # - `d`: head_dim
         # - `e`: compressed entry
@@ -826,13 +1028,8 @@ class DeepseekV4Attention(nn.Module):
         kv = dsv4_rope(kv, cos_sin_cache, packed.position_ids)
         if self.kv_precision == "fp8":
             kv = dsv4_swa_kv_fake_quant(kv, self.config.qk_rope_head_dim)
-        if self.cp_context.cp_enabled:
-            # Launch on NCCL's communication stream; query/compressor work does not read KV.
-            kv = torch.ops._c10d_functional.all_gather_into_tensor(
-                kv.movedim(1, 0).contiguous(),
-                self.cp_context.cp_world_size,
-                self.cp_context.cp_group.group_name,
-            )
+        if packed.cp_halo is not None:
+            kv = packed.cp_halo.prepend(kv, self.cp_context.cp_group.group_name)  # (b, halo + t, 1, d)
 
         q_residual = self.q_a_norm(self.q_a_proj(hidden_states))  # (b, t, r)
         # Keep the query in the sparse kernel's (batch, tokens, heads, dim) layout.
@@ -855,8 +1052,6 @@ class DeepseekV4Attention(nn.Module):
         if self.kv_precision == "fp8" and compressed_kv is not None:
             # Not the sliding-window fake quant: vLLM's compressor store floors the scale, not the amax.
             compressed_kv = dsv4_compressed_kv_fake_quant(compressed_kv, self.config.qk_rope_head_dim)
-        if self.cp_context.cp_enabled:
-            kv = funcol.wait_tensor(kv).movedim(0, 1).contiguous()  # (b, T, 1, d)
         kv = kv.transpose(1, 2)  # (b, 1, T, d)
         inputs = SparseAttnInputs.build(
             kv=kv,
