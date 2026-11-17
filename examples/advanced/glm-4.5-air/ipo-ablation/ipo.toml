@@ -1,5 +1,7 @@
 # IPO arm: mask a token when |p_train - p_infer| > eps. eps = 0.3 is the default; the ablation also ran
 # eps = 0.2 (`--trainer.loss.eps 0.2`).
+#
+#   uv run rl @ examples/advanced/glm-4.5-air/ipo-ablation/base.toml @ examples/advanced/glm-4.5-air/ipo-ablation/ipo.toml
 
 [slurm]
 job_name = "ipo-ablation-ipo"
