@@ -27,6 +27,9 @@ def apply_shared_vllm_patches():
     monkey_patch_online_fp8_parameter_cast()
     monkey_patch_glm5_next_kda_conv_weights()
     monkey_patch_online_mxfp8_moe_keep_kernel_on_reload()
+    from prime_rl.inference.vllm.nvfp4_dispatch import patch_nvfp4_per_token_dispatch
+
+    patch_nvfp4_per_token_dispatch()
     monkey_patch_strip_routed_experts_from_chat()
     monkey_patch_skip_prompt_routing_for_chat()
     monkey_patch_dp_coordinator_startup_timeout()
