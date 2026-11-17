@@ -28,7 +28,8 @@ mkdir -p "$WORKSPACE"
 UCX_SRC="$WORKSPACE/ucx_source"
 UCX_INSTALL="$PROJECT_DIR/third_party/ucx"
 NIXL_SRC="$WORKSPACE/nixl_source"
-NIXL_VERSION="${NIXL_VERSION:-0.10.1}"
+# Git tag; NIXL tags carry a `v` prefix from 1.0 on, the wheel version does not.
+NIXL_VERSION="${NIXL_VERSION:-v1.5.0}"
 CUDA_PATH="${CUDA_HOME:-/usr/local/cuda}"
 NPROC=$(nproc)
 
@@ -86,6 +87,9 @@ git checkout "$NIXL_VERSION"
 # nixl_cu13 first, so a nixl_cu12 build would sit unused next to the PyPI wheel.
 git checkout -- pyproject.toml
 uv run --no-project --with tomlkit python contrib/tomlutil.py --wheel-name nixl-cu13 pyproject.toml
+# Only the optional `nixl_ep` (off by default) builds against torch, so drop its
+# pinned torch from the build requires instead of downloading it into the build env.
+sed -i '/^requires = /s/, *"torch[^"]*"//' pyproject.toml
 
 export PKG_CONFIG_PATH="$UCX_INSTALL/lib/pkgconfig"
 export LD_LIBRARY_PATH="$UCX_INSTALL/lib:$UCX_INSTALL/lib/ucx:${LD_LIBRARY_PATH:-}"
@@ -102,5 +106,5 @@ printf 'meson-python==0.21.1\n' > "$WORKSPACE/nixl-build-constraints.txt"
 "$PYTHON" -m pip wheel . --no-deps --wheel-dir="$WHEEL_DIR" \
     --build-constraint "$WORKSPACE/nixl-build-constraints.txt"
 
-WHEEL=$(ls "$WHEEL_DIR"/nixl_cu13-"$NIXL_VERSION"-*.whl | head -1)
+WHEEL=$(ls "$WHEEL_DIR"/nixl_cu13-"${NIXL_VERSION#v}"-*.whl | head -1)
 echo "=== NIXL wheel built at: $WHEEL ==="

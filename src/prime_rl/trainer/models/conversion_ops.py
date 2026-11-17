@@ -373,3 +373,29 @@ def routed_experts_op(
         Rename(f"{prefix}.{hf_experts}.down_proj", f"{prefix}.{prime_experts}.down_proj"),
     ]
     return Conditional(key_present(gate_up), then=fused_then, else_=stacks)
+
+
+def view_mapping(ops: list[ConvOp], shapes: dict[str, torch.Size]) -> dict[str, dict] | None:
+    """Each HF tensor of the prime -> HF conversion of a state dict with these keys and shapes, as
+    ``{"from": prime_key, "index": [...]}``, meaning ``prime[from][*index]``. Found by playing the
+    real conversion on meta tensors. None when an HF tensor is not such a view (a concat, a value
+    transform)."""
+    prime = {key: torch.empty(shape, device="meta") for key, shape in shapes.items()}
+    tensor_id_to_key = {id(tensor): key for key, tensor in prime.items()}
+    views = {}
+    for name, tensor in apply_prime_to_hf(dict(prime), ops).items():
+        base = tensor if tensor._base is None else tensor._base
+        lead = base.dim() - tensor.dim()
+        if (
+            id(base) not in tensor_id_to_key
+            or lead < 0
+            or tensor.shape != base.shape[lead:]
+            or tensor.stride() != base.stride()[lead:]
+        ):
+            return None
+        index, offset = [], tensor.storage_offset()
+        for stride in base.stride()[:lead]:
+            index.append(offset // stride)
+            offset %= stride
+        views[name] = {"from": tensor_id_to_key[id(base)], "index": index}
+    return views

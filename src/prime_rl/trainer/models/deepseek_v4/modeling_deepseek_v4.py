@@ -24,7 +24,7 @@ from prime_rl.trainer.models.deepseek_v4.hyperconnections import (
     DeepseekV4HyperConnection,
     DeepseekV4HyperHead,
 )
-from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4MoE
+from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4HashRouter, DeepseekV4MoE
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import MoE
@@ -95,17 +95,6 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     config: DeepseekV4Config
     config_class = DeepseekV4Config
     base_model_prefix = "model"
-    supports_gradient_checkpointing = True
-    _no_split_modules = ["DeepseekV4DecoderLayer"]
-    _skip_keys_device_placement = ["past_key_values"]
-    # V4 attention runs its own fused kernel; no transformers backend can serve it.
-    _supports_flash_attn = False
-    _supports_sdpa = False
-    _supports_flex_attn = False
-    _can_compile_fullgraph = False
-    _supports_attention_backend = True
-    _can_record_outputs = {"hidden_states": DeepseekV4DecoderLayer}
-    _keys_to_ignore_on_load_unexpected = [r"(^|\.)mtp\..*"]
 
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:
@@ -117,10 +106,10 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
         init_std = self.config.initializer_range
         if isinstance(module, (DeepseekV4Attention, DeepseekV4HyperConnection, DeepseekV4HyperHead)):
             module.init_weights(init_std)
-        elif isinstance(module, DeepseekV4MoE):
-            module.init_weights(init_std, module.tokens_per_expert.device)
         elif isinstance(module, DeepseekV4RotaryEmbedding):
             module.init_buffers_post_meta()
+        elif isinstance(module, DeepseekV4HashRouter):
+            module.init_tid2eid()
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
@@ -174,10 +163,9 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
 class DeepseekV4Model(DeepseekV4PreTrainedModel):
     def __init__(self, config: DeepseekV4Config):
         super().__init__(config)
-        self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         # Shared by every attention layer instead of passing RoPE tensors through forward, which FSDP casts to bf16.
         self.rotary_emb = DeepseekV4RotaryEmbedding(config)
         self.layers = nn.ModuleList(
@@ -272,8 +260,6 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
 
 class DeepseekV4ForCausalLM(DeepseekV4PreTrainedModel, GenerationMixin):
     _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
-    _tp_plan = {"lm_head": "colwise_gather_output"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config: DeepseekV4Config):
         super().__init__(config)
