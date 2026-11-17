@@ -340,16 +340,21 @@ def monkey_patch_glm5_next_kda_conv_weights():
     After loading, store the three weights as slices of one buffer and point the cache at it;
     reloads copy into parameter storage in place, so updates land in the buffer.
 
-    Remove when vLLM keeps the q/k/v conv weights in one merged parameter
-    (https://github.com/vllm-project/vllm/pull/60991).
+    vLLM with https://github.com/vllm-project/vllm/pull/60991 keeps the q/k/v conv weights in one
+    parameter that the conv kernels read directly, so there this patch does nothing: its hook reads
+    attributes that no longer exist and would replace vLLM's own ``process_weights_after_loading``
+    where a model class defines one. Remove it when our minimum vLLM version includes that change.
     """
-    from vllm.models.glm5next.common.kda import Glm5NextLinearAttention
+    from vllm.models.glm5next.common import kda
     from vllm.models.glm5next.common.model import Glm5NextForCausalLM, Glm5NextForConditionalGeneration
+
+    if hasattr(kda, "_fused_qkv_conv1d"):
+        return
 
     @torch.no_grad()
     def process_weights_after_loading(self) -> None:
         for module in self.modules():
-            if isinstance(module, Glm5NextLinearAttention):
+            if isinstance(module, kda.Glm5NextLinearAttention):
                 convs = (module.q_conv1d, module.k_conv1d, module.v_conv1d)
                 merged = torch.cat([conv.weight.data for conv in convs])
                 for conv, part in zip(convs, merged.chunk(3)):
@@ -422,8 +427,14 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
         if self.connector is not None:
             self.connector.update_connector_output(kv_connector_output)
 
+        # Since vllm-project/vllm#65319 an aborted request's unfinished async load counts against
+        # `max_num_inflight_kv_loads` until it reports done.
+        aborted_kv_loads = getattr(self, "_aborted_kv_loads", None)
         for req_id in kv_connector_output.finished_recving or ():
             logger.debug("Finished recving KV transfer for request %s", req_id)
+            # Before the skip below: the load is done even when the request is already freed.
+            if aborted_kv_loads is not None:
+                aborted_kv_loads.discard(req_id)
             # Stale notification for a request freed earlier this step (e.g. an
             # aborted request whose send completion freed it). Nothing to do.
             if req_id not in self.requests:
@@ -553,10 +564,14 @@ def monkey_patch_routed_experts_with_pd_connectors():
             return num_external
         return original_cap_external_hit(self, request, num_local, num_external)
 
-    original_worker_init = AuxOutputWorkerConnector.__init__
+    # The worker builds its buffer in `initialize_output_storage` since vllm-project/vllm#63237, in `__init__` before.
+    builds_buffer = (
+        "initialize_output_storage" if hasattr(AuxOutputWorkerConnector, "initialize_output_storage") else "__init__"
+    )
+    original_build_buffer = getattr(AuxOutputWorkerConnector, builds_buffer)
 
-    def worker_init(self, *args, **kwargs):
-        original_worker_init(self, *args, **kwargs)
+    def build_buffer(self, *args, **kwargs):
+        original_build_buffer(self, *args, **kwargs)
         if self._buffer is not None:
             skip_remote_prefill_partial_block(self)
 
@@ -566,7 +581,7 @@ def monkey_patch_routed_experts_with_pd_connectors():
     AuxOutputSchedulerConnector.request_finished = request_finished
     AuxOutputSchedulerConnector.max_cache_hit = max_cache_hit
     AuxOutputSchedulerConnector.cap_external_hit = cap_external_hit
-    AuxOutputWorkerConnector.__init__ = worker_init
+    setattr(AuxOutputWorkerConnector, builds_buffer, build_buffer)
 
 
 def skip_remote_prefill_partial_block(worker) -> None:
@@ -630,8 +645,11 @@ def monkey_patch_clamp_kv_offload_loads_for_routed_experts():
     cut (`monkey_patch_routed_experts_cut_loaded_prefix_hits`) keeps later requests from reading.
     """
     from vllm.distributed.aux_output_connector.connector import AuxOutputSchedulerConnector
-    from vllm.distributed.kv_transfer.kv_connector.v1.mooncake.store.connector import MooncakeStoreConnector
+    from vllm.distributed.kv_transfer.kv_connector.factory import KVConnectorFactory
     from vllm.distributed.kv_transfer.kv_connector.v1.offloading_connector import OffloadingConnector
+
+    # By its registered name: the module path differs between vLLM versions (vllm-project/vllm#65877).
+    MooncakeStoreConnector = KVConnectorFactory.get_connector_class_by_name("MooncakeStoreConnector")
 
     if getattr(OffloadingConnector._max_loadable_tokens, "_prime_rl_routed_experts_clamp", False):
         return
