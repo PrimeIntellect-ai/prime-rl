@@ -6,7 +6,6 @@ selection with a frozen token-id lookup but keeps the learned gating weights.
 """
 
 import torch
-from torch import nn
 
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.layers.activations import ClampedSilu
@@ -17,8 +16,8 @@ from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceT
 class DeepseekV4HashRouter(TokenChoiceTopKRouter):
     """A bootstrap layer's router: selection is a frozen token-id lookup, gating still learned.
 
-    `tid2eid` replaces the top-k of the scores with `tid2eid[token_id]`, read from the checkpoint
-    and zeros until one fills it. A frozen selection cannot be steered, so a hash layer has no use
+    `tid2eid` replaces the top-k of the scores with `tid2eid[token_id]`, read from the checkpoint,
+    or drawn by `init_tid2eid` from scratch. A frozen selection cannot be steered, so a hash layer has no use
     for the aux-loss-free load-balancing bias, and HF's `DeepseekV4HashRouter` carries no
     `e_score_correction_bias` to load into it either; `selection_bias=False` leaves that buffer
     unbuilt, keeping the state dict aligned with HF's.
@@ -27,6 +26,13 @@ class DeepseekV4HashRouter(TokenChoiceTopKRouter):
     def __init__(self, *, vocab_size: int, **router_kwargs) -> None:
         super().__init__(**router_kwargs, selection_bias=False)
         self.register_buffer("tid2eid", torch.zeros(vocab_size, self.top_k, dtype=torch.long), persistent=True)
+
+    @torch.no_grad()
+    def init_tid2eid(self) -> None:
+        """Route each token id to `top_k` distinct experts drawn at random. The draw uses the CPU generator, which
+        `initialize_from_scratch` seeds alike on every rank, so all ranks build the same table."""
+        scores = torch.rand(self.tid2eid.shape[0], self.num_experts)
+        self.tid2eid.copy_(scores.topk(self.top_k, dim=-1).indices)
 
 
 class DeepseekV4MoE(MoE):
@@ -90,11 +96,6 @@ class DeepseekV4MoE(MoE):
         )
         self.layer_idx = layer_idx
         self.is_hash = is_hash
-
-    def init_weights(self, init_std: float, buffer_device: torch.device) -> None:
-        super().init_weights(init_std, buffer_device)
-        # HF draws both halves of its fused gate_up_proj from std=0.02; the shared init uses init_std for up.
-        nn.init.trunc_normal_(self.experts.up_proj, mean=0.0, std=0.02)
 
     def forward(
         self,

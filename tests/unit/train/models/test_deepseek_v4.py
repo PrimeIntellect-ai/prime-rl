@@ -102,8 +102,8 @@ def _randomize(module: nn.Module) -> None:
     """Draw non-degenerate values for every parameter and routing buffer.
 
     These modules allocate with `torch.empty`, and the values `init_weights` would write are
-    themselves degenerate for testing: norm gains default to ones and the sinks, position biases,
-    load-balancing bias and hash table all default to zeros, each of which leaves the path it
+    themselves degenerate for testing: norm gains default to ones and the sinks, position biases
+    and load-balancing bias to zeros, each of which leaves the path it
     controls indistinguishable from a no-op. The position bias is drawn wide because it is a
     softmax logit over a pooling window; at the projections' std the gate would stay near uniform.
     """
@@ -271,10 +271,9 @@ def _fill_hash_tables(model: nn.Module) -> dict[int, torch.Tensor]:
 def test_deepseek_v4_hash_table_survives_the_load_path(tmp_path, monkeypatch):
     """The frozen table has to reach `mlp.router.tid2eid` from the name a real checkpoint ships.
 
-    It is the one buffer no `init_weights` can reconstruct: an all-zero table is a valid tensor
-    that routes every token to expert 0, so a rename anywhere along the loading path degrades the
-    model in silence rather than raising. `test_deepseek_v4_weight_conversion_roundtrip` only ever
-    roundtrips the zeros the constructor leaves behind, and `VLLM_MAPPED_NAMES` pins the on-disk
+    It is the one buffer no `init_weights` can reconstruct, so a rename anywhere along the loading
+    path degrades the model in silence rather than raising. `test_deepseek_v4_weight_conversion_roundtrip`
+    only ever roundtrips the table the constructor leaves behind, and `VLLM_MAPPED_NAMES` pins the on-disk
     name without saying where it lands, so this carries real values across the whole path.
 
     Three things in sequence, because they are three links in one chain. The conversion emits only

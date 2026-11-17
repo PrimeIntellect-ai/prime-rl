@@ -1,6 +1,7 @@
 import importlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Annotated, Literal, get_args
@@ -53,6 +54,36 @@ def get_config_files() -> list[Path]:
     return [path for root in roots for path in root.rglob("*.toml")]
 
 
+ENTRYPOINT_CONFIGS = {
+    "rl": RLConfig,
+    "trainer": TrainerConfig,
+    "sft": SFTConfig,
+    "pretrain": PretrainConfig,
+    "orchestrator": OrchestratorConfig,
+    "inference": InferenceConfig,
+    "env-worker-pool": EnvWorkerPoolConfig,
+    "eval": EvalConfig,
+}
+
+# A launch command in a config's comments, e.g. `#   uv run rl @ base.toml @ overlay.toml --max-steps 5`.
+# Only the `@` file stack counts; lines with placeholders instead of TOML paths don't match.
+LAUNCH_COMMAND = re.compile(r"^#\s*uv run ([\w-]+)((?:\s+@\s+\S+\.toml)+)")
+
+
+def get_launch_commands() -> list[tuple[str, str, list[Path]]]:
+    """(location, entrypoint, config stack) for each launch command documented in a config file."""
+    commands = []
+    for config_file in get_config_files():
+        for number, line in enumerate(config_file.read_text().splitlines(), start=1):
+            if match := LAUNCH_COMMAND.match(line):
+                stack = [Path(path) for path in match[2].split()[1::2]]
+                commands.append((f"{config_file.as_posix()}:{number}", match[1], stack))
+    return commands
+
+
+LAUNCH_COMMANDS = get_launch_commands()
+
+
 def can_parse(config_cls: type, args: list[str]) -> bool:
     """Whether `cli` parses the given `@` config file args into `config_cls`."""
     try:
@@ -64,23 +95,32 @@ def can_parse(config_cls: type, args: list[str]) -> bool:
 
 @pytest.mark.parametrize("config_file", get_config_files(), ids=lambda x: x.as_posix())
 def test_load_configs(config_file: Path):
-    """Tests that all config files can be loaded by at least one config class.
+    """Tests that every config file parses on its own into at least one config class, or is an overlay.
 
-    A file that no class parses standalone is an overlay — a checked-in config that only carries
-    the deltas over a shared base (e.g. the glm-4.5-air budget variants over
-    `swe-budget.toml`). Retry those composed with each sibling TOML as the base: the
-    documented `@ base.toml @ overlay.toml` left-to-right merge (docs/configuration.md,
-    "TOML Composition").
+    An overlay only carries the deltas over a base (e.g. the glm-4.5-air budget variants over
+    `swe-budget.toml`). It must be part of a launch command documented in a config's comments,
+    which `test_launch_commands` parses.
     """
-    could_parse = [can_parse(config_cls, ["@", config_file.as_posix()]) for config_cls in CONFIG_CLASSES]
-    if not any(could_parse):
-        sibling_bases = sorted(p for p in config_file.parent.glob("*.toml") if p != config_file)
-        could_parse = [
-            can_parse(config_cls, ["@", base.as_posix(), "@", config_file.as_posix()])
-            for base in sibling_bases
-            for config_cls in CONFIG_CLASSES
-        ]
-    assert any(could_parse), f"No config class could be parsed from {config_file}"
+    if any(config_file in stack for _, _, stack in LAUNCH_COMMANDS):
+        return
+    assert any(can_parse(config_cls, ["@", config_file.as_posix()]) for config_cls in CONFIG_CLASSES), (
+        f"{config_file} parses into no config class on its own. If it is an overlay, document how to "
+        f"compose it in a header comment, e.g. `#   uv run rl @ base.toml @ {config_file.as_posix()}`."
+    )
+
+
+@pytest.mark.parametrize(
+    ("entrypoint", "stack"),
+    [(entrypoint, stack) for _, entrypoint, stack in LAUNCH_COMMANDS],
+    ids=[location for location, _, _ in LAUNCH_COMMANDS],
+)
+def test_launch_commands(entrypoint: str, stack: list[Path]):
+    """Tests that each launch command documented in a config file parses with its entrypoint's config class."""
+    assert entrypoint in ENTRYPOINT_CONFIGS, f"Unknown entrypoint `{entrypoint}`"
+    missing = [path for path in stack if not path.is_file()]
+    assert not missing, f"Launch command references missing files: {missing}"
+    args = [arg for path in stack for arg in ("@", path.as_posix())]
+    cli(ENTRYPOINT_CONFIGS[entrypoint], args=args)
 
 
 class NestedConfig(BaseConfig):
@@ -1454,16 +1494,117 @@ def test_score_centering_captures_complete_bounded_support(top_k, top_p):
     assert RLConfig.model_validate_json(config.model_dump_json()) == config
 
 
-def test_init_from_accepts_a_checkpoint_step_dir():
-    config = TrainerModelConfig(init_from="runs/sft/checkpoints/step_500")
+@pytest.mark.parametrize(
+    ("config_cls", "default_type"),
+    [(PretrainConfig, "scratch"), (SFTConfig, "pretrained"), (TrainerConfig, "pretrained")],
+)
+def test_model_init_type_defaults_per_entrypoint(tmp_path, config_cls, default_type: str):
+    data = {"data": {"paths": [str(tmp_path)]}} if config_cls is PretrainConfig else {}
+    assert config_cls.model_validate(data).model.init.type == default_type
+    # A [model.init] table without a type keeps the entrypoint's default.
+    assert config_cls.model_validate({**data, "model": {"init": {}}}).model.init.type == default_type
 
-    assert config.init_from == Path("runs/sft/checkpoints/step_500")
+
+def test_model_init_seed_belongs_to_scratch():
+    assert SFTConfig.model_validate({"model": {"init": {"type": "scratch", "seed": 1}}}).model.init.seed == 1
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        SFTConfig.model_validate({"model": {"init": {"seed": 1}}})
 
 
-@pytest.mark.parametrize("init_from", ["runs/sft/checkpoints", "runs/sft/checkpoints/step_500/trainer"])
-def test_init_from_rejects_a_path_that_is_not_a_step_dir(init_from: str):
-    with pytest.raises(ValidationError, match="model.init_from must point at a checkpoint step directory"):
-        TrainerModelConfig(init_from=init_from)
+@pytest.mark.parametrize("init_type", ["hf", "ckpt"])
+def test_model_init_types_of_earlier_versions_fail(init_type: str):
+    with pytest.raises(ValidationError, match="does not match any of the expected tags: 'scratch', 'pretrained'"):
+        SFTConfig.model_validate({"model": {"init": {"type": init_type}}})
+
+
+def test_model_init_scratch_rejects_lora():
+    with pytest.raises(ValidationError, match='model.init.type = "scratch" does not load'):
+        SFTConfig.model_validate({"model": {"init": {"type": "scratch"}, "lora": {}}})
+
+
+@pytest.mark.parametrize("tokenizer", [None, "Qwen/Qwen3-0.6B"])
+def test_inference_parsers_resolve_from_the_tokenizer_name(tokenizer: str | None):
+    data = {
+        "model": {"name": "runs/sft/checkpoints/step_500"},
+        "trainer": {},
+        "orchestrator": {
+            "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
+            "renderer": {"name": "qwen3"},
+        },
+        "inference": {},
+    }
+    if tokenizer is None:
+        with pytest.warns(UserWarning, match="set tokenizer.name"):
+            config = RLConfig.model_validate(data)
+        assert config.inference.vllm.tool_call_parser is None
+    else:
+        config = RLConfig.model_validate({**data, "tokenizer": {"name": tokenizer}})
+        assert config.inference.vllm.tool_call_parser == "hermes"
+
+
+def test_rl_shared_model_init_reaches_the_trainer():
+    config = RLConfig.model_validate(
+        {
+            "model": {"init": {"type": "scratch", "seed": 3}},
+            "trainer": {},
+            "orchestrator": {
+                "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
+                "renderer": {"name": "qwen3"},
+            },
+        }
+    )
+    assert config.trainer.model.init.type == "scratch" and config.trainer.model.init.seed == 3
+
+
+@pytest.mark.parametrize(
+    ("init_type", "explicit", "load_format"),
+    [("pretrained", None, None), ("scratch", None, "dummy"), ("scratch", "auto", "auto")],
+)
+def test_inference_loads_dummy_weights_for_a_scratch_init(
+    init_type: str, explicit: str | None, load_format: str | None
+):
+    vllm = {"speculative_config": {"method": "eagle3", "model": "drafts/eagle3"}}
+    if explicit is not None:
+        vllm["load_format"] = explicit
+    config = RLConfig.model_validate(
+        {
+            "model": {"init": {"type": init_type}},
+            "trainer": {},
+            "orchestrator": {
+                "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
+                "renderer": {"name": "qwen3"},
+            },
+            "inference": {"vllm": vllm},
+        }
+    )
+    namespace = config.inference.to_namespace()
+    assert getattr(namespace, "load_format", None) == load_format
+    draft_load_config = {"load_format": "auto"} if load_format == "dummy" else None
+    assert namespace.speculative_config.get("draft_load_config") == draft_load_config
+    assert RLConfig.model_validate_json(config.model_dump_json()) == config
+
+
+@pytest.mark.parametrize(
+    ("init_type", "vllm", "match"),
+    [
+        ("scratch", {"speculative_config": {"method": "mtp"}}, "reads its draft weights from model.name"),
+        ("scratch", {"speculative_config": {"model": "drafts/qwen3-0.6b"}}, "with the target's load format"),
+        ("pretrained", {"load_format": "dummy", "speculative_config": {"method": "mtp"}}, "reads its draft weights"),
+    ],
+)
+def test_a_draft_without_its_own_weights_fails_under_a_dummy_target(init_type: str, vllm: dict, match: str):
+    with pytest.raises(ValidationError, match=match):
+        RLConfig.model_validate(
+            {
+                "model": {"init": {"type": init_type}},
+                "trainer": {},
+                "orchestrator": {
+                    "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
+                    "renderer": {"name": "qwen3"},
+                },
+                "inference": {"vllm": vllm},
+            }
+        )
 
 
 def test_score_centering_replays_top_p_alone():

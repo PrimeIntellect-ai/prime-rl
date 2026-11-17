@@ -117,16 +117,9 @@ class GroupedExperts(nn.Module):
         return self.compute(self, x, *routing)
 
     def init_weights(self, init_std: float):
-        if self.gate_up_proj is None:
-            first_projection = self.gate_proj if self.gate_proj is not None else self.up_proj
-            nn.init.trunc_normal_(first_projection, mean=0.0, std=0.02)
-            remaining = (self.up_proj, self.down_proj) if self.gate_proj is not None else (self.down_proj,)
-        else:
-            gate_proj, up_proj = self.gate_up_proj.chunk(2, dim=1)
-            nn.init.trunc_normal_(gate_proj, mean=0.0, std=0.02)
-            remaining = (up_proj, self.down_proj)
-        for weight in remaining:
-            nn.init.trunc_normal_(weight, mean=0.0, std=init_std)
+        for weight in (self.gate_proj, self.up_proj, self.gate_up_proj, self.down_proj):
+            if weight is not None:
+                nn.init.trunc_normal_(weight, mean=0.0, std=init_std)
         for bias in (self.gate_proj_bias, self.up_proj_bias, self.down_proj_bias):
             if bias is not None:
                 nn.init.zeros_(bias)
