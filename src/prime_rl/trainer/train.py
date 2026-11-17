@@ -260,10 +260,41 @@ def train(config: SFTConfig | PretrainConfig):
     cp_size = parallel_dims.cp
     metric_names: list[str] | None = None
 
+    def compute_custom_loss(micro_batch: dict, metrics: dict) -> tuple[torch.Tensor, torch.Tensor]:
+        """The custom loss's (loss, count) for a micro-batch. Its metric sums are added to ``metrics``."""
+        batch = {
+            key: micro_batch[key].to("cuda", non_blocking=True)
+            for key in ("input_ids", "position_ids", "target_ids", "loss_mask", "seq_lens")
+        }
+        # Where the samples are, read on the host
+        batch["sample_lens"], batch["truncated"] = micro_batch["sample_lens"], micro_batch["truncated"]
+        with maybe_activation_offloading(config.model.ac_offloading, model):
+            outputs = run_loss_fn(loss_fn, model, batch)
+        if isinstance(outputs.count, int):  # filled on the device: a host int copied over would sync
+            count = torch.full((), outputs.count, dtype=torch.int64, device="cuda")
+        else:
+            count = torch.as_tensor(outputs.count, device="cuda")
+        if count.ndim != 0 or count.is_floating_point():
+            raise TypeError(f"custom loss count must be an integer, got {outputs.count!r}")
+        # A NaN micro-batch is left out of the metrics, as it is of the loss; masked on the device, without a sync.
+        nan_loss = torch.isnan(outputs.loss.detach())
+        nonlocal metric_names
+        metric_names = check_metric_names(outputs.metrics, metric_names)
+        # Sorted, so that every rank adds them to the step's statistics in the same order
+        for name, value in sorted(outputs.metrics.items()):
+            if value.ndim != 0:
+                raise ValueError(f"custom loss metric {name!r} must be a scalar tensor, got shape {tuple(value.shape)}")
+            value = value.detach().double().to("cuda")
+            metrics[name] = metrics.get(name, 0.0) + torch.where(nan_loss, 0.0, value)
+        return outputs.loss, count.to(torch.int64)
+
     def compute_loss(micro_batch: dict, metrics: dict) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass returning (loss_sum, token_count) over unmasked tokens, or the custom loss's (loss, count).
 
         The custom loss's metric sums for this micro-batch are added to ``metrics``."""
+        if loss_fn is not None:
+            return compute_custom_loss(micro_batch, metrics)
+
         input_ids = micro_batch["input_ids"].to("cuda", non_blocking=True)
         position_ids = micro_batch["position_ids"].to("cuda", non_blocking=True)
         target_ids = micro_batch["target_ids"].to("cuda", non_blocking=True)
@@ -289,37 +320,6 @@ def train(config: SFTConfig | PretrainConfig):
             seq_lens_are_pre_shard = True
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
-
-        if loss_fn is not None:
-            batch = {
-                **micro_batch,
-                "input_ids": input_ids,
-                "position_ids": position_ids,
-                "target_ids": target_ids,
-                "loss_mask": loss_mask,
-                "seq_lens": seq_lens,
-            }
-            with maybe_activation_offloading(config.model.ac_offloading, model):
-                outputs = run_loss_fn(loss_fn, model, batch, seq_lens_are_pre_shard=seq_lens_are_pre_shard)
-            if isinstance(outputs.count, int):  # filled on the device: a host int copied over would sync
-                count = torch.full((), outputs.count, dtype=torch.int64, device="cuda")
-            else:
-                count = torch.as_tensor(outputs.count, device="cuda")
-            if count.ndim != 0 or count.is_floating_point():
-                raise TypeError(f"custom loss count must be an integer, got {outputs.count!r}")
-            # A NaN micro-batch is left out of the metrics, as it is of the loss; masked on the device, without a sync.
-            nan_loss = torch.isnan(outputs.loss.detach())
-            nonlocal metric_names
-            metric_names = check_metric_names(outputs.metrics, metric_names)
-            # Sorted, so that every rank adds them to the step's statistics in the same order
-            for name, value in sorted(outputs.metrics.items()):
-                if value.ndim != 0:
-                    raise ValueError(
-                        f"custom loss metric {name!r} must be a scalar tensor, got shape {tuple(value.shape)}"
-                    )
-                value = value.detach().double().to("cuda")
-                metrics[name] = metrics.get(name, 0.0) + torch.where(nan_loss, 0.0, value)
-            return outputs.loss, count.to(torch.int64)
 
         token_count = loss_mask.sum(dtype=torch.int64)
 

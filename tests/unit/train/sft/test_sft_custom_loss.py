@@ -22,10 +22,8 @@ from prime_rl.trainer.sft.loss import LossInputs, LossOutputs, check_metric_name
 
 def scaled_ce(inputs: LossInputs, scale: float = 1.0) -> LossOutputs:
     """Stock SFT's token cross-entropy, times ``scale``."""
-    batch = inputs.batch
-    logprobs = token_logprobs(inputs.model.lm_head, inputs.hidden_states, batch["target_ids"])
-    ce = -(logprobs * batch["loss_mask"]).sum()
-    return LossOutputs(loss=scale * ce, count=batch["loss_mask"].sum(), metrics={"ce": ce.detach()})
+    ce = -(inputs.target_logprobs() * inputs.loss_mask).sum()
+    return LossOutputs(loss=scale * ce, count=inputs.loss_mask.sum(), metrics={"ce": ce.detach()})
 
 
 class TinyCausalLM(nn.Module):
@@ -60,27 +58,61 @@ def test_forward_runs_a_function_on_the_hidden_states():
     assert out["logits"].shape == (1, 3, 11)
 
 
+def padded_batch() -> dict:
+    """Two samples of 3 and 2 tokens, then 2 tokens of padding."""
+    input_ids = torch.tensor([[1, 2, 3, 4, 5, 1, 2]])
+    return {
+        "input_ids": input_ids,
+        "position_ids": torch.tensor([[0, 1, 2, 0, 1, 0, 1]]),
+        "seq_lens": torch.tensor([3, 2, 2]),
+        "sample_lens": torch.tensor([3, 2]),
+        "truncated": torch.tensor([False, False]),
+        "target_ids": torch.tensor([[2, 3, 4, 5, 6, 0, 0]]),
+        "loss_mask": torch.tensor([[True, True, False, True, True, False, False]]),
+    }
+
+
 def test_custom_loss_calls_the_function_with_its_kwargs():
     loss_fn = setup_sft_loss_fn(SFTCustomLossConfig(import_path=f"{__name__}.scaled_ce", kwargs={"scale": 2.0}))
     model = tiny_causal_lm()
-    input_ids = torch.tensor([[1, 2, 3, 4, 5]])
-    batch = {
-        "input_ids": input_ids,
-        "position_ids": torch.tensor([[0, 1, 2, 0, 1]]),
-        "seq_lens": torch.tensor([3, 2]),
-        "target_ids": torch.tensor([[2, 3, 4, 5, 6]]),
-        "loss_mask": torch.tensor([[True, True, False, True, True]]),
-    }
+    batch = padded_batch()
+    lm_head_calls = []
+    model.lm_head.register_forward_hook(lambda *args: lm_head_calls.append(1))
     outputs = run_loss_fn(loss_fn, model, batch)
 
     # stock SFT's summed cross-entropy on the same micro-batch
     stock = forward(
-        model, input_ids, batch["position_ids"], seq_lens=batch["seq_lens"],
+        model, batch["input_ids"], batch["position_ids"], seq_lens=batch["seq_lens"],
         labels=batch["target_ids"].masked_fill(~batch["loss_mask"], -100),
     )["loss"]  # fmt: skip
     torch.testing.assert_close(outputs.loss, 2.0 * stock)
     torch.testing.assert_close(outputs.metrics["ce"], stock.detach())
     assert outputs.count == 4
+    assert len(lm_head_calls) == 2  # once for the micro-batch's two samples, once for the stock loss
+
+
+def test_custom_loss_is_called_on_each_sample_without_the_padding():
+    model = tiny_causal_lm()
+    batch = {**padded_batch(), "truncated": torch.tensor([False, True])}
+    hidden_states = model.backbone(batch["input_ids"], batch["position_ids"]).last_hidden_state[0]
+    samples = []
+
+    def record(inputs: LossInputs) -> LossOutputs:
+        samples.append(inputs)
+        return LossOutputs(loss=inputs.hidden_states.sum(), count=1)
+
+    run_loss_fn(record, model, batch)
+    assert [sample.input_ids.tolist() for sample in samples] == [[1, 2, 3], [4, 5]]
+    assert [sample.position_ids.tolist() for sample in samples] == [[0, 1, 2], [0, 1]]
+    assert [sample.target_ids.tolist() for sample in samples] == [[2, 3, 4], [5, 6]]
+    assert [sample.loss_mask.tolist() for sample in samples] == [[True, True, False], [True, True]]
+    assert [sample.truncated for sample in samples] == [False, True]
+    torch.testing.assert_close(samples[1].hidden_states, hidden_states[3:5])
+    # a slice of the micro-batch's log-probabilities, equal to those of the sample on its own
+    sample = samples[1]
+    torch.testing.assert_close(
+        sample.target_logprobs(), token_logprobs(model.lm_head, sample.hidden_states[None], sample.target_ids[None])[0]
+    )
 
 
 def test_metric_names_are_fixed_by_the_first_call():
@@ -169,13 +201,13 @@ class HeadsModel(PreTrainedModelPrimeRL):
 
 
 def heads_loss(inputs: LossInputs) -> LossOutputs:
-    """Calls the LM head twice (the summed cross-entropy, then per-token log-probabilities) and the score head."""
-    batch, head = inputs.batch, inputs.model.score_head
-    ce = inputs.model.lm_head(inputs.hidden_states, batch["target_ids"].masked_fill(~batch["loss_mask"], -100))
-    logprobs = token_logprobs(inputs.model.lm_head, inputs.hidden_states, batch["target_ids"])
-    scores = head(inputs.hidden_states[batch["loss_mask"]].to(head.weight.dtype)).float()
-    loss = ce["loss"] - (logprobs * batch["loss_mask"]).sum() + scores.square().sum()
-    return LossOutputs(loss=loss, count=batch["loss_mask"].sum())
+    """Calls the LM head on the sample (its summed cross-entropy), through ``target_logprobs`` (once per micro-batch)
+    and the score head."""
+    mask, head = inputs.loss_mask, inputs.model.score_head
+    ce = inputs.model.lm_head(inputs.hidden_states[None], inputs.target_ids.masked_fill(~mask, -100)[None])
+    scores = head(inputs.hidden_states[mask].to(head.weight.dtype)).float()
+    loss = ce["loss"] - (inputs.target_logprobs() * mask).sum() + scores.square().sum()
+    return LossOutputs(loss=loss, count=mask.sum())
 
 
 def heads_model(tied: bool) -> HeadsModel:
@@ -192,6 +224,8 @@ def heads_batch(rank: int) -> dict:
         "input_ids": input_ids,
         "position_ids": torch.tensor([[*range(6), *range(4)]]),
         "seq_lens": torch.tensor([6, 4]),
+        "sample_lens": torch.tensor([6, 4]),
+        "truncated": torch.tensor([False, False]),
         "target_ids": torch.roll(input_ids, -1, dims=1),
         "loss_mask": torch.tensor([[False, True, True, False, True, True, False, True, True, True]]),
     }
