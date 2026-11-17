@@ -17,6 +17,13 @@ import triton.language as tl
 from prime_rl.trainer.models.kernels.fp8_indexer import per_token_group_quant_fp8
 from prime_rl.trainer.models.layers.norms import get_quack_rmsnorm
 
+# Guarded because vLLM ships in the linux-gated `gpu` extra, so some installs lack it.
+try:
+    import vllm._C_stable_libtorch  # noqa: F401
+    from vllm.models.deepseek_v4.common.ops.fused_indexer_q import fused_indexer_q_rope_quant
+except ImportError:
+    fused_indexer_q_rope_quant = None
+
 VLLM_Q_NORM_ROPE_HEAD_DIM = 512
 VLLM_Q_NORM_ROPE_ROPE_DIM = 64
 VLLM_Q_NORM_ROPE_NUM_HEADS = (8, 16, 32, 64, 128)
@@ -184,8 +191,8 @@ def _vllm_q_norm_rope(
         and num_heads in VLLM_Q_NORM_ROPE_NUM_HEADS
     ):
         return None
-    import vllm._C_stable_libtorch  # noqa: F401
-
+    if fused_indexer_q_rope_quant is None:
+        raise ImportError("vLLM's fused q norm + RoPE kernel failed to import; install the `gpu` extra")
     rows = q.reshape(-1, num_heads, head_dim).contiguous()
     if rows.numel() == 0:
         return q.new_empty(q.shape)
@@ -315,8 +322,8 @@ def dsv4_indexer_q_rope_quant(
         The float8_e4m3fn query, shaped like `q`, and the fp32 weights times each head's query scale.
     """
     if q.is_cuda and q.dtype == torch.bfloat16:
-        from vllm.models.deepseek_v4.common.ops.fused_indexer_q import fused_indexer_q_rope_quant
-
+        if fused_indexer_q_rope_quant is None:
+            raise ImportError("vLLM's fused indexer q RoPE + quant kernel failed to import; install the `gpu` extra")
         return fused_indexer_q_rope_quant(
             position_ids.reshape(-1).long(),
             q.contiguous(),
