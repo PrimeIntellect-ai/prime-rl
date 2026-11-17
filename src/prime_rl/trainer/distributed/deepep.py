@@ -121,13 +121,18 @@ def _(grad, handle_id, num_recv_tokens):
 
 def _dispatch_setup_context(ctx, inputs, output) -> None:
     x, *_ = inputs
-    *_, handle_id = output
+    recv_x, *_, handle_id = output
     ctx.save_for_backward(handle_id)
     ctx.num_tokens = x.shape[0]
+    ctx.recv_x = (recv_x.shape, recv_x.dtype, recv_x.device)
 
 
 def _dispatch_backward(ctx, grad_recv_x, grad_recv_topk_weights, *_):
     (handle_id,) = ctx.saved_tensors
+    if grad_recv_x is None:
+        # Rows that need no gradient (encoded tokens) while the routing weights do: combine zeros alongside them
+        shape, dtype, device = ctx.recv_x
+        grad_recv_x = torch.zeros(shape, dtype=dtype, device=device)
     grad_x, grad_topk_weights = _dispatch_backward_op(
         grad_recv_x, grad_recv_topk_weights.contiguous(), handle_id, ctx.num_tokens
     )

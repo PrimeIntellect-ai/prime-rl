@@ -60,7 +60,7 @@ from prime_rl.trainer.model import (
     setup_model,
     take_moe_routing_stats,
 )
-from prime_rl.trainer.moe_runtime import setup_moe_comm_env
+from prime_rl.trainer.moe_runtime import seed_expert_rounding, setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.vlm import setup_processor
 from prime_rl.trainer.perf import get_perf_counter
@@ -332,6 +332,7 @@ def train(config: TrainerConfig):
         is_last_step = is_last_step or paused
 
         logger.debug(f"Starting training step {progress.step}")
+        seed_expert_rounding(config.model, progress.step)
         step_start_time = time.perf_counter()
 
         # Broadcast the incoming policy (v{progress.step-1}) before waiting for its
