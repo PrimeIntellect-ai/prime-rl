@@ -502,34 +502,83 @@ def test_inject_prime_lm_head_fused():
     assert out["entropy"].shape == (batch_size, seq_len), "Entropy shape mismatch"
 
 
+VOCAB, LABEL = 8192 + 128, 8192 + 121
+SUPPORTS = {"none": None, "label_only": [LABEL], "label_and_others": [LABEL, 3, 77, 4100, 8200, 8300]}
+
+
 def _collapsing_logits() -> torch.Tensor:
-    """Label 0 beats the other logits by ~21, past the margin (~16.6) where fp32 rounds its probability to 1."""
-    logits = 15.0 - torch.rand(64, generator=torch.Generator().manual_seed(0))
-    logits[0] = 40.0
+    """Two vocab chunks; the label, in the second, holds all but ~1e-9 of the probability, far past where fp32
+    rounds 1 - p to 0 (~6e-8)."""
+    logits = 15.0 - torch.rand(VOCAB, generator=torch.Generator().manual_seed(0))
+    logits[LABEL] = 45.0
     return logits
 
 
-def _fp64_label_logprob_and_gradient(logits: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    rest = (logits.double()[1:] - logits.double()[0]).exp()
-    return -torch.log1p(rest.sum()), torch.cat([rest.sum().view(1), -rest]) / (1 + rest.sum())
+def _fp64_logprob_and_gradient(
+    scaled: torch.Tensor, support: list[int] | None, support_weights: torch.Tensor | None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The label's logprob and the gradient of ``logp_label + sum_e w_e * logp_e`` over the scaled logits, with the
+    label dominant so ``1 - p_label`` is formed without cancellation."""
+    scaled = scaled.double()
+    members = torch.arange(VOCAB) if support is None else torch.tensor(support)
+    others = members[members != LABEL]
+    rest = torch.zeros(VOCAB, dtype=torch.float64)
+    rest[others] = (scaled[others] - scaled[LABEL]).exp()
+    total_rest = rest.sum()
+    probs, one_minus_p_label = rest / (1 + total_rest), total_rest / (1 + total_rest)
+    weights = torch.zeros(VOCAB, dtype=torch.float64)
+    if support_weights is not None:
+        weights.index_add_(0, torch.tensor(support), support_weights.double().cpu())
+    label_weight = 1.0 + weights[LABEL]
+    rest_weight = weights[others].sum()
+    grad = weights - (label_weight + rest_weight) * probs
+    grad[LABEL] = label_weight * one_minus_p_label - rest_weight / (1 + total_rest)
+    return -torch.log1p(total_rest), grad
 
 
-@pytest.mark.parametrize("head", ["fused", "vanilla"])
-def test_label_logprob_and_gradient_survive_softmax_collapse(head):
-    logits = _collapsing_logits()
-    expected_logprob, expected_grad = _fp64_label_logprob_and_gradient(logits)
-    labels = torch.zeros(1, 1, dtype=torch.long)
-    if head == "fused":
-        lm_head = FusedOutputLinear(1, logits.numel(), chunk_size=1)
-        with torch.no_grad():
-            lm_head.weight.copy_(logits.unsqueeze(-1))
-        logprobs = lm_head(torch.ones(1, 1, 1), labels, temperature=torch.ones(1, 1))["logprobs"]
-        logprobs.sum().backward()
-        grad = lm_head.weight.grad.squeeze(-1)
-    else:
+@pytest.mark.gpu
+@pytest.mark.parametrize("temperature", [1.0, 0.7])
+@pytest.mark.parametrize("support", list(SUPPORTS))
+@pytest.mark.parametrize("head", ["fused", "fused_sparse_backward", "vanilla"])
+def test_label_logprob_and_gradient_survive_softmax_collapse(head, support, temperature):
+    """Near probability 1 the label's logprob and logit gradient match fp64, also with gradients on the support
+    logprobs that each scale with their probability (as IcePop score centering puts there)."""
+    if head == "fused_sparse_backward" and support == "none":
+        pytest.skip("the sparse backward needs a replayed support")
+    ids = SUPPORTS[support]
+    logits = _collapsing_logits().cuda()
+    labels = torch.full((1, 1), LABEL, device="cuda")
+    temperatures = torch.full((1, 1), temperature, device="cuda")
+    token_support = None
+    if ids is not None:
+        token_support = TokenSupport(
+            ids=torch.tensor(ids, dtype=torch.int32, device="cuda"),
+            offsets=torch.tensor([0, len(ids)]),
+            replayed=torch.tensor([True], device="cuda"),
+            sparse_backward=head == "fused_sparse_backward",
+        )
+    if head == "vanilla":
+        scaled = logits / temperatures.view(1)
         leaf = logits.clone().requires_grad_(True)
-        logprobs = selective_log_softmax(leaf.view(1, 1, -1), labels)
-        logprobs.sum().backward()
-        grad = leaf.grad
-    torch.testing.assert_close(logprobs.double().view(()), expected_logprob, rtol=1e-5, atol=0)
-    torch.testing.assert_close(grad.double(), expected_grad, rtol=1e-5, atol=0)
+        scaled_leaf = leaf.view(1, 1, -1) / temperatures.unsqueeze(-1)
+        if token_support is None:
+            logprobs, support_logprobs = selective_log_softmax(scaled_leaf, labels), None
+        else:
+            logprobs, support_logprobs = selective_log_softmax_with_support(scaled_leaf, labels, token_support)
+    else:
+        inv_temperature = 1.0 / temperatures.view(1)
+        scaled = logits * inv_temperature
+        leaf = torch.nn.Parameter(logits.unsqueeze(-1).clone())
+        lm_head = FusedOutputLinear(1, VOCAB, chunk_size=1).cuda()
+        lm_head.weight = leaf
+        out = lm_head(torch.ones(1, 1, 1, device="cuda"), labels, temperature=temperatures, support=token_support)
+        logprobs, support_logprobs = out["logprobs"], out["support_logprobs"]
+    support_weights = None
+    loss = logprobs.sum()
+    if ids is not None:
+        support_weights = 0.5 * support_logprobs.detach().exp()
+        loss = loss + (support_weights * support_logprobs).sum()
+    loss.backward()
+    expected_logprob, expected_grad = _fp64_logprob_and_gradient(scaled.cpu(), ids, support_weights)
+    torch.testing.assert_close(logprobs.double().view(()).cpu(), expected_logprob, rtol=1e-5, atol=0)
+    torch.testing.assert_close(leaf.grad.view(-1).double().cpu(), expected_grad / temperature, rtol=1e-5, atol=1e-30)

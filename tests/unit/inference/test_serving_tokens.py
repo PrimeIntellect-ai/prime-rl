@@ -388,3 +388,16 @@ def test_only_sampled_token_logprobs_are_packed_flat(logprobs, logprob_token_ids
     params = SamplingParams(logprobs=logprobs, logprob_token_ids=logprob_token_ids, flat_logprobs=True)
     request = GenerateRequest(model="test", token_ids=[10, 11], sampling_params=params)
     assert _PackedOutputs(_empty_request_outputs(), request).strips_logprobs is packed
+
+
+def test_pack_sampler_rows_keeps_near_certain_logprobs():
+    """A sampled id holding all but ~1e-9 of the probability keeps its small negative logprob instead of rounding
+    to 0."""
+    logits = 15.0 - torch.rand(1, 4096, generator=torch.Generator().manual_seed(0))
+    logits[0, 7] = 45.0
+    _, packed, _ = pack_sampler_rows(
+        logits.clone(), torch.tensor([0, 1]), torch.ones(1, dtype=torch.int32), torch.tensor([[7]]), np.array([4])
+    )
+    sampled_logprob = ((packed[0, 0] >> 32).to(torch.int32) ^ NEG_INF_BITS).view(torch.float32)
+    rest = (torch.cat([logits[0, :7], logits[0, 8:]]).double() - 45.0).exp().sum()
+    torch.testing.assert_close(sampled_logprob.double(), -torch.log1p(rest), rtol=1e-5, atol=0)
