@@ -1786,3 +1786,28 @@ def test_engine_expert_targets_match_any_block_name():
         assert pattern.fullmatch(name), name
     for name in ("model.layers.2.mlp.experts", "model.layers.1.mlp.shared_experts", "model.layers.13.mlp.experts"):
         assert not pattern.fullmatch(name), name
+
+
+def test_nvfp4_dense_ignore_keeps_every_router_bf16():
+    import re
+
+    from prime_rl.configs.inference import NVFP4_DENSE_IGNORE
+
+    patterns = [re.compile(pattern.removeprefix("re:")) for pattern in NVFP4_DENSE_IGNORE]
+
+    def ignored(name):
+        return any(pattern.fullmatch(name) for pattern in patterns)
+
+    for router in (
+        "model.layers.3.mlp.gate",  # Qwen3, DeepSeek, GLM
+        "model.layers.3.block_sparse_moe.gate",  # Mixtral, MiniMax, Granite
+        "backbone.layers.3.mixer.gate",  # Nemotron-H
+        "model.layers.3.mlp.router",  # gpt-oss
+    ):
+        assert ignored(router), router
+    for linear in (
+        "model.layers.3.mlp.gate_proj",
+        "model.layers.3.mlp.gate_up_proj",
+        "model.layers.3.self_attn.q_proj",
+    ):
+        assert not ignored(linear), linear

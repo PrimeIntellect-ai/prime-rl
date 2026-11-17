@@ -449,7 +449,7 @@ NVFP4_IEEE_DIVISION_ENV = "FLASHINFER_DISABLE_FP4_QUANT_FAST_MATH"
 NVFP4_DENSE_IGNORE = [
     r"re:.*shared_experts?\.",
     r"re:.*shared_expert_gate$",
-    r"re:.*mlp\.gate$",
+    r"re:.*\.(mlp|block_sparse_moe|mixer)\.(gate|router)$",
     r"re:.*lm_head$",
     r"re:.*(eh_proj|weights_proj|in_proj_a|in_proj_b)$",
 ]
