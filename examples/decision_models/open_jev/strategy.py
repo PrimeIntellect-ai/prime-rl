@@ -13,8 +13,8 @@ from renderers import Qwen35RendererConfig, create_renderer
 from torch import Tensor
 
 from prime_rl.trainer.sft.loss import LossInputs
-from prime_rl.trainer.sft.system_one.data import RenderedRecord, SystemOneStrategy
-from prime_rl.trainer.sft.system_one.record import Question, SystemOneRecord
+from prime_rl.trainer.sft.system_one.data import RenderedRequest, SystemOneStrategy
+from prime_rl.trainer.sft.system_one.record import Question, SystemOneRequest
 
 
 def render(value: Any) -> str:
@@ -54,19 +54,19 @@ class OpenJevStrategy(SystemOneStrategy):
 
     renderer = None
 
-    def render_record(self, record: SystemOneRecord, max_tokens: int) -> RenderedRecord:
+    def render_request(self, request: SystemOneRequest, max_tokens: int) -> RenderedRequest:
         if self.renderer is None:
             self.renderer = create_renderer(self.tokenizer, Qwen35RendererConfig(enable_thinking=False))
         input_ids, seq_lens, read_spans = [], [], []
-        for question in record.questions:
+        for question in request.questions:
             spans = []
-            for prompt in candidate_prompts(record.state, question):
+            for prompt in candidate_prompts(request.state, question):
                 ids = self.renderer.render_ids([{"role": "user", "content": prompt}], add_generation_prompt=True)
                 input_ids += ids
                 seq_lens.append(len(ids))
                 spans.append((len(input_ids) - 1, len(input_ids)))
             read_spans.append(spans)
-        return RenderedRecord(input_ids=input_ids, seq_lens=seq_lens, read_spans=read_spans)
+        return RenderedRequest(input_ids=input_ids, seq_lens=seq_lens, read_spans=read_spans)
 
     @classmethod
     def option_logits(cls, inputs: LossInputs) -> list[Tensor]:

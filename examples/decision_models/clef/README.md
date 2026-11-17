@@ -1,6 +1,6 @@
 # Clef
 
-[Clef-Flash](https://huggingface.co/Cloudflare/clef-flash) (Cloudflare, Apache-2.0) is Qwen3.5-9B with a joint schema head. One prompt holds the state and the schema of every question. The head reads the hidden states of each question's instruction and of each of its options, attends over the whole record, and decides the record's questions together. This folder fine-tunes the released model in full on [Typed Decisions Synth](../data/README.md).
+[Clef-Flash](https://huggingface.co/Cloudflare/clef-flash) (Cloudflare, Apache-2.0) is Qwen3.5-9B with a joint schema head. One prompt holds the state and the schema of every question. The head reads the hidden states of each question's instruction and of each of its options, attends over the whole request, and decides the request's questions together. This folder fine-tunes the released model in full on [Typed Decisions Synth](../data/README.md).
 
 ## Native and example code
 
@@ -12,7 +12,7 @@ The model class and its strategy are prime-rl's ([Native Decision Models](../../
 
 ## vLLM
 
-vLLM 0.33 serves Clef-Flash. The prompt and the head are vLLM's, and a run's [export](../../../docs/training.md#exporting-checkpoints) has the release's layout (`joint_head_config.json` and `joint_head.safetensors` beside the shards), which vLLM 0.33 serves. On the export of the full run, vLLM's probabilities and the trainer's differ by a median of about 0.001 per question, as much as vLLM's own differ under another batching. Serve it with the router off (`router = "None"` in the `uv run inference` config, or `--router None`), or send requests to the engine port: vllm-router re-sorts the JSON keys of a request, which reorders the record's questions, so the served prompts differ from the trained ones.
+vLLM 0.33 serves Clef-Flash. The prompt and the head are vLLM's, and a run's [export](../../../docs/training.md#exporting-checkpoints) has the release's layout (`joint_head_config.json` and `joint_head.safetensors` beside the shards), which vLLM 0.33 serves. On the export of the full run, vLLM's probabilities and the trainer's differ by a median of about 0.001 per question, as much as vLLM's own differ under another batching. Serve it with the router off (`router = "None"` in the `uv run inference` config, or `--router None`), or send requests to the engine port: vllm-router re-sorts the JSON keys of a request, which reorders the request's questions, so the served prompts differ from the trained ones.
 
 ## Run
 

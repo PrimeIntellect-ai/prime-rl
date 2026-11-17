@@ -12,8 +12,8 @@ from typing import Any
 from torch import Tensor
 
 from prime_rl.trainer.sft.loss import LossInputs
-from prime_rl.trainer.sft.system_one.data import RenderedRecord, SystemOneStrategy
-from prime_rl.trainer.sft.system_one.record import Question, SystemOneRecord
+from prime_rl.trainer.sft.system_one.data import RenderedRequest, SystemOneStrategy
+from prime_rl.trainer.sft.system_one.record import Question, SystemOneRequest
 from prime_rl.trainer.sft.system_one.strategies.d3 import D3Strategy
 
 SYSTEM_PROMPT = (
@@ -22,7 +22,7 @@ SYSTEM_PROMPT = (
 )
 DEFAULT_INSTRUCTIONS = "Choose the best matching option."
 MARKER = "<|fim_suffix|>"
-# The tokens the decider neutralizes in a record's text: the marker and its tokenizer's special tokens. Listed here
+# The tokens the decider neutralizes in a request's text: the marker and its tokenizer's special tokens. Listed here
 # because prime-rl makes EOS the pad token, which drops <|endoftext|> from the run tokenizer's own list.
 NEUTRALIZED = (
     MARKER,
@@ -44,7 +44,7 @@ def describe(value: Any) -> str:
 
 def neutralize(value: Any) -> str:
     """The value as text in which none of ``NEUTRALIZED`` survives: their angle brackets become full-width, so a
-    record's text never adds a read position or ends a chat turn. As in the decider, other control tokens such as
+    request's text never adds a read position or ends a chat turn. As in the decider, other control tokens such as
     ``<|im_start|>`` are left as they are."""
     text = describe(value)
     for token in NEUTRALIZED:
@@ -63,10 +63,10 @@ def option_texts(question: Question) -> list[Any]:
     return question.descriptions
 
 
-def joint_prompt(record: SystemOneRecord, codes: list[str]) -> str:
+def joint_prompt(request: SystemOneRequest, codes: list[str]) -> str:
     """The user turn: the state, then every question with one line per option under its answer code, and a marker."""
-    parts = ["State:\n" + neutralize(record.state)]
-    for index, question in enumerate(record.questions):
+    parts = ["State:\n" + neutralize(request.state)]
+    for index, question in enumerate(request.questions):
         lines = [
             f"Question {index}:",
             neutralize(question.instructions or DEFAULT_INSTRUCTIONS),
@@ -79,7 +79,7 @@ def joint_prompt(record: SystemOneRecord, codes: list[str]) -> str:
 
 
 class DeciderStrategy(D3Strategy):
-    """The whole record is one attention segment: a system and a user turn in the checkpoint's chat template, up to
+    """The whole request is one attention segment: a system and a user turn in the checkpoint's chat template, up to
     where the answer would start, with thinking off. Each question is read at its marker, where d3's readout scores
     the answer codes. The codes are the release's ``decision_config.json``'s (``config.decision_config``)."""
 
@@ -92,17 +92,17 @@ class DeciderStrategy(D3Strategy):
         self.codes = config.decision_config["codes"]
         self.marker_id = tokenizer.convert_tokens_to_ids(MARKER)
 
-    def render_record(self, record: SystemOneRecord, max_tokens: int) -> RenderedRecord:
+    def render_request(self, request: SystemOneRequest, max_tokens: int) -> RenderedRequest:
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": joint_prompt(record, self.codes)},
+            {"role": "user", "content": joint_prompt(request, self.codes)},
         ]
         text = self.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
         )
         input_ids = self.tokenizer.encode(text, add_special_tokens=False)
         read_spans = [[(position, position + 1)] for position, token in enumerate(input_ids) if token == self.marker_id]
-        return RenderedRecord(input_ids=input_ids, seq_lens=[len(input_ids)], read_spans=read_spans)
+        return RenderedRequest(input_ids=input_ids, seq_lens=[len(input_ids)], read_spans=read_spans)
 
     @classmethod
     def option_logits(cls, inputs: LossInputs) -> list[Tensor]:

@@ -1,6 +1,6 @@
 # Decider
 
-[pplx-decider-flash-v1.2](https://huggingface.co/perplexity-ai/pplx-decider-flash-v1.2) (by Perplexity) is Qwen3.5-4B with an answer-code readout. It answers every question of a record in one prompt: after the state, each question lists its options under short answer codes (`A`, `B`, ...) and ends in a marker token, `<|fim_suffix|>`. The full-attention layers read the prompt in both directions while the Gated DeltaNet layers stay causal, and a linear readout of 255 rows scores the codes at each marker. A question with n options keeps the first n scores. This folder fine-tunes the released model in full on [Typed Decisions Synth](../data/README.md).
+[pplx-decider-flash-v1.2](https://huggingface.co/perplexity-ai/pplx-decider-flash-v1.2) (by Perplexity) is Qwen3.5-4B with an answer-code readout. It answers every question of a request in one prompt: after the state, each question lists its options under short answer codes (`A`, `B`, ...) and ends in a marker token, `<|fim_suffix|>`. The full-attention layers read the prompt in both directions while the Gated DeltaNet layers stay causal, and a linear readout of 255 rows scores the codes at each marker. A question with n options keeps the first n scores. This folder fine-tunes the released model in full on [Typed Decisions Synth](../data/README.md).
 
 ## Native and example code
 
@@ -9,7 +9,7 @@ A Decider release has d3's layout, so prime-rl selects its d3 class for it, `D3F
 | File | What |
 |---|---|
 | `model.py` | `Decider`, the `[model.implementation]` class: d3's class reading `decision_config.json` format version 2 only, Decider's (it refuses a d3 release, format version 1, whose prompts are d3's), declaring `DeciderStrategy`, and an export with temperature 1 |
-| `strategy.py` | `DeciderStrategy`, a subclass of prime-rl's `D3Strategy`. `render_record`: the whole record is one prompt and one attention segment (a system prompt, the state, then every question with its options under the answer codes and a marker), read at each question's marker. `option_logits`: the readout's first rows at each marker, not divided by the temperature. The answer codes are those of the release's `decision_config.json` |
+| `strategy.py` | `DeciderStrategy`, a subclass of prime-rl's `D3Strategy`. `render_request`: the whole request is one prompt and one attention segment (a system prompt, the state, then every question with its options under the answer codes and a marker), read at each question's marker. `option_logits`: the readout's first rows at each marker, not divided by the temperature. The answer codes are those of the release's `decision_config.json` |
 | `train.toml`, `smoke.toml` | The full fine-tuning run, and a 30-step mechanics check composed after it |
 
 ## vLLM

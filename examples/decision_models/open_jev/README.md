@@ -9,7 +9,7 @@ The model class and its strategy are this folder's: the config names the class, 
 | File | What |
 |---|---|
 | `model.py` | `Qwen3_5Decision`, the `[model.implementation]` class: prime-rl's Qwen3.5 plus `decision_head`, a linear layer that scores a prompt, initialised to `lm_head[Yes] - lm_head[No]`. It declares `OpenJevStrategy` |
-| `strategy.py` | `OpenJevStrategy`. `render_record`: every option of every question is its own yes/no prompt (one prompt for noul), each its own attention segment, read at its last token. `option_logits`: `decision_head` scores each prompt; a noul question's logits are `[0, score]`, a choice or score question's are its prompts' scores |
+| `strategy.py` | `OpenJevStrategy`. `render_request`: every option of every question is its own yes/no prompt (one prompt for noul), each its own attention segment, read at its last token. `option_logits`: `decision_head` scores each prompt; a noul question's logits are `[0, score]`, a choice or score question's are its prompts' scores |
 | `convert_dataset.py` | Open-Jev's dataset as System One records, one question per record |
 | `train.toml`, `smoke.toml` | The full fine-tuning run, and a 30-step mechanics check composed after it |
 

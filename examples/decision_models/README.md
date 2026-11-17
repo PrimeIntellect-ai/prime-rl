@@ -9,18 +9,18 @@ A decision model is a model class and the strategy it declares, plus the loss pr
 | Piece | Config | What it does |
 |---|---|---|
 | Model class | none for a native release (d3, Clef-Flash), else `[model.implementation]` | prime-rl's class for the release, or a subclass of prime-rl's class for the architecture, with the head. The head's weights come from the checkpoint, or from the class's `init_missing_weights` when the checkpoint has none. Its classmethod `system_one_strategy` returns its strategy's class. |
-| Strategy | none: the model class declares it | A `SystemOneStrategy` subclass, built from the run's tokenizer and the model's config. `render_record`: a record becomes tokens, attention segments and, per question, the token spans the head reads; it owns its chat template. `option_logits`: called on one record at a time, the head's logits at those spans, one per option of each of its questions, from the model's modules. |
+| Strategy | none: the model class declares it | A `SystemOneStrategy` subclass, built from the run's tokenizer and the model's config. `render_request`: a request becomes tokens, attention segments and, per question, the token spans the head reads; it owns its chat template. `option_logits`: called on one record at a time, the head's logits at those spans, one per option of each of its questions, from the model's modules. |
 | Loss | `[loss] type = "decision"` | prime-rl's decision loss, the same for every model. |
 
-vLLM 0.33's read strategy is a prime-rl strategy (`render_record` and `option_logits`) plus the softmax; the model class keeps the head's weights. The contract of `option_logits`, and what `decision_loss` computes from it, are in [System One Data](../../docs/training.md#system-one-data) and in `SystemOneStrategy` and `DecisionModel` in `src/prime_rl/trainer/sft/system_one/`.
+vLLM 0.33's read strategy is a prime-rl strategy (`render_request` and `option_logits`) plus the softmax; the model class keeps the head's weights. The contract of `option_logits`, and what `decision_loss` computes from it, are in [System One Data](../../docs/training.md#system-one-data) and in `SystemOneStrategy` and `DecisionModel` in `src/prime_rl/trainer/sft/system_one/`.
 
 ## Models
 
-| Folder | Model | Base | How it reads a record | Class and strategy | vLLM 0.33 |
+| Folder | Model | Base | How it reads a request | Class and strategy | vLLM 0.33 |
 |---|---|---|---|---|---|
 | [`d3/`](d3/README.md) | d3-nano | Qwen3.5-2B | One prompt per question; a 255-code readout at its last token | prime-rl's | Serves it |
-| [`clef/`](clef/README.md) | Clef-Flash | Qwen3.5-9B | One prompt per record; a joint head over each question's instruction and option spans | prime-rl's | Serves it |
-| [`decider/`](decider/README.md) | pplx-decider-flash | Qwen3.5-4B | One prompt per record; the 255-code readout at each question's marker | Subclasses of prime-rl's d3 class and strategy | Refuses it (format version 2) |
+| [`clef/`](clef/README.md) | Clef-Flash | Qwen3.5-9B | One prompt per request; a joint head over each question's instruction and option spans | prime-rl's | Serves it |
+| [`decider/`](decider/README.md) | pplx-decider-flash | Qwen3.5-4B | One prompt per request; the 255-code readout at each question's marker | Subclasses of prime-rl's d3 class and strategy | Refuses it (format version 2) |
 | [`open_jev/`](open_jev/README.md) | Open-Jev | Qwen3.5-2B | One yes/no prompt per candidate answer; a scalar head scores each prompt | The folder's | No counterpart |
 
 Open-Jev trains on its own dataset. The other three train on Typed Decisions Synth, converted by [`data/convert_typed_decisions_synth.py`](data/README.md).
