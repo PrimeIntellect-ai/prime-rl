@@ -32,6 +32,7 @@ from prime_rl.configs.shared import ResumeConfig
 from prime_rl.configs.trainer import CheckpointConfig, ModelConfig
 from prime_rl.trainer.lora import has_lora_layers
 from prime_rl.trainer.model import find_decision_model
+from prime_rl.trainer.models import _DECISION_MODELS
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.conversion_ops import view_mapping
 from prime_rl.trainer.models.fusions import (
@@ -147,6 +148,27 @@ def check_model_config(model_config: PretrainedConfig, directory: Path) -> None:
     if changes:
         more = f", +{len(changes) - 5} more" if len(changes) > 5 else ""
         raise ValueError(f"Checkpoint at {directory} has another architecture: {', '.join(changes[:5])}{more}")
+
+
+def check_side_files(side_files: dict[str, dict], directory: Path) -> None:
+    """Fail when the checkpoint in ``directory`` was saved with another file selecting a decision model than
+    ``side_files``, which config.json does not describe: a d3 run would resume with other answer codes of the same
+    count, and a Clef-Flash run as a plain Qwen3.5. A checkpoint without a config.json is not checked."""
+    if not (directory / "config.json").exists():
+        return
+    for _, _, name in _DECISION_MODELS:
+        path = directory / name
+        saved = json.loads(path.read_text()) if path.exists() else None
+        current = side_files.get(name)
+        if saved == current:
+            continue
+        if saved is None:
+            difference = f"without the {name} that model.name has"
+        elif current is None:
+            difference = f"with a {name}, which model.name lacks"
+        else:
+            difference = f"with another {name} than model.name's"
+        raise ValueError(f"Checkpoint at {directory} was saved {difference}, so it holds another decision model")
 
 
 @dataclass
@@ -546,6 +568,7 @@ class CheckpointManager:
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
         check_model_config(self.model_files.config, ckpt_path.parent)
+        check_side_files(self.model_files.side_files, ckpt_path.parent)
         self.load_from_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
 
     def save(

@@ -29,7 +29,7 @@ from transformers.models.qwen3_5 import modeling_qwen3_5 as hf_modeling
 
 import prime_rl.trainer.parallel_dims as parallel_dims_module
 from prime_rl.configs.trainer import ModelConfig
-from prime_rl.trainer.ckpt import setup_model_files
+from prime_rl.trainer.ckpt import check_side_files, setup_model_files
 from prime_rl.trainer.data import CatDataset, cat_collate
 from prime_rl.trainer.model import (
     forward,
@@ -176,6 +176,21 @@ def test_a_checkpoint_step_directory_holds_the_file_that_selects_the_class(tmp_p
         assert type(model) is type(get_model(model_config(release), device=torch.device("meta")))
         assert getattr(model.config, attribute) == json.loads((release / file).read_text())
         assert not hasattr(files.config, attribute)
+
+
+def test_a_resume_checks_the_file_that_selects_the_class(tmp_path):
+    """config.json does not describe the decision model, so a resume compares the file too."""
+    step_dir = tmp_path / "step_5"
+    write_d3_release(step_dir)
+    check_side_files({"decision_config.json": DECISION_CONFIG}, step_dir)
+    check_side_files({}, tmp_path)  # no config.json: not checked, as the architecture is not
+    codes = DECISION_CONFIG | {"codes": ["V", "W", "X", "Y", "Z"]}
+    with pytest.raises(ValueError, match="saved with another decision_config.json than model.name's"):
+        check_side_files({"decision_config.json": codes}, step_dir)
+    with pytest.raises(ValueError, match="saved with a decision_config.json, which model.name lacks"):
+        check_side_files({}, step_dir)
+    with pytest.raises(ValueError, match="saved without the joint_head_config.json that model.name has"):
+        check_side_files({"decision_config.json": DECISION_CONFIG, "joint_head_config.json": {}}, step_dir)
 
 
 def test_d3_checks_its_decision_config(tmp_path):
