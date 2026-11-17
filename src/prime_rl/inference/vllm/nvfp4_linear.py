@@ -7,9 +7,19 @@ dequantization scale. It is registered as the ``nvfp4`` online shorthand (NVFP4 
 ``quantization = "online"`` can route layers to it through ``quantization_config.targets``.
 """
 
+import functools
+
 import torch
 
 NVFP4_ENCODE_MAX = 448.0 * 6.0  # E4M3 block-scale max x E2M1 max
+
+
+@functools.cache
+def per_token_base_scale(device: torch.device) -> torch.Tensor:
+    """The quantizer builds this tensor from a float on every call unless given one, which graph capture forbids."""
+    from vllm.model_executor.layers.quantization.utils.flashinfer_utils import NVFP4_PER_TOKEN_BASE_GLOBAL_SCALE
+
+    return torch.tensor([NVFP4_PER_TOKEN_BASE_GLOBAL_SCALE], dtype=torch.float32, device=device)
 
 
 @torch.library.custom_op("prime_rl::nvfp4_per_token_linear", mutates_args=())
@@ -18,15 +28,19 @@ def nvfp4_per_token_linear(
 ) -> torch.Tensor:
     """``x [M, K] @ dequant(weight [N, K/2]).T`` with ``x`` quantized to NVFP4 per token."""
     from flashinfer import SfLayout, mm_fp4, nvfp4_quantize
-    from vllm.model_executor.layers.quantization.utils.flashinfer_utils import NVFP4_PER_TOKEN_BASE_GLOBAL_SCALE
 
     if x.shape[0] == 0:
         return x.new_empty(0, weight.shape[0])
-    x_q, x_scale, x_token_scale = nvfp4_quantize(
-        x, NVFP4_PER_TOKEN_BASE_GLOBAL_SCALE, sfLayout=SfLayout.layout_128x4, per_token_activation=True
+    # The quantizer scales each token's dequantization factor by the weight's, giving the GEMM's per-row alpha.
+    x_q, x_scale, alpha = nvfp4_quantize(
+        x,
+        per_token_base_scale(x.device),
+        sfLayout=SfLayout.layout_128x4,
+        per_token_activation=True,
+        backend="cute-dsl",
+        out_scale=weight_scale_inv,
     )
-    alpha = x_token_scale.reshape(-1) * weight_scale_inv
-    return mm_fp4(x_q, weight.T, x_scale, weight_scale.T, alpha, x.dtype, backend="cute-dsl")
+    return mm_fp4(x_q, weight.T, x_scale, weight_scale.T, alpha.reshape(-1), x.dtype, backend="cute-dsl")
 
 
 @nvfp4_per_token_linear.register_fake
