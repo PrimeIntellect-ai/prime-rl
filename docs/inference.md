@@ -311,7 +311,14 @@ The engine admin routes are `POST /update_draft_weights` with `{"weight_dir": "/
 
 ### Optimized P/D disaggregation deployment
 
-For optimal P/D disaggregation deployment, we automatically set the decode `all2all_backend` to `deepep_low_latency` and the prefill `all2all_backend` to `deepep_high_throughput`. We currently don't support customizing all2all backends for P/D disaggragation out of the box. You can do this by overriding the slurm template only.
+By default, P/D sets the prefill `all2all_backend` to `deepep_high_throughput` and the decode `all2all_backend` to `deepep_low_latency`, and decode captures `FULL_DECODE_ONLY` CUDA graphs. Setting `inference.vllm.all2all_backend` applies that backend to both roles instead. `inference.deployment.prefill_vllm_overrides` and `decode_vllm_overrides` set any vLLM option for one role only.
+
+vLLM's MXFP8 MoE kernels (e.g. DeepSeek-V4-Flash with `quantization = "mxfp8"`) do not run behind DeepEP high-throughput or low-latency. When each role fits on one node, use `flashinfer_nvlink_one_sided`:
+
+```toml
+[inference.vllm]
+all2all_backend = "flashinfer_nvlink_one_sided"
+```
 
 For KV cache transfer, we utilize the NIXL connector. This is the default and only currently supported connector. We aim to support more advanced options, such as D->P transfer, or Mooncake Connector in the future.
 

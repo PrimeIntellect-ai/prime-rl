@@ -1388,6 +1388,22 @@ def test_pd_role_connectors():
     assert [c["kv_connector"] for c in decode] == ["NixlConnector", "HiSparseConnector"]
     assert config.for_pd_role("prefill").hisparse is None
 
+    prefill, decode = config.for_pd_role("prefill").vllm, config.for_pd_role("decode").vllm
+    assert (prefill.all2all_backend, decode.all2all_backend) == ("deepep_high_throughput", "deepep_low_latency")
+    assert decode.compilation_config == {"cudagraph_mode": "FULL_DECODE_ONLY"}
+    deployment["decode_vllm_overrides"] = {"max_num_seqs": 96, "compilation_config": {"max_cudagraph_capture_size": 96}}
+    vllm = {"all2all_backend": "flashinfer_nvlink_one_sided", "compilation_config": {"pass_config": {}}}
+    config = InferenceConfig(deployment=deployment, slurm={}, vllm=vllm)
+    prefill, decode = config.for_pd_role("prefill").vllm, config.for_pd_role("decode").vllm
+    assert prefill.all2all_backend == decode.all2all_backend == "flashinfer_nvlink_one_sided"
+    assert decode.max_num_seqs == 96 and not hasattr(prefill, "max_num_seqs")
+    assert decode.compilation_config == {
+        "cudagraph_mode": "FULL_DECODE_ONLY",
+        "pass_config": {},
+        "max_cudagraph_capture_size": 96,
+    }
+    assert prefill.compilation_config == {"pass_config": {}}
+
     with pytest.raises(ValidationError, match="native KV cache offload"):
         InferenceConfig(
             kv_cache_offload={"type": "native", "cpu": {"num_bytes": 1000}}, hisparse={"host_pool_gib": 160}

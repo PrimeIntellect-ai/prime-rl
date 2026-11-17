@@ -235,8 +235,6 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     # The kv_transfer_config (NIXL transfer + any KV offload connector) is built in
     # InferenceConfig.to_namespace() from the per-node config, so it is no longer assembled here.
 
-    DECODE_COMPILE_CFG='{"cudagraph_mode":"FULL_DECODE_ONLY"}'
-
     DP_PER_NODE={{ dp_per_node }}
     TP=$((GPUS_PER_NODE / DP_PER_NODE))
 
@@ -260,7 +258,6 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
 {% for key, value in prefill_env_vars.items() %}
         export {{ key }}="{{ value }}"
 {% endfor %}
-        ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\"{{ prefill_vllm_extra_json }}"
     else
         # ── Decode node ──
         ROLE="decode"
@@ -274,7 +271,6 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
 {% for key, value in decode_env_vars.items() %}
         export {{ key }}="{{ value }}"
 {% endfor %}
-        ROLE_EXTRA="\"all2all_backend\": \"deepep_low_latency\", \"compilation_config\": $DECODE_COMPILE_CFG{{ decode_vllm_extra_json }}"
     fi
 
     CONFIG_PATH="$CONFIG_DIR/inference-$ROLE.json"
@@ -314,7 +310,7 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     for k in $(seq 0 $((DP_PER_NODE - 1))); do
         GLOBAL_RANK=$((ROLE_RANK * DP_PER_NODE + k))
         RANK_GPUS=$(seq -s, $((k * TP)) $((k * TP + TP - 1)))
-        RANK_EXTRA="{\"data_parallel_address\": \"$DP_ADDR\", \"data_parallel_rank\": $GLOBAL_RANK, $ROLE_EXTRA}"
+        RANK_EXTRA="{\"data_parallel_address\": \"$DP_ADDR\", \"data_parallel_rank\": $GLOBAL_RANK}"
         launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")"
     done
 {%- elif num_nodes > 1 %}

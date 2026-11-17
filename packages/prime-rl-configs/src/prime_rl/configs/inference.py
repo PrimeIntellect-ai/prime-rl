@@ -391,6 +391,10 @@ class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     """Inference nodes."""
 
 
+# Default all2all backend per P/D role when ``inference.vllm.all2all_backend`` is unset.
+PD_ALL2ALL_BACKENDS = {"prefill": "deepep_high_throughput", "decode": "deepep_low_latency"}
+
+
 # Disaggregated prefill/decode inference. Each replica is split into separate
 # prefill and decode node groups. Requires NIXL for KV transfer and a router for
 # request routing.
@@ -422,10 +426,10 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     """Extra environment variables exported only on decode nodes."""
 
     prefill_vllm_overrides: dict[str, Any] = {}
-    """Extra vLLM config options merged into --vllm-extra only for prefill ranks (SLURM only)."""
+    """vLLM options for prefill instances only, applied over ``inference.vllm`` (dict values are merged one level deep)."""
 
     decode_vllm_overrides: dict[str, Any] = {}
-    """Extra vLLM config options merged into --vllm-extra only for decode ranks (SLURM only)."""
+    """vLLM options for decode instances only, applied over ``inference.vllm`` (dict values are merged one level deep)."""
 
     prefill_kv_cache_offload: KVCacheOffloadConfig | Literal["inherit"] | None = "inherit"
     """KV cache offload on prefill instances. ``inherit`` uses ``inference.kv_cache_offload``; None disables it."""
@@ -610,12 +614,24 @@ class InferenceConfig(BaseConfig):
         return {role: self.kv_cache_offload if offload == "inherit" else offload for role, offload in overrides.items()}
 
     def for_pd_role(self, role: Literal["prefill", "decode"]) -> "InferenceConfig":
-        """Engine config for one role of a disaggregated deployment: the role's KV cache offload, and HiSparse on decode only."""
+        """Engine config for one role of a disaggregated deployment: the role's KV cache offload, HiSparse on
+        decode only, the role's all2all backend and CUDA graph mode, and then the role's ``*_vllm_overrides``.
+
+        The all2all backend defaults to DeepEP high-throughput (prefill) / low-latency (decode) unless
+        ``inference.vllm.all2all_backend`` is set, which then applies to both roles."""
         assert self.deployment.type == "disaggregated"
         config = self.model_copy(deep=True)
         config.kv_cache_offload = self.kv_cache_offload_by_role[role]
         if role == "prefill":
             config.hisparse = None
+        vllm = config.vllm.model_extra
+        vllm.setdefault("all2all_backend", PD_ALL2ALL_BACKENDS[role])
+        if role == "decode":
+            vllm["compilation_config"] = {"cudagraph_mode": "FULL_DECODE_ONLY", **vllm.get("compilation_config", {})}
+        for key, value in getattr(self.deployment, f"{role}_vllm_overrides").items():
+            if isinstance(value, dict) and isinstance(getattr(config.vllm, key, None), dict):
+                value = {**getattr(config.vllm, key), **value}
+            setattr(config.vllm, key, value)
         return config
 
     def build_kv_transfer_config(self) -> dict[str, Any] | None:

@@ -14,7 +14,7 @@ from prime_rl.configs.inference import VllmRouterConfig
 from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, run_links
-from prime_rl.entrypoints.inference import mooncake_offloads, vllm_overrides_fragment, write_pd_configs
+from prime_rl.entrypoints.inference import mooncake_offloads, write_pd_configs
 from prime_rl.utils.config import check_mode, cli, dump_resolved_config, dump_rl_components
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
@@ -442,8 +442,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             trainer_env_vars=trainer_env_vars,
             orchestrator_env_vars=orchestrator_env_vars,
             inference_env_vars=inference_env_vars,
-            prefill_vllm_extra_json=vllm_overrides_fragment(infer_deploy.prefill_vllm_overrides),
-            decode_vllm_extra_json=vllm_overrides_fragment(infer_deploy.decode_vllm_overrides),
             dp_per_node=config.deployment.gpus_per_node // config.inference.vllm.tensor_parallel_size,
             **mooncake_vars,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
