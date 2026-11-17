@@ -282,7 +282,8 @@ def unwrapped_name(name: str) -> str:
 
 
 def run_reference(config: ModelConfig, rows: list[dict]) -> dict:
-    """All rows through an unsharded model in bf16 (FSDP's compute dtype), accumulating gradients in fp32."""
+    """All rows through an unsharded model in bf16 (FSDP's compute dtype), accumulating gradients in fp32. Parameters
+    that get no gradient, like the indexers, which reach the loss only through top-k indices, have no entry."""
     model = get_model(config, device=torch.device("meta"), dtype=torch.float32)
     if config.fusions.enabled:
         apply_model_fusions(model, config.fusions.enabled)
@@ -293,7 +294,7 @@ def run_reference(config: ModelConfig, rows: list[dict]) -> dict:
     load_dcp_from_hf(model, config)
     for param in model.parameters():
         param.data = param.data.bfloat16()
-    grads = {name: torch.zeros_like(param, dtype=torch.float32) for name, param in model.named_parameters()}
+    grads: dict[str, torch.Tensor] = {}
     loss_sum, num_tokens = 0.0, 0
     for row in rows:
         row_loss, row_tokens = compute_loss(model, row, cp_rank=0, cp_size=1)
@@ -301,8 +302,9 @@ def run_reference(config: ModelConfig, rows: list[dict]) -> dict:
         loss_sum += row_loss.item()
         num_tokens += row_tokens.item()
         for name, param in model.named_parameters():
-            grads[name] += param.grad.float()
-            param.grad = None
+            if param.grad is not None:
+                grads.setdefault(name, torch.zeros_like(param, dtype=torch.float32)).add_(param.grad.float())
+                param.grad = None
     grads = {name: grad / num_tokens for name, grad in grads.items()}
     grad_norm = torch.linalg.vector_norm(torch.stack([torch.linalg.vector_norm(grad) for grad in grads.values()]))
     return {"loss": loss_sum / num_tokens, "grad_norm": grad_norm.item(), "grads": grads}
@@ -332,6 +334,7 @@ def run_case(config: ModelConfig, parallel_dims, rows: list[dict]) -> dict:
     grads = {
         unwrapped_name(name): param.grad.full_tensor() if isinstance(param.grad, DTensor) else param.grad
         for name, param in model.named_parameters()
+        if param.grad is not None
     }
     return {"loss": (loss_sum / num_tokens).item(), "grad_norm": grad_norm.item(), "grads": grads}
 
@@ -346,10 +349,10 @@ def isolated(run, *args) -> dict:
 
 
 def relative_errors(result: dict, reference: dict) -> dict:
-    assert result["grads"].keys() == reference["grads"].keys()
     grad_errors = {
         name: (torch.linalg.vector_norm(result["grads"][name] - ref) / torch.linalg.vector_norm(ref)).item()
         for name, ref in reference["grads"].items()
+        if name in result["grads"]
     }
     worst = max(grad_errors, key=grad_errors.get)
     return {
@@ -357,6 +360,7 @@ def relative_errors(result: dict, reference: dict) -> dict:
         "grad_norm": abs(result["grad_norm"] / reference["grad_norm"] - 1),
         "grad": grad_errors[worst],
         "worst_grad": worst,
+        "one_sided_grads": sorted(result["grads"].keys() ^ reference["grads"].keys()),
     }
 
 
@@ -415,6 +419,7 @@ def results(run_process, tmp_path_factory: pytest.TempPathFactory) -> dict[str, 
 def test_matches_unsharded_reference(results: dict[str, dict], case: Case):
     errors = results[case.name]
     assert "error" not in errors, errors.get("error")
+    assert not errors["one_sided_grads"], f"gradients on only one side: {errors['one_sided_grads']}"
     tolerances = COMPILE_TOLERANCES if case.compile else TOLERANCES
     for metric, tolerance in tolerances.items():
         assert errors[metric] <= tolerance, f"{metric} relative error {errors[metric]:.1e} > {tolerance:.0e} ({errors})"
