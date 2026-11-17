@@ -1,0 +1,14 @@
+# Inference fit for Qwen3.6-35B-A3B at 256k with dummy weights. Used by
+# benchmarks/recipes/inference_fit.sh.
+
+[vllm]
+model = "Qwen/Qwen3.6-35B-A3B"
+load_format = "dummy"
+max_model_len = 262144
+gpu_memory_utilization = 0.85
+enable_prefix_caching = true
+
+# Text-only RL: skip the vision encoder and its profiling.
+[vllm.limit_mm_per_prompt]
+image = 0
+video = 0

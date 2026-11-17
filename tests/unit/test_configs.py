@@ -49,9 +49,10 @@ CONFIG_CLASSES = [
 
 
 def get_config_files() -> list[Path]:
-    """Any TOML file inside `configs/`, `examples/` or `tests/regression/configs/`."""
-    roots = [Path("configs"), Path("examples"), Path("tests/regression/configs")]
-    return [path for root in roots for path in root.rglob("*.toml")]
+    """Any TOML file inside `configs/`, `examples/`, `recipes/` or `tests/regression/configs/`, except the
+    recipes' `meta.toml` metadata."""
+    roots = [Path("configs"), Path("examples"), Path("recipes"), Path("tests/regression/configs")]
+    return [path for root in roots for path in root.rglob("*.toml") if path.name != "meta.toml"]
 
 
 ENTRYPOINT_CONFIGS = {

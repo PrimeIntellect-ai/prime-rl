@@ -1,0 +1,20 @@
+# Trainer-only fit for Qwen3.6-35B-A3B at 256k: one 262144-token sample per micro batch,
+# random weights, balanced routing. Used by benchmarks/recipes/trainer_fit.sh.
+max_steps = 3
+
+[model]
+name = "Qwen/Qwen3.6-35B-A3B"
+seq_len = 262144
+ep = 8
+
+[model.ac]
+freq = 1
+
+[model.debug]
+random_init = true
+force_balanced_routing = true
+
+[data.fake]
+batch_size = 8
+generate_samples = true
+doc_len = 262144

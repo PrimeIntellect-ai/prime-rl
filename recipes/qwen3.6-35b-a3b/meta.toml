@@ -1,0 +1,34 @@
+# Recipe metadata: what was measured, where and when. Read by humans and the recipe index.
+
+model = "Qwen/Qwen3.6-35B-A3B"
+builder = "Qwen"
+weight_class = "35B-A3B MoE"
+architecture = "qwen3_5_moe (hybrid Gated DeltaNet, 10 of 40 layers full attention)"
+native_precision = "bf16"
+
+[h200]
+recipe = "h200.toml"
+precision = "bf16"
+max_context = 262144
+measured = "2026-11-17"
+prime_rl_commit = "505b59b28"
+results = "benchmarks/recipes/qwen3.6-35b-a3b/results-h200.md"
+smoke_run = "5 steps on recipes/tasks/swe.toml (scaleswe), batch 64, 1 trainer + 1 inference node"
+# Trainer nodes are idle ~75% of the time with one replica on scaleswe.
+suggested_infer_replicas_per_trainer_node = 3
+
+[h200.trainer]
+nodes = 1
+layout = "ep 8, cp 4, optimizer offload, no activation offload"
+tokens_per_s_256k = 25573
+tokens_per_s_scaleswe = 21663
+peak_memory_gib = 114.0
+headroom_gib = 25.8
+
+[h200.inference]
+nodes_per_replica = 1
+layout = "tp 2, dp 4"
+output_tokens_per_s_per_gpu_scaleswe = 914
+uncached_prefill_tokens_per_s_per_gpu_scaleswe = 21417
+max_kv_cache_usage_scaleswe = 0.73
+startup_s = 442
