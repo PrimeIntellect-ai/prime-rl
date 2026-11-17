@@ -17,6 +17,8 @@ uv run rl --model @ model.toml --data @ data.toml                          # nes
 uv run rl @ base.toml --trainer @ trainer.toml --trainer.lr 1e-3           # mixed
 ```
 
+A checked-in overlay (a TOML that only parses on top of a base) documents its stack in a header comment, `#   uv run rl @ base.toml @ overlay.toml` with repo-relative paths; CI parses every such command.
+
 Resolution order: CLI > config files (left-to-right) > class defaults. Merging is deep — unset fields in an overlay are preserved from the base. `output_dir` has one extra fallback: CLI > config files > `$PRL_OUTPUT_DIR` > `"outputs"`.
 
 Naming: CLI uses kebab-case (`--vllm.max-model-len`); TOML uses snake_case (`max_model_len`).
