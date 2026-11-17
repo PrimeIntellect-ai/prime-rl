@@ -396,8 +396,9 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
         for req_id in kv_connector_output.finished_recving or ():
             logger.debug("Finished recving KV transfer for request %s", req_id)
             # Stale notification for a request freed earlier this step (e.g. an
-            # aborted request whose send completion freed it). Nothing to do.
+            # aborted request whose send completion freed it): only its load slot is left.
             if req_id not in self.requests:
+                self._aborted_kv_loads.discard(req_id)
                 continue
             req = self.requests[req_id]
             if req.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
@@ -457,7 +458,7 @@ def monkey_patch_minimax_m2_think_end_passthrough():
 def monkey_patch_routed_experts_with_pd_connectors():
     """Let vLLM's routed-experts capture (AuxOutput connector) run on NIXL P/D instances.
 
-    vLLM (0.33 included) rejects routed-experts capture with P/D connectors, because a decode instance never
+    vLLM (0.34 included) rejects routed-experts capture with P/D connectors, because a decode instance never
     computes a remotely prefilled prompt, so it has no rows for it. This carries our upstream fix
     (AuxOutput patch 02): a request on a decode instance emits rows only from its first forward on
     this instance, and the worker does not buffer the

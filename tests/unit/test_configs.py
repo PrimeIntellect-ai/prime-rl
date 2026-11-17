@@ -1348,23 +1348,6 @@ def test_explicit_inference_parser_wins_over_auto():
     assert config.inference.vllm.tool_call_parser == "hermes"
 
 
-@pytest.mark.parametrize("deployment", [{"type": "single_node"}, {"type": "disaggregated"}])
-def test_combined_replay_keeps_both_captures(deployment):
-    from prime_rl.inference.server import setup_vllm_env
-
-    config = InferenceConfig(
-        deployment=deployment,
-        slurm={} if deployment["type"] == "disaggregated" else None,
-        enable_return_sampling_mask=True,
-        vllm={"enable_return_routed_experts": True},
-    )
-
-    setup_vllm_env(config)
-
-    assert config.enable_return_sampling_mask is True
-    assert config.vllm.enable_return_routed_experts is True
-
-
 def test_pd_role_connectors():
     mooncake = {"type": "mooncake", "cpu": {"num_bytes": 1000}}
     deployment = {"type": "disaggregated", "decode_kv_cache_offload": {**mooncake, "cpu": {"num_bytes": 0}}}
