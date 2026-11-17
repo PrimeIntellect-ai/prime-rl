@@ -24,9 +24,12 @@ _topk_clamp: int | None = None
 _stock_init = kernel_sm90.FlashAttentionDSABackwardSm90.__init__
 _sm100_topk_clamp: int | None = None
 _sm100_stock_init = kernel_sm100.FlashAttentionDSABackwardSm100.__init__
+# The `generic_m64` backend's kernels: the stock one and, since cuDNN frontend 1.32, one deterministic subclass per
+# dKV shard count or relay cluster size.
 _SM100_GENERIC_KERNELS = (
     kernel_sm100.FlashAttentionDSABackwardSm100,
-    kernel_sm100_deterministic.FlashAttentionDSABackwardSm100Deterministic,
+    *kernel_sm100_deterministic._DETERMINISTIC_KERNELS.values(),
+    *kernel_sm100_deterministic._DETERMINISTIC_RELAY_KERNELS.values(),
 )
 
 

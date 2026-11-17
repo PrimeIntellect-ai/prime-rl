@@ -1,6 +1,5 @@
 import importlib
 import json
-import os
 import re
 import sys
 from pathlib import Path
@@ -1350,10 +1349,9 @@ def test_explicit_inference_parser_wins_over_auto():
 
 
 @pytest.mark.parametrize("deployment", [{"type": "single_node"}, {"type": "disaggregated"}])
-def test_combined_replay_uses_v2_runner(monkeypatch, deployment):
+def test_combined_replay_keeps_both_captures(deployment):
     from prime_rl.inference.server import setup_vllm_env
 
-    monkeypatch.delenv("VLLM_USE_V2_MODEL_RUNNER", raising=False)
     config = InferenceConfig(
         deployment=deployment,
         slurm={} if deployment["type"] == "disaggregated" else None,
@@ -1365,7 +1363,6 @@ def test_combined_replay_uses_v2_runner(monkeypatch, deployment):
 
     assert config.enable_return_sampling_mask is True
     assert config.vllm.enable_return_routed_experts is True
-    assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
 
 
 def test_pd_role_connectors():
