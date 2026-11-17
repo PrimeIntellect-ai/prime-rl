@@ -13,6 +13,7 @@ import sys
 from collections import defaultdict
 
 import torch
+import torch._inductor.config
 import torch.distributed as dist
 
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config
@@ -38,6 +39,7 @@ torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 group = dist.group.WORLD
 T = args.tokens
 n = T // world
+torch._inductor.config.emulate_precision_casts = True
 torch._dynamo.config.recompile_limit = 256
 torch._dynamo.config.accumulated_recompile_limit = 4096
 
