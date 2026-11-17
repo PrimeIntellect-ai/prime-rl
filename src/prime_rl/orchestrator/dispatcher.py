@@ -934,7 +934,8 @@ class Dispatcher:
                     breaker.pool_down = True
                     if breaker.state != "open":
                         breaker.trip(reason, time.monotonic())
-                        await self.fail_paused_groups(env.name)
+                    # Also when already open: an aborted probe reports nothing, so its group's other members fail here
+                    await self.fail_paused_groups(env.name)
 
     def complete_group_member(self, meta: InflightEpisode, group: GroupState | None) -> int:
         """Advance group accounting and return the attempt's pinned policy version."""
@@ -998,6 +999,7 @@ class Dispatcher:
             if meta.group_id != group_id:
                 continue
             del self.inflight[task]
+            self.aborted.pop(task, None)
             self.release()
             self.retire(meta)
             claimed.append((task, meta))
@@ -1041,6 +1043,7 @@ class Dispatcher:
             self.retire(meta)
         tasks = list(self.inflight.keys())
         self.inflight.clear()
+        self.aborted.clear()
         self.groups.clear()
         if tasks:
             await self._cancel_claimed(tasks)
@@ -1074,6 +1077,7 @@ class Dispatcher:
             if meta.kind != "train":
                 continue
             self.inflight.pop(task, None)
+            self.aborted.pop(task, None)
             self.release()
             self.retire(meta)
             self.metrics.record_cancellation(kind="train", env_name=meta.env_name)

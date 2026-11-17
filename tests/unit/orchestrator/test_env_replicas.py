@@ -72,3 +72,31 @@ def test_health_monitor_fails_and_avoids_a_dead_replica(monkeypatch):
         await asyncio.gather(tasks[0], tasks[2])
 
     asyncio.run(run())
+
+
+def test_a_downed_pool_fails_paused_groups_also_with_the_breaker_open(monkeypatch):
+    # The breaker is open with a probe in flight; the monitor aborts the probe, which reports nothing, so the probe
+    # group's other members must be failed here instead of waiting for the pool
+    monkeypatch.setattr(dispatcher, "ENV_HEALTH_INTERVAL_S", 0)
+
+    async def run():
+        env = Env(SimpleNamespace(resolved_name="e"), None, [])
+        env._env_clients = [FakeClient(healthy=False)]
+        env._running = [set()]
+        d = Dispatcher.__new__(Dispatcher)
+        d.train_envs, d.eval_envs = [env], None
+        d.breakers = {env.name: SimpleNamespace(state="open", pool_down=False)}
+        d.inflight, d.aborted = {}, {}
+        failed = []
+
+        async def fail_paused_groups(name):
+            failed.append(name)
+
+        d.fail_paused_groups = fail_paused_groups
+        monitor = asyncio.create_task(d.monitor_env_health())
+        while not failed:
+            await asyncio.sleep(0)
+        monitor.cancel()
+        assert failed[0] == env.name and d.breakers[env.name].pool_down
+
+    asyncio.run(run())
