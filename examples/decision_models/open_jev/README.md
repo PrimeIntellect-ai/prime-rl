@@ -27,7 +27,7 @@ uv run hf download ZefanCai/Open-Jev --repo-type dataset --local-dir outputs/ope
 PYTHONPATH=examples uv run python examples/decision_models/open_jev/convert_dataset.py outputs/open-jev/Open-Jev outputs/open-jev/Open-Jev-system-one
 ```
 
-`model.name` is the base model as downloaded. It has no decision head, so when a run starts the class sets the head from the loaded LM head (`init_missing_weights`); a resumed run takes the trained head from its checkpoint.
+`model.name` is the base model as downloaded. It has no decision head, so when a run starts the class sets the head from the loaded LM head (`init_missing_weights`); a resumed run takes the trained head from its checkpoint, and so does a run whose `model.name` is a checkpoint step directory. With `model.init.type = "scratch"` the head starts from its random init, not from the Yes and No rows.
 
 The run is 13,700 steps: one pass over the 79,116 training records takes 13,677, and the last 23 begin a second pass. It validates on the 3,723 validation records before the first step and every 1,370 steps, the last time on the final step. The first validation measures the untrained head, a zero-shot Yes/No judge.
 
