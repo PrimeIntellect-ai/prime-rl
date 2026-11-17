@@ -276,14 +276,16 @@ def _select_topk(q_fp8, k_fp8, k_scales, w, ks, ke, S_k, chunk_rows, indices):
     from vllm.third_party import deep_gemm
 
     q_scales = None
+    logits_dtype = torch.float32
     if torch.cuda.get_device_capability(q_fp8.device)[0] == 10:
         # SM100 takes MX inputs only: each key's UE8M0 scale repeated over its four 32-wide blocks, unit query
-        # scales (they are folded into w) and bf16 weights, as vLLM's `mqa_logits_mx_inputs` builds them. The
-        # cast is exact for bf16 head weights and rounds fp32 ones (GLM5-Next) the way vLLM does.
+        # scales (they are folded into w) and weights in the logits dtype, as vLLM's `mqa_logits_mx_inputs`
+        # builds them. BF16 logits reduce in BF16: the cast is exact for bf16 head weights and rounds fp32 ones.
+        logits_dtype = torch.bfloat16
         k_scales = (k_scales.view(torch.int32) >> 23).to(torch.uint8)[:, None].expand(-1, 4).contiguous()
         k_scales = k_scales.view(torch.int32).squeeze(-1)
         q_scales = torch.full(q_fp8.shape[:-1], UNIT_UE8M0_X4, dtype=torch.int32, device=q_fp8.device)
-        w = w.to(torch.bfloat16)
+        w = w.to(logits_dtype)
     lengths = (ke - ks).clamp_min(0)
     for start in range(0, q_fp8.shape[0], chunk_rows):
         end = min(start + chunk_rows, q_fp8.shape[0])
@@ -295,6 +297,7 @@ def _select_topk(q_fp8, k_fp8, k_scales, w, ks, ke, S_k, chunk_rows, indices):
             ks[start:end],
             ke[start:end],
             k_fp8.shape[0],
+            logits_dtype,
         ).float()
         row_lengths = lengths[start:end]
         columns = torch.arange(logits.shape[1], device=logits.device)
