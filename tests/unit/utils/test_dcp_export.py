@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import torch
 import torch.distributed.checkpoint as dcp
-from safetensors.torch import load_file
+from safetensors.torch import load_file, save_file
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from torch.distributed.checkpoint import FileSystemReader
@@ -61,7 +61,8 @@ def save_checkpoint(path: Path, state: dict[str, torch.Tensor], row_chunks: int)
 @pytest.mark.parametrize("tied", [False, True])
 @pytest.mark.parametrize("fp8", [False, True])
 @pytest.mark.parametrize("ngram_parts", [None, 3, 128])
-def test_layer_export_matches_original_hf_weights(tmp_path, exporter, monkeypatch, tied, fp8, ngram_parts):
+@pytest.mark.parametrize("frozen", [False, True])
+def test_layer_export_matches_original_hf_weights(tmp_path, exporter, monkeypatch, tied, fp8, ngram_parts, frozen):
     config_kwargs = dict(
         hidden_size=16,
         intermediate_size=16,
@@ -130,13 +131,34 @@ def test_layer_export_matches_original_hf_weights(tmp_path, exporter, monkeypatc
 
     state = model.convert_to_prime({name: tensor.clone() for name, tensor in original.items()})
     assert all(tensor.dtype == torch.float32 for tensor in state.values() if tensor.is_floating_point())
+    base_dir = None
+    if frozen:
+        # The checkpoint leaves out frozen modules (layer 0, its n-gram table); they come from the base checkpoint
+        base_dir = tmp_path / "base"
+        base_dir.mkdir()
+        save_file({name: tensor.contiguous() for name, tensor in original.items()}, base_dir / "model.safetensors")
+        state = {
+            key: value
+            for key, value in state.items()
+            if not key.startswith(("model.layers.0.", "model.ngram.tables.0."))
+        }
     stored_table_chunks = save_checkpoint(tmp_path, state, row_chunks=3)
     table_reads = []
     load_rows = exporter.load_rows
     monkeypatch.setattr(exporter, "load_rows", lambda *args: table_reads.append(args[1:]) or load_rows(*args))
-    checkpoint = exporter.Checkpoint(tmp_path, FileSystemReader(tmp_path).read_metadata(), model.to("meta"), None, None)
+    checkpoint = exporter.Checkpoint(
+        tmp_path, FileSystemReader(tmp_path).read_metadata(), model.to("meta"), None, None, base_dir
+    )
+    fp32 = set()
+    if frozen:
+        # A frozen weight kept in FP32 under its PrimeRL name, whose HF name differs (router.gate -> gate)
+        router = "model.layers.0.mlp.router.gate.weight"
+        monkeypatch.setattr(
+            type(model), "keep_in_fp32_for_weight_transfer", classmethod(lambda cls, key: key == router)
+        )
+        fp32 = {"model.layers.0.mlp.gate.weight"}
     expected = {
-        name: tensor.bfloat16() if tensor.is_floating_point() else tensor.clone()
+        name: tensor.clone() if name in fp32 or not tensor.is_floating_point() else tensor.bfloat16()
         for name, tensor in original.items()
         if not (tied and name == "lm_head.weight")
     }

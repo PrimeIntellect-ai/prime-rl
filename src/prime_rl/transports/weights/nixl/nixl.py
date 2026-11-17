@@ -22,6 +22,7 @@ from torch.distributed.tensor._utils import compute_local_shape_and_global_offse
 
 from prime_rl.configs.shared import NIXLWeightBroadcastConfig
 from prime_rl.orchestrator.clients import init_nixl_broadcast
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.world import wait_for_master
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender
@@ -328,7 +329,9 @@ class NIXLWeightSender(WeightSender):
     def initialize_transfer(self, model: nn.Module) -> None:
         if self.initialized:
             return
-        state_dict = model.state_dict()
+        model = cast(PreTrainedModelPrimeRL, model)
+        frozen = model.frozen_weight_keys()
+        state_dict = {key: value for key, value in model.state_dict().items() if key not in frozen}
         transfer_groups = self.build_transfer_group_index(state_dict)
         self.transfer_group_names = transfer_groups.group_names
         if self.is_serving_rank:

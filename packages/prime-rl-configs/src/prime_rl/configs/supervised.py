@@ -84,6 +84,7 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     """SFT and pretraining: next-token loss on a fixed dataset, as opposed to RL."""
 
     auto_freeze_moe_router = False
+    auto_freeze_ngram_embedding = False
     # Standard L2 regularization for supervised training.
     auto_weight_decay = 0.01
     # Initialize the weights from scratch instead of loading them from ``model.name``, unless resuming.
@@ -180,6 +181,13 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     def validate_deployment(self):
         if self.deployment.type == "multi_node" and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_freeze_with_init_from_scratch(self):
+        # Frozen weights are not checkpointed: a resume reloads them from model.name, which a from-scratch run lacks.
+        if self.init_from_scratch and (self.model.freeze_layers > 0 or self.model.freeze_ngram_embedding is True):
+            raise ValueError("model.freeze_layers and model.freeze_ngram_embedding need pretrained weights")
         return self
 
     @model_validator(mode="after")

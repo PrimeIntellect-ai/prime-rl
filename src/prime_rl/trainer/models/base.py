@@ -6,6 +6,7 @@ from transformers.modeling_utils import PreTrainedModel
 
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.ngram import NGramTable
+from prime_rl.trainer.vlm import get_language_model
 from prime_rl.utils.cp import CPContext
 
 
@@ -74,6 +75,27 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         Runtime upcasts for training or inference do not change the wire dtype.
         """
         return False
+
+    def frozen_weight_keys(self) -> set[str]:
+        """State-dict keys of frozen weights that weight transfer and checkpoints skip.
+
+        They keep their values from the base checkpoint for the whole run, so the inference
+        engines keep the copy they loaded and a resume loads them from the base checkpoint again.
+        Only whole inference-engine modules may be skipped: the engine re-initializes a module that
+        receives part of its weights. So these are the frozen input embeddings, n-gram tables and
+        decoder layers, buffers included.
+        """
+        language_model = get_language_model(self)
+        embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
+        ngram_tables = [module for module in self.modules() if isinstance(module, NGramTable)]
+        frozen_modules = [
+            module
+            for module in [embed_module, *language_model.layers, *ngram_tables]
+            if not any(param.requires_grad for param in module.parameters())
+        ]
+        # Matched by module prefix, not tensor identity: fused parameters reach the state dict as split views.
+        prefixes = tuple(f"{name}." for name, module in self.named_modules() if module in frozen_modules)
+        return {key for key in self.state_dict() if key.startswith(prefixes)}
 
     @classmethod
     def from_config(cls, config, trust_remote_code: bool = False, **kwargs):
