@@ -2,7 +2,6 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import NamedTuple
 
-import dion
 import pytest
 import torch
 import torch.distributed as dist
@@ -12,6 +11,7 @@ from torch.optim import Optimizer
 
 from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.trainer.ckpt import AppState, CheckpointManager, PinnedStager, Progress
+from prime_rl.trainer.optim.muon import Muon
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 from prime_rl.trainer.utils import get_dcp_group
 
@@ -134,7 +134,7 @@ def test_offload_reuses_pinned_buffers_across_steps() -> None:
 
 
 def test_checkpoint_resume_restores_param_groups(tmp_path) -> None:
-    """dion's Muon keeps its step count in the param groups, which an in-place offloaded load does not reach."""
+    """Muon keeps its step count in the param groups, which an in-place offloaded load does not reach."""
 
     def setup():
         model = make_model(0)
@@ -142,7 +142,7 @@ def test_checkpoint_resume_restores_param_groups(tmp_path) -> None:
             dict(params=[p for p in model.parameters() if p.ndim == 2], algorithm="muon"),
             dict(params=[p for p in model.parameters() if p.ndim == 1], algorithm="adamw"),
         ]
-        optimizer = dion.Muon(groups, lr=1e-2, fsdp_mesh_dim=0, world_mesh=None, adjust_lr="rms_norm")
+        optimizer = Muon(groups, lr=1e-2)
         return model, CPUOffloadOptimizer(optimizer)
 
     model, optimizer = setup()
