@@ -169,10 +169,14 @@ class EnvWorker:
                     raise
                 self._kept[request_id] = (hook, episode)
         # The streamer retries failed sends, but its final flush is also best-effort.
-        # Every returned trace must have reached the client before we report success.
-        for trace in episode.traces:
-            if error := send_errors.get(trace.id):
-                raise RuntimeError(f"Failed to deliver final trace state - {type(error).__name__}: {error}") from error
+        # A failed update that reverted to the delivered state needs no resend.
+        if send_errors:
+            pending = {trace_id for trace_id, _, _ in streamer.diff(everything=True)}
+            for trace in episode.traces:
+                if trace.id in pending and (error := send_errors.get(trace.id)) is not None:
+                    raise RuntimeError(
+                        f"Failed to deliver final trace state - {type(error).__name__}: {error}"
+                    ) from error
         return RunResponse(
             head=dump(episode, exclude={"traces"}),
             traces=[
