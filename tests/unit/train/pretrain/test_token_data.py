@@ -187,8 +187,8 @@ def test_subsets_and_resumes_fail_clearly(tmp_path):
 
 
 def global_rows(config: PretrainDataConfig, gpus: int, steps: int, states=None) -> tuple[list[list], list[dict]]:
-    """Every step's rows over all GPUs (sorted first tokens with their row indices), and every GPU's dataloader state
-    after the last step, with two dataloader workers per GPU."""
+    """Every step's rows over all GPUs (sorted), and every GPU's dataloader state after the last step, with two
+    dataloader workers per GPU."""
     rows, new_states = [[] for _ in range(steps)], []
     for rank in range(gpus):
         loader = setup_dataloader(setup_token_dataset(config, dp_rank=rank, dp_size=gpus), config, cp=1)
@@ -199,7 +199,7 @@ def global_rows(config: PretrainDataConfig, gpus: int, steps: int, states=None) 
         for step in range(steps):
             for _ in range(config.batch_size // (gpus * config.micro_batch_size)):
                 batch = next(batches)
-                rows[step] += zip(batch["windows"].tolist(), batch["input_ids"].view(-1, config.seq_len).tolist())
+                rows[step] += batch["input_ids"].view(-1, config.seq_len).tolist()
         new_states.append(loader.state_dict())
     return [sorted(step_rows) for step_rows in rows], new_states
 
