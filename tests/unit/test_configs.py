@@ -1501,3 +1501,12 @@ def test_score_centering_replays_top_p_alone():
     assert sampling.top_k == 10000 and sampling.logprobs == 1
     assert sampling.extra_body["extra_args"]["prl_replay"]
     assert config.inference.enable_return_sampling_mask
+
+
+def test_resolved_sampler_draws_pass_the_policy_sampling_check():
+    # The resolved extra_args (draws plus compact logprobs) must validate again, e.g. on reload or a live update
+    from prime_rl.configs.orchestrator import TrainSamplingConfig, TrainSourceConfig
+
+    source = TrainSourceConfig.model_construct(sampling=TrainSamplingConfig(sampler_draws=4))
+    assert source.sampling.extra_body["extra_args"]["prl_compact_logprobs"]
+    source.validate_policy_sampling()

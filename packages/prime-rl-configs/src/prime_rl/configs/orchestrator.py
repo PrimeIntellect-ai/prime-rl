@@ -284,7 +284,8 @@ class TrainSourceConfig(EnvConfig):
         )
         sampling = vf.SamplingConfig(**self.sampling.model_dump(exclude_none=True, exclude={"sampler_draws"}))
         extra_args = dict(getattr(sampling, "extra_args", None) or {})
-        extra_args.pop("prl_sampler_draws", None)  # set by score centering
+        extra_args.pop("prl_sampler_draws", None)  # set by score centering, with compact logprobs
+        extra_args.pop("prl_compact_logprobs", None)
         if extra_args in ({}, {"prl_replay": self.sampling.truncates_distribution()}):
             supported.add("extra_args")
         if unsupported := sampling.model_dump(exclude_none=True).keys() - supported:
