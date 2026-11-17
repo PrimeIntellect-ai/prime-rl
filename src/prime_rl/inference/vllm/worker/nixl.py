@@ -17,7 +17,7 @@ from modelexpress.client import MxClient
 from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 
-from prime_rl.inference.vllm.worker.weight_transfer import WeightRPCMixin, update_mla_absorbed_weights
+from prime_rl.inference.vllm.worker.weight_transfer import WeightRPCMixin
 from prime_rl.transports.weights.nixl.agent import (
     MemDesc,
     NixlAgent,
@@ -480,7 +480,6 @@ class NIXLWeightUpdateWorker(WeightRPCMixin, Worker):
 
         started = time.perf_counter()
         self.apply_transfer_plan(plan)
-        update_mla_absorbed_weights(self.raw_model)
         torch.accelerator.synchronize(self.device)
         logger.info(
             "Applied NIXL policy update on rank %d in %.2fs",
