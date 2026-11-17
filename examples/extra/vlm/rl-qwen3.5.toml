@@ -126,6 +126,9 @@ max_inflight = 512
 
 [orchestrator.renderer]
 name = "qwen3.5"
+# Keep the thinking of every earlier turn in the prompt. By default the template drops it once a
+# new user message arrives, and the history then no longer matches the tokens that were sampled.
+thinking_retention = "all"
 
 [orchestrator.train]
 group_size = 16
