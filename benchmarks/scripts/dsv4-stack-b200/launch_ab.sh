@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+nohup $INVESTIGATION/ab_node.sh $JOB n4354 main:n4354-main-r1 4354:n4354-4354-r1 main:n4354-main-r2 4354:n4354-4354-r2 > $INVESTIGATION/logs/ab-n4354.log 2>&1 &
+nohup $INVESTIGATION/ab_node.sh $JOB n4355 main:n4355-main-r1 "4355:n4355-4355halo-r1:--model.dsv4-cp-kv-exchange halo" main:n4355-main-r2 "4355:n4355-4355halo-r2:--model.dsv4-cp-kv-exchange halo" > $INVESTIGATION/logs/ab-n4355.log 2>&1 &
+nohup $INVESTIGATION/ab_node.sh $JOB n4356 main:n4356-main-r1 "4356:n4356-4356halo-r1:--model.dsv4-cp-kv-exchange halo" main:n4356-main-r2 "4356:n4356-4356halo-r2:--model.dsv4-cp-kv-exchange halo" > $INVESTIGATION/logs/ab-n4356.log 2>&1 &
+nohup $INVESTIGATION/ab_node.sh $JOB n4357 main:n4357-main-r1 "4357:n4357-4357halo-r1:--model.dsv4-cp-kv-exchange halo" main:n4357-main-r2 "4357:n4357-4357halo-r2:--model.dsv4-cp-kv-exchange halo" > $INVESTIGATION/logs/ab-n4357.log 2>&1 &
+nohup $INVESTIGATION/ab_node.sh $JOB n4358 main:n4358-main-r1 4358:n4358-4358-r1 "4358:n4358-4358halosac-r1:--model.dsv4-cp-kv-exchange halo --model.ac.mode selective --model.ac.targets <TARGETS>" main:n4358-main-r2 4358:n4358-4358-r2 "4358:n4358-4358halosac-r2:--model.dsv4-cp-kv-exchange halo --model.ac.mode selective --model.ac.targets <TARGETS>" > $INVESTIGATION/logs/ab-n4358.log 2>&1 &
+nohup $INVESTIGATION/ab_node.sh $JOB naux main:naux-main-r1 "4358:naux-4358halo-r1:--model.dsv4-cp-kv-exchange halo" 4358:naux-4358-r1 main:naux-main-r2 "4358:naux-4358halo-r2:--model.dsv4-cp-kv-exchange halo" 4358:naux-4358-r2 > $INVESTIGATION/logs/ab-naux.log 2>&1 &
