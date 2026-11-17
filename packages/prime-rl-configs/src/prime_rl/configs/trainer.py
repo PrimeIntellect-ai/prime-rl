@@ -214,6 +214,11 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     num_sms: int = Field(32, ge=1)
     """SMs allocated to DeepEP communication kernels."""
 
+    mnnvl: bool = False
+    """Carry DeepEP's cross-node traffic over multi-node NVLink (NVSHMEM MNNVL, fabric-handle buffers) instead of
+    InfiniBand, for expert-parallel groups inside one NVLink domain that spans nodes (GB300 NVL72). ``rl`` and ``sft``
+    turn it on from ``deployment.gpus_per_nvlink_domain`` when the group fits in the domain."""
+
 
 class LLEPConfig(BaseConfig):
     """Least-loaded expert parallelism (https://arxiv.org/abs/2601.17111): a rank whose experts are overloaded hands
@@ -281,6 +286,14 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
         if self.llep is not None and "num_reserved_sms" not in self.model_fields_set:
             self.num_reserved_sms = 32
         return self
+
+
+def auto_setup_deepep_mnnvl(model, deployment) -> None:
+    """DeepEP sends cross-node expert-parallel traffic over InfiniBand unless told the NVLink domain spans nodes; on
+    such racks (NVL72) turn on its multi-node NVLink path, unless ``mnnvl`` was set explicitly."""
+    dispatch = model.moe.dispatch
+    if isinstance(dispatch, DeepEPMoEDispatchConfig) and "mnnvl" not in dispatch.model_fields_set:
+        dispatch.mnnvl = deployment.nvlink_spans_nodes
 
 
 def rl_micro_batch_multiple(model: "ModelConfig") -> int:
