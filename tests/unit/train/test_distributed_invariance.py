@@ -1,67 +1,21 @@
-"""Distributed invariance of the trainer on two GPUs.
+"""Distributed invariance: the trainer computes the same loss and gradients however the model is split over 2 GPUs.
 
-Question: does the trainer compute the same loss and gradients no matter how the model is split across GPUs (FSDP, CP,
-EP) and which model features are on (activation checkpointing and offloading, fusions, torch.compile)?
+Each case loads a tiny seeded checkpoint through the trainer's own path, builds the model with `setup_model` on its
+layout (FSDP, CP, EP, activation checkpointing and offloading, fusions, torch.compile), and runs forward and backward
+on 4 packed Reverse-Text-SFT rows. One `torchrun` launch runs every case of a suite; each case reports as its own test.
 
-How it works:
+- Reference: the same checkpoint unsharded on one GPU, bf16 compute with fp32 gradient accumulation.
+- Routing replay: MoE cases replay the reference's expert picks, as RL's router replay does. Near-tied router scores
+  would otherwise pick other experts under CP/EP numerics. `test_vllm_parity.py` checks the picks themselves.
+- Tolerances: relative error of the loss (1e-5), the grad norm (1e-3) and the worst parameter gradient (2e-2), or
+  1e-4 / 3e-3 / 1e-1 with torch.compile: about 5x the largest difference observed. A gradient under 0.1% of the total
+  grad norm is measured against 0.1% of the total; a gradient on only one side fails. `Case.tolerances` raises a
+  tolerance for a measured reason.
+- Suites: `CASES` run in the tiny GPU subset, `FULL_SUITE_CASES` (archs whose kernels take minutes to compile) in the
+  full GPU suite. A case is one line there; a new arch also needs a tiny config in `TINY_MODELS` (built by HF) or
+  `TINY_PRIME_RL_MODELS` (built by the prime-rl model class).
 
-- One launch, many cases. The pytest fixture starts a single `torchrun --nproc-per-node=2` that runs every case of a
-  suite in-process, so torchrun, imports and data loading are paid once. Each case reports back as its own test.
-- Same weights everywhere. Every model is a tiny seeded random-init checkpoint (2 or 3 layers, hidden 256, every layer
-  kind of its arch), saved once in the HF format. Every layout and the reference load that checkpoint through the
-  trainer's own loading path, including the HF -> prime-rl conversion.
-- Real data. The first 4 rows of Reverse-Text-SFT, 512 tokens each, tokenized and packed by the trainer's SFT dataset
-  and dataloader code. Every model uses the Qwen3 tokenizer's vocabulary, so all of them read the same rows.
-- A case builds the model with the trainer's `setup_model` on its layout, then `setup_context_parallel` for CP. Each
-  rank runs forward and backward on its share of the rows: DP ranks split the rows, CP ranks each take a shard of
-  every row's sequence. The ranks sum the loss and token counts, then apply the trainer loop's gradient scaling
-  (`scale_gradients_`) and `clip_grad_norm_` for the grad norm.
-- The reference is the same checkpoint as a plain unsharded model on one GPU. It runs all rows in bf16 (FSDP's
-  compute dtype) and accumulates the gradients in fp32. It also records the experts every MoE router picks, which the
-  cases replay. References run first and CP cases last, because CP setup patches the attention classes for the rest
-  of the process.
-- The comparison is the relative error of the loss, the grad norm, and every parameter's full gradient (sharded
-  gradients are gathered). A parameter whose gradient nearly cancels (under 0.1% of the total grad norm) is measured
-  against 0.1% of the total grad norm instead, since its own relative error is rounding noise. Parameters that get no
-  gradient, like indexers that reach the loss only through top-k indices, are left out on both sides. A gradient
-  that exists, or is nonzero, on only one side fails the case.
-
-MoE routers pick their top-k experts from near-tied scores. CP and EP change the bf16 numerics slightly, so a few tokens
-pick other experts. That changes the loss and the router gradients by far more than the numerics themselves, and
-differently from run to run, as autotuned kernels pick other configs. The cases therefore replay the reference's
-routing, as RL's router replay does: both sides route every token to the same experts, and the comparison measures
-the sharding. `test_vllm_parity.py` checks the routers' own picks against vLLM's.
-
-The results also report each case's `worst_grad_share`: the norm of the worst parameter's reference gradient over the
-total grad norm. A tiny share means that parameter's gradient nearly cancels, so its relative error is noisy.
-
-Tolerances are about 5x the largest difference seen on the Llama, Qwen3 and GLM-4 archs: loss 1e-5, grad norm 1e-3
-and worst parameter gradient 2e-2 in eager mode, and 1e-4, 3e-3 and 1e-1 with torch.compile, which fuses bf16 ops
-differently from the eager reference. A case can raise one with a measured reason (`Case.tolerances`): GatedDeltaNet
-under CP moves the loss more than attention. Observed: dp2 is exact up to ~1e-8, eager CP and EP gradients differ by up
-to ~5e-3 on those archs and ~1e-2 on the newer ones, and compiled cases by up to ~1.3e-2. DeepSeek-V4's backward is not
-deterministic: on H200 its ep2 case has two reproducible numeric modes, and in the worse one an expert gradient is
-1.8e-2 off, close to the tolerance. Bugs injected by hand each failed exactly the affected cases: a Ulysses all-to-all
-backward without the exchange, a wrong FSDP gradient divide factor on EP blocks, and every CP rank using the first
-shard's position ids.
-
-There are two suites, each one launch. `tiny` (`CASES`) runs in the tiny GPU subset in about 40 s. `full`
-(`FULL_SUITE_CASES`) runs only in the full GPU suite. It holds the cases that take too long to compile in a fresh
-process: Qwen3-MoE with torch.compile (~25 s), and Qwen3.5 MoE, Qwen3.8 Flash Next, DeepSeek-V4 and GLM-5, whose
-kernels take minutes (the cuDNN sparse-attention backward, DeepGEMM, TileLang, FLA's Triton autotuning).
-
-A case that raises, for example on a kernel the GPU does not support, fails alone and the other cases still report.
-If only one rank raises, the other waits in a collective until the launch timeout.
-
-Adding a case is one line in `CASES` or `FULL_SUITE_CASES`. Adding a model is one config:
-
-- In `TINY_MODELS` for archs that HF implements. HF builds and saves the checkpoint.
-- In `TINY_PRIME_RL_MODELS` for the others. The prime-rl model class builds the checkpoint with seeded weights
-  (`init_weights`) and saves it through `convert_to_hf`.
-
-Keep the vocabulary, every layer kind, and the head shapes the kernels need; shrink the widths and the experts.
-
-To run a suite without pytest (it writes `results.json` to the output dir):
+Run a suite without pytest (it writes `results.json`):
 
     uv run torchrun --nproc-per-node=2 tests/unit/train/test_distributed_invariance.py <output_dir> tiny|full
 """
