@@ -200,7 +200,7 @@ def train(config: SFTConfig | PretrainConfig):
         else:
             eod_mask_token = None
             warn_if_no_document_separator(shards, tokenizer)
-        dataset = setup_token_dataset(config.data, dp_rank, dp_size, eod_mask_token=eod_mask_token)
+        dataset = setup_token_dataset(config.data, dp_rank=dp_rank, dp_size=dp_size, eod_mask_token=eod_mask_token)
     else:
         dataset = setup_sft_dataset(
             tokenizer,
@@ -218,7 +218,9 @@ def train(config: SFTConfig | PretrainConfig):
         logger.info(f"Loading validation dataset ({config.val.data})")
         val_raw_dataset = load_sft_dataset(config.val.data)
     if config.val is not None and isinstance(config, PretrainConfig):
-        val_document_dataset = setup_document_dataset(config.val.data, dp_rank, dp_size, config.val.num_samples)
+        val_document_dataset = setup_document_dataset(
+            config.val.data, dp_rank=dp_rank, dp_size=dp_size, num_documents=config.val.num_samples
+        )
         logger.info(
             f"Validation scores {len(val_document_dataset.windows)} windows of held-out documents "
             f"in {len(val_document_dataset.rows)} rows"

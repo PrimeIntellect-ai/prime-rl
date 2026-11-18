@@ -353,7 +353,7 @@ def warn_if_no_document_separator(shards: TokenShards, tokenizer: PreTrainedToke
 
 
 def setup_token_dataset(
-    config: DatatroveDataConfig, dp_rank: int = 0, dp_size: int = 1, eod_mask_token: int | None = None
+    config: DatatroveDataConfig, *, dp_rank: int, dp_size: int, eod_mask_token: int | None = None
 ) -> TokenDataset:
     return TokenDataset(
         TokenShards(config.paths, seed=config.seed),
@@ -366,7 +366,7 @@ def setup_token_dataset(
 
 
 def setup_document_dataset(
-    config: DatatroveDataConfig, dp_rank: int = 0, dp_size: int = 1, num_documents: int | None = None
+    config: DatatroveDataConfig, *, dp_rank: int, dp_size: int, num_documents: int | None = None
 ) -> DocumentDataset:
     return DocumentDataset(
         TokenShards(config.paths),

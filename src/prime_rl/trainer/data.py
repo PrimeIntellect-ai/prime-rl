@@ -34,9 +34,8 @@ class Batch(TypedDict):
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
-    """SFT dataset are iterable (infinite) and stateful (can be checkpointed). ``dp_rank`` and ``dp_size`` are this
-    rank's data-parallel rank and the data-parallel size (`ParallelDims.data_parallel`): the ranks of a
-    context-parallel group share a data-parallel rank and read the same samples."""
+    """Iterable (infinite) and stateful (checkpointable) dataset, read by data rank ``dp_rank * num_workers +
+    worker_id`` of ``dp_size * num_workers`` (`ParallelDims.data_parallel`)."""
 
     def __init__(self, dp_rank: int = 0, dp_size: int = 1):
         self.step, self.epoch = 0, 0
