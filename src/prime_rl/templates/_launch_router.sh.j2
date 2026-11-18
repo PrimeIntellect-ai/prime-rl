@@ -77,7 +77,7 @@ LLMD_EOF
         --prometheus-port "$((port + 21000))"
         --worker-startup-timeout-secs 4200)
     if [ "$mode" = pd ]; then
-        cmd+=(--vllm-pd-disaggregation $worker_args)
+        cmd+=(--vllm-pd-disaggregation $worker_args --pd-turn-retries {{ router.pd_turn_retries }})
 {%- if pd_bidirectional %}
         # Bidirectional KV transfer: keep each session's decode blocks and hand them to its next prefill (once).
         cmd+=(--pd-bidirectional-kv --pd-bidirectional-ttl-secs {{ pd_bidirectional.effective_router_ttl_s }})
