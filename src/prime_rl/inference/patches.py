@@ -41,6 +41,7 @@ def apply_shared_vllm_patches():
     monkey_patch_dspark_dp_compile_cache()
     monkey_patch_nixl_bidirectional_single_pull()
     monkey_patch_nixl_sliding_window_backoff()
+    monkey_patch_nixl_bidirectional_spec_decode_coverage()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
@@ -107,6 +108,73 @@ def monkey_patch_nixl_sliding_window_backoff():
 
     _prefill_backoff._prime_rl_sliding_window = True
     cls._prefill_backoff = _prefill_backoff
+
+
+def trim_block_ids_to_tokens(block_ids, kv_cache_groups, num_tokens: int):
+    """Keep, per KV cache group, only the blocks that hold positions ``[0, num_tokens)``.
+
+    Block lists are positional from token 0 for every attention group (sliding-window groups pad out-of-window
+    positions with null blocks), so the blocks to keep are the first ``cdiv(num_tokens, block_size)``. SSM groups hold
+    one running state, not positions, and stay as they are.
+    """
+    from vllm.v1.kv_cache_interface import MambaSpec
+
+    trimmed = []
+    for group, blocks in zip(kv_cache_groups, block_ids, strict=True):
+        spec = group.kv_cache_spec
+        if isinstance(spec, MambaSpec):
+            trimmed.append(blocks)
+            continue
+        keep = -(-num_tokens // spec.block_size)
+        trimmed.append(list(blocks)[:keep])
+    return tuple(trimmed)
+
+
+def monkey_patch_nixl_bidirectional_spec_decode_coverage():
+    """Bidirectional NIXL with speculative decoding: decode's handle covers only tokens with valid KV.
+
+    When a request finishes, decode exports its retained blocks for the next turn's prefill with
+    ``remote_num_tokens = request.num_computed_tokens``. With speculative decoding, the last step also computed the
+    drafted positions after the final token; the request ends before a rejection rolls them back, so the count
+    includes positions holding rejected drafts' KV (e.g. 42 for 23 prompt + 16 output tokens with 3 drafts). Only
+    ``num_tokens - 1`` positions hold KV of the actual sequence: every token but the last was an input. Prefill would
+    load the stale draft KV, and a router that checks coverage against the tokens it has seen drops every such
+    handle, so the readback never happens. The extra positions can also add a trailing block, and prefill pairs block
+    lists from their ends, which would shift every block.
+
+    Report ``num_tokens - 1`` and drop the blocks past it, per KV cache group, before vLLM clips sliding-window
+    groups to their in-window tail (clipping a list with an extra trailing block would cut a block the window needs).
+    Without speculative decoding, ``num_computed_tokens`` is already ``num_tokens - 1`` and nothing changes.
+    """
+    from vllm.distributed.kv_transfer.kv_connector.v1.nixl import pull_scheduler
+    from vllm.v1.request import RequestStatus
+
+    cls = pull_scheduler.NixlPullConnectorScheduler
+    original = cls.request_finished
+    if getattr(original, "_prime_rl_spec_decode_coverage", False):
+        return
+
+    def request_finished(self, request, block_ids):
+        params = request.kv_transfer_params
+        valid = request.num_tokens - 1
+        if (
+            getattr(self, "is_bidirectional_kv_xfer_enabled", False)
+            and params
+            and not params.get("do_remote_decode")
+            and request.status in (RequestStatus.FINISHED_LENGTH_CAPPED, RequestStatus.FINISHED_STOPPED)
+            and 0 < valid < request.num_computed_tokens
+        ):
+            block_ids = trim_block_ids_to_tokens(block_ids, self.kv_cache_config.kv_cache_groups, valid)
+            computed = request.num_computed_tokens
+            request.num_computed_tokens = valid
+            try:
+                return original(self, request, block_ids)
+            finally:
+                request.num_computed_tokens = computed
+        return original(self, request, block_ids)
+
+    request_finished._prime_rl_spec_decode_coverage = True
+    cls.request_finished = request_finished
 
 
 def monkey_patch_block_outermost_mla_stride():
