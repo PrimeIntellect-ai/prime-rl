@@ -55,10 +55,10 @@ class PretrainDataConfig(BaseDataConfig):
     """The folders to sample documents from."""
 
     seed: int = Field(0, ge=0)
-    """Seed for the order of the documents and the subsets."""
+    """Seed for the order of the documents, within rows too, and for the subsets."""
 
     document_masking: bool = True
-    """Attention and positions restart at every document. If False, a row is one sequence."""
+    """Attention and positions restart at every document and piece. If False, a row is one sequence."""
 
     eod_mask_loss: bool = True
     """Don't train the model to predict the first token of the next, unrelated document: no loss where the input is

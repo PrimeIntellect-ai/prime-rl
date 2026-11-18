@@ -189,8 +189,9 @@ class TokenSampler:
 
     A unit is a document or a ``seq_len`` piece of a longer one. A source reads its units (or, with ``repetitions``, a
     fixed seeded subset) in passes, each in a keyed order (`permute`). Units are taken in order of due time, their
-    source's tokens over its weight (weighted fair queuing); the unit that crosses the step's end is cut,
-    and `fill_rows` packs the step into full rows. ``cache_dir`` keeps the long-document table and the subsets."""
+    source's tokens over its weight (weighted fair queuing); the unit that crosses the step's end is cut, and
+    `fill_rows` packs the step into full rows, each in a seeded order. ``cache_dir`` keeps the long-document table and
+    the subsets."""
 
     def __init__(
         self,

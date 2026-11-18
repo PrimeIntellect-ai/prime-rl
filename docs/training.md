@@ -419,7 +419,7 @@ seq_len = 2048
 
 **Repetitions.** `repetitions` is how often every token of a source is seen over the run (`max_steps * batch_size * seq_len` tokens; needs `max_steps`). The source then reads a fixed, seeded subset of `weight * run tokens / repetitions` tokens that many times. Without it, a source is read whole, in a new order on every pass.
 
-**Rows.** Documents longer than `seq_len` are cut into `seq_len` pieces. A step's documents fill `batch_size` rows of exactly `seq_len` tokens, without padding and without losing a prediction within a document. Attention and positions restart at every document (`data.document_masking = false` makes a row one sequence).
+**Rows.** Documents longer than `seq_len` are cut into `seq_len` pieces. A step's documents fill `batch_size` rows of exactly `seq_len` tokens, without padding and without losing a prediction within a document. Attention and positions restart at every document and piece (`data.document_masking = false` makes a row one sequence). With `data.eod_mask_loss` (on by default), positions whose input is the separator have no loss: their target is the first token of another document.
 
 **Resume.** A resume is exact, also on another number of GPUs, if `data.num_workers` is unchanged. It stops with an error if `seq_len`, `batch_size`, `seed`, the sources, weights or repetitions change (or `max_steps`, with repetitions); `ckpt.skip_dataloader` starts the data over. `data.batch_size` must be a multiple of dp × `num_workers` × `micro_batch_size`.
 
