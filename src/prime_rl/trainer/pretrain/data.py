@@ -454,6 +454,11 @@ class TokenSampler:
         }
 
 
+def positions(seq_lens: list[int]) -> np.ndarray:
+    """Every token's position in its segment, for segments of ``seq_lens`` tokens."""
+    return np.arange(sum(seq_lens)) - np.repeat(np.cumsum(seq_lens) - seq_lens, seq_lens)
+
+
 class TokenDataset(StatefulIterableDataset):
     """The rows of the sampler's steps: every rank plans every step, and data rank ``r`` of ``R`` yields rows ``r``,
     ``r + R``, ... of each. The state is the cursor at the start of the current step and the rows of it yielded; at a
@@ -507,11 +512,10 @@ class TokenDataset(StatefulIterableDataset):
         if self.eod_mask_token is not None:
             loss_mask &= input_ids != self.eod_mask_token
         seq_lens = lengths.tolist() if self.document_masking else [self.sampler.seq_len]
-        positions = np.arange(self.sampler.seq_len) - np.repeat(np.cumsum(seq_lens) - seq_lens, seq_lens)
         return {
             "input_ids": input_ids,
             "target_ids": target_ids,
-            "position_ids": positions,
+            "position_ids": positions(seq_lens),
             "loss_mask": loss_mask,
             "seq_lens": seq_lens,
             "mm_kwargs": None,
@@ -613,7 +617,7 @@ class DocumentDataset(StatefulIterableDataset):
         return {
             "input_ids": input_ids,
             "target_ids": target_ids,
-            "position_ids": np.arange(len(input_ids)) - np.repeat(np.cumsum(seq_lens) - seq_lens, seq_lens),
+            "position_ids": positions(seq_lens),
             "loss_mask": loss_mask,
             "seq_lens": seq_lens,
             "mm_kwargs": None,

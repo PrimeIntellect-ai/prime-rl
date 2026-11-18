@@ -14,16 +14,13 @@ from prime_rl.utils.logger import get_logger
 
 
 class Sample(TypedDict):
-    """A sample's tokens: ``input_ids``, ``position_ids``, ``target_ids`` and ``mm_token_type_ids`` as int64 arrays,
-    ``loss_mask`` as a bool array."""
-
-    input_ids: np.ndarray
-    position_ids: np.ndarray
-    loss_mask: np.ndarray
-    target_ids: np.ndarray
+    input_ids: Int[np.ndarray, "seq"]
+    position_ids: Int[np.ndarray, "seq"]
+    loss_mask: Bool[np.ndarray, "seq"]
+    target_ids: Int[np.ndarray, "seq"]
     seq_lens: list[int]
     mm_kwargs: dict[str, Tensor] | None
-    mm_token_type_ids: np.ndarray | None
+    mm_token_type_ids: Int[np.ndarray, "seq"] | None
 
 
 class Batch(TypedDict):
