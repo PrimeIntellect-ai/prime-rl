@@ -49,4 +49,5 @@ launch_inference_rank() {
     else
         CUDA_VISIBLE_DEVICES="$gpus" VLLM_RPC_BASE_PATH="$rpcbase" "${cmd[@]}" 2>&1 | tee -a "$log" &
     fi
+    INFERENCE_PORT_BY_PID[$!]="$port"
 }
