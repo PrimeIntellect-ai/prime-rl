@@ -3,8 +3,8 @@
 vLLM's online ``nvfp4_per_token`` experts quantize their input after the all2all, so under DP+EP with
 ``all2all_backend = "flashinfer_nvlink_one_sided"`` every token crosses NVLink as bf16 (2 B per element)
 and each receiving rank quantizes it again. Here the sending rank quantizes once and dispatches the FP4
-values, the E4M3 block scales and the FP32 per-token scale as separate payloads: 0.28x the bf16 bytes and
-0.55x those of MXFP8 dispatch, with no packing or unpacking copies. Each token's quantization depends only
+values and the E4M3 block scales with the FP32 per-token scale appended to each token's scale row: 0.28x the
+bf16 bytes and 0.55x those of MXFP8 dispatch. Each token's quantization depends only
 on that token, so the experts receive exactly the inputs they would have computed after receipt.
 """
 
@@ -52,26 +52,22 @@ def patch_nvfp4_per_token_dispatch():
                 max(global_num_tokens_cpu) if global_num_tokens_cpu is not None else a1.shape[0]
             )
             x_q, block_scale, per_token_scale = quantize_nvfp4_per_token_input(a1)
-            communication = self.all2all_manager.get_communication()
-            # The wrapper's dispatch carries a single scale tensor, so call the primitive with the per-token
-            # scale as its own payload; the wrapper's combine reads the token count its dispatch records.
-            recv = communication.alltoall.dispatch(
+            # The wrapper dispatches one scale tensor per token: carry the FP32 per-token scale as 4 more bytes
+            # of each token's E4M3 block-scale row and split them again on receipt.
+            block_scale = block_scale.view(torch.uint8).reshape(x_q.shape[0], -1)
+            scale_width = block_scale.shape[1]
+            token_scale = per_token_scale.reshape(-1, 1).view(torch.uint8)
+            received = self.all2all_manager.get_communication().dispatch(
+                x_q.view(torch.uint8),
                 topk_ids,
-                [
-                    x_q.view(torch.uint8),
-                    block_scale.view(torch.uint8),
-                    per_token_scale.reshape(-1, 1),
-                    topk_ids,
-                    topk_weights,
-                ],
-                self.runtime_max_tokens_per_rank,
-                invalid_token_expert_id=communication.params.invalid_expert_id,
-                expert_id_payload_index=3,
+                topk_weights,
+                hidden_states_scale=torch.cat([block_scale, token_scale], dim=1),
+                runtime_max_tokens_per_rank=self.runtime_max_tokens_per_rank,
             )
-            communication._tokens_per_rank = self.runtime_max_tokens_per_rank
-            x, scales, token_scales, ids, weights = (t.flatten(0, 1) for t in recv)
-            self.received_per_token_scale = token_scales.squeeze(1)
-            return x.view(x_q.dtype), scales, None, ids, weights
+            recv_scales = received.hidden_states_scale
+            self.received_per_token_scale = recv_scales[:, scale_width:].contiguous().view(torch.float32).squeeze(1)
+            scales = recv_scales[:, :scale_width].contiguous()
+            return received.hidden_states.view(x_q.dtype), scales, None, received.topk_ids, received.topk_weights
 
     class TrtLlmNvFp4PrequantizedExperts(TrtLlmNvFp4ExpertsModular):
         """Per-token NVFP4 experts whose input arrives quantized; the dispatcher holds the per-token scales."""
