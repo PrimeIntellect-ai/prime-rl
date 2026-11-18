@@ -1,4 +1,5 @@
 import hashlib
+from dataclasses import replace
 from typing import Iterable, Iterator, Literal
 
 import torch
@@ -27,7 +28,10 @@ def get_weight_model(model_runner, target: WeightTarget) -> Module:
 
 
 def checkpoint_weights(model: Module, path: str, load_config) -> Iterator[tuple[str, torch.Tensor]]:
-    """Stream an HF-format checkpoint directory with vLLM's default loader."""
+    """Stream an HF-format checkpoint directory with vLLM's default loader, also for a server that started from dummy
+    weights."""
+    if load_config.load_format == "dummy":
+        load_config = replace(load_config, load_format="auto")
     model_loader = get_model_loader(load_config)
     assert isinstance(model_loader, DefaultModelLoader)
     source = DefaultModelLoader.Source(
@@ -142,11 +146,6 @@ def load_weights_checkpoint_layerwise(
         initialize_layerwise_reload(model)
         model.load_weights(state_iter)  # type: ignore
         finalize_layerwise_reload(model, model_config)
-        if preserve_tensor_attributes:
-            for module in model.modules():
-                rebuild = getattr(module, "_build_fused_kv_buffers", None)
-                if rebuild is not None:
-                    rebuild()
         for module, name, original in tensor_attributes:
             updated = getattr(module, name)
             if updated is not original:
@@ -154,34 +153,3 @@ def load_weights_checkpoint_layerwise(
                     raise ValueError(f"Weight reload changed the layout of {type(module).__name__}.{name}")
                 original.copy_(updated)
                 setattr(module, name, original)
-
-
-@torch.no_grad()
-def update_mla_absorbed_weights(model: Module) -> None:
-    """Recompute MLA absorbed KV weights after in-place kv_b_proj updates."""
-    from vllm.model_executor.layers.quantization.utils.quant_utils import get_and_maybe_dequant_weights
-
-    for name, module in model.named_modules():
-        has_absorbed_weights = hasattr(module, "W_UV") or hasattr(module, "W_UK_T")
-        if not has_absorbed_weights or not hasattr(module, "kv_b_proj"):
-            continue
-
-        if hasattr(module, "W_UV"):
-            out_dtype = module.W_UV.dtype
-        else:
-            out_dtype = torch.bfloat16
-
-        kv_b_proj_weight = get_and_maybe_dequant_weights(module.kv_b_proj, out_dtype=out_dtype).T
-        kv_b_proj_weight = kv_b_proj_weight.view(
-            module.kv_lora_rank,
-            module.num_heads,
-            module.qk_nope_head_dim + module.v_head_dim,
-        )
-        w_uk, w_uv = kv_b_proj_weight.split([module.qk_nope_head_dim, module.v_head_dim], dim=-1)
-
-        if hasattr(module, "W_UV"):
-            module.W_UV.copy_(w_uv.transpose(0, 1))
-        if hasattr(module, "W_UK_T"):
-            module.W_UK_T.copy_(w_uk.permute(1, 2, 0))
-
-        logger.debug(f"Updated MLA absorbed weights for module {name}")

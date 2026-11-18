@@ -17,7 +17,7 @@ from modelexpress.client import MxClient
 from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 
-from prime_rl.inference.vllm.worker.weight_transfer import WeightRPCMixin, update_mla_absorbed_weights
+from prime_rl.inference.vllm.worker.weight_transfer import WeightRPCMixin
 from prime_rl.transports.weights.nixl.agent import (
     MemDesc,
     NixlAgent,
@@ -62,10 +62,6 @@ class LayerWeightTransferPlan:
     reload_layer: nn.Module | None
     copies: list[TensorCopyPlan]
     persistent_copies: list[TensorCopyPlan]
-
-    @property
-    def destination_names(self) -> set[str]:
-        return {plan.recorded_copy.destination_name for plan in self.copies}
 
 
 @dataclass
@@ -489,7 +485,6 @@ class NIXLWeightUpdateWorker(WeightRPCMixin, Worker):
 
         started = time.perf_counter()
         self.apply_transfer_plan(plan)
-        update_mla_absorbed_weights(self.raw_model)
         torch.accelerator.synchronize(self.device)
         logger.info(
             "Applied NIXL policy update on rank %d in %.2fs",
@@ -506,7 +501,6 @@ class NIXLWeightUpdateWorker(WeightRPCMixin, Worker):
             initialize_layerwise_reload,
         )
         from vllm.model_executor.model_loader.reload.meta import materialize_layer
-        from vllm.model_executor.model_loader.reload.utils import get_layer_tensors
 
         model = self.raw_model
         cancelled = Event()
@@ -548,11 +542,6 @@ class NIXLWeightUpdateWorker(WeightRPCMixin, Worker):
 
                 info = LAYERWISE_INFO[layer]
                 materialize_layer(layer, info)
-                # Match loader semantics for destinations with unwritten padding.
-                destination_names = layer_plan.destination_names
-                for name, tensor in get_layer_tensors(layer).items():
-                    if name in destination_names and not tensor.is_meta:
-                        tensor.zero_()
                 for copy_plan in layer_plan.copies:
                     self.replay_tensor_copy(copy_plan)
                 for copy_plan in layer_plan.persistent_copies:

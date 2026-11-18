@@ -59,14 +59,14 @@ gpu = [
     "torchvision ; sys_platform == 'linux'",
     "torchaudio ; sys_platform == 'linux'",
     "torchdata>=0.11.0 ; sys_platform == 'linux'",
-    "vllm>=0.33.0 ; sys_platform == 'linux'",
+    "vllm>=0.34.0 ; sys_platform == 'linux'",
     "mooncake-transfer-engine>=0.3.10.post2 ; sys_platform == 'linux'",
     "torchtitan ; sys_platform == 'linux'",
     "dion ; sys_platform == 'linux'",
     "tilelang>=0.1.8 ; sys_platform == 'linux'",
-    # DSA sparse MLA backward kernel (CuTe DSL). vLLM 0.33 requires >=1.31; 1.32 changed the backward's
-    # signature (preallocated dq/dkv/d_sink and workspace), which our call sites and `cudnn_dsa_patch` predate.
-    "nvidia-cudnn-frontend>=1.31.0,<1.32 ; sys_platform == 'linux'",
+    # DSA sparse MLA backward kernel (CuTe DSL). FlashInfer 0.7.3 (vLLM 0.34) requires >=1.32. `cudnn_dsa_patch`
+    # reaches into the frontend's private compile caches, so the version stays pinned (1.32.3 reorders the SM90 key).
+    "nvidia-cudnn-frontend==1.32.2 ; sys_platform == 'linux'",
     "deep-select ; sys_platform == 'linux'",
     "flash-linear-attention>=0.6.0 ; sys_platform == 'linux'",
     "mamba-ssm>=2.3.0 ; sys_platform == 'linux'",
@@ -75,8 +75,8 @@ gpu = [
     "nixl-cu13==1.5.0 ; sys_platform == 'linux'",
     # Precompiled FlashInfer kernels for vLLM's flashinfer-python pin. Without them every fresh node
     # downloads the trtllm-gen cubins and JIT-builds its modules into its node-local cache at startup.
-    "flashinfer-cubin==0.7.2.post1 ; sys_platform == 'linux'",
-    "flashinfer-jit-cache==0.7.2.post1+cu130 ; sys_platform == 'linux'",
+    "flashinfer-cubin==0.7.3 ; sys_platform == 'linux'",
+    "flashinfer-jit-cache==0.7.3+cu130 ; sys_platform == 'linux'",
     "modelexpress==0.8.0.dev20261022 ; sys_platform == 'linux'",
 ]
 dashboard = [
@@ -153,10 +153,10 @@ override-dependencies = [
     # Shared by vLLM, TileLang, and the pinned FlashAttention 4 runtime.
     "apache-tvm-ffi==0.1.11",
     "nvidia-cudnn-cu13>=9.15 ; sys_platform == 'linux'",
-    # vLLM 0.33.0 requires this exact CUTLASS DSL version and quack-kernels 0.6.5.
+    # vLLM 0.34.0 requires this exact CUTLASS DSL version and quack-kernels 0.6.5.
     # Keep this pin aligned with quack-kernels and the flash-attn-4 revision below.
     "nvidia-cutlass-dsl==4.8.0",
-    # vLLM 0.33.0 is compiled against and pins exactly torch 2.14.0.
+    # vLLM 0.34.0 is compiled against and pins exactly torch 2.14.0.
     "torch==2.14.0",
     # torch 2.14 pins NCCL 2.30.7, which puts both GPUs of a pair on the same NIC when every GPU
     # runs its own cross-node communicator at once (e.g. FSDP with expert parallelism inside a
@@ -192,8 +192,8 @@ members = [
 # Tau tasksets require litellm<1.82.7, while Harbor requires litellm>=1.92.0.
 # Apex pins a verifiers git revision instead of the editable workspace member.
 # AutomationBench-AA needs upstream automation-bench 1.0.6, which conflicts with pi_automationbench's fork 1.1.1.
-# ALE CLI requires numpy>=2.4.4, while vLLM 0.33.0 (via mistral-common) requires numpy<2.4.
-# IFBench requires setuptools<78, while vLLM 0.33.0 requires setuptools>=78.1.1.
+# ALE CLI requires numpy>=2.4.4, while vLLM 0.34.0 (via mistral-common) requires numpy<2.4.
+# IFBench requires setuptools<78, while vLLM 0.34.0 requires setuptools>=78.1.1.
 # A workspace shares one lock, so these packages need separate environments.
 exclude = [
     "deps/prime-envs/environments/if/ifbench",
@@ -240,9 +240,9 @@ harbor = "2026-10-08T00:00:00Z"
 # CA bundle: security fixes (e.g. 2026.10.19 for the eMudhra compromise) must not wait out the cooldown
 certifi = false
 tokenspeed-mla = false
-# vLLM 0.33.0 pins flashinfer-python 0.7.2.post1, published inside the rolling window
+# vLLM 0.34.0 pins flashinfer-python 0.7.3, published inside the rolling window
 flashinfer-python = false
-# vLLM 0.33.0 pins these, published inside the rolling window
+# vLLM 0.34.0 pins these, published inside the rolling window
 instanttensor = false
 humming-kernels = false
 fastokens = false
@@ -291,8 +291,8 @@ vllm-router = [
     { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.4/vllm_router-0.2.4-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 vllm = [
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.33.0rc3/vllm-0.33.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.33.0rc3/vllm-0.33.0-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.34.0/vllm-0.34.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.34.0/vllm-0.34.0-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 deep-ep = [
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
@@ -312,8 +312,8 @@ flash_attn_3 = { index = "pytorch-cu130-test" }
 flashinfer-cubin = { index = "flashinfer" }
 # Per-platform wheels: the aarch64 build also requires sm110a/sm121a wheels that x86_64 lacks.
 flashinfer-jit-cache = [
-    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache-0.7.2.post1%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache-0.7.2.post1%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache-0.7.3%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache-0.7.3%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 
 [tool.uv.extra-build-dependencies]

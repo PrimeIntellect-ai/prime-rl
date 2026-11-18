@@ -52,8 +52,8 @@ class GatedDeltaNet(nn.Module):
             padding=conv_kernel_size - 1,
             bias=False,
         )
-        self.dt_bias = nn.Parameter(torch.ones(num_value_heads))
-        self.A_log = nn.Parameter(torch.empty(num_value_heads).uniform_(0, 16).log_())
+        self.dt_bias = nn.Parameter(torch.empty(num_value_heads))
+        self.A_log = nn.Parameter(torch.empty(num_value_heads))
         self.norm = FusedRMSNormGated(value_head_dim, eps=norm_eps, activation=output_gate_activation)
         self.out_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
         self.in_proj_qkv = nn.Linear(hidden_size, conv_dim, bias=False)
@@ -61,6 +61,13 @@ class GatedDeltaNet(nn.Module):
         self.in_proj_b = nn.Linear(hidden_size, num_value_heads, bias=False)
         self.in_proj_a = nn.Linear(hidden_size, num_value_heads, bias=False)
         self.cp_context = CPContext()
+        self.reset_parameters()
+
+    @torch.no_grad()
+    def reset_parameters(self) -> None:
+        nn.init.ones_(self.dt_bias)
+        # The lower bound keeps log(A) finite.
+        self.A_log.uniform_(0.01, 16).log_()
 
     def attention_flops(self, seq_len: int) -> int:
         return delta_rule_flops(
