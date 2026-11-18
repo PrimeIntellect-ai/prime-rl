@@ -174,10 +174,14 @@ source .venv/bin/activate
 # SLURM env propagation; otherwise uv would silently fall back to the shared .venv.
 srun --ntasks-per-node=1 bash -s <<'SYNC_SH'
 cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync --all-extras --all-packages
+# uv sync restores the locked NIXL wheel, whose bundled UCX breaks P/D KV transfer: reinstall the source build.
+if compgen -G "deps/nixl_cu13-*.whl" > /dev/null; then uv pip install -q --reinstall --no-deps deps/nixl_cu13-*.whl; fi
 SYNC_SH
 {% else %}
 # Shared (NFS) venv: one sync on the batch node populates it for all nodes.
 uv sync --all-extras --all-packages
+# uv sync restores the locked NIXL wheel, whose bundled UCX breaks P/D KV transfer: reinstall the source build.
+if compgen -G "deps/nixl_cu13-*.whl" > /dev/null; then uv pip install -q --reinstall --no-deps deps/nixl_cu13-*.whl; fi
 {% endif %}
 
 {% if pre_run_command %}
@@ -409,6 +413,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     export LD_LIBRARY_PATH="$PROJECT_DIR/third_party/ucx/lib:$PROJECT_DIR/third_party/ucx/lib/ucx:${LD_LIBRARY_PATH:-}"
     export VLLM_NIXL_SIDE_CHANNEL_HOST=$LOCAL_IP
     export VLLM_NIXL_SIDE_CHANNEL_PORT=5600
+    export NIXL_NIC_AFFINITY={{ 1 if nixl_nic_affinity else 0 }}
 
     # The kv_transfer_config (NIXL transfer + any KV offload connector) is built in
     # InferenceConfig.to_namespace() from the per-node config, so it is no longer assembled here.

@@ -39,9 +39,74 @@ def apply_shared_vllm_patches():
     monkey_patch_fit_sliding_window_pages()
     monkey_patch_flashinfer_fp8_ds_mla_draft()
     monkey_patch_dspark_dp_compile_cache()
+    monkey_patch_nixl_bidirectional_single_pull()
+    monkey_patch_nixl_sliding_window_backoff()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
+
+
+def monkey_patch_nixl_bidirectional_single_pull():
+    """Bidirectional NIXL: a prefill request that comes back through the connector lookup after its D->P pull
+    prefills locally instead of waiting for a second read.
+
+    With ``bidirectional_kv_xfer``, the next turn's prefill request carries decode's block ids, and the first lookup
+    registers the D->P read and marks them ``_remote_blocks_processed``. If the read fails under the ``recompute``
+    load-failure policy (e.g. prefill declines it because decode's blocks are close to their TTL), or the request is
+    preempted after the pull and its blocks are evicted, the request goes through the lookup again. That lookup
+    still offered decode's tokens, so the request waited in ``WAITING_FOR_REMOTE_KVS`` for a read that is never
+    issued, holding its blocks: under load the prefill instance stalls. Backport of vllm-project/vllm#64860.
+    """
+    from vllm.distributed.kv_transfer.kv_connector.v1.nixl import pull_scheduler
+
+    cls = pull_scheduler.NixlPullConnectorScheduler
+    original = cls.get_num_new_matched_tokens
+    if getattr(original, "_prime_rl_single_pull", False):
+        return
+
+    def get_num_new_matched_tokens(self, request, num_computed_tokens):
+        params = request.kv_transfer_params
+        if (
+            params is not None
+            and params.get("do_remote_decode")
+            and params.get("_remote_blocks_processed")
+            and not params.get("do_remote_prefill")
+        ):
+            return 0, False
+        return original(self, request, num_computed_tokens)
+
+    get_num_new_matched_tokens._prime_rl_single_pull = True
+    cls.get_num_new_matched_tokens = get_num_new_matched_tokens
+
+
+def monkey_patch_nixl_sliding_window_backoff():
+    """P/D with sliding-window layers: leave the last prompt token to decode, as for Mamba.
+
+    Decode recomputes the last prompt token to sample the first output token. If prefill transfers the whole prompt,
+    the sliding-window group is laid out for the next position, which drops the oldest block of the window whenever
+    ``N - W + 1`` is a multiple of the block size: the recomputed token then attends to the null block. Prefill
+    therefore stops one token short and decode recomputes it with its window intact (DeepSeek V4's compressor
+    caches are sliding-window specs). Backport of vllm-project/vllm#65584 (NIXL side).
+    """
+    from vllm.distributed.kv_transfer.kv_connector.v1.nixl import base_scheduler
+    from vllm.v1.kv_cache_interface import SlidingWindowSpec
+
+    cls = base_scheduler.NixlBaseConnectorScheduler
+    original = cls._prefill_backoff
+    if getattr(original, "_prime_rl_sliding_window", False):
+        return
+
+    def _prefill_backoff(self) -> int:
+        has_sliding_window = getattr(self, "_prime_rl_has_sliding_window", None)
+        if has_sliding_window is None:
+            has_sliding_window = any(
+                isinstance(group.kv_cache_spec, SlidingWindowSpec) for group in self.kv_cache_config.kv_cache_groups
+            )
+            self._prime_rl_has_sliding_window = has_sliding_window
+        return max(original(self), 1 if has_sliding_window else 0)
+
+    _prefill_backoff._prime_rl_sliding_window = True
+    cls._prefill_backoff = _prefill_backoff
 
 
 def monkey_patch_block_outermost_mla_stride():

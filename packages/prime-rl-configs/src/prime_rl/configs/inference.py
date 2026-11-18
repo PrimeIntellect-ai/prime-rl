@@ -271,6 +271,12 @@ class MooncakeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
     own ``kv_lease_duration``, not this lease. Under P/D the larger of the two roles' values applies, since one
     master serves both."""
 
+    pool_only: bool = False
+    """Only contribute this node's DRAM (and disk) segment to the shared pool: the engine neither loads from nor saves
+    to the store. Under bidirectional P/D (``deployment.bidirectional_kv_transfer``) decode needs no store connector,
+    since the next turn's prefill reads the previous turn's KV straight from decode, but decode nodes can still grow
+    the pool that prefill uses."""
+
     def to_connector_dict(self) -> dict[str, Any]:
         # Addresses/sizes/tiers are realized by the per-node store launch in the sbatch
         # template (MOONCAKE_CONFIG_PATH JSON); blocks are keyed by model + parallel rank +
@@ -374,6 +380,36 @@ class LlmdRouterConfig(BaseConfig):
 RouterConfig: TypeAlias = Annotated[VllmRouterConfig | LlmdRouterConfig, Field(discriminator="type")]
 
 
+class BidirectionalKVTransferConfig(BaseConfig):
+    """Bidirectional NIXL KV transfer for multi-turn P/D (vLLM ``bidirectional_kv_xfer``).
+
+    After a turn, decode keeps the turn's KV blocks (prompt and completion) for ``decode_blocks_ttl_s``. The router
+    remembers them per session (``x-session-id``) and hands them to the next turn's prefill, which reads them from
+    decode over NIXL and computes only the new tokens, instead of recomputing the conversation. Each handle is used at
+    most once: decode frees the blocks after the first read, so a retried turn falls back to a plain prefill."""
+
+    decode_blocks_ttl_s: int = Field(480, ge=1)
+    """How long decode keeps a finished turn's blocks for the next turn (``decoder_kv_blocks_ttl``). Retained blocks
+    occupy decode's KV cache until read or expired, so a long TTL with many idle sessions costs decode capacity."""
+
+    router_ttl_s: int | None = Field(None, ge=1)
+    """How long the router keeps a session's decode handle. Must be shorter than ``decode_blocks_ttl_s`` so the router
+    never hands out blocks decode has already released. Defaults to ``decode_blocks_ttl_s`` minus 30 s."""
+
+    @property
+    def effective_router_ttl_s(self) -> int:
+        return self.router_ttl_s if self.router_ttl_s is not None else max(1, self.decode_blocks_ttl_s - 30)
+
+    @model_validator(mode="after")
+    def router_ttl_below_decode_ttl(self):
+        if self.effective_router_ttl_s >= self.decode_blocks_ttl_s:
+            raise ValueError(
+                "bidirectional_kv_transfer.router_ttl_s must be shorter than decode_blocks_ttl_s: the router would "
+                "otherwise hand out decode blocks that are already released."
+            )
+        return self
+
+
 class BaseInferenceDeploymentConfig(BaseConfig):
     gpus_per_node: int = 8
     """GPUs per node."""
@@ -433,6 +469,16 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     decode_kv_cache_offload: KVCacheOffloadConfig | Literal["inherit"] | None = "inherit"
     """KV cache offload on decode instances. ``inherit`` uses ``inference.kv_cache_offload``; None disables it."""
 
+    bidirectional_kv_transfer: BidirectionalKVTransferConfig | None = None
+    """Bidirectional KV transfer: the next turn's prefill reads the previous turn's KV back from decode. Requires the
+    ``vllm-router`` router. None (default) keeps one-way prefill-to-decode transfer."""
+
+    nixl_nic_affinity: bool = True
+    """Pin each single-GPU engine's NIXL/UCX traffic to the RDMA port nearest its GPU, on one rail
+    (``UCX_NET_DEVICES``, ``UCX_MAX_RMA_RAILS=1``). Spreading GPUDirect RDMA over every NIC sends traffic across
+    CPU sockets, which can stall the GPU under sustained P/D transfer load. Engines spanning several GPUs keep all
+    ports."""
+
     @property
     def num_prefill_nodes(self) -> int:
         return self.prefill_nodes_per_replica * self.num_prefill_replicas
@@ -483,6 +529,9 @@ class InferenceConfig(BaseConfig):
 
     use_pd_kv_transfer: bool = False
     """Auto-set for disaggregated P/D: emit the NIXL transfer connector. Persisted into the per-node config (which drops ``deployment``) so the connector is still built per worker. Not meant to be set by hand."""
+
+    pd_decode_blocks_ttl_s: int | None = None
+    """Auto-set from ``deployment.bidirectional_kv_transfer``: enables bidirectional NIXL transfer with this decode block TTL. Persisted into the per-node config like ``use_pd_kv_transfer``. Not meant to be set by hand."""
 
     enable_return_sampling_mask: bool = False
     """Return per-token sampling masks (``sampling_mask``) on ``/inference/v1/generate`` responses via vLLM's native ``--return-sampling-mask`` (>= 0.28). The ``rl`` entrypoint enables this field for truncated policy sampling and for recorded sampler logprobs (``sampling.logprobs``, set by score centering), which are captured next to the mask. Standalone inference must set it explicitly because no orchestrator sampling config is available. The field persists into per-node configs. Requests opt in with ``extra_args.prl_replay = true``; only these requests require positive temperature. Their supports are captured whole, so top-p alone needs no top-k. Evaluation requests need not opt in. Under speculative decoding each accepted position carries its own support, and sampler logprobs need truncated (replayed) sampling."""
@@ -541,6 +590,18 @@ class InferenceConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_bidirectional_kv_transfer(self):
+        """Bidirectional transfer needs a router that tracks each session's decode blocks, and decode blocks in the
+        regular paged layout (HiSparse keeps decode's sparse-MLA KV in a host pool that prefill cannot read)."""
+        if self.deployment.type != "disaggregated" or self.deployment.bidirectional_kv_transfer is None:
+            return self
+        if self.router is None or self.router.type != "vllm-router":
+            raise ValueError("deployment.bidirectional_kv_transfer requires the vllm-router router.")
+        if self.hisparse is not None:
+            raise ValueError("deployment.bidirectional_kv_transfer does not support HiSparse decode instances.")
+        return self
+
+    @model_validator(mode="after")
     def validate_router_deployment(self):
         """The llm-d router (EPP + Envoy) is launched by the SLURM templates only; multi-node deployments need a router to front the per-rank engines."""
         if self.router is not None and self.router.type == "llm-d" and self.deployment.type == "single_node":
@@ -573,6 +634,8 @@ class InferenceConfig(BaseConfig):
         """Auto-configure inference for disaggregated P/D: enable EP and compute DP."""
         if self.deployment.type == "disaggregated":
             self.use_pd_kv_transfer = True
+            if self.deployment.bidirectional_kv_transfer is not None:
+                self.pd_decode_blocks_ttl_s = self.deployment.bidirectional_kv_transfer.decode_blocks_ttl_s
             if "enable_expert_parallel" not in self.vllm.model_fields_set:
                 self.vllm.enable_expert_parallel = True
             if "enable_eplb" not in self.vllm.model_fields_set:
@@ -626,18 +689,20 @@ class InferenceConfig(BaseConfig):
         via ``MultiConnector``. Returns None when none applies.
         """
         connectors: list[dict[str, Any]] = []
+        bidirectional = self.use_pd_kv_transfer and self.pd_decode_blocks_ttl_s is not None
         if self.use_pd_kv_transfer:
+            nixl_extra: dict[str, Any] = {"num_threads": 1}
+            if bidirectional:
+                nixl_extra |= {"bidirectional_kv_xfer": True, "decoder_kv_blocks_ttl": self.pd_decode_blocks_ttl_s}
             connectors.append(
-                {
-                    "kv_connector": "NixlConnector",
-                    "kv_role": "kv_both",
-                    "kv_connector_extra_config": {"num_threads": 1},
-                }
+                {"kv_connector": "NixlConnector", "kv_role": "kv_both", "kv_connector_extra_config": nixl_extra}
             )
-        if self.kv_cache_offload is not None:
-            connector = self.kv_cache_offload.to_connector_dict()
-            if self.use_pd_kv_transfer and connector["kv_connector"] == "MooncakeStoreConnector":
-                # Decode instances also store the KV they generate, so the next turn's prefill can load it.
+        offload = self.kv_cache_offload
+        if offload is not None and not (offload.type == "mooncake" and offload.pool_only):
+            connector = offload.to_connector_dict()
+            if self.use_pd_kv_transfer and not bidirectional and connector["kv_connector"] == "MooncakeStoreConnector":
+                # Decode instances also store the KV they generate, so the next turn's prefill can load it. With
+                # bidirectional transfer the next turn reads that KV from decode directly instead.
                 connector["kv_connector_extra_config"]["save_decode_cache"] = True
             connectors.append(connector)
         if self.hisparse is not None:

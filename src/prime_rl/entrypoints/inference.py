@@ -130,6 +130,8 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, log_dir: Path
             decode_env_vars=config.deployment.decode_env_vars,
             prefill_vllm_extra_json=vllm_overrides_fragment(config.deployment.prefill_vllm_overrides),
             decode_vllm_extra_json=vllm_overrides_fragment(config.deployment.decode_vllm_overrides),
+            pd_bidirectional=config.deployment.bidirectional_kv_transfer,
+            nixl_nic_affinity=config.deployment.nixl_nic_affinity,
         )
     elif is_multi_node:
         template_vars.update(
