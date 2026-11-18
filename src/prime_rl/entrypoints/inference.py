@@ -1,5 +1,6 @@
 import json
 import os
+import resource
 import signal
 import subprocess
 import sys
@@ -227,6 +228,10 @@ def inference_local(config: InferenceConfig):
     os.environ.update({**DEFAULT_COMMON_ENV_VARS, **DEFAULT_INFERENCE_ENV_VARS, **config.env_vars})
 
     setup_vllm_env(config)
+
+    # The router holds a socket per in-flight request on each side; a 1024 soft limit runs out at ~500.
+    _, hard_nofile = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (hard_nofile, hard_nofile))
 
     router_process: subprocess.Popen | None = None
     router_stopping = Event()
