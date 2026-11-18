@@ -655,6 +655,26 @@ def ckpt_output_dir(output_dir: Path, ckpt_config: CheckpointConfig | None) -> P
     return (ckpt_config.output_dir if ckpt_config else None) or output_dir
 
 
+def _init_optimizer_state_without_step(optimizers: list[OptimizerLike]) -> None:
+    """Create empty optimizer state for optimizers that can build it without stepping.
+
+    ``get_state_dict`` initializes an empty optimizer by running ``step()`` on zero gradients
+    (``torch.distributed.checkpoint.state_dict._init_optim_state``). For Muon that is a full
+    distributed Newton-Schulz pass over every matrix before any checkpoint byte is read, which
+    can take far longer than a training step. Optimizers that lazily create their state (dion's
+    ``_get_or_initialize_state``) get the same zero tensors directly; DCP then loads into them.
+    """
+    for optimizer in optimizers:
+        optimizer = optimizer.checkpoint_optimizer() if isinstance(optimizer, OffloadOptimizer) else optimizer
+        init_state = getattr(optimizer, "_get_or_initialize_state", None)
+        if init_state is None or optimizer.state:
+            continue
+        for group in optimizer.param_groups:
+            for param in group["params"]:
+                if param.requires_grad:
+                    init_state(param, group["algorithm"])
+
+
 def _load_app_state(
     path: Path,
     model: nn.Module,
@@ -665,10 +685,12 @@ def _load_app_state(
     model_only: bool,
 ) -> None:
     app_state = AppState(model, [] if model_only else optimizers, scheduler, progress)
+    if not model_only:
+        _init_optimizer_state_without_step(optimizers)
     dcp_load(state_dict={"app": app_state}, checkpoint_id=path, process_group=get_dcp_group())
-    # DCP materializes the optimizer state with a zero-grad step, which allocates a full set of
-    # gradients. Left in the allocator cache, those blocks fragment the pool and the first step
-    # reserves on top of them instead of reusing them.
+    # Without the pre-initialization above, DCP materializes the optimizer state with a zero-grad
+    # step, which allocates a full set of gradients. Left in the allocator cache, those blocks
+    # fragment the pool and the first step reserves on top of them instead of reusing them.
     gc.collect()
     torch.cuda.empty_cache()
     if model_only:
