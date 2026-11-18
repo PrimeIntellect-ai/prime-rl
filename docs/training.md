@@ -115,7 +115,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `[orchestrator.train.algo]` | Training algorithm — its `type` names it (`grpo` default, `max_rl`, `rae`, `hierarchical_grpo`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |
 | `trainer.model.freeze_moe_router` | Freeze MoE router gates (default `true` for RL, `false` for SFT). Router updates in RL shift the trainer's expert choices away from the ones inference sampled, amplifying the train-inference mismatch, so RL keeps the pretrained router. Set `false` to train it. |
 | `[[orchestrator.train.source]]` | Training sources. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Training sources](configuration.md#training-sources-orchestratortrainsource). |
-| `[[eval.source]]` + `eval.interval` | Online eval environments and cadence (default every 100 steps); see [Online Evals](#online-evals). |
+| `[[eval.source]]` + `eval.interval` | Online eval environments and cadence (default every 100 steps), run by the orchestrator on the policy the train rollouts see; see [Configuration § Environments](configuration.md#environments). |
 | `[[val.sets]]` + `val.interval` | Validation sets scored on the trainer's weights; see [Validation](#validation). |
 
 **Monitoring:**
@@ -272,7 +272,7 @@ The run streams to the Prime Intellect platform by default — see [Prime](#prim
 
 ### Online Evals
 
-`uv run sft` and `uv run pretrain` can evaluate the model on rollout-based envs as it trains, reusing the RL orchestrator's eval machinery. Configure an `[eval]` block — the same block as in an `rl` config: multiple `[[eval.source]]` envs with per-source `interval` / `select` / `group_size` / sampling overrides — plus an `[inference]` block for the vLLM server:
+`uv run sft` and `uv run pretrain` can evaluate the model on rollout-based envs as it trains, reusing the RL orchestrator's eval machinery. Configure an `[eval]` block — the `[eval]` block of an `rl` config (multiple `[[eval.source]]` envs with per-source `interval` / `select` / `group_size` / sampling overrides), plus the online-eval process's own `[eval.client]`, `[eval.concurrency]` and `eval.cancel_on_new_checkpoint` — and an `[inference]` block for the vLLM server:
 
 ```toml
 [eval]
@@ -339,7 +339,7 @@ type = "chat"
 name = "reverse-text"
 path = "PrimeIntellect/Reverse-Text-SFT"
 split = "train"
-seq_len = 2048             # optional; default: the training data.seq_len
+seq_len = 2048             # optional; default: the training sequence length
 ```
 
 Every set logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and with a byte-level BPE tokenizer `val/<name>/bpb@<seq_len>`, the bits per UTF-8 byte of the scored tokens (special tokens count 0 bytes), e.g. `val/fineweb-edu/bpb@2k`. With another tokenizer (e.g. SentencePiece), the trainer logs one warning and only the loss. The sets are tokenized once at startup. At every validation, the sequences of all sets are packed longest first into rows of `val.micro_batch_tokens` tokens (default: the training micro-batch, `data.seq_len * data.micro_batch_size` in SFT and pretraining and `model.seq_len` in RL, or the longest set `seq_len` if that is longer, rounded up to a multiple of `model.cp`), with attention and positions restarting at every sequence and the rest of a row padded, and the rows are shared out over the data-parallel ranks. The log-probs are computed in fp32. `val.save_arrays` writes the per-item arrays of every set (summed loss, scored tokens, greedy hits and bytes per document or row) to `<run_dir>/val/step_N/`. A `chat` set needs a typed renderer, also in pretraining. An `rl` config takes `[val]` at the top level, like `[eval]`; its `chat` sets use `trainer.renderer`, which defaults to `orchestrator.renderer`, so they render like the policy's rollouts. Validation does not support VLM models.
@@ -439,7 +439,7 @@ All files in `data.paths` (in folder order, then file name order) form one token
 
 Validation scores every document of the held-out folder on its own, from its first token, and logs `val/fineweb-edu/loss@2k` and `val/fineweb-edu/bpb@2k`; see [Validation](#validation) for the other set types and options.
 
-[Online evals](#online-evals) work as in SFT, from the first step: with a scratch init, the inference server starts without weights and receives them with the trainer's startup broadcast. An untrained model has no chat template of its own to rely on, so set one with `inference.vllm.chat_template` (a Jinja template string or a file path); `configs/ci/integration/pretrain/eval.toml` is an example.
+[Online evals](#online-evals) work as in SFT, from the first step: with a scratch init, the inference server starts without weights and receives them with the trainer's startup broadcast. A model trained from scratch has learned no chat format (and a custom tokenizer may ship no template), so set one with `inference.vllm.chat_template` (a Jinja template string or a file path); `configs/ci/integration/pretrain/eval.toml` is an example.
 
 **Launch.**
 

@@ -122,6 +122,13 @@ def test_mismatch_kl_in_range(rl_process: ProcessResult, test_no_error, run_dir:
     check_avg_mismatch_kl_in_range(trainer_stdout, last_n_steps=3, max_threshold=0.01)
 
 
+def test_validation(rl_process: ProcessResult, test_no_error, run_dir: Path):
+    """The trainer scores the chat validation set, rendered with the orchestrator's renderer."""
+    with open(run_dir / "logs" / "latest" / "trainer.log") as f:
+        lines = strip_escape_codes(f.read()).splitlines()
+    assert any("Validation | Step 5 | reverse-text@2k | loss" in line for line in lines)
+
+
 @pytest.fixture(scope="module")
 def test_no_error_resume(rl_resume_process: ProcessResult, run_dir: Path):
     """Tests that the RL resume process does not fail."""

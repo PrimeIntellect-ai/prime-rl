@@ -167,11 +167,13 @@ class PrimeMonitor(Monitor):
         if isinstance(config, EvalConfig):
             await self._init_evaluations(config)
             return
-        # The SFT online-eval process and the RL trainer log into the run their launcher registers.
+        # The online-eval process and the RL trainer log into the run their launcher registers.
         attaches = isinstance(config, (OnlineEvalProcessConfig, TrainerConfig))
         run_id = os.getenv("RUN_ID")
         if attaches and run_id is None and mode == "online":
-            raise RuntimeError(f"This process logs to its launcher's run: launch it with `rl` or `sft`, or {OFF_HINT}")
+            raise RuntimeError(
+                f"This process logs to its launcher's run: launch it with `rl`, `sft` or `pretrain`, or {OFF_HINT}"
+            )
         # The launcher registered the run (or a managed launch pre-created it) - attach
         # instead of registering a duplicate. The registering process owns the attached
         # run's failure marking; a clean finish() completes it.

@@ -68,7 +68,7 @@ def resolve_resume_step(config: SupervisedTrainerConfig) -> int | None:
 
 def build_online_eval_config(config: SupervisedTrainerConfig) -> OnlineEvalProcessConfig:
     """The online-eval process's config: the resolved ``[eval]`` block with the run-level
-    fields filled from the SFT config. The launcher spawns the env worker pools itself; the
+    fields filled from the trainer's config. The launcher spawns the env worker pools itself; the
     online-eval process finds each one through the address it publishes in the shared
     config attempt."""
     assert config.eval is not None

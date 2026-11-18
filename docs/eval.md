@@ -1,6 +1,6 @@
 # Eval
 
-This page covers `uv run eval` — evaluating a model in one or more environments. For the online evals of a training run, see [Training](training.md#online-evals).
+This page covers `uv run eval` — evaluating a model in one or more environments. For the online evals of an `sft` or `pretrain` run, see [Training](training.md#online-evals); an `rl` run's `[eval]` uses the same sources, run by the orchestrator.
 
 > **AI agents working in this repo:** the equivalent runbook is at [`skills/eval/SKILL.md`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/skills/eval/SKILL.md).
 

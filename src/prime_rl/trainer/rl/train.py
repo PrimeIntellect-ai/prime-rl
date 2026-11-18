@@ -729,6 +729,7 @@ def train(config: TrainerConfig):
         # optimizer step (so eval_on_start evaluates untrained weights)
         validation_time = 0.0
         if run_validation_this_step:
+            torch.cuda.synchronize()
             validation_start_time = time.perf_counter()
             metrics = validation.run(model, progress.step)
             validation_time = time.perf_counter() - validation_start_time

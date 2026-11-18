@@ -33,6 +33,16 @@ env.taskset.id = "reverse-text"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 
+[val]
+interval = 5
+num_samples = 64
+
+[[val.sets]]
+type = "chat"
+name = "reverse-text"
+path = "PrimeIntellect/Reverse-Text-SFT"
+split = "train"
+
 [inference]
 
 # PrimeIntellect Qwen3 fine-tune - select its renderer explicitly (the -SFT

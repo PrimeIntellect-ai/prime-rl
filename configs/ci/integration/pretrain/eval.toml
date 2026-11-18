@@ -18,6 +18,7 @@ type = "filesystem"
 
 [eval]
 interval = 1
+cancel_on_new_checkpoint = false  # evaluate every step, also when the next one is already done
 
 [eval.select]
 limit = 16
@@ -32,7 +33,7 @@ env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 
 [inference.vllm]
-# A user-provided chat template, as an untrained model needs one.
+# A user-provided chat template: a model trained from scratch has learned no chat format.
 chat_template = """{% for message in messages %}{{ message['role'] }}: {{ message['content'] }}
 {% endfor %}{% if add_generation_prompt %}assistant: {% endif %}"""
 

@@ -820,7 +820,8 @@ class BaseTrainerConfig(BaseConfig):
             f"Rendering SFT data or chat validation sets requires a typed renderer with sampled-token and content "
             f"attribution, but {reason}. "
             "Implement and register the renderer in the renderers package, or explicitly select an existing "
-            "typed renderer only when its template is verified to match."
+            "typed renderer ([renderer], or [orchestrator.renderer] in an rl config) only when its template is verified "
+            "to match."
         )
 
 
@@ -891,7 +892,7 @@ class TrainerConfig(BaseTrainerConfig):
     @model_validator(mode="after")
     def resolve_mega_moe_max_tokens_per_rank(self):
         """RL micro batches are one packed sequence of up to ``model.seq_len`` tokens, padded to
-        ``rl_micro_batch_multiple`` and split over the CP ranks."""
+        ``rl_micro_batch_multiple`` and split over the CP ranks; validation rows have ``val.micro_batch_tokens``."""
         dispatch = self.model.moe.dispatch
         if dispatch.type == "mega_moe":
             multiple = rl_micro_batch_multiple(self.model)

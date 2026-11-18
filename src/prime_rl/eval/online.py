@@ -34,7 +34,7 @@ STARTUP_BROADCAST_TIMEOUT_S = 1200
 
 class OnlineEval:
     def __init__(self, config: OnlineEvalProcessConfig) -> None:
-        assert config.model is not None, "the sft launcher fills eval.model"
+        assert config.model is not None, "the sft and pretrain launchers fill eval.model"
         self.config = config
         self.runner = EvalRunner(config, run_dir=config.output_dir)
         # The last weight-broadcast step already handled (evaluated or skipped).
