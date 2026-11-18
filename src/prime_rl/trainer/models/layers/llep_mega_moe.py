@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from prime_rl.trainer.models.layers.moe import GroupedExperts
 
 _STATES: dict[int, "LLEPMegaMoE"] = {}
+_PRECISIONS: dict[int, str] = {}
 
 
 @torch.library.custom_op("prime_rl::llep_plan", mutates_args=())
@@ -93,9 +94,26 @@ def llep_mega_moe_backward_op(
     state_key: int,
     activation_clamp: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    state = _STATES[state_key]
-    if state.precision == "bf16":
+    state, precision = _STATES[state_key], _PRECISIONS[state_key]
+    if precision == "bf16":
         return state.backward(dy, x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj, activation_clamp)
+    if precision == "mxfp8":
+        # Every GEMM in MXFP8: the kernel quantizes x, dy and dz itself; the owners push the three weight operands
+        weights = MegaMoeMXFP8ExpertWeights.build(gate_up_proj, down_proj, for_backward=True)
+        dx, dtopk, dw1, dw2 = state.backward_mxfp8(
+            dy,
+            x,
+            vids,
+            foreign,
+            plan_id,
+            topk_weights,
+            weights.l1,
+            weights.l1_t,
+            weights.l2_t,
+            activation_clamp,
+            _dw_dtype(gate_up_proj),
+        )
+        return dx.to(x.dtype), dtopk, dw1, dw2
     # MXFP8 QAT: a bf16 backward on the weights the forward computed with (re-quantized, so bitwise the same)
     gate_up, down = mxfp8_decoded_weights(MegaMoeMXFP8ExpertWeights.build(gate_up_proj, down_proj, for_backward=False))
     return state.backward(
@@ -149,8 +167,8 @@ class LLEPMegaMoEExpertCompute:
         precision: str = "bf16",
     ) -> None:
         major = 9 if precision == "bf16" else 10
-        if precision not in ("bf16", "mxfp8_qat"):
-            raise ValueError(f"LLEP Mega MoE supports precision 'bf16' and 'mxfp8_qat', got {precision!r}.")
+        if precision not in ("bf16", "mxfp8", "mxfp8_qat"):
+            raise ValueError(f"LLEP Mega MoE supports precision 'bf16', 'mxfp8' and 'mxfp8_qat', got {precision!r}.")
         if not mega_moe_available(precision) or torch.cuda.get_device_capability()[0] != major:
             raise RuntimeError(
                 f"LLEP Mega MoE `{precision}` needs an SM{major}0 GPU and the prime-mega-moe `deep_gemm` build with LLEP "
@@ -179,9 +197,11 @@ class LLEPMegaMoEExpertCompute:
             num_sms,
             LLEPOptions(**options.model_dump()),
             precision="bf16" if precision == "bf16" else "mxfp8",
+            mxfp8_backward=precision == "mxfp8",
         )
         self.state_key = id(state)
         _STATES[self.state_key] = state
+        _PRECISIONS[self.state_key] = precision
 
     def validate(self, experts: "GroupedExperts") -> None:
         if experts.gate_proj is None and experts.gate_up_proj is None:
@@ -201,6 +221,7 @@ class LLEPMegaMoEExpertCompute:
             )
 
     def destroy(self) -> None:
+        _PRECISIONS.pop(self.state_key)
         _STATES.pop(self.state_key).destroy()
 
     def __call__(

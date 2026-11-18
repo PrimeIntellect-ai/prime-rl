@@ -466,7 +466,7 @@ def test_moe_compute_apply_to_cli(selection, selected):
             "MXFP8 transport requires",
         ),
         (
-            {"ep": 8, "moe": {"dispatch": {"type": "mega_moe", "precision": "mxfp8", "llep": {}}}},
+            {"ep": 8, "moe": {"dispatch": {"type": "mega_moe", "precision": "fp8", "llep": {}}}},
             "llep requires",
         ),
     ],
