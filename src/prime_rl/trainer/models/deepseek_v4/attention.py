@@ -450,7 +450,7 @@ class PackedContext:
 
         `rotary_emb` supplies the sliding window, the compress rates in use and the positions its
         RoPE cache covers, all read from its config. The sequence is as long as `seq_lens` says,
-        padding included: both packers fold their padding into the last document.
+        padding included, whether a packer folds it into the last document or gives it a segment of its own.
 
         `seq_lens` always describes the whole sequence. `cp_rank` and `cp_world_size` say which
         contiguous shard of it this rank holds the queries of. The window keys narrow to the shard

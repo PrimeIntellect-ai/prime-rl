@@ -190,7 +190,8 @@ class CatDataset(StatefulIterableDataset):
             result["position_ids"].extend(range(pad_len))
             result["loss_mask"].extend([False] * pad_len)
             result["target_ids"].extend([0] * pad_len)
-            result["seq_lens"][-1] += pad_len
+            # Padding is its own segment, so the last sample does not attend to it
+            result["seq_lens"].append(pad_len)
         result["mm_kwargs"] = packed["mm_kwargs"]
         if packed["mm_token_type_ids"] is not None:
             result["mm_token_type_ids"] = packed["mm_token_type_ids"][:seq_len] + [0] * pad_len
