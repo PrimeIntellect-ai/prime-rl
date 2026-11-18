@@ -157,11 +157,6 @@ def load_weights_checkpoint_layerwise(
         initialize_layerwise_reload(model)
         model.load_weights(state_iter)  # type: ignore
         finalize_layerwise_reload(model, model_config)
-        if preserve_tensor_attributes:
-            for module in model.modules():
-                rebuild = getattr(module, "_build_fused_kv_buffers", None)
-                if rebuild is not None:
-                    rebuild()
         for module, name, original in tensor_attributes:
             updated = getattr(module, name)
             if updated is not original:
@@ -818,7 +813,11 @@ def _restore_kernel_format(swapped: list[tuple]) -> None:
 
 @torch.no_grad()
 def update_mla_absorbed_weights(model: Module) -> None:
-    """Recompute MLA absorbed KV weights after in-place kv_b_proj updates."""
+    """Recompute MLA absorbed KV weights after in-place kv_b_proj updates.
+
+    Layerwise reloads refill them from vLLM's post-load hooks (``finalize_layerwise_reload``); sparse deltas and
+    index-map loads write the params directly and never run those hooks, so they call this.
+    """
     from vllm.model_executor.layers.quantization.utils.quant_utils import get_and_maybe_dequant_weights
 
     for name, module in model.named_modules():

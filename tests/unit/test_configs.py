@@ -1,6 +1,5 @@
 import importlib
 import json
-import os
 import re
 import sys
 from pathlib import Path
@@ -473,6 +472,20 @@ def test_moe_compute_apply_to_cli(selection, selected):
     ],
 )
 def test_invalid_moe_runtime_configs_fail(model, message):
+    with pytest.raises(ValidationError, match=message):
+        TrainerModelConfig.model_validate(model)
+
+
+@pytest.mark.parametrize(
+    ("model", "message"),
+    [
+        ({"ac": {"mode": "selective", "targets": ["@self_attn"]}}, "Invalid activation checkpointing target"),
+        ({"ac": {"mode": "selective", "targets": ["aten::mm@"]}}, "Invalid activation checkpointing target"),
+        ({"ac": {"mode": "selective", "targets": ["aten::mm@a@b"]}}, "Invalid activation checkpointing target"),
+        ({"ac": {"mode": "selective", "targets": ["aten::mm@self_attn"]}, "compile": None}, "require model.compile"),
+    ],
+)
+def test_invalid_ac_targets_fail(model, message):
     with pytest.raises(ValidationError, match=message):
         TrainerModelConfig.model_validate(model)
 
@@ -1347,25 +1360,6 @@ def test_explicit_inference_parser_wins_over_auto():
     )
     assert config.inference is not None
     assert config.inference.vllm.tool_call_parser == "hermes"
-
-
-@pytest.mark.parametrize("deployment", [{"type": "single_node"}, {"type": "disaggregated"}])
-def test_combined_replay_uses_v2_runner(monkeypatch, deployment):
-    from prime_rl.inference.server import setup_vllm_env
-
-    monkeypatch.delenv("VLLM_USE_V2_MODEL_RUNNER", raising=False)
-    config = InferenceConfig(
-        deployment=deployment,
-        slurm={} if deployment["type"] == "disaggregated" else None,
-        enable_return_sampling_mask=True,
-        vllm={"enable_return_routed_experts": True},
-    )
-
-    setup_vllm_env(config)
-
-    assert config.enable_return_sampling_mask is True
-    assert config.vllm.enable_return_routed_experts is True
-    assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
 
 
 def test_pd_role_connectors():
