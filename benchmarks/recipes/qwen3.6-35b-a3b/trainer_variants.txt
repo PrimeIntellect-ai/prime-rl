@@ -1,8 +1,0 @@
-# name overrides  (8x H200, ep 8; default: optimizer offload, AC offload 5 in flight)
-cp8 --model.cp 8
-cp4 --model.cp 4
-cp2 --model.cp 2
-cp1 --model.cp 1
-cp4-no-acoff --model.cp 4 --no-model.ac-offloading
-cp2-no-acoff --model.cp 2 --no-model.ac-offloading
-cp4-optim-gpu --model.cp 4 --model.offload none

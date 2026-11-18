@@ -1,6 +1,6 @@
 ---
 name: recipes
-description: Rules and playbook for the model × hardware RL recipes in `recipes/`, and the sweep harness in `benchmarks/recipes/` that fits them. Use when adding a recipe for a new model or hardware type, re-fitting a recipe after a stack change, or choosing trainer and inference parallelism for a model.
+description: Rules and methodology for the model × hardware RL recipes in `recipes/`. Use when adding a recipe for a new model or hardware type, re-fitting a recipe after a stack change, or choosing trainer and inference parallelism for a model.
 ---
 
 # Recipes
@@ -20,8 +20,8 @@ uv run rl @ recipes/<model>/<hardware>.toml @ my-task.toml
 - **Context.** Fit every recipe to 256k (`seq_len = max_model_len = 262144`), so that it works
   for any agentic workload. Shorter context can run much faster; that is the user's trade-off.
 - **Precision.** Use the checkpoint's native precision when both the trainer and vLLM support
-  it on the target hardware. Otherwise use the nearest supported format and record the gap in
-  `meta.toml`.
+  it on the target hardware. Otherwise use the nearest supported format and say so in the
+  recipe header.
   - Trainer: `bf16`, blockwise `fp8` (SM90 and SM100), `mxfp8` (SM100 only). No NVFP4 or MXFP4.
   - H200 is SM90: no MXFP8, no NVFP4. FP8 checkpoints use blockwise FP8 on both sides.
 - **One flat file per hardware.** `recipes/<model>/<hardware>.toml` holds the full config. Do
@@ -33,6 +33,8 @@ uv run rl @ recipes/<model>/<hardware>.toml @ my-task.toml
 - **Document the launch command.** Each recipe's header holds
   `#   uv run rl @ recipes/<model>/<hardware>.toml @ recipes/tasks/<task>.toml`.
   `tests/unit/test_configs.py` parses every such stack.
+- **Explain non-default choices.** Give each setting that differs from the default a one-line
+  comment with the measurement behind it.
 - **Smallest fit.** Pick the fewest trainer nodes that fit one 262144-token sample with about
   10% memory headroom. Among configs of that size, pick the highest tok/s per GPU. For
   inference, pick the replica shape with the best output tok/s per GPU that serves the
@@ -40,40 +42,117 @@ uv run rl @ recipes/<model>/<hardware>.toml @ my-task.toml
 
 ## Fitting a recipe
 
-Run each stage on dummy weights: loading real weights and FlashInfer autotuning can each take
-longer than the whole sweep. Ask before you submit SLURM jobs; other teams have priority.
+Fit the trainer and the inference server separately on dummy weights, then run the whole
+recipe once with real weights. Loading real weights and FlashInfer autotuning can each take
+longer than a whole sweep. Aim for less than 30 min of GPU time per stage. Ask before you
+submit SLURM jobs; other teams have priority.
 
-1. **Prior.** Read the model's `config.json`. Start from the nearest existing config in
-   `examples/advanced/` or `configs/advanced/`. Those configs are 128k: double `cp` for 256k.
-2. **Trainer fit.** Write `benchmarks/recipes/<model>/trainer.toml` (fake data, one
-   262144-token sample per micro batch, `random_init`, `force_balanced_routing`) and a variants
-   file, then run `benchmarks/recipes/trainer_fit.sh`. Read `summary.md`.
-3. **Inference fit.** Write `inference.toml` (`load_format = "dummy"`) and a variants file, then
-   run `benchmarks/recipes/inference_fit.sh`. It drives each server shape with
-   `bench_inference.py` (multi-turn sessions, log-normal lengths, a tail at 256k).
-4. **Smoke.** Run the recipe end to end with real weights for about 10 steps. This checks the
-   weight broadcast and the real memory peaks, which dummy weights do not show.
-5. **Write** `recipes/<model>/<hardware>.toml`, the measured numbers in `meta.toml`, the
-   summaries in `benchmarks/recipes/<model>/results-<hardware>.md`, and a row in
-   `recipes/README.md`. Check the composition with
-   `uv run rl @ recipe @ recipes/tasks/swe.toml --dry-run`.
+### 1. Prior
 
-### Sweep lessons
+Read the model's `config.json`: total and active parameters, expert count, attention type, KV
+head count, and the share of full-attention layers. Start from the nearest existing config in
+`examples/advanced/` or `configs/advanced/`. Those configs are 128k: double `cp` for 256k.
 
-- **Trainer cost is mostly compile.** Step 1 includes `torch.compile`; later variants reuse the
-  inductor cache and take about half the wall time. Run the most likely winner first.
-- **At 256k, attention dominates.** CP and offloading change throughput by less than 10%, so
-  the trainer choice is mostly about memory headroom.
+### 2. Trainer fit
+
+The trainer must fit the worst case: one 262144-token sample per micro batch. Run the trainer
+alone on one node with fake data, random weights and balanced routing:
+
+```bash
+torchrun --nproc-per-node 8 --standalone src/prime_rl/trainer/rl/train.py \
+    --model.name <model> --model.seq-len 262144 --model.ep 8 --model.ac.freq 1 \
+    --model.debug.random-init --model.debug.force-balanced-routing \
+    --data.fake.batch-size 8 --data.fake.generate-samples --data.fake.doc-len 262144 \
+    --max-steps 3 --no-monitors.prime --output-dir <out>/<variant> <variant overrides>
+```
+
+- Skip step 1: it includes `torch.compile`. Read tok/s and peak memory from steps 2 and 3 in
+  `<out>/<variant>/metrics.jsonl`.
+- Sweep `cp ∈ {1, 2, 4, 8}` first. Then turn levers off on the best one or two: activation
+  offloading (`--no-model.ac-offloading`) and optimizer offload (`--model.offload none`).
+- Treat a variant as fitting only if it leaves at least 10% of GPU memory free. Real routing
+  adds memory on top of the balanced-routing peak (see Known traps).
+- Run the most likely winner first. Later variants reuse the inductor cache and start about
+  twice as fast.
+
+### 3. Inference fit
+
+The inference replica must hold the 256k tail and serve many shorter agentic sessions.
+
+- **TP.** Keep `tensor_parallel_size` at or below the KV head count. Above it, vLLM
+  replicates the KV cache. Use the smallest TP that holds the weights and several 256k
+  contexts. vLLM logs the KV capacity in tokens at startup.
+- **DP.** Fill the node with `data_parallel_size`. For MoE models, vLLM DP shards the experts
+  across DP ranks, so a `tp × dp` node is one lockstep engine.
+- **Compare shapes** with dummy weights (`--vllm.load-format dummy`) under a synthetic
+  agentic load. Use multi-turn sessions that share a prefix, log-normal target lengths
+  (median about 24k), and a few percent of sessions that reach 256k. Raise concurrency until
+  output tok/s per GPU falls, and compare shapes at their peaks. Reject any shape that
+  preempts requests.
+- Server startup takes 7 to 10 min. Keep the number of server variants small.
+
+### 4. Smoke run
+
+Run the recipe with real weights and a real task for 5 to 10 steps:
+
+```bash
+uv run rl @ recipes/<model>/<hardware>.toml @ recipes/tasks/swe.toml --max-steps 5 \
+    --orchestrator.batch-size 64 --orchestrator.eval.skip-first-step
+```
+
+The smoke run checks the weight broadcast and the real memory peaks, which dummy weights do
+not show. It also gives the real throughput:
+
+- Trainer: tok/s and peak memory of every step after step 1.
+- Inference: output and prefill tok/s per GPU, prefix-cache hit rate, peak KV cache usage,
+  preemptions.
+- `time/wait_for_batch` on the trainer. Set `deployment.num_infer_replicas` so that the
+  trainer computes most of the time. If the trainer waits for half of each step, the
+  inference side needs about twice the replicas.
+
+### 5. Write the recipe
+
+Write `recipes/<model>/<hardware>.toml` and add a row to `recipes/README.md` with the layout,
+the measured trainer tok/s and the status. Check the composition:
+
+```bash
+uv run rl @ recipes/<model>/<hardware>.toml @ recipes/tasks/swe.toml --dry-run
+```
+
+## Example: Qwen3.6-35B-A3B on H200
+
+35B total, 3B active, 256 experts, 2 KV heads, 10 of 40 layers full attention, bf16.
+
+Trainer fit (dummy weights, ep 8, one node):
+
+| cp | Offloading | tok/s | Peak GiB |
+|---|---|---|---|
+| 1 | optimizer, activations | OOM | – |
+| 2 | optimizer, activations | 24.7k | 112.7 |
+| 2 | optimizer | 25.9k | 128.4 (too tight) |
+| 4 | optimizer, activations | 24.2k | 79.4 |
+| **4** | **optimizer** | **25.6k** | **87.4** |
+| 4 | none | 25.2k | 115.6 |
+| 8 | optimizer, activations | 23.8k | 93.2 |
+
+Inference fit: the hybrid attention keeps about 4.9M KV tokens per GPU at TP 1. TP 1, 2 and 4
+gave 542, 535 and 458 output tok/s per GPU at concurrency 256. TP 2 × DP 4 won on tail TTFT.
+
+Smoke run (5 steps of scaleswe, one trainer and one inference node): the trainer ran at 21.7k
+tok/s and peaked at 114 GiB in step 1, 27 GiB above the sweep. Inference gave 914 output
+tok/s per GPU with a 74% prefix-cache hit rate and no preemptions. The trainer waited for
+batches 73% of the time, so the recipe sets three inference replicas.
+
+## Sweep lessons
+
+- **At 256k, attention dominates trainer time.** CP and offloading change throughput by less
+  than 10%, so the trainer choice is mostly about memory headroom.
 - **Peak memory is not monotonic in CP.** At cp = world size, DP is 1 and every rank runs every
   micro batch, which can cost more memory than cp / 2. Sweep at least cp ∈ {2, 4, 8}.
-- **TP above the KV head count replicates the KV cache.** Skip those shapes.
-- **vLLM DP shards MoE experts across DP ranks**, so `dp > 1` is one lockstep engine, not
-  independent replicas.
 - **Inference throughput has a peak in concurrency.** Below it, throughput equals the offered
-  load and shapes look the same. Past it, the prefix cache thrashes and throughput falls. Raise
-  concurrency until throughput falls and compare shapes at their peaks.
-- **Server startup takes 7 to 10 min**, about two thirds of it Python imports from the shared
-  filesystem. Keep the number of server variants small.
+  load and all shapes look the same. Past it, the prefix cache thrashes and throughput falls.
+- **A closed-loop synthetic load measures offered load, not capacity.** Use it to rank shapes.
+  Take the real per-GPU rates from the smoke run.
 
 ## Memory levers, cheapest first
 
@@ -87,15 +166,12 @@ Each lever costs throughput. Turn on only what the fit needs.
 
 ## Known traps
 
+- Balanced routing understates trainer memory. Real routing is uneven; on Qwen3.6-35B-A3B the
+  peak was 8–27 GiB above the sweep. Read the peak of every smoke step, not only step 1.
+- The logged MFU counts attention as non-causal. At long context it overstates real MFU by
+  almost 2x.
 - Nemotron-H has no CP: one 256k sample must fit on one rank.
 - DeepSeek V4 supports only ring CP and needs router replay, which rules out disaggregated
   inference.
 - The weight-update staging buffer needs free GPU memory on inference. DeepSeek V4 ran out of
   memory at `gpu_memory_utilization = 0.85`.
-- Balanced routing understates trainer memory. Real routing is uneven; on Qwen3.6-35B-A3B the
-  peak was 8–27 GiB above the sweep. Read the peak of every smoke step, not only step 1.
-- The inference bench is closed-loop: below its saturation point it reports offered load, not
-  capacity. The smoke run gives the real per-GPU rates. Record them and the trainer's
-  `time/wait_for_batch` share, and set `num_infer_replicas` so the trainer stays busy.
-- The logged MFU counts attention as non-causal. At long context it overstates real MFU by
-  almost 2x.

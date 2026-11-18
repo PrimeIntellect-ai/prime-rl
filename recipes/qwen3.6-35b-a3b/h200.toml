@@ -2,8 +2,6 @@
 # inference replicas. Add a task config with the sources, algorithm and optimizer:
 #
 #   uv run rl @ recipes/qwen3.6-35b-a3b/h200.toml @ recipes/tasks/swe.toml
-#
-# meta.toml has the measured numbers.
 
 seq_len = 262144
 

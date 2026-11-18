@@ -29,8 +29,7 @@ cat recipes/qwen3.6-35b-a3b/h200.toml recipes/tasks/swe.toml > run.toml
 ## Files
 
 - `<model>/<hardware>.toml`: the recipe.
-- `<model>/meta.toml`: what was measured, on which commit, and the results file.
 - `tasks/`: task configs that compose with any recipe.
 
-The sweep harness and the raw results are in [`benchmarks/recipes/`](../benchmarks/recipes).
-The rules and the fitting playbook are in [`skills/recipes/SKILL.md`](../skills/recipes/SKILL.md).
+The rules, the fitting method and the measurements behind each recipe are in
+[`skills/recipes/SKILL.md`](../skills/recipes/SKILL.md).

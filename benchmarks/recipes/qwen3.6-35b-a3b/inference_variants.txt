@@ -1,4 +1,0 @@
-# name dp concurrency,... overrides
-tp1-dp8 8 256,1024 --vllm.tensor-parallel-size 1 --vllm.data-parallel-size 8
-tp2-dp4 4 256,1024 --vllm.tensor-parallel-size 2 --vllm.data-parallel-size 4
-tp4-dp2 2 256,1024 --vllm.tensor-parallel-size 4 --vllm.data-parallel-size 2
