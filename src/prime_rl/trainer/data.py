@@ -1,4 +1,5 @@
 from collections import defaultdict
+from collections.abc import Callable
 from typing import Any, NotRequired, TypedDict
 
 import torch
@@ -249,7 +250,12 @@ def cat_collate(samples: list[Sample]) -> Batch:
     }
 
 
-def setup_dataloader(dataset: StatefulIterableDataset, config: BaseDataConfig, cp: int) -> StatefulDataLoader:
+def setup_dataloader(
+    dataset: StatefulIterableDataset,
+    config: BaseDataConfig,
+    cp: int,
+    collate_fn: Callable[[list[Sample]], Batch] = cat_collate,
+) -> StatefulDataLoader:
     row_len = config.seq_len * config.micro_batch_size
     # Rows hold at most `row_len` tokens, so padding to a multiple of it pads every row to exactly `row_len`
     pad_to_multiple_of = row_len if config.pad_to_seq_len else cp
@@ -257,7 +263,7 @@ def setup_dataloader(dataset: StatefulIterableDataset, config: BaseDataConfig, c
     return StatefulDataLoader(
         packing_dataset,
         batch_size=1,
-        collate_fn=cat_collate,
+        collate_fn=collate_fn,
         num_workers=config.num_workers,
         pin_memory=True,
     )

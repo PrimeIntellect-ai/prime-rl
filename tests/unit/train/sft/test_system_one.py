@@ -36,6 +36,7 @@ from prime_rl.trainer.sft.system_one.loss import (
 )
 from prime_rl.trainer.sft.system_one.record import build_targets, parse_record
 from prime_rl.trainer.sft.system_one.strategies import SYSTEM_ONE_STRATEGIES, get_system_one_strategy_cls
+from prime_rl.trainer.utils import params_without_gradient
 
 COLUMNS = SystemOneColumnsConfig()
 QUESTIONS = {
@@ -554,6 +555,19 @@ def test_decision_loss_equals_a_per_record_reference():
     assert not torch.allclose(merged, loss)
 
 
+def test_params_without_gradient_names_what_the_readout_never_uses():
+    model = SegmentDecisionModel()
+    model.lm_head.requires_grad_(True)  # a model class that forgot to freeze it
+    strategy = TokenStrategy(None, CONFIG, READ_SPANS)
+    batch = _micro_batch(SystemOneDataset(Dataset.from_list([ROW]), strategy), [ROW, SECOND])
+    loss_fn = partial(decision_loss, model, strategy=strategy, inputs=batch["decision_loss_inputs"], brier_weight=0)
+    out = forward(
+        model, batch["input_ids"], batch["position_ids"], seq_lens=batch["seq_lens"], hidden_states_fn=loss_fn
+    )
+    out["loss"].backward()
+    assert params_without_gradient(None, model) == ["lm_head.weight"]
+
+
 class HeadsConfig(PretrainedConfig):
     model_type = "decision_loss_heads_test"
 
@@ -663,6 +677,7 @@ def fsdp_worker(rank: int, world: int, tied: bool, strategy, init_file: str, out
     # As in the trainer: a step's backward, then validation (a no-grad forward, then reshard_module before clipping),
     # then the next step's backward on cleared gradients
     heads_loss(model, rank, strategy).backward()
+    assert params_without_gradient(None, model) == []
     with torch.no_grad():
         heads_loss(model, rank, strategy)
     reshard_module(model)

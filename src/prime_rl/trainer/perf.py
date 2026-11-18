@@ -16,12 +16,16 @@ class FlopCounter:
     token attends only within its own document). The model is walked once, at construction.
 
     `flops_per_token_6dn` is the plain 6 * active params estimate (no attention, no LoRA discount), for
-    MFU comparable with the common 6ND convention.
+    MFU comparable with the common 6ND convention. Without `lm_head`, the matmul FLOPs leave out the LM head,
+    for a model whose forward skips it.
     """
 
-    def __init__(self, model: PreTrainedModelPrimeRL):
+    def __init__(self, model: PreTrainedModelPrimeRL, lm_head: bool = True):
         active_params = model.num_active_params()
         self.flops_per_token_6dn = 6 * active_params
+        if not lm_head:
+            # What runs in its place, such as a decision model's readout, is not counted
+            active_params -= count_active_params(model, model.lm_head.parameters())
         lora_params = [param for name, param in model.named_parameters() if "lora_A" in name or "lora_B" in name]
         if lora_params:
             # Frozen base matmuls cost forward (2x) and dX (2x); adapters cost 6x.
@@ -52,7 +56,7 @@ class PerfCounter:
     Sliding window inspired by https://github.com/pytorch/torchtitan/blob/4b3f2e41a084bf79a8540068ed525539d1244edd/torchtitan/utils.py#L119
     """
 
-    def __init__(self, model: nn.Module, window_size: int = 10):
+    def __init__(self, model: nn.Module, window_size: int = 10, lm_head: bool = True):
         self.window_size = window_size
         self.tokens: list[int] = []
         self.times: list[float] = []
@@ -64,7 +68,7 @@ class PerfCounter:
             self.gpu_peak_flops = self._get_peak_flops(torch.cuda.get_device_name(torch.device("cuda")))
         else:
             self.gpu_peak_flops = 0
-        self.flop_counter = FlopCounter(model)
+        self.flop_counter = FlopCounter(model, lm_head=lm_head)
 
     def count_tokens(self, tokens: int) -> None:
         """Push a step into the sliding window. Time is recorded internally."""
@@ -130,9 +134,9 @@ class PerfCounter:
 _PERF_COUNTER: PerfCounter | None = None
 
 
-def get_perf_counter(model: nn.Module, window_size: int = 10) -> PerfCounter:
+def get_perf_counter(model: nn.Module, window_size: int = 10, lm_head: bool = True) -> PerfCounter:
     global _PERF_COUNTER
     if _PERF_COUNTER is None:
-        _PERF_COUNTER = PerfCounter(model, window_size)
+        _PERF_COUNTER = PerfCounter(model, window_size, lm_head=lm_head)
 
     return _PERF_COUNTER
