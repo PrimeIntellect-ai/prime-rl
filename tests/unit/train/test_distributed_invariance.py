@@ -492,7 +492,7 @@ def main(output_dir: Path, cases: list[Case]) -> None:
     models_dir = output_dir / "models"
     built = {name: isolated(save_tiny_model, name, models_dir) for name in sorted({case.model for case in cases})}
     dist.barrier()
-    rows = load_rows(setup_tokenizer(TokenizerConfig(name=TOKENIZER)))
+    rows = load_rows(setup_tokenizer(TokenizerConfig(name=TOKENIZER), model_name=TOKENIZER))
 
     configs = {case.name: model_config(case, models_dir) for case in cases}
     reference_keys = {case.name: (case.model, tuple(configs[case.name].fusions.enabled)) for case in cases}
