@@ -6536,7 +6536,7 @@ requires-dist = [
     { name = "numpy" },
     { name = "openai", specifier = ">=1.108.1" },
     { name = "openai-harmony", specifier = ">=0.0.4" },
-    { name = "pillow", marker = "extra == 'multimodal'", specifier = ">=12.2.0" },
+    { name = "pillow", marker = "extra == 'multimodal'", specifier = ">=13.0.0" },
     { name = "prime-pydantic-config", specifier = ">=0.3.0.dev83" },
     { name = "tiktoken" },
     { name = "transformers", marker = "extra == 'multimodal'", specifier = ">=4.50.0" },
@@ -6546,7 +6546,7 @@ provides-extras = ["multimodal", "transformers"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "pillow", specifier = ">=12.2.0" },
+    { name = "pillow", specifier = ">=13.0.0" },
     { name = "pre-commit" },
     { name = "pytest", specifier = ">=7.0.0" },
     { name = "pytest-asyncio", specifier = ">=0.21.0" },
@@ -8244,7 +8244,7 @@ requires-dist = [
     { name = "prime-sandboxes", specifier = ">=0.5.9" },
     { name = "prime-tunnel", specifier = ">=0.1.17" },
     { name = "pydantic", specifier = ">=2.12.3" },
-    { name = "renderers", extras = ["multimodal"], specifier = ">=0.2.1.dev9" },
+    { name = "renderers", extras = ["multimodal"], specifier = ">=0.2.1.dev12" },
     { name = "tenacity", specifier = ">=8.5.0" },
     { name = "textarena", marker = "extra == 'ta'", specifier = "==0.7.4" },
     { name = "tomli-w", specifier = ">=1.0.0" },
