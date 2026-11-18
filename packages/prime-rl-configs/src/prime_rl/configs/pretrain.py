@@ -33,7 +33,7 @@ class TokenSourceConfig(BaseConfig):
     """A folder of datatrove tokenized shards, one source of the training data."""
 
     name: str
-    """Names the source in ``data.phases`` and in the ``progress/<name>/*`` metrics."""
+    """Names the source in the ``progress/<name>/*`` metrics."""
 
     path: Path
     """Folder of ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``."""
@@ -46,14 +46,6 @@ class TokenSourceConfig(BaseConfig):
     whole source is read."""
 
 
-class MixturePhaseConfig(BaseConfig):
-    start_step: int = Field(ge=1)
-    """First step with these weights."""
-
-    weights: dict[str, Annotated[float, Field(ge=0)]]
-    """The weight of every source from ``start_step`` on: all sources, summing to 1 (0 stops a source)."""
-
-
 class PretrainDataConfig(BaseDataConfig):
     """Training shards: documents sampled from one or more sources into rows of ``seq_len`` tokens."""
 
@@ -61,9 +53,6 @@ class PretrainDataConfig(BaseDataConfig):
 
     sources: list[TokenSourceConfig] = Field(min_length=1)
     """The folders to sample documents from."""
-
-    phases: list[MixturePhaseConfig] = []
-    """Other mixtures from a given step on, e.g. an annealing mix for the last steps."""
 
     seed: int = Field(0, ge=0)
     """Seed for the order of the documents and the subsets."""
@@ -85,17 +74,8 @@ class PretrainDataConfig(BaseDataConfig):
         weights = [source.weight for source in self.sources]
         if None in weights and any(weight is not None for weight in weights):
             raise ValueError("data.sources: set weight on every source or on none (natural shares)")
-        mixtures = {"data.sources": dict(zip(names, weights))} if None not in weights else {}
-        mixtures |= {f"data.phases[{i}]": phase.weights for i, phase in enumerate(self.phases)}
-        for where, mixture in mixtures.items():
-            if mixture.keys() != set(names):
-                missing, unknown = sorted(set(names) - mixture.keys()), sorted(mixture.keys() - set(names))
-                raise ValueError(f"{where}: give every source a weight (missing {missing}, unknown {unknown})")
-            if not math.isclose(sum(mixture.values()), 1, abs_tol=1e-6):
-                raise ValueError(f"{where}: the weights sum to {sum(mixture.values())}, not 1")
-        starts = [phase.start_step for phase in self.phases]
-        if starts != sorted(set(starts)):
-            raise ValueError(f"data.phases: start_step must increase from phase to phase, got {starts}")
+        if None not in weights and not math.isclose(sum(weights), 1, abs_tol=1e-6):
+            raise ValueError(f"data.sources: the weights sum to {sum(weights)}, not 1")
         return self
 
 

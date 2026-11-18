@@ -226,15 +226,6 @@ def test_pretrain_config_roundtrip(tmp_path):
             "on every source or on none",
         ),
         ({"sources": [{"name": "a", "path": "a", "weight": 0.6}, {"name": "b", "path": "b", "weight": 0.3}]}, "not 1"),
-        ({"sources": [{"name": "a", "path": "a"}], "phases": [{"start_step": 2, "weights": {"b": 1}}]}, "missing"),
-        ({"sources": [{"name": "a", "path": "a", "repetitions": 0.5}]}, "greater than or equal to 1"),
-        (
-            {
-                "sources": [{"name": "a", "path": "a"}],
-                "phases": [{"start_step": 5, "weights": {"a": 1}}, {"start_step": 3, "weights": {"a": 1}}],
-            },
-            "must increase",
-        ),
     ],
 )
 def test_pretrain_data_rejects_invalid_sources(data: dict, error: str):

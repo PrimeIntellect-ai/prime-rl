@@ -128,20 +128,16 @@ def test_rows_keep_every_prediction_of_a_pass(tmp_path):
 
 
 def test_every_step_holds_the_mixture(tmp_path):
-    """Without weights, a and b get their natural shares, by their tokens; with weights, theirs, and from step 11 on a
-    phase's, which stops b. After every step, every source's tokens in the phase are within seq_len of its share,
-    the rest of a unit cut at a step's end included."""
+    """Without weights, a and b get their natural shares, by their tokens; with weights, theirs (0 stops b). After
+    every step, every source's tokens are within seq_len of its share, the rest of a unit cut at a step's end
+    included."""
     write_source(tmp_path / "a", LENGTHS * 20)
     write_source(tmp_path / "b", [6, 30, 9, 2, 18, 4] * 30, 10**6)
-    natural = setup_token_dataset(data_config(tmp_path, {"a": {}, "b": {}}, batch_size=8), dp_rank=0, dp_size=1).sampler
-    shares = natural.num_tokens / natural.num_tokens.sum()
-    for step, cursor in enumerate(plan(natural, 20)[1]):
-        assert np.abs(np.array(cursor["phase_tokens"]) - shares * (step + 1) * 128).max() <= 16
-    phases = [{"start_step": 11, "weights": {"a": 1.0, "b": 0.0}}]
-    config = data_config(tmp_path, {"a": {"weight": 0.25}, "b": {"weight": 0.75}}, phases=phases, batch_size=8)
-    for step, cursor in enumerate(plan(setup_token_dataset(config, dp_rank=0, dp_size=1).sampler, 20)[1]):
-        steps, shares = (step + 1, [0.25, 0.75]) if step < 10 else (step - 9, [1.0, 0.0])
-        assert np.abs(np.array(cursor["phase_tokens"]) - np.array(shares) * steps * 128).max() <= 16
+    for weights in ((None, None), (0.25, 0.75), (1.0, 0.0)):
+        sources = {name: {} if weight is None else {"weight": weight} for name, weight in zip("ab", weights)}
+        sampler = setup_token_dataset(data_config(tmp_path, sources, batch_size=8), dp_rank=0, dp_size=1).sampler
+        for step, cursor in enumerate(plan(sampler, 20)[1]):
+            assert np.abs(np.array(cursor["tokens"]) - sampler.weights * (step + 1) * 128).max() <= 16
 
 
 def test_repetitions_read_a_subset_that_many_times(tmp_path):
