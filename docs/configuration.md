@@ -153,7 +153,7 @@ Omit `type` to keep the default variant.
 
 ### Environments
 
-Training and evaluation sources are arrays of tables. Set one source per environment; training sources can optionally carry sampling weights:
+Training and evaluation sources are arrays of tables. The lightweight configs below run agents in Prime sandboxes with one CPU core and 1 GB RAM (`runtime.cpu` and `runtime.memory`). Authenticate with `PRIME_API_KEY` or `prime login` before launching. Set one source per environment; training sources can optionally carry sampling weights:
 
 ```toml
 [[orchestrator.train.source]]
@@ -162,21 +162,27 @@ ratio = 3  # 75% of batches
 env.taskset.id = "gsm8k"
 env.taskset.split = "train"
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1
 
 [[orchestrator.train.source]]
 name = "reverse-text"
 ratio = 1  # default — 25% of batches
 env.taskset.id = "reverse-text"
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1
 
 [[orchestrator.eval.source]]
 name = "gsm8k-eval"
 env.taskset.id = "gsm8k"
 env.taskset.split = "test"
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1
 ```
 
 Each source group — `[orchestrator.train]`, `[orchestrator.eval]`, the `[eval]` block of `sft` and the top level of `eval` — holds defaults for its sources. Every field that a group and its sources both have is a default: `env`, `sampling`, `select` and `group_size`, plus `algo` on the train group and `interval` on the eval groups of a training run. Each source inherits the fields that its group sets. One rule applies to all of them: nested blocks merge key by key, a source's own values win, and a block whose `type` (e.g. of `algo`) differs from the group's is the source's alone.

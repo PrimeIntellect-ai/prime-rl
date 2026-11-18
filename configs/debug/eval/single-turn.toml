@@ -1,5 +1,5 @@
 # Single env, single turn: gsm8k with the null harness (one chat completion per
-# task, no sandbox) against Prime Inference.
+# task) in Prime sandboxes against Prime Inference. Requires PRIME_API_KEY.
 #
 #   uv run eval @ configs/debug/eval/single-turn.toml
 
@@ -14,4 +14,6 @@ max_completion_tokens = 8192
 [[source]]
 env.taskset.id = "gsm8k"
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1

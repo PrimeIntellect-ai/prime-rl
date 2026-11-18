@@ -120,9 +120,15 @@ The V1 taskset fixes the question bank and searchable corpus. You can replace it
 ```toml
 [[orchestrator.train.source]]
 name = "wiki-search"
-taskset = { id = "wiki-search", task = { judges = [{ id = "reference", model = "openai/gpt-5.4-nano" }] } }
-harness = { id = "null" }
-runtime = { type = "subprocess" }
+env.taskset.id = "wiki-search"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1
+
+[[orchestrator.train.source.env.taskset.task.judges]]
+id = "reference"
+model = "openai/gpt-5.4-nano"
 ```
 
 ## Notes

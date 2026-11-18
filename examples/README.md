@@ -20,6 +20,9 @@ All advanced configs submit through SLURM (the `rl` entrypoint writes the sbatch
 
 Walk-throughs for the core environments (baseline eval → optional SFT warmup → RL → eval), each with its own README:
 
+These examples run agents in Prime sandboxes with one CPU core and 1 GB RAM each.
+Export `PRIME_API_KEY` or authenticate with `prime login` before launching.
+
 - [`reverse-text/`](basic/reverse-text/README.md) — smallest end-to-end loop (single-turn, 0.6B): `eval.toml` → `sft.toml` → `rl.toml`
 - [`alphabet-sort/`](basic/alphabet-sort/README.md) — multi-turn, user simulator, LoRA
 - [`wiki-search/`](basic/wiki-search/README.md) — multi-turn tool calling, LoRA

@@ -2,6 +2,10 @@
 
 Configurations for running prime-rl.
 
+The lightweight agent runtimes use Prime sandboxes with `runtime.cpu = 1`
+(one CPU core) and `runtime.memory = 1` (1 GB RAM). Export `PRIME_API_KEY`
+or authenticate with `prime login` before running them.
+
 - **[`advanced/`](advanced)** — frontier-model training configs without launch walkthroughs:
   `minimax-m2.5` (swe), `nemotron-3-super` (swe), `deepseek-v4-flash` (sft, SWE RL with
   MXFP8 inference, and a standalone vLLM serving pre-flight). For the tutorialized equivalents, see

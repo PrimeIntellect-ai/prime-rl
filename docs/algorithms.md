@@ -126,13 +126,17 @@ type = "grpo"
 name = "math"  # inherits the group's grpo
 env.taskset.id = "math"
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1
 
 [[orchestrator.train.source]]
 name = "terminal"
 env.taskset.id = "terminal"
 env.agent.harness.id = "bash"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1
 # this env runs its own algorithm
 algo.type = "echo"
 ```
@@ -445,9 +449,13 @@ group_size = 4  # proposed problems per source task
 env.n = 4  # solver attempts per proposed problem
 env.taskset.id = "proposer-solver"
 env.proposer.harness.id = "null"
-env.proposer.runtime.type = "subprocess"
+env.proposer.runtime.type = "prime"
+env.proposer.runtime.cpu = 1
+env.proposer.runtime.memory = 1
 env.solver.harness.id = "null"
-env.solver.runtime.type = "subprocess"
+env.solver.runtime.type = "prime"
+env.solver.runtime.cpu = 1
+env.solver.runtime.memory = 1
 ```
 
 `group_size` controls how many problems are proposed from each source task. `env.n` controls how many solvers attempt each proposed problem. If a comparison contains only one trace—for example, a solver when `env.n = 1`—its advantage is zero.
@@ -469,9 +477,13 @@ decay = 0.95
 name = "kuhn-poker"
 env.taskset.id = "kuhn-poker"
 env.player0.harness.id = "null"
-env.player0.runtime.type = "subprocess"
+env.player0.runtime.type = "prime"
+env.player0.runtime.cpu = 1
+env.player0.runtime.memory = 1
 env.player1.harness.id = "null"
-env.player1.runtime.type = "subprocess"
+env.player1.runtime.type = "prime"
+env.player1.runtime.cpu = 1
+env.player1.runtime.memory = 1
 ```
 
 Both of `kuhn-poker`'s agents late-bind to the run's own model — shared-policy self-play against a continuously improving opponent. Pin one agent to a frozen endpoint (`env.player1.model = ...`) for asymmetric play; its traces are marked untrainable by the env and never reach the advantage computation. A single-agent env under `rae` degrades to REINFORCE with an EMA baseline.

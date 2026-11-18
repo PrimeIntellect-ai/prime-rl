@@ -73,7 +73,9 @@ env.agent.harness.id = "bash"
 [[source]]
 env.taskset.id = "aime25"
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1
 select.include.idx = ["0:30"]
 ```
 

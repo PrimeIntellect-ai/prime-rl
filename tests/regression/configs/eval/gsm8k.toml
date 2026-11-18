@@ -1,7 +1,8 @@
 # Eval regression suite: the full gsm8k test split (1319 tasks), one rollout
-# each, with the null harness (one chat completion per task, no sandbox) against
-# Prime Inference. The regression workflow runs it once per night and compares
-# the result against tests/regression/baselines/eval/gsm8k.json. Refresh the
+# each, with the null harness (one chat completion per task) in Prime sandboxes
+# against Prime Inference. PRIME_API_KEY authenticates both. The regression
+# workflow runs it once per night and compares the result against
+# tests/regression/baselines/eval/gsm8k.json. Refresh the
 # baseline after you change this config or the model.
 #
 #   uv run eval @ tests/regression/configs/eval/gsm8k.toml
@@ -16,4 +17,6 @@ max_completion_tokens = 8192
 [[source]]
 env.taskset.id = "gsm8k"
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1

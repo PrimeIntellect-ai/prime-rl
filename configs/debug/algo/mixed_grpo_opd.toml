@@ -37,13 +37,17 @@ max_completion_tokens = 128
 name = "reverse-text-grpo"
 env.taskset.id = "reverse-text"
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1
 
 [[orchestrator.train.source]]
 name = "reverse-text-opd"
 env.taskset.id = "reverse-text"
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1
 algo.type = "opd"
 algo.teacher.name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
 algo.teacher.base_url = "http://localhost:8001/v1"
@@ -61,7 +65,9 @@ max_completion_tokens = 128
 name = "reverse-text"
 env.taskset.id = "reverse-text"
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+env.agent.runtime.type = "prime"
+env.agent.runtime.cpu = 1
+env.agent.runtime.memory = 1
 
 [trainer.optim]
 lr = 3e-6
