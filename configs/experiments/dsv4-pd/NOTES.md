@@ -172,3 +172,69 @@ Started 2026-11-17 on B200 (spawned from the b200-nvfp4 session).
 - exp branch exp/dsv4-pd-stress: merge staged + configs/experiments/dsv4-pd/ staged; scripts/commit_exp.sh commits
   (signed) and pushes once an SSH agent is live (none since ~23:10).
 - 23:51 NVFP4 job 399 FAILED at startup: gpu-319 GPU 7 not visible ('No CUDA GPUs are available'). R2/R3 (397/400) levels started now via tune_levels.sh; NVFP4 resubmitted as job 404 (excluding 319, 335), its levels start when up (~40 min offset).
+- 00:20 user: tuning table must compare P/D ratios (1P:1D vs 3P:1D), PD > agg is known. Added pd2p2d (4 nodes, two 1:1 pairs) job 410, levels 3072:75,4096:75 (tmux tune-2p2d); agg4 to be stopped after 3072. Exp PR #4574 (draft, exp/dsv4-pd-stress -> feat/dsv4-pd).
+- 01:10 agg4 job 400 cancelled after its 3072 level (PD > agg already established; frees sandboxes for 2P:2D).
+- Level 3072 on 32 GPUs (96 episodes/GPU, second half of 75 min): 3P:1D MXFP8 796 out tok/s/GPU -- DECODE-bound
+  (decode waiting 728, ITL 89 ms, TTFT 23 s; prefill idle), fell from 1,690 to ~750 after 20 min; agg4 1,230;
+  2P:2D (1:1) 2,324 at 32 min (running); 3P:1D NVFP4 1,049 at 52 min (decode-bound too, NVFP4 decode faster).
+  -> 1:1 is the best ratio for this workload; 3:1 overshoots. Sandbox-side failures: pd3p1d 446, agg4 314 episodes
+  failed at setup ("prime egress policy failed: 429 per-IP limit", "VM sandbox creation burst limit"), slots refilled.
+- 01:11 P/D + NVFP4 "best settings" = 2P:2D: pd2p2d_nvfp4 job 437 (gpu-306/316/346/356, warm), 3072:75,4096:75 (tmux
+  tune-2p2d-fp4). gpu-319 removed from Slurm (exclude of it now fails "Invalid node name"); agg4 job 400 cancelled.
+- 01:34 NVFP4 3P:1D job 404 cancelled after 3072 (3:1 is decode-bound; NVFP4 continues as 2P:2D, job 437).
+- Level 3072 (96 episodes/GPU): 2P:2D MXFP8 1,966 out tok/s/GPU (2-node 1P:1D 1,872: scales linearly), calls 40.1 per
+  16 GPUs, prefill waiting 211 (spike 476 at 50 min, recovered), decode 11; vs 3P:1D 796 (decode-bound), 3P:1D NVFP4
+  820 (decode-bound; decode waiting 550 vs 728), agg 1,230. Best ratio so far 1:1; the optimum sits between 1:1 and 3:1.
+- 01:54 pd3p2d (3P:2D, 5 nodes) job 447 on gpu-[310,326,343,358,370], level 3840:75 (= 96/GPU), tmux tune-3p2d.
+- 3P:1D @4096 (128/GPU): 917 out tok/s/GPU, decode-bound (decode waiting ~1,450 by the end), recompute 4.3%: three prefill nodes hold 4096 sessions without the prefill thrash 1P:1D hit at 128/GPU. 2P:2D @4096 at 33 min: ~2,555, prefill waiting 138.
+- 02:47 user: stop 3P:2D (job 447 cancelled at ~37 min of 3840: 1,481 out/GPU at 33 min, partial); still run 1P:3D; test bidirectional KV (router PR #76, prime-rl PR #4575).
+- 02:47 user: max 8 B200 nodes across this session + b200-nvfp4. Were at 12 (mine 8: 410, 437; peer 4: 180, 181, 408, 415). Cancelled 437 (NVFP4 2P:2D; its data since ~02:24 is compromised by InterceptionError/404 from its deployment).
+
+## 2026-11-18 03:00 — Bidirectional KV (prime-rl PR #4575, vllm-router 0.2.6 / router PR #76)
+
+What it does: NIXL `bidirectional_kv_xfer`. Decode keeps a finished turn's KV blocks (prompt + completion) for
+`decoder_kv_blocks_ttl` (480 s) and returns a handle; the router stores it per `x-session-id` (TTL 450 s) and sends it
+with the session's next turn to prefill, which pulls those blocks from decode over NIXL and computes only the new
+tokens. Single-use: the router drops the handle when a turn starts, so a retry runs a plain prefill. Prefill runs
+with `kv_load_failure_policy = "recompute"`. Only token-in `/inference/v1/generate` turns (RL path) carry handles;
+chat completions never do, so the DeepSWE eval runs token-in here (`PRL_EVAL_TOKEN_IN=1`, a runner.py patch in
+worktree prime-rl-bidir: the eval uses the renderer TrainClient, DeepSeekV4 renderer, thinking, effort max).
+
+Setup: worktree /home/phi/lib/prime-rl-bidir (branch exp/dsv4-pd-bidir off origin/feat/pd-bidirectional-kv 0c2082cf4,
+vLLM 0.34). Templates copied to templates-bidir/ with our router flags. NIXL: pip wheel (bundled UCX). The PR's
+source build (UCX 1.19) cannot run here: compute nodes lack rdma-core headers and autotools; the pip wheel ran the
+whole stress test with 0 failed transfers. Watch for `signal 11` in libucs.
+
+Plan (4 nodes, cap agreed with b200-nvfp4): 1P:3D bidirectional, then 1P:3D one-way, each at 4096 in flight (128
+episodes/GPU, the 2P2D/3P1D tuning level) for 75 min. configs/bidir/, scripts/bidir_round.sh + bidir_arm.sh.
+
+### 1P:3D bidirectional at 4096 (job 461, 03:42–04:57)
+
+- 0–35 min: ~99% of follow-up turns read decode KV; prefill computes ~720–820 tokens per turn (one-way 2P2D, chat
+  path: ~1,900–2,500), output peaks ~3,900 tok/s/GPU at 12–20 min. Contexts grow to ~85K tokens (chat-path runs: 40–65K;
+  the token-in renderer keeps reasoning in history when tools are present).
+- 35–50 min: collapse. Router prefix mismatches 1% -> 7–10% of turns; each one is a full prefill of the whole prompt
+  (median 85K tokens), since the handle is all-or-nothing and prefill's own cache holds nothing (GPU hit 0). Prefill
+  GPUs 100% busy, queue 3.6K, TTFT ~170 s, output ~640–1,070 tok/s/GPU. NIXL: 0 failed transfers, D->P reads 0.4–1 s
+  for ~340 MB (P->D pulls ~70 ms); not the bottleneck.
+- Mismatches from the traces (scripts/branch_analysis.py, branch_detail.py; 400 traces, 436 mismatches):
+  - 42%: RLM compaction (new prompt ~10% of the old path, history replaced after the first user message). Cheap.
+  - 54%: same-length prompt that diverges at an earlier assistant message (keeps 10–90% of the old path): the
+    harness changed something, the renderer could not bridge, and the full re-render of an older assistant turn
+    differs from its sampled tokens. One-way prefix caching would still reuse up to the divergence; bidirectional
+    recomputes all of it.
+  - rate by minute of the run: 0.0% (0–10), 0.2%, 0.7%, 2.4% (30–40), 7.4% (40–50), 6.9% (50–60).
+- Root cause of the expensive mismatches (scripts/branch_tail.py, branch_diff.py): 215 of 277 same-length mismatches
+  are RLM's compaction request ("Create a concise continuation summary...") at ~115K tokens (131072 - 16K), 52 are
+  harness `<runtime_event>` notices. The renderer cannot bridge those turns and fully re-renders the conversation,
+  and the DeepSeek-V4 renderer does not round-trip an assistant turn with text + tool calls: the model sampled
+  `...details.\n\n<｜DSML｜tool_calls>`, the parsed content keeps the trailing `\n\n`, and the render adds its own
+  separator (`emit_text(content)` then `"\n\n<｜DSML｜tool_calls>..."`, renderers/deepseek_v4.py ~L699-711), giving
+  `\n\n\n\n`. The prompt diverges at the first such assistant turn (often early), so the whole ~115K prompt is
+  recomputed under bidirectional transfer (one-way prefix caching reuses up to the divergence). renderers 9f4943f.
+
+### 1P:3D one-way at 4096 (job 482, 06:55–07:37), same branch, token-in
+Thrashed at ~25 min (prefill GPU hit 0.43 -> 0.02, 4K queued, TTFT 275 s, 81% recompute); stopped at 41 min.
+Output tok/s/GPU one-way vs bidirectional: 0–15 min 1,437 vs 1,894; 15–25 1,849 vs 3,815; 25–35 337 vs 3,383;
+35–41 188 vs 2,853. Bidirectional moves the 1P:3D thrash point from ~25 min to ~45 min, where the renderer
+round-trip mismatches take over.
