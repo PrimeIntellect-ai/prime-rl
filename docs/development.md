@@ -64,7 +64,7 @@ Three pytest markers are declared in `pyproject.toml` (`addopts = "--strict-mark
 
 - `gpu` — gate a test that needs CUDA. CPU CI uses `-m "not gpu"`; the GPU unit job uses `-m gpu`.
 - `slow` — gate a test that's expensive enough you'd usually skip it locally. Deselect with `-m "not slow"`.
-- `tiny` — add a GPU test to the fast subset that the `Tiny (GPU)` job runs on Modal for every push to a non-draft PR: distributed invariance, the GPU loss tests, and short RL and SFT runs. `scripts/modal_ci.py` runs each test group in its own container. A tiny test in a file that no group lists runs in the 1-GPU group, so a test that needs 2 GPUs or several minutes gets its own group there. Each group should stay under 3 minutes, so check the test's time with `--durations=0` before marking it.
+- `tiny` — add a GPU test to the fast subset that the `Tiny (GPU)` job runs on Modal for every push to a non-draft PR: distributed invariance, the GPU loss tests, and short RL and SFT runs. `scripts/modal_ci.py` runs each test group in its own container, so the job takes as long as its slowest group, the RL run (~2.5 min). A tiny test in a file that no group lists runs in the 1-GPU group, so a test that needs 2 GPUs or minutes of its own gets a new group there. Check the test's time with `--durations=0` before marking it.
 
 ## Pre-Commit Hooks
 
