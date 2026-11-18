@@ -214,7 +214,11 @@ def pack_sampler_rows(logits, cu_num_logits, num_sampled, sampled, num_rows):
     index = torch.from_numpy(selected).pin_memory().to(logits.device, non_blocking=True)
     x = logits[cu_num_logits[:-1].long()[index]].float()
     ids = torch.cat([sampled[index].view(-1, 1).long(), x.topk(width).indices], dim=1)
-    values = (x.gather(1, ids) - x.logsumexp(-1, keepdim=True)).clamp_min(-9999.0)
+    # The exact form of max_tail_spread in prime_rl/trainer/models/layers/lm_head.py
+    shifted = x.sub_(x.amax(-1, keepdim=True))
+    at_max = shifted == 0
+    tail = shifted.exp().masked_fill_(at_max, 0.0).sum(-1, keepdim=True) + (at_max.sum(-1, keepdim=True) - 1)
+    values = (shifted.gather(1, ids) - torch.log1p(tail)).clamp_min(-9999.0)
     packed = ((values.contiguous().view(torch.int32) ^ NEG_INF_BITS).long() << 32) | ids
     row_counts = (
         torch.from_numpy((num_rows[selected] + 1).astype(np.int64)).pin_memory().to(x.device, non_blocking=True)

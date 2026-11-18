@@ -12,7 +12,13 @@ from prime_rl.configs.trainer import (
     IPOLossConfig,
     LossConfig,
 )
-from prime_rl.trainer.models.layers.lm_head import TokenSupport, support_replay_mask
+from prime_rl.trainer.models.layers.lm_head import (
+    TokenSupport,
+    label_log_softmax,
+    label_logprob,
+    max_tail_spread,
+    support_replay_mask,
+)
 from prime_rl.utils.utils import import_object
 
 
@@ -64,19 +70,29 @@ Expected signature for a custom loss:
 
 
 @jaxtyped(typechecker=typechecker)
-@torch.compile(dynamic=True)
 def selective_log_softmax(
     logits: Float[Tensor, "batch seq vocab"], index: Int[Tensor, "batch seq"]
 ) -> Float[Tensor, "batch seq"]:
-    logprobs = logits.log_softmax(dim=-1)
-    return torch.gather(logprobs, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
+    return label_log_softmax(logits, index)
 
 
 def _segment_logsumexp(values: Tensor, rows: Tensor, num_rows: int) -> Tensor:
-    """Differentiable logsumexp per row of flat ``values``; -inf for empty rows (their gradient is zero)."""
+    """Differentiable logsumexp per row of flat ``values``; -inf for empty or all -inf rows (their gradient is zero)."""
     row_max = values.new_full((num_rows,), float("-inf")).scatter_reduce(0, rows, values.detach(), "amax")
-    total = values.new_zeros(num_rows).index_add(0, rows, torch.exp(values - row_max[rows]))
+    shifted = torch.where(values > float("-inf"), values - row_max[rows], float("-inf"))
+    total = values.new_zeros(num_rows).index_add(0, rows, torch.exp(shifted))
     return row_max + torch.where(total > 0, total, 1.0).log()
+
+
+def _segment_complement_mass(logprobs: Tensor, rows: Tensor, num_rows: int) -> Tensor:
+    """``1 - sum(exp(logprobs))`` per row of flat ``logprobs`` (1 for empty rows), exact when one entry holds nearly
+    all of the mass: as in ``max_tail_spread``, the largest entry's share stays out of the sum of the small ones."""
+    row_max = logprobs.new_full((num_rows,), float("-inf")).scatter_reduce(0, rows, logprobs, "amax")
+    below = logprobs < row_max[rows]
+    terms = torch.where(below, torch.exp(logprobs - row_max[rows]), 0.0)
+    at_max = logprobs.new_zeros(num_rows).index_add(0, rows, (~below).to(logprobs.dtype))
+    tail = logprobs.new_zeros(num_rows).index_add(0, rows, terms) + (at_max - 1)
+    return -torch.expm1(row_max + torch.log1p(tail))
 
 
 def selective_log_softmax_with_support(
@@ -91,18 +107,20 @@ def selective_log_softmax_with_support(
     in_vocab = (support.ids >= 0) & (support.ids < logits.shape[-1])
     support_logits = logits[rows, torch.where(in_vocab, support.ids, 0).long()].masked_fill(~in_vocab, float("-inf"))
     replay = support_replay_mask(support, index, rows)
-    logz = torch.where(replay, _segment_logsumexp(support_logits, rows, support.num_rows), logits.logsumexp(-1))
+    label_entry = support.ids == index[rows]
+    support_rest = _segment_logsumexp(support_logits.masked_fill(label_entry, float("-inf")), rows, support.num_rows)
     target_logits = logits.gather(-1, index.unsqueeze(-1)).squeeze(-1)
-    return (target_logits - logz).unsqueeze(0), support_logits - logz[rows]
+    logprobs = torch.where(replay, label_logprob(target_logits, support_rest), label_log_softmax(logits, index))
+    logz = target_logits - logprobs
+    return logprobs.unsqueeze(0), torch.where(label_entry, logprobs[rows], support_logits - logz[rows])
 
 
 @jaxtyped(typechecker=typechecker)
 @torch.compile(dynamic=True)
 def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq"]:
     with torch.no_grad():
-        pd = torch.nn.functional.softmax(shifted_logits, dim=-1)
-        entropy = torch.logsumexp(shifted_logits, dim=-1) - torch.sum(pd * shifted_logits, dim=-1)
-    return entropy
+        _, tail, spread = max_tail_spread(shifted_logits)
+        return torch.log1p(tail) + spread / (1 + tail)
 
 
 def shift_tensor_left(t: Tensor, pad_value: float = 0.0) -> Tensor:
@@ -258,12 +276,14 @@ class IcePopLoss:
                 raise ValueError("Score centering is missing sampler heads on RL tokens")
             with torch.no_grad():
                 p = head.exp()
-                p_head, q_head = row_sum(p), row_sum(sampler.exp())
+                q_head = row_sum(sampler.exp())
+                p_tail = _segment_complement_mass(head, rows, mask.shape[0])
+                q_tail = _segment_complement_mass(sampler, rows, mask.shape[0])
                 head_log_ratio = head - sampler
                 accepted = (head_log_ratio >= log_ratio_low) & (head_log_ratio <= log_ratio_high)
                 # q * (p/q) * mask = p * mask, without unstable exponentiation.
                 mass = p * accepted
-                rho = (1.0 - q_head).clamp_min(1e-6) / (1.0 - p_head).clamp_min(1e-6)
+                rho = q_tail.clamp_min(1e-6) / p_tail.clamp_min(1e-6)
                 tail_log_ratio = -rho.log()
                 # The proportional tail has one ratio; MIS accepts all or none.
                 alpha = ((tail_log_ratio >= log_ratio_low) & (tail_log_ratio <= log_ratio_high)).to(p.dtype)
@@ -276,7 +296,7 @@ class IcePopLoss:
                 centering_metrics["score_centering/tail_scale"] = alpha[mask]
                 centering_metrics["score_centering/head_mass"] = q_head[mask]
                 centering_metrics["score_centering/logit_correction_l1"] = (
-                    row_sum((mass - p * total_mass[rows]).abs()) + (1.0 - p_head).clamp_min(0.0) * total_mass.abs()
+                    row_sum((mass - p * total_mass[rows]).abs()) + p_tail.clamp_min(0.0) * total_mass.abs()
                 )[mask]
             correction = loss_config.adv_tau * advantages.detach() * row_sum(mass * head)[mask]
             if weights is not None:

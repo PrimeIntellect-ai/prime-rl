@@ -12,6 +12,7 @@ from prime_rl.trainer.rl.loss import (
     LossInputs,
     LossOutputs,
     _mismatch_kl_from_log_ratio,
+    _segment_complement_mass,
     compute_entropy,
     compute_loss,
     ref_kl_loss_fn,
@@ -291,6 +292,16 @@ def test_mismatch_kl_retains_small_positive_values():
     torch.testing.assert_close(
         _mismatch_kl_from_log_ratio(log_ratio), torch.tensor([5e-9], device="cuda"), rtol=1e-3, atol=0
     )
+
+
+def test_segment_complement_mass_keeps_small_tails():
+    # Rows: one entry holding all but ~1e-7 of the mass, a three-way tie, an empty row, and an all -inf row
+    logprobs = torch.tensor(
+        [-3e-7, -16.1181, -16.1181, -1.3863, -1.3863, -1.3863, float("-inf"), float("-inf")], device="cuda"
+    )
+    rows = torch.tensor([0, 0, 0, 1, 1, 1, 3, 3], device="cuda")
+    expected = 1 - torch.zeros(4, dtype=torch.float64, device="cuda").index_add(0, rows, logprobs.double().exp())
+    torch.testing.assert_close(_segment_complement_mass(logprobs, rows, 4).double(), expected, rtol=1e-4, atol=0)
 
 
 def test_ce_component_matches_masked_nll():

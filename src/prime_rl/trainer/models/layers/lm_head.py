@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import types
 from dataclasses import dataclass, replace
-from functools import lru_cache
 from typing import TypedDict
 
 import torch
@@ -10,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from prime_rl.trainer.models.kernels.segment_reduce import csr_matmul, segment_logsumexp, segment_sum
+from prime_rl.trainer.models.kernels.segment_reduce import csr_matmul, segment_max_and_tail, segment_sum
 from prime_rl.trainer.models.layers.fp32_linear import FP32OutputMatmulBF16Backward, fp32_output_mm
 from prime_rl.utils.logger import get_logger
 
@@ -189,24 +188,102 @@ class VanillaOutputLinear(torch.nn.Linear):
         return PrimeLmOutput(logits=logits)
 
 
+def label_logprob(label_logits: Tensor, rest_logsumexp: Tensor) -> Tensor:
+    """Log-probability of the label from its logit and the logsumexp of the other logits, ``-softplus(rest - label)``.
+    Unlike ``label - logsumexp(all)`` it and its autograd gradient stay nonzero when the label's probability rounds to
+    1."""
+    return -F.softplus(rest_logsumexp - label_logits)
+
+
 def cross_entropy_sum(logits: Tensor, labels: Tensor) -> Tensor:
     """Summed fp32 cross-entropy over labels != IGNORE_INDEX."""
-    return F.cross_entropy(
-        logits.view(-1, logits.shape[-1]).float(), labels.reshape(-1), ignore_index=IGNORE_INDEX, reduction="sum"
-    )
+    labels = labels.reshape(-1)
+    logprobs = label_log_softmax(logits.view(-1, logits.shape[-1]).float(), labels.clamp(min=0))
+    return torch.where(labels != IGNORE_INDEX, -logprobs, 0.0).sum()
 
 
-def _online_logsumexp_and_weighted_update(
-    m: torch.Tensor, s: torch.Tensor, t: torch.Tensor, chunk_logits: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    chunk_m = torch.amax(chunk_logits, dim=-1)
+@torch.compile(dynamic=True)
+def max_tail_spread(logits: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    """Per row of ``logits``: the max ``m``, ``tail = sum exp(z - m)`` over every entry but one maximal one, and
+    ``spread = sum exp(z - m) * (m - z)``. Keeping the max entry's ``exp(0) = 1`` out of ``tail`` keeps small terms
+    from rounding away against it, so ``(z - m) - log1p(tail)`` is an exact log-probability even for an entry with
+    probability near 1, and the entropy is ``log1p(tail) + spread / (1 + tail)``."""
+    m = logits.amax(dim=-1, keepdim=True)
+    shifted = logits - m
+    below = shifted < 0
+    terms = torch.where(below, shifted.exp(), 0.0)
+    tail = terms.sum(dim=-1) + ((~below).sum(dim=-1) - 1)
+    spread = -(terms * torch.where(below, shifted, 0.0)).sum(dim=-1)
+    return m.squeeze(-1), tail, spread
+
+
+@torch.compile(dynamic=True)
+def _probs(logits: Tensor, norm_max: Tensor, norm_log_tail: Tensor) -> Tensor:
+    """``exp((z - m) - log1p(tail))`` per row, from ``max_tail_spread``'s max and ``log1p(tail)``, written over
+    ``logits``."""
+    return logits.sub_(norm_max.unsqueeze(-1)).sub_(norm_log_tail.unsqueeze(-1)).exp_()
+
+
+@torch.compile(dynamic=True)
+def _label_log_softmax_forward(logits: Tensor, labels: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    norm_max, tail, _ = max_tail_spread(logits)
+    norm_log_tail = torch.log1p(tail)
+    logprobs = (logits.gather(-1, labels.unsqueeze(-1)).squeeze(-1) - norm_max) - norm_log_tail
+    return norm_max, norm_log_tail, logprobs
+
+
+@torch.compile(dynamic=True)
+def _label_log_softmax_backward(
+    logits: Tensor, labels: Tensor, norm_max: Tensor, norm_log_tail: Tensor, logprobs: Tensor, grad: Tensor
+) -> Tensor:
+    is_label = torch.arange(logits.shape[-1], device=logits.device) == labels.unsqueeze(-1)
+    probs = torch.exp((logits - norm_max.unsqueeze(-1)) - norm_log_tail.unsqueeze(-1))
+    return grad.unsqueeze(-1) * torch.where(is_label, -torch.expm1(logprobs).unsqueeze(-1), -probs)
+
+
+class _LabelLogSoftmaxFn(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, logits: Tensor, labels: Tensor) -> Tensor:  # type: ignore[override]
+        norm_max, norm_log_tail, logprobs = _label_log_softmax_forward(logits, labels)
+        ctx.save_for_backward(logits, labels, norm_max, norm_log_tail, logprobs)
+        return logprobs
+
+    @staticmethod
+    def backward(ctx, grad: Tensor) -> tuple[Tensor, None]:
+        return _label_log_softmax_backward(*ctx.saved_tensors, grad), None
+
+
+def label_log_softmax(logits: Tensor, labels: Tensor) -> Tensor:
+    """``log_softmax(logits)`` at ``labels`` along the last dim, in ``max_tail_spread``'s exact form. Backward keeps
+    only ``logits`` and per-row statistics and writes the gradient in one pass, with ``1 - p = -expm1(logp)`` at the
+    label."""
+    return _LabelLogSoftmaxFn.apply(logits, labels)
+
+
+def _rescaled_spread(m: Tensor, tail: Tensor, spread: Tensor, m_new: Tensor) -> Tensor:
+    scale = torch.exp(m - m_new)
+    return torch.where(scale > 0, scale * (spread + (m_new - m) * (1 + tail)), 0.0)
+
+
+def _merge_max_tail_spread(
+    m: Tensor, tail: Tensor, spread: Tensor, chunk_m: Tensor, chunk_tail: Tensor, chunk_spread: Tensor
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Fold a vocab chunk's ``max_tail_spread`` into the running one of each row."""
     m_new = torch.maximum(m, chunk_m)
-    exp_old = torch.exp(m - m_new)
+    tail_new = torch.where(
+        chunk_m > m,
+        chunk_tail + (1 + tail) * torch.exp(m - m_new),
+        tail + (1 + chunk_tail) * torch.exp(chunk_m - m_new),
+    )
+    spread_new = _rescaled_spread(m, tail, spread, m_new) + _rescaled_spread(chunk_m, chunk_tail, chunk_spread, m_new)
+    return m_new, tail_new, spread_new
 
-    chunk_exp = torch.exp(chunk_logits - m_new.unsqueeze(-1))
-    s_new = s * exp_old + chunk_exp.sum(dim=-1)
-    t_new = t * exp_old + (chunk_exp * chunk_logits).sum(dim=-1)
-    return m_new, s_new, t_new
+
+def _label_logit_grad(label_grad: Tensor, rest_grad: Tensor, logprobs: Tensor) -> Tensor:
+    """The label logit's gradient ``label_grad * (1 - p) - rest_grad * p``, with ``1 - p = -expm1(logp)`` so it stays
+    nonzero when ``p`` rounds to 1. ``label_grad`` sums the upstream gradients on the label's logprob and
+    ``rest_grad`` those on the other entries of its normalization."""
+    return -label_grad * torch.expm1(logprobs) - rest_grad * torch.exp(logprobs)
 
 
 def _support_flat_index(
@@ -224,7 +301,9 @@ def _sparse_logit_backward(
     weight: torch.Tensor,
     labels: torch.Tensor,
     inv_temperature: torch.Tensor,
-    logz: torch.Tensor,
+    norm_max: torch.Tensor,
+    norm_log_tail: torch.Tensor,
+    logprobs: torch.Tensor,
     support_ids: torch.Tensor,
     support_rows: torch.Tensor,
     offsets: torch.Tensor,
@@ -240,14 +319,24 @@ def _sparse_logit_backward(
 
     Per token the logit gradient is ``g_label * e_label + sum_e g_e * e_id - p * net`` with ``net = g_label +
     sum_e g_e``. Replayed tokens normalize ``p`` over their support, so the last term stays on it; for the others the
-    caller guarantees ``net = 0``. The gradient is one [N, V] CSR matrix (each token's label, then its entries),
-    multiplied into ``weight`` and, sorted by vocab id, into ``hidden``."""
+    caller guarantees ``net = 0``. A replayed label's own terms go into its CSR value as one ``_label_logit_grad``. The
+    gradient is one [N, V] CSR matrix (each token's label, then its entries), multiplied into ``weight`` and, sorted by
+    vocab id, into ``hidden``."""
     n, device = hidden.shape[0], hidden.device
     rows = support_rows.long()
-    label_grad = grad_logprobs.float() if grad_logprobs is not None else torch.zeros_like(logz)
+    label_grad = grad_logprobs.float() if grad_logprobs is not None else torch.zeros_like(logprobs)
     entry_grad = grad_support.float() if grad_support is not None else torch.zeros_like(entry_logits)
-    net = label_grad + segment_sum(entry_grad, offsets.to(device))
-    entry_grad = entry_grad - torch.where(replay[rows], torch.exp(entry_logits - logz[rows]) * net[rows], 0.0)
+    device_offsets = offsets.to(device)
+    label_entry = support_ids == labels[rows]
+    label_total = label_grad + segment_sum(torch.where(label_entry, entry_grad, 0.0), device_offsets)
+    rest_grad = segment_sum(torch.where(label_entry, 0.0, entry_grad), device_offsets)
+    net = label_total + rest_grad
+    label_in_replayed_support = replay[rows] & label_entry
+    entry_probs = torch.exp((entry_logits - norm_max[rows]) - norm_log_tail[rows])
+    entry_grad = torch.where(
+        label_in_replayed_support, 0.0, entry_grad - torch.where(replay[rows], entry_probs * net[rows], 0.0)
+    )
+    label_grad = torch.where(replay, _label_logit_grad(label_total, rest_grad, logprobs), label_grad)
 
     label_grad = label_grad * inv_temperature
     entry_grad = entry_grad * inv_temperature[rows]
@@ -306,7 +395,8 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         ``logprob = scaled_logits[label] - logsumexp(scaled_logits[support])``. Other
         rows — and entropy, a full-distribution diagnostic — keep full-vocab
         normalization. With a support it also returns the logprob of every support
-        entry under the same normalization as its token's label.
+        entry under the same normalization as its token's label. Each normalization is
+        kept as ``max_tail_spread``'s max and ``log1p(tail)``, so logprobs near 0 stay exact.
         """
         assert hidden.dim() == 2, f"expected hidden [N,H], got {tuple(hidden.shape)}"
         assert weight.dim() == 2, f"expected weight [V,H], got {tuple(weight.shape)}"
@@ -325,7 +415,8 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         vocab_chunk_size = min(vocab, 8192)
         logprobs = torch.empty((n,), device=device, dtype=torch.float32)
         entropy = torch.empty((n,), device=device, dtype=torch.float32)
-        logz = torch.empty((n,), device=device, dtype=torch.float32)
+        norm_max = torch.empty((n,), device=device, dtype=torch.float32)
+        norm_log_tail = torch.empty((n,), device=device, dtype=torch.float32)
         support_logprobs = (
             torch.empty(support_ids.shape, device=device, dtype=torch.float32) if support_ids is not None else None
         )
@@ -341,8 +432,8 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             token_count = end - start
 
             m = torch.full((token_count,), float("-inf"), device=device, dtype=torch.float32)
-            s = torch.zeros((token_count,), device=device, dtype=torch.float32)
-            t = torch.zeros((token_count,), device=device, dtype=torch.float32)
+            tail = torch.zeros((token_count,), device=device, dtype=torch.float32)
+            spread = torch.zeros((token_count,), device=device, dtype=torch.float32)
             target_logits = torch.zeros((token_count,), device=device, dtype=torch.float32)
 
             if support_ids is not None:
@@ -358,8 +449,6 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                     scaled_logits = softcap * torch.tanh(scaled_logits / softcap)
                 scaled_logits = scaled_logits * inv_t_chunk
 
-                m, s, t = _online_logsumexp_and_weighted_update(m, s, t, scaled_logits)
-
                 if support_ids is not None:
                     flat, in_range = _support_flat_index(ids_chunk, rows_chunk, vocab_start, vocab_end)
                     support_logits = torch.where(in_range, scaled_logits.view(-1)[flat], support_logits)
@@ -370,24 +459,43 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 chunk_target = scaled_logits.gather(1, local_idx.unsqueeze(1)).squeeze(1)
                 target_logits = torch.where(in_range, chunk_target, target_logits)
 
-            logz_full = m + torch.log(s)
-            logz_chunk = logz_full
+                # A token count equal to the vocab chunk width would otherwise share its symbol and recompile
+                torch._dynamo.mark_static(scaled_logits, 1)
+                m, tail, spread = _merge_max_tail_spread(m, tail, spread, *max_tail_spread(scaled_logits))
+
+            log_tail = torch.log1p(tail)
+            max_chunk, log_tail_chunk = m, log_tail
             if support_ids is not None:
-                support_logz = segment_logsumexp(support_logits, (offsets[start : end + 1] - first).to(device))
-                logz_chunk = torch.where(replay[start:end], support_logz, logz_full)
-                support_logprobs[first:last] = support_logits - logz_chunk[rows_chunk]
+                support_max, support_tail = segment_max_and_tail(
+                    support_logits, (offsets[start : end + 1] - first).to(device)
+                )
+                max_chunk = torch.where(replay[start:end], support_max, m)
+                log_tail_chunk = torch.where(replay[start:end], torch.log1p(support_tail), log_tail)
+                support_logprobs[first:last] = (support_logits - max_chunk[rows_chunk]) - log_tail_chunk[rows_chunk]
                 if sparse_backward:
                     entry_logits[first:last] = support_logits
             if sparse_backward:
                 label_logits[start:end] = target_logits
-            logz[start:end] = logz_chunk
-            logprobs[start:end] = target_logits - logz_chunk
-            entropy[start:end] = logz_full - (t / s)
+            norm_max[start:end] = max_chunk
+            norm_log_tail[start:end] = log_tail_chunk
+            logprobs[start:end] = (target_logits - max_chunk) - log_tail_chunk
+            entropy[start:end] = log_tail + spread / (1 + tail)
 
         ctx.set_materialize_grads(
             False
         )  # Without materialized grads unused outputs get grad None instead of zeros and backward can reject them without a sync
-        ctx.save_for_backward(hidden, weight, labels, inv_temperature, logz, support_ids, support_rows, replay)
+        ctx.save_for_backward(
+            hidden,
+            weight,
+            labels,
+            inv_temperature,
+            norm_max,
+            norm_log_tail,
+            logprobs,
+            support_ids,
+            support_rows,
+            replay,
+        )
         if sparse_backward:
             ctx.sparse_logits = (label_logits, entry_logits)
         ctx.sparse_backward = sparse_backward
@@ -405,7 +513,18 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         assert grad_entropy is None, "Backward through entropy is not implemented in FusedOutputLinear"
         assert grad_logprobs is not None or grad_support is not None, "FusedOutputLinear requires a logprob gradient"
 
-        hidden, weight, labels, inv_temperature, logz, support_ids, support_rows, replay = ctx.saved_tensors
+        (
+            hidden,
+            weight,
+            labels,
+            inv_temperature,
+            norm_max,
+            norm_log_tail,
+            logprobs,
+            support_ids,
+            support_rows,
+            replay,
+        ) = ctx.saved_tensors
         offsets: torch.Tensor | None = ctx.offsets
         chunk_size: int = ctx.chunk_size
         softcap: float | None = ctx.softcap
@@ -415,7 +534,9 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 weight,
                 labels,
                 inv_temperature,
-                logz,
+                norm_max,
+                norm_log_tail,
+                logprobs,
                 support_ids,
                 support_rows,
                 offsets,
@@ -441,12 +562,15 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             end = min(start + chunk_size, n)
             hidden_chunk = hidden[start:end]
             labels_chunk = labels[start:end]
+            logprobs_chunk = logprobs[start:end]
             grad_chunk = (
-                grad_logprobs[start:end].float() if grad_logprobs is not None else torch.zeros_like(logz[start:end])
+                grad_logprobs[start:end].float() if grad_logprobs is not None else torch.zeros_like(logprobs_chunk)
             )
             inv_t_chunk = inv_temperature[start:end].unsqueeze(-1)
-            logz_chunk = logz[start:end]
-            grad_scale = -grad_chunk
+            max_chunk = norm_max[start:end]
+            log_tail_chunk = norm_log_tail[start:end]
+            label_total = grad_chunk
+            rest_grad = torch.zeros_like(grad_chunk)
             grad_head = None
             if support_ids is not None:
                 first, last = int(offsets[start]), int(offsets[end])
@@ -454,7 +578,12 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 replay_chunk = replay[start:end]
                 if grad_support is not None:
                     grad_head = grad_support[first:last].float()
-                    grad_scale = grad_scale - segment_sum(grad_head, (offsets[start : end + 1] - first).to(device))
+                    chunk_offsets = (offsets[start : end + 1] - first).to(device)
+                    label_entry = ids_chunk == labels_chunk[rows_chunk.long()]
+                    label_total = label_total + segment_sum(torch.where(label_entry, grad_head, 0.0), chunk_offsets)
+                    rest_grad = segment_sum(torch.where(label_entry, 0.0, grad_head), chunk_offsets)
+            grad_scale = -(label_total + rest_grad)
+            label_logit_grad = _label_logit_grad(label_total, rest_grad, logprobs_chunk)
 
             for vocab_start in range(0, vocab, vocab_chunk_size):
                 vocab_end = min(vocab_start + vocab_chunk_size, vocab)
@@ -474,15 +603,19 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                     in_support[torch.where(in_range, flat, scaled_logits.numel())] = True
                     masked_out = replay_chunk.unsqueeze(-1) & ~in_support[:-1].view(scaled_logits.shape)
                     scaled_logits.masked_fill_(masked_out, float("-inf"))
-                probs = torch.exp(scaled_logits - logz_chunk.unsqueeze(-1))
-
-                grad_logits = grad_scale.unsqueeze(-1) * probs
-                # Branchless grad scatter like we did in the sync-free forward
-                in_range_label = (labels_chunk >= vocab_start) & (labels_chunk < vocab_end)
-                local_idx = (labels_chunk - vocab_start).clamp(0, vocab_end - vocab_start - 1).to(torch.int64)
-                grad_logits.scatter_add_(1, local_idx.unsqueeze(1), (grad_chunk * in_range_label).unsqueeze(1))
+                torch._dynamo.mark_static(scaled_logits, 1)
+                grad_logits = _probs(scaled_logits, max_chunk, log_tail_chunk).mul_(grad_scale.unsqueeze(-1))
                 if grad_head is not None:
                     grad_logits.view(-1).index_add_(0, flat, grad_head * in_range)
+                # Branchless: overwrite the label's entry where it falls into this vocab chunk
+                in_range_label = (labels_chunk >= vocab_start) & (labels_chunk < vocab_end)
+                local_idx = (
+                    (labels_chunk - vocab_start).clamp(0, vocab_end - vocab_start - 1).to(torch.int64).unsqueeze(1)
+                )
+                label_entry_grad = torch.where(
+                    in_range_label, label_logit_grad, grad_logits.gather(1, local_idx).squeeze(1)
+                )
+                grad_logits.scatter_(1, local_idx, label_entry_grad.unsqueeze(1))
                 grad_logits = grad_logits * inv_t_chunk
                 if softcap is not None:
                     grad_logits = grad_logits * (1 - tanh_logits.square())
@@ -495,55 +628,21 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         return grad_hidden, grad_weight, None, None, None, None, None, None, None, None, None
 
 
-# The GPUs the kernel was tested on: H100
-_QUACK_CROSS_ENTROPY_CAPABILITIES = ((9, 0),)
-
-
-@lru_cache(maxsize=1)
-def _quack_cross_entropy_fwd_out():
-    """quack's fused cross-entropy kernel, or None without the ``quack`` extra."""
-    try:
-        from quack.cross_entropy import cross_entropy_fwd_out
-
-        return cross_entropy_fwd_out
-    except ImportError:
-        return None
-
-
-def _quack_cross_entropy_supported(logits: Tensor) -> bool:
-    """Whether quack's fused cross-entropy kernel takes ``logits``: FP32 rows (the head's GEMM output) on a GPU the
-    kernel was tested on, with quack installed."""
-    return (
-        logits.is_cuda
-        and logits.dtype == torch.float32
-        and torch.cuda.get_device_capability(logits.device) in _QUACK_CROSS_ENTROPY_CAPABILITIES
-        and _quack_cross_entropy_fwd_out() is not None
-    )
-
-
 def _cross_entropy(logits: Tensor, labels: Tensor, loss: Tensor, with_grad: bool) -> Tensor | None:
     """Writes the fp32 cross-entropy of each row of ``logits`` into ``loss``, 0 where the label is IGNORE_INDEX. With
-    ``with_grad`` it also returns the gradient w.r.t. ``logits``: softmax minus one-hot, zero on ignored rows. Where
-    quack supports it, one quack kernel reads the logits once, does the math in fp32 and writes the gradient over them."""
-    if _quack_cross_entropy_supported(logits):
-        # The kernel reads the label's logit unchecked: check the labels on the device, without a host sync.
-        in_vocab = (labels >= 0) & (labels < logits.shape[1])
-        torch._assert_async((in_vocab | (labels == IGNORE_INDEX)).all())
-        # dx=None selects quack's online-softmax variant, which returns NaN when a warp's columns all lie past the
-        # vocab (Dao-AILab/quack#64). Always writing the gradient keeps the two-pass variant.
-        _quack_cross_entropy_fwd_out()(logits, labels, None, loss, None, logits, None, IGNORE_INDEX)
-        return logits if with_grad else None
-
+    ``with_grad`` it also returns the gradient w.r.t. ``logits``, softmax minus one-hot and zero on ignored rows,
+    written over ``logits``."""
     valid = labels != IGNORE_INDEX
     target = labels.clamp(min=0).unsqueeze(-1)
     logits = logits.float()
-    logz = torch.logsumexp(logits, dim=-1)
-    loss.copy_(torch.where(valid, logz - logits.gather(1, target).squeeze(1), 0.0))
+    m, tail, _ = max_tail_spread(logits)
+    log_tail = torch.log1p(tail)
+    logprobs = (logits.gather(1, target).squeeze(1) - m) - log_tail
+    loss.copy_(torch.where(valid, -logprobs, 0.0))
     if not with_grad:
         return None
-    grad_logits = logits.sub_(logz.unsqueeze(-1)).exp_()
-    grad_logits.scatter_add_(1, target, torch.full_like(target, -1, dtype=grad_logits.dtype))
-    return grad_logits.mul_(valid.unsqueeze(-1))
+    grad_logits = _probs(logits, m, log_tail)
+    return grad_logits.scatter_(1, target, torch.expm1(logprobs).unsqueeze(-1)).mul_(valid.unsqueeze(-1))
 
 
 class _ChunkedCrossEntropySumFn(torch.autograd.Function):
