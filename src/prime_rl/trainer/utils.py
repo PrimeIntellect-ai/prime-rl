@@ -279,7 +279,9 @@ def setup_cpu_offload(config: ModelConfig) -> None:
 def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: bool = False):
     get_logger().info(f"Initializing torch distributed (timeout={int(timeout.total_seconds())}s)")
     t0 = time.perf_counter()
-    device_id = get_world().local_rank
+    from prime_rl.utils.process import DEVICE_OFFSET_ENV
+
+    device_id = int(os.environ.get(DEVICE_OFFSET_ENV, "0")) + get_world().local_rank
     device_module.set_device(device_id)
     # Use Gloo backend for CPU and NCCL for GPU when CPU offloading is enabled
     # Otherwise use NCCL for better GPU performance
@@ -303,6 +305,11 @@ def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: b
     # fail on XPU when the default group is bound; bind on CUDA only.
     bound_device = torch.device(DEVICE_TYPE, device_id) if DEVICE_TYPE == "cuda" else None
     dist.init_process_group(backend=backend, timeout=timeout, device_id=bound_device)
+    if bound_device is None:
+        # An unbound group runs tensor-less collectives (barrier) on GPU `rank % device_count` until it
+        # has seen a tensor. That is another process's GPU when the trainer sees more than its own, so
+        # run one collective on this rank's GPU first.
+        dist.all_reduce(torch.zeros(1, device=DEVICE_TYPE))
     get_logger().debug(f"Initialized torch distributed in {format_time(time.perf_counter() - t0)}")
 
 

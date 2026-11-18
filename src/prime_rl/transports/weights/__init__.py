@@ -37,7 +37,7 @@ def setup_weight_sender(
         # imported by every trainer run, not just the ones that broadcast weights.
         from prime_rl.transports.weights.nccl import NCCLWeightSender
 
-        return NCCLWeightSender(output_dir, config, torch.cuda.current_device())
+        return NCCLWeightSender(output_dir, config, torch.accelerator.current_device_index())
     elif config.type == "filesystem":
         return FileSystemWeightSender(output_dir, config, lora_config)
     elif config.type == "nixl":

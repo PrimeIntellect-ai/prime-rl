@@ -98,6 +98,42 @@ def partition_gpus(num_infer: int, num_train: int) -> tuple[list[int | str], lis
     return physical_gpu_ids[:num_infer], physical_gpu_ids[num_infer : num_infer + num_train]
 
 
+DEVICE_OFFSET_ENV = "PRL_DEVICE_OFFSET"
+"""Index of the trainer's first GPU among the devices its process sees. Set when the trainer sees more GPUs
+than its own."""
+
+
+def gpu_masks(
+    infer_gpu_ids: list[int | str], trainer_gpu_ids: list[int | str], collective_weight_broadcast: bool
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Device-visibility env for the inference server and the trainer.
+
+    Each process normally sees only its own GPUs. On Intel XPU, oneCCL can only connect processes that see every
+    GPU of the communicator, so with the collective weight broadcast both processes see the inference and trainer
+    GPUs. vLLM uses the first GPUs it sees, so the inference GPUs must come first in device order; the trainer
+    starts at ``DEVICE_OFFSET_ENV``.
+    """
+    from prime_rl.utils.device import DEVICE_TYPE, VISIBLE_DEVICES_ENV
+
+    def mask(gpu_ids: list[int | str]) -> str:
+        return ",".join(map(str, gpu_ids))
+
+    if DEVICE_TYPE != "xpu" or not collective_weight_broadcast or not infer_gpu_ids or not trainer_gpu_ids:
+        return {VISIBLE_DEVICES_ENV: mask(infer_gpu_ids)}, {VISIBLE_DEVICES_ENV: mask(trainer_gpu_ids)}
+    gpu_ids = infer_gpu_ids + trainer_gpu_ids
+    indices = [int(gpu_id) if str(gpu_id).isdigit() else None for gpu_id in gpu_ids]
+    if None in indices or indices != sorted(set(indices)):
+        raise ValueError(
+            f"The NCCL weight broadcast on Intel XPU needs plain device indices in ascending order, inference GPUs "
+            f"first, but got inference GPU(s) {infer_gpu_ids} and trainer GPU(s) {trainer_gpu_ids}. "
+            "Reorder ZE_AFFINITY_MASK or pass --weight-broadcast.type filesystem."
+        )
+    return {VISIBLE_DEVICES_ENV: mask(gpu_ids)}, {
+        VISIBLE_DEVICES_ENV: mask(gpu_ids),
+        DEVICE_OFFSET_ENV: str(len(infer_gpu_ids)),
+    }
+
+
 def torchrun_cmd(
     module: str, config_path: Path, nproc_per_node: int, log_dir: Path, ranks_filter: list[int]
 ) -> list[str]:
