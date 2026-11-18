@@ -35,6 +35,7 @@ uv run pytest tests/integration -v                         # integration only
 uv run pytest -v -m "not gpu"                              # CPU-only subset (mirrors CPU CI)
 uv run pytest -v -m gpu                                    # GPU-only subset
 uv run pytest tests/unit tests/integration -m tiny -v      # fast GPU subset (mirrors the Tiny (GPU) job)
+uvx modal run scripts/modal_ci.py --suite tiny             # the Tiny (GPU) job itself, on Modal
 uv run pytest tests/integration/test_reverse_text.py -vvs  # one specific scenario
 uv run playwright install --only-shell chromium            # browser for the integration dashboard smoke tests
 ```
@@ -44,11 +45,11 @@ uv run playwright install --only-shell chromium            # browser for the int
 | Workflow | Trigger | What runs | Where |
 |---|---|---|---|
 | [`tests.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/tests.yml) | CPU jobs: every PR + push to `main`. `gsm8k_eval`: relevant changes in non-draft PRs, every push to `main`, manual dispatch | CPU: `pytest tests/unit -m "not gpu"`, plus a slim-wheel install check that `prime-rl-configs` imports cleanly without heavy deps (no torch / vllm / transformers / wandb / verifiers / datasets / liger / loguru in `sys.modules`). Separate hosted `gsm8k_eval` job | `ubuntu-latest` |
-| [`gpu-tiny.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/gpu-tiny.yml) | Every push to a non-draft PR from this repo (opened, synchronized, reopened, marked ready for review). Also every merge to `main` and manual dispatch | `Tiny (GPU)`: the fast GPU subset, `pytest tests/unit tests/integration -m tiny` (distributed invariance, GPU loss tests, short RL and SFT runs) | Self-hosted `prime-rl-2xh100` k8s scale set (2xH100) |
+| [`gpu-tiny.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/gpu-tiny.yml) | Every push to a non-draft PR from this repo (opened, synchronized, reopened, marked ready for review). Also every merge to `main` and manual dispatch | `Tiny (GPU)`: the fast GPU subset, `pytest tests/unit tests/integration -m tiny` (distributed invariance, GPU loss tests, short RL and SFT runs), split by `scripts/modal_ci.py` into test groups that run in parallel | Modal, one container per test group (2xH100 or 1xH100), started from `ubuntu-latest` |
 | [`gpu.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/gpu.yml) | On a PR: applying the `gpu-ci` label (Triage or higher). Also every merge to `main` and manual dispatch | Full GPU suite: `pytest tests/unit -m gpu`, plus RL/SFT integration scenarios (`reverse_text`, `reverse_text_sft`, `reverse_text_sft_lora`, `reverse_text_lora`, `reverse_text_moe`, `reverse_text_rl_opd`, `reverse_text_rl_sft`, `alphabet_sort`) with `max-parallel: 5` | Self-hosted `prime-rl-2xh100` k8s scale set (2xH100); `ubuntu-latest` for the trigger check |
 | [`regression.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/regression.yml) | 03:00 PST daily + manual `workflow_dispatch` (`suite` picks one suite; `eval_config` picks one eval config); `eval` also on PRs that touch it | `parallel`: `tests/regression/test_parallel_invariance.py`. `eval`: every `tests/regression/configs/eval/*.toml` (gsm8k, PI-TerminalBench2.1) against Prime Inference, each compared against its baseline in `tests/regression/baselines/eval/`. Nightly and manual runs post one Slack message per config through the `SLACK_WEBHOOK_URL` secret | `eval`: `ubuntu-latest`. `parallel`: `prime-rl-4xh100` |
 
-GPU jobs run on self-hosted k8s runner scale sets. Each job gets a fresh container. Target one with its label in `runs-on`:
+The other GPU jobs run on self-hosted k8s runner scale sets. Each job gets a fresh container. Target one with its label in `runs-on`:
 
 | Label | GPUs |
 |---|---|
@@ -63,7 +64,7 @@ Three pytest markers are declared in `pyproject.toml` (`addopts = "--strict-mark
 
 - `gpu` — gate a test that needs CUDA. CPU CI uses `-m "not gpu"`; the GPU unit job uses `-m gpu`.
 - `slow` — gate a test that's expensive enough you'd usually skip it locally. Deselect with `-m "not slow"`.
-- `tiny` — add a GPU test to the fast subset that the `Tiny (GPU)` job runs on one 2xH100 runner for every push to a non-draft PR: distributed invariance, the GPU loss tests, and short RL and SFT runs. The whole job should stay under 5 minutes, so check the test's time with `--durations=0` before marking it.
+- `tiny` — add a GPU test to the fast subset that the `Tiny (GPU)` job runs on Modal for every push to a non-draft PR: distributed invariance, the GPU loss tests, and short RL and SFT runs. `scripts/modal_ci.py` runs each test group in its own container. A tiny test in a file that no group lists runs in the 1-GPU group, so a test that needs 2 GPUs or several minutes gets its own group there. Each group should stay under 3 minutes, so check the test's time with `--durations=0` before marking it.
 
 ## Pre-Commit Hooks
 

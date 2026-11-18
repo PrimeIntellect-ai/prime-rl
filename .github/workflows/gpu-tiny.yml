@@ -10,7 +10,7 @@ on:
 permissions:
   contents: read
 
-# One run per PR: a new push cancels the superseded run and frees its runner. Every push to main runs.
+# One run per PR: a new push cancels the superseded run and stops its Modal app. Every push to main runs.
 concurrency:
   group: >-
     ${{ github.workflow }}-${{
@@ -22,22 +22,16 @@ concurrency:
 jobs:
   tiny-gpu:
     name: Tiny (GPU)
-    # Self-hosted GPU runners must never run fork code. Drafts do not run.
+    # Fork code never runs on the Modal account. Drafts do not run.
     if: >-
       github.event_name != 'pull_request'
       || (github.event.pull_request.draft == false
           && github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: prime-rl-2xh100
-    container:
-      image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
-      options: --gpus all
-    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MODAL_APP_NAME: prime-rl-ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - name: Install Git
-        run: |
-          apt-get update
-          apt-get install -y git
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -55,28 +49,26 @@ jobs:
             uses: astral-sh/setup-uv@v10.0.1
             with:
               enable-cache: false
-      - name: Install dependencies
-        timeout-minutes: 20
+      - name: Run tiny tests on Modal
         env:
-          UV_LOCK_TIMEOUT: "600"
-          UV_HTTP_RETRIES: "8"
-        run: uv sync --all-extras --all-packages --locked
-      - name: Run tiny tests
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: uvx --from modal==1.6.4 modal run --name "$MODAL_APP_NAME" scripts/modal_ci.py --suite tiny
+      # A cancelled job kills the Modal client before it stops the app, whose containers would keep running.
+      - name: Stop the Modal app
+        if: cancelled()
         env:
-          USERNAME_CI: CI_RUNNER
-          UV_NO_SYNC: "1"
-          WANDB_MODE: offline
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          GITHUB_REF_NAME: ${{ github.ref_name }}
-          GITHUB_HEAD_REF: ${{ github.head_ref }}
-          PYTEST_OUTPUT_DIR: /tmp/outputs
-          VLLM_WORKER_MULTIPROC_METHOD: spawn
-        run: uv run pytest tests/unit tests/integration -m tiny -vv --durations=0
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          uvx --from modal==1.6.4 modal app list --json \
+            | jq -r --arg name "$MODAL_APP_NAME" '.[] | select(.description == $name and .state != "stopped") | .app_id' \
+            | xargs -r -n1 uvx --from modal==1.6.4 modal app stop -y
       - name: Upload run logs on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: tiny-logs
-          path: /tmp/outputs/**/*.log
+          path: outputs/modal-ci
           retention-days: 7
           if-no-files-found: ignore
