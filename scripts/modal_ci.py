@@ -164,6 +164,8 @@ def cached_files(root: Path) -> set[Path]:
     volumes={CACHE: cache},
     secrets=[modal.Secret.from_name("prime-rl-ci")],
     timeout=20 * 60,
+    # Otherwise a group can run in the container another group just finished in, with its outputs and caches
+    single_use_containers=True,
 )
 def run_group(name: str, pytest_args: list[str], cache_key: str, ref_name: str) -> tuple[int, bytes, float, float]:
     """Run one pytest group. Returns its exit code, a tarball of its logs, and its start time and duration."""
