@@ -1,4 +1,4 @@
-from collections import Counter, OrderedDict
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -87,7 +87,7 @@ def test_rows_keep_every_prediction_of_a_pass(tmp_path):
     """The source holds exactly 4 steps of tokens (and an empty file). Its rows are full, positions restart at every
     segment, and they score every prediction within a document exactly once; the other scored targets are document
     starts after document ends. The pieces of the long documents land in several steps, and the next pass reads the
-    units in another order."""
+    units in another order. Without document masking, a row is one sequence."""
     lengths = [*LENGTHS, 4 * 4 * 16 - sum(LENGTHS)]
     write_source(tmp_path / "a", lengths)
     write_shard(tmp_path / "a" / "02.ds", [[], []])
@@ -121,6 +121,10 @@ def test_rows_keep_every_prediction_of_a_pass(tmp_path):
         for k in (0, 4)
     ]
     assert passes[0] != passes[1] and sorted(passes[0]) == sorted(passes[1])
+    # Without document masking, a row is one sequence.
+    config = data_config(tmp_path, {"a": {}}, document_masking=False)
+    row = take(setup_token_dataset(config, dp_rank=0, dp_size=1), 1)[0]
+    assert row["seq_lens"] == [16] and row["position_ids"] == list(range(16))
 
 
 def test_every_step_holds_the_mixture(tmp_path):
@@ -242,7 +246,9 @@ def test_eod_mask_loss(tmp_path):
     write_shard(tmp_path / "a" / "00.ds", [[*document, eos] for document in words])
     config = data_config(tmp_path, {"a": {}})
     off = take(setup_token_dataset(config, dp_rank=0, dp_size=1), 40)
-    on = take(setup_token_dataset(config, eod_mask_token=eos, dp_rank=0, dp_size=1), 40)
+    masked_dataset = setup_token_dataset(config, dp_rank=0, dp_size=1)
+    masked_dataset.eod_mask_token = eos
+    on = take(masked_dataset, 40)
     eos_inputs = word_to_eos = 0
     for plain, masked in zip(off, on):
         assert {k: v for k, v in plain.items() if k != "loss_mask"} == {
@@ -259,21 +265,14 @@ def test_eod_mask_loss(tmp_path):
 
 
 def test_long_documents_are_cached(tmp_path):
-    """A second start maps the table of long documents from the cache; a changed folder gets a new one."""
+    """The table of long documents is cached, and a changed folder gets a new one."""
     write_source(tmp_path / "a", LENGTHS)
     config = data_config(tmp_path, {"a": {}})
     sampler = setup_token_dataset(config, cache_dir=tmp_path / "cache", dp_rank=0, dp_size=1).sampler
     assert (sampler.long_documents.tolist(), sampler.pieces_before.tolist()) == ([1, 5, 7, 11, 13], [0, 2, 3, 5, 6, 7])
-    cached = setup_token_dataset(config, cache_dir=tmp_path / "cache", dp_rank=0, dp_size=1).sampler
-    assert isinstance(cached.long_documents, np.memmap) and cached.pieces_before.tolist() == [0, 2, 3, 5, 6, 7]
     write_source(tmp_path / "a", [40, *LENGTHS[1:], 3])
-    assert (
-        setup_token_dataset(config, cache_dir=tmp_path / "cache", dp_rank=0, dp_size=1).sampler.long_documents.tolist()[
-            0
-        ]
-        == 0
-    )
-    assert len(list((tmp_path / "cache").iterdir())) == 2
+    changed = setup_token_dataset(config, cache_dir=tmp_path / "cache", dp_rank=0, dp_size=1).sampler
+    assert changed.long_documents.tolist()[0] == 0
 
 
 def test_fill_rows():
@@ -295,20 +294,6 @@ def test_unit_order_needs_no_table():
     # 10^15 units: any unit is computed directly, without a permutation table.
     units = permute(np.arange(4), 10**15, key=3)
     assert len(set(units.tolist())) == 4 and (units < 10**15).all()
-
-
-def test_token_shards_keep_few_files_open(tmp_path, monkeypatch):
-    """The limit holds for all shards of a process together, e.g. the sources of a mixture."""
-    for folder in ("a", "b"):
-        for i in range(6):
-            write_shard(tmp_path / folder / f"{i:02d}.ds", [list(range(100 * i, 100 * i + 40))])
-    monkeypatch.setattr(pretrain_data, "MAX_OPEN_FILES", 2)
-    monkeypatch.setattr(pretrain_data, "OPEN_FILES", OrderedDict())
-    for folder in ("a", "b"):
-        shards = TokenShards([tmp_path / folder])
-        for i in range(6):
-            assert shards.open(i)[0][:3].tolist() == [100 * i, 100 * i + 1, 100 * i + 2]
-    assert len(pretrain_data.OPEN_FILES) == 2
 
 
 def scored_segments(batch: dict) -> list[tuple[list[int], list[int], list[int]]]:

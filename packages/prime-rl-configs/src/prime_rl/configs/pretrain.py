@@ -39,14 +39,11 @@ class TokenSourceConfig(BaseConfig):
     """Folder of ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``."""
 
     weight: float | None = Field(None, ge=0)
-    """The source's share of the training tokens. Set on every source (summing to 1) or on none: then every source
-    gets its natural share, its tokens over the tokens of all sources."""
+    """The source's share of the training tokens. If None on every source, its share of all sources' tokens."""
 
     repetitions: float | None = Field(None, ge=1)
-    """How often every token of the source is seen over the run (fractional: the last pass reads part of its subset).
-    If None, the whole source is used, and its repetitions follow from its weight and the run's tokens. If set, the
-    source uses a fixed subset of ``weight * max_steps * batch_size * seq_len / repetitions`` tokens (summed over the
-    phases' weights); needs ``max_steps``."""
+    """How often every token of a fixed subset of the source is seen over the run (needs ``max_steps``). If None, the
+    whole source is read."""
 
 
 class MixturePhaseConfig(BaseConfig):
@@ -63,19 +60,16 @@ class PretrainDataConfig(BaseDataConfig):
     type: Literal["datatrove"] = "datatrove"
 
     sources: list[TokenSourceConfig] = Field(min_length=1)
-    """The folders to sample documents from, mixed by ``weight``. A document longer than ``seq_len`` is cut into
-    pieces of ``seq_len`` tokens, each sampled on its own. Every pass over a source (or its subset) reads all its
-    documents and pieces once, in a new order, and every step holds the mixture."""
+    """The folders to sample documents from."""
 
     phases: list[MixturePhaseConfig] = []
     """Other mixtures from a given step on, e.g. an annealing mix for the last steps."""
 
     seed: int = Field(0, ge=0)
-    """Seed for the order of every source's passes and subset, and of the documents within rows."""
+    """Seed for the order of the documents and the subsets."""
 
     document_masking: bool = True
-    """Attention and positions restart at every document (and piece). If False, a row is one sequence: attention spans
-    the whole row and positions run over it."""
+    """Attention and positions restart at every document. If False, a row is one sequence."""
 
     eod_mask_loss: bool = True
     """Don't train the model to predict the first token of the next, unrelated document: no loss where the input is

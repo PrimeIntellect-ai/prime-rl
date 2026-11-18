@@ -214,9 +214,9 @@ def train(config: SFTConfig | PretrainConfig):
             dist.barrier()
         check_ranks_see_same_data(dataset.sampler)
         if config.data.eod_mask_loss:
-            dataset.eod_mask_token = detect_separator(dataset.shards, tokenizer)
+            dataset.eod_mask_token = detect_separator(dataset.sampler.shards, tokenizer)
         else:
-            warn_if_no_document_separator(dataset.shards, tokenizer)
+            warn_if_no_document_separator(dataset.sampler.shards, tokenizer)
     else:
         dataset = setup_sft_dataset(
             tokenizer,
