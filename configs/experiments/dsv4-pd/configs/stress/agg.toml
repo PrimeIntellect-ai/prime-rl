@@ -1,0 +1,38 @@
+# DSV4-Flash MXFP8 stress arm "agg" (2 nodes, 16 B200): Two independent aggregated DP8+EP replicas (one per node) behind one vllm-router.
+#
+#   uv run inference @ /home/phi/exp/dsv4-pd/configs/stress/agg.toml
+
+output_dir = "/home/phi/exp/dsv4-pd/outputs/stress_agg"
+
+[slurm]
+job_name = "dsv4-st-agg"
+partition = "all"
+# Copy of the repo templates whose router runs without its circuit breaker, with retries and lenient health checks
+# (identical in every arm), so a burst of transient errors cannot black-hole healthy engines mid-run.
+template_path = "/home/phi/exp/dsv4-pd/templates/inference.sbatch.j2"
+
+[deployment]
+type = "multi_node"
+num_nodes = 2
+
+[env_vars]
+VLLM_USE_DEEP_GEMM_E8M0 = "0"
+VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR = "/home/phi/.cache/vllm-flashinfer-autotune"
+# vLLM closes idle HTTP connections after 5 s by default, racing the router's pooled-connection reuse.
+VLLM_HTTP_TIMEOUT_KEEP_ALIVE = "3600"
+
+[vllm]
+model = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
+dtype = "bfloat16"
+quantization = "mxfp8"
+enable_expert_parallel = true
+all2all_backend = "flashinfer_nvlink_one_sided"
+gpu_memory_utilization = 0.85
+max_model_len = 131072
+kv_cache_dtype = "fp8"
+block_size = 256
+tool_call_parser = "deepseek_v4"
+reasoning_parser = "deepseek_v4"
+
+[vllm.quantization_config]
+ignore = ["*.wo_a", "*.indexer.*"]

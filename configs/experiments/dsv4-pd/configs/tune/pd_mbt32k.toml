@@ -1,0 +1,44 @@
+# Tuning round 1, DSV4-Flash P/D 1P:1D (2 nodes): prefill takes 32K-token chunks (vLLM default 16K); decode unchanged.
+#
+#   uv run inference @ /home/phi/exp/dsv4-pd/configs/tune/pd_mbt32k.toml
+
+output_dir = "/home/phi/exp/dsv4-pd/outputs/tune_pd_mbt32k"
+
+[slurm]
+job_name = "dsv4-tn-pd32k"
+partition = "all"
+# Copy of the repo templates whose router runs without its circuit breaker, with retries and lenient health checks
+# (identical in every arm), so a burst of transient errors cannot black-hole healthy engines mid-run.
+template_path = "/home/phi/exp/dsv4-pd/templates/inference.sbatch.j2"
+
+[deployment]
+type = "disaggregated"
+prefill_nodes_per_replica = 1
+decode_nodes_per_replica = 1
+
+[deployment.prefill_vllm_overrides]
+max_num_batched_tokens = 32768
+
+[env_vars]
+VLLM_USE_DEEP_GEMM_E8M0 = "0"
+VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR = "/home/phi/.cache/vllm-flashinfer-autotune"
+# vLLM closes idle HTTP connections after 5 s by default, racing the router's pooled-connection reuse.
+VLLM_HTTP_TIMEOUT_KEEP_ALIVE = "3600"
+# The checkpoint is cached; ~100 engines starting at once otherwise hit the Hub API rate limit (429).
+HF_HUB_OFFLINE = "1"
+
+[vllm]
+model = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
+dtype = "bfloat16"
+quantization = "mxfp8"
+enable_expert_parallel = true
+all2all_backend = "flashinfer_nvlink_one_sided"
+gpu_memory_utilization = 0.85
+max_model_len = 131072
+kv_cache_dtype = "fp8"
+block_size = 256
+tool_call_parser = "deepseek_v4"
+reasoning_parser = "deepseek_v4"
+
+[vllm.quantization_config]
+ignore = ["*.wo_a", "*.indexer.*"]

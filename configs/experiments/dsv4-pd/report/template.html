@@ -1,0 +1,446 @@
+<title>DSV4-Flash P/D Disaggregation</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap">
+<style>
+/* Layout: one reading column (~1040px) of report sections; headline findings as a 2x2 figure grid; charts full column width. */
+:root {
+  --bg: #f4f4f1;
+  --surface: #fcfcfb;
+  --fg: #0b0b0b;
+  --fg2: #52514e;
+  --muted: #7a7873;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.10);
+  --s-agg: #2a78d6;
+  --s-pd: #eb6834;
+  --s-pdmc: #1baf7a;
+  --critical: #d03b3b;
+  --good: #006300;
+  --code-bg: #ecebe6;
+  --font-display: "Space Grotesk", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d0d0d; --surface: #1a1a19; --fg: #f0efec; --fg2: #c3c2b7; --muted: #8f8d87; --grid: #2c2c2a;
+    --axis: #383835; --border: rgba(255, 255, 255, 0.10); --s-agg: #3987e5; --s-pd: #d95926; --s-pdmc: #199e70;
+    --critical: #e05252; --good: #0ca30c; --code-bg: #232321; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d0d0d; --surface: #1a1a19; --fg: #f0efec; --fg2: #c3c2b7; --muted: #8f8d87; --grid: #2c2c2a;
+  --axis: #383835; --border: rgba(255, 255, 255, 0.10); --s-agg: #3987e5; --s-pd: #d95926; --s-pdmc: #199e70;
+  --critical: #e05252; --good: #0ca30c; --code-bg: #232321; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--fg); font: 15px/1.6 var(--font-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 40px 64px;
+}
+main { max-width: 1040px; margin: 0 auto; display: flex; flex-direction: column; gap: 56px; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+h1 { font-size: clamp(30px, 5vw, 44px); line-height: 1.08; font-weight: 700; }
+h2 { font-size: 24px; font-weight: 600; }
+h3 { font-size: 16px; font-weight: 600; }
+p { margin: 0; max-width: 68ch; }
+a { color: inherit; text-underline-offset: 3px; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; border-radius: 4px; }
+code { font: 13px var(--font-mono); background: var(--code-bg); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+.eyebrow { font: 500 12px var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg2); }
+.section { display: flex; flex-direction: column; gap: 20px; }
+.section > header { display: flex; flex-direction: column; gap: 8px; }
+.lede { font-size: 18px; color: var(--fg2); max-width: 64ch; }
+.muted { color: var(--fg2); }
+.small { font-size: 13px; }
+
+/* header */
+.top { display: flex; flex-direction: column; gap: 18px; }
+.meta { display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center; font: 13px var(--font-mono); color: var(--fg2); }
+.pr-link { display: inline-flex; align-items: center; gap: 10px; padding: 9px 14px; border-radius: 8px; background: var(--fg); color: var(--bg);
+  font: 600 14px var(--font-body); text-decoration: none; }
+.pr-link span { font-family: var(--font-mono); font-weight: 500; opacity: 0.8; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border);
+  font: 500 12px var(--font-mono); color: var(--fg2); background: var(--surface); }
+.pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg2); }
+
+/* headline figures */
+.figures { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.figure { background: var(--surface); padding: 22px 24px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.figure .value { font: 600 38px/1.05 var(--font-display); letter-spacing: -0.02em; }
+.figure .label { font: 500 12px var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg2); }
+.figure p { font-size: 14px; color: var(--fg2); }
+@media (max-width: 640px) { .figures { grid-template-columns: minmax(0, 1fr); } }
+
+/* change list */
+.changes { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; border-top: 1px solid var(--border); }
+.change { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--border); }
+.change .kind { font: 500 12px var(--font-mono); color: var(--fg2); padding-top: 2px; }
+.change h3 { margin-bottom: 4px; }
+.change p { font-size: 14px; color: var(--fg2); }
+@media (max-width: 640px) { .change { grid-template-columns: minmax(0, 1fr); gap: 4px; } }
+
+/* arms */
+.arms { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.arm { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.arm-name { display: flex; align-items: center; gap: 8px; font: 600 15px var(--font-mono); }
+.swatch { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+.node { display: flex; flex-direction: column; gap: 4px; }
+.node .role { font: 500 11px var(--font-mono); color: var(--fg2); text-transform: uppercase; letter-spacing: 0.06em; }
+.gpus { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 3px; }
+.gpus i { height: 14px; border-radius: 2px; background: var(--grid); border: 1px solid var(--axis); }
+.link { font: 500 11px var(--font-mono); color: var(--fg2); }
+.arm p { font-size: 13px; color: var(--fg2); }
+@media (max-width: 760px) { .arms { grid-template-columns: minmax(0, 1fr); } }
+
+/* charts */
+.chart-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px 18px 12px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.chart-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; align-items: baseline; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font: 13px var(--font-mono); color: var(--fg2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.chart { position: relative; width: 100%; min-width: 0; }
+.chart svg { display: block; width: 100%; overflow: visible; }
+.chart text { font-family: var(--font-mono); fill: var(--muted); font-size: 11px; }
+.chart .gridline { stroke: var(--grid); stroke-width: 1; }
+.chart .baseline { stroke: var(--axis); stroke-width: 1; }
+.chart .ink { fill: var(--fg); }
+.chart .ink2 { fill: var(--fg2); }
+.chart .crit { fill: var(--critical); }
+.chart .annot { stroke: var(--axis); stroke-width: 1; }
+.tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12); padding: 8px 10px; font: 12px/1.5 var(--font-mono); color: var(--fg); white-space: nowrap; z-index: 2; }
+.tip b { font-weight: 500; }
+.tip .row { display: flex; align-items: center; gap: 6px; }
+.two-up { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 760px) { .two-up { grid-template-columns: minmax(0, 1fr); } }
+
+/* tables */
+.table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 14px; font-variant-numeric: tabular-nums; }
+th, td { padding: 9px 12px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+thead th { font: 500 12px var(--font-mono); color: var(--fg2); letter-spacing: 0.04em; background: var(--bg); }
+tbody tr:last-child td { border-bottom: 0; }
+td.num { font-family: var(--font-mono); font-size: 13px; }
+.status { display: inline-flex; align-items: center; gap: 5px; font: 500 12px var(--font-mono); color: var(--critical); }
+.status::before { content: "▲"; font-size: 9px; }
+.note { font-size: 13px; color: var(--fg2); }
+ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; max-width: 72ch; }
+ul.plain li { padding-left: 2px; }
+footer { font: 12px var(--font-mono); color: var(--muted); border-top: 1px solid var(--border); padding-top: 16px; display: flex; flex-wrap: wrap; gap: 8px 20px; }
+@media (prefers-reduced-motion: no-preference) { .tip { transition: opacity 80ms; } }
+</style>
+
+<main>
+  <div class="top">
+    <div class="eyebrow">prime-rl · inference · DeepSeek-V4-Flash · 8×B200 nodes</div>
+    <h1>Prefill/decode disaggregation for DeepSeek-V4-Flash</h1>
+    <p class="lede">P/D now runs DeepSeek-V4-Flash with online MXFP8 in prime-rl, at baseline accuracy. Under 768 to 1,536 concurrent agentic episodes it delivers more output per GPU than aggregated serving on the same 16 GPUs. Past the point where session KV outgrows the prefill node's cache, it thrashes unless Mooncake backs that cache with DRAM.</p>
+    <div class="meta">
+      <a class="pr-link" href="https://github.com/PrimeIntellect-ai/prime-rl/pull/4565">Draft PR #4565 <span>feat/dsv4-pd → main</span></a>
+      <span>vLLM 0.33 · online MXFP8 · NIXL KV transfer</span>
+      <span id="status-pill"></span>
+    </div>
+  </div>
+
+  <section class="section" aria-labelledby="h-headline">
+    <header><div class="eyebrow">Headline results</div><h2 id="h-headline">What the runs show</h2></header>
+    <div class="figures" id="figures"></div>
+  </section>
+
+  <section class="section" aria-labelledby="h-changes">
+    <header>
+      <div class="eyebrow">The change · 4 signed commits</div>
+      <h2 id="h-changes">What PR #4565 changes</h2>
+      <p class="muted">All changes are in prime-rl; vLLM is unmodified. Two things blocked DSV4: the P/D launch hardcoded DeepEP, which vLLM's MXFP8 MoE kernels cannot run behind, and Mooncake could not register GPU memory on these nodes.</p>
+    </header>
+    <div class="changes">
+      <div class="change"><div class="kind">feat(inference)</div><div>
+        <h3>Per-role P/D settings live in the role engine configs</h3>
+        <p>The all2all backend, the decode CUDA graph mode and <code>prefill_vllm_overrides</code> / <code>decode_vllm_overrides</code> move from a JSON string spliced into two sbatch templates into <code>InferenceConfig.for_pd_role</code>, so they land in <code>inference-{prefill,decode}.json</code>. An explicit <code>inference.vllm.all2all_backend</code> now applies to both roles. With DeepEP, DSV4 decode fails to start (<code>No MXFP8 MoE backends available</code>) and prefill falls back to weight-only Marlin; <code>flashinfer_nvlink_one_sided</code> works when each role fits one node.</p>
+      </div></div>
+      <div class="change"><div class="kind">fix(inference)</div><div>
+        <h3>Mooncake registers GPU KV caches through DMA-BUF</h3>
+        <p>Mooncake defaults <code>WITH_NVIDIA_PEERMEM</code> to true and calls plain <code>ibv_reg_mr</code> on GPU memory. Without the <code>nvidia_peermem</code> module every put failed with <code>AddressNotRegistered</code> and the store never held a block. The launch now sets <code>WITH_NVIDIA_PEERMEM=0</code> on such nodes. The docs add that auto-detected devices include NICs on other fabrics: pin <code>device_name</code> to the GPU fabric.</p>
+      </div></div>
+      <div class="change"><div class="kind">docs</div><div>
+        <h3>HiSparse does not support DeepSeek-V4</h3>
+        <p>vLLM rejects HiSparse for DSV4's compressed sparse MLA; the docs say so, because the first error users hit is an unresolved KV cache layout.</p>
+      </div></div>
+      <div class="change"><div class="kind">feat(configs)</div><div>
+        <h3><code>configs/advanced/deepseek-v4-flash/pd.toml</code></h3>
+        <p>One DP8+EP prefill node and one DP8+EP decode node with online MXFP8, FlashInfer one-sided all2all and NIXL KV transfer.</p>
+      </div></div>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="h-acc">
+    <header>
+      <div class="eyebrow">Correctness</div>
+      <h2 id="h-acc">Accuracy matches aggregated serving</h2>
+      <p class="muted">AIME 2026, 16 samples per problem, reasoning effort max, 64k completion budget. Teacher-forced checks of P/D outputs against single-engine scores give mean |Δ logprob| 0.005 to 0.05, the MXFP8 run-to-run level; NIXL moved KV intra- and cross-node with zero failed transfers.</p>
+    </header>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Setup</th><th>GPUs</th><th>Reward</th><th>Truncated</th><th>Wall time</th></tr></thead>
+      <tbody>
+        <tr><td>Aggregated DP8, 1 node (baseline)</td><td class="num">8</td><td class="num">0.9375</td><td class="num">5.4%</td><td class="num">19m15s</td></tr>
+        <tr><td>P/D on 1 node: prefill DP4 + decode DP4</td><td class="num">8</td><td class="num">0.9521</td><td class="num">4.0%</td><td class="num">21m53s</td></tr>
+        <tr><td>P/D 1P:1D, 2 nodes, prime-rl launcher</td><td class="num">16</td><td class="num">0.9583</td><td class="num">4.0%</td><td class="num">17m35s</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">All three are within run-to-run noise (about ±0.02).</p>
+  </section>
+
+  <section class="section" aria-labelledby="h-stress">
+    <header>
+      <div class="eyebrow">Stress test · equal compute</div>
+      <h2 id="h-stress">1,000+ concurrent agentic episodes</h2>
+      <p class="muted">PI-DeepSWE (113 long-horizon SWE tasks) with the RLM harness at reasoning effort max, 16 rollouts per task, a 24 h rollout timeout and Prime sandboxes. Each arm gets 2 nodes / 16 B200. Concurrency was pinned from high to low: 2048 as a burst from a warm 64-episode pool, then each lower level as a fresh eval started at that concurrency, held 60 to 120 min. Throughput is per GPU, averaged over the second half of each hold.</p>
+    </header>
+    <div class="arms" id="arms"></div>
+
+    <div class="chart-card">
+      <div class="chart-head"><h3>Output tokens/s per GPU by concurrency</h3><div class="legend" id="legend-a"></div></div>
+      <div class="chart" id="chart-levels"></div>
+      <p class="note" id="levels-note"></p>
+    </div>
+
+    <div class="two-up">
+      <div class="chart-card">
+        <div class="chart-head"><h3>The 2048 burst: output tok/s per GPU</h3></div>
+        <div class="legend" id="legend-b"></div>
+        <div class="chart" id="chart-burst"></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-head"><h3>The 2048 burst: prompt tokens recomputed</h3></div>
+        <div class="legend" id="legend-c"></div>
+        <div class="chart" id="chart-recompute"></div>
+      </div>
+    </div>
+    <p class="note">Minutes since the burst to 2048 episodes. P/D led for the first 30 minutes. About 40 minutes in, once session contexts outgrew the prefill node's prefix cache (about 7.5M tokens, half of aggregated's 14.7M), every call re-prefilled its whole context and about 2,000 requests queued. Mooncake served 20 to 60% of prompt tokens from DRAM and held its arm up; aggregated never thrashed but slid as contexts grew.</p>
+
+    <h3>All levels</h3>
+    <div class="table-wrap"><table id="table-levels"></table></div>
+    <p class="note">Recompute is the share of served prompt tokens prefilled again (not found in GPU or Mooncake cache), the thrash signal. P/D output tokens come from decode, served prompt from prefill. Calls are model requests per second.</p>
+  </section>
+
+  <section class="section" aria-labelledby="h-caveats">
+    <header><div class="eyebrow">Read with care</div><h2 id="h-caveats">Caveats and open items</h2></header>
+    <ul class="plain">
+      <li>Root cancelled the first set of inference jobs at 12:10 UTC, cutting level 768 at about 70 of 75 minutes. Levels 512 to 128 ran later on resubmitted arms with the same configs; pdmc was not re-run for them, to stay within 4 nodes. Below the thrash point it tracked pd within 0 to 11%.</li>
+      <li>Aggregated episodes often outlast a 75-minute hold, so per-level episode completions understate it.</li>
+      <li>Every arm ran the router with its circuit breaker off, 3 retries and lenient health checks, and the engines with a 3600 s HTTP keep-alive. Under bursts the router's defaults black-hole healthy engines. Not part of the PR.</li>
+      <li>vllm-router 0.2.4 rejects <code>reasoning_effort="max"</code>; the runs pass it as <code>chat_template_kwargs</code>, which the DSV4 template renders identically (verified by prompt token count). RL is unaffected.</li>
+      <li>Mooncake's decode-side save does not extend DSV4 prefix hits: decode stores only part of the five KV groups, so a turn's completion is prefilled again next turn.</li>
+      <li>A role spanning several nodes with MXFP8 would need <code>deepep_v2</code> (DeepEP v2); the pinned DeepEP wheel is v1.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <span id="generated"></span>
+    <span>Data: <code>/home/phi/exp/dsv4-pd/stress/*.jsonl</code> · notes: <code>NOTES.md</code></span>
+  </footer>
+</main>
+
+<script id="report-data" type="application/json">/*__DATA__*/{}</script>
+<script>
+(function () {
+  const D = JSON.parse(document.getElementById("report-data").textContent);
+  const ARMS = [
+    { key: "agg", name: "agg", desc: "Two independent aggregated DP8+EP replicas behind one router." },
+    { key: "pd", name: "pd", desc: "P/D 1P:1D: one DP8+EP prefill node, one DP8+EP decode node, NIXL KV transfer." },
+    { key: "pdmc", name: "pdmc", desc: "pd plus Mooncake: 1 TB of the prefill node's DRAM backs its prefix cache." },
+  ];
+  const color = (k) => `var(--s-${k})`;
+  const fmt = (v, d = 0) => v == null ? "–" : Number(v).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+  const thrashed = (r) => r && r.recompute != null && r.recompute >= 0.25;
+  const NS = "http://www.w3.org/2000/svg";
+  const el = (tag, attrs, parent) => { const n = document.createElementNS(NS, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); parent && parent.appendChild(n); return n; };
+  const levels = D.levels || [];
+  const byLevel = Object.fromEntries(levels.map((l) => [l.level, l.arms]));
+  const inProgress = new Set(D.in_progress || []);
+
+  // status + footer
+  document.getElementById("generated").textContent = "Generated " + (D.generated || "");
+  const pill = document.getElementById("status-pill");
+  if (inProgress.size) pill.innerHTML = `<span class="pill"><span class="dot"></span>Level ${[...inProgress].join(", ")} in progress</span>`;
+
+  // headline figures, computed from the data
+  const stable = levels.filter((l) => l.level >= 512 && l.arms.agg && l.arms.pd && !thrashed(l.arms.pd) && !inProgress.has(l.level));
+  const ratios = stable.map((l) => l.arms.pd.gen / l.arms.agg.gen);
+  const lo = Math.min(...ratios), hi = Math.max(...ratios);
+  const thrashLevel = levels.filter((l) => thrashed(l.arms.pd)).map((l) => l.level).sort((a, b) => a - b)[0];
+  const okBelow = levels.filter((l) => l.arms.pd && !thrashed(l.arms.pd) && (!thrashLevel || l.level < thrashLevel)).map((l) => l.level).sort((a, b) => b - a)[0];
+  const top = byLevel[2048] || {};
+  const figures = [
+    { label: "P/D output per GPU vs aggregated", value: ratios.length ? `${lo.toFixed(1)}–${hi.toFixed(1)}×` : "–",
+      text: `At ${stable.map((l) => fmt(l.level)).join(", ")} concurrent episodes on equal compute (16 B200 each), pd generates ${lo.toFixed(1)} to ${hi.toFixed(1)} times the output tokens per GPU, with decode free of prefill chunks.` },
+    { label: "P/D thrash point", value: thrashLevel ? `${fmt(okBelow)}–${fmt(thrashLevel)}` : "–",
+      text: `Stable at ${fmt(okBelow)} episodes; at ${fmt(thrashLevel)} the prefill cache overflowed about 40 minutes in and output fell to ${fmt(top.pd && top.pd.gen)} tokens/s per GPU.` },
+    { label: "Mooncake at 2048 episodes", value: top.pdmc && top.pd ? `${(top.pdmc.gen / top.pd.gen).toFixed(1)}×` : "–",
+      text: `With 1 TB of DRAM behind the prefill cache, P/D held ${fmt(top.pdmc && top.pdmc.gen)} tokens/s per GPU against ${fmt(top.pd && top.pd.gen)} without it, ahead of aggregated's ${fmt(top.agg && top.agg.gen)}.` },
+    { label: "AIME26 reward, P/D vs baseline", value: "0.95 / 0.96",
+      text: "P/D on 1 node and on 2 nodes against 0.94 for aggregated serving: within run-to-run noise." },
+  ];
+  document.getElementById("figures").innerHTML = figures.map((f) =>
+    `<div class="figure"><div class="label">${f.label}</div><div class="value">${f.value}</div><p>${f.text}</p></div>`).join("");
+
+  // arms with node schematics
+  const gpus = () => `<div class="gpus">${"<i></i>".repeat(8)}</div>`;
+  const nodes = { agg: [["replica 1", "prefill + decode"], ["replica 2", "prefill + decode"]],
+                  pd: [["prefill", "DP8 + EP"], ["decode", "DP8 + EP"]],
+                  pdmc: [["prefill + 1 TB Mooncake", "DP8 + EP"], ["decode", "DP8 + EP"]] };
+  document.getElementById("arms").innerHTML = ARMS.map((a) => `<div class="arm">
+      <div class="arm-name"><span class="swatch" style="background:${color(a.key)}"></span>${a.name}</div>
+      ${nodes[a.key].map(([role, sub], i) => `${i && a.key !== "agg" ? '<div class="link">↓ NIXL KV transfer</div>' : ""}
+        <div class="node"><div class="role">${role} · ${sub}</div>${gpus()}</div>`).join("")}
+      <p>${a.desc}</p></div>`).join("");
+
+  // legends
+  const legend = (id, arms) => { document.getElementById(id).innerHTML = arms.map((a) =>
+    `<span><span class="swatch" style="background:${color(a.key)}"></span>${a.name}</span>`).join(""); };
+  ["legend-a", "legend-b", "legend-c"].forEach((id) => legend(id, ARMS));
+
+  function tooltip(chart) {
+    let tip = chart.querySelector(".tip");
+    if (!tip) { tip = document.createElement("div"); tip.className = "tip"; tip.hidden = true; chart.appendChild(tip); }
+    return {
+      show(html, x, y) {
+        tip.innerHTML = html; tip.hidden = false;
+        const w = tip.offsetWidth, cw = chart.clientWidth;
+        tip.style.left = Math.max(0, Math.min(cw - w, x + 12)) + "px"; tip.style.top = Math.max(0, y - tip.offsetHeight - 8) + "px";
+      },
+      hide() { tip.hidden = true; },
+    };
+  }
+  const niceMax = (v) => { const p = Math.pow(10, Math.floor(Math.log10(v))); for (const m of [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (m * p >= v) return m * p; return v; };
+
+  // chart A: grouped bars per concurrency level
+  function drawLevels() {
+    const box = document.getElementById("chart-levels");
+    box.innerHTML = "";
+    const W = box.clientWidth, H = 300, m = { l: 48, r: 8, t: 22, b: 40 };
+    const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img", "aria-label": "Output tokens per second per GPU by concurrency level for agg, pd and pdmc" }, box);
+    const lv = levels.map((l) => l.level);
+    const maxV = niceMax(Math.max(...levels.flatMap((l) => ARMS.map((a) => (l.arms[a.key] || {}).gen || 0))));
+    const y = (v) => m.t + (H - m.t - m.b) * (1 - v / maxV);
+    const ticks = 4;
+    for (let i = 0; i <= ticks; i++) {
+      const v = (maxV / ticks) * i;
+      el("line", { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), class: i ? "gridline" : "baseline" }, svg);
+      el("text", { x: m.l - 8, y: y(v) + 4, "text-anchor": "end" }, svg).textContent = fmt(v);
+    }
+    const band = (W - m.l - m.r) / lv.length;
+    const bw = Math.min(24, (band - 16) / 3);
+    const tip = tooltip(box);
+    lv.forEach((level, i) => {
+      const cx = m.l + band * (i + 0.5);
+      const label = level + (inProgress.has(level) ? " ·" : levels[i].arms.agg && levels[i].arms.agg.partial && !inProgress.has(level) ? " *" : "");
+      el("text", { x: cx, y: H - m.b + 18, "text-anchor": "middle", class: "ink2" }, svg).textContent = label;
+      ARMS.forEach((a, j) => {
+        const r = levels[i].arms[a.key];
+        if (!r) return;
+        const x = cx + (j - 1) * (bw + 2) - bw / 2, top = y(r.gen), h = y(0) - top;
+        const rad = Math.min(4, h, bw / 2);
+        el("path", { d: `M${x},${y(0)} V${top + rad} Q${x},${top} ${x + rad},${top} H${x + bw - rad} Q${x + bw},${top} ${x + bw},${top + rad} V${y(0)} Z`,
+          style: `fill:${color(a.key)}` }, svg);
+        if (thrashed(r)) {
+          el("text", { x: x + bw / 2, y: top - 8, "text-anchor": "middle", class: "crit" }, svg).textContent = "▲";
+        }
+      });
+      const hit = el("rect", { x: cx - band / 2, y: m.t, width: band, height: H - m.t - m.b, fill: "transparent" }, svg);
+      const html = () => `<b>${fmt(level)} episodes${inProgress.has(level) ? " (in progress)" : ""}</b>` + ARMS.map((a) => {
+        const r = levels[i].arms[a.key];
+        return `<div class="row"><span class="swatch" style="background:${color(a.key)}"></span>${a.name}: ${r ? fmt(r.gen) + " tok/s/GPU · " + fmt(r.calls, 1) + " calls/s" + (thrashed(r) ? " · thrashed" : "") : "not run"}</div>`;
+      }).join("");
+      hit.addEventListener("mousemove", (e) => { const b = box.getBoundingClientRect(); tip.show(html(), e.clientX - b.left, e.clientY - b.top); });
+      hit.addEventListener("mouseleave", () => tip.hide());
+    });
+    el("text", { x: m.l, y: 12 }, svg).textContent = "tok/s per GPU";
+    el("text", { x: W - m.r, y: H - 6, "text-anchor": "end" }, svg).textContent = "concurrent episodes";
+    const notes = ["▲ thrashed: over a quarter of prompt tokens recomputed."];
+    if (levels.some((l) => !inProgress.has(l.level) && Object.values(l.arms).some((r) => r.partial))) notes.push("* hold cut short (cluster cancellation).");
+    if (inProgress.size) notes.push("· level still running; partial average.");
+    document.getElementById("levels-note").textContent = notes.join(" ");
+  }
+
+  // charts B and C: per-minute series of the 2048 burst
+  function drawSeries(id, idx, maxV, yfmt, ylabel) {
+    const box = document.getElementById(id);
+    box.innerHTML = "";
+    const W = box.clientWidth, H = 240, m = { l: 46, r: 46, t: 20, b: 30 };
+    const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img", "aria-label": ylabel + " over the 2048-episode burst" }, box);
+    const series = ARMS.map((a) => ({ a, pts: (D.burst[a.key] || []).filter((p) => p[idx] != null) }));
+    const maxX = Math.max(...series.flatMap((s) => s.pts.map((p) => p[0])), 1);
+    const x = (v) => m.l + (W - m.l - m.r) * (v / maxX), y = (v) => m.t + (H - m.t - m.b) * (1 - v / maxV);
+    for (let i = 0; i <= 4; i++) {
+      const v = (maxV / 4) * i;
+      el("line", { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), class: i ? "gridline" : "baseline" }, svg);
+      el("text", { x: m.l - 8, y: y(v) + 4, "text-anchor": "end" }, svg).textContent = yfmt(v);
+    }
+    for (let t = 0; t <= maxX; t += 30) el("text", { x: x(t), y: H - m.b + 16, "text-anchor": "middle" }, svg).textContent = t + "m";
+    el("line", { x1: x(40), x2: x(40), y1: m.t, y2: H - m.b, class: "annot" }, svg);
+    el("text", { x: x(40) - 6, y: m.t + 12, "text-anchor": "end", class: "ink2" }, svg).textContent = "pd cache overflow";
+    const ends = [];
+    series.forEach(({ a, pts }) => {
+      if (!pts.length) return;
+      el("path", { d: pts.map((p, i) => `${i ? "L" : "M"}${x(p[0]).toFixed(1)},${y(Math.min(p[idx], maxV)).toFixed(1)}`).join(" "),
+        fill: "none", style: `stroke:${color(a.key)}`, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
+      const last = pts[pts.length - 1];
+      el("circle", { cx: x(last[0]), cy: y(Math.min(last[idx], maxV)), r: 4, style: `fill:${color(a.key)};stroke:var(--surface)`, "stroke-width": 2 }, svg);
+      ends.push({ a, y: y(Math.min(last[idx], maxV)) });
+    });
+    ends.sort((p, q) => p.y - q.y);
+    for (let i = 1; i < ends.length; i++) if (ends[i].y - ends[i - 1].y < 13) ends[i].y = ends[i - 1].y + 13;
+    ends.forEach((e) => { el("text", { x: W - m.r + 8, y: e.y + 4, class: "ink2" }, svg).textContent = e.a.name; });
+    el("text", { x: m.l, y: 10 }, svg).textContent = ylabel;
+    const cross = el("line", { y1: m.t, y2: H - m.b, class: "annot", visibility: "hidden" }, svg);
+    const dots = series.map(({ a }) => el("circle", { r: 4, style: `fill:${color(a.key)};stroke:var(--surface)`, "stroke-width": 2, visibility: "hidden" }, svg));
+    const tip = tooltip(box);
+    const hit = el("rect", { x: m.l, y: m.t, width: W - m.l - m.r, height: H - m.t - m.b, fill: "transparent" }, svg);
+    hit.addEventListener("mousemove", (e) => {
+      const b = box.getBoundingClientRect(), mx = e.clientX - b.left;
+      const t = Math.max(0, Math.min(maxX, ((mx - m.l) / (W - m.l - m.r)) * maxX));
+      let rows = `<b>minute ${Math.round(t)}</b>`;
+      cross.setAttribute("x1", x(t)); cross.setAttribute("x2", x(t)); cross.setAttribute("visibility", "visible");
+      series.forEach(({ a, pts }, i) => {
+        if (!pts.length) return;
+        const p = pts.reduce((best, q) => Math.abs(q[0] - t) < Math.abs(best[0] - t) ? q : best, pts[0]);
+        dots[i].setAttribute("cx", x(p[0])); dots[i].setAttribute("cy", y(Math.min(p[idx], maxV))); dots[i].setAttribute("visibility", "visible");
+        rows += `<div class="row"><span class="swatch" style="background:${color(a.key)}"></span>${a.name}: ${yfmt(p[idx], true)} · ${fmt(p[3])} waiting</div>`;
+      });
+      tip.show(rows, mx, e.clientY - b.top);
+    });
+    hit.addEventListener("mouseleave", () => { tip.hide(); cross.setAttribute("visibility", "hidden"); dots.forEach((d) => d.setAttribute("visibility", "hidden")); });
+  }
+
+  // table: one row per level and arm
+  function drawTable() {
+    const t = document.getElementById("table-levels");
+    const head = "<thead><tr><th>Episodes</th><th>Arm</th><th>Out tok/s/GPU</th><th>Calls/s</th><th>Recompute</th><th>Waiting</th><th>TTFT</th><th>ITL</th></tr></thead>";
+    const rows = [...levels].sort((p, q) => q.level - p.level).flatMap((l) => ARMS.filter((a) => l.arms[a.key]).map((a, i) => {
+      const r = l.arms[a.key];
+      const lvl = i ? "" : fmt(l.level) + (inProgress.has(l.level) ? " (running)" : r.partial ? " (cut)" : "");
+      return `<tr><td class="num">${lvl}</td><td><span style="display:inline-flex;align-items:center;gap:6px"><span class="swatch" style="background:${color(a.key)}"></span>${a.name}</span></td>
+        <td class="num">${fmt(r.gen)}${thrashed(r) ? ' <span class="status">thrashed</span>' : ""}</td><td class="num">${fmt(r.calls, 1)}</td>
+        <td class="num">${fmt(r.recompute * 100, 1)}%</td><td class="num">${fmt(r.waiting)}</td><td class="num">${fmt(r.ttft, 1)} s</td>
+        <td class="num">${r.running >= 100 && r.itl ? fmt(r.itl * 1000) + " ms" : "–"}</td></tr>`;
+    }));
+    t.innerHTML = head + `<tbody>${rows.join("")}</tbody>`;
+  }
+
+  function render() {
+    drawLevels();
+    const maxOut = niceMax(Math.max(...Object.values(D.burst).flat().map((p) => p[1])));
+    drawSeries("chart-burst", 1, maxOut, (v) => fmt(v), "tok/s per GPU");
+    drawSeries("chart-recompute", 2, 1, (v, exact) => exact ? fmt(v * 100, 1) + "%" : fmt(v * 100) + "%", "share of prompt tokens");
+  }
+  drawTable();
+  render();
+  let raf;
+  window.addEventListener("resize", () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(render); });
+})();
+</script>
