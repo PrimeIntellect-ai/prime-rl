@@ -611,12 +611,22 @@ COMPLETION_PID=$!
 # A clean component exit is not enough to stop the run. Keep waiting for the
 # shared completion condition. Propagate any failure through
 # --kill-on-bad-exit=1 so every node tears down.
+{%- if num_infer_nodes > 0 %}
+# Inference servers must outlive the run, so a clean server exit is a failure.
+{%- endif %}
 while true; do
     wait -n -p FINISHED_PID
     EXIT_CODE=$?
     if [ "$EXIT_CODE" -ne 0 ] || [ "${FINISHED_PID:-}" = "$COMPLETION_PID" ]; then
         break
     fi
+{%- if num_infer_nodes > 0 %}
+    if [ -n "${INFERENCE_PORT_BY_PID[$FINISHED_PID]:-}" ]; then
+        echo "[$(hostname)] inference server on port ${INFERENCE_PORT_BY_PID[$FINISHED_PID]} exited with code 0 before the run completed"
+        EXIT_CODE=1
+        break
+    fi
+{%- endif %}
 done
 
 REMAINING_PIDS=$(jobs -p)
