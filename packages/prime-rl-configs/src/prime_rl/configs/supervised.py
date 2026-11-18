@@ -1,13 +1,13 @@
 import uuid
 import warnings
 from pathlib import Path
-from typing import Annotated, ClassVar, TypeAlias
+from typing import Annotated, TypeAlias
 from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
-from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.inference import InferenceConfig, setup_dummy_load
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
@@ -86,9 +86,6 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     auto_freeze_moe_router = False
     # Standard L2 regularization for supervised training.
     auto_weight_decay = 0.01
-    # Initialize the weights from scratch instead of loading them from ``model.name``, unless resuming.
-    init_from_scratch: ClassVar[bool] = False
-
     data: BaseDataConfig
 
     val: BaseValConfig | None = None
@@ -161,17 +158,21 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     @model_validator(mode="before")
     @classmethod
     def propagate_model_to_inference(cls, data):
-        """Fill ``inference.vllm.model`` from ``model.name`` before InferenceConfig
-        construction, so its parser auto-resolution sees the right model name."""
+        """Fill ``inference.vllm.model`` and ``tokenizer`` from ``model.name`` and ``tokenizer.name`` before
+        InferenceConfig construction, so its parser auto-resolution sees the right names."""
         if not isinstance(data, dict):
             return data
         inference = data.get("inference")
-        model = data.get("model")
-        name = model.get("name") if isinstance(model, dict) else None
-        if isinstance(inference, dict) and name:
-            vllm = inference.setdefault("vllm", {})
-            if isinstance(vllm, dict):
-                vllm.setdefault("model", name)
+        if not isinstance(inference, dict):
+            return data
+        vllm = inference.setdefault("vllm", {})
+        if not isinstance(vllm, dict):
+            return data
+        for section, key in (("model", "model"), ("tokenizer", "tokenizer")):
+            config = data.get(section)
+            name = config.get("name") if isinstance(config, dict) else None
+            if name:
+                vllm.setdefault(key, name)
         return data
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
@@ -201,6 +202,10 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
                     "make sure to set --enable_lora and --max-lora-rank.",
                     stacklevel=2,
                 )
+
+        # A scratch init reaches the server with the trainer's startup broadcast.
+        if self.inference is not None:
+            setup_dummy_load(self.inference, self.model.init.type == "scratch")
 
         if self.weight_broadcast is None:
             if self.model.lora is not None or self.inference is None:

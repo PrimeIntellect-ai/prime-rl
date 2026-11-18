@@ -32,14 +32,11 @@ class FeedForward(nn.Module):
         return self.down_proj(self.activation.apply(gate, up))
 
     def init_weights(self, init_std: float = 0.02) -> None:
-        first_projection = self.gate_proj if self.gate_proj is not None else self.up_proj
-        nn.init.trunc_normal_(first_projection.weight, mean=0.0, std=0.02)
-        remaining = (self.up_proj, self.down_proj) if self.gate_proj is not None else (self.down_proj,)
-        for linear in remaining:
-            nn.init.trunc_normal_(linear.weight, mean=0.0, std=init_std)
         for linear in (self.gate_proj, self.up_proj, self.down_proj):
-            if linear is not None and linear.bias is not None:
-                nn.init.zeros_(linear.bias)
+            if linear is not None:
+                nn.init.trunc_normal_(linear.weight, mean=0.0, std=init_std)
+                if linear.bias is not None:
+                    nn.init.zeros_(linear.bias)
 
 
 class SigmoidGatedFeedForward(FeedForward):

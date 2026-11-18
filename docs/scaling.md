@@ -135,7 +135,7 @@ chunk_tokens = 16384  # optional: tokens per rank per kernel call (long sequence
 
 ### Context Parallelism
 
-CP shards a single sequence across multiple GPUs along the token dimension — for long-context sequences. It uses Ulysses: an all-to-all turns sequence-sharded Q/K/V into head-sharded Q/K/V over the full sequence, attention runs locally, and a second all-to-all shards the output back. Hybrid linear-attention/Mamba models (Qwen3.5, NemotronH) redistribute their recurrent layers the same way. The sparse-attention models (DeepSeek-V4, GLM-5 DSA) keep queries sequence-sharded and all-gather their keys instead, which needs no head sharding.
+CP shards a single sequence across multiple GPUs along the token dimension, for long-context sequences. It uses Ulysses: an all-to-all turns sequence-sharded Q/K/V into head-sharded Q/K/V over the full sequence, attention runs locally, and a second all-to-all shards the output back. Hybrid linear-attention/Mamba models (Qwen3.5, NemotronH) redistribute their recurrent layers the same way. The sparse-attention models (DeepSeek-V4, GLM-5 DSA) keep queries sequence-sharded instead, which needs no head sharding. GLM-5 DSA all-gathers its keys. DeepSeek-V4 receives from the ranks before it only the tokens its sliding windows and compressors reach back into, pools the compressed entries that end in its own shard, and all-gathers those entries.
 
 Ulysses head-shards Q/K/V, so the CP degree must divide `num_attention_heads`. GQA models with fewer KV heads than the CP degree (e.g. NemotronH: 32 query heads, 2 KV heads) are supported via KV-head replication; the CP degree must then be a multiple of `num_key_value_heads`. Nemotron-H redistributes its Mamba activations between sequence- and head-parallel layouts in the model-owned Mamba path; the CP degree must divide `mamba_num_heads` and `n_groups`.
 
@@ -161,6 +161,17 @@ mode = "selective"
 ```
 
 Set `targets` to operator names (for example, `"aten::mm"`) or namespaces (for example, `"prime_rl_collectives"`) to replace the default selective targets. Correctness-required operations remain retained.
+
+To retain an operator only at some call sites, append `@` and a module path pattern relative to the transformer block. The pattern is an `fnmatch` glob, and it also matches inside the modules it names. Module-qualified targets require `trainer.model.compile`, whose module metadata identifies each call site. The trainer raises if a pattern matches no module, and after the first training forward if a target matched no traced operation, for example because the named module runs a different operator. This example names the FP8 GEMM, which runs only under `trainer.model.quantization.type = "fp8"`:
+
+```toml
+[trainer.model.ac]
+mode = "selective"
+targets = [
+  "prime_rl::fp8_blockwise_mm@self_attn.o_b_proj",
+  "prime_rl::fp8_blockwise_mm@mlp.shared_expert",
+]
+```
 
 Activation offloading still applies to tensors saved by autograd, but tensors retained by the checkpoint policy remain on the accelerator.
 
