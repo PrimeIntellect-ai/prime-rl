@@ -23,7 +23,9 @@
 # Run with the host GPUs. The by-path mount lets oneCCL exchange GPU memory handles inside the
 # container, which multi-GPU training needs:
 #   docker run --rm -it --device /dev/dri -v /dev/dri/by-path:/dev/dri/by-path --ipc=host \
-#     -v ~/.cache/huggingface:/root/.cache/huggingface prime-rl:xpu
+#     --group-add "$(getent group render | cut -d: -f3)" \
+#     -v ~/.cache/huggingface:/home/appuser/.cache/huggingface prime-rl:xpu
+# The image runs as appuser (uid 1000, with sudo); --group-add gives it the host's GPU render nodes.
 
 ARG TORCH_VERSION=2.15.0
 ARG VLLM_VERSION=0.34.0
@@ -68,6 +70,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3.12 \
         python3.12-dev \
         python3.12-venv \
+        sudo \
         tmux \
         vim \
         wget \
@@ -115,6 +118,17 @@ ENV UV_HTTP_TIMEOUT=500
 ENV UV_CACHE_DIR=/root/.cache/uv
 ENV VIRTUAL_ENV=/app/.venv
 RUN uv venv --python /usr/bin/python3.12 /app/.venv
+# Run as a non-root user with sudo, like Dockerfile.cuda. It owns /app while the venv is still
+# empty, and the dependency stages below install as that user, so the venv needs no chown.
+# GPU access needs the host's render group: `docker run --group-add <render GID>`.
+RUN userdel -r ubuntu 2>/dev/null || true; \
+    groupdel ubuntu 2>/dev/null || true; \
+    groupadd --gid 1000 appuser \
+    && useradd --uid 1000 --gid appuser --create-home --shell /bin/bash appuser \
+    && usermod -aG sudo appuser \
+    && echo "appuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers \
+    && install -d -o appuser -g appuser /home/appuser/.cache \
+    && chown -R appuser:appuser /app
 # The Intel SYCL/oneCCL runtime wheels place their shared libraries in the venv's lib/.
 ENV PATH="/app/.venv/bin:${PATH}"
 ENV LD_LIBRARY_PATH="/app/.venv/lib"
@@ -246,7 +260,9 @@ ARG VLLM_XPU_INDEX_URL
 ARG VLLM_XPU_EXTRA_INDEX_URL
 ARG VLLM_XPU_KERNELS_INDEX_URL
 COPY --from=resolve /build/third-party.txt /build/no-deps.txt /build/
-RUN --mount=type=cache,target=/root/.cache/uv \
+USER appuser
+ENV UV_CACHE_DIR=/home/appuser/.cache/uv
+RUN --mount=type=cache,target=/home/appuser/.cache/uv,uid=1000,gid=1000 \
     uv pip install --no-config --no-deps --compile-bytecode \
         --index-strategy unsafe-best-match \
         --extra-index-url "${TORCH_INDEX_URL}" \
@@ -257,9 +273,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     && uv pip install --no-config --no-deps -r /build/no-deps.txt
 
 FROM dependencies AS runtime
-COPY --from=source /app /app
+COPY --from=source --chown=appuser:appuser /app /app
 COPY --from=resolve /build/editables.txt /build/
-RUN --mount=type=cache,target=/root/.cache/uv \
+RUN --mount=type=cache,target=/home/appuser/.cache/uv,uid=1000,gid=1000 \
     uv pip install --no-config --no-deps -r /build/editables.txt \
     && python - <<'PY'
 from importlib.metadata import version
