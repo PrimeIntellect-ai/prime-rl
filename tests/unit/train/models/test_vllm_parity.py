@@ -1,64 +1,16 @@
 """Forward parity of the trainer's models with vLLM's.
 
-Question: for the same weights, does vLLM's model code give the same per-token logprobs as prime-rl's? RL samples with
-vLLM and trains with prime-rl, so any difference shows up as trainer/inference mismatch KL and skews the training
-signal, even when each side looks fine on its own. No reference implementation or weight file is involved.
+For the same weights, vLLM must give the same per-token logprobs as prime-rl: RL samples with vLLM and trains with
+prime-rl, so any difference becomes trainer/inference mismatch.
 
-How it works:
-
-- No weight files. Each case writes only a tiny config.json (small widths, few layers and experts, every layer kind
-  of the arch), with the architecture vLLM serves it as.
-- Trainer side. The trainer builds its model from that config through its own path: `get_model`, the default
-  fusions, and the fused LM head. It then draws seeded random weights (`randomize`). Matrices get std 0.02. Norm
-  gains, biases and other vectors are drawn between 0.5 and 1.5, away from their usual 1 or 0, so a dropped or
-  misnamed one shows in the logprobs. Router selection biases are drawn too. A case's `post_init` adjusts weights
-  that need a structure or scale (DeepSeek-V4's hash routing table, for example).
-- vLLM side. A vLLM engine starts inside the test process with `load_format="dummy"` (eager mode, small KV cache).
-  The trainer's weights then go in through prime-rl's weight-update path: `convert_state_dict_to_hf` in their wire
-  dtypes, as the weight broadcast sends them, then the inference worker's layerwise load. So a wrong weight
-  conversion fails the test too. The config is parsed with the classes transformers ships, as a vLLM server does.
-- Same tokens on both sides. There are 2 rows of real Reverse-Text-SFT conversations (201 and 175 tokens), longer
-  than the sliding windows and long enough for DeepSeek-V4's heavily compressed attention. vLLM returns prompt
-  logprobs; the trainer computes its logprobs for the same tokens in bf16, packed into one micro batch.
-- Metrics: the largest |logprob difference| and the mean mismatch KL, which is the estimator the RL trainer logs as
-  `mismatch_kl`.
-
-MoE routers pick their top-k experts from near-tied scores, so bf16-level differences between the two forwards send a
-few tokens to other experts. MoE cases therefore require that at least 85% of (token, MoE layer) pairs pick the same
-experts (near-tie flips cost up to 6%). They then compare logprobs with the trainer replaying vLLM's routing, as RL's
-router replay does, so the result does not depend on the GPU. A pure expert-selection bug still fails the agreement
-check.
-
-Tolerances: the runs are deterministic, so each arch has one clean value per GPU type. Its `max_abs` and
-`mismatch_kl` are 2.4-3.5x the largest clean value measured on Hopper and on SM120 Blackwell. Plain transformers allow
-0.02 and 1e-5, with more headroom where their clean values are lower; clean qwen3 measures 0.008 and 3.5e-6.
-DeepSeek-V4, GLM-5, GLM-5.3, Qwen3.8 Flash Next and gpt-oss use kernels that SM120 lacks, so their values come from
-Hopper only.
-
-What it catches, from bugs injected by hand:
-
-- rope theta x2, attention scale x1.02, GELU instead of SiLU, a 1% final-norm scale (qwen3)
-- swapped gate/up and permuted query heads in the weight conversion, a dropped k_norm
-- router renormalization and sigmoid bugs, swapped experts, a selection-bias-only bug (through the agreement check)
-- gated delta net `dt_bias` and conv bugs
-
-It misses single ~1% norm scales and a 10x eps change, which sit at the bf16 noise floor.
-
-Cases with `known_bug` run as strict xfails, so a fix shows up as a failure until the flag is removed:
-
-- Laguna: vLLM 0.33 never loads its `e_score_correction_bias` on weight updates, so 75% of routes differ.
-- MiniMax-M2: vLLM 0.33's layerwise reload crashes on its `functools.partial` QK-norm weight loaders.
-
-Cases with `tiny=True` (qwen3, qwen3_moe, GLM-5) also run in the tiny GPU subset. DeepSeek-V4 takes ~100 s to compile
-its kernels in a fresh process, so it runs only in the full GPU suite.
-
-Adding an arch is one `Case`, with these fields:
-
-- the tiny config, with `architectures` set to the class vLLM serves it as
-- `max_abs` and `mismatch_kl`: at least 2x the clean values you measure
-- `model` and `engine` overrides if needed
-- `post_init` for weights whose random values need a structure or scale
-- `tiny=True` to add it to the tiny subset
+- Each case writes only a tiny config.json. The trainer builds its model from it and draws seeded random weights, which
+  reach an in-process vLLM engine (`load_format="dummy"`) through prime-rl's weight-update path.
+- Metrics, over the same two conversations on both sides: the largest |logprob difference| and the mean mismatch KL.
+- MoE cases first require that at least 85% of (token, MoE layer) pairs pick the same top-k experts, then compare
+  logprobs with the trainer replaying vLLM's routing.
+- Tolerances are 2.4-3.5x the clean value measured on Hopper and SM120 (Hopper only where SM120 lacks the kernels),
+  and at least 0.02 and 1e-5.
+- Adding an arch is one `Case`: a tiny config with every layer kind of the arch and the architecture vLLM serves it as.
 """
 
 import gc
