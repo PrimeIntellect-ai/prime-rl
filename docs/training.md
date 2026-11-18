@@ -360,7 +360,7 @@ Every set logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and 
 | `data.path` | HF dataset name or local path of the `chat` data |
 | `data.batch_size` | Tokens per trainer step (packed) |
 | `data.seq_len` | Per-sample sequence length |
-| `loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |
+| `data.loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |
 | `val.sets` | Validation sets, scored every `val.interval` steps; see [Validation](#validation) |
 | `eval.interval` | Run online evals every N steps; see [Online Evals](#online-evals) |
 

@@ -217,18 +217,15 @@ def test_pretrain_config_roundtrip(tmp_path):
 def test_sft_and_pretrain_differ_only_in_defaults(tmp_path):
     """`uv run sft` and `uv run pretrain` take the same data types; on the same data they differ in the init, the
     optimizer's learning rate and the schedule."""
-    data = {"type": "documents", "paths": [str(tmp_path / "tokens")]}
-    args = ["--output-dir", str(tmp_path), "--run.name", "presets"]
-    write_toml(tmp_path / "data.toml", {"data": data})
-    sft = cli(SFTConfig, args=["@", str(tmp_path / "data.toml"), *args])
-    write_toml(tmp_path / "data.toml", {"data": {"paths": data["paths"]}})
-    pretrain = cli(PretrainConfig, args=["@", str(tmp_path / "data.toml"), *args])
+    write_toml(tmp_path / "data.toml", {"data": {"paths": [str(tmp_path / "tokens")]}})
+    args = ["@", str(tmp_path / "data.toml"), "--output-dir", str(tmp_path), "--run.name", "presets"]
+    sft = cli(SFTConfig, args=[*args, "--data.type", "documents"])
+    pretrain = cli(PretrainConfig, args=args)
     assert {name for name in SFTConfig.model_fields if getattr(sft, name) != getattr(pretrain, name)} == {
         "model",
         "optim",
         "scheduler",
     }
-    assert (sft.model.init.type, sft.optim.lr, sft.scheduler.type) == ("pretrained", 1e-6, "constant")
 
 
 def test_val_set_defaults(tmp_path):

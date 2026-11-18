@@ -61,7 +61,8 @@ class DocumentsValSetConfig(BaseValSetConfig):
     type: Literal["documents"] = "documents"
 
     path: Path
-    """Folder of datatrove tokenized shards, as for pretraining's ``data.paths``. The tokens are scored as stored."""
+    """Folder of datatrove tokenized shards, as in ``documents`` data's ``data.paths``. The tokens are scored as
+    stored."""
 
 
 class ChatValSetConfig(BaseValSetConfig):
@@ -83,7 +84,7 @@ class ChatValSetConfig(BaseValSetConfig):
     """HF dataset revision to load. Ignored for a local directory."""
 
     columns: SFTColumnsConfig = SFTColumnsConfig()
-    """Dataset columns, as for SFT's ``data.columns``."""
+    """Dataset columns, as in ``chat`` data's ``data.columns``."""
 
     loss_mask: LossMaskConfig = LossMaskConfig()
     """Which message types are scored."""

@@ -359,7 +359,7 @@ def run_meta(run_dir: Path) -> dict:
         "eval_plan": eval_plan,
         "platform": platform,
         "model": model_name(config),
-        "dataset": (config.get("data") or {}).get("name"),
+        "dataset": (config.get("data") or {}).get("path"),
         "env": eval_env(config),
         "total_episodes": eval_total_episodes(config),
         "eval_totals": eval_totals(config),

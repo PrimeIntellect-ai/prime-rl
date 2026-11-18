@@ -110,7 +110,6 @@ class ChatDataConfig(BaseDataConfig):
     columns: SFTColumnsConfig = SFTColumnsConfig()
     """Columns that carry per-sample renderer arguments."""
 
-    # Configuring
     loss_mask: LossMaskConfig = LossMaskConfig()
     """Which message types contribute to the loss."""
 
@@ -136,6 +135,8 @@ class ChatDataConfig(BaseDataConfig):
 
 
 class FakeDataConfig(BaseDataConfig):
+    """Generated tokens, e.g. for performance runs."""
+
     type: Literal["fake"] = "fake"
 
     length: Literal["fixed", "variable"] = "fixed"
@@ -449,8 +450,8 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     def validate_vlm_constraints(self):
         if self.model.vlm is None:
             return self
-        if self.data.type != "chat":
-            raise ValueError("[model.vlm] trains on chat data: set data.type = 'chat'.")
+        if self.data.type == "documents":
+            raise ValueError("[model.vlm] trains on chat data, not documents: set data.type = 'chat'.")
         if self.data.micro_batch_size != 1:
             raise ValueError("VLM training requires data.micro_batch_size = 1.")
         return self
