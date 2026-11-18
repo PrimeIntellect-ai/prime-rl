@@ -260,7 +260,7 @@ num_bytes = 128_000_000_000
 path = "/scratch/kv"
 ```
 
-For `native`, `cpu.num_bytes` is the aggregate CPU KV pool for the instance (vLLM shards it across workers). For `mooncake`, `cpu.num_bytes` is the DRAM each node contributes to the shared pool (so the total pool ≈ `num_bytes × #inference-nodes`); `0` connects the node to the pool without contributing storage. The store uses RDMA, so it requires an RDMA-capable fabric. Enabling offload automatically enables prefix caching.
+For `native`, `cpu.num_bytes` is the aggregate CPU KV pool for the instance (vLLM shards it across workers). For `mooncake`, `cpu.num_bytes` is the DRAM each node contributes to the shared pool (so the total pool ≈ `num_bytes × #inference-nodes`); `0` connects the node to the pool without contributing storage. The store uses RDMA, so it requires an RDMA-capable fabric. On nodes without the `nvidia_peermem` kernel module, the launcher has Mooncake register GPU memory through DMA-BUF. On nodes that also have RDMA NICs on another fabric, set `device_name` to the GPU fabric's NICs. Enabling offload automatically enables prefix caching.
 
 Under disaggregated P/D, `inference.deployment.prefill_kv_cache_offload` and `inference.deployment.decode_kv_cache_offload` set offload per role. By default both inherit `inference.kv_cache_offload`; `"None"` disables offload for that role. With Mooncake, decode instances also store the KV they generate (`save_decode_cache`), so the next turn's prefill can load the previous completion. A typical setup keeps all storage on prefill and connects decode without capacity:
 
@@ -282,7 +282,7 @@ Mooncake keys a block by model, parallel rank and content hash only. Roles that 
 
 > **Experimental.** Off by default and not used by any example config. Validated so far: P/D with HiSparse on decode, router replay and sampling replay on, on a small random DSA model (statistical checks only). Not validated yet: a real GLM-5.x long-prompt (40k+) quality A/B, aggregated HiSparse against the trainer forward pass, and preemption or failed KV loads with HiSparse.
 
-HiSparse (vLLM, DSA sparse-MLA models such as GLM-5.x) keeps the sparse-MLA KV in a pinned host pool. Decode attention reads per-request GPU buffers that hold the indexer top-k rows. This frees GPU memory for many more concurrent decode sequences.
+HiSparse (vLLM, DSA sparse-MLA models such as GLM-5.x; vLLM does not support DeepSeek-V4's compressed sparse MLA) keeps the sparse-MLA KV in a pinned host pool. Decode attention reads per-request GPU buffers that hold the indexer top-k rows. This frees GPU memory for many more concurrent decode sequences.
 
 ```toml
 [inference.hisparse]
@@ -311,7 +311,14 @@ The engine admin routes are `POST /update_draft_weights` with `{"weight_dir": "/
 
 ### Optimized P/D disaggregation deployment
 
-For optimal P/D disaggregation deployment, we automatically set the decode `all2all_backend` to `deepep_low_latency` and the prefill `all2all_backend` to `deepep_high_throughput`. We currently don't support customizing all2all backends for P/D disaggragation out of the box. You can do this by overriding the slurm template only.
+By default, P/D sets the prefill `all2all_backend` to `deepep_high_throughput` and the decode `all2all_backend` to `deepep_low_latency`, and decode captures `FULL_DECODE_ONLY` CUDA graphs. Setting `inference.vllm.all2all_backend` applies that backend to both roles instead. `inference.deployment.prefill_vllm_overrides` and `decode_vllm_overrides` set any vLLM option for one role only.
+
+vLLM's MXFP8 MoE kernels (e.g. DeepSeek-V4-Flash with `quantization = "mxfp8"`) do not run behind DeepEP high-throughput or low-latency. When each role fits on one node, use `flashinfer_nvlink_one_sided`:
+
+```toml
+[inference.vllm]
+all2all_backend = "flashinfer_nvlink_one_sided"
+```
 
 For KV cache transfer, we utilize the NIXL connector. This is the default and only currently supported connector. We aim to support more advanced options, such as D->P transfer, or Mooncake Connector in the future.
 

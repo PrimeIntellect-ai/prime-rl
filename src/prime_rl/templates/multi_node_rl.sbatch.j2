@@ -413,8 +413,6 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     # The kv_transfer_config (NIXL transfer + any KV offload connector) is built in
     # InferenceConfig.to_namespace() from the per-node config, so it is no longer assembled here.
 
-    DECODE_COMPILE_CFG='{"cudagraph_mode":"FULL_DECODE_ONLY"}'
-
     REPLICA_BASE=$((REPLICA_IDX * NODES_PER_INFER_REPLICA))
 
     if [ "$RANK_IN_REPLICA" -lt "$NUM_PREFILL_NODES" ]; then
@@ -431,7 +429,6 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 {% for key, value in prefill_env_vars.items() %}
         export {{ key }}="{{ value }}"
 {% endfor %}
-        ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\"{{ prefill_vllm_extra_json }}"
     else
         ROLE="decode"
         RANK_IN_DECODE=$((RANK_IN_REPLICA - NUM_PREFILL_NODES))
@@ -444,7 +441,6 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 {% for key, value in decode_env_vars.items() %}
         export {{ key }}="{{ value }}"
 {% endfor %}
-        ROLE_EXTRA="\"all2all_backend\": \"deepep_low_latency\", \"compilation_config\": $DECODE_COMPILE_CFG{{ decode_vllm_extra_json }}"
     fi
 
     CONFIG_PATH="$CONFIG_DIR/inference-$ROLE.json"
@@ -484,7 +480,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     for k in $(seq 0 $((INFERENCE_DP_LOCAL - 1))); do
         GLOBAL_RANK=$((START_RANK + k))
         RANK_GPUS=$(seq -s, $((k * INFERENCE_TP)) $((k * INFERENCE_TP + INFERENCE_TP - 1)))
-        RANK_EXTRA="{\"data_parallel_address\": \"$DP_ADDR\", \"data_parallel_rank\": $GLOBAL_RANK, $ROLE_EXTRA}"
+        RANK_EXTRA="{\"data_parallel_address\": \"$DP_ADDR\", \"data_parallel_rank\": $GLOBAL_RANK}"
         launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$INFERENCE_DATA_PARALLEL_RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")"
     done
 {%- else -%}
