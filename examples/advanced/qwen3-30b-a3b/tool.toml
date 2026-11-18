@@ -40,7 +40,7 @@ group_size = 16
 [[orchestrator.train.source]]
 env.taskset.id = "general-agent"
 env.taskset.min_tier = 1
-env.taskset.task.tools.colocated = true
+env.taskset.task.tools.runtime.type = "prime"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "prime"
 
