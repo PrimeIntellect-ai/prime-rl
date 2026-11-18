@@ -702,7 +702,7 @@ dependencies = [
 
 [[package]]
 name = "bfcl-v3"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "deps/prime-envs/environments/tool_use/bfcl_v3" }
 dependencies = [
     { name = "bfcl-eval" },
@@ -1640,11 +1640,12 @@ wheels = [
 
 [[package]]
 name = "enterprise-ops-gym"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "deps/prime-envs/environments/tool_use/enterprise_ops_gym" }
 dependencies = [
     { name = "datasets" },
     { name = "mcp" },
+    { name = "prime-sandboxes" },
     { name = "verifiers" },
 ]
 
@@ -1652,6 +1653,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0,<5" },
     { name = "mcp", specifier = ">=2,<3" },
+    { name = "prime-sandboxes", specifier = ">=0.5.11" },
     { name = "verifiers", specifier = ">=0.4.2.dev47" },
 ]
 
@@ -2126,7 +2128,7 @@ requires-dist = [
 
 [[package]]
 name = "forth-lang"
-version = "0.3.2"
+version = "0.4.0"
 source = { editable = "deps/prime-envs/environments/code/forth_lang" }
 dependencies = [
     { name = "datasets" },
@@ -2136,7 +2138,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.2.dev56" },
 ]
 
 [[package]]
@@ -2186,14 +2188,14 @@ http = [
 
 [[package]]
 name = "general-agent"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/tool_use/general_agent" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev56" }]
 
 [[package]]
 name = "genson"
@@ -3361,7 +3363,7 @@ wheels = [
 
 [[package]]
 name = "lean-common"
-version = "0.1.3"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/packages/lean_common" }
 dependencies = [
     { name = "verifiers" },
@@ -3733,7 +3735,7 @@ wheels = [
 
 [[package]]
 name = "mcp-atlas"
-version = "0.5.0"
+version = "0.6.0"
 source = { editable = "deps/prime-envs/environments/tool_use/mcp_atlas" }
 dependencies = [
     { name = "datasets" },
@@ -5137,7 +5139,7 @@ wheels = [
 
 [[package]]
 name = "pi-automationbench"
-version = "1.1.1"
+version = "1.1.2"
 source = { editable = "deps/prime-envs/environments/tool_use/pi_automationbench" }
 dependencies = [
     { name = "automation-bench" },
@@ -5147,7 +5149,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "automation-bench", git = "https://github.com/xeophon/AutomationBench-PI.git?rev=9556666" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.2.dev58" },
 ]
 
 [[package]]
@@ -5657,7 +5659,7 @@ train = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.5.9"
+version = "0.5.11"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -5669,9 +5671,9 @@ dependencies = [
     { name = "pyqwest" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8d/50/40e351b1fada75c8a166c3e482584912e660d7a143b5a1fa317c2038f2d0/prime_sandboxes-0.5.9.tar.gz", hash = "sha256:4aab8f2ca2dbd1f18cf356bb8c072baa29747cdee0305817d4d4eed7283c8cae", size = 173127, upload-time = "2026-11-10T01:03:33.691Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/87/a4/863ce60f0c8cf74e7c59a754a53db5f9089c9ca68f976758f11bebb9c4a6/prime_sandboxes-0.5.11.tar.gz", hash = "sha256:c80062d3767ac352bc463ea4442a47eb3066e2c4ddd52ca6f39afafda1abd500", size = 177262, upload-time = "2026-11-11T17:52:49.813Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/60/77/888edf3076ef91d424f323aad4455e4a2c426cf1dde91728a46e19a029ac/prime_sandboxes-0.5.9-py3-none-any.whl", hash = "sha256:f66355ab2c8384d1ade329c82b9497165c490778031f927c00fefa6101f1536d", size = 93862, upload-time = "2026-11-10T01:03:31.814Z" },
+    { url = "https://files.pythonhosted.org/packages/61/73/10c87464a895c551409fb0496af01cd02d41d2f15d57ac9581506ad4ca88/prime_sandboxes-0.5.11-py3-none-any.whl", hash = "sha256:0496639fceacfc80a5778e7901b8c95fa2dac2dedda00ff30f58a5185db646e5", size = 96085, upload-time = "2026-11-11T17:52:48.032Z" },
 ]
 
 [[package]]
@@ -5872,7 +5874,7 @@ wheels = [
 
 [[package]]
 name = "ptx-remote"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/code/ptx_remote" }
 dependencies = [
     { name = "httpx" },
@@ -6536,7 +6538,7 @@ requires-dist = [
     { name = "numpy" },
     { name = "openai", specifier = ">=1.108.1" },
     { name = "openai-harmony", specifier = ">=0.0.4" },
-    { name = "pillow", marker = "extra == 'multimodal'", specifier = ">=12.2.0" },
+    { name = "pillow", marker = "extra == 'multimodal'", specifier = ">=13.0.0" },
     { name = "prime-pydantic-config", specifier = ">=0.3.0.dev83" },
     { name = "tiktoken" },
     { name = "transformers", marker = "extra == 'multimodal'", specifier = ">=4.50.0" },
@@ -6546,7 +6548,7 @@ provides-extras = ["multimodal", "transformers"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "pillow", specifier = ">=12.2.0" },
+    { name = "pillow", specifier = ">=13.0.0" },
     { name = "pre-commit" },
     { name = "pytest", specifier = ">=7.0.0" },
     { name = "pytest-asyncio", specifier = ">=0.21.0" },
@@ -8244,7 +8246,7 @@ requires-dist = [
     { name = "prime-sandboxes", specifier = ">=0.5.9" },
     { name = "prime-tunnel", specifier = ">=0.1.17" },
     { name = "pydantic", specifier = ">=2.12.3" },
-    { name = "renderers", extras = ["multimodal"], specifier = ">=0.2.1.dev9" },
+    { name = "renderers", extras = ["multimodal"], specifier = ">=0.2.1.dev12" },
     { name = "tenacity", specifier = ">=8.5.0" },
     { name = "textarena", marker = "extra == 'ta'", specifier = "==0.7.4" },
     { name = "tomli-w", specifier = ">=1.0.0" },
