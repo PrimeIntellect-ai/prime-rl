@@ -5,48 +5,6 @@
 ARCHITECTURE = "Inkling2ForConditionalGeneration"
 
 
-def _patch_fp8_online_moe_backend() -> None:
-    """Let the online block-FP8 MoE method use vLLM's CUTLASS FP8 experts.
-
-    The online FP8 methods default to `allow_vllm_cutlass=False`, which leaves
-    only the Triton experts on Hopper (DeepGEMM is not installed here). The
-    CUTLASS FP8 experts drive the activation through `apply_moe_activation`, so
-    they support Inkling2's SiTU exactly; allowing them lets vLLM pick the
-    faster backend.
-    """
-    import os
-
-    from vllm.model_executor.layers.quantization.online import fp8 as online_fp8
-
-    if os.environ.get("INKLING2_DISABLE_CUTLASS") == "1":
-        return
-
-    original_init = online_fp8._Fp8OnlineMoEBase.__init__
-    if getattr(original_init, "_prime_rl_allows_cutlass", False):
-        return
-
-    def __init__(
-        self,
-        *,
-        weight_block_size,
-        moe,
-        weight_key=None,
-        activation_key=None,
-        allow_vllm_cutlass=False,
-    ):
-        original_init(
-            self,
-            weight_block_size=weight_block_size,
-            moe=moe,
-            weight_key=weight_key,
-            activation_key=activation_key,
-            allow_vllm_cutlass=True,
-        )
-
-    __init__._prime_rl_allows_cutlass = True
-    online_fp8._Fp8OnlineMoEBase.__init__ = __init__
-
-
 def _patch_deep_gemm_situ() -> None:
     """Let the FP8-block DeepGEMM experts run Inkling2's SiTU activation.
 
@@ -60,10 +18,9 @@ def _patch_deep_gemm_situ() -> None:
     if os.environ.get("INKLING2_DISABLE_DEEPGEMM") == "1":
         return
     # Opt-in: DeepGEMM's unfused SiTU path rounds activation scales differently
-    # from the exact Triton/CUTLASS paths (max |dlogprob| 0.27 over 651 values on
-    # a 6-layer probe, no token flips). CUTLASS is the default FP8 MoE backend;
-    # enabling DeepGEMM here also requires `use_deep_gemm = true` (or
-    # VLLM_USE_DEEP_GEMM=1/VLLM_MOE_USE_DEEP_GEMM=1).
+    # from the exact Triton path (max |dlogprob| 0.27 over 651 values on a
+    # 6-layer probe, no token flips). Enabling it also requires
+    # `use_deep_gemm = true` (or VLLM_USE_DEEP_GEMM=1/VLLM_MOE_USE_DEEP_GEMM=1).
     if os.environ.get("INKLING2_ENABLE_DEEPGEMM") != "1":
         return
 
@@ -96,7 +53,6 @@ def _register_parsers() -> None:
 
 
 def register() -> None:
-    _patch_fp8_online_moe_backend()
     _patch_deep_gemm_situ()
     _register_parsers()
     from transformers import AutoConfig

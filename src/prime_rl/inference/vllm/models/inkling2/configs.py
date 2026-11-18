@@ -47,8 +47,8 @@ class Inkling2ModelConfig(PreTrainedConfig):
         num_experts_per_tok: int = 8,
         n_shared_experts: int = 0,
         intermediate_size: int = 2304,
-        mlp_gate_softcap: float = 0.0,
-        mlp_up_softcap: float = 0.0,
+        mlp_gate_softcap: float = 4.0,
+        mlp_up_softcap: float = 25.0,
         route_scale: float = 8.0,
         use_gate_bias: bool = True,
         tie_word_embeddings: bool = False,
@@ -71,7 +71,11 @@ class Inkling2ModelConfig(PreTrainedConfig):
         self.swa_head_dim = swa_head_dim or head_dim
         self.d_rel = d_rel
         self.rel_extent = rel_extent
-        self.local_layer_ids = list(local_layer_ids or [])
+        if local_layer_ids is None:
+            local_layer_ids = [
+                layer for layer in range(num_hidden_layers) if (layer + 1) % n_layers_per_attn_res_block != 0
+            ]
+        self.local_layer_ids = list(local_layer_ids)
         self.sliding_window_size = sliding_window_size
         self.sconv_kernel_size = sconv_kernel_size
         self.rms_norm_eps = rms_norm_eps
