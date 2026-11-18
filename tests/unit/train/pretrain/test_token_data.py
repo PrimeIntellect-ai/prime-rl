@@ -91,7 +91,7 @@ def test_rows_keep_every_prediction_of_a_pass(tmp_path):
     lengths = [*LENGTHS, 4 * 4 * 16 - sum(LENGTHS)]
     write_source(tmp_path / "a", lengths)
     write_shard(tmp_path / "a" / "02.ds", [[], []])
-    dataset = setup_token_dataset(data_config(tmp_path, {"a": {}}, seed=3))
+    dataset = setup_token_dataset(data_config(tmp_path, {"a": {}}, seed=3), dp_rank=0, dp_size=1)
     rows = take(dataset, 4 * 4)
     starts = np.cumsum([0, *lengths])[:-1]
     within = {(t, t + 1) for start, n in zip(starts, lengths) for t in range(start, start + n - 1)}
@@ -129,13 +129,13 @@ def test_every_step_holds_the_mixture(tmp_path):
     the rest of a unit cut at a step's end included."""
     write_source(tmp_path / "a", LENGTHS * 20)
     write_source(tmp_path / "b", [6, 30, 9, 2, 18, 4] * 30, 10**6)
-    natural = setup_token_dataset(data_config(tmp_path, {"a": {}, "b": {}}, batch_size=8)).sampler
+    natural = setup_token_dataset(data_config(tmp_path, {"a": {}, "b": {}}, batch_size=8), dp_rank=0, dp_size=1).sampler
     shares = natural.num_tokens / natural.num_tokens.sum()
     for step, cursor in enumerate(plan(natural, 20)[1]):
         assert np.abs(np.array(cursor["phase_tokens"]) - shares * (step + 1) * 128).max() <= 16
     phases = [{"start_step": 11, "weights": {"a": 1.0, "b": 0.0}}]
     config = data_config(tmp_path, {"a": {"weight": 0.25}, "b": {"weight": 0.75}}, phases=phases, batch_size=8)
-    for step, cursor in enumerate(plan(setup_token_dataset(config).sampler, 20)[1]):
+    for step, cursor in enumerate(plan(setup_token_dataset(config, dp_rank=0, dp_size=1).sampler, 20)[1]):
         steps, shares = (step + 1, [0.25, 0.75]) if step < 10 else (step - 9, [1.0, 0.0])
         assert np.abs(np.array(cursor["phase_tokens"]) - np.array(shares) * steps * 128).max() <= 16
 
@@ -149,7 +149,9 @@ def test_repetitions_read_a_subset_that_many_times(tmp_path):
     sources = {"a": {"weight": 0.5, "repetitions": 2.5}, "b": {"weight": 0.5}}
 
     def read(max_steps: int) -> tuple[Counter, object, dict]:
-        sampler = setup_token_dataset(data_config(tmp_path, sources, batch_size=8), max_steps=max_steps).sampler
+        sampler = setup_token_dataset(
+            data_config(tmp_path, sources, batch_size=8), max_steps=max_steps, dp_rank=0, dp_size=1
+        ).sampler
         planned, cursors = plan(sampler, max_steps)
         tokens = Counter(
             (file, t)
@@ -176,14 +178,22 @@ def test_subsets_and_resumes_fail_clearly(tmp_path):
     max_steps when no source has repetitions."""
     write_shard(tmp_path / "a" / "00.ds", consecutive_documents([8] * 100))
     with pytest.raises(ValueError, match="needs 1,600 unique tokens but has 800"):
-        setup_token_dataset(data_config(tmp_path, {"a": {"repetitions": 1.0}}, batch_size=10), max_steps=10)
-    state = setup_token_dataset(data_config(tmp_path, {"a": {}}), max_steps=10).state_dict()
-    setup_token_dataset(data_config(tmp_path, {"a": {}}), max_steps=20).load_state_dict(state)
+        setup_token_dataset(
+            data_config(tmp_path, {"a": {"repetitions": 1.0}}, batch_size=10), max_steps=10, dp_rank=0, dp_size=1
+        )
+    state = setup_token_dataset(data_config(tmp_path, {"a": {}}), max_steps=10, dp_rank=0, dp_size=1).state_dict()
+    setup_token_dataset(data_config(tmp_path, {"a": {}}), max_steps=20, dp_rank=0, dp_size=1).load_state_dict(state)
     with pytest.raises(ValueError, match="in seed"):
-        setup_token_dataset(data_config(tmp_path, {"a": {}}, seed=1), max_steps=10).load_state_dict(state)
-    state = setup_token_dataset(data_config(tmp_path, {"a": {"repetitions": 2.0}}), max_steps=10).state_dict()
+        setup_token_dataset(
+            data_config(tmp_path, {"a": {}}, seed=1), max_steps=10, dp_rank=0, dp_size=1
+        ).load_state_dict(state)
+    state = setup_token_dataset(
+        data_config(tmp_path, {"a": {"repetitions": 2.0}}), max_steps=10, dp_rank=0, dp_size=1
+    ).state_dict()
     with pytest.raises(ValueError, match="max_steps"):
-        setup_token_dataset(data_config(tmp_path, {"a": {"repetitions": 2.0}}), max_steps=11).load_state_dict(state)
+        setup_token_dataset(
+            data_config(tmp_path, {"a": {"repetitions": 2.0}}), max_steps=11, dp_rank=0, dp_size=1
+        ).load_state_dict(state)
 
 
 def global_rows(config: PretrainDataConfig, gpus: int, steps: int, states=None) -> tuple[list[list], list[dict]]:
@@ -212,7 +222,7 @@ def test_resume_continues_the_stream(tmp_path, gpus_before, gpus_after):
     write_source(tmp_path / "b", [6, 30, 9, 2, 18, 4], 10**6)
     sources = {"a": {"weight": 0.4}, "b": {"weight": 0.6}}
     config = data_config(tmp_path, sources, micro_batch_size=1, num_workers=2, batch_size=8)
-    sampler = setup_token_dataset(config).sampler
+    sampler = setup_token_dataset(config, dp_rank=0, dp_size=1).sampler
     cursor, wrap = sampler.start(), None
     while wrap is None:
         cursor = sampler.plan(cursor)[1]
@@ -231,8 +241,8 @@ def test_eod_mask_loss(tmp_path):
     words = consecutive_documents([2, 6, 1, 11, 3, 4, 9, 5, 2, 7] * 6)
     write_shard(tmp_path / "a" / "00.ds", [[*document, eos] for document in words])
     config = data_config(tmp_path, {"a": {}})
-    off = take(setup_token_dataset(config), 40)
-    on = take(setup_token_dataset(config, eod_mask_token=eos), 40)
+    off = take(setup_token_dataset(config, dp_rank=0, dp_size=1), 40)
+    on = take(setup_token_dataset(config, eod_mask_token=eos, dp_rank=0, dp_size=1), 40)
     eos_inputs = word_to_eos = 0
     for plain, masked in zip(off, on):
         assert {k: v for k, v in plain.items() if k != "loss_mask"} == {
@@ -252,12 +262,17 @@ def test_long_documents_are_cached(tmp_path):
     """A second start maps the table of long documents from the cache; a changed folder gets a new one."""
     write_source(tmp_path / "a", LENGTHS)
     config = data_config(tmp_path, {"a": {}})
-    sampler = setup_token_dataset(config, cache_dir=tmp_path / "cache").sampler
+    sampler = setup_token_dataset(config, cache_dir=tmp_path / "cache", dp_rank=0, dp_size=1).sampler
     assert (sampler.long_documents.tolist(), sampler.pieces_before.tolist()) == ([1, 5, 7, 11, 13], [0, 2, 3, 5, 6, 7])
-    cached = setup_token_dataset(config, cache_dir=tmp_path / "cache").sampler
+    cached = setup_token_dataset(config, cache_dir=tmp_path / "cache", dp_rank=0, dp_size=1).sampler
     assert isinstance(cached.long_documents, np.memmap) and cached.pieces_before.tolist() == [0, 2, 3, 5, 6, 7]
     write_source(tmp_path / "a", [40, *LENGTHS[1:], 3])
-    assert setup_token_dataset(config, cache_dir=tmp_path / "cache").sampler.long_documents.tolist()[0] == 0
+    assert (
+        setup_token_dataset(config, cache_dir=tmp_path / "cache", dp_rank=0, dp_size=1).sampler.long_documents.tolist()[
+            0
+        ]
+        == 0
+    )
     assert len(list((tmp_path / "cache").iterdir())) == 2
 
 
