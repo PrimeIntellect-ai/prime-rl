@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import shlex
 import shutil
 import sys
@@ -328,6 +329,16 @@ def get_all_ckpt_steps(ckpt_dir: Path) -> list[int]:
     """Gets all checkpoint steps from the checkpoint directory, sorted in ascending order."""
     step_dirs = list(ckpt_dir.glob("step_*"))
     return sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
+
+
+def is_checkpoint_step_dir(path: str | Path) -> bool:
+    """Whether ``path`` is a local trainer checkpoint step directory, whose ``trainer/`` holds the weights."""
+    return (Path(path) / "trainer").is_dir()
+
+
+def has_step_dir_name(path: str | Path) -> bool:
+    """Whether ``path`` is named like a checkpoint step directory (``.../step_<N>``), which it may no longer be."""
+    return re.fullmatch(r"step_\d+", Path(path).name) is not None
 
 
 def is_ckpt_step_complete(step_dir: Path) -> bool:

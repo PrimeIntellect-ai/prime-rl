@@ -31,6 +31,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
 from prime_rl.configs.trainer import (
+    MODULE_TARGET_SEPARATOR,
     ActivationCheckpointConfig,
     CompileConfig,
     FP8Config,
@@ -41,6 +42,7 @@ from prime_rl.configs.trainer import (
 from prime_rl.trainer.activation_checkpointing import (
     TokenChunkedCheckpointWrapper,
     get_activation_checkpoint_wrapper,
+    unmatched_module_patterns,
 )
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
@@ -71,6 +73,7 @@ from prime_rl.trainer.utils import get_dcp_group
 from prime_rl.trainer.vlm import get_language_model, get_vision_encoder
 from prime_rl.trainer.world import get_world, wait_for_master
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.pathing import has_step_dir_name, is_checkpoint_step_dir
 from prime_rl.utils.utils import format_time
 from prime_rl.utils.weights import (
     load_state_dict,
@@ -82,14 +85,15 @@ from prime_rl.utils.weights import (
 def pre_download_model(model_name: str, *, skip_weights: bool = False) -> None:
     """Pre-download model from HuggingFace Hub so all nodes have cached weights before training.
 
-    With ``skip_weights`` (random-init debug runs), only config and tokenizer files are fetched.
+    With ``skip_weights`` (weights that do not come from the HF model), only config and tokenizer files are fetched.
     """
-    if Path(model_name).exists():
-        get_logger().info(f"Model {model_name} found at local path, skipping download")
+    # A checkpoint step directory (gone by a resume, which reads the run's own copies of its files) is never on the Hub.
+    if Path(model_name).exists() or has_step_dir_name(model_name):
+        get_logger().info(f"Model {model_name} is a local path, skipping download")
         return
     t0 = time.perf_counter()
     if skip_weights:
-        get_logger().info(f"Pre-downloading config and tokenizer for {model_name} (random init, skipping weights)")
+        get_logger().info(f"Pre-downloading config and tokenizer for {model_name} (skipping weights)")
         path = snapshot_download(
             repo_id=model_name, repo_type="model", allow_patterns=["*.json", "*.txt", "tokenizer*", "*.jinja"]
         )
@@ -375,6 +379,7 @@ def get_model(
     model_config.dsa_backend = config.dsa_backend
     if model_config.model_type == "deepseek_v4":
         model_config.kv_precision = config.dsv4_kv_precision
+        model_config.compressor_backend = config.dsv4_compressor_backend
     # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
     # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
     indexer_types = getattr(model_config, "indexer_types", None)
@@ -424,6 +429,8 @@ def get_model(
             f"Setting the number of layers to {config.debug.num_layers} in the model config. This means {target_config.num_hidden_layers - num_hidden_layers} layers will not be loaded."
         )
         target_config.num_hidden_layers = num_hidden_layers
+        if getattr(target_config, "layer_types", None) is not None:
+            target_config.layer_types = target_config.layer_types[:num_hidden_layers]
 
     custom_vlm_cls = get_custom_vlm_cls(model_config)
     if custom_vlm_cls is None and not supports_custom_impl(model_config):
@@ -467,8 +474,34 @@ def get_model(
     return model
 
 
-def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
+def use_resumed_model_files(model: ModelConfig, tokenizer: TokenizerConfig, step_dir: Path) -> None:
+    """A run started from a checkpoint step directory resumes with the config.json and tokenizer of the step directory
+    it resumes, which holds copies (``ModelFiles``), so the source may be gone by then. The source is recognized by its
+    name, since it may no longer exist."""
+    if not has_step_dir_name(model.name) or not (step_dir / "config.json").exists():
+        return
+    if tokenizer.name == model.name:
+        tokenizer.name = str(step_dir)
+    model.name = str(step_dir)
+
+
+def check_ckpt_dir(config: ModelConfig) -> None:
+    """A checkpoint step directory supplies the architecture with its config.json."""
+    if is_checkpoint_step_dir(config.name) and not (Path(config.name) / "config.json").exists():
+        raise FileNotFoundError(
+            f"Checkpoint step directory {config.name} has no config.json, so the architecture is unknown; copy the "
+            "model's config.json and tokenizer files into it"
+        )
+
+
+def setup_tokenizer(config: TokenizerConfig, model_name: str) -> PreTrainedTokenizer:
     logger = get_logger()
+    # The tokenizer name defaults to the model name, a folder of which may hold only a config.json (transformers then
+    # loads an empty tokenizer).
+    model_dir = Path(model_name)
+    tokenizer_files = ("tokenizer_config.json", "tokenizer.json", "tokenizer.model")
+    if config.name == model_name and model_dir.is_dir() and not any((model_dir / f).exists() for f in tokenizer_files):
+        raise FileNotFoundError(f"No tokenizer at model.name {model_name}; set tokenizer.name")
     tokenizer = AutoTokenizer.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
     if config.chat_template is not None:
         path = Path(config.chat_template)
@@ -669,22 +702,34 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
 
 @torch.no_grad()
-def initialize_from_scratch(model: nn.Module) -> None:
+def initialize_from_scratch(model: nn.Module, seed: int) -> None:
     """Initialize the weights with the model's own init (``initialize_weights``, which applies its
-    ``_init_weights``). The parameters are NaN before, so one the init does not reach fails here."""
-    get_logger().info("Initializing the weights from scratch")
+    ``_init_weights``), seeded with ``seed``. Floating parameters and buffers are NaN-filled first, so any the init misses
+    raises."""
+    get_logger().info(f"Initializing the weights from scratch (seed {seed})")
     model.to_empty(device="cuda")
     torch.distributed.barrier()
+
+    def floating_tensors() -> dict[str, Tensor]:
+        tensors = {**dict(model.named_parameters()), **dict(model.named_buffers())}
+        return {
+            name: tensor.to_local() if isinstance(tensor, DTensor) else tensor
+            for name, tensor in tensors.items()
+            if tensor.is_floating_point()
+        }
+
+    for tensor in floating_tensors().values():
+        tensor.fill_(float("nan"))
     model.init_buffers_post_meta()
-    local_params = {
-        name: param.to_local() if isinstance(param, DTensor) else param for name, param in model.named_parameters()
-    }
-    for param in local_params.values():
-        param.fill_(float("nan"))
+    torch.manual_seed(seed)
     model.initialize_weights()
-    uninitialized = [name for name, param in local_params.items() if param.isnan().any()]
+    uninitialized = [name for name, tensor in floating_tensors().items() if tensor.isnan().any()]
     if uninitialized:
-        raise RuntimeError(f"The init of {type(model).__name__} does not initialize {uninitialized}")
+        more = f", +{len(uninitialized) - 3} more" if len(uninitialized) > 3 else ""
+        raise RuntimeError(
+            f'{model.config.model_type!r} does not support model.init.type = "scratch": its init does not reach '
+            f"{', '.join(uninitialized[:3])}{more}"
+        )
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
@@ -696,10 +741,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     model.init_buffers_post_meta()
 
     logger = get_logger()
-    if config.debug.random_init:
-        logger.warning("Randomly initializing model. Skipping loading weights from HF.")
-        return
-
     if not Path(config.name).exists():
         snapshot_path = Path(snapshot_download(repo_id=config.name, repo_type="model"))
     else:
@@ -790,18 +831,37 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
     # FLA's metadata cache must not skip operations during checkpoint replay.
     fla.utils.FLA_DISABLE_TENSOR_CACHE = True
     language_model = get_language_model(model)
-    wrap_block = get_activation_checkpoint_wrapper(ac_config)
-    checkpointed_layers = 0
+    matched_module_targets: set[str] = set()
+    wrap_block = get_activation_checkpoint_wrapper(ac_config, matched_module_targets)
+    checkpointed_blocks = []
 
     for layer_id, (layer_name, transformer_block) in enumerate(language_model.layers.named_children()):
         if layer_id % ac_config.freq != 0:
             continue
 
         language_model.layers.register_module(layer_name, wrap_block(transformer_block))
-        checkpointed_layers += 1
+        checkpointed_blocks.append(transformer_block)
+
+    if ac_config.mode == "selective" and ac_config.targets is not None:
+        unmatched = unmatched_module_patterns(ac_config.targets, checkpointed_blocks)
+        if unmatched:
+            raise ValueError(f"Activation checkpointing module patterns match no checkpointed submodule: {unmatched}")
+
+        module_targets = [target for target in ac_config.targets if MODULE_TARGET_SEPARATOR in target]
+        if module_targets:
+
+            def check_module_targets_after_first_training_forward(_module, _args, _output) -> None:
+                if not torch.is_grad_enabled():
+                    return
+                check_once.remove()
+                untraced = [target for target in module_targets if target not in matched_module_targets]
+                if untraced:
+                    raise ValueError(f"Activation checkpointing targets matched no traced operation: {untraced}")
+
+            check_once = language_model.register_forward_hook(check_module_targets_after_first_training_forward)
 
     get_logger().info(
-        f"Applied {ac_config.mode} activation checkpointing to {checkpointed_layers} layers (freq={ac_config.freq})"
+        f"Applied {ac_config.mode} activation checkpointing to {len(checkpointed_blocks)} layers (freq={ac_config.freq})"
     )
 
 
@@ -969,7 +1029,6 @@ def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
-    init_from_scratch: bool = False,
 ) -> nn.Module:
     resolve_auto_attn(config)
 
@@ -1046,8 +1105,8 @@ def setup_model(
         model.to_empty(device=device)
         torch.distributed.barrier()
         model.init_buffers_post_meta()
-    elif init_from_scratch:
-        initialize_from_scratch(model)
+    elif config.init.type == "scratch":
+        initialize_from_scratch(model, config.init.seed)
     else:
         load_dcp_from_hf(model, config)
 
