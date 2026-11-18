@@ -481,7 +481,8 @@ def test_cat_dataset_packs_text_and_multimodal_samples_together():
 
     assert packed["input_ids"] == [1, 2, 3, 4, 0, 0]
     assert packed["loss_mask"] == [True, True, True, True, False, False]
-    assert packed["seq_lens"] == [1, 2, 3]
+    assert packed["position_ids"] == [0, 0, 1, 0, 0, 1]
+    assert packed["seq_lens"] == [1, 2, 1, 2]  # the padding is a segment of its own
     assert packed["mm_kwargs"] is not None
     assert packed["mm_token_type_ids"] == [0, 0, 1, 0, 0, 0]
     assert text_pack["input_ids"] == [5, 6, 7, 8, 9, 10]
