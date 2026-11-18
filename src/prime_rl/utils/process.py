@@ -40,9 +40,6 @@ DEFAULT_INFERENCE_ENV_VARS: dict[str, str] = {
     "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
     "VLLM_ENGINE_READY_TIMEOUT_S": "4200",
     "UCX_TLS": "all",
-    # The router pools keep-alive connections to the engines. With uvicorn's 5 s default the engine closes idle
-    # connections while the router may already be reusing them, and those requests fail with connection resets.
-    "VLLM_HTTP_TIMEOUT_KEEP_ALIVE": "3600",
     # vLLM's AOT compile cache and FlashInfer's JIT cache default to $HOME; a partial cache shared across
     # nodes makes TP ranks load different compiled artifacts and hang.
     "VLLM_CACHE_ROOT": f"/tmp/.vllm-cache-{os.getuid()}",
