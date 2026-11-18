@@ -34,7 +34,7 @@ def setup_weight_sender(
     model_name: str | None = None,
 ) -> WeightSender:
     if config.type == "nccl":
-        return NCCLWeightSender(output_dir, config, torch.cuda.current_device())
+        return NCCLWeightSender(output_dir, config, torch.accelerator.current_device_index())
     elif config.type == "filesystem":
         return FileSystemWeightSender(output_dir, config, lora_config)
     elif config.type == "nixl":

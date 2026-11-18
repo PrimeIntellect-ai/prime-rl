@@ -31,6 +31,7 @@ from prime_rl.utils.process import (
     DEFAULT_INFERENCE_ENV_VARS,
     DEFAULT_TRAINER_ENV_VARS,
     ProcessGroup,
+    gpu_masks,
     local_trainer_env_vars,
     partition_gpus,
     torchrun_cmd,
@@ -318,9 +319,6 @@ def launch_slurm(config: SupervisedTrainerConfig, entrypoint: str):
 
 def launch_local(config: SupervisedTrainerConfig, entrypoint: str):
     """Run SFT training locally with process monitoring and cleanup."""
-    if not config.dry_run:
-        from prime_rl.utils.device import VISIBLE_DEVICES_ENV
-
     assert config.deployment.type == "single_node"
 
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
@@ -359,6 +357,11 @@ def launch_local(config: SupervisedTrainerConfig, entrypoint: str):
         infer_gpu_ids, trainer_gpu_ids = partition_gpus(
             config.deployment.num_infer_gpus, config.deployment.num_train_gpus
         )
+    infer_gpu_env, trainer_gpu_env = gpu_masks(
+        infer_gpu_ids,
+        trainer_gpu_ids,
+        collective_weight_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
+    )
 
     # Trainer and online-eval log to a single shared W&B run whose id ($WANDB_RUN_ID)
     # equals $PRL_RUN_ID, one label per process.
@@ -388,7 +391,7 @@ def launch_local(config: SupervisedTrainerConfig, entrypoint: str):
                     **DEFAULT_INFERENCE_ENV_VARS,
                     **config.env_vars,
                     **config.inference.env_vars,
-                    VISIBLE_DEVICES_ENV: ",".join(map(str, infer_gpu_ids)),
+                    **infer_gpu_env,
                 },
                 log_path=log_dir / "inference.log",
             )
@@ -438,7 +441,7 @@ def launch_local(config: SupervisedTrainerConfig, entrypoint: str):
             trainer_env["LOGURU_FORCE_COLORS"] = "1"
             trainer_env["WANDB_SHARED_LABEL"] = "trainer"
         if trainer_gpu_ids:
-            trainer_env[VISIBLE_DEVICES_ENV] = ",".join(map(str, trainer_gpu_ids))
+            trainer_env.update(trainer_gpu_env)
         processes.start(
             "trainer",
             torchrun_cmd(

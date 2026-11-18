@@ -36,6 +36,7 @@ from prime_rl.utils.process import (
     DEFAULT_INFERENCE_ENV_VARS,
     DEFAULT_TRAINER_ENV_VARS,
     ProcessGroup,
+    gpu_masks,
     local_trainer_env_vars,
     partition_gpus,
     set_proc_title,
@@ -181,9 +182,6 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
 
 
 def rl_local(config: RLConfig):
-    if not config.dry_run:
-        from prime_rl.utils.device import VISIBLE_DEVICES_ENV
-
     assert config.deployment.type == "single_node"
 
     logger = setup_logger(
@@ -214,6 +212,11 @@ def rl_local(config: RLConfig):
     num_infer_gpus = config.deployment.num_infer_gpus if config.inference is not None else 0
     infer_gpu_ids, trainer_gpu_ids = partition_gpus(num_infer_gpus, config.deployment.num_train_gpus)
     logger.info(f"Using local->physical GPU mapping: {dict(enumerate(infer_gpu_ids + trainer_gpu_ids))}")
+    infer_gpu_env, trainer_gpu_env = gpu_masks(
+        infer_gpu_ids,
+        trainer_gpu_ids,
+        collective_weight_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
+    )
 
     start_command = sys.argv
     logger.debug(f"RL start command: {' '.join(start_command)}")
@@ -256,7 +259,7 @@ def rl_local(config: RLConfig):
                     **DEFAULT_INFERENCE_ENV_VARS,
                     **config.env_vars,
                     **config.inference.env_vars,
-                    VISIBLE_DEVICES_ENV: ",".join(map(str, infer_gpu_ids)),
+                    **infer_gpu_env,
                 },
                 log_path=log_dir / "inference.log",
             )
@@ -336,7 +339,7 @@ def rl_local(config: RLConfig):
                 **wandb_shared_env,
                 **attempt_env,
                 "WANDB_SHARED_LABEL": "trainer",
-                VISIBLE_DEVICES_ENV: ",".join(map(str, trainer_gpu_ids)),
+                **trainer_gpu_env,
             },
             log_path=log_dir / "trainer.log",
         )
