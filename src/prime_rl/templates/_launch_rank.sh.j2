@@ -37,7 +37,8 @@ launch_inference_rank() {
         local -a nic_env=()
         if [ "${NIXL_NIC_AFFINITY:-0}" = 1 ] && [[ "$gpus" != *,* ]]; then
             local nic
-            if nic=$(python -m prime_rl.utils.rdma "$gpus" 2>>"$log") && [ -n "$nic" ]; then
+            # Same environment as the engine (`uv run`), which need not be the activated .venv.
+            if nic=$(uv run --no-sync python -m prime_rl.utils.rdma "$gpus" 2>>"$log") && [ -n "$nic" ]; then
                 nic_env=(UCX_NET_DEVICES="$nic" UCX_MAX_RMA_RAILS=1)
                 echo "[nixl] GPU $gpus -> $nic" | tee -a "$log"
             else
