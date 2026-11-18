@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,6 +66,41 @@ SUITES = {
     ),
 }
 
+
+def tracked_files(*paths: str) -> list[str]:
+    """The files git tracks under `paths`, including those of initialized submodules."""
+    command = ["git", "ls-files", "-z", "--recurse-submodules", "--", *paths]
+    return subprocess.run(command, cwd=REPO, capture_output=True, text=True, check=True).stdout.split("\0")[:-1]
+
+
+def staged(name: str, paths: list[str]) -> Path:
+    """Copies of repo files with the modes git checks out. Image layers are keyed by file content and mode, so a
+    local checkout (any umask, untracked files) and CI build the same layers."""
+    root = Path(STAGING.name, name)
+    for path in paths:
+        source, target = REPO / path, root / path
+        if source.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+            target.chmod(0o755 if source.stat().st_mode & 0o100 else 0o644)
+    return root
+
+
+# The container imports this file too, without building the image
+if modal.is_local():
+    STAGING = tempfile.TemporaryDirectory(prefix="modal-ci-")
+    manifests = staged(
+        "manifests",
+        [
+            path
+            for path in tracked_files("pyproject.toml", "uv.lock", "packages", "deps")
+            if path.endswith(("pyproject.toml", "uv.lock"))
+        ],
+    )
+    local_packages = staged("local-packages", tracked_files("README.md", "packages", "deps"))
+else:
+    manifests = local_packages = Path()
+
 image = (
     modal.Image.from_registry(
         "nvidia/cuda:13.0.1-cudnn-devel-ubuntu24.04@sha256:8b2705ea7a8653ad3451b46ab835eced92d77b44e671b9cf3ad4f95fbb2efe5e",
@@ -81,16 +117,11 @@ image = (
         }
     )
     .workdir(REMOTE_REPO)
-    .add_local_file(REPO / "pyproject.toml", f"{REMOTE_REPO}/pyproject.toml", copy=True)
-    .add_local_file(REPO / "uv.lock", f"{REMOTE_REPO}/uv.lock", copy=True)
-    .add_local_dir(REPO / "packages", f"{REMOTE_REPO}/packages", copy=True, ignore=lambda p: p.name != "pyproject.toml")
-    .add_local_dir(REPO / "deps", f"{REMOTE_REPO}/deps", copy=True, ignore=lambda p: p.name != "pyproject.toml")
+    .add_local_dir(manifests, REMOTE_REPO, copy=True)
     # uv cannot check the lock without the local sources, which also lack their git versions here; the CPU tests
     # job runs `uv sync --locked`
     .run_commands("uv sync --frozen --all-extras --all-packages --no-install-local --compile-bytecode --no-cache")
-    .add_local_dir(REPO / "deps", f"{REMOTE_REPO}/deps", copy=True, ignore=IGNORE)
-    .add_local_dir(REPO / "packages", f"{REMOTE_REPO}/packages", copy=True, ignore=IGNORE)
-    .add_local_file(REPO / "README.md", f"{REMOTE_REPO}/README.md", copy=True)
+    .add_local_dir(local_packages, REMOTE_REPO, copy=True)
     # hatchling puts src/ on the path only if it finds a module there; the source is added when a container starts.
     # Modal's builder sets UV_COMPILE_BYTECODE=1, which would recompile the whole venv in this layer.
     .run_commands(
