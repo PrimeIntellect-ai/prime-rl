@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.pretrain import DatatroveDataConfig
+from prime_rl.configs.supervised import DocumentsDataConfig
 from prime_rl.trainer.data import StatefulIterableDataset
 from prime_rl.utils.logger import get_logger
 
@@ -254,7 +254,7 @@ def warn_if_no_document_separator(shards: TokenShards, tokenizer: PreTrainedToke
 
 
 def setup_token_dataset(
-    config: DatatroveDataConfig, non_dp_size: int = 1, eod_mask_token: int | None = None
+    config: DocumentsDataConfig, non_dp_size: int = 1, eod_mask_token: int | None = None
 ) -> TokenDataset:
     return TokenDataset(
         TokenShards(config.paths, seed=config.seed),

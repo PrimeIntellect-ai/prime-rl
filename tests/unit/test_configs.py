@@ -196,24 +196,39 @@ def test_rl_launcher_config_roundtrip(tmp_path):
 
 
 def test_pretrain_config_roundtrip(tmp_path):
-    """A minimal pretrain TOML gets the pretraining defaults and survives the launcher's resolved config, which
-    `uv run sft` rejects."""
+    """A minimal pretrain TOML gets the pretraining defaults and survives the launcher's resolved config."""
     from prime_rl.entrypoints.launcher import write_config
 
     write_toml(tmp_path / "pretrain.toml", {"data": {"paths": [str(tmp_path / "tokens")]}})
     config = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--output-dir", str(tmp_path)])
-    assert config.data.type == "datatrove"
+    assert config.data.type == "documents"
     assert (config.optim.type, config.optim.lr, config.optim.weight_decay) == ("adamw", 1e-3, 0.01)
     assert (config.scheduler.type, config.scheduler.warmup_steps, config.scheduler.decay_steps) == ("linear", 10, 0)
 
     write_config(config, tmp_path / "pretrain.json")
     assert cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.json")]) == config
-    assert not can_parse(SFTConfig, ["@", str(tmp_path / "pretrain.json")])
 
     muon = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--optim.type", "muon"])
     assert muon.optim.lr == 1e-3
     warmup = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--scheduler.warmup-steps", "100"])
     assert (warmup.scheduler.warmup_steps, warmup.scheduler.decay_steps) == (100, 0)
+
+
+def test_sft_and_pretrain_differ_only_in_defaults(tmp_path):
+    """`uv run sft` and `uv run pretrain` take the same data types; on the same data they differ in the init, the
+    optimizer's learning rate and the schedule."""
+    data = {"type": "documents", "paths": [str(tmp_path / "tokens")]}
+    args = ["--output-dir", str(tmp_path), "--run.name", "presets"]
+    write_toml(tmp_path / "data.toml", {"data": data})
+    sft = cli(SFTConfig, args=["@", str(tmp_path / "data.toml"), *args])
+    write_toml(tmp_path / "data.toml", {"data": {"paths": data["paths"]}})
+    pretrain = cli(PretrainConfig, args=["@", str(tmp_path / "data.toml"), *args])
+    assert {name for name in SFTConfig.model_fields if getattr(sft, name) != getattr(pretrain, name)} == {
+        "model",
+        "optim",
+        "scheduler",
+    }
+    assert (sft.model.init.type, sft.optim.lr, sft.scheduler.type) == ("pretrained", 1e-6, "constant")
 
 
 def test_val_set_defaults(tmp_path):
@@ -1466,7 +1481,7 @@ def test_sft_config_accepts_custom_renderer(tmp_path, custom_renderer_import_pat
         tomli_w.dumps(
             {
                 "model": {"name": "PrimeIntellect/Qwen3-0.6B"},
-                "data": {"name": "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"},
+                "data": {"path": "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"},
                 "renderer": {"name": "custom", "import_path": custom_renderer_import_path, "instruction": "Be brief."},
             }
         )

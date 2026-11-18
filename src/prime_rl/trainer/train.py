@@ -14,8 +14,7 @@ import torch
 from torch.profiler import profile, ProfilerActivity
 from prime_rl.trainer.ckpt import Progress, ckpt_output_dir, setup_ckpt_manager, setup_model_files
 from prime_rl.utils.pathing import get_ckpt_dir, get_step_path, is_checkpoint_step_dir, resolve_latest_ckpt_step
-from prime_rl.configs.pretrain import PretrainConfig
-from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.supervised import SupervisedTrainerConfig
 from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
 from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp, validate_cp_seq_lens
@@ -69,7 +68,7 @@ import torch.distributed as dist
 
 
 @clean_exit
-def train(config: SFTConfig | PretrainConfig):
+def train(config: SupervisedTrainerConfig):
     # Setup world and logger
     world = get_world()
     logger = setup_logger(
@@ -189,7 +188,7 @@ def train(config: SFTConfig | PretrainConfig):
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
     multimodal = config.model.vlm is not None
-    if isinstance(config, PretrainConfig):
+    if config.data.type == "documents":
         shards = TokenShards(config.data.paths)
         if config.data.eod_mask_loss:
             eod_mask_token = detect_separator(shards, tokenizer)

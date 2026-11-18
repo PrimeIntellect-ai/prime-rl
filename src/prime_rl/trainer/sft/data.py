@@ -13,7 +13,8 @@ from renderers.base import MultiModalData, PlaceholderRange, Renderer, build_tra
 from torch import Tensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTColumnsConfig, SFTDataConfig
+from prime_rl.configs.supervised import ChatDataConfig, FakeDataConfig
+from prime_rl.configs.val import LossMaskConfig, SFTColumnsConfig
 from prime_rl.trainer.data import StatefulIterableDataset
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
@@ -421,11 +422,6 @@ class SFTDataset(StatefulIterableDataset):
             yield processed_example
 
 
-def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
-    if isinstance(data, SFTDataConfig):
-        data.name = pre_download_dataset(data.name, data.revision, env_vars)
-
-
 def pre_download_dataset(name: str, revision: str | None, env_vars: dict[str, str]) -> str:
     """Download HF dataset ``name`` unless it is a local path. Returns its local path."""
     if Path(name).exists():
@@ -476,12 +472,12 @@ def setup_and_interleave_datasets(
     return dataset
 
 
-def load_sft_dataset(config: SFTDataConfig) -> Dataset:
+def load_sft_dataset(config: ChatDataConfig) -> Dataset:
     """Load and interleave the raw HF dataset. This is the expensive I/O step."""
     logger = get_logger()
     if config.subsets is None and config.splits is None:
         return setup_and_interleave_datasets(
-            dataset_name=config.name,
+            dataset_name=config.path,
             subsets_and_splits=[(None, "train")],
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
@@ -490,7 +486,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
     elif config.subsets is not None and config.splits is None:
         logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
         return setup_and_interleave_datasets(
-            dataset_name=config.name,
+            dataset_name=config.path,
             subsets_and_splits=[(subset, "train") for subset in config.subsets],
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
@@ -499,7 +495,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
     elif config.subsets is None and config.splits is not None:
         logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
         return setup_and_interleave_datasets(
-            dataset_name=config.name,
+            dataset_name=config.path,
             subsets_and_splits=[(None, split) for split in config.splits],
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
@@ -509,7 +505,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
         assert config.subsets is not None and config.splits is not None
         logger.debug(f"Loading datasets for subsets {config.subsets} with splits {config.splits}")
         return setup_and_interleave_datasets(
-            dataset_name=config.name,
+            dataset_name=config.path,
             subsets_and_splits=list(zip(config.subsets, config.splits)),
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
@@ -519,7 +515,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
 
 def setup_sft_dataset(
     tokenizer: PreTrainedTokenizer,
-    config: DataConfig,
+    config: ChatDataConfig | FakeDataConfig,
     non_dp_size: int = 1,
     *,
     renderer_config: RendererConfig | None = None,
@@ -535,9 +531,9 @@ def setup_sft_dataset(
             seed=config.seed,
             non_dp_size=non_dp_size,
         )
-    elif config.type == "sft":
+    elif config.type == "chat":
         if renderer_config is None:
-            raise ValueError("SFT data requires a renderer config.")
+            raise ValueError("Chat data requires a renderer config.")
         renderers = RendererResolver(tokenizer, renderer_config, processor=processor, columns=config.columns.renderer)
         return SFTDataset(
             load_sft_dataset(config),

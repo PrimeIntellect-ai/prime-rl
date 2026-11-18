@@ -1,9 +1,8 @@
-from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
-from prime_rl.configs.supervised import BaseDataConfig, SupervisedTrainerConfig
+from prime_rl.configs.supervised import DataConfig, SupervisedTrainerConfig
 from prime_rl.configs.trainer import (
     AdamWConfig,
     ConstantSchedulerConfig,
@@ -15,35 +14,6 @@ from prime_rl.configs.trainer import (
     ScratchInit,
     SignSGDConfig,
 )
-
-
-class DatatroveDataConfig(BaseDataConfig):
-    """Tokenized shards written by datatrove's ``DocumentTokenizer``, read as one token pool and cut into samples of
-    ``seq_len`` tokens."""
-
-    type: Literal["datatrove"] = "datatrove"
-
-    paths: list[Path] = Field(min_length=1)
-    """Folders of datatrove tokenized shards: ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``.
-    The files of all folders (in folder order, then file name order) are read as one token pool."""
-
-    seed: int = 0
-    """Seed for the sample order: each epoch reads every ``seq_len`` window of the pool once, in a new random order
-    and from a new random offset."""
-
-    document_masking: bool = True
-    """Attention and positions restart at every document. If False, a sample is one sequence: attention spans the
-    whole sample and positions run over it."""
-
-
-class PretrainDataConfig(DatatroveDataConfig):
-    """Training shards."""
-
-    eod_mask_loss: bool = True
-    """Don't train the model to predict the first token of the next, unrelated document: no loss where the input is
-    the document separator. The separator is the special token the training shards' documents end with, detected at
-    startup; startup fails if they don't all end with one, unless they start with BOS (then there is nothing to
-    mask)."""
 
 
 class PretrainAdamWConfig(AdamWConfig):
@@ -77,7 +47,8 @@ class PretrainModelConfig(ModelConfig):
 
 
 class PretrainConfig(SupervisedTrainerConfig):
-    """Pretraining: next-token loss on tokenized shards, with the weights initialized from scratch by default."""
+    """``uv run pretrain``: the supervised trainer with pretraining defaults: tokenized documents, a scratch init, a
+    learning rate of 1e-3 after a linear warmup."""
 
     model: PretrainModelConfig = PretrainModelConfig()
 
@@ -85,10 +56,18 @@ class PretrainConfig(SupervisedTrainerConfig):
     """Run kind of this config. ``uv run launch`` picks the entrypoint from it; ``uv run pretrain`` accepts only
     "pretrain" (or no mode)."""
 
-    data: PretrainDataConfig
+    data: DataConfig
+    """Training data. Defaults to ``type = "documents"``."""
 
     optim: PretrainOptimizerConfig = PretrainAdamWConfig()
 
     scheduler: PretrainSchedulerConfig = PretrainLinearSchedulerConfig()
     """Learning rate schedule. Defaults to a linear warmup over 10 steps, then constant: from a random init, Adam's
     first updates at the full learning rate are unstable."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_data_type(cls, data: Any) -> Any:
+        if isinstance(data, dict) and isinstance(data.get("data"), dict):
+            data["data"].setdefault("type", "documents")
+        return data

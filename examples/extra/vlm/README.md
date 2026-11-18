@@ -30,7 +30,7 @@ Both configs use LoRA with a frozen vision encoder and assistant-only loss maski
 | [`sft.toml`](sft.toml) | `Qwen/Qwen3.5-0.8B` (dense, LoRA rank 16) | sanity-scale, 20 steps |
 | [`sft-moe.toml`](sft-moe.toml) | `Qwen/Qwen3.6-35B-A3B` (MoE, LoRA rank 32, EP8) | one 8-GPU node |
 
-Set `data.name` to your [multimodal chat dataset](../../../docs/training.md#dataset-format), then:
+Set `data.path` to your [multimodal chat dataset](../../../docs/training.md#dataset-format), then:
 
 ```bash
 uv run sft @ examples/extra/vlm/sft.toml

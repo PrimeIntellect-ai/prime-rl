@@ -202,6 +202,15 @@ The trainer warns when batch wait time exceeds active trainer time. Add inferenc
 
 `uv run sft` runs supervised fine-tuning from a HF dataset. It shares model loaders, FSDP setup, checkpointing, and the chat-template plumbing with the RL trainer, so a typical workflow is _SFT → RL → SFT → …_ without any reformatting.
 
+`uv run sft` and `uv run pretrain` ([Pretraining](#pretraining)) are one supervised trainer. Both take every data type — `[data] type = "chat"` (conversations, below), `"documents"` (tokenized shards, see [Pretraining](#pretraining)) or `"fake"` — and differ only in their defaults:
+
+| Default | `sft` | `pretrain` |
+|---|---|---|
+| `data.type` | `chat` (`PrimeIntellect/Reverse-Text-SFT`) | `documents` (`data.paths` required) |
+| `model.init` | `pretrained` | `scratch` |
+| `optim.lr` | `1e-6` | `1e-3` (AdamW and Muon) |
+| `scheduler` | `constant` | `linear`, 10 warmup steps, no decay |
+
 ### Dataset Format
 
 Two accepted layouts:
@@ -348,7 +357,7 @@ Every set logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and 
 
 | Knob | What it controls |
 |---|---|
-| `data.name` | HF dataset name or local path |
+| `data.path` | HF dataset name or local path of the `chat` data |
 | `data.batch_size` | Tokens per trainer step (packed) |
 | `data.seq_len` | Per-sample sequence length |
 | `loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |
@@ -388,7 +397,7 @@ Pulled from the console log and mirrored to W&B.
 
 ## Pretraining
 
-`uv run pretrain` trains a model from scratch on tokenized text. It shares the trainer, launcher, checkpointing and monitoring with `uv run sft`. What differs is the data, and that the weights start from the model's own init (`model.init.type = "scratch"`, see [Model Initialization](#model-initialization)): `model.name` only supplies the architecture and the tokenizer. The from-scratch init is tested on dense models. The defaults are SFT's, except `optim.lr = 1e-3` and a 10-step linear learning-rate warmup.
+`uv run pretrain` trains a model from scratch on tokenized text. It is the supervised trainer of `uv run sft` with other defaults ([SFT Trainer](#sft-trainer)): `documents` data, `optim.lr = 1e-3` with a 10-step linear warmup, and the model's own init (`model.init.type = "scratch"`, see [Model Initialization](#model-initialization)), where `model.name` only supplies the architecture and the tokenizer. The from-scratch init is tested on dense models.
 
 **Tokenize first.** prime-rl does not tokenize; it reads the output of [datatrove](https://github.com/huggingface/datatrove)'s `DocumentTokenizer`: `*.ds` token files, each with its `.ds.index` (document ends) and `.ds.metadata`. datatrove is a separate install (`pip install datatrove`), not a prime-rl dependency. Set `eos_token` to the tokenizer's end-of-text token, which is not always its EOS: for Qwen it is `<|endoftext|>`, not `<|im_end|>`. datatrove adds no separator by default and prime-rl adds none either, so without one the documents run together and the model never learns to stop; the trainer checks at startup that the documents end with one. If a document's text contains the separator string, the tokenizer may encode it as the separator token, and the loss at that position is then masked too.
 
@@ -420,7 +429,7 @@ max_steps = 1000
 [model]
 name = "Qwen/Qwen3-0.6B"   # only the architecture is read
 
-[data]
+[data]                     # type = "documents" is the pretrain default
 paths = ["data/fineweb-edu"]
 seq_len = 2048
 batch_size = 256

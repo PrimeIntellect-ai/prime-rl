@@ -1,7 +1,7 @@
 import uuid
 import warnings
 from pathlib import Path
-from typing import Annotated, TypeAlias
+from typing import Annotated, Literal, TypeAlias
 from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
@@ -21,6 +21,7 @@ from prime_rl.configs.shared import (
     WeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import BaseTrainerConfig, mega_moe_max_tokens_per_rank
+from prime_rl.configs.val import LossMaskConfig, SFTColumnsConfig
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 
 
@@ -51,6 +52,105 @@ class BaseDataConfig(BaseConfig):
         return self
 
 
+class DocumentsDataConfig(BaseDataConfig):
+    """Tokenized shards written by datatrove's ``DocumentTokenizer``, read as one token pool and cut into samples of
+    ``seq_len`` tokens."""
+
+    type: Literal["documents"] = "documents"
+
+    paths: list[Path] = Field(min_length=1)
+    """Folders of datatrove tokenized shards: ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``.
+    The files of all folders (in folder order, then file name order) are read as one token pool."""
+
+    seed: int = 0
+    """Seed for the sample order: each epoch reads every ``seq_len`` window of the pool once, in a new random order
+    and from a new random offset."""
+
+    document_masking: bool = True
+    """Attention and positions restart at every document. If False, a sample is one sequence: attention spans the
+    whole sample and positions run over it."""
+
+    eod_mask_loss: bool = True
+    """Don't train the model to predict the first token of the next, unrelated document: no loss where the input is
+    the document separator. The separator is the special token the training shards' documents end with, detected at
+    startup; startup fails if they don't all end with one, unless they start with BOS (then there is nothing to
+    mask)."""
+
+
+class ChatDataConfig(BaseDataConfig):
+    """Conversations from an HF dataset, rendered with the renderer; the tokens of ``loss_mask``'s message types are
+    trained on."""
+
+    type: Literal["chat"] = "chat"
+
+    path: str = "PrimeIntellect/Reverse-Text-SFT"
+    """HF dataset name or local directory."""
+
+    revision: str | None = None
+    """HF dataset revision to load. Ignored for a local path."""
+
+    subsets: list[str] | None = None
+    """Subsets to load from the HF dataset."""
+
+    splits: list[str] | None = None
+    """Splits to load from the HF dataset."""
+
+    probabilities: list[float] | None = None
+    """Sampling probabilities for each subset/split."""
+
+    stopping_strategy: Literal["first_exhausted", "all_exhausted"] = "all_exhausted"
+    """Stopping strategy when interleaving multiple subsets/splits."""
+
+    shuffle: bool = True
+    """Shuffle the dataset at the start of each epoch."""
+
+    seed: int = 0
+    """Random seed for shuffling. Re-shuffled per epoch by adding the epoch count to the seed."""
+
+    columns: SFTColumnsConfig = SFTColumnsConfig()
+    """Columns that carry per-sample renderer arguments."""
+
+    # Configuring
+    loss_mask: LossMaskConfig = LossMaskConfig()
+    """Which message types contribute to the loss."""
+
+    @model_validator(mode="after")
+    def validate_subsets_and_splits(self):
+        if self.subsets is not None or self.splits is not None:
+            if self.subsets is not None and self.splits is not None:
+                if len(self.subsets) != len(self.splits):
+                    raise ValueError(
+                        "Number of subsets must be equal to number of splits. Please specify which split to load for each subset."
+                    )
+            if self.subsets is not None and self.probabilities is not None:
+                if len(self.probabilities) != len(self.subsets):
+                    raise ValueError(
+                        "Number of probabilities must be equal to number of subsets. Please specify a probability for each subset."
+                    )
+            if self.splits is not None and self.probabilities is not None:
+                if len(self.probabilities) != len(self.splits):
+                    raise ValueError(
+                        "Number of probabilities must be equal to number of splits. Please specify a probability for each split."
+                    )
+        return self
+
+
+class FakeDataConfig(BaseDataConfig):
+    type: Literal["fake"] = "fake"
+
+    length: Literal["fixed", "variable"] = "fixed"
+    """Use fixed-length samples or variable-length samples."""
+
+    input_ids: Literal["increasing", "random"] = "increasing"
+    """Token id generator: ``increasing`` for deterministic sequences, ``random`` for random ids."""
+
+    seed: int = 0
+    """Seed for the per-rank packing/token generator, combined with the data rank."""
+
+
+DataConfig: TypeAlias = Annotated[DocumentsDataConfig | ChatDataConfig | FakeDataConfig, Field(discriminator="type")]
+
+
 class SingleNodeDeploymentConfig(BaseSingleNodeDeploymentConfig):
     @model_validator(mode="after")
     def validate_gpu_count(self):
@@ -71,13 +171,16 @@ SupervisedDeploymentConfig: TypeAlias = Annotated[
 
 
 class SupervisedTrainerConfig(BaseTrainerConfig):
-    """SFT and pretraining: next-token loss on a fixed dataset, as opposed to RL."""
+    """SFT and pretraining: next-token loss on a fixed dataset, as opposed to RL. ``uv run sft`` (``SFTConfig``) and
+    ``uv run pretrain`` (``PretrainConfig``) only differ in defaults."""
 
     auto_freeze_moe_router = False
     # Standard L2 regularization for supervised training.
     auto_weight_decay = 0.01
 
-    data: BaseDataConfig
+    data: DataConfig
+    """Training data: tokenized ``documents``, ``chat`` conversations rendered with ``renderer``, or ``fake``
+    tokens."""
 
     eval: SupervisedOnlineEvalConfig | None = None
     """Online evaluation configuration: rollout-based evals against a live inference
@@ -117,7 +220,7 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
         default the run directory, W&B run name and platform run name to it when not
         set explicitly."""
         if self.run.name is None:
-            dataset = str(getattr(self.data, "name", "")).split("/")[-1]
+            dataset = str(getattr(self.data, "path", "")).split("/")[-1]
             model = self.model.name.split("/")[-1]
             parts = [part for part in (dataset, model) if part]
             self.run.name = "--".join([*parts, uuid.uuid4().hex[:8]]).lower()
@@ -340,7 +443,17 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
         return self
 
     def renders_conversations(self) -> bool:
-        return self.data.type == "sft" or super().renders_conversations()
+        return self.data.type == "chat" or super().renders_conversations()
+
+    @model_validator(mode="after")
+    def validate_vlm_constraints(self):
+        if self.model.vlm is None:
+            return self
+        if self.data.type != "chat":
+            raise ValueError("[model.vlm] trains on chat data: set data.type = 'chat'.")
+        if self.data.micro_batch_size != 1:
+            raise ValueError("VLM training requires data.micro_batch_size = 1.")
+        return self
 
     ### Auto-setup and validate shared configs
 
