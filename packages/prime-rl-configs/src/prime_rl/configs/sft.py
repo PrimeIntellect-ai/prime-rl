@@ -119,6 +119,25 @@ class SFTDataConfig(HFDataConfig):
     """Which message types contribute to the loss."""
 
 
+class SystemOneColumnsConfig(BaseConfig):
+    """Dataset columns of a System One record. Set a field to read a column under another name."""
+
+    id: str = "id"
+    """Column with the record id for warnings and errors. Absent or null, the id is the row's subset/split/index."""
+
+    state: str = "state"
+    """Column with the state to decide on, as JSON text (a text state as a JSON string)."""
+
+    questions: str = "questions"
+    """Column with the System One questions as JSON text: question id -> ``{type, instructions, criteria}``."""
+
+    label: str = "label"
+    """Column with hard labels as JSON text: question id -> option. Any question may go without one."""
+
+    soft_label: str = "soft_label"
+    """Column with soft labels as JSON text: question id -> option id -> probability. Used over the hard label."""
+
+
 class SFTValConfig(BaseValConfig):
     data: SFTDataConfig
 
