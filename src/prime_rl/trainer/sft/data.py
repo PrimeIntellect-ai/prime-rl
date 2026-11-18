@@ -3,7 +3,7 @@ import time
 import uuid
 from abc import abstractmethod
 from pathlib import Path
-from typing import Any, Callable, Literal, cast
+from typing import TYPE_CHECKING, Any, Callable, Literal, cast
 
 import numpy as np
 import torch
@@ -19,6 +19,9 @@ from prime_rl.trainer.data import StatefulIterableDataset
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import format_time
+
+if TYPE_CHECKING:
+    from prime_rl.trainer.sft.system_one.data import SystemOneStrategy
 
 
 class FakeDataset(StatefulIterableDataset):
@@ -562,6 +565,7 @@ def setup_sft_dataset(
     renderer_config: RendererConfig | None = None,
     processor: Any | None = None,
     multimodal: bool = False,
+    strategy: "SystemOneStrategy | None" = None,
 ) -> StatefulIterableDataset:
     if config.type == "fake":
         return FakeDataset(
@@ -589,6 +593,24 @@ def setup_sft_dataset(
             max_epochs=max_epochs,
             multimodal=multimodal,
             columns=config.columns,
+        )
+    elif config.type == "system_one":
+        # Lazy: system_one.data imports this module
+        from prime_rl.trainer.sft.system_one.data import SystemOneDataset
+
+        if strategy is None:
+            raise ValueError("System One data requires the model's strategy.")
+        if raw_dataset is None:
+            raw_dataset = load_sft_dataset(config)
+        return SystemOneDataset(
+            raw_dataset,
+            strategy,
+            columns=config.columns,
+            shuffle=config.shuffle,
+            seed=config.seed,
+            seq_len=config.seq_len,
+            non_dp_size=non_dp_size,
+            max_epochs=max_epochs,
         )
     else:
         raise ValueError(f"Invalid dataset type: {config.type}")

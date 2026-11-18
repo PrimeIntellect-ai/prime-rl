@@ -648,6 +648,7 @@ def fsdp_worker(rank: int, world: int, tied: bool, strategy, init_file: str, out
     # As in the trainer: a step's backward, then validation (a no-grad forward, then reshard_module before clipping),
     # then the next step's backward on cleared gradients
     heads_loss(model, rank, strategy).backward()
+    assert all(param.grad is not None for param in model.parameters() if param.requires_grad)
     with torch.no_grad():
         heads_loss(model, rank, strategy)
     reshard_module(model)

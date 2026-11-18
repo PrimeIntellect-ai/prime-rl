@@ -147,11 +147,29 @@ class SystemOneDataConfig(HFDataConfig):
     """Dataset columns of a record."""
 
 
+class SFTCrossEntropyLossConfig(BaseConfig):
+    """Token cross-entropy: the stock SFT loss."""
+
+    type: Literal["ce"] = "ce"
+
+
+class SFTDecisionLossConfig(BaseConfig):
+    """Soft cross-entropy plus ``brier_weight`` x Brier score per labelled question of System One data."""
+
+    type: Literal["decision"] = "decision"
+
+    brier_weight: float = Field(0.0, ge=0, allow_inf_nan=False)
+    """Weight of the Brier score (the squared error between a question's distribution and its target)."""
+
+
+SFTLossConfig: TypeAlias = Annotated[SFTCrossEntropyLossConfig | SFTDecisionLossConfig, Field(discriminator="type")]
+
+
 class SFTValConfig(BaseValConfig):
-    data: SFTDataConfig
+    data: Annotated[SFTDataConfig | SystemOneDataConfig, Field(discriminator="type")]
 
 
-DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
+DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig | SystemOneDataConfig, Field(discriminator="type")]
 
 
 class SFTConfig(SupervisedTrainerConfig):
@@ -167,10 +185,93 @@ class SFTConfig(SupervisedTrainerConfig):
     val: SFTValConfig | None = None
     """Validation configuration. If None, no validation runs."""
 
+    loss: SFTLossConfig = SFTCrossEntropyLossConfig()
+    """The training loss. Defaults to ``decision`` with System One data, else ``ce``."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def fill_defaults_from_data(cls, data):
+        """Fill a missing ``val.data.type`` and ``loss.type`` from ``data.type``, and with System One data a missing
+        ``val.data.seq_len`` from ``data.seq_len``."""
+        if not isinstance(data, dict):
+            return data
+        # A dict, or a config whose fields iterate as pairs
+        train_data = dict(data.get("data") or {})
+        system_one = train_data.get("type") == "system_one"
+        val = data.get("val")
+        val_data = val.get("data") if isinstance(val, dict) else None
+        if isinstance(val_data, dict):
+            val_data.setdefault("type", "system_one" if system_one else "sft")
+            if system_one and "seq_len" in train_data:
+                val_data.setdefault("seq_len", train_data["seq_len"])
+        if system_one:
+            loss = data.setdefault("loss", {})
+            if isinstance(loss, dict):
+                loss.setdefault("type", "decision")
+        elif isinstance(data.get("loss"), dict):
+            data["loss"].setdefault("type", "ce")
+        return data
+
+    @model_validator(mode="after")
+    def validate_system_one_data(self):
+        """System One data and the decision loss go together, for training and validation alike."""
+        data_configs = {"data": self.data}
+        if self.val is not None:
+            data_configs["val.data"] = self.val.data
+        if all(data.type != "system_one" for data in data_configs.values()):
+            if self.loss.type == "decision":
+                raise ValueError(f'loss.type = "decision" needs data.type = "system_one", got "{self.data.type}"')
+            return self
+        if any(data.type != "system_one" for data in data_configs.values()):
+            types = ", ".join(f'{key}.type = "{data.type}"' for key, data in data_configs.items())
+            raise ValueError(f'data.type and val.data.type must both be "system_one" or neither, but {types}.')
+
+        if self.loss.type == "ce":
+            raise ValueError(
+                'data.type = "system_one" cannot train with loss.type = "ce": a record\'s targets are per question, '
+                'not per token. Remove [loss], or set [loss] type = "decision".'
+            )
+        if self.model.lora is not None:
+            raise ValueError(
+                'data.type = "system_one" is not supported with [model.lora]: decision models train with full '
+                "fine-tuning, and a LoRA checkpoint can be neither exported nor served."
+            )
+        if self.eval is not None:
+            raise ValueError(
+                'data.type = "system_one" is not supported with [eval]: online evals send the trained weights to a '
+                "vLLM server, which runs its own model classes, not a decision model's prime-rl class. Remove [eval], "
+                "and score checkpoints outside the trainer instead."
+            )
+        if self.model.cp > 1:
+            raise ValueError(
+                'data.type = "system_one" does not support context parallelism (model.cp > 1) yet: it is a planned '
+                "follow-up. Set model.cp = 1."
+            )
+        if self.model.vlm is not None:
+            raise ValueError(
+                'data.type = "system_one" does not support [model.vlm] yet: it is a planned follow-up. Remove '
+                "[model.vlm]."
+            )
+        # Compare with the default: a resolved config writes it out
+        if self.renderer != AutoRendererConfig():
+            raise ValueError(
+                '[renderer] is not used with data.type = "system_one": the model\'s strategy owns any chat template. '
+                "Remove [renderer]."
+            )
+        if self.val is not None and self.val.data.seq_len != self.data.seq_len:
+            raise ValueError(
+                f"val.data.seq_len ({self.val.data.seq_len}) must equal data.seq_len ({self.data.seq_len}): it is "
+                "the token budget of a record. Leave it unset to take data.seq_len."
+            )
+        return self
+
     @model_validator(mode="after")
     def validate_typed_renderer(self):
         """Require a typed renderer whenever SFT renders real samples."""
         if self.data.type == "fake" and self.val is None:
+            return self
+        # The strategy renders System One data
+        if self.data.type == "system_one":
             return self
 
         model_id = self.tokenizer.name or self.model.name
