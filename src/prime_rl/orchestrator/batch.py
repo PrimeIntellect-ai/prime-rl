@@ -698,9 +698,13 @@ class BatchPacker:
         self.num_train_workers = config.num_train_workers
         # Rows hold at most `seq_len` tokens, so padding to a multiple of it pads every row to exactly `seq_len`
         self.pad_to_multiple_of = config.seq_len if config.pad_to_seq_len else config.pad_to_multiple_of
-        # Built as the trainer builds it. The flash-attention version selects kernels, not modules.
+        # Built as the trainer builds it. Kernel choices select kernels, not modules: the orchestrator may have no GPU,
+        # and the default DSA backend (cudnn_flashmla) refuses to build without one, so it uses tilelang.
         model_config = ModelConfig(
-            name=config.model.name, attn="flash_attention_3", trust_remote_code=config.tokenizer.trust_remote_code
+            name=config.model.name,
+            attn="flash_attention_3",
+            dsa_backend="tilelang",
+            trust_remote_code=config.tokenizer.trust_remote_code,
         )
         self.bin_cost = FlopCounter(get_model(model_config, device=torch.device("meta")))
 
