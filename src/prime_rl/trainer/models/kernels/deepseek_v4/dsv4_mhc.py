@@ -252,7 +252,8 @@ def _triton_h_post_bda_fwd(
     s, b, n, C = original_residual.shape
     sb = s * b
     dev = h_res.device
-    out = torch.empty(sb, n, C, dtype=original_residual.dtype, device=dev)
+    out = torch.empty(s, b, n, C, dtype=original_residual.dtype, device=dev)
+    out_flat = out.view(sb, n, C)
     hr_flat = h_res.contiguous().view(sb, n, n)
     orig_flat = original_residual.contiguous().view(sb, n, C)
     hp_flat = h_post.contiguous().view(sb, n)
@@ -265,7 +266,7 @@ def _triton_h_post_bda_fwd(
         hp_flat,
         x_flat,
         x_flat,
-        out,
+        out_flat,
         sb,
         C,
         n,
@@ -275,12 +276,12 @@ def _triton_h_post_bda_fwd(
         orig_flat.stride(0),
         orig_flat.stride(1),
         orig_flat.stride(2),
-        out.stride(0),
-        out.stride(1),
-        out.stride(2),
+        out_flat.stride(0),
+        out_flat.stride(1),
+        out_flat.stride(2),
         HAS_BIAS=False,
     )
-    return out.view(s, b, n, C)
+    return out
 
 
 @triton.autotune(
