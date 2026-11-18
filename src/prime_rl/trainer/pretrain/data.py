@@ -1,7 +1,6 @@
 """Pretraining data: units of the documents in datatrove tokenized shards, sampled from one or more sources into rows of
 ``seq_len`` tokens, and for validation every held-out document scored on its own."""
 
-import bisect
 import hashlib
 import os
 import resource
@@ -190,14 +189,14 @@ class TokenSampler:
 
     A unit is a document or a ``seq_len`` piece of a longer one. A source reads its units (or, with ``repetitions``, a
     fixed seeded subset) in passes, each in a keyed order (`permute`). Units are taken in order of due time, their
-    source's tokens in the phase over its weight (weighted fair queuing); the unit that crosses the step's end is cut,
+    source's tokens over its weight (weighted fair queuing); the unit that crosses the step's end is cut,
     and `fill_rows` packs the step into full rows. ``cache_dir`` keeps the long-document table and the subsets."""
 
     def __init__(
         self,
         names: list[str],
         sources: list[TokenShards],
-        phases: list[tuple[int, list[float]]],
+        weights: list[float],
         repetitions: list[float | None],
         batch_size: int,
         seq_len: int,
@@ -221,13 +220,9 @@ class TokenSampler:
         self.keys = mix(np.uint64(seed) + np.array([zlib.crc32(name.encode()) for name in names], dtype=np.uint64))
         self.subset_keys = mix(self.keys ^ np.uint64(SUBSET_KEY))
         self.offered = (None, None)
-        self.phase_starts = [start for start, _ in phases]
-        self.weights = [np.array(weights) / sum(weights) for _, weights in phases]
-        # Every source's tokens over the run: its weight in every phase times the phase's tokens.
-        self.run_tokens = None
-        if max_steps is not None:
-            steps = np.diff([*(min(start, max_steps) for start in self.phase_starts), max_steps])
-            self.run_tokens = sum(n * batch_size * seq_len * weights for n, weights in zip(steps, self.weights))
+        self.weights = np.array(weights) / sum(weights)
+        # Every source's tokens over the run.
+        self.run_tokens = None if max_steps is None else max_steps * batch_size * seq_len * self.weights
         # The units and tokens of every source's (sub)set.
         self.subsets = np.array([times is not None for times in repetitions])
         self.set_units, self.set_tokens = self.num_units.copy(), self.num_tokens.copy()
@@ -306,13 +301,8 @@ class TokenSampler:
             lengths[chosen] = np.minimum(ends - begins - pieces[chosen] * self.seq_len, self.seq_len)
         return lengths
 
-    def phase(self, step: int) -> int:
-        return bisect.bisect_right(self.phase_starts, step) - 1
-
     def start(self) -> dict:
-        return {
-            key: [0] * len(self.sources) for key in ("units", "tokens", "phase_tokens", "pieces", "piece_tokens")
-        } | {
+        return {key: [0] * len(self.sources) for key in ("units", "tokens", "pieces", "piece_tokens")} | {
             "step": 0,
             "rest": None,
         }
@@ -348,15 +338,12 @@ class TokenSampler:
 
     def plan(self, cursor: dict) -> tuple["Step", dict]:
         """The step that starts at ``cursor``, and the cursor at the start of the next step."""
-        step = cursor["step"]
-        phase = self.phase(step)
-        weights = self.weights[phase]
+        step, weights = cursor["step"], self.weights
         reads, tokens = np.array(cursor["units"]), np.array(cursor["tokens"])
-        phase_tokens = np.zeros_like(tokens) if step == self.phase_starts[phase] else np.array(cursor["phase_tokens"])
         rest = np.array(cursor["rest"] or [], dtype=np.int64).reshape(-1, 6)
-        np.add.at(phase_tokens, rest[:, 0], rest[:, 3] - rest[:, 2])
+        np.add.at(tokens, rest[:, 0], rest[:, 3] - rest[:, 2])
         budget = self.batch_size * self.seq_len - int((rest[:, 3] - rest[:, 2]).sum())
-        # The sources' next units by due time: a unit's source's tokens in the phase before it, divided by its weight
+        # The sources' next units by due time: a unit's source's tokens before it, divided by its weight
         # (ties to the first source); sources without weight have none. Every source offers about twice its share
         # of the step, and 4 more units for sources whose share is a unit or two; twice as many if the step would take
         # all of them. These numbers only set how often a step has to locate more units, not which units it takes.
@@ -367,7 +354,6 @@ class TokenSampler:
         units_before, offered = self.offered
         if units_before != cursor["units"]:
             offered = np.empty((0, 6), dtype=np.int64)
-        offered = offered[weights[offered[:, 0]] > 0]
         while True:
             have = np.bincount(offered[:, 0], minlength=len(weights))[sources]
             new = np.maximum(wanted - have, 0)
@@ -379,7 +365,7 @@ class TokenSampler:
             counts = have + new
             before = np.cumsum(lengths) - lengths
             before -= np.repeat(before[np.cumsum(counts) - counts], counts)
-            order = np.argsort((phase_tokens[owners] + before) / weights[owners], kind="stable")
+            order = np.argsort((tokens[owners] + before) / weights[owners], kind="stable")
             ends = np.cumsum(lengths[order])
             taken = order[: np.searchsorted(ends, budget) + 1]
             exhausted = np.bincount(owners[taken], minlength=len(weights))[sources] == counts
@@ -395,9 +381,8 @@ class TokenSampler:
         next_rest[2] = next_rest[3] - cut
         chosen[-1, 3] -= cut
         chosen = chosen[chosen[:, 3] > chosen[:, 2]]
-        np.add.at(phase_tokens, chosen[:, 0], chosen[:, 3] - chosen[:, 2])
+        np.add.at(tokens, chosen[:, 0], chosen[:, 3] - chosen[:, 2])
         units = np.concatenate([rest, chosen])
-        np.add.at(tokens, units[:, 0], units[:, 3] - units[:, 2])
         pieces = fill_rows(units[:, 3] - units[:, 2], self.batch_size, self.seq_len)
         # The pieces of every row in a random order.
         shuffled = pieces[np.lexsort((np.random.default_rng([self.seed, step, 1]).random(len(pieces)), pieces[:, 0]))]
@@ -408,7 +393,6 @@ class TokenSampler:
             "step": step + 1,
             "units": reads.tolist(),
             "tokens": tokens.tolist(),
-            "phase_tokens": phase_tokens.tolist(),
             "rest": next_rest.tolist() if cut else None,
             "pieces": np.bincount(piece_sources, minlength=len(weights)).tolist(),
             "piece_tokens": np.bincount(piece_sources, pieces[:, 3], minlength=len(weights)).astype(int).tolist(),
@@ -448,7 +432,7 @@ class TokenSampler:
             "batch_size": self.batch_size,
             "seed": self.seed,
             "sources": [[name, *map(str, s.paths), digest] for name, s, digest in zip(self.names, self.sources, files)],
-            "phases": [[start, weights.tolist()] for start, weights in zip(self.phase_starts, self.weights)],
+            "weights": self.weights.tolist(),
             "repetitions": self.repetitions,
             "max_steps": self.max_steps if self.subsets.any() else None,
         }
@@ -709,14 +693,13 @@ def setup_token_dataset(
     for source, shards in zip(config.sources, sources):
         if shards.num_tokens == 0:
             raise ValueError(f"Source {source.name} ({source.path}) has no tokens")
-    # The sources' weights, or else their natural shares, then every phase's.
+    # The sources' weights, or else their natural shares.
     weights = [s.weight if s.weight is not None else shards.num_tokens for s, shards in zip(config.sources, sources)]
-    phases = [(0, weights), *((p.start_step - 1, [p.weights[s.name] for s in config.sources]) for p in config.phases)]
     repetitions = [source.repetitions for source in config.sources]
     sampler = TokenSampler(
         [source.name for source in config.sources],
         sources,
-        phases,
+        weights,
         repetitions,
         config.batch_size,
         config.seq_len,
@@ -728,7 +711,7 @@ def setup_token_dataset(
         set_tokens = int(sampler.set_tokens[index])
         times = sampler.run_tokens[index] / set_tokens if sampler.run_tokens is not None else None
         get_logger().info(
-            f"Source {name}: weight {sampler.weights[sampler.phase(0)][index]:.4g}, {shards.num_tokens:,} tokens, "
+            f"Source {name}: weight {sampler.weights[index]:.4g}, {shards.num_tokens:,} tokens, "
             f"{set_tokens:,} used, repetitions {f'{times:.3g}' if times is not None else '(no max_steps)'}"
             f"{' (given)' if repetitions[index] is not None else ''}"
         )

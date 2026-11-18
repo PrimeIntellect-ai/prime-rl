@@ -415,13 +415,13 @@ paths = ["data/fineweb-edu-val"]
 seq_len = 2048
 ```
 
-**Mixture.** A source's `weight` is its share of the training tokens. Set it on every source (summing to 1) or on none; then each source gets its share of all sources' tokens. `[[data.phases]]` switches to other weights from `start_step` on (every source, summing to 1; 0 stops a source). The sources take turns deterministically, so every step holds the mixture up to about one document per source.
+**Mixture.** A source's `weight` is its share of the training tokens. Set it on every source (summing to 1) or on none; then each source gets its share of all sources' tokens. The sources take turns deterministically, so every step holds the mixture up to about one document per source.
 
-**Repetitions.** `repetitions` is how often every token of a source is seen over the run (`max_steps * batch_size * seq_len` tokens; needs `max_steps`). The source then reads a fixed, seeded subset of `weight * run tokens / repetitions` tokens (with phases, its weight in each phase times the phase's tokens) that many times. Without it, a source is read whole, in a new order on every pass.
+**Repetitions.** `repetitions` is how often every token of a source is seen over the run (`max_steps * batch_size * seq_len` tokens; needs `max_steps`). The source then reads a fixed, seeded subset of `weight * run tokens / repetitions` tokens that many times. Without it, a source is read whole, in a new order on every pass.
 
 **Rows.** Documents longer than `seq_len` are cut into `seq_len` pieces. A step's documents fill `batch_size` rows of exactly `seq_len` tokens, without padding and without losing a prediction within a document. Attention and positions restart at every document (`data.document_masking = false` makes a row one sequence).
 
-**Resume.** A resume is exact, also on another number of GPUs, if `data.num_workers` is unchanged. It stops with an error if `seq_len`, `batch_size`, `seed`, the sources, weights, phases or repetitions change (or `max_steps`, with repetitions); `ckpt.skip_dataloader` starts the data over. `data.batch_size` must be a multiple of dp × `num_workers` × `micro_batch_size`.
+**Resume.** A resume is exact, also on another number of GPUs, if `data.num_workers` is unchanged. It stops with an error if `seq_len`, `batch_size`, `seed`, the sources, weights or repetitions change (or `max_steps`, with repetitions); `ckpt.skip_dataloader` starts the data over. `data.batch_size` must be a multiple of dp × `num_workers` × `micro_batch_size`.
 
 Validation scores every document in `val.data.paths` on its own, from its first token, and logs the mean loss over all scored tokens as `val/loss`. A document is cut into non-overlapping windows of `val.data.seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it. Every token after a document's first is scored, and no position predicts a token of another document. The windows are packed into rows of `val.data.seq_len * val.data.micro_batch_size` tokens and shared out over the data-parallel ranks. `val.num_samples` limits every validation to the first documents of the held-out shards, the same ones every time; without it, every validation scores all of them.
 
