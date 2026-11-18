@@ -73,6 +73,7 @@ source .venv/bin/activate
 # inside the task because unexported vars in .env don't cross srun even with normal
 # SLURM env propagation; otherwise uv would silently fall back to the shared .venv.
 srun --ntasks-per-node=1 bash -s <<'SYNC_SH'
+set -e
 cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync --all-extras --all-packages
 # uv sync restores the locked NIXL wheel, whose bundled UCX breaks P/D KV transfer: reinstall the source build.
 if compgen -G "deps/nixl_cu13-*.whl" > /dev/null; then uv pip install -q --reinstall --no-deps deps/nixl_cu13-*.whl; fi

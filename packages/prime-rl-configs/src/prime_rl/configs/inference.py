@@ -532,6 +532,8 @@ class InferenceConfig(BaseConfig):
 
     pd_decode_blocks_ttl_s: int | None = None
     """Auto-set from ``deployment.bidirectional_kv_transfer``: enables bidirectional NIXL transfer with this decode block TTL. Persisted into the per-node config like ``use_pd_kv_transfer``. Not meant to be set by hand."""
+    kv_load_failure_policy: Literal["recompute", "fail"] | None = None
+    """What vLLM does when a KV load from another instance fails or is declined (``kv_transfer_config.kv_load_failure_policy``): ``recompute`` computes the missing tokens locally, ``fail`` ends the request with an error. None keeps vLLM's default (``fail``). Under bidirectional P/D, prefill defaults to ``recompute``: it declines reading decode blocks that are about to expire, and that turn should then prefill locally instead of failing."""
 
     enable_return_sampling_mask: bool = False
     """Return per-token sampling masks (``sampling_mask``) on ``/inference/v1/generate`` responses via vLLM's native ``--return-sampling-mask`` (>= 0.28). The ``rl`` entrypoint enables this field for truncated policy sampling and for recorded sampler logprobs (``sampling.logprobs``, set by score centering), which are captured next to the mask. Standalone inference must set it explicitly because no orchestrator sampling config is available. The field persists into per-node configs. Requests opt in with ``extra_args.prl_replay = true``; only these requests require positive temperature. Their supports are captured whole, so top-p alone needs no top-k. Evaluation requests need not opt in. Under speculative decoding each accepted position carries its own support, and sampler logprobs need truncated (replayed) sampling."""
@@ -679,6 +681,8 @@ class InferenceConfig(BaseConfig):
         config.kv_cache_offload = self.kv_cache_offload_by_role[role]
         if role == "prefill":
             config.hisparse = None
+            if self.pd_decode_blocks_ttl_s is not None and "kv_load_failure_policy" not in self.model_fields_set:
+                config.kv_load_failure_policy = "recompute"
         return config
 
     def build_kv_transfer_config(self) -> dict[str, Any] | None:
@@ -717,12 +721,17 @@ class InferenceConfig(BaseConfig):
         if not connectors:
             return None
         if len(connectors) == 1:
-            return connectors[0]
-        return {
-            "kv_connector": "MultiConnector",
-            "kv_role": "kv_both",
-            "kv_connector_extra_config": {"connectors": connectors},
-        }
+            config = connectors[0]
+        else:
+            config = {
+                "kv_connector": "MultiConnector",
+                "kv_role": "kv_both",
+                "kv_connector_extra_config": {"connectors": connectors},
+            }
+        if self.kv_load_failure_policy is not None:
+            # The scheduler reads the policy from the top-level config only, also under MultiConnector.
+            config["kv_load_failure_policy"] = self.kv_load_failure_policy
+        return config
 
     # Fields vLLM rejects as None — omitted from the namespace so vLLM applies its
     # own default (e.g. quantization is inferred from the checkpoint).
