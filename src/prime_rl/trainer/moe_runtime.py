@@ -11,9 +11,11 @@ from prime_rl.configs.trainer import (
     DeepGemmFP8MoEComputeConfig,
     MegaMoeMoEDispatchConfig,
     ModelConfig,
+    MoEComputeConfig,
     MoERuntimeConfig,
     MXFP8MoEComputeConfig,
     TorchMoEDispatchConfig,
+    mega_moe_precision,
 )
 from prime_rl.trainer.distributed.expert_parallel import ExpertWeightParallel
 from prime_rl.trainer.distributed.token_dispatcher import (
@@ -77,7 +79,7 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
 
 
 def _resolve_mega_moe_compute(
-    moe: MoE, dispatch: MegaMoeMoEDispatchConfig, group: ProcessGroup, dp_replicate: int
+    moe: MoE, dispatch: MegaMoeMoEDispatchConfig, compute: MoEComputeConfig, group: ProcessGroup, dp_replicate: int
 ) -> FusedDispatchExpertCompute:
     if dispatch.max_tokens_per_rank is None:
         raise ValueError(
@@ -96,8 +98,8 @@ def _resolve_mega_moe_compute(
     if dispatch.llep is not None:
         from prime_rl.trainer.models.layers.llep_mega_moe import LLEPMegaMoEExpertCompute
 
-        return LLEPMegaMoEExpertCompute(**kwargs, options=dispatch.llep, precision=dispatch.precision)
-    return MegaMoEExpertCompute(**kwargs, precision=dispatch.precision)
+        return LLEPMegaMoEExpertCompute(**kwargs, options=dispatch.llep, precision=mega_moe_precision(compute))
+    return MegaMoEExpertCompute(**kwargs, precision=mega_moe_precision(compute))
 
 
 def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:
@@ -109,17 +111,18 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
 
     selected_moes = set(moe_layers)
     if config.moe.compute.apply_to != "all":
-        language_model = get_language_model(model)
-        selected_layers = config.moe.compute.resolve_layers(len(language_model.layers))
-        selected_moes = {
-            module
-            for index, layer in enumerate(language_model.layers.children())
-            if index in selected_layers
-            for module in layer.modules()
-            if isinstance(module, MoE)
-        }
+        layers = list(get_language_model(model).layers.children())
+        moes = [[module for module in layer.modules() if isinstance(module, MoE)] for layer in layers]
+        moe_indices = [index for index, modules in enumerate(moes) if modules]
+        selected_layers = config.moe.compute.resolve_layers(len(layers), moe_indices)
+        selected_moes = {module for index in selected_layers for module in moes[index]}
         get_logger().debug(f"Selected model layers for MoE compute: {sorted(selected_layers)}")
-    bf16_compute = BF16ExpertCompute()
+    if config.moe.compute.remainder == "mxfp8":
+        import prime_kernels
+
+        remainder_compute = MXFP8ExpertCompute(kernel=prime_kernels.load("mxfp8_moe"), high_precision_wgrad=False)
+    else:
+        remainder_compute = BF16ExpertCompute()
     dispatch = config.moe.dispatch
     is_mega_moe = isinstance(dispatch, MegaMoeMoEDispatchConfig)
     ep_mesh = parallel_dims.get_mesh("ep") if parallel_dims.ep_enabled else None
@@ -128,11 +131,13 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
             raise ValueError(
                 "Mega MoE dispatch requires an expert-parallel group (model.ep > 1); it has no single-rank mode."
             )
-        # Mega MoE fuses the expert compute into dispatch, so `model.moe.compute` does not apply to it.
+        # Mega MoE fuses the expert compute into dispatch and runs every MoE layer, in `model.moe.compute`'s precision
         selected_moes = set(moe_layers)
-        selected_compute = _resolve_mega_moe_compute(moe_layers[0], dispatch, ep_mesh.get_group(), config.dp_replicate)
+        selected_compute = _resolve_mega_moe_compute(
+            moe_layers[0], dispatch, config.moe.compute, ep_mesh.get_group(), config.dp_replicate
+        )
     else:
-        selected_compute = _resolve_expert_compute(config) if selected_moes else bf16_compute
+        selected_compute = _resolve_expert_compute(config) if selected_moes else remainder_compute
 
     for moe in moe_layers:
         if ep_mesh is not None and moe.experts.num_experts % parallel_dims.ep:
@@ -146,7 +151,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
             )
         if is_mega_moe:
             selected_compute.validate_top_k(moe.router.top_k)
-        compute = selected_compute if moe in selected_moes else bf16_compute
+        compute = selected_compute if moe in selected_moes else remainder_compute
         moe.experts.set_compute(compute)
         if ep_mesh is None:
             token_dispatcher = LocalTokenDispatcher(
@@ -190,5 +195,5 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
 
     get_logger().info(
         f"Configured {len(selected_moes)}/{len(moe_layers)} MoE layers with compute={type(selected_compute).__name__}, "
-        f"apply_to={config.moe.compute.apply_to}, fallback=bf16, dispatch={config.moe.dispatch.type}, ep={parallel_dims.ep}"
+        f"apply_to={config.moe.compute.apply_to}, remainder={config.moe.compute.remainder}, dispatch={config.moe.dispatch.type}, ep={parallel_dims.ep}"
     )
