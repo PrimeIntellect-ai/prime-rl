@@ -1,8 +1,8 @@
-# DeepSeek-V4-Flash agentic RL on `terminal-lego` (terminal tasks) and `swelego` (SWE) at 131k
-# context, bash harness on a prime sandbox runtime; eval on OpenThoughts-TBLite. Hardware-agnostic
-# base: compose it with a hardware overlay that sets the topology and the precision, e.g.
+# DeepSeek-V4-Flash agentic RL at 131k context with the bash harness on a prime sandbox runtime.
+# Task- and hardware-agnostic base: compose it with a task source from `tasks/` and a hardware
+# overlay from `gpu/`, e.g.
 #
-#   uv run rl @ examples/advanced/deepseek-v4-flash/rl.toml @ examples/advanced/deepseek-v4-flash/gpu/h200.toml
+#   uv run rl @ examples/advanced/deepseek-v4-flash/rl.toml @ examples/advanced/deepseek-v4-flash/tasks/terminal.toml @ examples/advanced/deepseek-v4-flash/gpu/h200.toml
 
 max_steps = 1000
 seq_len = 131072
@@ -19,7 +19,6 @@ name = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
 
 [monitors.wandb]
 project = "deepseek-v4-flash"
-name = "terminal-lego-swelego"
 
 [weight_broadcast]
 type = "nccl"
@@ -50,10 +49,6 @@ group_size = 8
 [orchestrator.train.sampling]
 top_p = 0.97
 
-# Pass-rate-scaled, so groups that all solve still train: shorter solutions win.
-[orchestrator.train.algo.length_penalty]
-type = "linear"
-
 [orchestrator.renderer]
 # The bf16 re-export is not in the renderer map, so name the renderer explicitly.
 name = "deepseek-v4"
@@ -61,26 +56,6 @@ enable_thinking = true
 # With tools present the encoder keeps all reasoning anyway; these make the settings agree.
 drop_thinking = false
 thinking_retention = "all"
-
-[[orchestrator.train.source]]
-name = "terminal-lego"
-env.taskset.id = "terminal-lego"
-env.agent.harness.id = "bash"
-
-[[orchestrator.train.source]]
-name = "swelego"
-env.taskset.id = "swelego"
-env.agent.harness.id = "bash"
-
-[orchestrator.eval]
-interval = 50
-group_size = 4
-
-[[orchestrator.eval.source]]
-name = "openthoughts-tblite"
-env.taskset.id = "openthoughts-tblite"
-env.agent.harness.id = "bash"
-env.agent.timeout.rollout = 3600
 
 # --- Inference: one DEP8 replica per node (attention data parallel, experts sharded 8 ways) ---
 

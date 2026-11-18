@@ -1,0 +1,71 @@
+# B300 overlay for rl.toml: 4 trainer nodes + 4 one-node DEP8 inference replicas, MXFP8 on both
+# sides. Add inference replicas with `--deployment.num-infer-replicas`.
+#
+#   uv run rl @ examples/advanced/deepseek-v4-flash/rl.toml @ examples/advanced/deepseek-v4-flash/tasks/swe.toml @ examples/advanced/deepseek-v4-flash/gpu/b300.toml
+#
+# The checkpoint's dense weights sit exactly on the e4m3 grid (DeepSeek ships them as FP8), so an
+# lr-1e-6 update mostly rounds back to the base value when vLLM re-quantizes. A bf16 trainer then
+# drifts away from inference step by step; quantizing the trainer's forward identically keeps
+# both on the same weights.
+
+# FlashInfer autotuning takes ~20 min of each replica's startup. Its results are keyed by the vLLM
+# config hash and only rank 0 reads them, so a cache on shared storage is safe across nodes. It sits
+# at the top level because only these vars are exported by the sbatch, where $HOME expands.
+[env_vars]
+VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR = "$HOME/.cache/vllm-flashinfer-autotune"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 4
+num_infer_nodes = 1
+num_infer_replicas = 4
+
+# --- Trainer: MXFP8 to match vLLM's online MXFP8 bit for bit ---
+
+[trainer]
+dist_timeout_seconds = 14400
+
+[trainer.model]
+# DeepSeek V4 only supports ring CP. 131k / 8 = 16k tokens per rank.
+cp = 8
+
+[trainer.model.moe.compute]
+type = "mxfp8"
+
+# Every linear vLLM runs in MXFP8 (wq_a, wkv, wq_b, wo_b, shared experts) runs in MXFP8 here too;
+# what vLLM keeps bf16 (wo_a, compressors, router, lm_head) stays bf16. Both quantize 1x32 with
+# power-of-two scales rounded up, so weights match bit for bit. The indexer stays bf16 on both
+# sides: its top-k key selection is discrete, so FP8 rounding differences flip selected keys once
+# sequences are long, and at 131k nearly every token is in that regime.
+[trainer.model.quantization]
+type = "mxfp8"
+recipe = "mxfp8_rceil_wgrad_with_hp"
+extra_ignore_patterns = ["o_a_proj", 'compressor\.', 'indexer\.']
+
+# --- Orchestrator ---
+
+[orchestrator.model.client]
+# Loading and quantizing the 1.1 TB bf16 checkpoint over NFS takes well over the default timeout.
+wait_for_ready_timeout = 7200
+
+# Start at, and never drop below, 1024 rollouts in flight; the controller may climb further.
+[orchestrator.concurrency]
+initial_inflight = 1024
+min_inflight = 1024
+
+# --- Inference: online MXFP8 ---
+
+# Pinned off: vLLM derives it from `scale_fmt`, and this checkpoint has no `quantization_config`.
+[inference.env_vars]
+VLLM_USE_DEEP_GEMM_E8M0 = "0"
+
+[inference.vllm]
+dtype = "bfloat16"
+quantization = "mxfp8"
+# Headroom for the NCCL weight-receive staging buffer, which OOMed at 0.85.
+gpu_memory_utilization = 0.75
+
+[inference.vllm.quantization_config]
+# wo_a: vLLM's deep_gemm_fp8_o_proj treats an MXFP8 `wo_a` as blockwise FP8 and fails a DeepGEMM
+# assert. indexer: kept bf16 to match the trainer.
+ignore = ["*.wo_a", "*.indexer.*"]
