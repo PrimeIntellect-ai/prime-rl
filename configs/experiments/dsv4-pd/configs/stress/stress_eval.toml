@@ -1,0 +1,68 @@
+# Stress workload: PI-DeepSWE (113 long-horizon SWE tasks) with the RLM harness at reasoning effort max, rollouts in
+# Prime VM sandboxes, against one arm's router. Concurrency is pinned by stress_driver.py through the control API
+# (PUT /v1/concurrency), stepping a staircase; the band below only bounds the adaptive controller, which stays off.
+# Four identical sources with different shuffles keep groups RL-like (16 rollouts per task, ~64+ tasks in flight at
+# 1000+ episodes) and supply ~7.2K episodes: an eval runs each source once.
+#
+#   uv run eval @ stress_eval.toml --run.name stress-<arm> --client.base-url http://<router>:8000/v1 \
+#     --client.admin-base-url <engine>/v1 ... [--inference-metrics-roles ...]
+
+model = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
+group_size = 16
+output_dir = "/home/phi/exp/dsv4-pd/outputs"
+
+[client]
+base_url = "http://localhost:8000/v1"
+api_key_var = "VLLM_API_KEY"
+
+[concurrency]
+min_inflight = 1
+max_inflight = 4096
+initial_inflight = 16
+
+[control]
+port = 8045
+
+[sampling]
+temperature = 1.0
+top_p = 1.0
+
+# vllm-router rejects a top-level reasoning_effort="max"; the DSV4 template renders this the same way.
+[sampling.chat_template_kwargs]
+reasoning_effort = "max"
+
+[[source]]
+name = "deepswe-0"
+env.taskset.id = "pi-deepswe"
+env.agent.harness.id = "rlm"
+# 24 h per rollout instead of the task's 1.5 h, so no max-reasoning RLM rollout is cut.
+env.agent.timeout.rollout = 86400
+select.shuffle = true
+select.seed = 0
+
+[[source]]
+name = "deepswe-1"
+env.taskset.id = "pi-deepswe"
+env.agent.harness.id = "rlm"
+# 24 h per rollout instead of the task's 1.5 h, so no max-reasoning RLM rollout is cut.
+env.agent.timeout.rollout = 86400
+select.shuffle = true
+select.seed = 1
+
+[[source]]
+name = "deepswe-2"
+env.taskset.id = "pi-deepswe"
+env.agent.harness.id = "rlm"
+# 24 h per rollout instead of the task's 1.5 h, so no max-reasoning RLM rollout is cut.
+env.agent.timeout.rollout = 86400
+select.shuffle = true
+select.seed = 2
+
+[[source]]
+name = "deepswe-3"
+env.taskset.id = "pi-deepswe"
+env.agent.harness.id = "rlm"
+# 24 h per rollout instead of the task's 1.5 h, so no max-reasoning RLM rollout is cut.
+env.agent.timeout.rollout = 86400
+select.shuffle = true
+select.seed = 3

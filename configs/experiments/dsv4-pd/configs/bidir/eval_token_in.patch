@@ -1,0 +1,23 @@
+diff --git a/src/prime_rl/eval/runner.py b/src/prime_rl/eval/runner.py
+index b992bf117..4a386fdfc 100644
+--- a/src/prime_rl/eval/runner.py
++++ b/src/prime_rl/eval/runner.py
+@@ -88,7 +88,17 @@ class EvalRunner:
+         self.run_name = os.environ.get("PRL_RUN_NAME")
+ 
+         get_logger().info(f"Initializing inference pool (base_url={config.client.base_url}, model={config.model})")
+-        self.clients = InferenceClient(config.client, model_name=config.model)
++        if os.environ.get("PRL_EVAL_TOKEN_IN") == "1":
++            # Experiment: roll evals out token-in through /inference/v1/generate with session ids, like RL.
++            from renderers.configs import DeepSeekV4RendererConfig
++
++            renderer = DeepSeekV4RendererConfig(enable_thinking=True, reasoning_effort="max")
++            self.clients = InferenceClient(
++                config.client, model_name=config.model, train_client_type="renderer", renderer_config=renderer
++            )
++            self.clients.eval_client = self.clients.train_client
++        else:
++            self.clients = InferenceClient(config.client, model_name=config.model)
+         self.admin_plane = AdminPlane(config.client, roles=config.inference_metrics_roles)
+ 
+         get_logger().info("Loading eval environment(s)")

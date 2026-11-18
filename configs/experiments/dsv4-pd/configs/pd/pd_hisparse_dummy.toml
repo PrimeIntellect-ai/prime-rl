@@ -1,0 +1,34 @@
+# DSV4-Flash 1-node P/D + HiSparse on decode, dummy weights (dry run: per-role engine configs for scripts/pd1node.sh).
+dry_run = true
+output_dir = "/home/phi/exp/dsv4-pd/outputs/pd_hisparse_dummy"
+
+[slurm]
+partition = "all"
+
+[deployment]
+type = "disaggregated"
+
+[env_vars]
+VLLM_USE_DEEP_GEMM_E8M0 = "0"
+VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR = "/home/phi/.cache/vllm-flashinfer-autotune"
+
+[vllm]
+model = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
+load_format = "dummy"
+dtype = "bfloat16"
+quantization = "mxfp8"
+gpu_memory_utilization = 0.85
+max_model_len = 131072
+kv_cache_dtype = "fp8"
+block_size = 256
+tool_call_parser = "deepseek_v4"
+reasoning_parser = "deepseek_v4"
+
+[vllm.quantization_config]
+ignore = ["*.wo_a", "*.indexer.*"]
+
+[deployment.decode_vllm_overrides]
+max_num_seqs = 96
+
+[hisparse]
+host_pool_gib = 160

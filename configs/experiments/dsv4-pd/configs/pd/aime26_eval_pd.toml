@@ -1,0 +1,30 @@
+# AIME 2026 avg@16 through the P/D router, rollouts in prime sandboxes. Same settings as the aggregated baseline
+# (/home/phi/exp/dsv4-nvfp4/configs/aime26_eval.toml, 64k completion budget, effort max), except the effort goes in
+# chat_template_kwargs: vllm-router 0.2.4 rejects a top-level reasoning_effort="max" (only low/medium/high), and the
+# DSV4 template renders both the same way (thinking stays on, effort "max").
+#
+#   uv run eval @ /home/phi/exp/dsv4-pd/configs/aime26_eval_pd.toml --run.name <name> [--client.base-url http://<router>:8000/v1]
+
+model = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
+group_size = 16
+output_dir = "/home/phi/exp/dsv4-pd/outputs"
+
+[client]
+base_url = "http://localhost:8000/v1"
+api_key_var = "VLLM_API_KEY"
+
+[concurrency]
+min_inflight = 64
+max_inflight = 256
+
+[sampling]
+temperature = 1.0
+top_p = 1.0
+max_completion_tokens = 65536
+
+[sampling.chat_template_kwargs]
+reasoning_effort = "max"
+
+[[source]]
+env.taskset.id = "aime26"
+env.agent.harness.id = "null"

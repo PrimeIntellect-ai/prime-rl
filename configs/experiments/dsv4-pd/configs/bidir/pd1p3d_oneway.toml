@@ -1,0 +1,48 @@
+# DSV4-Flash P/D 1P:3D on 4 nodes, one-way KV transfer (prefill to decode only): the baseline for pd1p3d_bidir.toml,
+# same branch (PR #4575) and settings without [deployment.bidirectional_kv_transfer]. One DP8+EP prefill node,
+# three DP8+EP decode nodes, online MXFP8, no Mooncake (isolates the bidirectional effect).
+#
+#   uv run inference @ /home/phi/exp/dsv4-pd/configs/bidir/pd1p3d_oneway.toml
+
+output_dir = "/home/phi/exp/dsv4-pd/outputs/tune_pd1p3d_oneway"
+
+[slurm]
+job_name = "dsv4-ow-1p3d"
+partition = "all"
+# PR #4575's templates with the router's circuit breaker off, retries and lenient health checks (as in every arm).
+template_path = "/home/phi/exp/dsv4-pd/templates-bidir/inference.sbatch.j2"
+
+[deployment]
+type = "disaggregated"
+prefill_nodes_per_replica = 1
+num_prefill_replicas = 1
+decode_nodes_per_replica = 1
+num_decode_replicas = 3
+
+[deployment.prefill_vllm_overrides]
+all2all_backend = "flashinfer_nvlink_one_sided"
+
+[deployment.decode_vllm_overrides]
+all2all_backend = "flashinfer_nvlink_one_sided"
+
+[env_vars]
+VLLM_USE_DEEP_GEMM_E8M0 = "0"
+VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR = "/home/phi/.cache/vllm-flashinfer-autotune"
+VLLM_HTTP_TIMEOUT_KEEP_ALIVE = "3600"
+HF_HUB_OFFLINE = "1"
+
+[vllm]
+model = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
+dtype = "bfloat16"
+quantization = "mxfp8"
+enable_expert_parallel = true
+all2all_backend = "flashinfer_nvlink_one_sided"
+gpu_memory_utilization = 0.85
+max_model_len = 131072
+kv_cache_dtype = "fp8"
+block_size = 256
+tool_call_parser = "deepseek_v4"
+reasoning_parser = "deepseek_v4"
+
+[vllm.quantization_config]
+ignore = ["*.wo_a", "*.indexer.*"]
