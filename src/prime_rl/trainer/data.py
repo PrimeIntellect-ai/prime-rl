@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 import torch
 from jaxtyping import Bool, Int
@@ -22,6 +22,8 @@ class Sample(TypedDict):
     seq_lens: list[int]
     mm_kwargs: dict[str, Tensor] | None
     mm_token_type_ids: list[int] | None
+    sample_data: NotRequired[Any]
+    """Per-sample values a dataset attaches, collected per row. A sample with them is never cut."""
 
 
 class Batch(TypedDict):
@@ -30,8 +32,12 @@ class Batch(TypedDict):
     target_ids: Int[Tensor, "batch seq"]
     loss_mask: Bool[Tensor, "batch seq"]
     seq_lens: Int[Tensor, "packed"]
+    sample_lens: Int[Tensor, "samples"]
+    """Token count of each sample in the row, without padding."""
     mm_kwargs: dict[str, Tensor] | None
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
+    sample_data: list[Any] | None
+    """Each sample's ``sample_data``, or None."""
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
@@ -100,6 +106,7 @@ class CatDataset(StatefulIterableDataset):
         packed_samples = defaultdict(list)
         packed_samples["mm_kwargs"] = None
         packed_samples["mm_token_type_ids"] = None
+        packed_samples["sample_data"] = None
         seq_len = 0
 
         pending_sample = self.pending_sample
@@ -120,14 +127,27 @@ class CatDataset(StatefulIterableDataset):
                 packed_samples = defaultdict(list)
                 packed_samples["mm_kwargs"] = None
                 packed_samples["mm_token_type_ids"] = None
+                packed_samples["sample_data"] = None
                 seq_len = 0
 
             existing_len = len(packed_samples["input_ids"])
+            sample_data = sample.get("sample_data")
+            if sample_data is not None:
+                assert sample_len <= self.seq_len, (
+                    f"A sample with sample_data has {sample_len} tokens, more than a row's {self.seq_len}"
+                )
+            if existing_len > 0 and (sample_data is None) != (packed_samples["sample_data"] is None):
+                raise ValueError("Cannot pack samples with and without sample_data")
+            if sample_data is not None:
+                if packed_samples["sample_data"] is None:
+                    packed_samples["sample_data"] = []
+                packed_samples["sample_data"].append(sample_data)
             for key in ("input_ids", "position_ids", "loss_mask", "target_ids"):
                 value = sample[key]
                 assert isinstance(value, list)
                 packed_samples[key].extend(value)
             packed_samples["seq_lens"].extend(sample["seq_lens"])
+            packed_samples["sample_lens"].append(sample_len)
 
             sample_mm_kwargs = sample.get("mm_kwargs")
             sample_mm_type_ids = sample.get("mm_token_type_ids")
@@ -160,6 +180,7 @@ class CatDataset(StatefulIterableDataset):
                 packed_samples = defaultdict(list)
                 packed_samples["mm_kwargs"] = None
                 packed_samples["mm_token_type_ids"] = None
+                packed_samples["sample_data"] = None
                 seq_len = 0
 
         if seq_len > 0:
@@ -169,15 +190,9 @@ class CatDataset(StatefulIterableDataset):
         result: dict[str, Any] = {
             k: packed[k][:seq_len] for k in ("input_ids", "position_ids", "loss_mask", "target_ids")
         }
-        result["seq_lens"] = []
-        remaining = len(result["input_ids"])
-        for sample_len in packed["seq_lens"]:
-            if remaining <= 0:
-                break
-            kept = min(sample_len, remaining)
-            if kept > 0:
-                result["seq_lens"].append(kept)
-            remaining -= kept
+        num_tokens = len(result["input_ids"])
+        result["seq_lens"] = _kept_lengths(packed["seq_lens"], num_tokens)
+        result["sample_lens"] = _kept_lengths(packed["sample_lens"], num_tokens)
         pad_len = -len(result["input_ids"]) % self.pad_to_multiple_of
         if pad_len > 0:
             # Identical pad tokens route to the same MoE experts and can overload one EP rank, so text packs pad with
@@ -197,7 +212,21 @@ class CatDataset(StatefulIterableDataset):
             result["mm_token_type_ids"] = packed["mm_token_type_ids"][:seq_len] + [0] * pad_len
         else:
             result["mm_token_type_ids"] = None
+        result["sample_data"] = packed["sample_data"]
         return result
+
+
+def _kept_lengths(lengths: list[int], num_tokens: int) -> list[int]:
+    """The ``lengths`` of consecutive spans, kept to the first ``num_tokens`` tokens."""
+    kept_lengths = []
+    for length in lengths:
+        if num_tokens <= 0:
+            break
+        kept = min(length, num_tokens)
+        if kept > 0:
+            kept_lengths.append(kept)
+        num_tokens -= kept
+    return kept_lengths
 
 
 def cat_collate(samples: list[Sample]) -> Batch:
@@ -211,10 +240,12 @@ def cat_collate(samples: list[Sample]) -> Batch:
         "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool).unsqueeze(0),
         "target_ids": torch.tensor(sample["target_ids"], dtype=torch.long).unsqueeze(0),
         "seq_lens": torch.tensor(sample["seq_lens"], dtype=torch.long),
+        "sample_lens": torch.tensor(sample["sample_lens"], dtype=torch.long),
         "mm_kwargs": dict(mm_kwargs) if mm_kwargs is not None else None,
         "mm_token_type_ids": (
             torch.tensor(mm_token_type_ids, dtype=torch.long).unsqueeze(0) if mm_token_type_ids is not None else None
         ),
+        "sample_data": sample.get("sample_data"),
     }
 
 
