@@ -175,15 +175,20 @@ source .venv/bin/activate
 srun --ntasks-per-node=1 bash -s <<'SYNC_SH'
 set -e
 cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync --all-extras --all-packages
-# uv sync restores the locked NIXL wheel, whose bundled UCX breaks P/D KV transfer: reinstall the source build.
-if compgen -G "deps/nixl_cu13-*.whl" > /dev/null; then uv pip install -q --reinstall --no-deps deps/nixl_cu13-*.whl; fi
+# uv sync restores the locked NIXL wheel, whose bundled UCX breaks P/D KV transfer: reinstall the source build
+# into the project environment (uv pip would otherwise pick the activated .venv, not UV_PROJECT_ENVIRONMENT).
+if compgen -G "deps/nixl_cu13-*.whl" > /dev/null; then uv pip install -q --reinstall --no-deps --python "${UV_PROJECT_ENVIRONMENT:-.venv}" deps/nixl_cu13-*.whl; fi
 SYNC_SH
 {% else %}
 # Shared (NFS) venv: one sync on the batch node populates it for all nodes.
 uv sync --all-extras --all-packages
-# uv sync restores the locked NIXL wheel, whose bundled UCX breaks P/D KV transfer: reinstall the source build.
-if compgen -G "deps/nixl_cu13-*.whl" > /dev/null; then uv pip install -q --reinstall --no-deps deps/nixl_cu13-*.whl; fi
+# uv sync restores the locked NIXL wheel, whose bundled UCX breaks P/D KV transfer: reinstall the source build
+# into the project environment (uv pip would otherwise pick the activated .venv, not UV_PROJECT_ENVIRONMENT).
+if compgen -G "deps/nixl_cu13-*.whl" > /dev/null; then uv pip install -q --reinstall --no-deps --python "${UV_PROJECT_ENVIRONMENT:-.venv}" deps/nixl_cu13-*.whl; fi
 {% endif %}
+# The environment is synced above. Every later `uv run` would sync it again: the per-process syncs race, and they
+# replace the source-built NIXL with the locked wheel.
+export UV_NO_SYNC=1
 
 {% if pre_run_command %}
 # Pre-run command

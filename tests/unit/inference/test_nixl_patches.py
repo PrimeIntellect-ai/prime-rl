@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from vllm.distributed.kv_transfer.kv_connector.v1.nixl.base_scheduler import NixlBaseConnectorScheduler
 from vllm.distributed.kv_transfer.kv_connector.v1.nixl.pull_scheduler import NixlPullConnectorScheduler
-from vllm.v1.kv_cache_interface import FullAttentionSpec, SlidingWindowSpec
+from vllm.v1.kv_cache_interface import FullAttentionSpec, SlidingWindowMLASpec, SlidingWindowSpec
 
 from prime_rl.inference.patches import (
     monkey_patch_nixl_bidirectional_single_pull,
@@ -60,5 +60,8 @@ def test_sliding_window_models_leave_last_prompt_token_to_decode(monkeypatch):
     assert NixlBaseConnectorScheduler._prefill_backoff is patched
 
     assert _backoff_scheduler(full, window)._prefill_backoff() == 1
+    # DeepSeek V4's compressor caches. The scheduler sees per-layer specs: vLLM unwraps UniformTypeKVCacheSpecs
+    # (generate_scheduler_kv_cache_config), and SlidingWindowMLASpec subclasses SlidingWindowSpec.
+    assert _backoff_scheduler(full, object.__new__(SlidingWindowMLASpec))._prefill_backoff() == 1
     assert _backoff_scheduler(full, window)._get_remote_prefill_token_count(1024) == 1023
     assert _backoff_scheduler(full)._prefill_backoff() == 0

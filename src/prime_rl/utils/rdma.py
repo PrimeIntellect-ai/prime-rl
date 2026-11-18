@@ -5,7 +5,8 @@ NIC on the other CPU socket crosses the inter-socket link, and sustained transfe
 
     python -m prime_rl.utils.rdma <cuda device index or GPU-UUID>
 
-prints the active InfiniBand port nearest that GPU (e.g. ``mlx5_4:1``), for ``UCX_NET_DEVICES``.
+prints the active InfiniBand port nearest that GPU (e.g. ``mlx5_4:1``), or the nearest RoCE port on nodes without
+InfiniBand, for ``UCX_NET_DEVICES``.
 """
 
 import sys
@@ -66,11 +67,11 @@ def pci_distance(a: Path, b: Path) -> int:
     return len(a.parts) + len(b.parts) - 2 * common
 
 
-def nearest_rdma_port(device: str, link_layer: str = "InfiniBand") -> str:
-    """The active RDMA port nearest the GPU in the PCIe tree."""
-    ports = active_rdma_ports(link_layer)
+def nearest_rdma_port(device: str) -> str:
+    """The active RDMA port nearest the GPU in the PCIe tree: InfiniBand ports, or RoCE ports when there are none."""
+    ports = active_rdma_ports("InfiniBand") or active_rdma_ports("Ethernet")
     if not ports:
-        raise RuntimeError(f"No active {link_layer} RDMA port")
+        raise RuntimeError("No active InfiniBand or RoCE port")
     gpu = gpu_pci_path(device)
     return min((pci_distance(gpu, path), port) for port, path in ports)[1]
 

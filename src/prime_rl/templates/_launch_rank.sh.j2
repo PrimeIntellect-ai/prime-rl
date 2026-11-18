@@ -37,9 +37,11 @@ launch_inference_rank() {
         local -a nic_env=()
         if [ "${NIXL_NIC_AFFINITY:-0}" = 1 ] && [[ "$gpus" != *,* ]]; then
             local nic
-            if nic=$(python -m prime_rl.utils.rdma "$gpus" 2>/dev/null) && [ -n "$nic" ]; then
+            if nic=$(python -m prime_rl.utils.rdma "$gpus" 2>>"$log") && [ -n "$nic" ]; then
                 nic_env=(UCX_NET_DEVICES="$nic" UCX_MAX_RMA_RAILS=1)
                 echo "[nixl] GPU $gpus -> $nic" | tee -a "$log"
+            else
+                echo "[nixl] GPU $gpus: no nearest RDMA port found, NIXL uses every port" | tee -a "$log"
             fi
         fi
         env "${nic_env[@]}" CUDA_VISIBLE_DEVICES="$gpus" VLLM_NIXL_SIDE_CHANNEL_PORT="$nixl" VLLM_RPC_BASE_PATH="$rpcbase" "${cmd[@]}" 2>&1 | tee -a "$log" &
