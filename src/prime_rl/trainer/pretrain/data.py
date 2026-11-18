@@ -43,7 +43,7 @@ def memmap(path: str, dtype: np.dtype) -> np.ndarray:
     return OPEN_FILES[path]
 
 
-# Keys the order that subsets take units in apart from the order of the passes.
+# Keys the order that subsets take units in apart from the order of the passes: any constant other than 0 does.
 SUBSET_KEY = 0xD1B54A32D192ED03
 
 
@@ -145,8 +145,9 @@ class TokenShards:
     def tokens(self, file_index: int) -> np.ndarray:
         return memmap(str(self.files[file_index]), self.dtypes[file_index])
 
-    def open(self, file_index: int) -> tuple[np.ndarray, np.ndarray]:
-        return self.tokens(file_index), memmap(f"{self.files[file_index]}.index", INDEX)
+    def index(self, file_index: int) -> np.ndarray:
+        """The file's document ends."""
+        return memmap(f"{self.files[file_index]}.index", INDEX)
 
     def long_documents(self, seq_len: int) -> tuple[np.ndarray, np.ndarray]:
         """The documents longer than ``seq_len`` (their numbers) and their pieces of ``seq_len`` tokens beyond the
@@ -165,61 +166,32 @@ class TokenShards:
         return documents, pieces
 
 
-class Segment(NamedTuple):
-    """Tokens ``[begin, end)`` of a file of the sampler's sources, in the document ``[doc_begin, doc_end)``."""
-
-    source: int
-    file: int
-    begin: int
-    end: int
-    doc_begin: int
-    doc_end: int
-
-
 class Step(NamedTuple):
     """A step's units in the order they were drawn, the cut one cut (``units``: a unit's source, file, begin, end,
-    doc_begin and doc_end, as in `Segment`), and its rows: every row's pieces (``pieces`` ``[row_starts[r],
-    row_starts[r + 1])``), each a unit, an offset in it and a length."""
+    doc_begin and doc_end, the tokens ``[begin, end)`` of the file in its document ``[doc_begin, doc_end)``), and its
+    rows: every row's pieces (``pieces`` ``[row_starts[r], row_starts[r + 1])``), each a unit, an offset in it and a
+    length."""
 
     units: np.ndarray
     pieces: np.ndarray
     row_starts: np.ndarray
 
     def row_segments(self, row: int) -> np.ndarray:
-        """The row's pieces as segments, one per line (`Segment`'s fields)."""
+        """The row's pieces as units, one per line."""
         unit, offset, length = self.pieces[self.row_starts[row] : self.row_starts[row + 1]].T
         segments = self.units[unit]
         segments[:, 2] += offset
         segments[:, 3] = segments[:, 2] + length
         return segments
 
-    def row(self, row: int) -> list[Segment]:
-        return [Segment(*segment) for segment in self.row_segments(row).tolist()]
-
 
 class TokenSampler:
-    """The rows of every step: ``batch_size`` rows of ``seq_len`` tokens, sampled from the documents of the sources.
+    """Plans every step's ``batch_size`` rows of ``seq_len`` tokens from a cursor of a few counters (`start`, `plan`).
 
-    A source's units are its documents, a document longer than ``seq_len`` cut into pieces of ``seq_len`` tokens (the
-    last one shorter), each piece a unit of its own. With ``repetitions``, a source reads a fixed subset of its units:
-    the first ones of an order drawn from ``seed`` and its name, until they hold the tokens the source reads over the
-    run (its weight in every phase times the phase's tokens, up to ``max_steps``) divided by its repetitions; a smaller
-    subset is a prefix of a larger one. A pass over a source (or its subset) reads all its units once, in an order
-    drawn from ``seed``, the source's name and the pass (`permute`: unit by unit, without a table); the next pass
-    starts as soon as it runs out.
-
-    The sources take turns by weight (``phases``: the first step, counted from 0, and every source's weight), without
-    randomness: in the order of the units' due times, a unit's source's tokens in the phase before it divided by the
-    source's weight (ties to the first source), as weighted fair queuing orders packets. So every step holds the
-    mixture up to about a unit per source. A step takes the next ``batch_size * seq_len`` tokens of units; the unit
-    that crosses the end is cut, and its rest starts the next step.
-    The step's units go into its rows longest first, each into the fullest row with room for it; the ones that fit
-    nowhere are cut to fill the gaps, so every row holds exactly ``seq_len`` tokens (`fill_rows`). The units of a row
-    are then shuffled.
-
-    The cursor at the start of a step (`start`, `plan`) is a few numbers: the step, every source's units and tokens
-    read, in all and in the phase, and the rest of the cut unit. `plan` computes the step from it in time proportional
-    to the step's units. ``cache_dir`` keeps the table of long documents (`long_document_table`) and the subsets."""
+    A unit is a document or a ``seq_len`` piece of a longer one. A source reads its units (or, with ``repetitions``, a
+    fixed seeded subset) in passes, each in a keyed order (`permute`). Units are taken in order of due time, their
+    source's tokens in the phase over its weight (weighted fair queuing); the unit that crosses the step's end is cut,
+    and `fill_rows` packs the step into full rows. ``cache_dir`` keeps the long-document table and the subsets."""
 
     def __init__(
         self,
@@ -235,19 +207,13 @@ class TokenSampler:
     ):
         self.names, self.sources, self.repetitions, self.max_steps = names, sources, repetitions, max_steps
         self.batch_size, self.seq_len, self.seed = batch_size, seq_len, seed
-        self.files = [(source, file) for source, shards in enumerate(sources) for file in range(len(shards.files))]
-        # Every file's document index and tokens, with their dtypes (`memmap`).
-        self.index_files = [(f"{file}.index", INDEX) for shards in sources for file in shards.files]
-        self.token_files = [
-            (str(file), dtype) for shards in sources for file, dtype in zip(shards.files, shards.dtypes)
-        ]
+        # The files of all sources, numbered in source order.
+        self.shards = TokenShards.join(sources)
         self.num_documents = np.array([shards.num_documents for shards in sources], dtype=np.int64)
         self.num_tokens = np.array([shards.num_tokens for shards in sources], dtype=np.int64)
         # The number of every source's first document, and of every file's, in the documents of all sources.
         self.source_documents = np.cumsum([0, *self.num_documents])
-        self.file_documents = np.concatenate(
-            [start + shards.doc_offsets[:-1] for start, shards in zip(self.source_documents, sources)]
-        )
+        self.file_documents = self.shards.doc_offsets[:-1]
         self.long_documents, self.pieces_before = self.long_document_table(cache_dir)
         # The further pieces of all sources before every source's first.
         self.source_pieces = self.pieces_before[np.searchsorted(self.long_documents, self.source_documents)]
@@ -334,7 +300,7 @@ class TokenSampler:
         order = np.argsort(files, kind="stable")
         bounds = np.flatnonzero(np.diff(files[order])) + 1
         for chosen in np.split(order, bounds):
-            doc_ends = memmap(*self.index_files[files[chosen[0]]])
+            doc_ends = self.shards.index(files[chosen[0]])
             ends = doc_ends[local[chosen]].astype(np.int64)
             begins = np.where(local[chosen] > 0, doc_ends[np.maximum(local[chosen] - 1, 0)].astype(np.int64), 0)
             lengths[chosen] = np.minimum(ends - begins - pieces[chosen] * self.seq_len, self.seq_len)
@@ -364,8 +330,8 @@ class TokenSampler:
         return files, documents - self.file_documents[files], pieces
 
     def locate(self, sources: np.ndarray, reads: np.ndarray) -> np.ndarray:
-        """The unit that every read ``reads`` (counted over all passes) of sources ``sources`` reads, as a segment
-        (`Segment`'s fields), one per line."""
+        """The unit that every read ``reads`` (counted over all passes) of sources ``sources`` reads, one per line (as
+        `Step.units`)."""
         passes, index = np.divmod(reads, self.set_units[sources])
         units = permute(index, self.set_units[sources], mix(self.keys[sources] + passes.astype(np.uint64)))
         subset = self.subsets[sources]
@@ -373,7 +339,7 @@ class TokenSampler:
             units[subset] = permute(units[subset], self.num_units[sources[subset]], self.subset_keys[sources[subset]])
         files, local, pieces = self.documents(sources, units)
         files, local = files.tolist(), local.tolist()
-        indexes = {file: memmap(*self.index_files[file]) for file in set(files)}
+        indexes = {file: self.shards.index(file) for file in set(files)}
         doc_ends = np.array([indexes[file][doc] for file, doc in zip(files, local)], dtype=np.int64)
         doc_begins = np.array([indexes[file][doc - 1] if doc else 0 for file, doc in zip(files, local)], np.int64)
         begins = doc_begins + pieces * self.seq_len
@@ -392,7 +358,8 @@ class TokenSampler:
         budget = self.batch_size * self.seq_len - int((rest[:, 3] - rest[:, 2]).sum())
         # The sources' next units by due time: a unit's source's tokens in the phase before it, divided by its weight
         # (ties to the first source); sources without weight have none. Every source offers about twice its share
-        # of the step, twice as many if the step would take all of them.
+        # of the step, and 4 more units for sources whose share is a unit or two; twice as many if the step would take
+        # all of them. These numbers only set how often a step has to locate more units, not which units it takes.
         sources = np.flatnonzero(weights > 0)
         wanted = np.ceil(2.0 * weights[sources] * budget * self.set_units[sources] / self.set_tokens[sources])
         wanted = wanted.astype(np.int64) + 4
@@ -488,35 +455,22 @@ class TokenSampler:
 
 
 class TokenDataset(StatefulIterableDataset):
-    """The rows of the sampler's steps. Every rank plans every step; data rank ``r`` of ``R`` yields rows ``r``,
-    ``r + R``, ... of the rows of all steps. Each row's documents are its segments, with positions from 0 (one segment
-    without ``document_masking``). A segment's last token predicts its document's next token; at a document's end it
-    predicts the next segment's first token if that segment starts a document, else nothing. ``shards`` is the pool
-    of all sources' folders.
+    """The rows of the sampler's steps: every rank plans every step, and data rank ``r`` of ``R`` yields rows ``r``,
+    ``r + R``, ... of each. The state is the cursor at the start of the current step and the rows of it yielded; at a
+    step boundary it is the same on every rank, so a resumed run reads the same rows on any number of GPUs.
+    ``eod_mask_token`` (set by the trainer) has no loss where it is the input."""
 
-    The state is the cursor at the start of the current step and the rows of it yielded. On a rank's last row of a
-    step it is the next step's cursor, the same on every rank, so a run resumed at a step boundary reads the same
-    global rows on any number of GPUs; ``step`` counts the rows of all ranks in the steps done."""
-
-    def __init__(
-        self,
-        sampler: TokenSampler,
-        shards: TokenShards,
-        document_masking: bool = True,
-        dp_rank: int = 0,
-        dp_size: int = 1,
-        eod_mask_token: int | None = None,
-    ):
+    def __init__(self, sampler: TokenSampler, document_masking: bool = True, dp_rank: int = 0, dp_size: int = 1):
         super().__init__(dp_rank, dp_size)
-        self.sampler, self.shards = sampler, shards
+        self.sampler = sampler
         self.document_masking = document_masking
-        self.eod_mask_token = eod_mask_token
+        self.eod_mask_token = None
         self.cursor, self.rows_done = sampler.start(), 0
         self.inputs = sampler.inputs()
 
     def state_dict(self) -> dict:
         step = self.cursor["step"] * self.sampler.batch_size
-        epoch = sum(self.cursor["tokens"]) / self.shards.num_tokens
+        epoch = sum(self.cursor["tokens"]) / self.sampler.shards.num_tokens
         return {"step": step, "epoch": epoch, "cursor": self.cursor, "rows_done": self.rows_done, "plan": self.inputs}
 
     def load_state_dict(self, state_dict: dict):
@@ -537,7 +491,7 @@ class TokenDataset(StatefulIterableDataset):
         lengths = ends - begins
         # Every segment's tokens, then its document's next token if the document continues.
         more = ends < doc_ends
-        maps = [memmap(*self.sampler.token_files[file]) for file in files.tolist()]
+        maps = [self.sampler.shards.tokens(file) for file in files.tolist()]
         read = zip(maps, begins.tolist(), (ends + more).tolist())
         tokens = np.concatenate([file_tokens[begin:end] for file_tokens, begin, end in read], dtype=np.int64)
         nexts = np.cumsum(lengths + more)[more] - 1
@@ -589,7 +543,7 @@ def document_windows(shards: TokenShards, seq_len: int, num_documents: int | Non
     window starts at the last token of the one before and sees none of the tokens before it."""
     windows, documents = [], 0
     for file_index in range(len(shards.files)):
-        _, doc_ends = shards.open(file_index)
+        doc_ends = shards.index(file_index)
         begin = 0
         for end in doc_ends.tolist():
             if documents == num_documents:
@@ -644,7 +598,7 @@ class DocumentDataset(StatefulIterableDataset):
         window_tokens = []
         for index in row:
             file_index, start, end = self.windows[index]
-            window_tokens.append(self.shards.open(file_index)[0][start:end].astype(np.int64))
+            window_tokens.append(self.shards.tokens(file_index)[start:end].astype(np.int64))
         input_ids = np.concatenate([ids[:-1] for ids in window_tokens])
         target_ids = np.concatenate([ids[1:] for ids in window_tokens])
         seq_lens = [len(ids) - 1 for ids in window_tokens]
@@ -684,7 +638,7 @@ def document_edges(shards: TokenShards, n: int) -> dict[Path, tuple[list[int], l
         firsts, lasts = edges.setdefault(file.parent, ([], []))
         if len(lasts) >= n:
             continue
-        tokens, doc_ends = shards.open(index)
+        tokens, doc_ends = shards.tokens(index), shards.index(index)
         lengths = np.diff(doc_ends, prepend=0)
         # Without empty documents: an empty first document ends at 0, and 0 - 1 would wrap around to the last token.
         ends = doc_ends[lengths > 0][: n - len(lasts)].astype(np.int64)
@@ -740,9 +694,9 @@ def warn_if_no_document_separator(shards: TokenShards, tokenizer: PreTrainedToke
 
 def setup_token_dataset(
     config: PretrainDataConfig,
-    dp_rank: int = 0,
-    dp_size: int = 1,
-    eod_mask_token: int | None = None,
+    *,
+    dp_rank: int,
+    dp_size: int,
     cache_dir: Path | None = None,
     max_steps: int | None = None,
 ) -> TokenDataset:
@@ -774,14 +728,7 @@ def setup_token_dataset(
             f"{set_tokens:,} used, repetitions {f'{times:.3g}' if times is not None else '(no max_steps)'}"
             f"{' (given)' if repetitions[index] is not None else ''}"
         )
-    return TokenDataset(
-        sampler,
-        TokenShards.join(sources),
-        config.document_masking,
-        dp_rank=dp_rank,
-        dp_size=dp_size,
-        eod_mask_token=eod_mask_token,
-    )
+    return TokenDataset(sampler, config.document_masking, dp_rank=dp_rank, dp_size=dp_size)
 
 
 def check_ranks_see_same_data(sampler: TokenSampler) -> None:
@@ -801,7 +748,7 @@ def check_ranks_see_same_data(sampler: TokenSampler) -> None:
 
 
 def setup_document_dataset(
-    config: DatatroveDataConfig, dp_rank: int = 0, dp_size: int = 1, num_documents: int | None = None
+    config: DatatroveDataConfig, *, dp_rank: int, dp_size: int, num_documents: int | None = None
 ) -> DocumentDataset:
     return DocumentDataset(
         TokenShards(config.paths),
