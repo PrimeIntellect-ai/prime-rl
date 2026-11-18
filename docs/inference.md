@@ -289,7 +289,7 @@ HiSparse (vLLM, DSA sparse-MLA models such as GLM-5.x) keeps the sparse-MLA KV i
 host_pool_gib = 160   # pinned host RAM per GPU worker
 ```
 
-prime-rl adds vLLM's `HiSparseConnector` to the KV transfer config. Under disaggregated P/D it applies to decode instances only: the launcher writes one engine config per role (`inference-prefill.json`, `inference-decode.json`) and drops HiSparse from the prefill one. Budget decode-node RAM as `GPUs per node × host_pool_gib`. Prefill KV offload works with it, but decode cannot also offload KV: set `inference.deployment.decode_kv_cache_offload = "None"`. Native offload rejects HiSparse's host-resident KV layout, and Mooncake would store that layout under the same keys as prefill's regular layout, so prefill fails to load it. Without P/D, native offload is rejected and Mooncake offload works. vLLM checks HiSparse's requirements at startup: the V2 model runner (vLLM selects it), no pipeline or decode context parallelism, and a model with `index_topk`. vLLM also rejects `cudagraph_mode = "FULL"`; the P/D decode launch uses `FULL_DECODE_ONLY`, which it accepts. Size decode `max_num_seqs` explicitly (e.g. 96 per rank): the GPU buffers scale with it.
+prime-rl adds vLLM's `HiSparseConnector` to the KV transfer config. Under disaggregated P/D it applies to decode instances only: the launcher writes one engine config per role (`inference-prefill.json`, `inference-decode.json`) and drops HiSparse from the prefill one. Budget decode-node RAM as `GPUs per node × host_pool_gib`. Prefill KV offload works with it, but decode cannot also offload KV: set `inference.deployment.decode_kv_cache_offload = "None"`. Native offload rejects HiSparse's host-resident KV layout, and Mooncake would store that layout under the same keys as prefill's regular layout, so prefill fails to load it. Without P/D, native offload is rejected and Mooncake offload works. vLLM checks HiSparse's requirements at startup: no pipeline or decode context parallelism, and a model with `index_topk`. vLLM also rejects `cudagraph_mode = "FULL"`; the P/D decode launch uses `FULL_DECODE_ONLY`, which it accepts. Size decode `max_num_seqs` explicitly (e.g. 96 per rank): the GPU buffers scale with it.
 
 ### Speculative Decoding
 
@@ -348,7 +348,7 @@ On the CLI the same keys are available as `--inference.vllm.max-num-seqs 256` (o
 
 Router replay works by capturing the expert routing decisions into a buffer. This buffer then gets sent to the trainer, which can use it instead of re-computing the routing. This lowers the trainer↔inference mismatch by an order of magnitude, resulting in more stable training.
 
-To enable router replay, you can set `inference.vllm.enable_return_routed_experts = true`. Capture runs on vLLM's V2 model runner (forced automatically). Under disaggregated P/D the router takes the prompt routing from the prefill instance and the completion routing from the decode instance. 
+To enable router replay, you can set `inference.vllm.enable_return_routed_experts = true`. Under disaggregated P/D the router takes the prompt routing from the prefill instance and the completion routing from the decode instance. 
 
 ```toml
 [trainer]
@@ -374,7 +374,7 @@ top_p = 0.95
 
 That's all — there are no replay flags. Truncated train sampling makes the inference server return sampling masks (`inference.enable_return_sampling_mask`, auto-enabled), and the trainer replays them. Each request's kept set is captured whole. Top-p alone gets `top_k = 10000`, so a flat distribution cannot keep most of the vocabulary; with both set, vLLM applies top-k first and top-p within it. Configs that would break under renormalized logprobs are rejected: `opd`/`opsd` and truncation knobs smuggled via `extra_body`. Frozen-source envs are exempt.
 
-Capture runs on vLLM's V2 model runner (selected automatically). Truncated policy-training requests opt in with `sampling_params.extra_args.prl_replay = true`. Only opted-in requests must use positive temperature. Eval requests on the same server can use top-p alone, top-k alone, both, or greedy sampling. Mixed batches skip mask capture for eval rows, and all-eval batches skip it entirely.
+Truncated policy-training requests opt in with `sampling_params.extra_args.prl_replay = true`. Only opted-in requests must use positive temperature. Eval requests on the same server can use top-p alone, top-k alone, both, or greedy sampling. Mixed batches skip mask capture for eval rows, and all-eval batches skip it entirely.
 
 Capture reads the logits vLLM's sampler has already masked (its top-k/top-p kernel finds the nucleus threshold without sorting the vocabulary, and the sampled token is drawn from exactly that set). Per sampling step, one GPU pass counts each replayed request's kept tokens and the log-normalizer over them, and a second pass compacts their ids and logprobs into one flat buffer at prefix-summed offsets. Only the step's real total is copied to the host. The buffer holds `inference.sampling_support_capacity` entries (default 16M, 128 MB); requests whose supports do not fit in a step fail with an explicit error rather than being truncated. The server logs the maximum per-step total every minute.
 
