@@ -39,6 +39,9 @@ def apply_shared_vllm_patches():
     monkey_patch_fit_sliding_window_pages()
     monkey_patch_flashinfer_fp8_ds_mla_draft()
     monkey_patch_dspark_dp_compile_cache()
+    from prime_rl.inference.vllm.dsv4_nvfp4_kv import patch_deepseek_v4_nvfp4_kv_cache
+
+    patch_deepseek_v4_nvfp4_kv_cache()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
