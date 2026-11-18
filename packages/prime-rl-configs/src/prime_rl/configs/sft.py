@@ -138,6 +138,15 @@ class SystemOneColumnsConfig(BaseConfig):
     """Column with soft labels as JSON text: question id -> option id -> probability. Used over the hard label."""
 
 
+class SystemOneDataConfig(HFDataConfig):
+    """System One records: a state and typed questions per row, with hard and/or soft labels."""
+
+    type: Literal["system_one"] = "system_one"
+
+    columns: SystemOneColumnsConfig = SystemOneColumnsConfig()
+    """Dataset columns of a record."""
+
+
 class SFTValConfig(BaseValConfig):
     data: SFTDataConfig
 

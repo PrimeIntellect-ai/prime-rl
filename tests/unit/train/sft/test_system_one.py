@@ -1,9 +1,18 @@
 import json
 
 import pytest
+from datasets import Dataset
+from transformers import PretrainedConfig
 
 from prime_rl.configs.sft import SystemOneColumnsConfig
+from prime_rl.trainer.sft.system_one.data import (
+    RenderedRequest,
+    SystemOneDataset,
+    SystemOneStrategy,
+    check_rendered_request,
+)
 from prime_rl.trainer.sft.system_one.record import build_targets, parse_record
+from prime_rl.trainer.sft.system_one.strategies import SYSTEM_ONE_STRATEGIES, get_system_one_strategy_cls
 
 COLUMNS = SystemOneColumnsConfig()
 QUESTIONS = {
@@ -178,3 +187,127 @@ def test_rejects_malformed_records(questions, label, soft_label):
 def test_rejects_columns_that_are_not_json_text(column, value):
     with pytest.raises(ValueError, match=f"record 'r': column '{column}'"):
         parse_record({**row(label=LABEL), column: value}, COLUMNS)
+
+
+CONFIG = PretrainedConfig(vocab_size=32)
+
+
+class StubStrategy(SystemOneStrategy):
+    """Ten tokens in two segments, one or two read spans per question, noul and choice options reordered."""
+
+    def __init__(self, tokenizer, config, read_spans=None):
+        super().__init__(tokenizer, config)
+        self.read_spans = read_spans
+
+    def render_request(self, request, max_tokens):
+        return RenderedRequest(
+            input_ids=list(range(10, 20)),
+            seq_lens=[4, 6],
+            read_spans=self.read_spans,
+            options=[["true", "false"], ["billing", "technical"], ["0", "1", "2"]],
+        )
+
+    def option_logits(self, model, hidden_states, input_ids, questions):
+        model.seen.append((hidden_states, input_ids, questions))
+        return model.logits
+
+
+READ_SPANS = [[(1, 2)], [(2, 4)], [(6, 7), (8, 10)]]
+
+
+def _dataset(read_spans=READ_SPANS) -> SystemOneDataset:
+    return SystemOneDataset(Dataset.from_list([ROW]), StubStrategy(None, CONFIG, read_spans))
+
+
+def test_process_builds_sample_in_strategy_option_order():
+    sample = _dataset()._process(ROW)
+
+    assert sample == {
+        "input_ids": list(range(10, 20)),
+        "position_ids": [0, 1, 2, 3, 0, 1, 2, 3, 4, 5],
+        "seq_lens": [4, 6],
+        "loss_mask": [False, True, True, True, False, False, True, False, True, True],
+        "target_ids": [0] * 10,
+        "mm_kwargs": None,
+        "mm_token_type_ids": None,
+        "sample_data": {
+            "id": "r",
+            "questions": [
+                {"id": "outage", "type": "noul", "options": ["true", "false"], "reads": [[1, 2]], "target": [1.0, 0.0]},
+                {
+                    "id": "team",
+                    "type": "choice",
+                    "options": ["billing", "technical"],
+                    "reads": [[2, 4]],
+                    "target": [0.25, 0.75],
+                },
+                {
+                    "id": "urgency",
+                    "type": "score",
+                    "options": ["0", "1", "2"],
+                    "reads": [[6, 7], [8, 10]],
+                    "target": [0.0, 0.0, 1.0],
+                },
+            ],
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "input_ids, seq_lens, read_spans",
+    [
+        (list(range(10)), [4, 6], [[(1, 3)], [(2, 4)], [(6, 7)]]),  # overlapping spans
+        (list(range(10)), [4, 6], [[(1, 2)], [(3, 5)], [(6, 7)]]),  # a span across two segments
+        ([True, *range(9)], [4, 6], [[(1, 2)], [(2, 4)], [(6, 7)]]),  # a bool token
+        (list(range(10)), [True, 3, 6], [[(1, 2)], [(2, 4)], [(6, 7)]]),  # a bool segment length
+        (list(range(10)), [4, 6], [[(True, 2)], [(2, 4)], [(6, 7)]]),  # a bool span start
+        ([32, *range(9)], [4, 6], [[(1, 2)], [(2, 4)], [(6, 7)]]),  # a token id past the vocabulary
+        ([-1, *range(9)], [4, 6], [[(1, 2)], [(2, 4)], [(6, 7)]]),  # a negative token id
+    ],
+)
+def test_check_rendered_request_rejects_broken_renderings(input_ids, seq_lens, read_spans):
+    request, _ = parse_record(ROW, COLUMNS)
+    rendered = RenderedRequest(input_ids=input_ids, seq_lens=seq_lens, read_spans=read_spans)
+    with pytest.raises(ValueError, match="record 'r': the strategy broke the RenderedRequest contract"):
+        check_rendered_request(rendered, request, vocab_size=32)
+
+
+def test_process_skips_record_without_labels():
+    assert _dataset()._process(row()) is None
+
+
+class SkippingStrategy(StubStrategy):
+    def render_request(self, request, max_tokens):
+        return None
+
+
+def test_raises_when_every_record_is_skipped():
+    dataset = SystemOneDataset(Dataset.from_list([ROW] * 3), SkippingStrategy(None, CONFIG))
+    with pytest.raises(RuntimeError, match="skipped 7 rows in a row"):
+        next(iter(dataset))
+
+
+def test_check_records_parses_the_data_rank_share_of_the_rows():
+    rows = [ROW, {**ROW, "id": "bad", "label": "{"}, ROW]
+    dataset = SystemOneDataset(Dataset.from_list(rows), StubStrategy(None, CONFIG))
+    with pytest.raises(ValueError, match="record 'bad': column 'label'"):
+        dataset.check_records()
+    dataset.data_rank, dataset.data_world_size = 0, 2  # rows 0 and 2
+    dataset.check_records()
+
+
+def test_get_system_one_strategy_cls_looks_up_the_architecture(monkeypatch):
+    monkeypatch.setitem(SYSTEM_ONE_STRATEGIES, "StubDecisionModel", StubStrategy)
+    monkeypatch.setitem(SYSTEM_ONE_STRATEGIES, "SkippingDecisionModel", SkippingStrategy)
+    assert get_system_one_strategy_cls(PretrainedConfig(architectures=["StubDecisionModel"])) is StubStrategy
+    # Only the first architecture counts
+    config = PretrainedConfig(architectures=["SkippingDecisionModel", "StubDecisionModel"])
+    assert get_system_one_strategy_cls(config) is SkippingStrategy
+    with pytest.raises(
+        ValueError,
+        match=r"architectures \['Qwen3ForCausalLM', 'StubDecisionModel'\] do not start with one. "
+        r"Strategies are registered for \['SkippingDecisionModel', 'StubDecisionModel'\]",
+    ):
+        get_system_one_strategy_cls(PretrainedConfig(architectures=["Qwen3ForCausalLM", "StubDecisionModel"]))
+    with pytest.raises(ValueError, match=r"architectures \[\] do not start with one"):
+        get_system_one_strategy_cls(PretrainedConfig())
