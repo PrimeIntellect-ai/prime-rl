@@ -48,11 +48,12 @@ def _e2m1_code(x):
 
 
 @triton.jit
-def _e2m1_value(nibble):
+def _e2m1_to_f32(nibble):
+    # fp32 bit pattern of an e2m1 nibble: 0, 0.5, then 2^(e-1) * (1 + m/2); bit 3 is the sign.
     exponent = (nibble >> 1) & 3
-    mantissa = (nibble & 1).to(tl.float32)
-    magnitude = tl.where(exponent == 0, mantissa * 0.5, tl.exp2((exponent - 1).to(tl.float32)) * (1.0 + 0.5 * mantissa))
-    return tl.where((nibble & 8) != 0, -magnitude, magnitude)
+    mantissa = nibble & 1
+    bits = tl.where(exponent == 0, mantissa * 0x3F000000, ((126 + exponent) << 23) | (mantissa << 22))
+    return (bits | ((nibble & 8) << 28)).to(tl.float32, bitcast=True)
 
 
 @triton.jit
@@ -79,18 +80,20 @@ def _store_nvfp4_record(record_ptr, x, NOPE: tl.constexpr, GROUP: tl.constexpr, 
 
 
 @triton.jit
-def _load_nvfp4_record(record_ptr, NOPE: tl.constexpr, GROUP: tl.constexpr, ROPE_OFF: tl.constexpr):
-    """Dequantize a 320 B record into a 512-wide fp32 row."""
-    WIDTH: tl.constexpr = 512
-    col = tl.arange(0, WIDTH)
-    is_nope = col < NOPE
-    byte = tl.load(record_ptr + col // 2, mask=is_nope, other=0).to(tl.int32)
-    nibble = tl.where((col % 2) == 0, byte & 15, byte >> 4)
-    scale = tl.load(record_ptr + NOPE // 2 + col // GROUP, mask=is_nope, other=0)
-    scale_f = scale.to(tl.float8e4nv, bitcast=True).to(tl.float32)
-    rope = tl.load(record_ptr + ROPE_OFF + (col - NOPE), mask=~is_nope, other=0)
-    rope_f = rope.to(tl.float8e4nv, bitcast=True).to(tl.float32)
-    return tl.where(is_nope, _e2m1_value(nibble) * scale_f, rope_f)
+def _load_nvfp4_records(record_ptrs, live, NOPE: tl.constexpr, GROUP: tl.constexpr, ROPE_OFF: tl.constexpr):
+    """Dequantize R records (one pointer each; ``live`` masks absent ones).
+
+    Returns the even and odd NoPE values ``[R, 256]`` (byte b holds elements 2b and 2b + 1; bytes
+    past NOPE / 2 read as zero) and the RoPE values ``[R, 64]``, all fp32.
+    """
+    b = tl.arange(0, 256)
+    mask = live[:, None] & (b[None, :] < NOPE // 2)
+    byte = tl.load(record_ptrs[:, None] + b[None, :], mask=mask, other=0).to(tl.int32)
+    scale = tl.load(record_ptrs[:, None] + NOPE // 2 + b[None, :] // (GROUP // 2), mask=mask, other=0)
+    scale = scale.to(tl.float8e4nv, bitcast=True).to(tl.float32)
+    rope = tl.load(record_ptrs[:, None] + ROPE_OFF + tl.arange(0, 64)[None, :], mask=live[:, None], other=0)
+    rope = rope.to(tl.float8e4nv, bitcast=True).to(tl.float32)
+    return _e2m1_to_f32(byte & 15) * scale, _e2m1_to_f32(byte >> 4) * scale, rope
 
 
 @triton.jit
@@ -244,15 +247,22 @@ def _gather_nvfp4_k_cache_kernel(
     NOPE: tl.constexpr,
     GROUP: tl.constexpr,
     ROPE_OFF: tl.constexpr,
+    R: tl.constexpr,
 ):
     req = tl.program_id(0)
-    seq_len = tl.load(seq_lens_ptr + req)
-    col = tl.arange(0, 512)
-    for i in range(tl.program_id(1), seq_len, tl.num_programs(1)):
-        block = tl.load(block_table_ptr + req * block_table_stride + i // cache_block_size)
-        record_ptr = k_cache_ptr + block.to(tl.int64) * KV_BLOCK_STRIDE + (i % cache_block_size) * RECORD_BYTES
-        row = _load_nvfp4_record(record_ptr, NOPE, GROUP, ROPE_OFF)
-        tl.store(out_ptr + req * out_stride0 + (offset + i) * out_stride1 + col, row.to(tl.bfloat16))
+    i = tl.program_id(1) * R + tl.arange(0, R)
+    live = i < tl.load(seq_lens_ptr + req)
+    block = tl.load(block_table_ptr + req * block_table_stride + i // cache_block_size, mask=live, other=0)
+    src = k_cache_ptr + block.to(tl.int64) * KV_BLOCK_STRIDE + (i % cache_block_size) * RECORD_BYTES
+    even, odd, rope = _load_nvfp4_records(src, live, NOPE, GROUP, ROPE_OFF)
+    row = out_ptr + req * out_stride0 + (offset + i) * out_stride1
+    pair = even.to(tl.bfloat16).to(tl.uint16, bitcast=True).to(tl.uint32)
+    pair |= odd.to(tl.bfloat16).to(tl.uint16, bitcast=True).to(tl.uint32) << 16
+    b = tl.arange(0, 256)
+    words = row.to(tl.pointer_type(tl.uint32))
+    tl.store(words[:, None] + b[None, :], pair, mask=live[:, None] & (b[None, :] < NOPE // 2))
+    r = tl.arange(0, 64)
+    tl.store(row[:, None] + NOPE + r[None, :], rope.to(tl.bfloat16), mask=live[:, None])
 
 
 def gather_nvfp4_k_cache(
@@ -265,7 +275,9 @@ def gather_nvfp4_k_cache(
 ) -> None:
     """Dequantize every compressed token of each request into ``out[req, offset + i]`` (bf16)."""
     assert out.stride(2) == 1 and out.shape[2] == HEAD_DIM
-    _gather_nvfp4_k_cache_kernel[(seq_lens.shape[0], 128)](
+    rows_per_program = 8
+    grid = (seq_lens.shape[0], triton.cdiv(out.shape[1] - offset, rows_per_program))
+    _gather_nvfp4_k_cache_kernel[grid](
         out,
         out.stride(0),
         out.stride(1),
@@ -280,6 +292,7 @@ def gather_nvfp4_k_cache(
         NOPE=NOPE_DIM,
         GROUP=NVFP4_GROUP,
         ROPE_OFF=ROPE_OFFSET,
+        R=rows_per_program,
         num_warps=4,
     )
 
@@ -291,6 +304,7 @@ def _nvfp4_to_fp8_records_kernel(
     k_cache_ptr,
     out_cache_ptr,
     out_indices_ptr,
+    num_records,
     top_k,
     cache_block_size,
     KV_BLOCK_STRIDE: tl.constexpr,
@@ -303,37 +317,49 @@ def _nvfp4_to_fp8_records_kernel(
     FP8_TOKEN: tl.constexpr,
     FP8_SCALE: tl.constexpr,
     FP8_GROUP: tl.constexpr,
+    R: tl.constexpr,
 ):
-    token = tl.program_id(0)
-    k = tl.program_id(1)
-    slot = tl.load(indices_ptr + token * top_k + k)
-    j = token * top_k + k
-    if (k >= tl.load(lens_ptr + token)) | (slot < 0):
-        tl.store(out_indices_ptr + j, -1)
-        return
-    record_ptr = k_cache_ptr + (slot // cache_block_size).to(tl.int64) * KV_BLOCK_STRIDE
-    record_ptr += (slot % cache_block_size) * RECORD_BYTES
-    row = _load_nvfp4_record(record_ptr, NOPE, GROUP, ROPE_OFF)
+    j = tl.program_id(0) * R + tl.arange(0, R)
+    in_range = j < num_records
+    slot = tl.load(indices_ptr + j, mask=in_range, other=-1)
+    length = tl.load(lens_ptr + j // top_k, mask=in_range, other=0)
+    live = in_range & (j % top_k < length) & (slot >= 0)
+    tl.store(out_indices_ptr + j, tl.where(live, j, -1), mask=in_range)
+    src = (
+        k_cache_ptr
+        + (slot // cache_block_size).to(tl.int64) * KV_BLOCK_STRIDE
+        + (slot % cache_block_size) * RECORD_BYTES
+    )
+    even, odd, rope = _load_nvfp4_records(src, live, NOPE, GROUP, ROPE_OFF)
 
-    page_ptr = out_cache_ptr + (j // OUT_PAGE_TOKENS).to(tl.int64) * OUT_PAGE_STRIDE
+    # 64-element fp8 groups are 32 bytes of the even/odd halves.
+    BYTES_PER_GROUP: tl.constexpr = FP8_GROUP // 2
+    amax = tl.max(
+        tl.reshape(tl.maximum(tl.abs(even), tl.abs(odd)), (R, 256 // BYTES_PER_GROUP, BYTES_PER_GROUP)), axis=2
+    )
+    exponent = tl.ceil(tl.log2(tl.maximum(amax, 1e-4) / 448.0))
+    inv = tl.reshape(
+        tl.broadcast_to(tl.exp2(-exponent)[:, :, None], (R, 256 // BYTES_PER_GROUP, BYTES_PER_GROUP)), (R, 256)
+    )
+    lo = tl.clamp(even * inv, -448.0, 448.0).to(tl.float8e4nv).to(tl.uint8, bitcast=True).to(tl.uint16)
+    hi = tl.clamp(odd * inv, -448.0, 448.0).to(tl.float8e4nv).to(tl.uint8, bitcast=True).to(tl.uint16)
+
+    page = out_cache_ptr + (j // OUT_PAGE_TOKENS).to(tl.int64) * OUT_PAGE_STRIDE
     pos = j % OUT_PAGE_TOKENS
-    data_ptr = page_ptr + pos * FP8_TOKEN
-    scale_ptr = page_ptr + OUT_PAGE_TOKENS * FP8_TOKEN + pos * FP8_SCALE
-
-    WIDTH: tl.constexpr = 512
-    groups = tl.reshape(row, (WIDTH // FP8_GROUP, FP8_GROUP))
-    amax = tl.maximum(tl.max(tl.abs(groups), axis=1), 1e-4)
-    exponent = tl.ceil(tl.log2(amax / 448.0))
-    fp8 = tl.clamp(groups * tl.exp2(-exponent)[:, None], -448.0, 448.0).to(tl.float8e4nv)
-    fp8 = tl.reshape(fp8.to(tl.uint8, bitcast=True), (WIDTH,))
-    col = tl.arange(0, WIDTH)
-    tl.store(data_ptr + col, fp8, mask=col < NOPE)
-    group = tl.arange(0, WIDTH // FP8_GROUP)
-    encoded = tl.where(group < NOPE // FP8_GROUP, tl.clamp(exponent + 127.0, 0.0, 255.0), 0.0)
-    tl.store(scale_ptr + group, encoded.to(tl.uint8))
-    rope_ptr = (data_ptr + NOPE).to(tl.pointer_type(tl.bfloat16))
-    tl.store(rope_ptr + (col - NOPE), row.to(tl.bfloat16), mask=col >= NOPE)
-    tl.store(out_indices_ptr + j, j)
+    data = page + pos * FP8_TOKEN
+    b = tl.arange(0, 256)
+    tl.store(
+        data.to(tl.pointer_type(tl.uint16))[:, None] + b[None, :],
+        lo | (hi << 8),
+        mask=live[:, None] & (b[None, :] < NOPE // 2),
+    )
+    g = tl.arange(0, 256 // BYTES_PER_GROUP)
+    encoded = tl.where(g[None, :] < NOPE // FP8_GROUP, tl.clamp(exponent + 127.0, 0.0, 255.0), 0.0)
+    scales = page + OUT_PAGE_TOKENS * FP8_TOKEN + pos * FP8_SCALE
+    tl.store(scales[:, None] + g[None, :], encoded.to(tl.uint8), mask=live[:, None])
+    r = tl.arange(0, 64)
+    rope_ptr = (data + NOPE).to(tl.pointer_type(tl.bfloat16))
+    tl.store(rope_ptr[:, None] + r[None, :], rope.to(tl.bfloat16), mask=live[:, None])
 
 
 def fp8_record_pages(num_records: int) -> tuple[int, int]:
@@ -363,13 +389,15 @@ def nvfp4_to_fp8_records(
     out_cache = workspace.as_strided(
         (pages, 64, 1, FP8_RECORD_BYTES), (page_stride, FP8_RECORD_BYTES, FP8_RECORD_BYTES, 1)
     )
+    records_per_program = 8
     if num_tokens:
-        _nvfp4_to_fp8_records_kernel[(num_tokens, top_k)](
+        _nvfp4_to_fp8_records_kernel[(triton.cdiv(num_tokens * top_k, records_per_program),)](
             indices,
             lens,
             k_cache,
             workspace,
             out_indices,
+            num_tokens * top_k,
             top_k,
             block_size,
             KV_BLOCK_STRIDE=k_cache.stride(0),
@@ -382,6 +410,7 @@ def nvfp4_to_fp8_records(
             FP8_TOKEN=FP8_TOKEN_BYTES,
             FP8_SCALE=FP8_SCALE_BYTES,
             FP8_GROUP=FP8_QUANT_GROUP,
-            num_warps=4,
+            R=records_per_program,
+            num_warps=2,
         )
     return out_cache
