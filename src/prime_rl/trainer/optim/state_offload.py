@@ -6,6 +6,7 @@ from torch.optim import Optimizer
 
 from prime_rl.trainer.optim.base import OffloadOptimizer
 from prime_rl.trainer.utils import empty_pinned
+from prime_rl.utils.device import DEVICE_TYPE, device_module
 
 
 class CPUOffloadOptimizer(OffloadOptimizer):
@@ -57,8 +58,8 @@ class CPUOffloadOptimizer(OffloadOptimizer):
                         state[key] = self._offload_to_cpu(param, key, value)
                     else:
                         state[key] = value.to(device, non_blocking=True)
-        if device == "cpu" and torch.cuda.is_initialized():
-            torch.cuda.synchronize()
+        if device == "cpu" and device_module.is_initialized():
+            device_module.synchronize()
 
     def step(self, closure=None):
         # First step initializes states on GPU - offload after
@@ -69,7 +70,7 @@ class CPUOffloadOptimizer(OffloadOptimizer):
             return result
 
         # Move states to GPU
-        self._move_states("cuda")
+        self._move_states(DEVICE_TYPE)
 
         # Run optimizer step
         result = self.optimizer.step(closure)
@@ -85,8 +86,8 @@ class CPUOffloadOptimizer(OffloadOptimizer):
     def state_dict(self):
         # Move to GPU temporarily for consistent state dict
         if self._initialized:
-            self._move_states("cuda")
-            torch.cuda.synchronize()
+            self._move_states(DEVICE_TYPE)
+            device_module.synchronize()
         state_dict = self.optimizer.state_dict()
         if self._initialized:
             self._move_states("cpu")
@@ -118,8 +119,8 @@ class CPUOffloadOptimizer(OffloadOptimizer):
 
     def prepare_checkpoint_save(self) -> None:
         if self._initialized:
-            self._move_states("cuda")
-            torch.cuda.synchronize()
+            self._move_states(DEVICE_TYPE)
+            device_module.synchronize()
 
     def finish_checkpoint_save(self) -> None:
         self._move_states("cpu")

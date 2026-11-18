@@ -42,6 +42,7 @@ from prime_rl.trainer.models.fusions import (
 from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
 from prime_rl.trainer.utils import DCP_TIMEOUT, empty_pinned, get_dcp_group
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.device import DEVICE_TYPE, device_module
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_ckpt_dir, get_step_path, is_ckpt_step_complete
 
@@ -145,7 +146,7 @@ class Staging:
     source state dict, kept alive (with its GPU temporaries) until the copies are done."""
 
     state_dict: dict[str, Any]
-    copied: torch.cuda.Event
+    copied: torch.Event
     sources: dict[str, Any] | None
 
     def wait(self) -> dict[str, Any]:
@@ -178,14 +179,14 @@ class PinnedStager:
 
     def __init__(self):
         self.buffers: dict[tuple, torch.Tensor] = {}
-        self.stream = torch.cuda.Stream()
+        self.stream = device_module.Stream()
 
     def stage(self, state_dict: dict[str, Any]) -> Staging:
         # The side stream must see everything the training stream wrote, including the optimizer step
-        self.stream.wait_stream(torch.cuda.current_stream())
-        with torch.cuda.stream(self.stream):
+        self.stream.wait_stream(device_module.current_stream())
+        with device_module.stream(self.stream):
             staged = self._copy(state_dict, ())
-        copied = torch.cuda.Event()
+        copied = device_module.Event()
         copied.record(self.stream)
         return Staging(staged, copied, state_dict)
 
@@ -220,7 +221,7 @@ def _copy_cpu_state_split_on_sharded_dim_to_gpu(
             continue
         sharded_on_packing_dim = Shard(packed_info.spec.dim)
         state[packed_info.fqn] = {
-            key: DTensor(value._local_tensor.cuda(), value._spec, requires_grad=False)
+            key: DTensor(value._local_tensor.to(DEVICE_TYPE), value._spec, requires_grad=False)
             if isinstance(value, DTensor) and value._local_tensor.is_cpu and sharded_on_packing_dim in value.placements
             else value
             for key, value in state[packed_info.fqn].items()
@@ -305,9 +306,9 @@ class AppState(Stateful):
                 optimizer.finish_checkpoint_save()
 
         if self._has_cpu_offload():
-            torch.cuda.synchronize()
+            device_module.synchronize()
             gc.collect()
-            torch.cuda.empty_cache()
+            device_module.empty_cache()
 
         return state_dict
 
@@ -445,7 +446,7 @@ class CheckpointManager:
             # and it needs shared memory the size of the shard. A new thread's current device is 0, so without the
             # initializer its first CUDA call would create a context on GPU 0 for every rank.
             self.writer = ThreadPoolExecutor(
-                max_workers=1, initializer=torch.cuda.set_device, initargs=(torch.cuda.current_device(),)
+                max_workers=1, initializer=device_module.set_device, initargs=(device_module.current_device(),)
             )
             self.write_group = torch.distributed.new_group(backend="gloo", timeout=DCP_TIMEOUT)
         staging = self.stager.stage({"app": app_state.async_state_dict()})
@@ -670,7 +671,7 @@ def _load_app_state(
     # gradients. Left in the allocator cache, those blocks fragment the pool and the first step
     # reserves on top of them instead of reusing them.
     gc.collect()
-    torch.cuda.empty_cache()
+    device_module.empty_cache()
     if model_only:
         for optimizer in optimizers:
             if isinstance(optimizer, OffloadOptimizer):

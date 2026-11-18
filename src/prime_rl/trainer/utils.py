@@ -24,6 +24,7 @@ from prime_rl.configs.trainer import ModelConfig
 from prime_rl.control.controller import Controller
 from prime_rl.control.types import StepActionType
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.device import DEVICE_TYPE, DIST_BACKEND, device_module
 from prime_rl.utils.distributed import all_gather_bytes
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_ckpt_dir
@@ -116,7 +117,7 @@ def clip_grad_norm_(
         grad_norm = torch.linalg.vector_norm(torch.stack(norms)) if norms else torch.tensor(0.0)
         for parameters in mesh_parameters.values():
             torch.nn.utils.clip_grads_with_norm_(parameters, max_norm, grad_norm)
-    return grad_norm.cuda() if grad_norm.device.type == "cpu" else grad_norm
+    return grad_norm.to(DEVICE_TYPE) if grad_norm.device.type == "cpu" else grad_norm
 
 
 class _PageLockedMapping(mmap.mmap):
@@ -142,7 +143,8 @@ def empty_pinned(shape: tuple[int, ...] | torch.Size, dtype: torch.dtype) -> Ten
     only when the last view of its storage is freed.
     """
     nbytes = torch.Size(shape).numel() * dtype.itemsize
-    if nbytes == 0:
+    # cudaHostRegister has no XPU counterpart, so XPU pins through torch's caching host allocator
+    if nbytes == 0 or DEVICE_TYPE == "xpu":
         return torch.empty(shape, dtype=dtype, pin_memory=True)
     mapping = _PageLockedMapping(-1, nbytes)
     tensor = torch.frombuffer(mapping, dtype=torch.uint8)
@@ -179,9 +181,13 @@ def bind_process_to_gpu_numa_node() -> None:
     optimizer's OMP threads, local to the socket the GPU hangs off. Must run before any
     offload buffer is allocated and before the OMP thread pool spins up.
     """
+    logger = get_logger()
+    if DEVICE_TYPE == "xpu":
+        logger.warning("GPU NUMA lookup uses NVML, which has no Intel XPU equivalent; skipping NUMA binding")
+        return
+
     import pynvml
 
-    logger = get_logger()
     device_id = torch.cuda.current_device()
     # NVML indexes every GPU on the node and CUDA only the visible ones (CUDA_VISIBLE_DEVICES): match by UUID
     uuid = f"GPU-{torch.cuda.get_device_properties(device_id).uuid}"
@@ -233,13 +239,13 @@ def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: b
     get_logger().info(f"Initializing torch distributed (timeout={int(timeout.total_seconds())}s)")
     t0 = time.perf_counter()
     device_id = get_world().local_rank
-    torch.cuda.set_device(device_id)
+    device_module.set_device(device_id)
     # Use Gloo backend for CPU and NCCL for GPU when CPU offloading is enabled
     # Otherwise use NCCL for better GPU performance
     backend = None  # by default nccl
     if enable_gloo:
-        get_logger().info("Using Gloo backend for CPU and NCCL backend for GPU")
-        backend = "cpu:gloo,cuda:nccl"
+        get_logger().info(f"Using Gloo backend for CPU and {DIST_BACKEND} backend for GPU")
+        backend = f"cpu:gloo,{DEVICE_TYPE}:{DIST_BACKEND}"
 
     # init_process_group applies `timeout` only to the default PG; device-mesh
     # sub-groups (dp/cp/ep) are created via new_group without a timeout and fall
@@ -251,7 +257,11 @@ def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: b
     dist.distributed_c10d.default_pg_timeout = timeout
     dist.distributed_c10d.default_pg_nccl_timeout = timeout
 
-    dist.init_process_group(backend=backend, timeout=timeout, device_id=device_id)
+    # Binding the default group to a device makes every later new_group look up a backend for that
+    # device. Gloo handles CUDA tensors but not XPU ones, so CPU-only gloo groups (e.g. the DCP group)
+    # fail on XPU when the default group is bound; bind on CUDA only.
+    bound_device = torch.device(DEVICE_TYPE, device_id) if DEVICE_TYPE == "cuda" else None
+    dist.init_process_group(backend=backend, timeout=timeout, device_id=bound_device)
     get_logger().debug(f"Initialized torch distributed in {format_time(time.perf_counter() - t0)}")
 
 
@@ -266,17 +276,17 @@ def get_dcp_group() -> dist.ProcessGroup:
 
 def broadcast_step_action(controller: Controller, step: int) -> StepActionType | None:
     """The pause or checkpoint the master's controller applies at ``step``, applied by every rank."""
-    code = torch.tensor(STEP_ACTIONS.index(controller.update(step)), device="cuda")
+    code = torch.tensor(STEP_ACTIONS.index(controller.update(step)), device=DEVICE_TYPE)
     dist.broadcast(code, src=0)
     return STEP_ACTIONS[code.item()]
 
 
 def get_peak_memory_across_ranks() -> tuple[float, float]:
     """Peak GPU memory in GiB including memory outside the caching allocator (symmetric memory, NCCL, CUDA context), and that outside share, each maxed over ranks; every rank must call it."""
-    free_memory, total_memory = torch.cuda.mem_get_info()
-    non_torch_memory = (total_memory - free_memory - torch.cuda.memory_reserved()) / 1024**3
-    peak_memory = torch.cuda.max_memory_reserved() / 1024**3 + non_torch_memory
-    memory = torch.tensor([peak_memory, non_torch_memory], device="cuda")
+    free_memory, total_memory = device_module.mem_get_info()
+    non_torch_memory = (total_memory - free_memory - device_module.memory_reserved()) / 1024**3
+    peak_memory = device_module.max_memory_reserved() / 1024**3 + non_torch_memory
+    memory = torch.tensor([peak_memory, non_torch_memory], device=DEVICE_TYPE)
     dist.all_reduce(memory, op=dist.ReduceOp.MAX)
     peak_memory, non_torch_memory = memory.tolist()
     return peak_memory, non_torch_memory
@@ -325,7 +335,7 @@ class TensorStats:
 
         Uses masked reductions instead of boolean indexing, so it never waits for the GPU."""
         # A custom loss may emit a metric on the CPU
-        values = values.detach().reshape(-1).to(device="cuda", dtype=torch.float64)
+        values = values.detach().reshape(-1).to(device=DEVICE_TYPE, dtype=torch.float64)
         if values.numel() == 0:
             return
         mask = torch.ones_like(values, dtype=torch.bool) if mask is None else mask.reshape(-1).to(values.device)
@@ -354,7 +364,7 @@ class TensorStats:
         if not keys:
             return {}
 
-        empty = torch.tensor([0, 0, 0, -math.inf, -math.inf], dtype=torch.float64, device="cuda")
+        empty = torch.tensor([0, 0, 0, -math.inf, -math.inf], dtype=torch.float64, device=DEVICE_TYPE)
         rows = torch.stack([self.moments.get(key, empty) for key in keys])
         sums, extremes = rows[:, :3].contiguous(), rows[:, 3:].contiguous()
         dist.all_reduce(sums, op=dist.ReduceOp.SUM)
@@ -434,7 +444,7 @@ MEMORY_SNAPSHOT_MAX_ENTRIES = 100000
 
 class MemoryProfiler:
     def __init__(self, step_num: int, snapshot_path: Path):
-        torch.cuda.memory._record_memory_history(max_entries=MEMORY_SNAPSHOT_MAX_ENTRIES)
+        device_module.memory._record_memory_history(max_entries=MEMORY_SNAPSHOT_MAX_ENTRIES)
         self.logger = get_logger()
         snapshot_path.mkdir(parents=True, exist_ok=True)
         self.snapshot_path = snapshot_path
@@ -447,7 +457,7 @@ class MemoryProfiler:
         step_folder.mkdir(parents=True, exist_ok=True)
         file_path = step_folder / f"rank_{get_world().rank}.pickle"
         with open(file_path, "wb") as output:
-            pickle.dump(torch.cuda.memory._snapshot(), output)
+            pickle.dump(device_module.memory._snapshot(), output)
         self.logger.info(
             f"Finished dumping memory snapshot in {time.monotonic() - begin:.2f} seconds, load {file_path} at https://docs.pytorch.org/memory_viz to visualize the memory usage"
         )
