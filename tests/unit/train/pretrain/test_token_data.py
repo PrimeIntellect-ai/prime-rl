@@ -261,11 +261,15 @@ def test_eod_mask_loss(tmp_path):
 
 
 def test_long_documents_are_cached(tmp_path):
-    """The table of long documents is cached, and a changed folder gets a new one."""
+    """The table of long documents is cached and read back, and a changed folder gets a new one."""
     write_source(tmp_path / "a", LENGTHS)
     config = data_config(tmp_path, {"a": {}})
-    sampler = setup_token_dataset(config, cache_dir=tmp_path / "cache", dp_rank=0, dp_size=1).sampler
-    assert (sampler.long_documents.tolist(), sampler.pieces_before.tolist()) == ([1, 5, 7, 11, 13], [0, 2, 3, 5, 6, 7])
+    for _ in range(2):
+        sampler = setup_token_dataset(config, cache_dir=tmp_path / "cache", dp_rank=0, dp_size=1).sampler
+        assert (sampler.long_documents.tolist(), sampler.pieces_before.tolist()) == (
+            [1, 5, 7, 11, 13],
+            [0, 2, 3, 5, 6, 7],
+        )
     write_source(tmp_path / "a", [40, *LENGTHS[1:], 3])
     changed = setup_token_dataset(config, cache_dir=tmp_path / "cache", dp_rank=0, dp_size=1).sampler
     assert changed.long_documents.tolist()[0] == 0
