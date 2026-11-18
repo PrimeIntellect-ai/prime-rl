@@ -1,10 +1,13 @@
 import json
+import time
 import uuid
+from pathlib import Path
 from typing import Any, Callable, Literal, cast
 
 import numpy as np
 import torch
 from datasets import Dataset, interleave_datasets, load_dataset
+from huggingface_hub import snapshot_download
 from renderers import AutoRendererConfig, RendererConfig, merge_chat_template_kwargs
 from renderers.base import MultiModalData, PlaceholderRange, Renderer, build_training_sample, create_renderer
 from torch import Tensor
@@ -14,6 +17,7 @@ from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTColumnsConfig, S
 from prime_rl.trainer.data import StatefulIterableDataset
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.utils import format_time
 
 
 class FakeDataset(StatefulIterableDataset):
@@ -415,6 +419,28 @@ class SFTDataset(StatefulIterableDataset):
             self.num_samples[subset_or_split] += 1
             self.num_tokens[subset_or_split] += len(processed_example.get("input_ids", []))
             yield processed_example
+
+
+def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
+    if not isinstance(data, SFTDataConfig):
+        return
+    if Path(data.name).exists():
+        get_logger().info(f"Data {data.name} found at local path, skipping download")
+        return
+
+    dataset_name = data.name
+    t0 = time.perf_counter()
+    get_logger().info(f"Pre-downloading data {dataset_name} at revision {data.revision or 'main'}")
+    snapshot = snapshot_download(
+        repo_id=dataset_name,
+        repo_type="dataset",
+        revision=data.revision,
+        cache_dir=env_vars.get("HF_HUB_CACHE"),
+    )
+    data.name = snapshot
+    get_logger().debug(
+        f"Finished pre-downloading data {dataset_name} to {snapshot} in {format_time(time.perf_counter() - t0)}"
+    )
 
 
 def setup_and_interleave_datasets(

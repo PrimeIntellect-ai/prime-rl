@@ -203,9 +203,6 @@ def start_router(config: InferenceConfig) -> subprocess.Popen:
         str(config.router.request_timeout_secs),
         "--worker-startup-timeout-secs",
         "4200",
-        # The default of 30 s leaves a started engine idle for up to 30 s before the router admits it
-        "--worker-startup-check-interval",
-        "1",
         "--prometheus-port",
         str(config.server.port + 21000),
     ]
