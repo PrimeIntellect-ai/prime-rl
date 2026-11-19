@@ -11,6 +11,7 @@ from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 
 from prime_rl.configs.shared import NCCLWeightBroadcastConfig
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.layers.ngram import NGramTable
 from prime_rl.trainer.utils import get_world
 from prime_rl.trainer.vlm import get_layer_prefix
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender
@@ -21,7 +22,7 @@ from prime_rl.utils.nccl import (
     encode_tensor_metadata,
     iter_tensor_buckets,
 )
-from prime_rl.utils.weights import get_chunked_conversion_ops, resolve_wire_dtype
+from prime_rl.utils.weights import get_chunked_conversion_ops, resolve_fqn, resolve_wire_dtype
 
 
 def _gather_row_chunk_to_master(value: Tensor, start: int, stop: int, dtype: torch.dtype) -> Tensor | None:
@@ -56,6 +57,18 @@ def _gather_row_chunk_to_master(value: Tensor, start: int, stop: int, dtype: tor
         chunk[left - start : right - start].copy_(local[left - offset : right - offset])
     dist.reduce(chunk, dst=0, group=mesh.get_group(mesh_dim))
     return chunk if rank == 0 else None
+
+
+def drop_frozen_ngram_tables(model: nn.Module, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+    """Leave frozen n-gram tables out: they never change, so inference keeps the copy it loaded."""
+    frozen = {
+        resolve_fqn(model, f"{name}.weight")
+        for name, module in model.named_modules()
+        if isinstance(module, NGramTable) and not module.weight.requires_grad
+    }
+    if not frozen:
+        return state_dict
+    return {key: value for key, value in state_dict.items() if resolve_fqn(model, key) not in frozen}
 
 
 def get_max_layer_num(state_dict: dict[str, Tensor], layer_prefix: str = "model.layers.") -> int:
@@ -188,7 +201,7 @@ class NCCLBroadcaster:
     @torch.no_grad()
     def send(self, model: nn.Module) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL."""
-        state_dict = model.state_dict()
+        state_dict = drop_frozen_ngram_tables(model, model.state_dict())
         layer_prefix = get_layer_prefix(model)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
         chunked_ops = get_chunked_conversion_ops(model, state_dict)

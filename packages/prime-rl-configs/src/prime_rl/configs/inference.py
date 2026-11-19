@@ -31,7 +31,7 @@ class ServerConfig(BaseConfig):
 # not depend on vLLM, and importing it costs seconds in every config-parsing process.
 VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
 
-QuantizationType = Literal["fp8_per_block", "mxfp8"]
+QuantizationType = Literal["fp8_per_block", "mxfp8", "online"]
 
 
 class VllmConfig(BaseConfig):
@@ -89,7 +89,7 @@ class VllmConfig(BaseConfig):
     """Enable prefix caching."""
 
     quantization: QuantizationType | None = None
-    """Online inference quantization method. If None, vLLM infers it from the checkpoint."""
+    """Online inference quantization method. If None, vLLM infers it from the checkpoint. ``online`` quantizes only the layer kinds set in vLLM's ``quantization_config`` (e.g. ``{moe = "fp8_per_block"}`` for the routed experts only)."""
 
     enable_lora: bool = False
     """Enable LoRA."""
@@ -694,6 +694,12 @@ class InferenceConfig(BaseConfig):
         # cache-discount billing counters parse them off /inference/v1/generate.
         if "enable_prompt_tokens_details" not in extra_fields:
             namespace.enable_prompt_tokens_details = True
+
+        # vLLM's SWA bounded replay (DeepSeek-V4.1) prefills later layers on each request's last
+        # window only, so the first tokens of that window get approximate states the trainer
+        # never computes. Compute every window exactly unless overridden.
+        if "swa_bounded_replay" not in extra_fields:
+            namespace.swa_bounded_replay = False
 
         # The orchestrator generates through /inference/v1/generate, a scale-out
         # endpoint that vLLM registers only with `--enable-scale-out`.

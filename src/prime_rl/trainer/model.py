@@ -54,6 +54,7 @@ from prime_rl.trainer.models import (
     supports_custom_impl,
 )
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Indexer
+from prime_rl.trainer.models.deepseek_v41.attention import DeepseekV41Indexer
 from prime_rl.trainer.models.fusions import (
     apply_model_fusions,
     get_fsdp_shard_placement_fn,
@@ -179,13 +180,25 @@ def freeze_sparse_indexer(model: nn.Module) -> None:
     num_frozen = 0
 
     for module in model.modules():
-        if isinstance(module, (Indexer, DeepseekV4Indexer, SparseAttentionIndexer)):
+        if isinstance(module, (Indexer, DeepseekV4Indexer, DeepseekV41Indexer, SparseAttentionIndexer)):
             for param in module.parameters():
                 param.requires_grad = False
                 num_frozen += 1
 
     if num_frozen > 0:
         logger.info(f"Froze {num_frozen} sparse indexer parameters")
+
+
+def freeze_engram_tables(model: nn.Module) -> None:
+    """Freeze the n-gram tables (DeepSeek-V4.1's engram tables), keeping their consumers trainable.
+
+    A frozen table needs no fp32 master, so it is kept in bf16, the dtype its rows are looked up in.
+    """
+    tables = [module for module in model.modules() if isinstance(module, NGramTable)]
+    for table in tables:
+        table.weight = nn.Parameter(table.weight.to(torch.bfloat16), requires_grad=False)
+    if tables:
+        get_logger().info(f"Froze {len(tables)} n-gram tables")
 
 
 def apply_force_balanced_routing(model: nn.Module) -> None:
@@ -380,6 +393,10 @@ def get_model(
     if model_config.model_type == "deepseek_v4":
         model_config.kv_precision = config.dsv4_kv_precision
         model_config.compressor_backend = config.dsv4_compressor_backend
+    if model_config.model_type in ("deepseek_v41", "deepseek_v41_text"):
+        text_config = model_config.get_text_config()
+        text_config.kv_precision = config.dsv4_kv_precision
+        text_config.dsa_backend = config.dsa_backend
     # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
     # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
     indexer_types = getattr(model_config, "indexer_types", None)
@@ -574,7 +591,12 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         fully_shard(vision_encoder, mesh=hsdp_mesh, **fsdp_config)
         get_logger().info(f"Applied FSDP to vision encoder (frozen={config.vlm.freeze_vision_encoder})")
 
+    ignored_params = set()
     for table in [module for module in model.modules() if isinstance(module, NGramTable)]:
+        if not table.weight.requires_grad:
+            # A frozen table has no gradient to reduce, and FSDP would copy its whole local shard every step.
+            ignored_params.add(table.weight)
+            continue
         if isinstance(table.weight, DTensor):
             table_mesh = (
                 parallel_dims.world_mesh["dp_replicate", "dp_shard_mod_head"]
@@ -645,6 +667,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         offload_policy=offload_policy,
         reshard_after_forward=config.reshard_after_forward,
         shard_placement_fn=shard_placement_fn,
+        ignored_params=ignored_params or None,
     )
     model.set_reduce_scatter_max_input_buffers(config.reduce_scatter_max_input_buffers)
 
@@ -1063,6 +1086,9 @@ def setup_model(
 
     if config.freeze_moe_router:
         freeze_moe_router(model)
+
+    if config.freeze_engram_tables:
+        freeze_engram_tables(model)
 
     # A sparse-attention indexer runs its forward under torch.no_grad(), so it is never
     # trainable. Freeze it so optimizer state stays symmetric across checkpoint save/resume.
