@@ -43,6 +43,7 @@ def apply_shared_vllm_patches():
     monkey_patch_nixl_sliding_window_backoff()
     monkey_patch_nixl_bidirectional_spec_decode_coverage()
     monkey_patch_keep_pause_ignores_held_kv()
+    monkey_patch_nixl_lease_clock_follows_engine()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
@@ -190,7 +191,8 @@ def monkey_patch_keep_pause_ignores_held_kv():
 
     While the scheduler is paused with ``PAUSED_ALL``, count only requests the next step must still report as
     finished. The held blocks stay allocated, a weight update does not touch them, remote reads of them proceed without
-    this engine stepping, and the engine processes their completion or expiry once it resumes.
+    this engine stepping, and the engine processes their completion or expiry once it resumes. The paused peer sends no
+    lease heartbeats, so ``monkey_patch_nixl_lease_clock_follows_engine`` keeps those leases from expiring meanwhile.
     """
     from vllm.v1.core.sched.interface import PauseState
     from vllm.v1.core.sched.scheduler import Scheduler
@@ -206,6 +208,48 @@ def monkey_patch_keep_pause_ignores_held_kv():
 
     has_finished_requests._prime_rl_keep_pause = True
     Scheduler.has_finished_requests = has_finished_requests
+
+
+# Longer than any engine step, shorter than a lease's heartbeat margin (heartbeats every 1/6 of the 30 s lease extend
+# it by 2/3): a longer gap between two lease checks means the engine was paused or busy outside of steps.
+LEASE_CLOCK_MAX_STEP_GAP_S = 5.0
+
+
+def monkey_patch_nixl_lease_clock_follows_engine():
+    """NIXL send leases do not run down while their engine is not stepping.
+
+    A worker holds a finished request's blocks for a remote reader until that reader reports the read or the lease
+    expires; the remote engine extends the lease with heartbeats it sends as it steps. During a weight update the
+    engines are paused and their core threads run the update, so neither side steps: no heartbeats are sent or
+    received, and a lease that runs on wall-clock time expires. On resume the holder would release and reuse blocks
+    that the reader still reads.
+
+    Each lease check shifts the leases held at the previous check by the time since it, when that gap is longer than
+    any step. A lease then keeps the time it had left when the engine stopped, and the resumed reader's heartbeats
+    arrive within it. Leases granted since the previous check are stamped fresh and stay as they are.
+    """
+    import time
+
+    from vllm.distributed.kv_transfer.kv_connector.v1.nixl import base_worker
+
+    cls = base_worker.NixlBaseConnectorWorker
+    original = cls._reap_expired_send_leases
+    if getattr(original, "_prime_rl_lease_clock", False):
+        return
+
+    def _reap_expired_send_leases(self, done_sending: set[str]) -> None:
+        now = time.perf_counter()
+        last = getattr(self, "_prime_rl_last_lease_check", None)
+        held = getattr(self, "_prime_rl_leases_at_last_check", set())
+        if last is not None and now - last > LEASE_CLOCK_MAX_STEP_GAP_S:
+            for req_id in held & self._reqs_to_send.keys():
+                self._reqs_to_send[req_id] += now - last
+        original(self, done_sending)
+        self._prime_rl_last_lease_check = now
+        self._prime_rl_leases_at_last_check = set(self._reqs_to_send)
+
+    _reap_expired_send_leases._prime_rl_lease_clock = True
+    cls._reap_expired_send_leases = _reap_expired_send_leases
 
 
 def monkey_patch_block_outermost_mla_stride():
