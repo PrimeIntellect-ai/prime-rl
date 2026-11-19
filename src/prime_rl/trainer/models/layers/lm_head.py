@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import types
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import TypedDict
@@ -674,8 +675,9 @@ def _patch_model_forward(model: nn.Module) -> None:
         logits_to_keep: int = 0,
         temperature: torch.Tensor | None = None,
         support: TokenSupport | None = None,
+        hidden_states_fn: Callable[[Tensor], dict[str, Tensor]] | None = None,
         **kwargs: object,
-    ) -> PrimeLmOutput:
+    ) -> PrimeLmOutput | dict[str, Tensor]:
         if position_ids is None:
             reference_tensor = input_ids if input_ids is not None else inputs_embeds
             position_ids = torch.arange(reference_tensor.shape[1], device=reference_tensor.device).unsqueeze(0)
@@ -684,6 +686,9 @@ def _patch_model_forward(model: nn.Module) -> None:
             model_kwargs["inputs_embeds"] = inputs_embeds
         outputs = self.model(**model_kwargs)
         hidden_states = outputs.last_hidden_state
+        if hidden_states_fn is not None:
+            # In the LM head's place, inside the forward, so FSDP keeps the root unit gathered and hooks the output
+            return hidden_states_fn(hidden_states)
 
         # Slice hidden states for logits_to_keep
         slice_indices = (

@@ -1,4 +1,5 @@
 import json
+import pickle
 from collections import Counter
 
 import pytest
@@ -9,7 +10,7 @@ from renderers.base import MultiModalData, PlaceholderRange, RenderedTrainingSam
 from transformers import AutoTokenizer
 
 import prime_rl.trainer.sft.data as sft_data
-from prime_rl.trainer.data import CatDataset
+from prime_rl.trainer.data import CatDataset, StatefulIterableDataset, cat_collate
 from prime_rl.trainer.sft.data import SFTDataset, _drop_null_fields
 from prime_rl.trainer.utils import print_sample
 
@@ -481,14 +482,96 @@ def test_cat_dataset_packs_text_and_multimodal_samples_together():
 
     assert packed["input_ids"] == [1, 2, 3, 4, 0, 0]
     assert packed["loss_mask"] == [True, True, True, True, False, False]
-    assert packed["seq_lens"] == [1, 2, 3]
+    assert packed["position_ids"] == [0, 0, 1, 0, 0, 1]
+    assert packed["seq_lens"] == [1, 2, 1, 2]  # the padding is a segment of its own
+    assert packed["sample_lens"] == [1, 2, 1]
     assert packed["mm_kwargs"] is not None
     assert packed["mm_token_type_ids"] == [0, 0, 1, 0, 0, 0]
     assert text_pack["input_ids"] == [5, 6, 7, 8, 9, 10]
     assert text_pack["loss_mask"] == [True] * 6
     assert text_pack["seq_lens"] == [6]
+    assert text_pack["sample_lens"] == [6]
     assert text_pack["mm_kwargs"] is None
     assert text_pack["mm_token_type_ids"] is None
+
+
+def test_cat_dataset_records_each_sample():
+    two_segments = {**_sft_sample([1, 2, 3]), "position_ids": [0, 1, 0], "seq_lens": [2, 1]}
+    dataset = CatDataset(
+        [two_segments, _sft_sample([4, 5, 6]), _sft_sample(list(range(10, 17))), _sft_sample([7])],
+        seq_len=5,
+        pad_to_multiple_of=5,
+    )
+    rows = [cat_collate([row]) for row in dataset]
+
+    # the second sample does not fit the rest of the first row and starts the next one, whole
+    assert [row["sample_lens"].tolist() for row in rows] == [[3], [3], [5], [1]]
+    assert [row["seq_lens"].tolist() for row in rows] == [[2, 1, 2], [3, 2], [5], [1, 4]]
+    # only a chat sample longer than a row is cut, alone in an unpadded row
+    assert rows[2]["input_ids"].tolist() == [[10, 11, 12, 13, 14]]
+    assert all(row["sample_data"] is None for row in rows)
+
+
+class _ListDataset(StatefulIterableDataset):
+    def __init__(self, samples: list[dict]):
+        super().__init__()
+        self.samples = samples
+
+    def __iter__(self):
+        while self.step < len(self.samples):
+            self.step += 1
+            yield self.samples[self.step - 1]
+
+
+def test_cat_dataset_keeps_sample_data_in_pack_order():
+    samples = [
+        {**_sft_sample([1, 2]), "sample_data": "a"},
+        {**_sft_sample([3]), "sample_data": "b"},
+        {**_sft_sample([4, 5, 6]), "sample_data": "c"},
+        {**_sft_sample([7]), "sample_data": "d"},
+    ]
+
+    first, second = CatDataset(samples, seq_len=4, pad_to_multiple_of=1)
+
+    assert first["input_ids"] == [1, 2, 3]
+    assert first["sample_data"] == ["a", "b"]
+    assert second["input_ids"] == [4, 5, 6, 7]
+    assert second["sample_data"] == ["c", "d"]
+    assert cat_collate([first])["sample_data"] == ["a", "b"]
+
+
+def test_cat_dataset_resumes_a_pending_sample_with_its_sample_data():
+    samples = [
+        {**_sft_sample([1, 2]), "sample_data": "a"},
+        {**_sft_sample([3, 4, 5]), "sample_data": "b"},
+        {**_sft_sample([6]), "sample_data": "c"},
+    ]
+    dataset = CatDataset(_ListDataset(samples), seq_len=4, pad_to_multiple_of=1)
+
+    assert next(iter(dataset))["sample_data"] == ["a"]
+    state = pickle.loads(pickle.dumps(dataset.state_dict()))
+    assert state["pending_sample"]["sample_data"] == "b"
+
+    resumed = CatDataset(_ListDataset(samples), seq_len=4, pad_to_multiple_of=1)
+    resumed.load_state_dict(state)
+    (packed,) = resumed
+
+    assert packed["input_ids"] == [3, 4, 5, 6]
+    batch = cat_collate([packed])
+    assert batch["sample_lens"].tolist() == [3, 1]
+    assert batch["sample_data"] == ["b", "c"]
+
+
+def test_cat_dataset_never_cuts_a_sample_with_sample_data():
+    samples = [{**_sft_sample([1, 2, 3, 4, 5]), "sample_data": "a"}]
+    with pytest.raises(AssertionError, match="more than a row's 4"):
+        list(CatDataset(samples, seq_len=4, pad_to_multiple_of=4))
+
+
+def test_cat_dataset_refuses_rows_mixing_samples_with_and_without_sample_data():
+    samples = [{**_sft_sample([1, 2]), "sample_data": "a"}, _sft_sample([3])]
+    with pytest.raises(ValueError, match="with and without sample_data"):
+        list(CatDataset(samples, seq_len=4, pad_to_multiple_of=1))
 
 
 CUSTOM_RENDERER_SOURCE = """

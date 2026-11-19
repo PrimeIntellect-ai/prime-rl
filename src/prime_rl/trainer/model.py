@@ -1,3 +1,5 @@
+import functools
+import inspect
 import logging
 import os
 import shutil
@@ -1114,6 +1116,12 @@ def setup_model(
     return model
 
 
+@functools.cache
+def _takes_hidden_states_fn(forward_fn: Callable) -> bool:
+    # A forward that takes **kwargs would swallow hidden_states_fn
+    return "hidden_states_fn" in inspect.signature(forward_fn).parameters
+
+
 def forward(
     model: nn.Module,
     input_ids: Int[Tensor, "batch seq"],
@@ -1129,7 +1137,10 @@ def forward(
     # True when seq_lens holds the full pre-CP-shard document boundaries
     # (kept global because documents can straddle the shard cut).
     seq_lens_are_pre_shard: bool = False,
-) -> PrimeLmOutput:
+    hidden_states_fn: Callable[[Tensor], dict[str, Tensor]] | None = None,
+) -> PrimeLmOutput | dict[str, Tensor]:
+    """With ``hidden_states_fn``, the LM head is skipped and the function's dict of tensors, computed on the final
+    hidden states inside the forward, is returned."""
     kwargs = {
         "input_ids": input_ids,
         "position_ids": position_ids,
@@ -1148,5 +1159,14 @@ def forward(
 
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts
+
+    if hidden_states_fn is not None:
+        assert labels is None and temperature is None and support is None, "hidden_states_fn replaces the LM head"
+        # Keyed by the function, so the cache does not hold the model
+        assert _takes_hidden_states_fn(getattr(model.forward, "__func__", model.forward)), (
+            "hidden_states_fn needs the forward patched in by inject_prime_lm_head"
+        )
+        kwargs["hidden_states_fn"] = hidden_states_fn
+        return model(**kwargs)
 
     return cast_float_and_contiguous(model(**kwargs))

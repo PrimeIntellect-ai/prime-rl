@@ -593,6 +593,11 @@ class GradientOffloadManager:
             "gradient transfers",
         )
 
+    def has_gradient(self, param: nn.Parameter) -> bool:
+        """Whether ``param`` got a gradient since the last ``zero_grad``."""
+        self.wait()
+        return self._buffers[id(param)].initialized
+
     def wait_for_optimizer(self) -> None:
         if self._overlap_optimizer:
             self._wait_for(lambda: self._completed_chunks == len(self._chunks), "CPU optimizer chunks")

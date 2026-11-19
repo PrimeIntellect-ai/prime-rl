@@ -84,6 +84,14 @@ def finish_backward(manager: "GradientOffloadManager | None", *, wait_for_copies
         manager.finish_backward(wait_for_copies=wait_for_copies)
 
 
+def params_without_gradient(manager: "GradientOffloadManager | None", model: nn.Module) -> list[str]:
+    """Names of the trainable parameters that got no gradient since the last ``zero_grad``."""
+    trainable = [(name, param) for name, param in model.named_parameters() if param.requires_grad]
+    if manager is not None:
+        return [name for name, param in trainable if not manager.has_gradient(param)]
+    return [name for name, param in trainable if param.grad is None]
+
+
 @torch.no_grad()
 def scale_gradients_(manager: "GradientOffloadManager | None", model: nn.Module, factor: float | Tensor) -> None:
     """Multiply every gradient by ``factor``, a number or a 0-dim tensor on the gradients' device (no host sync)."""
