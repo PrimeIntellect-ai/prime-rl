@@ -190,3 +190,37 @@ def test_declined_decode_read_prefills_locally(single_pull_patch):
     scheduler.update_from_output(output, runner_output)
     assert not scheduler.requests and not scheduler.running and len(scheduler.waiting) == 0
     assert all(block.ref_cnt == 0 for block in scheduler.kv_cache_manager.block_pool.blocks)
+
+
+def test_keep_pause_does_not_wait_for_held_kv():
+    """A prefill that finished for remote decode holds its blocks until decode pulls them. While the engine is paused
+    with ``keep`` (PAUSED_ALL), that hold no longer counts as work, so the pause completes; it counts again on resume."""
+    from vllm.v1.core.sched.interface import PauseState
+
+    from prime_rl.inference.patches import monkey_patch_keep_pause_ignores_held_kv
+
+    monkey_patch_keep_pause_ignores_held_kv()
+    scheduler = _scheduler(_prefill_kv_transfer_config())
+    request = _turn2_request(508, BLOCK_SIZE * 2, num_remote_blocks=0)
+    request.kv_transfer_params = {"do_remote_decode": True, "do_remote_prefill": False}
+    scheduler.add_request(request)
+
+    output = scheduler.schedule()
+    scheduler.update_from_output(output, _output(request))
+    assert request.status == RequestStatus.FINISHED_LENGTH_CAPPED
+    output = scheduler.schedule()  # reports the finished request to the workers
+    scheduler.update_from_output(output, EMPTY_MODEL_RUNNER_OUTPUT)
+    assert request.request_id in scheduler.requests, "prefill holds the blocks for decode"
+    assert scheduler.has_requests()
+
+    scheduler.set_pause_state(PauseState.PAUSED_ALL)
+    assert not scheduler.has_requests()
+    assert request.request_id in scheduler.requests, "the blocks stay held while paused"
+
+    scheduler.set_pause_state(PauseState.UNPAUSED)
+    assert scheduler.has_requests()
+    output = scheduler.schedule()
+    runner_output = copy.deepcopy(EMPTY_MODEL_RUNNER_OUTPUT)
+    runner_output.kv_connector_output = KVConnectorOutput(finished_sending={request.request_id})
+    scheduler.update_from_output(output, runner_output)
+    assert not scheduler.has_requests()
