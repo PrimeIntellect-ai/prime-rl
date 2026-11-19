@@ -16,7 +16,6 @@ from prime_rl.trainer.pretrain.data import (
     setup_document_dataset,
     warn_if_no_document_separator,
 )
-from prime_rl.trainer.world import reset_world
 
 # Documents of the pool, in two folders, with an empty one. A token's id is its position in the pool.
 DOCUMENTS = [[range(0, 10), range(10, 30), range(30, 30), range(30, 60)], [range(60, 103)]]
@@ -96,17 +95,6 @@ def test_document_masking(folders: list[Path], document_masking: bool):
         assert sample["loss_mask"] == [True] * seq_len
 
 
-def set_world(monkeypatch, rank: int, world_size: int) -> None:
-    reset_world()
-    for name, value in (
-        ("RANK", rank),
-        ("LOCAL_RANK", rank),
-        ("WORLD_SIZE", world_size),
-        ("LOCAL_WORLD_SIZE", world_size),
-    ):
-        monkeypatch.setenv(name, str(value))
-
-
 def scored_segments(batch: dict) -> list[tuple[list[int], list[int], list[int]]]:
     """Inputs, targets and positions of every scored segment of a micro-batch row."""
     segments, start = [], 0
@@ -124,9 +112,7 @@ def scored_segments(batch: dict) -> list[tuple[list[int], list[int], list[int]]]
 
 @pytest.mark.parametrize("num_documents", [None, 4])
 @pytest.mark.parametrize("world_size", [1, 2, 3])
-def test_validation_scores_every_document_on_its_own(
-    folders: list[Path], monkeypatch, world_size: int, num_documents: int | None
-):
+def test_validation_scores_every_document_on_its_own(folders: list[Path], world_size: int, num_documents: int | None):
     """The data ranks together score every document (or the first num_documents) as if it were alone: windows of
     seq_len scored tokens, each with positions from 0 and no token before its own first one, every token after the
     document's first scored once. Every rank runs the same number of micro-batches."""
@@ -139,11 +125,8 @@ def test_validation_scores_every_document_on_its_own(
 
     batches_by_rank = []
     for rank in range(world_size):
-        set_world(monkeypatch, rank, world_size)
-        batches_by_rank.append(
-            list(setup_dataloader(setup_document_dataset(config, num_documents=num_documents), config, cp=1))
-        )
-    reset_world()
+        dataset = setup_document_dataset(config, dp_rank=rank, dp_size=world_size, num_documents=num_documents)
+        batches_by_rank.append(list(setup_dataloader(dataset, config, cp=1)))
 
     assert len({len(batches) for batches in batches_by_rank}) == 1
     for batches in batches_by_rank:
@@ -157,14 +140,14 @@ def first_tokens(batch: dict, seq_len: int) -> list[int]:
     return batch["input_ids"][0, ::seq_len].tolist()
 
 
-def test_resume_on_another_number_of_ranks_continues_the_window_sequence(folders: list[Path], monkeypatch):
+def test_resume_on_another_number_of_ranks_continues_the_window_sequence(folders: list[Path]):
     """Two data ranks read 3 micro-batches each and checkpoint; one rank resumes from rank 0's checkpoint. Together
     they read the windows an uninterrupted single-rank run reads."""
     config = DatatroveDataConfig(paths=folders, seq_len=8, batch_size=2, micro_batch_size=2)
 
     def dataloader(rank: int, world_size: int):
-        set_world(monkeypatch, rank, world_size)
-        return setup_dataloader(TokenDataset(TokenShards(config.paths), config.seq_len), config, cp=1)
+        dataset = TokenDataset(TokenShards(config.paths), config.seq_len, dp_rank=rank, dp_size=world_size)
+        return setup_dataloader(dataset, config, cp=1)
 
     uninterrupted = iter(dataloader(rank=0, world_size=1))
     expected = [token for _ in range(12) for token in first_tokens(next(uninterrupted), config.seq_len)]
@@ -182,7 +165,6 @@ def test_resume_on_another_number_of_ranks_continues_the_window_sequence(folders
     resumed.load_state_dict(states[0])
     batches = iter(resumed)
     windows += [token for _ in range(6) for token in first_tokens(next(batches), config.seq_len)]
-    reset_world()
     assert windows == expected
 
 

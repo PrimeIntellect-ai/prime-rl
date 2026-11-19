@@ -228,6 +228,13 @@ class ParallelDims:
         return mesh[name]
 
     @property
+    def data_parallel(self) -> tuple[int, int]:
+        """This rank's data-parallel rank and the data-parallel size. Ranks of different data-parallel ranks read
+        different micro-batches; the ranks of a context-parallel group read the same ones."""
+        mesh = self.get_mesh("dp")
+        return mesh.get_local_rank(), mesh.size()
+
+    @property
     def dp_enabled(self):
         return self.dp_replicate > 1 or self.dp_shard > 1
 
@@ -262,10 +269,6 @@ class ParallelDims:
     @cached_property
     def fsdp_gradient_divide_factor(self) -> int:
         return self.dp_replicate * self.dp_shard * self.cp
-
-    @cached_property
-    def non_data_parallel_size(self):
-        return self.cp * self.pp
 
     @cached_property
     def logger(self):

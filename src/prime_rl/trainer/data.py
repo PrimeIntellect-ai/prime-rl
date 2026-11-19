@@ -9,7 +9,6 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 from prime_rl.configs.supervised import BaseDataConfig
-from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.sequence import repeat_to_length
 
@@ -35,14 +34,15 @@ class Batch(TypedDict):
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
-    """SFT dataset are iterable (infinite) and stateful (can be checkpointed)."""
+    """Iterable (infinite) and stateful (checkpointable) dataset, read by data rank ``dp_rank * num_workers +
+    worker_id`` of ``dp_size * num_workers`` (`ParallelDims.data_parallel`)."""
 
-    def __init__(self, non_dp_size: int = 1):
+    def __init__(self, dp_rank: int = 0, dp_size: int = 1):
         self.step, self.epoch = 0, 0
         self.num_samples = defaultdict(int)
         self.num_tokens = defaultdict(int)
         self.fast_forward = False
-        self.non_dp_size = non_dp_size
+        self.dp_rank, self.dp_size = dp_rank, dp_size
         self._setup_world_info()
 
     def state_dict(self) -> dict:
@@ -61,10 +61,8 @@ class StatefulIterableDataset(Stateful, IterableDataset):
             num_workers = worker_info.num_workers
         else:
             worker_id, num_workers = 0, 1
-        world = get_world()
-        assert world.world_size % self.non_dp_size == 0, "world_size must be divisible by non_dp_size"
-        self.data_rank = world.rank // self.non_dp_size * num_workers + worker_id
-        self.data_world_size = world.world_size // self.non_dp_size * num_workers
+        self.data_rank = self.dp_rank * num_workers + worker_id
+        self.data_world_size = self.dp_size * num_workers
 
 
 class CatDataset(StatefulIterableDataset):
