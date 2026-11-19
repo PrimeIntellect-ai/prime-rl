@@ -24,6 +24,7 @@ from prime_rl.trainer.models.muse_glimmer import MuseGlimmerConfig, MuseGlimmerF
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM, NemotronHOmniConfig
 from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
 from prime_rl.trainer.models.qwen3_5 import (
+    ClefFlashForJointSchema,
     Qwen3_5Config,
     Qwen3_5ForCausalLM,
     Qwen3_5MoeConfig,
@@ -97,7 +98,7 @@ _CUSTOM_CAUSAL_LM_BY_MODEL_TYPE = {
 }
 
 # Classes selected, before their family's, by an extra config file next to a stock config.json.
-_SELECTED_BY_EXTRA_CONFIG: tuple[type[PreTrainedModelPrimeRL], ...] = ()
+_SELECTED_BY_EXTRA_CONFIG: tuple[type[PreTrainedModelPrimeRL], ...] = (ClefFlashForJointSchema,)
 
 
 def check_selected_by_extra_config(classes: tuple[type[PreTrainedModelPrimeRL], ...]) -> None:
