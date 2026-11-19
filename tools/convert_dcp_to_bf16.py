@@ -33,6 +33,7 @@ from prime_rl.utils.pathing import get_config_dir, has_step_dir_name
 from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
     get_chunked_conversion_ops,
+    get_unexpected_keys,
     group_by_layer,
     resolve_wire_dtype,
 )
@@ -133,14 +134,20 @@ def open_checkpoint(ckpt_dir: Path) -> Checkpoint:
         model_config.attn = "flash_attention_2"
     logger.info(f"Building {model_config.name} on the meta device for its conversion rules")
     model = get_model(model_config, device=torch.device("meta"), dtype=torch.bfloat16)
+    if unknown := get_unexpected_keys(metadata, model.state_dict().keys()):
+        raise ValueError(
+            f"{type(model).__name__}, built from {model_config.name}, lacks {len(unknown)} tensors of the checkpoint "
+            f"({', '.join(unknown[:3])}), which the export would leave out"
+        )
     return Checkpoint(dcp_dir, metadata, model, model_config, tokenizer_config)
 
 
 def get_layers(model: nn.Module) -> list[list[str]]:
-    """Group ordinary weights by decoder layer, excluding tied heads and chunked tables."""
+    """Group ordinary weights by decoder layer, excluding tied heads, chunked tables and export files."""
     state = model.state_dict()
     chunked = get_chunked_conversion_ops(model, state)
-    keys = [key for key in state if key not in chunked]
+    export_prefixes = tuple(getattr(model, "export_files", {}))
+    keys = [key for key in state if key not in chunked and not key.startswith(export_prefixes)]
     # The trainer ties the head on the top-level config flag, so the export must drop it on the same one.
     if getattr(model.config, "tie_word_embeddings", False):
         tied_keys = set(getattr(model, "_tied_weights_keys", None) or ()) | {"lm_head.weight"}
@@ -189,6 +196,24 @@ def load_rows(checkpoint: Checkpoint, key: str, start: int, stop: int) -> Tensor
     return tensor
 
 
+def write_export_files(checkpoint: Checkpoint, output_dir: Path) -> None:
+    """Write the model's export files, outside the weight index and without their prefix."""
+    model = checkpoint.model
+    for prefix, name in getattr(model, "export_files", {}).items():
+        keys = [key for key in model.state_dict() if key.startswith(prefix)]
+        if not keys:
+            raise ValueError(f"{type(model).__name__}.export_files names {prefix!r}, which matches no tensor")
+        tensors = {}
+        for key, tensor in load_layer(checkpoint, keys).items():
+            if not key.startswith(prefix):
+                raise ValueError(
+                    f"{type(model).__name__} converts its {prefix!r} tensors to {key!r}: an export_files prefix must "
+                    "name them before and after conversion"
+                )
+            tensors[key.removeprefix(prefix)] = tensor.contiguous()
+        save_file(tensors, output_dir / name, metadata={"format": "pt"})
+
+
 def write_weights(
     checkpoint: Checkpoint,
     output_dir: Path,
@@ -197,6 +222,7 @@ def write_weights(
 ) -> dict[str, str]:
     """Write decoder layers and streamed table shards, then return their completed index."""
     output_dir.mkdir(parents=True, exist_ok=True)
+    write_export_files(checkpoint, output_dir)
     layers = get_layers(checkpoint.model)
     skeleton = checkpoint.model.state_dict()
     chunked = get_chunked_conversion_ops(checkpoint.model, skeleton)
@@ -267,9 +293,13 @@ def _export_config(config: PretrainedConfig) -> None:
 def save_model_assets(
     model: nn.Module, model_config: ModelConfig, tokenizer_config: TokenizerConfig, output_dir: Path
 ) -> None:
-    """Save model config, generation config, processor and tokenizer next to the weights."""
-    _export_config(model.config)
-    model.config.save_pretrained(output_dir)
+    """Save model config, generation config, processor, tokenizer and an extra config file next to the weights."""
+    config = deepcopy(model.config)
+    extra_config_file = getattr(model, "extra_config_file", None)
+    if extra_config_file is not None:
+        extra_config = vars(config).pop(model.extra_config_attr)
+    _export_config(config)
+    config.save_pretrained(output_dir)
     if getattr(model, "generation_config", None):
         generation_config = deepcopy(model.generation_config)
         generation_config.use_cache = True
@@ -285,6 +315,8 @@ def save_model_assets(
     if Path(model_config.name).is_dir():
         for path in Path(model_config.name).glob("*.py"):
             shutil.copyfile(path, output_dir / path.name)
+    if extra_config_file is not None:
+        (output_dir / extra_config_file).write_text(json.dumps(extra_config, indent=2) + "\n")
 
 
 def publish_export(staging_dir: Path, output_dir: Path) -> None:

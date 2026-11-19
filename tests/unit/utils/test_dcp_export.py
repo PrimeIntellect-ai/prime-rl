@@ -21,6 +21,16 @@ from prime_rl.trainer.models.layers.ngram import LAYOUT_BUFFERS
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig
 from prime_rl.trainer.models.qwen3_8_flash_next import Qwen3_8FlashNextForCausalLM, Qwen3_8FlashNextTextConfig
 from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalLM
+from prime_rl.utils.weights import load_state_dict_keys
+from tests.unit.train.models.extra_config_stub import (
+    EXTRA_CONFIG,
+    EXTRA_CONFIG_ATTR,
+    EXTRA_CONFIG_FILE,
+    HeadStub,
+    load_like_the_trainer,
+    register,
+    write_stub,
+)
 
 
 @pytest.fixture
@@ -391,3 +401,70 @@ def test_convert_exports_a_run_checkpoint_end_to_end(tmp_path, exporter, monkeyp
     assert all(quantized[f"{name}.weight"].dtype == torch.float8_e4m3fn for name in scaled)
     assert all(quantized[f"{name}.weight"].dtype == torch.bfloat16 for name in quantization["modules_to_not_convert"])
     assert quantized.keys() - {f"{name}.weight_scale_inv" for name in scaled} == tensors.keys()
+
+
+def save_stub_run(tmp_path) -> tuple[Path, dict[str, torch.Tensor]]:
+    """A run of the registered stub from ``tmp_path / "model"``: its step directory and its weights."""
+    model_dir = tmp_path / "model"
+    write_stub(model_dir)
+    config_dir = tmp_path / "run" / "configs" / "latest" / "resolved"
+    config_dir.mkdir(parents=True)
+    (config_dir / "sft.json").write_text(json.dumps({"model": {"name": str(model_dir)}, "tokenizer": {}}))
+    model = get_model(ModelConfig(name=str(model_dir), attn="flash_attention_2"), device=torch.device("meta"))
+    assert isinstance(model, HeadStub)
+    torch.manual_seed(0)
+    state = {name: torch.randn(tensor.shape) for name, tensor in model.state_dict().items()}
+    step_dir = tmp_path / "run" / "checkpoints" / "step_1"
+    dcp.save({"app": {"model": state}}, checkpoint_id=step_dir / "trainer", no_dist=True)
+    return step_dir, state
+
+
+def test_the_export_writes_export_files_and_the_extra_config_file(tmp_path, exporter, monkeypatch):
+    monkeypatch.delenv("PRL_ATTEMPT_CONFIG_DIR", raising=False)
+    register(monkeypatch, HeadStub)
+    step_dir, state = save_stub_run(tmp_path)
+    output = exporter.convert(step_dir)
+
+    index = json.loads((output / "model.safetensors.index.json").read_text())["weight_map"]
+    assert set(index) == set(state) - {"head.weight"} and "head.safetensors" not in index.values()
+    head = load_file(output / "head.safetensors")
+    assert list(head) == ["weight"] and torch.equal(head["weight"], state["head.weight"].bfloat16())
+    assert json.loads((output / EXTRA_CONFIG_FILE).read_text()) == EXTRA_CONFIG
+    config = json.loads((output / "config.json").read_text())
+    assert EXTRA_CONFIG_ATTR not in config and config["architectures"] == ["Qwen3ForCausalLM"]
+
+    # The export loads back as the stub, with every weight under the model's names
+    model = get_model(ModelConfig(name=str(output), attn="flash_attention_2"), device=torch.device("meta"))
+    assert type(model) is HeadStub
+    assert set(load_state_dict_keys(output, HeadStub.export_files)) == set(model.state_dict())
+    load_like_the_trainer(model, output, monkeypatch)
+    for name, tensor in model.state_dict().items():
+        assert torch.equal(tensor, state[name].bfloat16()), name
+
+    # The content is taken off a copy of the model's config
+    checkpoint = exporter.open_checkpoint(step_dir)
+    exporter.save_model_assets(checkpoint.model, checkpoint.model_config, checkpoint.tokenizer_config, tmp_path / "x")
+    assert getattr(checkpoint.model.config, EXTRA_CONFIG_ATTR) == EXTRA_CONFIG
+    assert (tmp_path / "x" / "config.json").read_text() == (output / "config.json").read_text()
+
+
+def test_both_fp8_tools_refuse_a_model_with_export_files(tmp_path, exporter, monkeypatch):
+    monkeypatch.delenv("PRL_ATTEMPT_CONFIG_DIR", raising=False)
+    register(monkeypatch, HeadStub)
+    step_dir, _ = save_stub_run(tmp_path)
+    with pytest.raises(ValueError, match="HeadStub has export files, which FP8 export does not support"):
+        importlib.import_module("convert_dcp_to_fp8").convert(step_dir, block_size=2)
+    output = exporter.convert(step_dir)
+    with pytest.raises(ValueError, match="holds HeadStub, whose export files FP8 conversion does not support"):
+        importlib.import_module("convert_bf16_to_fp8").convert(output, tmp_path / "fp8")
+    assert not (tmp_path / "fp8").exists()
+
+
+def test_the_export_refuses_a_checkpoint_the_model_lacks(tmp_path, exporter, monkeypatch):
+    monkeypatch.delenv("PRL_ATTEMPT_CONFIG_DIR", raising=False)
+    register(monkeypatch, HeadStub)
+    step_dir, _ = save_stub_run(tmp_path)
+    # Without the extra config file, model.name builds the stock model, which has no head
+    (tmp_path / "model" / EXTRA_CONFIG_FILE).unlink()
+    with pytest.raises(ValueError, match=r"Qwen3ForCausalLM, built from .*, lacks 1 tensors of the checkpoint \(head"):
+        exporter.open_checkpoint(step_dir)
