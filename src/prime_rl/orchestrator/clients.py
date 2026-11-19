@@ -554,8 +554,9 @@ def _is_retryable_admin_error(exception: BaseException) -> bool:
 # AsyncClient uses `timeout=None`, so without this a stuck server would hang the
 # weight update forever: the read timeout converts a hang into a TimeoutException
 # that tenacity retries. Sized for `/pause`, which drains in-flight requests
-# (mode="keep") and so can legitimately take a while.
-ADMIN_TIMEOUT_S = 300.0
+# (mode="keep") and so can legitimately take a while. A loaded pool can need longer
+# to drain: PRIME_ADMIN_TIMEOUT_S overrides the default.
+ADMIN_TIMEOUT_S = float(os.environ.get("PRIME_ADMIN_TIMEOUT_S", "300"))
 # `/update_weights` runs a collective NCCL receive across all DP workers, which
 # can take longer than the other admin ops.
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
