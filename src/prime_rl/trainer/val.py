@@ -1,4 +1,4 @@
-"""Validation sets (``[[val.sets]]``), scored on the training model. Every set is tokenized once at startup into
+"""Validation sets (``[[val.set]]``), scored on the training model. Every set is tokenized once at startup into
 requests (`prepare_set`). Every validation scores the requests of all sets together (`score`, with the model's LM
 head swapped for `scoring_head`) and summarizes each set (`ValSet.summarize`)."""
 
@@ -296,7 +296,7 @@ def length_label(seq_len: int) -> str:
 
 
 class Validation:
-    """The ``[[val.sets]]``, tokenized once at startup and scored on the training model at every validation."""
+    """The ``[[val.set]]``, tokenized once at startup and scored on the training model at every validation."""
 
     def __init__(
         self,
@@ -310,7 +310,7 @@ class Validation:
         self.config = config
         self.parallel_dims = parallel_dims
         self.run_dir = run_dir
-        self.sets = [prepare_set(val_set, config.num_samples, tokenizer, renderer) for val_set in config.sets]
+        self.sets = [prepare_set(val_set, config.num_samples, tokenizer, renderer) for val_set in config.set]
         for val_set in self.sets:
             if not val_set.requests:
                 raise ValueError(f"Validation set {val_set.name} has nothing to score")

@@ -37,7 +37,7 @@ env.agent.runtime.type = "subprocess"
 interval = 5
 num_samples = 64
 
-[[val.sets]]
+[[val.set]]
 type = "chat"
 name = "reverse-text"
 path = "PrimeIntellect/Reverse-Text-SFT"
