@@ -11,6 +11,7 @@ from huggingface_hub import split_torch_state_dict_into_shards
 from safetensors import safe_open
 from safetensors.torch import save_file
 from torch import Tensor, nn
+from torch.distributed.checkpoint.metadata import Metadata
 from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
 from torch.distributed.tensor import DTensor
 from transformers.utils import (
@@ -25,6 +26,12 @@ from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from prime_rl.trainer.models.conversion_ops import ChunkedConvOp
+
+
+def get_unexpected_keys(metadata: Metadata, model_keys: Iterable[str]) -> list[str]:
+    """The model tensors of a DCP checkpoint (``metadata``) missing from ``model_keys``, sorted."""
+    stored = {key.removeprefix("app.model.") for key in metadata.state_dict_metadata if key.startswith("app.model.")}
+    return sorted(stored - set(model_keys))
 
 
 def load_state_dict_keys(save_dir: Path, export_files: dict[str, str] | None = None) -> list[str]:

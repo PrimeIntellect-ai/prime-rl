@@ -205,7 +205,14 @@ def train(config: TrainerConfig):
             f"{config.model.name} selects {cls.__name__} by its {cls.extra_config_file}: RL's weight transfer does not "
             "support classes selected by an extra config file yet"
         )
-    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt, model_files, resume=config.resume)
+    # A model cut to model.debug.num_layers lacks the other layers of its checkpoints
+    ckpt_manager = setup_ckpt_manager(
+        config.output_dir,
+        config.ckpt,
+        model_files,
+        resume=config.resume,
+        check_tensors=config.model.debug.num_layers is None,
+    )
 
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")

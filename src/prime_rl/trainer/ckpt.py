@@ -11,7 +11,7 @@ from typing import Any
 
 import torch
 from torch import nn
-from torch.distributed.checkpoint import FileSystemWriter
+from torch.distributed.checkpoint import FileSystemReader, FileSystemWriter
 from torch.distributed.checkpoint.state_dict import (
     get_model_state_dict,
     get_state_dict,
@@ -45,6 +45,7 @@ from prime_rl.trainer.utils import DCP_TIMEOUT, empty_pinned, get_dcp_group
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_ckpt_dir, get_step_path, is_ckpt_step_complete
+from prime_rl.utils.weights import get_unexpected_keys
 
 
 @dataclass
@@ -57,7 +58,8 @@ class Progress:
 @dataclass
 class ModelFiles:
     """What a checkpoint step directory holds besides the weights, so that it loads as a model name: the model's
-    config.json, the tokenizer, a VLM's processor and the generation config."""
+    config.json, the tokenizer, a VLM's processor, the generation config and an extra config file that selects its
+    class."""
 
     config: PretrainedConfig
     tokenizer: PreTrainedTokenizerBase
@@ -75,6 +77,9 @@ class ModelFiles:
         if self.processor is not None:
             self.processor.save_pretrained(directory)
         self.tokenizer.save_pretrained(directory)
+        if self.selection is not None:
+            path = directory / self.selection.cls.extra_config_file
+            path.write_text(json.dumps(self.selection.content, indent=2) + "\n")
 
 
 def setup_model_files(
@@ -373,9 +378,11 @@ class CheckpointManager:
         config: CheckpointConfig,
         model_files: ModelFiles,
         resume: ResumeConfig | None = None,
+        check_tensors: bool = True,
     ):
         self.config = config
         self.model_files = model_files
+        self.check_tensors = check_tensors
         self.skip_optimizer = config.skip_optimizer
         self.ckpt_dir = get_ckpt_dir(output_dir)
         self.logger = get_logger()
@@ -497,7 +504,15 @@ class CheckpointManager:
         self.logger.debug(f"Loading training checkpoint from {path}")
         start_time = time.perf_counter()
 
-        _load_app_state(path, model, optimizers, scheduler, progress, model_only=self.skip_optimizer)
+        _load_app_state(
+            path,
+            model,
+            optimizers,
+            scheduler,
+            progress,
+            model_only=self.skip_optimizer,
+            check_tensors=self.check_tensors,
+        )
 
         # Load the dataloader
         if dataloader is not None:
@@ -521,7 +536,9 @@ class CheckpointManager:
             raise FileNotFoundError(f"No trainer checkpoint at {path}")
         self.logger.info(f"Initializing weights from {path}")
         start_time = time.perf_counter()
-        _load_app_state(path, model, optimizers, scheduler=None, progress=None, model_only=True)
+        _load_app_state(
+            path, model, optimizers, scheduler=None, progress=None, model_only=True, check_tensors=self.check_tensors
+        )
         self.logger.debug(f"Loaded weights in {format_time(time.perf_counter() - start_time)}")
 
     def load(
@@ -647,16 +664,27 @@ def setup_ckpt_manager(
     ckpt_config: CheckpointConfig | None,
     model_files: ModelFiles,
     resume: ResumeConfig | None = None,
+    check_tensors: bool = True,
 ) -> CheckpointManager:
     """The checkpoint manager always exists: ``resume`` decides whether it loads,
-    ``ckpt`` whether it saves (a resume without ``ckpt`` loads but saves nothing)."""
+    ``ckpt`` whether it saves (a resume without ``ckpt`` loads but saves nothing). With ``check_tensors``, a load
+    refuses a checkpoint with tensors the model lacks."""
     return CheckpointManager(
-        ckpt_output_dir(output_dir, ckpt_config), ckpt_config or CheckpointConfig(), model_files, resume
+        ckpt_output_dir(output_dir, ckpt_config), ckpt_config or CheckpointConfig(), model_files, resume, check_tensors
     )
 
 
 def ckpt_output_dir(output_dir: Path, ckpt_config: CheckpointConfig | None) -> Path:
     return (ckpt_config.output_dir if ckpt_config else None) or output_dir
+
+
+def check_model_holds_checkpoint(path: Path, model: nn.Module) -> None:
+    """Raise unless ``model`` has every model tensor of the checkpoint at ``path``: a load would skip the others."""
+    if unexpected := get_unexpected_keys(FileSystemReader(path).read_metadata(), get_model_state_dict(model).keys()):
+        raise ValueError(
+            f"The checkpoint at {path} holds {len(unexpected)} tensors {type(model).__name__} lacks "
+            f"({', '.join(unexpected[:3])})"
+        )
 
 
 def _load_app_state(
@@ -667,7 +695,10 @@ def _load_app_state(
     progress: Progress | None,
     *,
     model_only: bool,
+    check_tensors: bool,
 ) -> None:
+    if check_tensors:
+        check_model_holds_checkpoint(path, model)
     app_state = AppState(model, [] if model_only else optimizers, scheduler, progress)
     dcp_load(state_dict={"app": app_state}, checkpoint_id=path, process_group=get_dcp_group())
     # DCP materializes the optimizer state with a zero-grad step, which allocates a full set of
