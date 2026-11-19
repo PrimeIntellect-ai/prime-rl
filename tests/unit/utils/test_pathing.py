@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -167,10 +168,16 @@ ALL_SKIPS = CheckpointConfig(skip_scheduler=True, skip_optimizer=True, skip_data
 
 
 def _write_run_configs(run_dir: Path, *names: str) -> Path:
-    """A run directory as a launcher leaves it: ``configs/attempt_1/resolved/<name>.json``."""
+    """A run directory as a launcher leaves it: ``configs/attempt_1/resolved/<name>.json``.
+
+    Root launcher configs (``rl``/``sft``/``pretrain``/``eval``) carry their own ``mode``;
+    sub-component configs (``trainer``, ``orchestrator``) do not.
+    """
     config_dir, _ = create_attempt_dirs(run_dir)
+    root = {"rl", "sft", "pretrain", "eval"}
     for name in names:
-        (config_dir / f"{name}.json").touch()
+        body = {"mode": name} if name in root else {}
+        (config_dir / f"{name}.json").write_text(json.dumps(body))
     return config_dir
 
 
@@ -237,10 +244,38 @@ def test_resume_dir_mode_reads_the_newest_attempt_first(tmp_path):
     for number, mode in ((2, "pretrain"), (10, "sft")):
         resolved = source_dir / "configs" / f"attempt_{number}" / "resolved"
         resolved.mkdir(parents=True)
-        (resolved / f"{mode}.json").touch()
+        (resolved / f"{mode}.json").write_text(json.dumps({"mode": mode}))
     (source_dir / "configs" / "latest.rclonelink").touch()
 
     assert get_checkpoint_mode(_step_dir(source_dir, 5)) == "sft"
+
+
+def test_resume_dir_mode_from_config_mode_field(tmp_path):
+    """The mode comes from the saved root config's ``mode`` field, not the filename."""
+    source_dir = tmp_path / "launcher-run"
+    config_dir, _ = create_attempt_dirs(source_dir)
+    (config_dir / "sft.json").write_text(json.dumps({"mode": "sft"}))
+
+    assert get_checkpoint_mode(_step_dir(source_dir, 20)) == "sft"
+
+
+def test_resume_dir_mode_ignores_eval_mode(tmp_path):
+    """``eval`` is a mode but not a trainer run kind: an eval-only attempt names no checkpoint."""
+    source_dir = tmp_path / "eval-run"
+    config_dir, _ = create_attempt_dirs(source_dir)
+    (config_dir / "eval.json").write_text(json.dumps({"mode": "eval"}))
+
+    assert get_checkpoint_mode(_step_dir(source_dir, 5)) is None
+
+
+def test_resume_dir_mode_tolerates_unparseable_configs(tmp_path):
+    """A half-written or empty JSON in an attempt does not stop detection."""
+    source_dir = tmp_path / "launcher-run"
+    config_dir, _ = create_attempt_dirs(source_dir)
+    (config_dir / "a.json").write_text("")
+    (config_dir / "sft.json").write_text(json.dumps({"mode": "sft"}))
+
+    assert get_checkpoint_mode(_step_dir(source_dir, 10)) == "sft"
 
 
 def test_resume_dir_all_skips_force_the_load(tmp_path):

@@ -120,7 +120,7 @@ DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discrimi
 
 
 class SFTConfig(SupervisedTrainerConfig):
-    mode: Literal["sft"] | None = None
+    mode: Literal["sft"] = "sft"
     """Run kind of this config. ``uv run launch`` picks the entrypoint from it; ``uv run sft`` accepts only
     "sft" (or no mode)."""
 

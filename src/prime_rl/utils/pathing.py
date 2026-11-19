@@ -441,15 +441,9 @@ def validate_run_dir(
         )
 
 
-RUN_MODE_CONFIGS = {
-    # The resolved configs only one run kind writes: the orchestrator's (a local rl launch writes no
-    # rl.json) and the per-kind configs a launcher saves. `trainer.json` is every trainer's config,
-    # so on its own it names no run kind.
-    "pretrain": ("pretrain.json",),
-    "sft": ("sft.json",),
-    "rl": ("rl.json", "orchestrator.json"),
-}
-"""The resolved configs that name a run kind in a run directory's config attempt."""
+TRAINER_MODES = ("rl", "sft", "pretrain")
+"""The run kinds that produce resumable trainer checkpoints. ``eval`` is a mode but not one here:
+an eval run keeps no checkpoint of its own."""
 
 INIT_FROM_KEY = {"pretrain": "model.init_from", "sft": "model.init_from", "rl": "trainer.model.init_from"}
 """The config key that starts a run of each kind from another run's weights."""
@@ -460,9 +454,13 @@ def get_checkpoint_mode(step_dir: Path) -> str | None:
     run directory: ``configs/latest/resolved``, the attempt directories, or the legacy
     ``configs/resolved``.
 
-    None when no attempt names a single run kind — an old run, a ``ckpt.output_dir`` outside the run
-    dir, a hosted run that saved no mode's config — so a checkpoint whose run kind can't be told
-    keeps its old behavior.
+    Each root launcher config (``rl.json``/``sft.json``/``pretrain.json``) declares its own kind
+    in its top-level ``mode``, so one resolved JSON names the run. Hosted rl writes only its
+    sub-component configs; ``orchestrator.json`` is the fallback since only rl produces one.
+
+    None when no attempt names a single run kind — an old run, a ``ckpt.output_dir`` outside the
+    run dir, a hosted run that saved no root config — so a checkpoint whose run kind can't be
+    told keeps its old behavior.
     """
     configs_dir = step_dir.parent.parent / "configs"
     # A hosted volume restores `configs/latest` from R2 as a plain file (`latest.rclonelink`), so
@@ -472,10 +470,17 @@ def get_checkpoint_mode(step_dir: Path) -> str | None:
     for resolved_dir in (configs_dir / "latest" / "resolved", *attempts, configs_dir / "resolved"):
         if not resolved_dir.is_dir():
             continue
-        names = {path.name for path in resolved_dir.glob("*.json")}
-        modes = [mode for mode, configs in RUN_MODE_CONFIGS.items() if not names.isdisjoint(configs)]
-        if modes:
-            return modes[0] if len(modes) == 1 else None
+        for path in sorted(resolved_dir.glob("*.json")):
+            try:
+                mode = json.loads(path.read_text()).get("mode")
+            except (OSError, ValueError):
+                continue
+            if mode in TRAINER_MODES:
+                return mode
+        # Hosted rl writes only ``trainer.json`` and ``orchestrator.json``; neither carries a
+        # ``mode`` field, but only rl runs produce an orchestrator.
+        if (resolved_dir / "orchestrator.json").is_file():
+            return "rl"
     return None
 
 

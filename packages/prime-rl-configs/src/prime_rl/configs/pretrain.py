@@ -93,7 +93,7 @@ class PretrainConfig(SupervisedTrainerConfig):
 
     model: PretrainModelConfig = PretrainModelConfig()
 
-    mode: Literal["pretrain"] | None = None
+    mode: Literal["pretrain"] = "pretrain"
     """Run kind of this config. ``uv run launch`` picks the entrypoint from it; ``uv run pretrain`` accepts only
     "pretrain" (or no mode)."""
 

@@ -83,7 +83,7 @@ class EvalConfig(ServedEvalConfig):
     the source sets ``serve.address``. Defaults to Prime Inference (``PRIME_API_KEY`` or
     ``prime login``) with the concurrency pinned at 128."""
 
-    mode: Literal["eval"] | None = None
+    mode: Literal["eval"] = "eval"
     """Run kind of this config. ``uv run launch`` picks the entrypoint from it; ``uv run eval`` accepts only
     "eval" (or no mode)."""
 
