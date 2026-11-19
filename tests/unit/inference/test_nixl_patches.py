@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import pytest
 from vllm.distributed.kv_transfer.kv_connector.v1.nixl.base_scheduler import NixlBaseConnectorScheduler
 from vllm.distributed.kv_transfer.kv_connector.v1.nixl.pull_scheduler import NixlPullConnectorScheduler
 from vllm.v1.kv_cache_interface import FullAttentionSpec, SlidingWindowMLASpec, SlidingWindowSpec
@@ -191,14 +192,16 @@ def test_send_lease_keeps_its_remaining_time_across_a_keep_pause(monkeypatch):
     assert reap(1125.0) == {"new"}
 
 
-def test_keep_pause_freezes_the_nixl_leases_of_the_engines_workers(monkeypatch):
-    """The patched engine pause and resume reach the NIXL worker inside a MultiConnector through collective_rpc; an
-    ``abort`` pause leaves leases on wall-clock time."""
+@pytest.mark.parametrize("engine_cls", ["EngineCore", "EngineCoreProc"])
+def test_keep_pause_freezes_the_nixl_leases_of_the_engines_workers(monkeypatch, engine_cls):
+    """The patched engine pause and resume reach the NIXL worker inside a MultiConnector through collective_rpc, also
+    through EngineCoreProc's own pause and resume (the engine class that serves); an ``abort`` pause leaves leases on
+    wall-clock time."""
     import time
 
     import vllm.distributed.kv_transfer as kv_transfer
     from vllm.distributed.kv_transfer.kv_connector.v1.nixl.base_worker import NixlBaseConnectorWorker
-    from vllm.v1.engine.core import EngineCore
+    from vllm.v1.engine import core
 
     from prime_rl.inference.patches import monkey_patch_freeze_nixl_leases_during_keep_pause
 
@@ -211,13 +214,15 @@ def test_keep_pause_freezes_the_nixl_leases_of_the_engines_workers(monkeypatch):
     monkeypatch.setattr(kv_transfer, "has_kv_transfer_group", lambda: True)
     monkeypatch.setattr(kv_transfer, "get_kv_transfer_group", lambda: group)
 
-    engine = object.__new__(EngineCore)
+    engine = object.__new__(getattr(core, engine_cls))
     engine.vllm_config = SimpleNamespace(kv_transfer_config=SimpleNamespace())
     engine.scheduler = SimpleNamespace(set_pause_state=lambda state: None, finish_requests=lambda ids, status: [])
     engine._finish_pause = lambda clear_cache, reset_connector: None
     engine._set_kv_cache_reclaimable = lambda reclaimable: None
     engine._checkpoint_state = SimpleNamespace(is_restored=True)
     engine.collective_rpc = lambda method: [method(None)]
+    engine._pause_complete = lambda: True
+    engine._send_abort_outputs = lambda requests: None
 
     engine.pause_scheduler(mode="keep", clear_cache=False)
     clock[0] = 1120.0
