@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import shlex
 import shutil
 import sys
@@ -368,6 +369,16 @@ def confined(path: str | Path) -> Path:
     if not resolved.startswith(_save_root + os.sep):
         raise ValueError(f"{str(path)!r} is outside the run directory {_save_root!r}")
     return Path(resolved)
+
+
+def is_checkpoint_step_dir(path: str | Path) -> bool:
+    """Whether ``path`` is a local trainer checkpoint step directory, whose ``trainer/`` holds the weights."""
+    return (Path(path) / "trainer").is_dir()
+
+
+def has_step_dir_name(path: str | Path) -> bool:
+    """Whether ``path`` is named like a checkpoint step directory (``.../step_<N>``), which it may no longer be."""
+    return re.fullmatch(r"step_\d+", Path(path).name) is not None
 
 
 def is_ckpt_step_complete(step_dir: Path) -> bool:

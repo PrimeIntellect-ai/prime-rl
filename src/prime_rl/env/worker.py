@@ -58,6 +58,9 @@ LATE_CANCEL_SECONDS = 10.0
 """How long a delivered episode stays discardable: a client whose caller cancels the run
 after the reply left drops the reply and sends a cancel right away."""
 
+_SHUTDOWN_DRAIN_SECONDS = 5.0
+"""Leave time for shared-resource teardown before the pool's 10-second kill deadline."""
+
 
 def set_episode_hook(hook: EpisodeHook | None) -> None:
     """Install a hook that keeps finished episodes' training arrays. Streamed nodes never
@@ -391,8 +394,19 @@ class EnvWorker:
             except (asyncio.CancelledError, KeyboardInterrupt):
                 pass
             finally:
-                for task in tasks:
-                    task.cancel()
-                self.frontend.close()
-                self.ctx.term()
+                pending = tuple(tasks)
+                try:
+                    for task in pending:
+                        # asyncio.run may already be cancelling these on SIGTERM.
+                        if not task.cancelling():
+                            task.cancel()
+                    # Request finalizers still need the socket and serving resources.
+                    if pending:
+                        done, unfinished = await asyncio.wait(pending, timeout=_SHUTDOWN_DRAIN_SECONDS)
+                        await asyncio.gather(*done, return_exceptions=True)
+                        if unfinished:
+                            get_logger().warning(f"Timed out draining env worker requests pending={len(unfinished)}")
+                finally:
+                    self.frontend.close()
+                    self.ctx.term()
                 get_logger().info(f"Stopped env worker taskset={self.taskset_id} address={self.address}")
