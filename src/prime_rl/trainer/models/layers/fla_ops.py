@@ -12,13 +12,15 @@ from torch import Tensor
 # FLA's public entry points are torch.compiler.disable'd (directly or through its backend dispatch).
 # Inside an activation-checkpointed block that graph break makes Dynamo run the whole block eagerly,
 # so each op is exposed as an opaque custom op that calls FLA's forward and backward functions.
-CHUNK_SIZE = 64
+
+# FLA's default chunk size; prepare_chunk_indices and every op below must agree on it.
+FLA_CHUNK_SIZE = 64
 
 
 def prepare_chunk_indices(cu_seqlens: Tensor) -> Tensor:
     """Each chunk's (sequence, chunk within sequence) index, which these ops take; build it once per packed row
     outside the compiled layers, since it reads ``cu_seqlens`` on the host."""
-    return fla_prepare_chunk_indices(cu_seqlens, CHUNK_SIZE)
+    return fla_prepare_chunk_indices(cu_seqlens, FLA_CHUNK_SIZE)
 
 
 @torch.library.custom_op("prime_rl::fla_causal_conv1d", mutates_args=())
@@ -33,7 +35,7 @@ def _causal_conv1d(
         activation=activation,
         cu_seqlens=cu_seqlens,
         chunk_indices=chunk_indices,
-        chunk_size=CHUNK_SIZE,
+        chunk_size=FLA_CHUNK_SIZE,
     )
     return y
 
@@ -57,7 +59,7 @@ def _causal_conv1d_backward(
         activation=activation,
         cu_seqlens=cu_seqlens,
         chunk_indices=chunk_indices,
-        chunk_size=CHUNK_SIZE,
+        chunk_size=FLA_CHUNK_SIZE,
     )
     return dx, dweight
 
@@ -107,7 +109,7 @@ def _chunk_gated_delta_rule(
         output_final_state=False,
         cu_seqlens=cu_seqlens,
         chunk_indices=chunk_indices,
-        chunk_size=CHUNK_SIZE,
+        chunk_size=FLA_CHUNK_SIZE,
     )
     return o.to(q.dtype), q, q_rstd, k, k_rstd, g_cumsum, A
 
@@ -121,7 +123,7 @@ def _(q, k, v, g, beta, scale, cu_seqlens, chunk_indices):
         torch.empty_like(k),
         k.new_empty(k.shape[:-1], dtype=torch.float32),
         torch.empty_like(g, dtype=torch.float32),
-        k.new_empty((*beta.shape, CHUNK_SIZE)),
+        k.new_empty((*beta.shape, FLA_CHUNK_SIZE)),
     )
 
 
@@ -153,7 +155,7 @@ def _chunk_gated_delta_rule_backward(
         dht=None,
         cu_seqlens=cu_seqlens,
         chunk_indices=chunk_indices,
-        chunk_size=CHUNK_SIZE,
+        chunk_size=FLA_CHUNK_SIZE,
     )
     dq = l2norm_bwd(q, q_rstd, dq)
     dk = l2norm_bwd(k, k_rstd, dk)
@@ -238,7 +240,7 @@ def _chunk_kda(
         output_final_state=False,
         cu_seqlens=cu_seqlens,
         chunk_indices=chunk_indices,
-        chunk_size=CHUNK_SIZE,
+        chunk_size=FLA_CHUNK_SIZE,
         safe_gate=True,
         lower_bound=lower_bound,
         use_gate_in_kernel=True,
@@ -257,8 +259,8 @@ def _(q, k, v, g, beta, A_log, dt_bias, scale, lower_bound, cu_seqlens, chunk_in
         torch.empty_like(k),
         k.new_empty(k.shape[:-1], dtype=torch.float32),
         torch.empty_like(beta, dtype=torch.float32),
-        k.new_empty((*beta.shape, CHUNK_SIZE)),
-        k.new_empty((*beta.shape, CHUNK_SIZE)),
+        k.new_empty((*beta.shape, FLA_CHUNK_SIZE)),
+        k.new_empty((*beta.shape, FLA_CHUNK_SIZE)),
     )
 
 
@@ -296,7 +298,7 @@ def _chunk_kda_backward(
         g_org=g,
         cu_seqlens=cu_seqlens,
         chunk_indices=chunk_indices,
-        chunk_size=CHUNK_SIZE,
+        chunk_size=FLA_CHUNK_SIZE,
         safe_gate=True,
         lower_bound=lower_bound,
         use_gate_in_kernel=True,
