@@ -1,0 +1,22 @@
+# A tiny Clef-Flash release trained on System One records. The test writes both and passes them as --model.name,
+# --data.name and --val.data.name.
+max_steps = 4
+
+[ckpt]
+
+[model]
+name = "set-by-the-test"
+
+[data]
+type = "system_one"
+name = "set-by-the-test"
+seq_len = 2048
+batch_size = 4
+micro_batch_size = 1
+
+[val]
+interval = 2
+
+[val.data]
+name = "set-by-the-test"
+micro_batch_size = 1

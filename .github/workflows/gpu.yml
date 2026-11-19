@@ -114,6 +114,7 @@ jobs:
           - {test: reverse_text_lora, name: Reverse Text LoRA}
           - {test: reverse_text_moe, name: Reverse Text MoE}
           - {test: reverse_text_modelexpress, name: Reverse Text ModelExpress}
+          - {test: clef_flash_sft, name: Clef-Flash SFT}
     steps:
       - name: Install Git
         run: |
