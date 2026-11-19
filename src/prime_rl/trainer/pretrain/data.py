@@ -510,10 +510,10 @@ class TokenDataset(StatefulIterableDataset):
         seq_lens = lengths.tolist() if self.document_masking else [self.sampler.seq_len]
         positions = np.arange(self.sampler.seq_len) - np.repeat(np.cumsum(seq_lens) - seq_lens, seq_lens)
         return {
-            "input_ids": input_ids.tolist(),
-            "target_ids": target_ids.tolist(),
-            "position_ids": positions.tolist(),
-            "loss_mask": loss_mask.tolist(),
+            "input_ids": input_ids,
+            "target_ids": target_ids,
+            "position_ids": positions,
+            "loss_mask": loss_mask,
             "seq_lens": seq_lens,
             "mm_kwargs": None,
             "mm_token_type_ids": None,
