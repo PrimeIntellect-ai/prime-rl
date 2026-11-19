@@ -24,6 +24,7 @@ from prime_rl.configs.shared import (
 )
 from prime_rl.configs.trainer import (
     InitConfig,
+    NVFP4MoEComputeConfig,
     TokenizerConfig,
     TrainerConfig,
     rl_micro_batch_multiple,
@@ -568,6 +569,28 @@ class RLConfig(BaseConfig):
                 warnings.warn(
                     "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` to the vLLM server.",
                     stacklevel=2,
+                )
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_nvfp4_experts(self):
+        """NVFP4 trainer experts reproduce the engines' online ``nvfp4_per_token`` MoE, so the engines must run it,
+        with the trainer's FlashInfer quantizer settings."""
+        compute = self.trainer.model.moe.compute
+        if not isinstance(compute, NVFP4MoEComputeConfig) or self.inference is None:
+            return self
+        vllm = self.inference.vllm
+        moe_quantization = (getattr(vllm, "quantization_config", None) or {}).get("moe")
+        if vllm.quantization != "online" or moe_quantization != "nvfp4_per_token":
+            raise ValueError(
+                "trainer.model.moe.compute.type = 'nvfp4' needs engines with the same routed-expert numerics: set "
+                "inference.vllm.quantization = 'online' and inference.vllm.quantization_config.moe = 'nvfp4_per_token'."
+            )
+        for name, value in compute.flashinfer_env.items():
+            if self.inference.env_vars.setdefault(name, value) != value:
+                raise ValueError(
+                    f"inference.env_vars.{name} = {self.inference.env_vars[name]!r} disagrees with the trainer's NVFP4 "
+                    f"experts ({value!r}); set it through trainer.model.moe.compute."
                 )
         return self
 
