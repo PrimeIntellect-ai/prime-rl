@@ -22,7 +22,7 @@ from prime_rl.orchestrator.algo.base import iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import stamp_loss_routing
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import RolloutWindow, TrainEpisodes
-from prime_rl.orchestrator.trajectories import iter_trainable_branches, trace_to_samples
+from prime_rl.orchestrator.trajectories import iter_trainable_branches
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TrainBatch
 from prime_rl.orchestrator.utils import (
     episode_env_name,
@@ -255,7 +255,9 @@ class TrainSink(Reconfigurable):
         is ``progress.step`` and trains policy v{step-1}, so a token sampled by
         v{k} would ship at staleness ``(step-1) - k``. Tokens without a policy
         label take their episode's dispatch version, which no token of the
-        episode predates. Queued tokens only age when ``progress.step``
+        episode predates. A sample with no branch identity was compiled from
+        a frozen model's tokens, not the branch's own, so it never goes stale.
+        Queued tokens only age when ``progress.step``
         advances, so the full sweep runs once per step; ``trace_ids`` scopes
         the check to a freshly inserted group. Frozen-sourced episodes (no
         policy span) never go stale.
@@ -281,6 +283,8 @@ class TrainSink(Reconfigurable):
             samples = self.pending_batch[trace_id]
             masked = [
                 mask_stale_tokens(sample, branches[sample.branch_index], policy.start, min_version)
+                if sample.branch_index is not None
+                else 0
                 for sample in samples
             ]
             trainable = [not n or _has_loss(sample) for sample, n in zip(samples, masked)]
@@ -366,7 +370,7 @@ class TrainSink(Reconfigurable):
         # The temperature the group sampled with, which a live update may have changed since.
         temperature = env.sampling_at(train_work(group[0]).step).temperature
         for trace in survivors:
-            samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
+            samples = await asyncio.to_thread(env.algorithm.trace_to_samples, trace, env_name=env_name)
             for sample in samples:
                 sample.temperatures = np.full(len(sample.token_ids), temperature, dtype=np.float32)
                 if env.requires_sampling_masks and not _kept(sample, "sampler_support_replayed"):
@@ -533,7 +537,8 @@ class TrainSink(Reconfigurable):
                     continue
                 branches = episode.traces[0].branches
                 for sample in trace_samples:
-                    sample.staleness = token_staleness(branches[sample.branch_index], policy.start, trained_version)
+                    if sample.branch_index is not None:
+                        sample.staleness = token_staleness(branches[sample.branch_index], policy.start, trained_version)
 
         await asyncio.to_thread(stamp_staleness)
 
@@ -549,6 +554,8 @@ class TrainSink(Reconfigurable):
             trainable = {branch.index: (branch, mask) for branch, mask in iter_trainable_branches(episode.traces[0])}
             for sample in trace_samples:
                 kept += int(sample.mask.sum())
+                if sample.branch_index is None:
+                    continue
                 branch, mask = trainable[sample.branch_index]
                 runs = stale_token_runs(branch, policy.start, min_version)
                 masked += sum(int(mask[start:end].sum()) for start, end in runs)

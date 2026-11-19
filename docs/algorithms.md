@@ -21,6 +21,7 @@ This page covers the math and the configurable algorithmic components: the algor
   - [Self-Play Advantage (RAE)](#self-play-advantage-rae)
   - [Authoring an Algorithm](#authoring-an-algorithm)
   - [Reference Scoring](#reference-scoring)
+  - [Experience Distillation](#experience-distillation)
 - [Curricula](#curricula)
 - [Multi-Turn Trajectories](#multi-turn-trajectories)
   - [Extension Property](#extension-property)
@@ -50,9 +51,9 @@ name = "Qwen/Qwen3-32B"
 base_url = "http://localhost:8001/v1"
 ```
 
-Model *roles* are algorithm-local vocabulary — each algorithm names its reference on the field where the model is actually used, and there is no shared `teacher` slot. `opd` declares a `teacher` field (the frozen model whose reverse KL the policy distills toward); `sft` declares a `teacher` field too (the frozen model it samples from and imitates); `opsd` self-distills against the live policy and names no model at all. No role exists outside the algorithm that declares it: the dispatcher, sink, and trainer branch on liveness alone, never on what an algorithm calls a model.
+Model *roles* are algorithm-local vocabulary — each algorithm names its reference on the field where the model is actually used, and there is no shared `teacher` slot. `opd` declares a `teacher` field (the frozen model whose reverse KL the policy distills toward); `sft` declares a `teacher` field too (the frozen model it samples from and imitates); `epd` declares one for the frozen model that re-decides the policy's trials; `opsd` self-distills against the live policy and names no model at all. No role exists outside the algorithm that declares it: the dispatcher, sink, and trainer branch on liveness alone, never on what an algorithm calls a model.
 
-So for `opd` and `sft` set `[orchestrator.train.algo.teacher]`; `opsd` needs neither. Both teachers must be frozen endpoints — they are typed `FrozenModelConfig`, so `"policy"` isn't representable (the KL would be identically zero); `opsd`'s teacher *is* the live policy by definition (self-distillation conditioned on a demonstration), so it exposes no reference to configure.
+So for `opd`, `sft` and `epd` set `[orchestrator.train.algo.teacher]`; `opsd` needs none. These teachers must be frozen endpoints — they are typed `FrozenModelConfig`, so `"policy"` isn't representable (the KL would be identically zero); `opsd`'s teacher *is* the live policy by definition (self-distillation conditioned on a demonstration), so it exposes no reference to configure.
 
 Liveness is a property of the reference, not of any role: rollouts sampled from `"policy"` get version-salted prefix caches, carry sampling logprobs for importance ratios, and go stale as weights update; rollouts and scores from frozen models get a stable prefix cache and never go stale. Frozen models are externally hosted (`base_url` is required) — `prime-rl` never launches or updates them, and each env's algorithm builds its own client pool to the endpoints it declares.
 
@@ -73,6 +74,7 @@ type = "grpo"  # the default
 | `hierarchical_grpo` | policy | `rl` on actions | GRPO for proposer-solver envs. Solvers are compared only with attempts on the same proposed problem; proposers are compared with the other proposals in the group. See [Hierarchical GRPO](#hierarchical-grpo). |
 | `opd` | policy | `ref_kl` on actions | On-policy distillation ([Thinking Machines](https://thinkingmachines.ai/blog/on-policy-distillation/)): the policy samples, per-token reverse KL against a reference model as the gradient signal. Needs a `teacher`. |
 | `sft` | *(the teacher)* | `ce` on actions | Hard distillation: a frozen model generates rollouts, the policy trains with CE on its tokens. Needs a frozen `teacher` (the model it samples from). |
+| `epd` | policy | `ce` on teacher decisions | [Experience Distillation](#experience-distillation) ([arXiv:2607.21051](https://arxiv.org/abs/2607.21051)): a group's rollouts are its task's experience; a frozen `teacher` with that experience in context re-decides every step, and the policy trains with CE on those decisions without it. |
 | `opsd` | policy | `ref_kl` on actions | SDFT ([arXiv:2601.19897](https://arxiv.org/abs/2601.19897)): the model is its own reference, conditioned on an expert demonstration. The teacher *is* the live policy (the paper's setting, no extra deployment) — no model to configure. |
 | `echo` | policy | `rl` on actions + weighted `ce` on observations | ECHO: standard GRPO plus a cross-entropy loss on env-provided tokens already present in the rollout, selected by message role (needs the renderer's role attribution). Defaults to tool-response bodies at `alpha = 0.1` (ECHO's λ); set `roles` to train other roles, each at its own weight. |
 
@@ -151,6 +153,7 @@ At runtime, each env's `TrainEnv` (`prime_rl.orchestrator.envs`) resolves the al
 | `opd` | `OPDAlgorithm` | `score_episode`: own-context prefill under the teacher |
 | `opsd` | `OPSDAlgorithm` | `score_episode`: demo-conditioned prefill under the live policy |
 | `sft` | `SFTDistillAlgorithm` | no credit assignment; CE on sampled tokens |
+| `epd` | `EPDAlgorithm` | `score_group`: teacher re-decides each trial with the group as experience; `trace_to_samples`: CE on those decisions without the experience |
 
 Algorithms operate on native verifier artifacts and annotate their message graphs directly:
 
@@ -365,6 +368,7 @@ The per-token training signal is set by `algo.type` and the [algorithm](#the-alg
 | `opd` | `ref_kl` | On-policy distillation: per-token reverse KL to a reference model (`teacher`, an inline frozen hosted model), evaluated in the trainer from shipped reference logprobs. No credit — rollouts keep `advantages = None` and ship no advantage stream; `group_size` only fans out sampling. |
 | `opsd` | `ref_kl` | SDFT: per-token reverse KL to a demo-conditioned reference. No credit — rollouts keep `advantages = None` and ship no advantage stream. |
 | `sft` | `ce` | Cross-entropy on the sampled tokens. Assigns no advantage — trains on every sampled token. |
+| `epd` | `ce` | Cross-entropy on the teacher's sampled decisions, in a context without the experience. Assigns no advantage. |
 
 ### Default Advantage
 
@@ -497,7 +501,7 @@ class MyAlgorithm(Algorithm):
             assign_advantages(trace, advantage)
 ```
 
-Add a typed `MyAlgoConfig` to `prime_rl.configs.algorithm` and its discriminated union, then register `"my_algo": MyAlgorithm` in `ALGORITHM_CLASSES`. Pick `score_episode` for rollout-local work or model calls, and `score_group` for group-relative credit. `assign_advantages` takes a scalar or a list aligned to the trace graph's sampled tokens.
+Add a typed `MyAlgoConfig` to `prime_rl.configs.algorithm` and its discriminated union, then register `"my_algo": MyAlgorithm` in `ALGORITHM_CLASSES`. Pick `score_episode` for rollout-local work or model calls, and `score_group` for group-relative credit. An algorithm whose training sequence differs from the rollout's own tokens overrides `trace_to_samples`, which compiles each admitted trace into `TrainingSample`s. `assign_advantages` takes a scalar or a list aligned to the trace graph's sampled tokens.
 
 Curriculum admission and metrics can inspect the resulting graph-native streams after group scoring.
 
@@ -519,6 +523,25 @@ Scoring runs before curriculum admission, so a rollout that is later rejected st
 The orchestrator filters samples with no training signal. This includes samples with zero advantage on all RL tokens. Samples that still carry CE or reference-KL components are retained. Filtering an RL token also removes its trainer/inference mismatch-KL contribution.
 
 `orchestrator.constant_trainer_batch_size` defaults to `true`. The orchestrator filters samples before they count toward the batch target. It collects replacements, so rollout-based batches contain `orchestrator.batch_size` training traces. Set the option to `false` to filter after collection without replacement. This setting can improve orchestrator throughput, but it produces smaller trainer batches.
+
+### Experience Distillation
+
+`epd` implements Experience Distillation ([arXiv:2607.21051](https://arxiv.org/abs/2607.21051)) on any env: it distills what a model learns in context from repeated attempts at a task into a model that sees no attempts. The policy plays the env as usual, and a group's `group_size` rollouts are trials of one task. Together they are the task's experience: a transcript of every trial, each headed by its reward and stop condition, placed in the teacher's system message through `template` (with an `{experience}` placeholder). Trials are added in group order up to `max_experience_chars`.
+
+In `score_group`, the frozen `teacher` re-decides every recorded step of every trial. At step t it sees the experience and the trial so far, packed as `o_0, a'_0, a_0, o_1, ..., o_t`: its own earlier decisions `a'`, the recorded actions `a` and the observations that followed them. It samples `a'_t`, which may be a tool call; nothing runs it. The decisions are stored in `trace.info["epd"]`. Each step is one token-in/out call through the policy's renderer, so the teacher must be a vLLM server (`uv run inference`) with the policy's tokenizer; the paper uses the policy's own starting checkpoint. `temperature` and `max_tokens` control its sampling.
+
+`trace_to_samples` renders the same packed sequence without the experience, with the trial's tools, through the policy's renderer (the same path as SFT data), and trains with CE on the teacher's decisions only. The trials themselves are not trained on. These samples are not the branch's token sequence: they carry no branch identity, get no trainer annotations, and never go stale, since the trained tokens come from the frozen teacher. A decision whose tool-call arguments are not valid JSON cannot be rendered, and its trace is skipped with a warning.
+
+```toml
+[orchestrator.train.algo]
+type = "epd"
+
+[orchestrator.train.algo.teacher]
+name = "Qwen/Qwen3-8B"
+base_url = "http://localhost:8001/v1"
+```
+
+The teacher calls are sequential within a trial and run before curriculum admission, so a group costs about `group_size` × turns teacher calls.
 
 ## Curricula
 

@@ -39,6 +39,7 @@ def _ref_kind(ref):
         ("max_rl", {}, "policy", "rl"),
         ("opd", {"teacher": FROZEN}, "policy", "ref_kl"),
         ("sft", {"teacher": FROZEN}, "frozen", "ce"),
+        ("epd", {"teacher": FROZEN}, "policy", "ce"),
         ("opsd", {}, "policy", "ref_kl"),
         ("echo", {}, "policy", "rl"),
     ],

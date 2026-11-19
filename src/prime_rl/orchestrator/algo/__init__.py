@@ -6,7 +6,7 @@ turns the signal half into runtime objects (the sampling half is interpreted by
 :class:`~prime_rl.orchestrator.envs.TrainEnv`):
 
 - one module per algorithm (``grpo``, ``echo``, ``max_rl``, ``rae``,
-  ``hierarchical_grpo``, ``opd``, ``opsd``, ``sft``, ``debug``) — each named
+  ``hierarchical_grpo``, ``opd``, ``opsd``, ``sft``, ``epd``, ``debug``) — each named
   class owns its scoring hooks
   (``score_episode`` / ``score_group``) and declares what it needs (loss
   component, a "teacher", ...). One instance per env, built by
@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.orchestrator.algo.debug import DebugAlgorithm
 from prime_rl.orchestrator.algo.echo import EchoAlgorithm
+from prime_rl.orchestrator.algo.epd import EPDAlgorithm
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.hierarchical_grpo import HierarchicalGRPOAlgorithm
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
@@ -49,6 +50,7 @@ ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
     "opd": OPDAlgorithm,
     "opsd": OPSDAlgorithm,
     "sft": SFTDistillAlgorithm,
+    "epd": EPDAlgorithm,
     "debug": DebugAlgorithm,
 }
 
@@ -67,6 +69,7 @@ __all__ = [
     "Algorithm",
     "DebugAlgorithm",
     "EchoAlgorithm",
+    "EPDAlgorithm",
     "GRPOAlgorithm",
     "HierarchicalGRPOAlgorithm",
     "MaxRLAlgorithm",

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import numpy as np
 import verifiers.v1 as vf
+from renderers import RendererConfig
 
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
 from prime_rl.orchestrator.clients import InferenceClient, connect_frozen_client
+from prime_rl.orchestrator.trajectories import trace_to_samples
+from prime_rl.transports.batch import TrainingSample
 
 
 def iter_trainable_traces(episodes: list[vf.Episode]):
@@ -41,9 +44,12 @@ class Algorithm:
     async def setup(self) -> None:
         """Connect resources owned by the algorithm."""
 
-    async def connect(self, reference: FrozenModelConfig) -> InferenceClient:
-        """Connect and track the frozen model pool owned by this algorithm."""
-        self.connected = await connect_frozen_client(reference)
+    async def connect(
+        self, reference: FrozenModelConfig, *, renderer_config: RendererConfig | None = None
+    ) -> InferenceClient:
+        """Connect and track the frozen model pool owned by this algorithm. With
+        ``renderer_config``, its train client generates token-in/out through that renderer."""
+        self.connected = await connect_frozen_client(reference, renderer_config=renderer_config)
         return self.connected
 
     async def score_episode(self, episode: vf.Episode) -> None:
@@ -51,6 +57,10 @@ class Algorithm:
 
     async def score_group(self, episodes: list[vf.Episode]) -> None:
         """Assign group-relative annotations to a finalized cohort."""
+
+    def trace_to_samples(self, trace: vf.Trace, *, env_name: str) -> list[TrainingSample]:
+        """Compile one admitted trace into training samples, one per trainable branch."""
+        return trace_to_samples(trace, env_name=env_name)
 
     def reconfigure(self, config: AlgoConfig) -> None:
         """Adopt a live config update, in which only fields marked LIVE can differ."""

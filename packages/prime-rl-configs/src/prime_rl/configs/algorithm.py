@@ -2,7 +2,7 @@
 
 An algorithm is a named, self-contained config — a discriminated union keyed
 on ``type`` (``grpo``, ``max_rl``, ``rae``, ``hierarchical_grpo``, ``opd``,
-``opsd``, ``sft``, ``echo``, ``debug``).
+``opsd``, ``sft``, ``epd``, ``echo``, ``debug``).
 The bundle *is* the algorithm: each variant carries
 its credit-assignment / loss-routing parameters and any model it references,
 and its class defaults are the vetted setting — ``type = "opd"`` with a
@@ -349,6 +349,52 @@ class SFTAlgoConfig(BaseAlgoConfig):
         return self.teacher
 
 
+EPD_TEMPLATE = """You are attempting a task you have attempted before. Below is the record of your previous attempts at it, with the outcome of each.
+
+<experience>
+{experience}
+</experience>
+
+Before each decision, study these attempts: what worked, what failed and why. Reason carefully about the best next step given what happened, then respond exactly as the task requires."""
+
+
+class EPDAlgoConfig(BaseAlgoConfig):
+    type: Literal["epd"] = "epd"
+    """Experience Distillation (arXiv:2607.21051), on any env: the policy's
+    ``group_size`` rollouts of a task are that task's trials, and together they
+    are its experience. A frozen ``teacher`` with the experience in context
+    re-decides every recorded step of every trial: at step t it sees the trial's
+    history with its own earlier decisions and the recorded actions, and samples
+    ``a'_t``. The policy trains with CE on those decisions in the same history
+    without the experience. The trials themselves are not trained on, and no
+    advantage is assigned."""
+
+    action_loss_type: ClassVar[ActionLossType] = "ce"
+
+    teacher: FrozenModelConfig
+    """The teacher — an inline frozen hosted model (``name`` + ``base_url``) that
+    reads the experience and makes the decisions the policy imitates; the paper
+    uses the policy's own starting checkpoint. It is sampled token-in/out through
+    the policy's renderer, so it must be a vLLM server with ``/inference/v1/generate``
+    (``uv run inference``) and share the policy's tokenizer."""
+
+    template: str = EPD_TEMPLATE
+    """Content of the system message that puts the experience in the teacher's
+    context, ahead of the trial; ``{experience}`` is replaced with the group's trials
+    as a transcript, each headed by its reward and stop condition."""
+
+    max_experience_chars: int = Field(200_000, gt=0)
+    """Character budget of the rendered experience. Trials are added in group order
+    while they fit; the rest are left out with a warning, and a group none of whose
+    trials fits raises."""
+
+    temperature: float = Field(1.0, ge=0)
+    """Sampling temperature of the teacher's decisions."""
+
+    max_tokens: int | None = Field(None, gt=0)
+    """Token limit of each teacher decision; None leaves it to the server."""
+
+
 class DebugAlgoConfig(BaseAlgoConfig):
     type: Literal["debug"] = "debug"
     """Debugging algorithm for infra work: every sampled token of every clean
@@ -384,6 +430,7 @@ AlgoConfig: TypeAlias = Annotated[
     | OPDAlgoConfig
     | OPSDAlgoConfig
     | SFTAlgoConfig
+    | EPDAlgoConfig
     | DebugAlgoConfig,
     Field(discriminator="type"),
 ]
@@ -398,6 +445,7 @@ its class defaults are the vetted setting.
 - ``opd`` — on-policy distillation: policy samples, per-token reverse KL against a reference model. Needs ``teacher``.
 - ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy (the teacher is the policy itself).
 - ``sft`` — a frozen ``teacher`` samples, the policy trains with CE on its tokens. Needs ``teacher``.
+- ``epd`` — Experience Distillation: a group's rollouts are its task's experience; a frozen ``teacher`` with that experience in context re-decides every step, and the policy trains with CE on those decisions without it. Needs ``teacher``.
 - ``echo`` — GRPO on action tokens + weighted CE on tool-response observation tokens.
 - ``debug`` — the same constant advantage on every sampled token, ignoring
   rewards. Debugging only: for infra work that needs every token trainable.
