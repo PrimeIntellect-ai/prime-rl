@@ -2,7 +2,7 @@ name: Regression
 
 # Scheduled regression suites, one job group per suite. Dispatch with `suite`
 # to run one of them.
-#   parallel: test_parallel_invariance.py on the 4xH100 runners
+#   parallel: test_parallel_invariance.py on Modal (4xH100)
 #   eval:     every configs/eval/*.toml through `uv run eval` against Prime
 #             Inference, compared against baselines/eval/. reports/eval/ holds
 #             the error bars of each baseline. Also runs on PRs that touch the
@@ -60,17 +60,11 @@ jobs:
     parallel:
         name: Parallel / Invariance
         if: ${{ github.event_name != 'pull_request' && (!inputs.suite || inputs.suite == 'all' || inputs.suite == 'parallel') }}
-        runs-on: prime-rl-4xh100
-        container:
-            image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
-            options: --gpus all
-        timeout-minutes: 60
+        runs-on: ubuntu-latest
+        timeout-minutes: 40
+        env:
+            MODAL_APP_NAME: prime-rl-ci-${{ github.run_id }}-${{ github.run_attempt }}
         steps:
-            - name: Install Git
-              run: |
-                  apt-get update
-                  apt-get install -y git
-                  git config --global --add safe.directory "$GITHUB_WORKSPACE"
             - name: Checkout repository
               uses: actions/checkout@v7
               with:
@@ -88,22 +82,27 @@ jobs:
                     uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
                     with:
                         enable-cache: false
-            - name: Install dependencies
-              run: uv sync --all-extras --all-packages --locked
-            - name: Run invariance test
+            - name: Run invariance test on Modal
               env:
-                  USERNAME_CI: CI_RUNNER
-                  UV_NO_SYNC: "1"
-                  WANDB_MODE: offline
-                  HF_TOKEN: ${{ secrets.HF_TOKEN }}
-                  PYTEST_OUTPUT_DIR: /tmp/outputs
-              run: uv run pytest -vvs tests/regression/test_parallel_invariance.py
+                  MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+                  MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+              run: uvx --from modal==1.6.4 modal run --name "$MODAL_APP_NAME" scripts/modal_ci.py --suite parallel
+            # A cancelled job kills the Modal client before it stops the app, whose containers would keep running.
+            - name: Stop the Modal app
+              if: cancelled()
+              env:
+                  MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+                  MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+              run: |
+                  uvx --from modal==1.6.4 modal app list --json \
+                      | jq -r --arg name "$MODAL_APP_NAME" '.[] | select(.description == $name and .state != "stopped") | .app_id' \
+                      | xargs -r -n1 uvx --from modal==1.6.4 modal app stop -y
             - name: Upload run logs on failure
               if: failure()
               uses: actions/upload-artifact@v7
               with:
                   name: parallel-invariance-logs
-                  path: /tmp/outputs/**/*.log
+                  path: outputs/modal-ci
                   retention-days: 7
                   if-no-files-found: ignore
 
