@@ -4,7 +4,7 @@ Each case builds a tiny seeded model with `setup_model` on its layout (activatio
 torch.compile per layer, then FSDP, CP or EP) and runs one forward and backward. A case passes when the loss and grad
 norm are finite, Dynamo counted no graph break, and Dynamo compiled at least one graph per kind of decoder layer, so no
 kind of layer runs eagerly. One `torchrun` launch runs every selected case of a group; each case reports as its own
-test. A case that fails today sets `known_failure` to a substring of its error and runs as a strict xfail.
+test.
 
 Run cases without pytest, by case id or group name (each rank writes `rank<N>.json` after every case):
 
@@ -71,8 +71,6 @@ class CompileCase(Case):
     """Cases of one group share a torchrun launch."""
     requirement: Callable[[], str | None] | None = None
     """Returns why this GPU or environment cannot run the case, or None if it can."""
-    known_failure: str | None = None
-    """A substring of the error this case fails with today. It runs as a strict xfail."""
 
     def skip_reason(self) -> str | None:
         return None if self.requirement is None else self.requirement()
@@ -90,36 +88,10 @@ CP_MODELS = [
     "nemotron_h",
     "afmoe",
 ]
-FLA_DISPATCH_IS_COMPILER_DISABLED = "Skip inlining function <function causal_conv1d_fwd"
-FLA_CP_CONTEXT_IS_COMPILER_DISABLED = "Skip calling function `<function build_cp_context"
-FA4_SINK_CALL_IS_UNTRACEABLE = "`active_fake_mode`"
-KNOWN_FAILURES = {
-    "qwen3_5-dp2": FLA_DISPATCH_IS_COMPILER_DISABLED,
-    "qwen3_5_moe-dp2": FLA_DISPATCH_IS_COMPILER_DISABLED,
-    "qwen3_8_flash_next-dp2": FLA_DISPATCH_IS_COMPILER_DISABLED,
-    "glm5_next-dp2": FLA_DISPATCH_IS_COMPILER_DISABLED,
-    "nemotron_h-dp2": FLA_DISPATCH_IS_COMPILER_DISABLED,
-    "nemotron_h-dp2-token_chunk": FLA_DISPATCH_IS_COMPILER_DISABLED,
-    "nemotron_h-cp2": FLA_DISPATCH_IS_COMPILER_DISABLED,
-    "qwen3_5-cp2": FLA_CP_CONTEXT_IS_COMPILER_DISABLED,
-    "qwen3_5_moe-cp2": FLA_CP_CONTEXT_IS_COMPILER_DISABLED,
-    "qwen3_8_flash_next-cp2": FLA_CP_CONTEXT_IS_COMPILER_DISABLED,
-    "glm5_next-cp2": FLA_CP_CONTEXT_IS_COMPILER_DISABLED,
-    "gpt_oss-dp2": FA4_SINK_CALL_IS_UNTRACEABLE,
-    "gpt_oss-cp2": FA4_SINK_CALL_IS_UNTRACEABLE,
-}
 CASES = [
-    *(CompileCase(f"{model}-dp2", model, known_failure=KNOWN_FAILURES.get(f"{model}-dp2")) for model in TINY_CONFIGS),
-    CompileCase(
-        "nemotron_h-dp2-token_chunk",
-        "nemotron_h",
-        overrides={"ac": {"token_chunk_size": 64}},
-        known_failure=KNOWN_FAILURES["nemotron_h-dp2-token_chunk"],
-    ),
-    *(
-        CompileCase(f"{model}-cp2", model, cp=2, group="cp2", known_failure=KNOWN_FAILURES.get(f"{model}-cp2"))
-        for model in CP_MODELS
-    ),
+    *(CompileCase(f"{model}-dp2", model) for model in TINY_CONFIGS),
+    CompileCase("nemotron_h-dp2-token_chunk", "nemotron_h", overrides={"ac": {"token_chunk_size": 64}}),
+    *(CompileCase(f"{model}-cp2", model, cp=2, group="cp2") for model in CP_MODELS),
     CompileCase("qwen3_moe-ep2-torch-bf16", "qwen3_moe", ep=2, group="ep2_torch"),
     CompileCase(
         "qwen3_moe-ep2-torch-sonicmoe",
@@ -164,10 +136,6 @@ GROUPS = {
     group: [case for case in CASES if case.group == group] for group in dict.fromkeys(case.group for case in CASES)
 }
 TIMEOUTS = {"dp2": 30 * 60, "cp2": 20 * 60, "ep2_torch": 15 * 60, "ep2_deepep": 10 * 60}
-
-
-class KnownFailure(Exception):
-    """A case failed with the error its `known_failure` names."""
 
 
 def isolated(run, *args) -> dict:
@@ -329,17 +297,8 @@ def case_failures(launch_result: dict, case: CompileCase) -> list[str]:
     return found
 
 
-def case_param(case: CompileCase):
-    marks = (
-        []
-        if case.known_failure is None
-        else [pytest.mark.xfail(strict=True, raises=KnownFailure, reason=case.known_failure)]
-    )
-    return pytest.param(case, id=case.name, marks=marks)
-
-
 @pytest.mark.gpu
-@pytest.mark.parametrize("case", [case_param(case) for case in CASES])
+@pytest.mark.parametrize("case", CASES, ids=lambda case: case.name)
 def test_compiles_fullgraph(group_results: Callable[[str], dict], case: CompileCase):
     if torch.cuda.device_count() < NUM_RANKS:
         pytest.skip(f"needs {NUM_RANKS} GPUs")
@@ -347,11 +306,6 @@ def test_compiles_fullgraph(group_results: Callable[[str], dict], case: CompileC
     if skip_reason is not None:
         pytest.skip(skip_reason)
     found = case_failures(group_results(case.group), case)
-    if case.known_failure is not None:
-        assert any(case.known_failure in failure for failure in found), (
-            f"expected a failure containing {case.known_failure!r}, got {found or 'a pass'}"
-        )
-        raise KnownFailure(case.known_failure)
     assert not found, "\n".join(found)
 
 
