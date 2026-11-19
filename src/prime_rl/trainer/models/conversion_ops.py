@@ -240,6 +240,23 @@ class SplitConcat(ConvOp):
 
 
 @dataclass
+class Copy(ConvOp):
+    """Add ``target`` as a copy of ``source`` on the way to prime, and drop it on the way back. For a prime-only
+    tensor the HF checkpoint does not ship, e.g. a frozen copy of the LM head. The copy owns its storage: safetensors
+    refuses to save tensors that share memory."""
+
+    source: str
+    target: str
+
+    def hf_to_prime(self, sd: StateDict) -> None:
+        if self.source in sd:
+            sd[self.target] = sd[self.source].clone()
+
+    def prime_to_hf(self, sd: StateDict) -> None:
+        sd.pop(self.target, None)
+
+
+@dataclass
 class MapValue(ConvOp):
     """Apply a value transform to one key. ``forward`` runs HF->prime,
     ``backward`` runs prime->HF. Use for genuinely non-structural conversions
