@@ -10,6 +10,6 @@ python3 - "$OUT/Qwen--Qwen3.8-Flash-Next/config.json" <<'PY'
 import json, sys
 path = sys.argv[1]
 config = json.load(open(path))
-config["ngram_vocab_size_base"] = 1_000_000
+config.get("text_config", config)["ngram_vocab_size_base"] = 1_000_000
 json.dump(config, open(path, "w"), indent=2)
 PY
