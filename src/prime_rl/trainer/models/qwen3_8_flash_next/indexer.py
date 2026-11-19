@@ -124,7 +124,7 @@ class SparseAttentionIndexer(nn.Module):
 
         num_blocks = block_start_tokens.shape[0]
         sentinel = total_tokens
-        block_start_tokens = F.pad(block_start_tokens, (0, 1), value=sentinel)
+        block_start_tokens = torch.cat((block_start_tokens, block_start_tokens.new_full((1,), sentinel)))
         selected_block_starts = block_start_tokens[selected_blocks.long()]
         selected_tokens = selected_block_starts[:, :, None] + offsets
         selected_tokens = selected_tokens.masked_fill(selected_blocks[:, :, None] == num_blocks, sentinel)
