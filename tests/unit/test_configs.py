@@ -229,7 +229,7 @@ def test_sft_and_pretrain_differ_only_in_defaults(tmp_path):
 
 
 def test_val_set_defaults(tmp_path):
-    """[[val.sets]] are scored at the training seq_len unless they set their own, in rows of val.micro_batch_tokens:
+    """[[val.set]] are scored at the training seq_len unless they set their own, in rows of val.micro_batch_tokens:
     the training micro-batch or the longest set seq_len, whichever is larger, rounded up to a multiple of the CP
     degree."""
     path = str(tmp_path / "tokens")
@@ -239,15 +239,15 @@ def test_val_set_defaults(tmp_path):
     ]
     write_toml(
         tmp_path / "pretrain.toml",
-        {"data": {"paths": [path], "seq_len": 1024, "micro_batch_size": 2}, "val": {"sets": val_sets}},
+        {"data": {"paths": [path], "seq_len": 1024, "micro_batch_size": 2}, "val": {"set": val_sets}},
     )
     args = ["@", str(tmp_path / "pretrain.toml"), "--output-dir", str(tmp_path)]
     config = cli(PretrainConfig, args=args)
-    assert [val_set.seq_len for val_set in config.val.sets] == [1024, 4096]
+    assert [val_set.seq_len for val_set in config.val.set] == [1024, 4096]
     assert config.val.micro_batch_tokens == 4096
     assert not can_parse(PretrainConfig, [*args, "--val.micro-batch-tokens", "2048"])
     odd_set = json.dumps([{**val_sets[1], "seq_len": 4097}])
-    cp_args = [*args, "--model.cp", "2", "--data.micro-batch-size", "1", "--val.sets", odd_set]
+    cp_args = [*args, "--model.cp", "2", "--data.micro-batch-size", "1", "--val.set", odd_set]
     assert cli(PretrainConfig, args=cp_args).val.micro_batch_tokens == 4098
 
 
@@ -255,11 +255,11 @@ def test_rl_val_and_eval_are_set_at_the_top_level(tmp_path):
     """An rl config takes [val] and [eval] as SFT and pretraining do: they fill trainer.val (with RL's model.seq_len
     defaults) and orchestrator.eval, which are not set directly, and chat sets render like the policy's rollouts."""
     base = ["@", "configs/ci/integration/reverse-text/start.toml", "--output-dir", str(tmp_path)]
-    val = {"sets": [{"type": "documents", "name": "held-out", "path": str(tmp_path)}]}
+    val = {"set": [{"type": "documents", "name": "held-out", "path": str(tmp_path)}]}
     source = {"name": "reverse-text-eval", "env": {"taskset": {"id": "reverse-text"}}}
     write_toml(tmp_path / "shared.toml", {"val": val, "eval": {"interval": 5, "source": [source]}})
     config = cli(RLConfig, args=[*base, "@", str(tmp_path / "shared.toml")])
-    assert config.trainer.val.sets[0].seq_len == config.trainer.val.micro_batch_tokens == 2048
+    assert config.trainer.val.set[0].seq_len == config.trainer.val.micro_batch_tokens == 2048
     assert config.orchestrator.eval.intervals == {"reverse-text-eval": 5}
     assert config.trainer.renderer == config.orchestrator.renderer
     (tmp_path / "rl.json").write_text(json.dumps(dump_resolved_config(config)))

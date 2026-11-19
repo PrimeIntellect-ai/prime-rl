@@ -100,8 +100,8 @@ class ValConfig(BaseConfig):
     eval_on_start: bool = False
     """Run validation before the first training step."""
 
-    sets: list[ValSetConfig] = Field(min_length=1)
-    """The validation sets (``[[val.sets]]``). Each logs ``val/<name>/loss@<seq_len>``, the mean loss per scored
+    set: list[ValSetConfig] = Field(min_length=1)
+    """The validation sets (``[[val.set]]``). Each logs ``val/<name>/loss@<seq_len>``, the mean loss per scored
     token, and with a byte-level BPE tokenizer ``val/<name>/bpb@<seq_len>``, bits per UTF-8 byte of the scored
     tokens."""
 
@@ -120,17 +120,17 @@ class ValConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_unique_names(self):
-        names = [val_set.name for val_set in self.sets]
+        names = [val_set.name for val_set in self.set]
         if len(set(names)) < len(names):
-            raise ValueError(f"val.sets names must be unique: {names}")
+            raise ValueError(f"val.set names must be unique: {names}")
         return self
 
     def resolve(self, seq_len: int, micro_batch_tokens: int, cp: int) -> None:
         """Fill the defaults from the trainer's sequence length and micro-batch tokens, and check the row size."""
-        for val_set in self.sets:
+        for val_set in self.set:
             if val_set.seq_len is None:
                 val_set.seq_len = seq_len
-        longest = max(val_set.seq_len for val_set in self.sets)
+        longest = max(val_set.seq_len for val_set in self.set)
         if self.micro_batch_tokens is None:
             self.micro_batch_tokens = -(-max(micro_batch_tokens, longest) // cp) * cp
         elif self.micro_batch_tokens < longest:

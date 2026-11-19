@@ -116,7 +116,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `trainer.model.freeze_moe_router` | Freeze MoE router gates (default `true` for RL, `false` for SFT). Router updates in RL shift the trainer's expert choices away from the ones inference sampled, amplifying the train-inference mismatch, so RL keeps the pretrained router. Set `false` to train it. |
 | `[[orchestrator.train.source]]` | Training sources. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Training sources](configuration.md#training-sources-orchestratortrainsource). |
 | `[[eval.source]]` + `eval.interval` | Online eval environments and cadence (default every 100 steps), run by the orchestrator on the policy the train rollouts see; see [Configuration § Environments](configuration.md#environments). |
-| `[[val.sets]]` + `val.interval` | Validation sets scored on the trainer's weights; see [Validation](#validation). |
+| `[[val.set]]` + `val.interval` | Validation sets scored on the trainer's weights; see [Validation](#validation). |
 
 **Monitoring:**
 
@@ -326,7 +326,7 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 
 ### Validation
 
-`[val]` scores named validation sets on the training model every `val.interval` steps (also before the first step with `val.eval_on_start`), in SFT, pretraining and RL. It runs after a step's forward and backward passes, before the optimizer step. Each `[[val.sets]]` table has a `type`, a unique `name`, a `path` and an optional `seq_len` (default: the training sequence length, `data.seq_len` in SFT and pretraining and `model.seq_len` in RL):
+`[val]` scores named validation sets on the training model every `val.interval` steps (also before the first step with `val.eval_on_start`), in SFT, pretraining and RL. It runs after a step's forward and backward passes, before the optimizer step. Each `[[val.set]]` table has a `type`, a unique `name`, a `path` and an optional `seq_len` (default: the training sequence length, `data.seq_len` in SFT and pretraining and `model.seq_len` in RL):
 
 | `type` | `path` | scored |
 |---|---|---|
@@ -338,12 +338,12 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 interval = 100
 num_samples = 512          # optional: the first 512 documents or rows of each set; default: all of them
 
-[[val.sets]]
+[[val.set]]
 type = "documents"
 name = "fineweb-edu"
 path = "data/fineweb-edu-val"
 
-[[val.sets]]
+[[val.set]]
 type = "chat"
 name = "reverse-text"
 path = "PrimeIntellect/Reverse-Text-SFT"
@@ -361,7 +361,7 @@ Every set logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and 
 | `data.batch_size` | Tokens per trainer step (packed) |
 | `data.seq_len` | Per-sample sequence length |
 | `data.loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |
-| `val.sets` | Validation sets, scored every `val.interval` steps; see [Validation](#validation) |
+| `val.set` | Validation sets, scored every `val.interval` steps; see [Validation](#validation) |
 | `eval.interval` | Run online evals every N steps; see [Online Evals](#online-evals) |
 
 ### Important Metrics
@@ -438,7 +438,7 @@ batch_size = 256
 interval = 100
 num_samples = 512          # documents per validation; leave out to score every held-out document
 
-[[val.sets]]
+[[val.set]]
 type = "documents"
 name = "fineweb-edu"
 path = "data/fineweb-edu-val"

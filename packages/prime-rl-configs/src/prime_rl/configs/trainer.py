@@ -791,7 +791,7 @@ class BaseTrainerConfig(BaseConfig):
 
     def renders_conversations(self) -> bool:
         """Whether the trainer renders conversations with ``renderer``."""
-        return self.val is not None and any(val_set.type == "chat" for val_set in self.val.sets)
+        return self.val is not None and any(val_set.type == "chat" for val_set in self.val.set)
 
     @model_validator(mode="after")
     def validate_vlm_val(self):
