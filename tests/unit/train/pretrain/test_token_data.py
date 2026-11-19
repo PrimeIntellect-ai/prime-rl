@@ -1,5 +1,5 @@
 import shutil
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -158,8 +158,9 @@ def test_repetitions_read_a_subset_that_many_times(tmp_path):
 
 
 def test_subsets_and_resumes_fail_clearly(tmp_path):
-    """A subset larger than its source fails at startup. A resume fails when the data settings differ, naming the old
-    and new values, except for max_steps when no source has repetitions and for a source moved to another folder."""
+    """A subset larger than its source fails at startup. A resume fails when the seed, the number of workers, a source's
+    subset (max_steps with repetitions) or a source's files differ, naming what changed; max_steps may change without
+    repetitions, and a source may move to another folder."""
     write_shard(tmp_path / "a" / "00.ds", consecutive_documents([8] * 100))
     with pytest.raises(ValueError, match="needs 1,600 unique tokens but has 800"):
         setup_token_dataset(
@@ -177,9 +178,14 @@ def test_subsets_and_resumes_fail_clearly(tmp_path):
     state = setup_token_dataset(
         data_config(tmp_path, {"a": {"repetitions": 2.0}}), max_steps=10, dp_rank=0, dp_size=1
     ).state_dict()
-    with pytest.raises(ValueError, match="max_steps"):
+    with pytest.raises(ValueError, match="Source a: subset 320 tokens -> 512 tokens"):
         setup_token_dataset(
-            data_config(tmp_path, {"a": {"repetitions": 2.0}}), max_steps=11, dp_rank=0, dp_size=1
+            data_config(tmp_path, {"a": {"repetitions": 2.0}}), max_steps=16, dp_rank=0, dp_size=1
+        ).load_state_dict(state)
+    write_shard(tmp_path / "a" / "01.ds", consecutive_documents([8] * 10, 800))
+    with pytest.raises(ValueError, match="Source a: its files"):
+        setup_token_dataset(
+            data_config(tmp_path, {"a": {"repetitions": 2.0}}), max_steps=10, dp_rank=0, dp_size=1
         ).load_state_dict(state)
 
 
@@ -213,12 +219,76 @@ def test_resume_continues_the_stream(tmp_path, gpus_before, gpus_after):
     cursor, wrap = sampler.start(), None
     while wrap is None:
         cursor = sampler.plan(cursor)[1]
-        wrap = cursor["step"] if cursor["units"][1] >= sampler.num_units[1] else None
+        wrap = cursor["rows"] // config.batch_size if cursor["units"][1] >= sampler.num_units[1] else None
     uninterrupted, _ = global_rows(config, gpus_before, wrap + 3)
     for stop in (3, wrap):
         before, states = global_rows(config, gpus_before, stop)
         after, _ = global_rows(config, gpus_after, wrap + 3 - stop, states)
         assert before + after == uninterrupted
+
+
+def read_by_source(steps: list[list]) -> dict[int, list[int]]:
+    """The tokens in the rows of ``steps`` by source: a's are below 10**6, b's below 2 * 10**6, then c's."""
+    read = defaultdict(list)
+    for token in (token for rows in steps for row in rows for token in row):
+        read[token // 10**6].append(token)
+    return read
+
+
+def first_in_order(sampler, source: int, num_tokens: int) -> list[int]:
+    """The source's first ``num_tokens`` tokens in the order of its first pass."""
+    units = sampler.locate(np.full(sampler.num_units[source], source), np.arange(sampler.num_units[source]))
+    tokens = [token for _, file, begin, end, _, _ in units for token in sampler.shards.tokens(file)[begin:end]]
+    return tokens[:num_tokens]
+
+
+def test_resume_with_another_mix_reads_on(tmp_path):
+    """Resumed with other weights and a larger batch, every source reads on in its order: no unit twice, none skipped.
+    From the change on, every step holds the new mixture (the source that is behind does not catch up), and the
+    metrics count every source's tokens since the start."""
+    write_source(tmp_path / "a", LENGTHS * 10)
+    write_source(tmp_path / "b", [6, 30, 9, 2, 18, 4] * 40, 10**6)
+    settings = {"micro_batch_size": 1, "num_workers": 2}
+    old = data_config(tmp_path, {"a": {"weight": 0.5}, "b": {"weight": 0.5}}, batch_size=8, **settings)
+    new = data_config(tmp_path, {"a": {"weight": 0.2}, "b": {"weight": 0.8}}, batch_size=16, **settings)
+    before, states = global_rows(old, 2, 4)
+    after, states = global_rows(new, 2, 4, states)
+    sampler = setup_token_dataset(new, dp_rank=0, dp_size=1).sampler
+    read = read_by_source(before + after)
+    for source in (0, 1):
+        assert sorted(read[source]) == sorted(first_in_order(sampler, source, len(read[source])))
+    for steps in range(1, 5):
+        since = read_by_source(after[:steps])
+        assert all(abs(len(since[s]) - sampler.weights[s] * steps * 16 * 16) <= 16 for s in (0, 1))
+    state = next(iter(states[0]["_snapshot"]["_worker_snapshots"].values()))["dataset_state"]["dataset"]
+    metrics = sampler.progress(state["cursor"])
+    assert [metrics["progress/a/num_tokens"], metrics["progress/b/num_tokens"]] == [len(read[0]), len(read[1])]
+    assert state["step"] == 4 * 8 + 4 * 16
+
+
+def test_resume_adds_and_removes_sources(tmp_path):
+    """Resumed without b (the first source, so a's files move) and with c: a reads on in its order, c from its start,
+    and b no more, whether the unit cut at the step's end was a's or b's."""
+    write_source(tmp_path / "a", LENGTHS * 10)
+    write_source(tmp_path / "b", [6, 30, 9, 2, 18, 4] * 40, 10**6)
+    write_source(tmp_path / "c", [3, 21, 8, 13] * 40, 2 * 10**6)
+    settings = {"micro_batch_size": 1, "num_workers": 2, "batch_size": 8}
+    old = data_config(tmp_path, {"b": {"weight": 0.5}, "a": {"weight": 0.5}}, **settings)
+    new = data_config(tmp_path, {"a": {"weight": 0.5}, "c": {"weight": 0.5}}, **settings)
+    sampler = setup_token_dataset(old, dp_rank=0, dp_size=1).sampler
+    cursor, stops = sampler.start(), {}
+    while len(stops) < 2:
+        cursor = sampler.plan(cursor)[1]
+        if cursor["rest"]:
+            stops.setdefault(cursor["rest"][0], cursor["rows"] // 8)
+    sampler = setup_token_dataset(new, dp_rank=0, dp_size=1).sampler
+    for stop in stops.values():
+        before, states = global_rows(old, 2, stop)
+        after, _ = global_rows(new, 2, 4, states)
+        read = read_by_source(before + after)
+        assert 1 not in read_by_source(after)
+        assert sorted(read[0]) == sorted(first_in_order(sampler, 0, len(read[0])))
+        assert sorted(read[2]) == sorted(first_in_order(sampler, 1, len(read[2])))
 
 
 def test_eod_mask_loss(tmp_path):
