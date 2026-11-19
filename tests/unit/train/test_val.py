@@ -84,16 +84,13 @@ def test_chat_set_scores_the_tokens_sft_trains_on(tmp_path: Path):
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
     renderer = AutoRendererConfig()
     data = SFTDataConfig(name=str(tmp_path), seq_len=1024, shuffle=False)
-    (sample,) = islice(setup_sft_dataset(tokenizer, data, renderer_config=renderer), 1)
+    (sample,) = islice(setup_sft_dataset(tokenizer, data, dp_rank=0, dp_size=1, renderer_config=renderer), 1)
 
     config = ChatValSetConfig(name="chat", path=str(tmp_path), split="train", seq_len=1024)
     # num_samples above the split's size scores every row.
     ((inputs, labels),) = chat_set(config, 5, tokenizer, renderer).requests
-    assert inputs.tolist() == sample["input_ids"]
-    expected = [
-        target if trained else IGNORE_INDEX for target, trained in zip(sample["target_ids"], sample["loss_mask"])
-    ]
-    assert labels.tolist() == expected
+    assert inputs.tolist() == sample["input_ids"].tolist()
+    assert labels.tolist() == np.where(sample["loss_mask"], sample["target_ids"], IGNORE_INDEX).tolist()
     assert tokenizer.convert_tokens_to_ids("<|im_start|>") not in labels
 
 

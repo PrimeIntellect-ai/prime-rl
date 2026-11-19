@@ -47,7 +47,7 @@ jobs:
     container:
       image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
       options: --gpus all
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Install Git
         run: |

@@ -38,7 +38,8 @@ from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.data import get_dataset_progress, get_dataset_state, setup_dataloader
 from prime_rl.trainer.pretrain.data import (
-    TokenShards,
+    TokenDataset,
+    check_ranks_see_same_data,
     detect_separator,
     setup_token_dataset,
     warn_if_no_document_separator,
@@ -189,19 +190,50 @@ def train(config: SFTConfig | PretrainConfig):
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
     multimodal = config.model.vlm is not None
+    dp_rank, dp_size = parallel_dims.data_parallel
     if isinstance(config, PretrainConfig):
-        shards = TokenShards(config.data.paths)
+        rows = dp_size * config.data.num_workers * config.data.micro_batch_size
+        assert config.data.batch_size % rows == 0, (
+            f"batch_size ({config.data.batch_size}) must be divisible by data-parallel size x num_workers x "
+            f"micro_batch_size ({rows}), so every dataloader worker reads whole micro-batches of every step"
+        )
+
+        def setup_dataset() -> TokenDataset:
+            return setup_token_dataset(
+                config.data,
+                dp_rank=dp_rank,
+                dp_size=dp_size,
+                cache_dir=config.run_dir / "data",
+                max_steps=config.max_steps,
+            )
+
+        # Rank 0 writes the table of long documents to the cache, the other ranks then read it. Rank 0's error reaches
+        # every rank, so none waits for it.
+        error = None
+        if world.rank == 0:
+            try:
+                dataset = setup_dataset()
+            except Exception as e:
+                error = e
+        rank_0_error = [f"{type(error).__name__}: {error}" if error is not None else None]
+        dist.broadcast_object_list(rank_0_error, src=0)
+        if error is not None:
+            raise error
+        if rank_0_error[0] is not None:
+            raise RuntimeError(f"Rank 0 failed to set up the data: {rank_0_error[0]}")
+        if world.rank != 0:
+            dataset = setup_dataset()
+        check_ranks_see_same_data(dataset.sampler)
         if config.data.eod_mask_loss:
-            eod_mask_token = detect_separator(shards, tokenizer)
+            dataset.eod_mask_token = detect_separator(dataset.sampler.shards, tokenizer)
         else:
-            eod_mask_token = None
-            warn_if_no_document_separator(shards, tokenizer)
-        dataset = setup_token_dataset(config.data, config.model.cp, eod_mask_token=eod_mask_token)
+            warn_if_no_document_separator(dataset.sampler.shards, tokenizer)
     else:
         dataset = setup_sft_dataset(
             tokenizer,
             config.data,
-            config.model.cp,
+            dp_rank=dp_rank,
+            dp_size=dp_size,
             renderer_config=config.renderer,
             processor=processor,
             multimodal=multimodal,
@@ -527,6 +559,8 @@ def train(config: SFTConfig | PretrainConfig):
                     for subset_or_split, num_tokens in tokens_by_source.items()
                 },
             )
+        if isinstance(dataset, TokenDataset):
+            progress_metrics.update(dataset.sampler.progress(dataset_progress["cursor"]))
         asyncio.run(monitors.log(progress_metrics, step=progress.step))
 
         # Log performance metrics

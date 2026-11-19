@@ -366,6 +366,7 @@ Pulled from the console log and mirrored to W&B.
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
 - `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
+- `progress/<name>/{num_tokens,unique_tokens,repetitions,mean_segment_length}` — pretraining: a source's tokens read, the unique ones among them (at most its subset's), their ratio, and the mean length of its document pieces in the step's rows; `progress/{unique_tokens,repetitions,mean_segment_length}` over all sources. In pretraining, `progress/epoch` is the tokens read over all sources' tokens.
 
 **Stability and optimization:**
 
@@ -411,7 +412,7 @@ LocalPipelineExecutor(
 ).run()
 ```
 
-**Configure.** Only `data.paths` is required:
+**Configure.** Only `[[data.source]]` (a name and a folder each) is required:
 
 ```toml
 mode = "pretrain"          # optional; lets `uv run launch` run this config
@@ -421,13 +422,23 @@ max_steps = 1000
 name = "Qwen/Qwen3-0.6B"   # only the architecture is read
 
 [data]
-paths = ["data/fineweb-edu"]
 seq_len = 2048
 batch_size = 256
 
+[[data.source]]
+name = "web"
+path = "data/fineweb-edu"
+weight = 7                 # relative to the other weights; leave it out on every source for natural shares
+
+[[data.source]]
+name = "code"
+path = "data/code"
+weight = 3
+repetitions = 4            # optional: every token seen 4 times, so a subset of its share (3/10) x the run's tokens / 4
+
 [val]                      # optional
 interval = 100
-num_samples = 512          # documents per validation; leave out to score every held-out document
+num_samples = 512          # optional: the first 512 documents of each set; default: all of them
 
 [[val.set]]
 type = "documents"
@@ -435,9 +446,15 @@ name = "fineweb-edu"
 path = "data/fineweb-edu-val"
 ```
 
-All files in `data.paths` (in folder order, then file name order) form one token pool. Each epoch reads every `seq_len` window of the pool once, in a new random order and from a new random offset drawn from `data.seed`. Attention and positions restart at every document; `data.document_masking = false` makes a window one sequence. In training, the model is not trained to predict the next document's first token: there is no loss where the input is the document separator (`data.eod_mask_loss = false` turns this off). The separator is the special token the training shards' documents end with, detected at startup; shards whose documents start with BOS have nothing to mask. A resumed run reads exactly the windows an uninterrupted run would, also on another number of GPUs, as long as `data.num_workers` stays the same.
+**Mixture.** Weights are relative: a source's share of the training tokens is its weight over the sum of all weights, so `7` and `3` give the same mixture as `0.7` and `0.3`. Set `weight` on every source or on none; without weights, a source's share is its share of all sources' tokens. The sources take turns deterministically, so every step holds the mixture up to about one document per source.
 
-Validation scores every document of the held-out folder on its own, from its first token, and logs `val/fineweb-edu/loss@2k` and `val/fineweb-edu/bpb@2k`; see [Validation](#validation) for the other set types and options.
+**Repetitions.** `repetitions` is how often every token of a source is seen over the run (`max_steps * batch_size * seq_len` tokens; needs `max_steps`). The source then reads a fixed, seeded subset of `share * run tokens / repetitions` tokens that many times. Without it, a source is read whole, in a new order on every pass.
+
+**Rows.** Documents longer than `seq_len` are cut into `seq_len` pieces. A step's documents fill `batch_size` rows of exactly `seq_len` tokens, without padding and without losing a prediction within a document. Attention and positions restart at every document and piece (`data.document_masking = false` makes a row one sequence). With `data.eod_mask_loss` (on by default), positions whose input is the separator have no loss: their target is the first token of another document.
+
+**Resume.** A resume is exact, also on another number of GPUs. It stops with an error that names the old and new value of every changed setting: `seq_len`, `batch_size`, `seed`, `num_workers`, a source's name or files (their tokens and documents), the weights or repetitions (or `max_steps`, with repetitions). A source may move to another folder. With `ckpt.skip_dataloader`, the run resumes without the data state: the data starts over from step 0, in the same order as at the run's start (a different `data.seed` gives a different order). `data.batch_size` must be a multiple of dp × `num_workers` × `micro_batch_size`.
+
+**Validation.** The `documents` set scores every document of the held-out folder on its own, from its first token, and logs `val/fineweb-edu/loss@2k` and `val/fineweb-edu/bpb@2k`; see [Validation](#validation) for the other set types and options.
 
 [Online evals](#online-evals) work as in SFT, from the first step: with a scratch init, the inference server starts without weights and receives them with the trainer's startup broadcast. A model trained from scratch has learned no chat format (and a custom tokenizer may ship no template), so set one with `inference.vllm.chat_template` (a Jinja template string or a file path); `configs/ci/integration/pretrain/eval.toml` is an example.
 
