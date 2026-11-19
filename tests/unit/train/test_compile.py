@@ -97,10 +97,36 @@ CP_MODELS = [
     "afmoe",
 ]
 MEGA_MOE_DISPATCH = {"type": "mega_moe", "max_tokens_per_rank": ROW_LEN}
+FLA_DISPATCH_IS_COMPILER_DISABLED = "Skip inlining function <function causal_conv1d_fwd"
+FLA_CP_CONTEXT_IS_COMPILER_DISABLED = "Skip calling function `<function build_cp_context"
+FA4_SINK_CALL_IS_UNTRACEABLE = "`active_fake_mode`"
+KNOWN_FAILURES = {
+    "qwen3_5-dp2": FLA_DISPATCH_IS_COMPILER_DISABLED,
+    "qwen3_5_moe-dp2": FLA_DISPATCH_IS_COMPILER_DISABLED,
+    "qwen3_8_flash_next-dp2": FLA_DISPATCH_IS_COMPILER_DISABLED,
+    "glm5_next-dp2": FLA_DISPATCH_IS_COMPILER_DISABLED,
+    "nemotron_h-dp2": FLA_DISPATCH_IS_COMPILER_DISABLED,
+    "nemotron_h-dp2-token_chunk": FLA_DISPATCH_IS_COMPILER_DISABLED,
+    "nemotron_h-cp2": FLA_DISPATCH_IS_COMPILER_DISABLED,
+    "qwen3_5-cp2": FLA_CP_CONTEXT_IS_COMPILER_DISABLED,
+    "qwen3_5_moe-cp2": FLA_CP_CONTEXT_IS_COMPILER_DISABLED,
+    "qwen3_8_flash_next-cp2": FLA_CP_CONTEXT_IS_COMPILER_DISABLED,
+    "glm5_next-cp2": FLA_CP_CONTEXT_IS_COMPILER_DISABLED,
+    "gpt_oss-dp2": FA4_SINK_CALL_IS_UNTRACEABLE,
+    "gpt_oss-cp2": FA4_SINK_CALL_IS_UNTRACEABLE,
+}
 CASES = [
-    *(CompileCase(f"{model}-dp2", model) for model in TINY_CONFIGS),
-    CompileCase("nemotron_h-dp2-token_chunk", "nemotron_h", overrides={"ac": {"token_chunk_size": 64}}),
-    *(CompileCase(f"{model}-cp2", model, cp=2, group="cp2") for model in CP_MODELS),
+    *(CompileCase(f"{model}-dp2", model, known_failure=KNOWN_FAILURES.get(f"{model}-dp2")) for model in TINY_CONFIGS),
+    CompileCase(
+        "nemotron_h-dp2-token_chunk",
+        "nemotron_h",
+        overrides={"ac": {"token_chunk_size": 64}},
+        known_failure=KNOWN_FAILURES["nemotron_h-dp2-token_chunk"],
+    ),
+    *(
+        CompileCase(f"{model}-cp2", model, cp=2, group="cp2", known_failure=KNOWN_FAILURES.get(f"{model}-cp2"))
+        for model in CP_MODELS
+    ),
     CompileCase("qwen3_moe-ep2-torch-bf16", "qwen3_moe", ep=2, group="ep2_torch"),
     CompileCase(
         "qwen3_moe-ep2-torch-sonicmoe",
