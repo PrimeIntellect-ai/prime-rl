@@ -107,3 +107,28 @@ def conversion_chain(config) -> list[ConvOp]:
         PrefixRename("layers.", "model.layers."),
     ]
     return ops
+
+
+# A LoRA adapter only carries the attention and expert linears, keyed
+# `model.layers.N.<prime path>.lora_{A,B}.weight`. vLLM maps adapter names with the same
+# `hf_to_vllm_mapper` as the base weights, so they must use the published names. Applied in order.
+_ADAPTER_RENAMES = (
+    (".self_attn.compressor.indexer.", ".attn.indexer."),
+    (".self_attn.", ".attn."),
+    (".mlp.shared_expert.", ".ffn.shared_experts."),
+    (".mlp.", ".ffn."),
+    (".q_a_proj.", ".wq_a."),
+    (".q_b_proj.", ".wq_b."),
+    (".kv_proj.", ".wkv."),
+    (".o_b_proj.", ".wo_b."),
+    (".compressor.gate_proj.", ".compressor.wgate."),
+    (".gate_proj.", ".w1."),
+    (".down_proj.", ".w2."),
+    (".up_proj.", ".w3."),
+)
+
+
+def adapter_key_to_hf(name: str) -> str:
+    for old, new in _ADAPTER_RENAMES:
+        name = name.replace(old, new)
+    return name
