@@ -240,7 +240,7 @@ class SplitConcat(ConvOp):
 
 
 @dataclass
-class Copy(ConvOp):
+class Duplicate(ConvOp):
     """Add ``target`` as a copy of ``source`` on the way to prime, and drop it on the way back. For a prime-only
     tensor the HF checkpoint does not ship, e.g. a frozen copy of the LM head. The copy owns its storage: safetensors
     refuses to save tensors that share memory."""

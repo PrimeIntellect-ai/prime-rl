@@ -1,10 +1,13 @@
 import torch
 
-from prime_rl.trainer.models.conversion_ops import Copy, Rename, apply_hf_to_prime, apply_prime_to_hf
+from prime_rl.trainer.models.conversion_ops import Duplicate, Rename, apply_hf_to_prime, apply_prime_to_hf
 
 
-def test_copy_creates_the_target_on_the_way_to_prime_and_drops_it_on_the_way_back():
-    ops = [Rename("embed.weight", "model.embed_tokens.weight"), Copy("model.embed_tokens.weight", "lm_head.weight")]
+def test_duplicate_creates_the_target_on_the_way_to_prime_and_drops_it_on_the_way_back():
+    ops = [
+        Rename("embed.weight", "model.embed_tokens.weight"),
+        Duplicate("model.embed_tokens.weight", "lm_head.weight"),
+    ]
     embed = torch.randn(4, 3)
 
     prime = apply_hf_to_prime({"embed.weight": embed.clone()}, ops)
@@ -20,8 +23,8 @@ def test_copy_creates_the_target_on_the_way_to_prime_and_drops_it_on_the_way_bac
     assert torch.equal(hf["embed.weight"], embed)
 
 
-def test_copy_without_its_source_or_target_does_nothing():
-    op = Copy("source", "target")
+def test_duplicate_without_its_source_or_target_does_nothing():
+    op = Duplicate("source", "target")
     state_dict = {"other": torch.zeros(2)}
     op.hf_to_prime(state_dict)
     op.prime_to_hf(state_dict)
