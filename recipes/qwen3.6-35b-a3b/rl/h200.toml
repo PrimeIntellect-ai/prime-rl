@@ -1,7 +1,7 @@
 # Qwen3.6-35B-A3B RL at 256k context on 8x H200 nodes: one trainer node and three one-node
-# inference replicas. Add a task config with the sources, algorithm and optimizer:
+# inference replicas. Add a task config with the sources and algorithm:
 #
-#   uv run rl @ recipes/qwen3.6-35b-a3b/h200.toml @ recipes/tasks/swe.toml
+#   uv run rl @ recipes/qwen3.6-35b-a3b/rl/h200.toml @ recipes/rl/tasks/swe.toml
 
 seq_len = 262144
 

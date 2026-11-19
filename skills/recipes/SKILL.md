@@ -1,17 +1,20 @@
 ---
 name: recipes
-description: Rules and methodology for the model × hardware RL recipes in `recipes/`. Use when adding a recipe for a new model or hardware type, re-fitting a recipe after a stack change, or choosing trainer and inference parallelism for a model.
+description: Rules and methodology for the model × entrypoint × hardware recipes in `recipes/`. Use when adding a recipe for a new model, entrypoint or hardware type, re-fitting a recipe after a stack change, or choosing trainer and inference parallelism for a model.
 ---
 
 # Recipes
 
-A recipe is a tested RL config for one model on one hardware type. It sets the infrastructure
-(deployment, trainer parallelism, inference engine) and the model-specific settings (renderer,
-parsers, precision). It sets no task: users add their environment as a second config.
+A recipe is a tested config for one model, one entrypoint (`rl`, `sft`) and one hardware
+type. It sets the infrastructure (deployment, trainer parallelism, inference engine) and the
+model-specific settings (renderer, parsers, precision). It sets no task or data. For RL, users
+add their environment as a second config:
 
 ```bash
-uv run rl @ recipes/<model>/<hardware>.toml @ my-task.toml
+uv run rl @ recipes/<model>/rl/<hardware>.toml @ my-task.toml
 ```
+
+The fitting method below covers RL. Only RL recipes exist so far.
 
 ## Rules
 
@@ -24,14 +27,15 @@ uv run rl @ recipes/<model>/<hardware>.toml @ my-task.toml
   recipe header.
   - Trainer: `bf16`, blockwise `fp8` (SM90 and SM100), `mxfp8` (SM100 only). No NVFP4 or MXFP4.
   - H200 is SM90: no MXFP8, no NVFP4. FP8 checkpoints use blockwise FP8 on both sides.
-- **One flat file per hardware.** `recipes/<model>/<hardware>.toml` holds the full config. Do
-  not split it into a model base and a hardware overlay: hosted training takes one file.
-- **Recipe and task never share a table.** A recipe sets `[model]`, `[deployment]`, `[slurm]`,
-  `[weight_broadcast]`, `[trainer.model]` and `[inference]`. A task in `recipes/tasks/` sets
-  `[orchestrator]`, the sources and `[trainer.optim]`. Then `cat recipe task > run.toml` gives a
-  single file for `prime train run` that resolves the same as `@ recipe @ task`.
-- **Document the launch command.** Each recipe's header holds
-  `#   uv run rl @ recipes/<model>/<hardware>.toml @ recipes/tasks/<task>.toml`.
+- **One flat file per hardware.** `recipes/<model>/<entrypoint>/<hardware>.toml` holds the
+  full config. Do not split it into a model base and a hardware overlay: hosted training takes
+  one file.
+- **Recipe and task never share a table.** An RL recipe sets `[model]`, `[deployment]`,
+  `[slurm]`, `[weight_broadcast]`, `[trainer.model]` and `[inference]`. A task in
+  `recipes/rl/tasks/` sets `[orchestrator]` and the sources. Then `cat recipe task > run.toml`
+  gives a single file for `prime train run` that resolves the same as `@ recipe @ task`.
+- **Document the launch command.** Each RL recipe's header holds
+  `#   uv run rl @ recipes/<model>/rl/<hardware>.toml @ recipes/rl/tasks/<task>.toml`.
   `tests/unit/test_configs.py` parses every such stack.
 - **Explain non-default choices.** Give each setting that differs from the default a one-line
   comment with the measurement behind it.
@@ -96,7 +100,7 @@ The inference replica must hold the 256k tail and serve many shorter agentic ses
 Run the recipe with real weights and a real task for 5 to 10 steps:
 
 ```bash
-uv run rl @ recipes/<model>/<hardware>.toml @ recipes/tasks/swe.toml --max-steps 5 \
+uv run rl @ recipes/<model>/rl/<hardware>.toml @ recipes/rl/tasks/swe.toml --max-steps 5 \
     --orchestrator.batch-size 64 --orchestrator.eval.skip-first-step
 ```
 
@@ -112,36 +116,12 @@ not show. It also gives the real throughput:
 
 ### 5. Write the recipe
 
-Write `recipes/<model>/<hardware>.toml` and add a row to `recipes/README.md` with the layout,
+Write `recipes/<model>/rl/<hardware>.toml` and add a row to `recipes/README.md` with the layout,
 the measured trainer tok/s and the status. Check the composition:
 
 ```bash
-uv run rl @ recipes/<model>/<hardware>.toml @ recipes/tasks/swe.toml --dry-run
+uv run rl @ recipes/<model>/rl/<hardware>.toml @ recipes/rl/tasks/swe.toml --dry-run
 ```
-
-## Example: Qwen3.6-35B-A3B on H200
-
-35B total, 3B active, 256 experts, 2 KV heads, 10 of 40 layers full attention, bf16.
-
-Trainer fit (dummy weights, ep 8, one node):
-
-| cp | Offloading | tok/s | Peak GiB |
-|---|---|---|---|
-| 1 | optimizer, activations | OOM | – |
-| 2 | optimizer, activations | 24.7k | 112.7 |
-| 2 | optimizer | 25.9k | 128.4 (too tight) |
-| 4 | optimizer, activations | 24.2k | 79.4 |
-| **4** | **optimizer** | **25.6k** | **87.4** |
-| 4 | none | 25.2k | 115.6 |
-| 8 | optimizer, activations | 23.8k | 93.2 |
-
-Inference fit: the hybrid attention keeps about 4.9M KV tokens per GPU at TP 1. TP 1, 2 and 4
-gave 542, 535 and 458 output tok/s per GPU at concurrency 256. TP 2 × DP 4 won on tail TTFT.
-
-Smoke run (5 steps of scaleswe, one trainer and one inference node): the trainer ran at 21.7k
-tok/s and peaked at 114 GiB in step 1, 27 GiB above the sweep. Inference gave 914 output
-tok/s per GPU with a 74% prefix-cache hit rate and no preemptions. The trainer waited for
-batches 73% of the time, so the recipe sets three inference replicas.
 
 ## Sweep lessons
 

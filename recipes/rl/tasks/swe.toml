@@ -21,7 +21,3 @@ name = "swebench-verified"
 env.taskset.id = "swebench-verified"
 env.agent.harness.id = "bash"
 env.agent.timeout.rollout = 3600
-
-[trainer.optim]
-type = "adamw"
-lr = 1e-6
