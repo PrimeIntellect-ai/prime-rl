@@ -3,6 +3,7 @@ from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, count_active_params
+from prime_rl.trainer.models.layers.fla_ops import prepare_chunk_indices
 from prime_rl.trainer.models.layers.gated_delta_net import GatedDeltaNet
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward, SigmoidGatedFeedForward
@@ -90,6 +91,7 @@ class Qwen3_5DecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor,
+        chunk_indices: torch.Tensor,
         max_seqlen: int,
         routed_experts: torch.LongTensor | None = None,
     ) -> torch.Tensor:
@@ -99,6 +101,7 @@ class Qwen3_5DecoderLayer(nn.Module):
             hidden_states = self.linear_attn(
                 hidden_states,
                 cu_seqlens,
+                chunk_indices,
             )
         else:
             hidden_states, _ = self.self_attn(
@@ -175,6 +178,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
             total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        chunk_indices = prepare_chunk_indices(cu_seqlens)
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
 
         hidden_states = inputs_embeds
@@ -184,6 +188,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
                 hidden_states=hidden_states,
                 position_embeddings=position_embeddings,
                 cu_seqlens=cu_seqlens,
+                chunk_indices=chunk_indices,
                 max_seqlen=max_seqlen,
                 routed_experts=layer_routed_experts,
             )

@@ -82,6 +82,7 @@ class GatedDeltaNet(nn.Module):
         self,
         hidden_states: torch.Tensor,
         cu_seqlens: torch.LongTensor,
+        chunk_indices: torch.Tensor,
     ) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape
         mixed_qkv = self.in_proj_qkv(hidden_states)
@@ -100,7 +101,9 @@ class GatedDeltaNet(nn.Module):
             )
 
         if context is None:
-            mixed_qkv = fla_ops.causal_conv1d(mixed_qkv, self.conv1d.weight.squeeze(1), self.activation, cu_seqlens)
+            mixed_qkv = fla_ops.causal_conv1d(
+                mixed_qkv, self.conv1d.weight.squeeze(1), self.activation, cu_seqlens, chunk_indices
+            )
         else:
             mixed_qkv, _ = causal_conv1d_with_context_parallelism(
                 x=mixed_qkv,
@@ -122,7 +125,7 @@ class GatedDeltaNet(nn.Module):
             key = key.repeat_interleave(heads_per_key, dim=2)
 
         if context is None:
-            core_output = fla_ops.chunk_gated_delta_rule(query, key, value, decay, beta, cu_seqlens)
+            core_output = fla_ops.chunk_gated_delta_rule(query, key, value, decay, beta, cu_seqlens, chunk_indices)
         else:
             core_output, _ = chunk_gated_delta_rule(
                 q=query,

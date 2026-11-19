@@ -892,6 +892,8 @@ DYNAMIC_TENSOR_ARG_DIMS = (
     ("query_positions", 0),
     ("first_pool", 0),
     ("visible_pools", 0),
+    # GLM5-next, Qwen3.5, Qwen3.8: FLA chunk indices, (chunks, 2), one entry per 64-token chunk of each document.
+    ("chunk_indices", 0),
 )
 
 

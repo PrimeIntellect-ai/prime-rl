@@ -82,7 +82,9 @@ class KimiDeltaAttention(nn.Module):
             bias=False,
         )
 
-    def forward(self, hidden_states: torch.Tensor, cu_seqlens: torch.LongTensor) -> torch.Tensor:
+    def forward(
+        self, hidden_states: torch.Tensor, cu_seqlens: torch.LongTensor, chunk_indices: torch.Tensor
+    ) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape
         # FLA memoizes cu_seqlens metadata by tensor identity. A per-layer copy makes every layer
         # miss that cache in the forward and in its activation-checkpoint recompute alike, so both
@@ -102,7 +104,7 @@ class KimiDeltaAttention(nn.Module):
         )
         conv_weight = torch.cat((self.q_conv1d.weight, self.k_conv1d.weight, self.v_conv1d.weight)).squeeze(1)
         if context is None:
-            mixed_qkv = fla_ops.causal_conv1d(mixed_qkv, conv_weight, "silu", cu_seqlens)
+            mixed_qkv = fla_ops.causal_conv1d(mixed_qkv, conv_weight, "silu", cu_seqlens, chunk_indices)
         else:
             mixed_qkv, _ = causal_conv1d_with_context_parallelism(
                 x=mixed_qkv, weight=conv_weight, bias=None, activation="silu", cp_context=context
@@ -115,7 +117,16 @@ class KimiDeltaAttention(nn.Module):
 
         if context is None:
             core_output = fla_ops.chunk_kda(
-                query, key, value, forget_gate, beta, self.A_log, self.dt_bias, self.gate_lower_bound, cu_seqlens
+                query,
+                key,
+                value,
+                forget_gate,
+                beta,
+                self.A_log,
+                self.dt_bias,
+                self.gate_lower_bound,
+                cu_seqlens,
+                chunk_indices,
             )
         else:
             core_output, _ = chunk_kda(

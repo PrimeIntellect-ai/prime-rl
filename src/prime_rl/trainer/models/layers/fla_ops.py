@@ -6,7 +6,7 @@ from fla.ops.common.gate import fused_beta_sigmoid_bwd, fused_beta_sigmoid_fwd
 from fla.ops.gated_delta_rule.chunk import chunk_gated_delta_rule_bwd, chunk_gated_delta_rule_fwd
 from fla.ops.kda.chunk_bwd import chunk_kda_bwd
 from fla.ops.kda.chunk_fwd import chunk_kda_fwd
-from fla.ops.utils.index import prepare_chunk_indices
+from fla.ops.utils.index import prepare_chunk_indices as fla_prepare_chunk_indices
 from torch import Tensor
 
 # FLA's public entry points are torch.compiler.disable'd (directly or through its backend dispatch).
@@ -15,56 +15,84 @@ from torch import Tensor
 CHUNK_SIZE = 64
 
 
+def prepare_chunk_indices(cu_seqlens: Tensor) -> Tensor:
+    """Each chunk's (sequence, chunk within sequence) index, which these ops take; build it once per packed row
+    outside the compiled layers, since it reads ``cu_seqlens`` on the host."""
+    return fla_prepare_chunk_indices(cu_seqlens, CHUNK_SIZE)
+
+
 @torch.library.custom_op("prime_rl::fla_causal_conv1d", mutates_args=())
-def _causal_conv1d(x: Tensor, weight: Tensor, activation: str | None, cu_seqlens: Tensor) -> Tensor:
-    y, _ = causal_conv1d_fwd(x=x, weight=weight, bias=None, residual=None, activation=activation, cu_seqlens=cu_seqlens)
+def _causal_conv1d(
+    x: Tensor, weight: Tensor, activation: str | None, cu_seqlens: Tensor, chunk_indices: Tensor
+) -> Tensor:
+    y, _ = causal_conv1d_fwd(
+        x=x,
+        weight=weight,
+        bias=None,
+        residual=None,
+        activation=activation,
+        cu_seqlens=cu_seqlens,
+        chunk_indices=chunk_indices,
+        chunk_size=CHUNK_SIZE,
+    )
     return y
 
 
 @_causal_conv1d.register_fake
-def _(x, weight, activation, cu_seqlens):
+def _(x, weight, activation, cu_seqlens, chunk_indices):
     return torch.empty_like(x)
 
 
 @torch.library.custom_op("prime_rl::fla_causal_conv1d_backward", mutates_args=())
 def _causal_conv1d_backward(
-    dy: Tensor, x: Tensor, weight: Tensor, activation: str | None, cu_seqlens: Tensor
+    dy: Tensor, x: Tensor, weight: Tensor, activation: str | None, cu_seqlens: Tensor, chunk_indices: Tensor
 ) -> tuple[Tensor, Tensor]:
     dx, dweight, _, _, _ = causal_conv1d_bwd(
-        x=x, dy=dy, dht=None, weight=weight, bias=None, residual=None, activation=activation, cu_seqlens=cu_seqlens
+        x=x,
+        dy=dy,
+        dht=None,
+        weight=weight,
+        bias=None,
+        residual=None,
+        activation=activation,
+        cu_seqlens=cu_seqlens,
+        chunk_indices=chunk_indices,
+        chunk_size=CHUNK_SIZE,
     )
     return dx, dweight
 
 
 @_causal_conv1d_backward.register_fake
-def _(dy, x, weight, activation, cu_seqlens):
+def _(dy, x, weight, activation, cu_seqlens, chunk_indices):
     return torch.empty_like(x), torch.empty_like(weight)
 
 
 def _causal_conv1d_setup_context(ctx, inputs, output) -> None:
-    x, weight, activation, cu_seqlens = inputs
-    ctx.save_for_backward(x, weight, cu_seqlens)
+    x, weight, activation, cu_seqlens, chunk_indices = inputs
+    ctx.save_for_backward(x, weight, cu_seqlens, chunk_indices)
     ctx.activation = activation
 
 
 def _causal_conv1d_autograd(ctx, dy: Tensor):
-    x, weight, cu_seqlens = ctx.saved_tensors
-    dx, dweight = _causal_conv1d_backward(dy.contiguous(), x, weight, ctx.activation, cu_seqlens)
-    return dx, dweight, None, None
+    x, weight, cu_seqlens, chunk_indices = ctx.saved_tensors
+    dx, dweight = _causal_conv1d_backward(dy.contiguous(), x, weight, ctx.activation, cu_seqlens, chunk_indices)
+    return dx, dweight, None, None, None
 
 
 _causal_conv1d.register_autograd(_causal_conv1d_autograd, setup_context=_causal_conv1d_setup_context)
 
 
-def causal_conv1d(x: Tensor, weight: Tensor, activation: str | None, cu_seqlens: Tensor) -> Tensor:
+def causal_conv1d(
+    x: Tensor, weight: Tensor, activation: str | None, cu_seqlens: Tensor, chunk_indices: Tensor
+) -> Tensor:
     """FLA's varlen causal depthwise convolution without bias or states: ``x`` is (1, tokens, channels), ``weight`` is
     (channels, width)."""
-    return _causal_conv1d(x.contiguous(), weight.contiguous(), activation, cu_seqlens)
+    return _causal_conv1d(x.contiguous(), weight.contiguous(), activation, cu_seqlens, chunk_indices)
 
 
 @torch.library.custom_op("prime_rl::fla_chunk_gated_delta_rule", mutates_args=())
 def _chunk_gated_delta_rule(
-    q: Tensor, k: Tensor, v: Tensor, g: Tensor, beta: Tensor, scale: float, cu_seqlens: Tensor
+    q: Tensor, k: Tensor, v: Tensor, g: Tensor, beta: Tensor, scale: float, cu_seqlens: Tensor, chunk_indices: Tensor
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     q, q_rstd = l2norm_fwd(q)
     k, k_rstd = l2norm_fwd(k)
@@ -78,14 +106,14 @@ def _chunk_gated_delta_rule(
         initial_state=None,
         output_final_state=False,
         cu_seqlens=cu_seqlens,
-        chunk_indices=prepare_chunk_indices(cu_seqlens, CHUNK_SIZE),
+        chunk_indices=chunk_indices,
         chunk_size=CHUNK_SIZE,
     )
     return o.to(q.dtype), q, q_rstd, k, k_rstd, g_cumsum, A
 
 
 @_chunk_gated_delta_rule.register_fake
-def _(q, k, v, g, beta, scale, cu_seqlens):
+def _(q, k, v, g, beta, scale, cu_seqlens, chunk_indices):
     return (
         torch.empty_like(v),
         torch.empty_like(q),
@@ -110,6 +138,7 @@ def _chunk_gated_delta_rule_backward(
     A: Tensor,
     scale: float,
     cu_seqlens: Tensor,
+    chunk_indices: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     dq, dk, dv, dbeta, dg, _, _, _ = chunk_gated_delta_rule_bwd(
         q=q,
@@ -123,7 +152,7 @@ def _chunk_gated_delta_rule_backward(
         do=do,
         dht=None,
         cu_seqlens=cu_seqlens,
-        chunk_indices=prepare_chunk_indices(cu_seqlens, CHUNK_SIZE),
+        chunk_indices=chunk_indices,
         chunk_size=CHUNK_SIZE,
     )
     dq = l2norm_bwd(q, q_rstd, dq)
@@ -132,7 +161,7 @@ def _chunk_gated_delta_rule_backward(
 
 
 @_chunk_gated_delta_rule_backward.register_fake
-def _(do, q, q_rstd, k, k_rstd, v, g_cumsum, beta, A, scale, cu_seqlens):
+def _(do, q, q_rstd, k, k_rstd, v, g_cumsum, beta, A, scale, cu_seqlens, chunk_indices):
     return (
         torch.empty_like(q),
         torch.empty_like(k),
@@ -143,20 +172,20 @@ def _(do, q, q_rstd, k, k_rstd, v, g_cumsum, beta, A, scale, cu_seqlens):
 
 
 def _chunk_gated_delta_rule_setup_context(ctx, inputs, output) -> None:
-    _, _, v, g, beta, scale, cu_seqlens = inputs
+    _, _, v, g, beta, scale, cu_seqlens, chunk_indices = inputs
     _, q, q_rstd, k, k_rstd, g_cumsum, A = output
     ctx.mark_non_differentiable(q, q_rstd, k, k_rstd, g_cumsum, A)
-    ctx.save_for_backward(q, q_rstd, k, k_rstd, v, g_cumsum, beta, A, cu_seqlens)
+    ctx.save_for_backward(q, q_rstd, k, k_rstd, v, g_cumsum, beta, A, cu_seqlens, chunk_indices)
     ctx.scale = scale
     ctx.g_dtype = g.dtype
 
 
 def _chunk_gated_delta_rule_autograd(ctx, do: Tensor, *_):
-    q, q_rstd, k, k_rstd, v, g_cumsum, beta, A, cu_seqlens = ctx.saved_tensors
+    q, q_rstd, k, k_rstd, v, g_cumsum, beta, A, cu_seqlens, chunk_indices = ctx.saved_tensors
     dq, dk, dv, dg, dbeta = _chunk_gated_delta_rule_backward(
-        do.contiguous(), q, q_rstd, k, k_rstd, v, g_cumsum, beta, A, ctx.scale, cu_seqlens
+        do.contiguous(), q, q_rstd, k, k_rstd, v, g_cumsum, beta, A, ctx.scale, cu_seqlens, chunk_indices
     )
-    return dq, dk, dv, dg.to(ctx.g_dtype), dbeta, None, None
+    return dq, dk, dv, dg.to(ctx.g_dtype), dbeta, None, None, None
 
 
 _chunk_gated_delta_rule.register_autograd(
@@ -164,7 +193,9 @@ _chunk_gated_delta_rule.register_autograd(
 )
 
 
-def chunk_gated_delta_rule(q: Tensor, k: Tensor, v: Tensor, g: Tensor, beta: Tensor, cu_seqlens: Tensor) -> Tensor:
+def chunk_gated_delta_rule(
+    q: Tensor, k: Tensor, v: Tensor, g: Tensor, beta: Tensor, cu_seqlens: Tensor, chunk_indices: Tensor
+) -> Tensor:
     """FLA's varlen ``chunk_gated_delta_rule`` with in-kernel q/k l2norm and no states: q, k and v are
     (1, tokens, heads, head_dim), g (log decay) and beta are (1, tokens, heads)."""
     return _chunk_gated_delta_rule(
@@ -175,6 +206,7 @@ def chunk_gated_delta_rule(q: Tensor, k: Tensor, v: Tensor, g: Tensor, beta: Ten
         beta.contiguous(),
         k.shape[-1] ** -0.5,
         cu_seqlens,
+        chunk_indices,
     )[0]
 
 
@@ -190,6 +222,7 @@ def _chunk_kda(
     scale: float,
     lower_bound: float,
     cu_seqlens: Tensor,
+    chunk_indices: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     q, q_rstd = l2norm_fwd(q)
     k, k_rstd = l2norm_fwd(k)
@@ -204,7 +237,7 @@ def _chunk_kda(
         initial_state=None,
         output_final_state=False,
         cu_seqlens=cu_seqlens,
-        chunk_indices=prepare_chunk_indices(cu_seqlens, CHUNK_SIZE),
+        chunk_indices=chunk_indices,
         chunk_size=CHUNK_SIZE,
         safe_gate=True,
         lower_bound=lower_bound,
@@ -216,7 +249,7 @@ def _chunk_kda(
 
 
 @_chunk_kda.register_fake
-def _(q, k, v, g, beta, A_log, dt_bias, scale, lower_bound, cu_seqlens):
+def _(q, k, v, g, beta, A_log, dt_bias, scale, lower_bound, cu_seqlens, chunk_indices):
     return (
         torch.empty_like(v),
         torch.empty_like(q),
@@ -247,6 +280,7 @@ def _chunk_kda_backward(
     scale: float,
     lower_bound: float,
     cu_seqlens: Tensor,
+    chunk_indices: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     dq, dk, dv, dbeta_sigmoid, dg, _, dA_log, ddt_bias = chunk_kda_bwd(
         q=q,
@@ -261,7 +295,7 @@ def _chunk_kda_backward(
         dht=None,
         g_org=g,
         cu_seqlens=cu_seqlens,
-        chunk_indices=prepare_chunk_indices(cu_seqlens, CHUNK_SIZE),
+        chunk_indices=chunk_indices,
         chunk_size=CHUNK_SIZE,
         safe_gate=True,
         lower_bound=lower_bound,
@@ -276,7 +310,25 @@ def _chunk_kda_backward(
 
 
 @_chunk_kda_backward.register_fake
-def _(do, q, q_rstd, k, k_rstd, v, g, beta, beta_sigmoid, A_log, dt_bias, Aqk, Akk, scale, lower_bound, cu_seqlens):
+def _(
+    do,
+    q,
+    q_rstd,
+    k,
+    k_rstd,
+    v,
+    g,
+    beta,
+    beta_sigmoid,
+    A_log,
+    dt_bias,
+    Aqk,
+    Akk,
+    scale,
+    lower_bound,
+    cu_seqlens,
+    chunk_indices,
+):
     return (
         torch.empty_like(q),
         torch.empty_like(k),
@@ -289,16 +341,20 @@ def _(do, q, q_rstd, k, k_rstd, v, g, beta, beta_sigmoid, A_log, dt_bias, Aqk, A
 
 
 def _chunk_kda_setup_context(ctx, inputs, output) -> None:
-    _, _, v, g, beta, A_log, dt_bias, scale, lower_bound, cu_seqlens = inputs
+    _, _, v, g, beta, A_log, dt_bias, scale, lower_bound, cu_seqlens, chunk_indices = inputs
     _, q, q_rstd, k, k_rstd, beta_sigmoid, Aqk, Akk = output
     ctx.mark_non_differentiable(q, q_rstd, k, k_rstd, beta_sigmoid, Aqk, Akk)
-    ctx.save_for_backward(q, q_rstd, k, k_rstd, v, g, beta, beta_sigmoid, A_log, dt_bias, Aqk, Akk, cu_seqlens)
+    ctx.save_for_backward(
+        q, q_rstd, k, k_rstd, v, g, beta, beta_sigmoid, A_log, dt_bias, Aqk, Akk, cu_seqlens, chunk_indices
+    )
     ctx.scale = scale
     ctx.lower_bound = lower_bound
 
 
 def _chunk_kda_autograd(ctx, do: Tensor, *_):
-    q, q_rstd, k, k_rstd, v, g, beta, beta_sigmoid, A_log, dt_bias, Aqk, Akk, cu_seqlens = ctx.saved_tensors
+    q, q_rstd, k, k_rstd, v, g, beta, beta_sigmoid, A_log, dt_bias, Aqk, Akk, cu_seqlens, chunk_indices = (
+        ctx.saved_tensors
+    )
     grads = _chunk_kda_backward(
         do.contiguous(),
         q,
@@ -316,8 +372,9 @@ def _chunk_kda_autograd(ctx, do: Tensor, *_):
         ctx.scale,
         ctx.lower_bound,
         cu_seqlens,
+        chunk_indices,
     )
-    return *grads, None, None, None
+    return *grads, None, None, None, None
 
 
 _chunk_kda.register_autograd(_chunk_kda_autograd, setup_context=_chunk_kda_setup_context)
@@ -333,6 +390,7 @@ def chunk_kda(
     dt_bias: Tensor,
     lower_bound: float,
     cu_seqlens: Tensor,
+    chunk_indices: Tensor,
 ) -> Tensor:
     """FLA's varlen ``chunk_kda`` with in-kernel q/k l2norm, safe gate and beta sigmoid, and no states: q, k, v and g
     (raw gate) are (1, tokens, heads, head_dim), beta (logits) is (1, tokens, heads)."""
@@ -347,6 +405,7 @@ def chunk_kda(
         k.shape[-1] ** -0.5,
         lower_bound,
         cu_seqlens,
+        chunk_indices,
     )[0]
 
 
