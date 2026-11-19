@@ -173,22 +173,47 @@ def fp8_indexer(
     # NOTE: We don't use weight scale in this kernel as it produces higher KL mismatch for some reason
     # This is not a problem result-wise, as it is a constant multiplier
     S_q, H, D = q.shape
-    S_k = k.shape[0]
 
     q_flat = q.reshape(S_q * H, D).contiguous()
     q_fp8, q_scales = per_token_group_quant_fp8(q_flat, group_size=D, use_ue8m0=True, eps=amax_floor)
-    S_k_aligned = triton.cdiv(max(S_k, 1), KEY_ALIGNMENT) * KEY_ALIGNMENT
-    k = torch.nn.functional.pad(k, (0, 0, 0, S_k_aligned - S_k))
-    k_fp8, k_scales = per_token_group_quant_fp8(k.contiguous(), group_size=D, use_ue8m0=True, eps=amax_floor)
-
     q_fp8 = q_fp8.view(S_q, H, D)
-    k_scales = k_scales.view(S_k_aligned)
 
     # Fold q_scale into weights
     q_scales = q_scales.view(S_q, H)
     w = w * q_scales
 
-    indices = torch.empty((S_q, topk), dtype=torch.int32, device=q.device)
+    return fp8_indexer_prequantized(q_fp8, k, w, ks, ke, topk, amax_floor=amax_floor, cp_group_name=cp_group_name)
+
+
+@torch.library.custom_op("prime_rl::fp8_indexer_prequantized", mutates_args=())
+def fp8_indexer_prequantized(
+    q_fp8: torch.Tensor,
+    k: torch.Tensor,
+    w: torch.Tensor,
+    ks: torch.Tensor,
+    ke: torch.Tensor,
+    topk: int,
+    amax_floor: float = FP8_EPS,
+    cp_group_name: str | None = None,
+) -> torch.Tensor:
+    """`fp8_indexer` on queries already UE8M0-quantized per head, each head's scale folded into `w`.
+
+    Args:
+        q_fp8: [S_q, H, D] float8_e4m3fn query vectors per head
+        k: [S_k, D] bf16 key vectors (shared across heads)
+        w: [S_q, H] fp32 per-head weights times each head's query scale
+        ks, ke, topk, cp_group_name: as in `fp8_indexer`
+        amax_floor: lower bound on each key's absolute maximum before its UE8M0 scale is taken
+    """
+    S_q, H, D = q_fp8.shape
+    S_k = k.shape[0]
+
+    S_k_aligned = triton.cdiv(max(S_k, 1), KEY_ALIGNMENT) * KEY_ALIGNMENT
+    k = torch.nn.functional.pad(k, (0, 0, 0, S_k_aligned - S_k))
+    k_fp8, k_scales = per_token_group_quant_fp8(k.contiguous(), group_size=D, use_ue8m0=True, eps=amax_floor)
+    k_scales = k_scales.view(S_k_aligned)
+
+    indices = torch.empty((S_q, topk), dtype=torch.int32, device=q_fp8.device)
     chunk_rows = max(MIN_CHUNK_ROWS, LOGITS_CHUNK_BYTES // (4 * S_k_aligned))
     if cp_group_name is None:
         _select_topk(q_fp8, k_fp8, k_scales, w, ks, ke, S_k, chunk_rows, indices)
@@ -213,7 +238,7 @@ def fp8_indexer(
         works = dist.batch_isend_irecv([dist.P2POp(dist.isend, t, peer, group) for t in sent])
     if recv_chunks:
         received = [
-            torch.empty(recv_rows, H, D, dtype=torch.uint8, device=q.device),
+            torch.empty(recv_rows, H, D, dtype=torch.uint8, device=q_fp8.device),
             w.new_empty(recv_rows, H),
             ks.new_empty(recv_rows),
             ke.new_empty(recv_rows),
@@ -230,7 +255,7 @@ def fp8_indexer(
         for work in works:
             work.wait()
         q_recv, w_recv, ks_recv, ke_recv = received
-        partner_indices = torch.empty((recv_rows, topk), dtype=torch.int32, device=q.device)
+        partner_indices = torch.empty((recv_rows, topk), dtype=torch.int32, device=q_fp8.device)
         _select_topk(
             q_recv.view(torch.float8_e4m3fn),
             k_fp8,
@@ -276,14 +301,16 @@ def _select_topk(q_fp8, k_fp8, k_scales, w, ks, ke, S_k, chunk_rows, indices):
     from vllm.third_party import deep_gemm
 
     q_scales = None
+    logits_dtype = torch.float32
     if torch.cuda.get_device_capability(q_fp8.device)[0] == 10:
         # SM100 takes MX inputs only: each key's UE8M0 scale repeated over its four 32-wide blocks, unit query
-        # scales (they are folded into w) and bf16 weights, as vLLM's `mqa_logits_mx_inputs` builds them. The
-        # cast is exact for bf16 head weights and rounds fp32 ones (GLM5-Next) the way vLLM does.
+        # scales (they are folded into w) and weights in the logits dtype, as vLLM's `mqa_logits_mx_inputs`
+        # builds them. BF16 logits reduce in BF16: the cast is exact for bf16 head weights and rounds fp32 ones.
+        logits_dtype = torch.bfloat16
         k_scales = (k_scales.view(torch.int32) >> 23).to(torch.uint8)[:, None].expand(-1, 4).contiguous()
         k_scales = k_scales.view(torch.int32).squeeze(-1)
         q_scales = torch.full(q_fp8.shape[:-1], UNIT_UE8M0_X4, dtype=torch.int32, device=q_fp8.device)
-        w = w.to(torch.bfloat16)
+        w = w.to(logits_dtype)
     lengths = (ke - ks).clamp_min(0)
     for start in range(0, q_fp8.shape[0], chunk_rows):
         end = min(start + chunk_rows, q_fp8.shape[0])
@@ -295,6 +322,7 @@ def _select_topk(q_fp8, k_fp8, k_scales, w, ks, ke, S_k, chunk_rows, indices):
             ks[start:end],
             ke[start:end],
             k_fp8.shape[0],
+            logits_dtype,
         ).float()
         row_lengths = lengths[start:end]
         columns = torch.arange(logits.shape[1], device=logits.device)
@@ -309,3 +337,8 @@ def _select_topk(q_fp8, k_fp8, k_scales, w, ks, ke, S_k, chunk_rows, indices):
 @fp8_indexer.register_fake
 def _fp8_indexer_fake(q, k, w, ks, ke, topk, weight_scale=1.0, amax_floor=FP8_EPS, cp_group_name=None):
     return q.new_empty((q.shape[0], topk), dtype=torch.int32)
+
+
+@fp8_indexer_prequantized.register_fake
+def _fp8_indexer_prequantized_fake(q_fp8, k, w, ks, ke, topk, amax_floor=FP8_EPS, cp_group_name=None):
+    return q_fp8.new_empty((q_fp8.shape[0], topk), dtype=torch.int32)
