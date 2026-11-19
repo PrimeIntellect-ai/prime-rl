@@ -1,7 +1,8 @@
 #!/bin/bash
 # Usage: run.sh MODEL ARM SHA [extra trainer args]
 # MODEL is a configs/*.toml name, ARM a label (base or fix), SHA the commit to run.
-# Env: PYTHON (interpreter with prime-rl's dependencies), MODELS_DIR, DATA_DIR, OUT_DIR (default ./ab-runs).
+# Env: PYTHON (interpreter with prime-rl's dependencies), MODELS_DIR, DATA_DIR, OUT_DIR (default ./ab-runs),
+# CACHE_ROOT (compile caches, default OUT_DIR/cache; use node-local disk when OUT_DIR is on a network filesystem).
 set -euo pipefail
 MODEL=$1
 ARM=$2
@@ -11,7 +12,7 @@ REPO=$(git -C "$HERE" rev-parse --show-toplevel)
 OUT_DIR=${OUT_DIR:-$PWD/ab-runs}
 SRC=$OUT_DIR/src/$SHA
 RUN=$OUT_DIR/runs/$MODEL-$ARM
-CACHE=$OUT_DIR/cache/$MODEL-$ARM
+CACHE=${CACHE_ROOT:-$OUT_DIR/cache}/$MODEL-$ARM
 [ ! -e "$RUN/rc.txt" ] || { echo "$RUN already holds a run" >&2; exit 1; }
 if [ ! -d "$SRC/src/prime_rl" ]; then
   mkdir -p "$SRC"
