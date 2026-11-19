@@ -335,6 +335,9 @@ class VllmRouterConfig(BaseConfig):
     pd_turn_retries: int = Field(2, ge=0)
     """Disaggregated P/D only: how often the router reruns a turn whose prefill or decode request failed with a connection error (``--pd-turn-retries``). A retry runs a fresh prefill and then decode, without the previous turn's decode KV. 0 returns the first error to the client."""
 
+    dedicated_node: bool = False
+    """Multi-node SLURM only: run the router on a node of its own (one extra node, the last of the allocation) instead of on the first inference node. The router then shares no CPU or host memory with inference engines."""
+
 
 class LlmdRouterConfig(BaseConfig):
     """llm-d router backend (EPP + Envoy)."""

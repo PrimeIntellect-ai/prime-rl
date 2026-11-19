@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name={{ job_name }}
-#SBATCH --nodes={{ num_train_nodes + num_infer_nodes }}
+#SBATCH --nodes={{ num_train_nodes + num_infer_nodes + (1 if num_infer_nodes > 0 and router.dedicated_node else 0) }}
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:{{ gpus_per_node }}
 {%- if partition %}
@@ -84,15 +84,23 @@ export WANDB_SHARED_MODE=1
 
 # Networking
 HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
-TRAIN_HOSTS=( ${HOSTNAMES[@]:$NUM_INFER_NODES:$SLURM_JOB_NUM_NODES} )
+TRAIN_HOSTS=( ${HOSTNAMES[@]:$NUM_INFER_NODES:$NUM_TRAIN_NODES} )
 export HOSTNAMES_STR="${HOSTNAMES[*]}"
 
 {% if num_infer_nodes > 0 -%}
 INFER_HOSTS=( ${HOSTNAMES[@]:0:$NUM_INFER_NODES} )
 
-# Single global router on inference node 0 fronts every per-rank endpoint;
-# admin URLs bypass it and hit each rank directly.
-INFER_URLS="http://${INFER_HOSTS[0]}:${ROUTER_PORT}/v1"
+# Single global router fronts every per-rank endpoint; admin URLs bypass it and hit each rank
+# directly. It runs on inference node 0, or with router.dedicated_node on the last node of the
+# allocation, which runs nothing else.
+{% if router.dedicated_node -%}
+ROUTER_PROCID=$((NUM_INFER_NODES + NUM_TRAIN_NODES))
+{% else -%}
+ROUTER_PROCID=0
+{% endif -%}
+export ROUTER_PROCID
+ROUTER_HOST="${HOSTNAMES[$ROUTER_PROCID]}"
+INFER_URLS="http://${ROUTER_HOST}:${ROUTER_PORT}/v1"
 ADMIN_URLS=""
 ROUTER_ARGS=""
 {% if is_disaggregated -%}
@@ -347,7 +355,16 @@ python -m prime_rl.entrypoints.run_owner rl $CONFIG_DIR/rl.json srun --kill-on-b
 
 {% if num_infer_nodes > 0 -%}
 
+{% if router.dedicated_node -%}
+if [ "$SLURM_PROCID" -eq "$ROUTER_PROCID" ]; then
+    # Dedicated router node: the router and nothing else.
+{% include '_launch_router.sh.j2' %}
+    echo "ROUTER_NODE=$(hostname) ROUTER_PROCID=$ROUTER_PROCID" | tee $LOG_DIR/inference/router_node.log
+    launch_router {{ "pd" if is_disaggregated else "regular" }} "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$LOG_DIR/inference/router.log"
+elif [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
+{%- else -%}
 if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
+{%- endif %}
     INFER_NODE_RANK=$SLURM_PROCID
     # Inference env vars: launcher defaults + [env_vars] + [inference.env_vars]
 {%- for key, value in inference_env_vars.items() %}
@@ -463,7 +480,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         | tee -a $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
 
     # Start the single global router on inference node 0 (PD mode, external LB across all per-rank endpoints)
-    if [ "$INFER_NODE_RANK" -eq 0 ]; then
+    if [ "$SLURM_PROCID" -eq "$ROUTER_PROCID" ]; then
         launch_router pd "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$LOG_DIR/inference/router.log"
     fi
 {%- if router.type == "llm-d" %}
@@ -500,7 +517,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     done
 {%- else -%}
     # Start the single global router on inference node 0 (external LB across all per-rank endpoints)
-    if [ "$INFER_NODE_RANK" -eq 0 ]; then
+    if [ "$SLURM_PROCID" -eq "$ROUTER_PROCID" ]; then
         launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$LOG_DIR/inference/router.log"
     fi
 
