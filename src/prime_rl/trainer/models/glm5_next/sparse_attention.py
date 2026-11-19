@@ -121,13 +121,14 @@ class KPoolIndexer(nn.Module):
 
     def _pool_keys(self, key: torch.Tensor, gate: torch.Tensor, pool_start_tokens: torch.Tensor) -> torch.Tensor:
         # Same accumulation order as vLLM's kpool kernel: max, exp, running sums, then one divide.
-        logits = gate[pool_start_tokens[:, None] + torch.arange(self.pool_size, device=key.device)].float()
+        pool_tokens = pool_start_tokens[:, None] + torch.arange(self.pool_size, device=key.device)
+        logits = gate[pool_tokens].float()
         logits = logits + self.index_kpool_compress_ape.float()
         weights = (logits - logits.amax(dim=1, keepdim=True)).exp()
         pooled = torch.zeros_like(weights[:, 0])
         normalizer = torch.zeros_like(weights[:, 0])
         for slot in range(self.pool_size):
-            pooled = pooled + key[pool_start_tokens + slot].float() * weights[:, slot]
+            pooled = pooled + key[pool_tokens[:, slot]].float() * weights[:, slot]
             normalizer = normalizer + weights[:, slot]
         pooled = (pooled / normalizer).to(key.dtype)
         return hadamard_128(pooled).to(key.dtype)
