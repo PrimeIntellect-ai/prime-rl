@@ -1,3 +1,4 @@
+import shutil
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
@@ -6,34 +7,17 @@ import numpy as np
 import pytest
 
 import prime_rl.trainer.pretrain.data as pretrain_data
-from prime_rl.configs.pretrain import DatatroveDataConfig, PretrainDataConfig
+from prime_rl.configs.pretrain import PretrainDataConfig
 from prime_rl.trainer.data import setup_dataloader
 from prime_rl.trainer.pretrain.data import (
     TokenShards,
     detect_separator,
     document_edges,
     permute,
-    setup_document_dataset,
     setup_token_dataset,
     warn_if_no_document_separator,
 )
 from prime_rl.utils.bin_packing import fill_rows
-
-# Documents of the pool, in two folders, with an empty one. A token's id is its position in the pool.
-DOCUMENTS = [[range(0, 10), range(10, 30), range(30, 30), range(30, 60)], [range(60, 103)]]
-
-
-@pytest.fixture
-def folders(tmp_path: Path) -> list[Path]:
-    folders = []
-    for index, documents in enumerate(DOCUMENTS):
-        folder = tmp_path / str(index)
-        folder.mkdir()
-        np.array([token for document in documents for token in document], dtype="<u4").tofile(folder / "00.ds")
-        np.cumsum([len(document) for document in documents], dtype="<u8").tofile(folder / "00.ds.index")
-        (folder / "00.ds.metadata").write_text("tokenizer|4\n")
-        folders.append(folder)
-    return folders
 
 
 def write_shard(path: Path, documents: list[list[int]]) -> None:
@@ -53,7 +37,7 @@ def consecutive_documents(lengths: list[int], first: int = 0) -> list[list[int]]
 def data_config(tmp_path: Path, sources: dict[str, dict], **data) -> PretrainDataConfig:
     """Sources of the folders ``tmp_path / name``, with their settings (weight, repetitions)."""
     return PretrainDataConfig(
-        sources=[{"name": name, "path": tmp_path / name, **settings} for name, settings in sources.items()],
+        source=[{"name": name, "path": tmp_path / name, **settings} for name, settings in sources.items()],
         **{"seq_len": 16, "batch_size": 4, **data},
     )
 
@@ -128,12 +112,12 @@ def test_rows_keep_every_prediction_of_a_pass(tmp_path):
 
 
 def test_every_step_holds_the_mixture(tmp_path):
-    """Without weights, a and b get their natural shares, by their tokens; with weights, theirs (0 stops b). After
-    every step, every source's tokens are within seq_len of its share, the rest of a unit cut at a step's end
-    included."""
+    """Without weights, a and b get their natural shares, by their tokens; with weights, their weight over the sum of
+    the weights (0 stops b). After every step, every source's tokens are within seq_len of its share, the rest of a
+    unit cut at a step's end included."""
     write_source(tmp_path / "a", LENGTHS * 20)
     write_source(tmp_path / "b", [6, 30, 9, 2, 18, 4] * 30, 10**6)
-    for weights in ((None, None), (0.25, 0.75), (1.0, 0.0)):
+    for weights in ((None, None), (1.0, 3.0), (1.0, 0.0)):
         sources = {name: {} if weight is None else {"weight": weight} for name, weight in zip("ab", weights)}
         sampler = setup_token_dataset(data_config(tmp_path, sources, batch_size=8), dp_rank=0, dp_size=1).sampler
         for step, cursor in enumerate(plan(sampler, 20)[1]):
@@ -174,8 +158,8 @@ def test_repetitions_read_a_subset_that_many_times(tmp_path):
 
 
 def test_subsets_and_resumes_fail_clearly(tmp_path):
-    """A subset larger than its source fails at startup. A resume fails when the data settings differ, except for
-    max_steps when no source has repetitions."""
+    """A subset larger than its source fails at startup. A resume fails when the data settings differ, naming the old
+    and new values, except for max_steps when no source has repetitions and for a source moved to another folder."""
     write_shard(tmp_path / "a" / "00.ds", consecutive_documents([8] * 100))
     with pytest.raises(ValueError, match="needs 1,600 unique tokens but has 800"):
         setup_token_dataset(
@@ -183,9 +167,12 @@ def test_subsets_and_resumes_fail_clearly(tmp_path):
         )
     state = setup_token_dataset(data_config(tmp_path, {"a": {}}), max_steps=10, dp_rank=0, dp_size=1).state_dict()
     setup_token_dataset(data_config(tmp_path, {"a": {}}), max_steps=20, dp_rank=0, dp_size=1).load_state_dict(state)
-    with pytest.raises(ValueError, match="in seed"):
+    shutil.copytree(tmp_path / "a", tmp_path / "moved" / "a")
+    moved = data_config(tmp_path / "moved", {"a": {}})
+    setup_token_dataset(moved, max_steps=10, dp_rank=0, dp_size=1).load_state_dict(state)
+    with pytest.raises(ValueError, match="seed 0 -> 1; num_workers 1 -> 2"):
         setup_token_dataset(
-            data_config(tmp_path, {"a": {}}, seed=1), max_steps=10, dp_rank=0, dp_size=1
+            data_config(tmp_path, {"a": {}}, seed=1, num_workers=2), max_steps=10, dp_rank=0, dp_size=1
         ).load_state_dict(state)
     state = setup_token_dataset(
         data_config(tmp_path, {"a": {"repetitions": 2.0}}), max_steps=10, dp_rank=0, dp_size=1
@@ -292,46 +279,6 @@ def test_unit_order_needs_no_table():
     # 10^15 units: any unit is computed directly, without a permutation table.
     units = permute(np.arange(4), 10**15, key=3)
     assert len(set(units.tolist())) == 4 and (units < 10**15).all()
-
-
-def scored_segments(batch: dict) -> list[tuple[list[int], list[int], list[int]]]:
-    """Inputs, targets and positions of every scored segment of a micro-batch row."""
-    segments, start = [], 0
-    for length in batch["seq_lens"].tolist():
-        end = start + length
-        if batch["loss_mask"][0, start:end].all():
-            segments.append(
-                tuple(batch[key][0, start:end].tolist() for key in ("input_ids", "target_ids", "position_ids"))
-            )
-        else:
-            assert not batch["loss_mask"][0, start:end].any()
-        start = end
-    return segments
-
-
-@pytest.mark.parametrize("num_documents", [None, 4])
-@pytest.mark.parametrize("world_size", [1, 2, 3])
-def test_validation_scores_every_document_on_its_own(folders: list[Path], world_size: int, num_documents: int | None):
-    """The data ranks together score every document (or the first num_documents) as if it were alone: windows of
-    seq_len scored tokens, each with positions from 0 and no token before its own first one, every token after the
-    document's first scored once. Every rank runs the same number of micro-batches."""
-    config = DatatroveDataConfig(paths=folders, seq_len=8, batch_size=2, micro_batch_size=2)
-    expected = []
-    for document in [list(document) for documents in DOCUMENTS for document in documents][:num_documents]:
-        for start in range(0, len(document) - 1, config.seq_len):
-            window = document[start : start + config.seq_len + 1]
-            expected.append((window[:-1], window[1:], list(range(len(window) - 1))))
-
-    batches_by_rank = []
-    for rank in range(world_size):
-        dataset = setup_document_dataset(config, dp_rank=rank, dp_size=world_size, num_documents=num_documents)
-        batches_by_rank.append(list(setup_dataloader(dataset, config, cp=1)))
-
-    assert len({len(batches) for batches in batches_by_rank}) == 1
-    for batches in batches_by_rank:
-        assert all(batch["input_ids"].shape == (1, config.seq_len * config.micro_batch_size) for batch in batches)
-    segments = [segment for batches in batches_by_rank for batch in batches for segment in scored_segments(batch)]
-    assert sorted(segments) == sorted(expected)
 
 
 def test_separator_check_skips_empty_files_and_documents(tmp_path: Path, monkeypatch):

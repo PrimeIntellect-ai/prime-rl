@@ -1,5 +1,5 @@
 """Pretraining data: units of the documents in datatrove tokenized shards, sampled from one or more sources into rows of
-``seq_len`` tokens, and for validation every held-out document scored on its own."""
+``seq_len`` tokens."""
 
 import hashlib
 import os
@@ -15,7 +15,7 @@ import numpy as np
 import torch.distributed as dist
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.pretrain import DatatroveDataConfig, PretrainDataConfig
+from prime_rl.configs.pretrain import PretrainDataConfig
 from prime_rl.trainer.data import StatefulIterableDataset
 from prime_rl.utils.bin_packing import fill_rows
 from prime_rl.utils.logger import get_logger
@@ -264,7 +264,7 @@ class TokenSampler:
         name = self.names[source]
         if tokens > self.num_tokens[source]:
             raise ValueError(
-                f"Source {name}: weight x the run's tokens / repetitions needs {tokens:,.0f} unique tokens but has "
+                f"Source {name}: its share x the run's tokens / repetitions needs {tokens:,.0f} unique tokens but has "
                 f"{self.num_tokens[source]:,}; raise repetitions, lower the weight, or train fewer steps"
             )
         if tokens < self.seq_len:
@@ -432,16 +432,17 @@ class TokenSampler:
             "seq_len": self.seq_len,
             "batch_size": self.batch_size,
             "seed": self.seed,
-            "sources": [[name, *map(str, s.paths), digest] for name, s, digest in zip(self.names, self.sources, files)],
+            "sources": [[name, digest] for name, digest in zip(self.names, files)],
             "weights": self.weights.tolist(),
             "repetitions": self.repetitions,
             "max_steps": self.max_steps if self.subsets.any() else None,
         }
 
 
-def positions(seq_lens: list[int]) -> np.ndarray:
-    """Every token's position in its segment, for segments of ``seq_lens`` tokens."""
-    return np.arange(sum(seq_lens)) - np.repeat(np.cumsum(seq_lens) - seq_lens, seq_lens)
+SKIP_DATALOADER = (
+    "With ckpt.skip_dataloader the run resumes without the data state: the data starts over from step 0, in the same "
+    "order as at the run's start (a different data.seed gives a different order)."
+)
 
 
 class TokenDataset(StatefulIterableDataset):
@@ -450,13 +451,21 @@ class TokenDataset(StatefulIterableDataset):
     step boundary it is the same on every rank, so a resumed run reads the same rows on any number of GPUs.
     ``eod_mask_token`` (set by the trainer) has no loss where it is the input."""
 
-    def __init__(self, sampler: TokenSampler, document_masking: bool = True, dp_rank: int = 0, dp_size: int = 1):
+    def __init__(
+        self,
+        sampler: TokenSampler,
+        document_masking: bool = True,
+        num_workers: int = 1,
+        dp_rank: int = 0,
+        dp_size: int = 1,
+    ):
         super().__init__(dp_rank, dp_size)
         self.sampler = sampler
         self.document_masking = document_masking
         self.eod_mask_token = None
         self.cursor, self.rows_done = sampler.start(), 0
-        self.inputs = sampler.inputs()
+        # A worker's state holds the rows it yielded, so the number of workers must stay the same.
+        self.inputs = sampler.inputs() | {"num_workers": num_workers}
 
     def state_dict(self) -> dict:
         step = self.cursor["step"] * self.sampler.batch_size
@@ -466,12 +475,14 @@ class TokenDataset(StatefulIterableDataset):
     def load_state_dict(self, state_dict: dict):
         if "cursor" not in state_dict:
             raise ValueError(
-                "The checkpoint's data state is not the source sampler's: resume with ckpt.skip_dataloader"
+                f"The checkpoint's data state is not the source sampler's, so the run can't resume it. {SKIP_DATALOADER}"
             )
-        if changed := [key for key, value in self.inputs.items() if state_dict.get("plan", {}).get(key) != value]:
+        plan = state_dict["plan"]
+        if changed := [key for key, value in self.inputs.items() if plan.get(key) != value]:
             raise ValueError(
-                f"The data settings differ from the checkpoint's in {', '.join(changed)}: resume with the same ones, or "
-                "with ckpt.skip_dataloader to start the data over"
+                "The data settings differ from the checkpoint's: "
+                + "; ".join(f"{key} {plan.get(key)!r} -> {self.inputs[key]!r}" for key in changed)
+                + f". Resume with the same ones. {SKIP_DATALOADER}"
             )
         self.cursor, self.rows_done = state_dict["cursor"], state_dict["rows_done"]
 
@@ -497,10 +508,11 @@ class TokenDataset(StatefulIterableDataset):
         if self.eod_mask_token is not None:
             loss_mask &= input_ids != self.eod_mask_token
         seq_lens = lengths.tolist() if self.document_masking else [self.sampler.seq_len]
+        positions = np.arange(self.sampler.seq_len) - np.repeat(np.cumsum(seq_lens) - seq_lens, seq_lens)
         return {
             "input_ids": input_ids,
             "target_ids": target_ids,
-            "position_ids": positions(seq_lens),
+            "position_ids": positions,
             "loss_mask": loss_mask,
             "seq_lens": seq_lens,
             "mm_kwargs": None,
@@ -520,100 +532,6 @@ class TokenDataset(StatefulIterableDataset):
                 else:
                     self.rows_done = i + 1
                 yield sample
-
-
-Window = tuple[int, int, int]
-"""File index and the token range ``[start, end)`` of a window in the file."""
-
-
-def document_windows(shards: TokenShards, seq_len: int, num_documents: int | None = None) -> list[Window]:
-    """Every document of ``shards`` as stored (or the first ``num_documents``), cut into non-overlapping windows of
-    ``seq_len`` scored tokens. A window holds up to ``seq_len + 1`` tokens and scores all but its first. The next
-    window starts at the last token of the one before and sees none of the tokens before it."""
-    windows, documents = [], 0
-    for file_index in range(len(shards.files)):
-        doc_ends = shards.index(file_index)
-        begin = 0
-        for end in doc_ends.tolist():
-            if documents == num_documents:
-                return windows
-            documents += 1
-            for window in range(begin, end - 1, seq_len):
-                windows.append((file_index, window, min(window + seq_len + 1, end)))
-            begin = end
-    return windows
-
-
-def pack_windows(lengths: list[int], token_budget: int) -> list[list[int]]:
-    """Window indices grouped into rows of at most ``token_budget`` tokens, longest first."""
-    order = sorted(range(len(lengths)), key=lambda i: -lengths[i])
-    rows, row, total = [], [], 0
-    for index in order:
-        if row and total + lengths[index] > token_budget:
-            rows.append(row)
-            row, total = [], 0
-        row.append(index)
-        total += lengths[index]
-    if row:
-        rows.append(row)
-    return rows
-
-
-class DocumentDataset(StatefulIterableDataset):
-    """Rows of ``row_len`` tokens that score every document of held-out shards on its own (`document_windows`). The
-    windows are packed longest first, one segment per window with positions from 0; the rest of a row is unscored
-    padding. Rows are dealt round-robin over the data ranks, and every rank yields the same number of rows, because
-    under FSDP every forward is a collective: a rank short of a row repeats the first one, unscored. Full rows pass
-    through the micro-batch packing unchanged."""
-
-    def __init__(
-        self,
-        shards: TokenShards,
-        seq_len: int,
-        row_len: int,
-        dp_rank: int = 0,
-        dp_size: int = 1,
-        num_documents: int | None = None,
-    ):
-        super().__init__(dp_rank, dp_size)
-        self.shards = shards
-        self.row_len = row_len
-        self.windows = document_windows(shards, seq_len, num_documents)
-        if not self.windows:
-            raise ValueError("The held-out shards have no document of two or more tokens")
-        self.rows = pack_windows([end - start - 1 for _, start, end in self.windows], row_len)
-
-    def sample(self, row: list[int], scored: bool) -> dict:
-        window_tokens = []
-        for index in row:
-            file_index, start, end = self.windows[index]
-            window_tokens.append(self.shards.tokens(file_index)[start:end].astype(np.int64))
-        input_ids = np.concatenate([ids[:-1] for ids in window_tokens])
-        target_ids = np.concatenate([ids[1:] for ids in window_tokens])
-        seq_lens = [len(ids) - 1 for ids in window_tokens]
-        loss_mask = np.full(len(input_ids), scored)
-        padding = self.row_len - len(input_ids)
-        if padding > 0:
-            # The row's own tokens, as in CatDataset: identical pad tokens would all route to the same MoE experts.
-            input_ids = np.concatenate([input_ids, np.resize(input_ids, padding)])
-            target_ids = np.concatenate([target_ids, np.zeros(padding, dtype=np.int64)])
-            loss_mask = np.concatenate([loss_mask, np.zeros(padding, dtype=bool)])
-            seq_lens.append(padding)
-        return {
-            "input_ids": input_ids,
-            "target_ids": target_ids,
-            "position_ids": positions(seq_lens),
-            "loss_mask": loss_mask,
-            "seq_lens": seq_lens,
-            "mm_kwargs": None,
-            "mm_token_type_ids": None,
-        }
-
-    def __iter__(self):
-        self._setup_world_info()
-        mine = self.rows[self.data_rank :: self.data_world_size]
-        for i in range(-(-len(self.rows) // self.data_world_size)):
-            yield self.sample(mine[i], scored=True) if i < len(mine) else self.sample(self.rows[0], scored=False)
 
 
 # Enough documents per folder to catch shards whose documents end differently, at two token reads each.
@@ -690,15 +608,15 @@ def setup_token_dataset(
     max_steps: int | None = None,
 ) -> TokenDataset:
     raise_open_files_limit()
-    sources = [TokenShards([source.path]) for source in config.sources]
-    for source, shards in zip(config.sources, sources):
+    sources = [TokenShards([source.path]) for source in config.source]
+    for source, shards in zip(config.source, sources):
         if shards.num_tokens == 0:
             raise ValueError(f"Source {source.name} ({source.path}) has no tokens")
     # The sources' weights, or else their natural shares.
-    weights = [s.weight if s.weight is not None else shards.num_tokens for s, shards in zip(config.sources, sources)]
-    repetitions = [source.repetitions for source in config.sources]
+    weights = [s.weight if s.weight is not None else shards.num_tokens for s, shards in zip(config.source, sources)]
+    repetitions = [source.repetitions for source in config.source]
     sampler = TokenSampler(
-        [source.name for source in config.sources],
+        [source.name for source in config.source],
         sources,
         weights,
         repetitions,
@@ -712,18 +630,20 @@ def setup_token_dataset(
         set_tokens = int(sampler.set_tokens[index])
         times = sampler.run_tokens[index] / set_tokens if sampler.run_tokens is not None else None
         get_logger().info(
-            f"Source {name}: weight {sampler.weights[index]:.4g}, {shards.num_tokens:,} tokens, "
+            f"Source {name}: share {sampler.weights[index]:.4g}, {shards.num_tokens:,} tokens, "
             f"{set_tokens:,} used, repetitions {f'{times:.3g}' if times is not None else '(no max_steps)'}"
             f"{' (given)' if repetitions[index] is not None else ''}"
         )
-    return TokenDataset(sampler, config.document_masking, dp_rank=dp_rank, dp_size=dp_size)
+    return TokenDataset(sampler, config.document_masking, config.num_workers, dp_rank=dp_rank, dp_size=dp_size)
 
 
 def check_ranks_see_same_data(sampler: TokenSampler) -> None:
-    """Raise unless every rank of the default group sees the same plan inputs (`TokenSampler.inputs`): a node that sees
-    other files, tokens or documents would plan other steps and train on rows that overlap or miss the others'."""
+    """Raise unless every rank of the default group sees the same plan inputs (`TokenSampler.inputs`) and folders: a
+    node that sees other files, tokens or documents would plan other steps and train on rows that overlap or miss the
+    others'."""
+    view = repr([sampler.inputs(), [str(path) for path in sampler.shards.paths]])
     seen = [None] * dist.get_world_size()
-    dist.all_gather_object(seen, (hashlib.sha256(repr(sampler.inputs()).encode()).hexdigest(), socket.gethostname()))
+    dist.all_gather_object(seen, (hashlib.sha256(view.encode()).hexdigest(), socket.gethostname()))
     views = {}
     for rank, (digest, host) in enumerate(seen):
         views.setdefault(digest, []).append(f"{rank} ({host})")
@@ -733,16 +653,3 @@ def check_ranks_see_same_data(sampler: TokenSampler) -> None:
             f"Each group sees one view: {' | '.join('ranks ' + ', '.join(ranks) for ranks in views.values())}. "
             "Likely a folder is still being written, or a node has a stale NFS view of it."
         )
-
-
-def setup_document_dataset(
-    config: DatatroveDataConfig, *, dp_rank: int, dp_size: int, num_documents: int | None = None
-) -> DocumentDataset:
-    return DocumentDataset(
-        TokenShards(config.paths),
-        seq_len=config.seq_len,
-        row_len=config.seq_len * config.micro_batch_size,
-        dp_rank=dp_rank,
-        dp_size=dp_size,
-        num_documents=num_documents,
-    )

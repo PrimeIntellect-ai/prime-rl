@@ -53,10 +53,10 @@ def pretrain_command(
         "run",
         "pretrain",
         *[arg for config in configs for arg in ("@", f"configs/ci/integration/pretrain/{config}")],
-        "--data.sources",
+        "--data.source",
         f'[{{"name": "reverse-text", "path": "{token_dir.as_posix()}"}}]',
-        "--val.data.paths",
-        f'["{token_dir.as_posix()}"]',
+        "--val.set",
+        f'[{{"type": "documents", "name": "reverse-text", "path": "{token_dir.as_posix()}"}}]',
         "--deployment.num-train-gpus",
         "2",
         "--monitors.wandb.project",
@@ -111,7 +111,7 @@ def test_loss_goes_down(pretrain_process: ProcessResult, run_dir: Path):
 
 
 def test_validation(pretrain_process: ProcessResult, run_dir: Path):
-    assert any("Validation | Step 10 | Loss" in line for line in trainer_log(run_dir))
+    assert any("Validation | Step 10 | reverse-text@1k | loss" in line for line in trainer_log(run_dir))
 
 
 def test_no_error_resume(pretrain_resume_process: ProcessResult):

@@ -1,10 +1,9 @@
-import math
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
-from prime_rl.configs.supervised import BaseDataConfig, BaseValConfig, SupervisedTrainerConfig
+from prime_rl.configs.supervised import BaseDataConfig, SupervisedTrainerConfig, ValConfig
 from prime_rl.configs.trainer import (
     AdamWConfig,
     ConstantSchedulerConfig,
@@ -19,16 +18,6 @@ from prime_rl.configs.trainer import (
 from prime_rl.utils.config import BaseConfig
 
 
-class DatatroveDataConfig(BaseDataConfig):
-    """Held-out shards written by datatrove's ``DocumentTokenizer``."""
-
-    type: Literal["datatrove"] = "datatrove"
-
-    paths: list[Path] = Field(min_length=1)
-    """Folders of datatrove tokenized shards: ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``,
-    read in folder order, then file name order."""
-
-
 class TokenSourceConfig(BaseConfig):
     """A folder of datatrove tokenized shards, one source of the training data."""
 
@@ -39,7 +28,8 @@ class TokenSourceConfig(BaseConfig):
     """Folder of ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``."""
 
     weight: float | None = Field(None, ge=0)
-    """The source's share of the training tokens. If None on every source, its share of all sources' tokens."""
+    """The source's relative weight: its share of the training tokens is its weight over the sum of all weights. If
+    None on every source, the share is the source's share of all sources' tokens."""
 
     repetitions: float | None = Field(None, ge=1)
     """How often every token of a fixed subset of the source is seen over the run (needs ``max_steps``). If None, the
@@ -51,8 +41,8 @@ class PretrainDataConfig(BaseDataConfig):
 
     type: Literal["datatrove"] = "datatrove"
 
-    sources: list[TokenSourceConfig] = Field(min_length=1)
-    """The folders to sample documents from."""
+    source: list[TokenSourceConfig] = Field(min_length=1)
+    """The folders to sample documents from (``[[data.source]]``)."""
 
     seed: int = Field(0, ge=0)
     """Seed for the order of the documents, within rows too, and for the subsets."""
@@ -68,26 +58,15 @@ class PretrainDataConfig(BaseDataConfig):
 
     @model_validator(mode="after")
     def validate_sources(self):
-        names = [source.name for source in self.sources]
+        names = [source.name for source in self.source]
         if len(set(names)) < len(names):
-            raise ValueError(f"data.sources: the names must be unique, got {names}")
-        weights = [source.weight for source in self.sources]
+            raise ValueError(f"data.source: the names must be unique, got {names}")
+        weights = [source.weight for source in self.source]
         if None in weights and any(weight is not None for weight in weights):
-            raise ValueError("data.sources: set weight on every source or on none (natural shares)")
-        if None not in weights and not math.isclose(sum(weights), 1, abs_tol=1e-6):
-            raise ValueError(f"data.sources: the weights sum to {sum(weights)}, not 1")
+            raise ValueError("data.source: set weight on every source or on none (natural shares)")
+        if None not in weights and sum(weights) <= 0:
+            raise ValueError("data.source: the weights must sum to more than 0")
         return self
-
-
-class PretrainValConfig(BaseValConfig):
-    data: DatatroveDataConfig
-    """Held-out shard folders. Every validation scores each of their documents on its own, from its first token, in
-    non-overlapping windows of ``seq_len`` scored tokens (a longer document continues in the next window, without the
-    tokens before). Windows are packed into rows of ``seq_len * micro_batch_size`` tokens."""
-
-    num_samples: int | None = Field(None, ge=1)
-    """Documents per validation: the first ``num_samples`` documents of the held-out shards (in folder order, then file
-    name order), the same ones every time. If None, every document."""
 
 
 class PretrainAdamWConfig(AdamWConfig):
@@ -131,8 +110,8 @@ class PretrainConfig(SupervisedTrainerConfig):
 
     data: PretrainDataConfig
 
-    val: PretrainValConfig | None = None
-    """Validation on held-out shards. If None, no validation runs."""
+    val: ValConfig | None = None
+    """Validation on held-out document sets. If None, no validation runs."""
 
     optim: PretrainOptimizerConfig = PretrainAdamWConfig()
 
@@ -142,8 +121,8 @@ class PretrainConfig(SupervisedTrainerConfig):
 
     @model_validator(mode="after")
     def validate_repetitions(self):
-        if self.max_steps is None and any(source.repetitions is not None for source in self.data.sources):
+        if self.max_steps is None and any(source.repetitions is not None for source in self.data.source):
             raise ValueError(
-                "data.sources: repetitions sizes a source's subset by the run's tokens, so it needs max_steps"
+                "data.source: repetitions sizes a source's subset by the run's tokens, so it needs max_steps"
             )
         return self

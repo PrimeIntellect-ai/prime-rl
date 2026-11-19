@@ -44,11 +44,11 @@ from prime_rl.trainer.pretrain.data import (
     TokenDataset,
     check_ranks_see_same_data,
     detect_separator,
-    setup_document_dataset,
     setup_token_dataset,
     warn_if_no_document_separator,
 )
 from prime_rl.trainer.sft.data import load_sft_dataset, setup_sft_dataset
+from prime_rl.trainer.val import Validation
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
@@ -200,18 +200,32 @@ def train(config: SFTConfig | PretrainConfig):
             f"batch_size ({config.data.batch_size}) must be divisible by data-parallel size x num_workers x "
             f"micro_batch_size ({rows}), so every dataloader worker reads whole micro-batches of every step"
         )
-        # Rank 0 writes the table of long documents to the cache, the other ranks then read it.
-        if world.rank != 0:
-            dist.barrier()
-        dataset = setup_token_dataset(
-            config.data,
-            dp_rank=dp_rank,
-            dp_size=dp_size,
-            cache_dir=config.run_dir / "data",
-            max_steps=config.max_steps,
-        )
+
+        def setup_dataset() -> TokenDataset:
+            return setup_token_dataset(
+                config.data,
+                dp_rank=dp_rank,
+                dp_size=dp_size,
+                cache_dir=config.run_dir / "data",
+                max_steps=config.max_steps,
+            )
+
+        # Rank 0 writes the table of long documents to the cache, the other ranks then read it. Rank 0's error reaches
+        # every rank, so none waits for it.
+        error = None
         if world.rank == 0:
-            dist.barrier()
+            try:
+                dataset = setup_dataset()
+            except Exception as e:
+                error = e
+        rank_0_error = [f"{type(error).__name__}: {error}" if error is not None else None]
+        dist.broadcast_object_list(rank_0_error, src=0)
+        if error is not None:
+            raise error
+        if rank_0_error[0] is not None:
+            raise RuntimeError(f"Rank 0 failed to set up the data: {rank_0_error[0]}")
+        if world.rank != 0:
+            dataset = setup_dataset()
         check_ranks_see_same_data(dataset.sampler)
         if config.data.eod_mask_loss:
             dataset.eod_mask_token = detect_separator(dataset.sampler.shards, tokenizer)
@@ -233,14 +247,9 @@ def train(config: SFTConfig | PretrainConfig):
     if config.val is not None and isinstance(config, SFTConfig):
         logger.info(f"Loading validation dataset ({config.val.data})")
         val_raw_dataset = load_sft_dataset(config.val.data)
+    validation = None
     if config.val is not None and isinstance(config, PretrainConfig):
-        val_document_dataset = setup_document_dataset(
-            config.val.data, dp_rank=dp_rank, dp_size=dp_size, num_documents=config.val.num_samples
-        )
-        logger.info(
-            f"Validation scores {len(val_document_dataset.windows)} windows of held-out documents "
-            f"in {len(val_document_dataset.rows)} rows"
-        )
+        validation = Validation(config.val, tokenizer, parallel_dims, config.run_dir)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -364,39 +373,35 @@ def train(config: SFTConfig | PretrainConfig):
         mean_loss = (total_loss_sum / total_token_count).item() if total_token_count.item() > 0 else float("nan")
         return mean_loss, nan_count.item()
 
-    def run_validation(step: int) -> None:
-        if isinstance(config, PretrainConfig):
-            val_dataset = val_document_dataset
-        else:
-            val_dataset = setup_sft_dataset(
-                tokenizer,
-                config.val.data,
-                dp_rank=dp_rank,
-                dp_size=dp_size,
-                max_epochs=1,
-                raw_dataset=val_raw_dataset,
-                renderer_config=config.renderer,
-                processor=processor,
-                multimodal=multimodal,
-            )
+    def run_sft_validation(step: int) -> dict[str, float]:
+        val_dataset = setup_sft_dataset(
+            tokenizer,
+            config.val.data,
+            dp_rank=dp_rank,
+            dp_size=dp_size,
+            max_epochs=1,
+            raw_dataset=val_raw_dataset,
+            renderer_config=config.renderer,
+            processor=processor,
+            multimodal=multimodal,
+        )
         val_dataloader = setup_dataloader(val_dataset, config.val.data, config.model.cp)
-
-        # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
         mean_loss, nan_count = run_eval_loop(val_dataloader)
-        if is_tt_moe_model(model):
-            # Keep validation routing out of the next training step's statistics.
-            take_moe_routing_stats(model)
         if nan_count > 0:
             logger.warning(f"Validation at step {step}: {nan_count} batches had NaN loss")
         if mean_loss != mean_loss:
             logger.warning(f"Validation at step {step} had no valid tokens")
         else:
             logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
-        asyncio.run(
-            monitors.log(
-                {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20)), "step": step}, step=step
-            )
-        )
+        return {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20))}
+
+    def run_validation(step: int) -> None:
+        # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
+        metrics = validation.run(model, step) if validation is not None else run_sft_validation(step)
+        if is_tt_moe_model(model):
+            # Keep validation routing out of the next training step's statistics.
+            take_moe_routing_stats(model)
+        asyncio.run(monitors.log({**metrics, "step": step}, step=step))
 
     def logged_micro_batches(micro_batches):
         for micro_batch in micro_batches:
