@@ -49,12 +49,17 @@
         export MOONCAKE_OFFLOAD_FILE_STORAGE_PATH="{{ offload.disk.path }}"
         export MOONCAKE_OFFLOAD_ENABLE_EVICTION=true
 {%- endif %}
-        mooncake_client -host=$LOCAL_IP -port=50052 -master_server_address=$MC_MASTER -metadata_server=$MC_METADATA -protocol=rdma -global_segment_size={{ offload.cpu.num_bytes }}{% if offload.device_name %} -device_names={{ offload.device_name }}{% endif %}{% if offload.disk %} -enable_offload=true{% endif %} > "$MC_DIR/client.log" 2>&1 &
+        MC_SEGMENT_BYTES={{ offload.cpu.num_bytes }}
+{%- if offload.cpu.head_node_num_bytes is not none %}
+        # The head node also hosts the router and the Mooncake master, so it gives the pool less of its DRAM.
+        if [ "$SLURMD_NODENAME" = "$MC_HEAD" ]; then MC_SEGMENT_BYTES={{ offload.cpu.head_node_num_bytes }}; fi
+{%- endif %}
+        mooncake_client -host=$LOCAL_IP -port=50052 -master_server_address=$MC_MASTER -metadata_server=$MC_METADATA -protocol=rdma -global_segment_size=$MC_SEGMENT_BYTES{% if offload.device_name %} -device_names={{ offload.device_name }}{% endif %}{% if offload.disk %} -enable_offload=true{% endif %} > "$MC_DIR/client.log" 2>&1 &
         for _ in $(seq 1 60); do timeout 1 bash -c "echo > /dev/tcp/$LOCAL_IP/50052" 2>/dev/null && break; sleep 1; done
 {%- endif %}
         cat > "$MOONCAKE_CONFIG_PATH" <<MOONCAKE_JSON
 {"mode":"standalone-store","global_segment_size":0,"local_buffer_size":4294967296,"protocol":"rdma","device_name":"{{ offload.device_name }}","master_server_address":"$MC_MASTER","metadata_server":"$MC_METADATA","enable_offload":{{ "true" if offload.disk else "false" }}}
 MOONCAKE_JSON
-        echo "[mooncake] node ${INFER_NODE_RANK} ($SLURMD_NODENAME) role=$MC_ROLE joined shared pool: master=$MC_MASTER contributed_bytes={{ offload.cpu.num_bytes }}"
+        echo "[mooncake] node ${INFER_NODE_RANK} ($SLURMD_NODENAME) role=$MC_ROLE joined shared pool: master=$MC_MASTER contributed_bytes=${MC_SEGMENT_BYTES:-0}"
     fi
 {%- endfor %}
