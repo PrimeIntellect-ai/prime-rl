@@ -13,8 +13,8 @@ from prime_rl.utils import pathing
 
 
 def point(trace_id: str) -> dict:
-    """A saved trace: the restore fields are on the entry of its checkpoint."""
-    checkpoint = {"id": f"c-{trace_id}", "snapshot": {"id": f"s-{trace_id}"}, "restore": {}}
+    """A saved trace: the session data is on the entry of its checkpoint."""
+    checkpoint = {"id": f"c-{trace_id}", "snapshot": {"id": f"s-{trace_id}"}, "session": {}}
     return {"id": trace_id, "checkpoints": [checkpoint]}
 
 
