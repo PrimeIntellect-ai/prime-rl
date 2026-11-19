@@ -3,14 +3,15 @@
 Each case builds a tiny seeded model with `setup_model` on its layout (activation checkpointing with offloading, then
 torch.compile per layer, then FSDP, CP or EP) and runs one forward and backward. A case passes when the loss and grad
 norm are finite, Dynamo counted no graph break, and Dynamo compiled at least one graph per kind of decoder layer, so no
-kind of layer runs eagerly. One `torchrun` launch runs every selected case of a group; each case reports as its own
-test.
+kind of layer runs eagerly. One `torchrun` launch runs every selected case, and each case reports as its own test. A
+case that crashes or hangs the launch fails, and a relaunch runs the cases it did not reach.
 
-Run cases without pytest, by case id or group name (each rank writes `rank<N>.json` after every case):
+Run cases without pytest by case id, or every case if none is given (each rank writes `rank<N>.json` around each case):
 
-    uv run torchrun --standalone --nproc-per-node=2 tests/unit/train/test_compile.py <output_dir> <case or group>...
+    uv run torchrun --standalone --nproc-per-node=2 tests/unit/train/test_compile.py <output_dir> <case>...
 """
 
+import functools
 import json
 import math
 import shutil
@@ -50,6 +51,10 @@ from prime_rl.utils.logger import setup_logger
 
 NUM_RANKS = 2
 PROCESS_GROUP_TIMEOUT = timedelta(minutes=5)
+LAUNCH_SECONDS = 5 * 60
+"""A launch's budget for imports, process group setup, building the models and loading the rows."""
+CASE_SECONDS = 3 * 60
+"""Each case's budget for a cold compile and its step. The cases of a launch share their budgets."""
 TINY_CONFIGS = TINY_MODELS | TINY_PRIME_RL_MODELS
 
 
@@ -65,8 +70,6 @@ def needs_deepgemm_gpu() -> str | None:
 class CompileCase(Case):
     compile: bool = True
     fullgraph: bool = True
-    group: str = "dp2"
-    """Cases of one group share a torchrun launch."""
     requirement: Callable[[], str | None] | None = None
     """Returns why this GPU or environment cannot run the case, or None if it can."""
 
@@ -89,20 +92,18 @@ CP_MODELS = [
 CASES = [
     *(CompileCase(f"{model}-dp2", model) for model in TINY_CONFIGS),
     CompileCase("nemotron_h-dp2-token_chunk", "nemotron_h", overrides={"ac": {"token_chunk_size": 64}}),
-    *(CompileCase(f"{model}-cp2", model, cp=2, group="cp2") for model in CP_MODELS),
-    CompileCase("qwen3_moe-ep2-torch-bf16", "qwen3_moe", ep=2, group="ep2_torch"),
+    *(CompileCase(f"{model}-cp2", model, cp=2) for model in CP_MODELS),
+    CompileCase("qwen3_moe-ep2-torch-bf16", "qwen3_moe", ep=2),
     CompileCase(
         "qwen3_moe-ep2-torch-sonicmoe",
         "qwen3_moe",
         ep=2,
-        group="ep2_torch",
         overrides={"moe": {"compute": {"type": "bf16", "backend": "sonicmoe"}}},
     ),
     CompileCase(
         "qwen3_moe-ep2-torch-deepgemm_fp8",
         "qwen3_moe",
         ep=2,
-        group="ep2_torch",
         overrides={"moe": {"compute": {"type": "deepgemm_fp8"}}},
         requirement=needs_deepgemm_gpu,
     ),
@@ -110,7 +111,6 @@ CASES = [
         "qwen3_moe-ep2-torch-mxfp8",
         "qwen3_moe",
         ep=2,
-        group="ep2_torch",
         overrides={"moe": {"compute": {"type": "mxfp8"}}},
         requirement=needs_sm100,
     ),
@@ -118,7 +118,6 @@ CASES = [
         "qwen3_moe-ep2-torch_mxfp8-mxfp8",
         "qwen3_moe",
         ep=2,
-        group="ep2_torch",
         overrides={"moe": {"dispatch": {"type": "torch", "transport": "mxfp8"}, "compute": {"type": "mxfp8"}}},
         requirement=needs_sm100,
     ),
@@ -126,14 +125,9 @@ CASES = [
         "qwen3_moe-ep2-deepep-bf16",
         "qwen3_moe",
         ep=2,
-        group="ep2_deepep",
         overrides={"moe": {"dispatch": {"type": "deepep"}}},
     ),
 ]
-GROUPS = {
-    group: [case for case in CASES if case.group == group] for group in dict.fromkeys(case.group for case in CASES)
-}
-TIMEOUTS = {"dp2": 30 * 60, "cp2": 20 * 60, "ep2_torch": 15 * 60, "ep2_deepep": 10 * 60}
 
 
 def isolated(run, *args) -> dict:
@@ -212,11 +206,22 @@ def compile_case(config: ModelConfig, parallel_dims: ParallelDims, rows: list[di
 
 
 def select_cases(names: list[str]) -> list[CompileCase]:
-    by_name = {case.name: [case] for case in CASES} | GROUPS
+    by_name = {case.name: case for case in CASES}
     unknown = [name for name in names if name not in by_name]
     if unknown:
-        raise ValueError(f"Unknown case ids or groups: {unknown}. Groups: {list(GROUPS)}")
-    return [case for name in names for case in by_name[name]]
+        raise ValueError(f"Unknown case ids: {unknown}")
+    return [by_name[name] for name in names] if names else CASES
+
+
+def in_run_order(cases: list[CompileCase]) -> list[CompileCase]:
+    """CP cases run last, since CP setup patches attention classes for the rest of the process."""
+    return sorted(cases, key=lambda case: case.cp)
+
+
+def save_results(path: Path, results: dict) -> None:
+    partial_path = path.with_suffix(".partial")
+    partial_path.write_text(json.dumps(results, indent=2))
+    partial_path.replace(path)
 
 
 def main(output_dir: Path, cases: list[CompileCase]) -> None:
@@ -232,8 +237,9 @@ def main(output_dir: Path, cases: list[CompileCase]) -> None:
 
     results_path = output_dir / f"rank{get_world().rank}.json"
     results, layouts = {}, {}
-    cp_cases_last = sorted(cases, key=lambda case: case.cp)
-    for case in cp_cases_last:
+    for case in in_run_order(cases):
+        results[case.name] = {"stage": "started"}
+        save_results(results_path, results)
         if skip_reasons[case.name] is not None:
             result = {"skipped": skip_reasons[case.name]}
         elif "error" in built[case.model]:
@@ -246,43 +252,53 @@ def main(output_dir: Path, cases: list[CompileCase]) -> None:
         status = "SKIP" if "skipped" in result else "FAIL" if result["failures"] else "PASS"
         print(f"[rank {get_world().rank}] {status} {case.name}: {json.dumps(result)}", flush=True)
         results[case.name] = result
-        partial_path = results_path.with_suffix(".partial")
-        partial_path.write_text(json.dumps(results, indent=2))
-        partial_path.replace(results_path)
+        save_results(results_path, results)
     dist.barrier()
     if get_world().is_master:
         shutil.rmtree(models_dir)
 
 
-def launch(group: str, names: list[str], run_process, tmp_path_factory: pytest.TempPathFactory) -> dict:
-    output_dir = tmp_path_factory.mktemp(f"compile-{group}")
+def launch(names: list[str], run_process, output_dir: Path) -> dict:
+    """Each rank's results. A case left started when a launch exits crashed or hung it: it fails, and a relaunch runs
+    the cases without a result, so every relaunch has at least one case fewer."""
     cmd = ["uv", "run", "torchrun", "--standalone", f"--nproc-per-node={NUM_RANKS}", __file__, output_dir.as_posix()]
-    returncode = run_process([*cmd, *names], timeout=TIMEOUTS[group]).returncode
-    rank_paths = [output_dir / f"rank{rank}.json" for rank in range(NUM_RANKS)]
-    return {
-        "returncode": returncode,
-        "ranks": [json.loads(path.read_text()) if path.exists() else {} for path in rank_paths],
-    }
+    ranks = [{} for _ in range(NUM_RANKS)]
+    while names:
+        timeout = LAUNCH_SECONDS + CASE_SECONDS * len(names)
+        start = time.monotonic()
+        returncode = run_process([*cmd, *names], timeout=timeout).returncode
+        exit_cause = (
+            f"timed out after {timeout} s" if time.monotonic() - start >= timeout else f"exited with code {returncode}"
+        )
+        for rank, results in enumerate(ranks):
+            rank_path = output_dir / f"rank{rank}.json"
+            if rank_path.exists():
+                results.update(json.loads(rank_path.read_text()))
+                rank_path.unlink()
+        started = [name for name in names if any(results.get(name) == {"stage": "started"} for results in ranks)]
+        if not started:
+            break
+        for results in ranks:
+            if "failures" not in results.get(started[0], {}):
+                results[started[0]] = {"failures": [f"the launch {exit_cause} during this case"]}
+        names = [name for name in names if not all("failures" in results.get(name, {}) for results in ranks)]
+    models_dir = output_dir / "models"
+    if models_dir.exists():
+        shutil.rmtree(models_dir)
+    return {"returncode": returncode, "ranks": ranks}
 
 
 @pytest.fixture(scope="module")
-def group_results(request: pytest.FixtureRequest, run_process, tmp_path_factory) -> Callable[[str], dict]:
-    """Launches a group's selected, runnable cases on the first request for that group."""
+def launch_results(request: pytest.FixtureRequest, run_process, tmp_path_factory) -> Callable[[], dict]:
+    """Launches the selected, runnable cases on the first request."""
     callspecs = [getattr(item, "callspec", None) for item in request.session.items]
     selected = {
         callspec.params["case"].name
         for callspec in callspecs
         if callspec is not None and isinstance(callspec.params.get("case"), CompileCase)
     }
-    launches = {}
-
-    def results(group: str) -> dict:
-        if group not in launches:
-            names = [case.name for case in GROUPS[group] if case.name in selected and case.skip_reason() is None]
-            launches[group] = launch(group, names, run_process, tmp_path_factory)
-        return launches[group]
-
-    return results
+    names = [case.name for case in in_run_order(CASES) if case.name in selected and case.skip_reason() is None]
+    return functools.cache(lambda: launch(names, run_process, tmp_path_factory.mktemp("compile")))
 
 
 def case_failures(launch_result: dict, case: CompileCase) -> list[str]:
@@ -297,13 +313,13 @@ def case_failures(launch_result: dict, case: CompileCase) -> list[str]:
 
 @pytest.mark.gpu
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case.name)
-def test_compiles_fullgraph(group_results: Callable[[str], dict], case: CompileCase):
+def test_compiles_fullgraph(launch_results: Callable[[], dict], case: CompileCase):
     if torch.cuda.device_count() < NUM_RANKS:
         pytest.skip(f"needs {NUM_RANKS} GPUs")
     skip_reason = case.skip_reason()
     if skip_reason is not None:
         pytest.skip(skip_reason)
-    found = case_failures(group_results(case.group), case)
+    found = case_failures(launch_results(), case)
     assert not found, "\n".join(found)
 
 
