@@ -175,4 +175,4 @@ Add the class to `_SELECTED_BY_EXTRA_CONFIG` (`models/__init__.py`). prime-rl th
 - leaves a release that lacks a tensor the class keeps, or names its weights otherwise, to the class's `is_hf_state_dict`, `is_prime_state_dict` and `convert_to_prime`, which only `setup_model` runs;
 - refuses it in RL training, whose weight transfer to the inference server converts weights with the family's class rather than the selected one.
 
-`tests/unit/train/models/extra_config_stub.py` is a minimal example.
+`tests/unit/train/models/extra_config_stub.py` is a minimal example, and Clef-Flash (`src/prime_rl/trainer/models/qwen3_5/modeling_clef_flash.py`) a full one.
