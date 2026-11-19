@@ -168,6 +168,7 @@ class KPoolIndexer(nn.Module):
         # The selected pools' tokens fill the first `token_budget` columns in any order, the incomplete
         # pool's tokens the next ones, and the rest of the row is the sentinel.
         sentinel = total_tokens
+        # cat, not F.pad: pad's scalar value would pin the token count and recompile per length.
         pool_start_tokens = torch.cat((layout.pool_start_tokens, layout.pool_start_tokens.new_full((1,), sentinel)))
         offsets = torch.arange(self.pool_size, device=device)
         selected_tokens = pool_start_tokens[selected_pools.long()][:, :, None] + offsets
