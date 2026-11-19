@@ -1,0 +1,14 @@
+max_steps = 8
+
+[model]
+init.type = "scratch"
+init.seed = 0
+ac_offloading = "None"
+offload = "none"
+
+[model.compile]
+
+[monitors]
+prime = "None"
+
+[monitors.file]
