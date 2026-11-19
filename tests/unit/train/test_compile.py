@@ -3,9 +3,9 @@
 Each case builds a tiny seeded model with `setup_model` on its layout (activation checkpointing with offloading, then
 torch.compile per layer, then FSDP, CP or EP) and runs one forward and backward. A case passes when the loss and grad
 norm are finite, Dynamo counted no graph break, and every frame Dynamo compiled produced a graph, at least one per kind
-of decoder layer (a skipped frame only logs under fullgraph and runs eagerly). One `torchrun` launch runs every
-selected case of a group; each case reports as its own test. A case that fails today sets `known_failure` to a
-substring of its error and runs as a strict xfail.
+of decoder layer, so no kind of layer runs eagerly. One `torchrun` launch runs every selected case of a group; each case
+reports as its own test. A case that fails today sets `known_failure` to a substring of its error and runs as a strict
+xfail.
 
 Run cases without pytest, by case id or group name (each rank writes `rank<N>.json` after every case):
 
@@ -232,16 +232,20 @@ def compile_case(config: ModelConfig, parallel_dims: ParallelDims, rows: list[di
     result["seconds"] = time.perf_counter() - start
     result["unique_graphs"] = counters["stats"]["unique_graphs"]
     result["graph_breaks"] = dict(counters["graph_break"])
-    forward_compiles = [metrics for metrics in get_compilation_metrics() if metrics.is_forward]
+    frame_compiles = [
+        metrics
+        for metrics in get_compilation_metrics()
+        if metrics.co_name is not None and metrics.is_forward is not False
+    ]
     result["frames"] = [
         {
-            "code": f"{metrics.co_name} ({Path(metrics.co_filename or '').name}:{metrics.co_firstlineno})",
+            "code": f"{metrics.co_name} ({Path(metrics.co_filename).name}:{metrics.co_firstlineno})",
             "ops": metrics.graph_op_count,
             "guarded": metrics.has_guarded_code,
         }
-        for metrics in forward_compiles
+        for metrics in frame_compiles
     ]
-    result["recompiles"] = [metrics.recompile_reason for metrics in forward_compiles if metrics.recompile_reason]
+    result["recompiles"] = [metrics.recompile_reason for metrics in frame_compiles if metrics.recompile_reason]
     torch.cuda.empty_cache()
     return result
 
