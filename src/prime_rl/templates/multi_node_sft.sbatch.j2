@@ -270,12 +270,22 @@ COMPLETION_PID=$!
 
 # Ignore clean component exits until the shared completion condition is met.
 # Propagate failures through --kill-on-bad-exit=1.
+{%- if online_eval %}
+# Inference servers must outlive the run, so a clean server exit is a failure.
+{%- endif %}
 while true; do
     wait -n -p FINISHED_PID
     EXIT_CODE=$?
     if [ "$EXIT_CODE" -ne 0 ] || [ "${FINISHED_PID:-}" = "$COMPLETION_PID" ]; then
         break
     fi
+{%- if online_eval %}
+    if [ -n "${INFERENCE_PORT_BY_PID[$FINISHED_PID]:-}" ]; then
+        echo "[$(hostname)] inference server on port ${INFERENCE_PORT_BY_PID[$FINISHED_PID]} exited with code 0 before the run completed"
+        EXIT_CODE=1
+        break
+    fi
+{%- endif %}
 done
 
 REMAINING_PIDS=$(jobs -p)
