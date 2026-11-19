@@ -2,7 +2,8 @@
 # Usage: run.sh MODEL ARM SHA [extra trainer args]
 # MODEL is a configs/*.toml name, ARM a label (base or fix), SHA the commit to run.
 # Env: PYTHON (interpreter with prime-rl's dependencies), MODELS_DIR, DATA_DIR, OUT_DIR (default ./ab-runs),
-# CACHE_ROOT (compile caches, default OUT_DIR/cache; use node-local disk when OUT_DIR is on a network filesystem).
+# CACHE_ROOT (compile caches, default OUT_DIR/cache; use node-local disk when OUT_DIR is on a network filesystem),
+# HOOK_DIR (directory holding the sitecustomize.py hook, default peaklog).
 set -euo pipefail
 MODEL=$1
 ARM=$2
@@ -27,7 +28,7 @@ export PYTHONUNBUFFERED=1 OMP_NUM_THREADS=1 PYTORCH_CUDA_ALLOC_CONF=expandable_s
 export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 HF_DATASETS_CACHE=$CACHE/datasets
 export TRITON_CACHE_DIR=$CACHE/triton TORCHINDUCTOR_CACHE_DIR=$CACHE/inductor
 export TORCH_LOGS=recompiles,graph_breaks TORCH_TRACE=$RUN/torch_trace PEAK_LOG_DIR=$RUN/peaks
-export PYTHONPATH=$HERE/peaklog:$SRC/src:$SRC/packages/prime-rl-configs/src
+export PYTHONPATH=${HOOK_DIR:-$HERE/peaklog}:$SRC/src:$SRC/packages/prime-rl-configs/src
 echo "$SHA" > "$RUN/sha.txt"
 date +%s.%N > "$RUN/start_epoch.txt"
 set +e
