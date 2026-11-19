@@ -65,3 +65,49 @@ def test_sliding_window_models_leave_last_prompt_token_to_decode(monkeypatch):
     assert _backoff_scheduler(full, object.__new__(SlidingWindowMLASpec))._prefill_backoff() == 1
     assert _backoff_scheduler(full, window)._get_remote_prefill_token_count(1024) == 1023
     assert _backoff_scheduler(full)._prefill_backoff() == 0
+
+
+def test_send_leases_do_not_expire_while_the_engine_is_stopped(monkeypatch):
+    """A lease keeps the time it had left when the engine stopped stepping (a pause or a weight update); leases
+    still expire on their own schedule while the engine steps."""
+    import time
+
+    from vllm.distributed.kv_transfer.kv_connector.v1.nixl.base_worker import NixlBaseConnectorWorker
+
+    from prime_rl.inference.patches import monkey_patch_nixl_lease_clock_follows_engine
+
+    monkeypatch.setattr(
+        NixlBaseConnectorWorker, "_reap_expired_send_leases", NixlBaseConnectorWorker._reap_expired_send_leases
+    )
+    monkey_patch_nixl_lease_clock_follows_engine()
+    clock = [1000.0]
+    monkeypatch.setattr(time, "perf_counter", lambda: clock[0])
+    worker = SimpleNamespace(
+        _reqs_to_send={"held": 1020.0, "short": 1001.5},
+        _reqs_to_process={"held", "short"},
+        consumer_notification_counts_by_req={},
+        expected_consumer_notifications_by_req={},
+        xfer_stats=SimpleNamespace(record_kv_expired_req=lambda: None),
+    )
+
+    def reap(at: float) -> set[str]:
+        clock[0] = at
+        done: set[str] = set()
+        NixlBaseConnectorWorker._reap_expired_send_leases(worker, done)
+        return done
+
+    assert reap(1000.0) == set()
+    assert reap(1001.0) == set()
+    assert reap(1002.0) == {"short"}, "a lease still expires while the engine steps"
+    # Paused for 5 minutes: "held" had 18 s left and keeps them.
+    assert reap(1302.0) == set()
+    assert worker._reqs_to_send["held"] == 1320.0
+    # A lease granted after the pause is stamped fresh and not shifted.
+    worker._reqs_to_send["new"] = 1310.0
+    worker._reqs_to_process.add("new")
+    assert reap(1303.0) == set() and worker._reqs_to_send["new"] == 1310.0
+    # The engine steps again (checks less than 5 s apart): both leases run down and expire.
+    assert reap(1306.0) == set() and reap(1309.0) == set()
+    assert reap(1311.0) == {"new"}
+    assert reap(1315.0) == set() and reap(1319.0) == set()
+    assert reap(1320.0) == {"held"}
