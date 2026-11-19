@@ -140,10 +140,16 @@ def isolated(run, *args) -> dict:
         return {"error": "".join(traceback.format_exception_only(error)).strip()}
 
 
-def layer_kinds(model: torch.nn.Module) -> set[tuple[str, ...]]:
-    """The decoder layers' distinct sets of module classes. Layers of different kinds cannot share a compiled graph."""
-    layers = [getattr(layer, "_checkpoint_wrapped_module", layer) for layer in get_language_model(model).layers]
-    return {tuple(sorted({type(module).__name__ for module in layer.modules()})) for layer in layers}
+def layer_kinds(model: torch.nn.Module) -> set[tuple[tuple[str, ...], str | None]]:
+    """The decoder layers' distinct pairs of module classes and config layer type. Layers of different kinds cannot
+    share a compiled graph."""
+    language_model = get_language_model(model)
+    layers = [getattr(layer, "_checkpoint_wrapped_module", layer) for layer in language_model.layers]
+    layer_types = getattr(language_model.config, "layer_types", None) or [None] * len(layers)
+    return {
+        (tuple(sorted({type(module).__name__ for module in layer.modules()})), layer_type)
+        for layer, layer_type in zip(layers, layer_types, strict=True)
+    }
 
 
 def run_step(config: ModelConfig, parallel_dims: ParallelDims, rows: list[dict], progress: dict) -> dict:
