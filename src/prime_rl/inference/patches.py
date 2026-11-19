@@ -41,6 +41,7 @@ def apply_shared_vllm_patches():
     monkey_patch_dspark_dp_compile_cache()
     monkey_patch_nixl_bidirectional_single_pull()
     monkey_patch_nixl_sliding_window_backoff()
+    monkey_patch_keep_pause_ignores_held_kv()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
@@ -107,6 +108,36 @@ def monkey_patch_nixl_sliding_window_backoff():
 
     _prefill_backoff._prime_rl_sliding_window = True
     cls._prefill_backoff = _prefill_backoff
+
+
+def monkey_patch_keep_pause_ignores_held_kv():
+    """A ``keep`` pause completes without waiting for KV blocks held for another instance.
+
+    A paused engine reports itself idle, which completes a ``keep`` pause, once the scheduler has no requests. Under
+    P/D, the scheduler also counts finished requests whose blocks it holds for a remote reader: prefill holds each
+    finished prefill until decode pulls it, and decode's lease heartbeats keep that hold alive while the request waits
+    in decode's queue; with bidirectional transfer, decode holds each finished turn for up to its TTL so the next
+    turn's prefill can read it. Pausing for a weight update therefore waits for decode to admit its whole queue and
+    for every held turn to be read or expire, which takes many minutes under load.
+
+    While the scheduler is paused with ``PAUSED_ALL``, count only requests the next step must still report as
+    finished. The held blocks stay allocated, a weight update does not touch them, remote reads of them proceed without
+    this engine stepping, and the engine processes their completion or expiry once it resumes.
+    """
+    from vllm.v1.core.sched.interface import PauseState
+    from vllm.v1.core.sched.scheduler import Scheduler
+
+    original = Scheduler.has_finished_requests
+    if getattr(original, "_prime_rl_keep_pause", False):
+        return
+
+    def has_finished_requests(self) -> bool:
+        if self.pause_state == PauseState.PAUSED_ALL:
+            return bool(self.finished_req_ids)
+        return original(self)
+
+    has_finished_requests._prime_rl_keep_pause = True
+    Scheduler.has_finished_requests = has_finished_requests
 
 
 def monkey_patch_block_outermost_mla_stride():
