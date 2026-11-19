@@ -4,6 +4,7 @@ from pydantic import Field, model_validator
 from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
 from renderers.base import MODEL_RENDERER_MAP
 
+from prime_rl.configs.shared import PluginConfig
 from prime_rl.configs.supervised import BaseDataConfig, BaseValConfig, SupervisedTrainerConfig
 from prime_rl.utils.config import BaseConfig
 
@@ -112,6 +113,23 @@ class SFTDataConfig(BaseDataConfig):
         return self
 
 
+class SFTCrossEntropyLossConfig(BaseConfig):
+    """Token cross-entropy: the stock SFT loss."""
+
+    type: Literal["ce"] = "ce"
+
+
+class SFTCustomLossConfig(PluginConfig):
+    """A custom SFT loss: a function computed from the backbone's final hidden states, in place of token
+    cross-entropy, called as ``my_loss(inputs, **kwargs)`` with a ``prime_rl.trainer.sft.loss.LossInputs`` and
+    returning a ``LossOutputs``."""
+
+    type: Literal["custom"] = "custom"
+
+
+SFTLossConfig: TypeAlias = Annotated[SFTCrossEntropyLossConfig | SFTCustomLossConfig, Field(discriminator="type")]
+
+
 class SFTValConfig(BaseValConfig):
     data: SFTDataConfig
 
@@ -131,6 +149,9 @@ class SFTConfig(SupervisedTrainerConfig):
 
     val: SFTValConfig | None = None
     """Validation configuration. If None, no validation runs."""
+
+    loss: SFTLossConfig = SFTCrossEntropyLossConfig()
+    """The training loss: token cross-entropy (``type = "ce"``, the default) or a custom loss (``type = "custom"``)."""
 
     @model_validator(mode="after")
     def validate_typed_renderer(self):
@@ -153,6 +174,16 @@ class SFTConfig(SupervisedTrainerConfig):
             "Implement and register the renderer in the renderers package, or explicitly select an existing "
             "typed renderer only when its template is verified to match."
         )
+
+    @model_validator(mode="after")
+    def validate_loss(self):
+        if self.loss.type != "custom":
+            return self
+        if self.model.cp > 1 or self.model.vlm is not None or self.model.offload == "full":
+            raise ValueError(
+                "a custom loss is not supported with context parallelism, VLM training or model.offload='full'"
+            )
+        return self
 
     @model_validator(mode="after")
     def validate_vlm_constraints(self):

@@ -16,6 +16,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [Dataset Format](#dataset-format)
   - [Launch](#launch-1)
   - [SFT-Specific Knobs](#sft-specific-knobs)
+  - [Custom Loss](#custom-loss)
   - [Important Metrics](#important-metrics-1)
 - [Pretraining](#pretraining)
 - [Checkpointing](#checkpointing)
@@ -325,6 +326,61 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 | `val.interval` | Run validation every N steps; `val.data` mirrors `data` |
 | `eval.interval` | Run online evals every N steps; see [Online Evals](#online-evals) |
 
+### Custom Loss
+
+`[loss]` selects the SFT trainer's loss: token cross-entropy (`type = "ce"`, the default) or, with `type = "custom"`, a loss function of yours in its place. The samples are stock SFT's: the chat rendered per `data.columns` and `[loss_mask]`, shifted for next-token prediction. Shuffling, rank sharding, epochs, resume, packing, normalization, clipping, validation and checkpointing stay the trainer's. As with the RL [custom loss](algorithms.md#custom-loss), the trainer calls the function **once per sample**, as `my_loss(inputs, **kwargs)` with the config's `kwargs`, on the backbone's final hidden states of that sample. It returns the sample's summed loss and the count it averages over (e.g. 1 for the sample, or its trained tokens); the trainer sums both over the step's samples, micro-batches and ranks and divides the loss by the count, as it divides the summed cross-entropy by the token count.
+
+```python
+# my_module.py
+from prime_rl.trainer.sft.loss import LossInputs, LossOutputs
+
+def focal_loss(inputs: LossInputs, gamma: float = 2.0) -> LossOutputs:
+    """Token cross-entropy, down-weighting tokens the model already predicts well: -(1 - p)^gamma * log p."""
+    logprobs, mask = inputs.target_logprobs(), inputs.loss_mask
+    focal = -((1 - logprobs.exp()) ** gamma) * logprobs
+    ce = -(logprobs * mask).sum() / mask.sum()  # the sample's mean token cross-entropy, to log
+    return LossOutputs(loss=(focal * mask).sum(), count=mask.sum(), metrics={"ce": ce.detach()})
+```
+
+Wire it up:
+
+```toml
+[loss]
+type = "custom"
+import_path = "my_module.focal_loss"
+kwargs = { gamma = 2.0 }
+```
+
+The dataclasses:
+
+```python
+@dataclass
+class LossInputs:                                  # one sample, without the row's padding
+    model: nn.Module
+    hidden_states: Float[Tensor, "seq hidden"]     # post-norm, no vocabulary projection
+    input_ids: Int[Tensor, "seq"]
+    position_ids: Int[Tensor, "seq"]
+    target_ids: Int[Tensor, "seq"]                 # each position's next token
+    loss_mask: Bool[Tensor, "seq"]                 # the tokens to train on
+    truncated: bool                                # packing cut the sample's tail
+
+    def target_logprobs(self) -> Float[Tensor, "seq"]: ...  # log p(target_ids) through the LM head
+
+@dataclass
+class LossOutputs:
+    loss: Float[Tensor, ""]                   # summed; divided by the global `count`
+    count: int | Tensor                       # e.g. 1 for the sample, or its trained tokens
+    metrics: dict[str, Tensor] = {}           # to log; any shape, one value per item (e.g. the sample)
+```
+
+A sample is one sample of the dataset, as packing put it in a micro-batch: packing concatenates samples into a row of up to `data.seq_len * data.micro_batch_size` tokens and starts the next row when a sample does not fit the rest of one, so a sample is never split across rows. The loss sees the sample's tokens alone, without the other samples of the row or its padding (`data.pad_to_seq_len`). Only a sample longer than a whole row is cut: it is alone in its row, which holds its first tokens, and comes with `truncated = True`.
+
+The loss runs inside the model's forward pass, where stock SFT computes its cross-entropy, so it can call any module of the model. `target_logprobs()` calls the LM head once per micro-batch, on all of its samples, at the first call on any of them, and returns the sample's part; calling the LM head yourself costs more (with a trainable LM head, each call of the fused head's summed cross-entropy keeps a weight-sized gradient buffer until backward, and on an untied model each further call re-gathers the head in backward). Call modules rather than reading their weights: FSDP gathers a unit's parameters while its modules run, so a weight read directly can be a shard (a decoder layer's or, on an untied model, the embedding's). A trainable module belongs to the model, since the optimizer, rank sync and checkpoints see only the model's parameters.
+
+Call every trainable module the loss uses unconditionally, on every sample, micro-batch and rank, even on an empty selection (e.g. `head(inputs.hidden_states[inputs.loss_mask])` when no token is trained): FSDP reduce-scatters a module's gradients after its backward, so skipping it on some ranks mismatches those collectives. With `model.dp_replicate > 1` (HSDP) the gradients are all-reduced over the replicas only after the step's last backward, so a module skipped on the step's last micro-batch does not fail, but the gradient from its earlier micro-batches is kept and added to a later step's. The LM head is such a module: a loss that uses `target_logprobs()` calls it on every sample.
+
+The samples are called one after another, as in RL, so many short samples cost one Python call each. `count` is an integer; with a global count of 0 the step's gradients are zeroed (the optimizer still applies weight decay and momentum). Each metric holds one value per item it describes, such as the sample or each of its questions; the trainer logs the mean, std, min and max of a name's values over the step's samples, micro-batches and ranks as `loss/<name>/{mean,std,min,max}` (`val/<name>/...` in validation), so names may differ between samples. A NaN micro-batch's metrics are left out, as its loss is. Not supported with context parallelism, VLM training or `model.offload = "full"`.
+
 ### Important Metrics
 
 Pulled from the console log and mirrored to W&B.
@@ -333,6 +389,7 @@ Pulled from the console log and mirrored to W&B.
 
 - `loss/mean`, `loss/perplexity` — main signal. Should decrease through the run.
 - `val/loss`, `val/perplexity` — validation metrics when `[val]` is set, logged every `val.interval` steps.
+- With a custom loss: `loss/<name>/{mean,std,min,max}` and `val/<name>/{mean,std,min,max}` for each metric the loss function returns; the perplexities are not logged, since the loss need not be a cross-entropy.
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
 - `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.

@@ -48,9 +48,11 @@ from prime_rl.trainer.pretrain.data import (
     warn_if_no_document_separator,
 )
 from prime_rl.trainer.sft.data import load_sft_dataset, setup_sft_dataset
+from prime_rl.trainer.sft.loss import run_loss_fn, setup_sft_loss_fn
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
+    TensorStats,
     broadcast_step_action,
     clip_grad_norm_,
     get_ckpt_disk_metrics,
@@ -189,6 +191,11 @@ def train(config: SFTConfig | PretrainConfig):
     logger.info(f"Initializing scheduler with {scheduler_steps} steps ({config.scheduler})")
     scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
 
+    loss_fn = None
+    if isinstance(config, SFTConfig) and config.loss.type == "custom":
+        logger.info(f"Loading custom loss ({config.loss})")
+        loss_fn = setup_sft_loss_fn(config.loss)
+
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
     multimodal = config.model.vlm is not None
@@ -262,8 +269,34 @@ def train(config: SFTConfig | PretrainConfig):
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     cp_size = parallel_dims.cp
 
-    def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
+    def compute_custom_loss(micro_batch: dict, stats: TensorStats) -> tuple[torch.Tensor, torch.Tensor]:
+        """The custom loss's (loss, count) for a micro-batch. Its metrics are added to ``stats``."""
+        batch = {
+            key: micro_batch[key].to("cuda", non_blocking=True)
+            for key in ("input_ids", "position_ids", "target_ids", "loss_mask", "seq_lens")
+        }
+        # Where the samples are, read on the host
+        batch["sample_lens"], batch["truncated"] = micro_batch["sample_lens"], micro_batch["truncated"]
+        with maybe_activation_offloading(config.model.ac_offloading, model):
+            outputs = run_loss_fn(loss_fn, model, batch)
+        if isinstance(outputs.count, int):  # filled on the device: a host int copied over would sync
+            count = torch.full((), outputs.count, dtype=torch.int64, device="cuda")
+        else:
+            count = torch.as_tensor(outputs.count, device="cuda")
+        if count.ndim != 0 or count.is_floating_point():
+            raise TypeError(f"custom loss count must be an integer, got {outputs.count!r}")
+        # A NaN micro-batch is left out of the metrics, as it is of the loss; masked on the device, without a sync.
+        keep = ~torch.isnan(outputs.loss.detach())
+        for name, values in outputs.metrics.items():
+            stats.add(name, values, mask=keep.expand(values.numel()))
+        return outputs.loss, count.to(torch.int64)
+
+    def compute_loss(micro_batch: dict, stats: TensorStats | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass returning (loss_sum, token_count) over unmasked tokens, or the custom loss's (loss, count) with
+        its metrics added to ``stats``."""
+        if loss_fn is not None:
+            return compute_custom_loss(micro_batch, stats)
+
         input_ids = micro_batch["input_ids"].to("cuda", non_blocking=True)
         position_ids = micro_batch["position_ids"].to("cuda", non_blocking=True)
         target_ids = micro_batch["target_ids"].to("cuda", non_blocking=True)
@@ -316,6 +349,7 @@ def train(config: SFTConfig | PretrainConfig):
         total_loss_sum = torch.tensor(0.0, device="cuda")
         total_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
         nan_count = torch.tensor(0, device="cuda")
+        stats = TensorStats() if loss_fn is not None else None
 
         # Variable-length packing yields different per-rank batch counts. Under FSDP
         # every forward is a collective, so all ranks must agree on when to stop —
@@ -330,7 +364,7 @@ def train(config: SFTConfig | PretrainConfig):
                 dist.all_reduce(has_data, op=dist.ReduceOp.MIN)
                 if has_data.item() == 0:
                     break
-                loss_sum, token_count = compute_loss(micro_batch)
+                loss_sum, token_count = compute_loss(micro_batch, stats)
                 if not torch.isnan(loss_sum.detach()):
                     total_loss_sum += loss_sum.detach()
                     total_token_count += token_count
@@ -342,7 +376,9 @@ def train(config: SFTConfig | PretrainConfig):
         dist.all_reduce(nan_count, op=dist.ReduceOp.SUM)
 
         mean_loss = (total_loss_sum / total_token_count).item() if total_token_count.item() > 0 else float("nan")
-        return mean_loss, nan_count.item()
+        # Collective: every rank leaves the loop above together
+        metrics = stats.compute_stats() if stats is not None else {}
+        return mean_loss, nan_count.item(), metrics
 
     def run_validation(step: int) -> None:
         if isinstance(config, PretrainConfig):
@@ -361,7 +397,7 @@ def train(config: SFTConfig | PretrainConfig):
         val_dataloader = setup_dataloader(val_dataset, config.val.data, config.model.cp)
 
         # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
-        mean_loss, nan_count = run_eval_loop(val_dataloader)
+        mean_loss, nan_count, metrics = run_eval_loop(val_dataloader)
         if is_tt_moe_model(model):
             # Keep validation routing out of the next training step's statistics.
             take_moe_routing_stats(model)
@@ -373,7 +409,14 @@ def train(config: SFTConfig | PretrainConfig):
             logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
         asyncio.run(
             monitors.log(
-                {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20)), "step": step}, step=step
+                {
+                    "val/loss": mean_loss,
+                    # perplexity is exp(cross-entropy); a custom loss need not be one
+                    **({} if loss_fn is not None else {"val/perplexity": math.exp(min(mean_loss, 20))}),
+                    **{f"val/{name}": value for name, value in metrics.items()},
+                    "step": step,
+                },
+                step=step,
             )
         )
 
@@ -420,6 +463,8 @@ def train(config: SFTConfig | PretrainConfig):
         logger.info(f"Tracing to {config.trace_path}")
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
     max_peak_memory = 0.0
+    # A custom loss's metrics over each step
+    loss_stats = TensorStats() if loss_fn is not None else None
     controller = Controller(requires_step=False)
     control_server = ControlServer(controller, config.control if world.is_master else None, ckpt_manager.ckpt_dir)
     control_server.start()
@@ -467,7 +512,7 @@ def train(config: SFTConfig | PretrainConfig):
         loss_tokens = torch.zeros((), dtype=torch.float64, device="cuda")
 
         def summed_loss(micro_batch: dict) -> torch.Tensor:
-            loss_sum, token_count = compute_loss(micro_batch)
+            loss_sum, token_count = compute_loss(micro_batch, loss_stats)
             loss_tokens.add_(token_count)
             return loss_sum
 
@@ -489,7 +534,9 @@ def train(config: SFTConfig | PretrainConfig):
             # The gradients of the summed loss are divided by the step's loss tokens once, after the last backward.
             tokens = step_stats["loss_tokens"]
             factor = parallel_dims.fsdp_gradient_divide_factor / tokens.clamp(min=1)
-            scale_gradients_(None, model, torch.where(tokens > 0, factor, 1.0).float())
+            # A custom loss may return a count of 0: with nothing to average over, its gradients are zeroed.
+            empty_scale = 0.0 if loss_fn is not None else 1.0
+            scale_gradients_(None, model, torch.where(tokens > 0, factor, empty_scale).float())
         forward_backward_end.record()
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
@@ -518,6 +565,9 @@ def train(config: SFTConfig | PretrainConfig):
         step_stats, norms = to_host(step_stats, {"grad_norm": grad_norm} if grad_norm is not None else {})
         result = step_result(step_stats, parallel_dims)
         loss = result.loss_sum / step_stats["loss_tokens"].item() if step_stats["loss_tokens"] > 0 else 0.0
+        loss_metrics = {}
+        if loss_stats is not None:  # collective: every rank reaches it once per step
+            loss_metrics = {f"loss/{name}": value for name, value in loss_stats.compute_stats().items()}
         grad_norm_value = norms["grad_norm"].item() if norms else None
         forward_backward_time = forward_backward_start.elapsed_time(forward_backward_end) / 1000
         if result.nan_count > 0:
@@ -630,8 +680,9 @@ def train(config: SFTConfig | PretrainConfig):
 
         loss_log_metrics = {
             "loss/mean": loss,
-            "loss/perplexity": math.exp(min(loss, 20)),
+            **({} if loss_fn is not None else {"loss/perplexity": math.exp(min(loss, 20))}),
             "loss/nan_count": result.nan_count,
+            **loss_metrics,
             "step": progress.step,
         }
         # Log tensor stats
