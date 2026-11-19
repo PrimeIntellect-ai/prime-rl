@@ -26,12 +26,17 @@ _PER_TOKEN_GLOBAL_SCALE_INV = 1.0 / (448.0 * 6.0)
 _E2M1_VALUES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0)
 
 
+def _pair_lut(device: torch.device) -> torch.Tensor:
+    """Each packed byte's two E2M1 values (low nibble first) as two BF16 bit patterns in one int32."""
+    bits = torch.tensor(_E2M1_VALUES, dtype=torch.bfloat16).view(torch.int16).to(torch.int32) & 0xFFFF
+    byte = torch.arange(256)
+    return (bits[byte & 0xF] | (bits[byte >> 4] << 16)).to(device)
+
+
 def dequantize_nvfp4(packed: torch.Tensor, block_scales: torch.Tensor) -> torch.Tensor:
-    """``[..., K // 2]`` packed E2M1 pairs (low nibble first) times their ``[..., K // 16]`` E4M3 block scales, in
-    BF16 (exact: at most 5 significant bits)."""
-    lut = torch.tensor(_E2M1_VALUES, dtype=torch.bfloat16, device=packed.device)
-    packed = packed.view(torch.uint8)
-    values = torch.stack((lut[(packed & 0xF).long()], lut[(packed >> 4).long()]), dim=-1)
+    """``[..., K // 2]`` packed E2M1 pairs times their ``[..., K // 16]`` E4M3 block scales, in BF16 (exact: at most
+    5 significant bits)."""
+    values = _pair_lut(packed.device)[packed.view(torch.uint8).int()].view(torch.bfloat16)
     values = values.view(*packed.shape[:-1], -1, 16)
     return (values * block_scales.view(torch.float8_e4m3fn).to(torch.bfloat16).unsqueeze(-1)).flatten(-2)
 
@@ -63,25 +68,21 @@ def quantize_weights(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, 
     return packed.view(num_experts, n, k // 2), block_scales.view(num_experts, n, k // 16), expert_scales
 
 
-def _row_expert_scales(expert_scales: torch.Tensor, offsets: torch.Tensor, num_rows: int) -> torch.Tensor:
-    """Each row's expert decode scale; rows past the last group (alignment padding) get 0."""
-    counts = torch.diff(offsets, prepend=offsets.new_zeros(1)).long()
-    padding = offsets.new_tensor(num_rows, dtype=torch.long) - offsets[-1].long()
-    return torch.repeat_interleave(
-        torch.cat((expert_scales, expert_scales.new_zeros(1))),
-        torch.cat((counts, padding.unsqueeze(0))),
-        output_size=num_rows,
-    )
-
-
-def _grouped_mm_fp32(x: torch.Tensor, weight: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
-    """``x[rows of group e] @ weight[e].T`` per group, FP32 out (the FP4 GEMM applies its scales to the FP32
-    accumulator); rows past the last group are 0."""
-    out = x.new_zeros(x.shape[0], weight.shape[1], dtype=torch.float32)
+def _grouped_linear_fp32(x, x_block_scales, token_scales, weight, w_block_scales, expert_scales, offsets):
+    """NVFP4 ``x @ weight[e].T`` per expert group, as the FP4 GEMM computes it: FP32 accumulation, then the per-token
+    and per-expert scales. Dequantizes one group at a time; rows past the last group are 0."""
+    out = torch.zeros(x.shape[0], weight.shape[1], dtype=torch.float32, device=x.device)
     bounds = [0, *offsets.tolist()]
     for expert, (start, end) in enumerate(zip(bounds[:-1], bounds[1:])):
         if end > start:
-            torch.mm(x[start:end], weight[expert].T, out_dtype=torch.float32, out=out[start:end])
+            rows = out[start:end]
+            torch.mm(
+                dequantize_nvfp4(x[start:end], x_block_scales[start:end]),
+                dequantize_nvfp4(weight[expert], w_block_scales[expert]).T,
+                out_dtype=torch.float32,
+                out=rows,
+            )
+            rows.mul_((token_scales[start:end] * expert_scales[expert]).unsqueeze(-1))
     return out
 
 
@@ -89,11 +90,7 @@ class _NVFP4GroupedLinear(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, weight, offsets, four_over_six, mxfp8):
         x_packed, x_block_scales, token_scales = quantize_activations(x, four_over_six)
-        w_packed, w_block_scales, expert_scales = quantize_weights(weight)
-        out = _grouped_mm_fp32(
-            dequantize_nvfp4(x_packed, x_block_scales), dequantize_nvfp4(w_packed, w_block_scales), offsets
-        )
-        out = out * (token_scales * _row_expert_scales(expert_scales, offsets, x.shape[0])).unsqueeze(-1)
+        out = _grouped_linear_fp32(x_packed, x_block_scales, token_scales, *quantize_weights(weight), offsets)
         ctx.save_for_backward(x_packed, x_block_scales, token_scales, weight, offsets)
         ctx.mxfp8 = mxfp8
         return out
