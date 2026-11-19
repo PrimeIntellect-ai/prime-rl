@@ -337,7 +337,8 @@ def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: l
     whose in_features or out_features is not a multiple of 128. Float8BlockwiseLinear
     documents that requirement and DeepGEMM's fp8_gemm_nt crashes at runtime
     on unaligned dims — better to keep them in BF16 with a clear log line than
-    silently break in the kernel.
+    silently break in the kernel. We also skip any nn.Linear with a bias, which
+    Float8BlockwiseLinear's forward drops.
 
     Conv1d, layer norms, and embedding tables are not nn.Linear and are
     skipped automatically by the type check; we don't need to list them.
@@ -347,6 +348,7 @@ def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: l
     replaced_modules = []
     skipped_modules = []
     skipped_unaligned: list[str] = []
+    skipped_biased: list[str] = []
     named_modules = dict(model.named_modules())
     for name, module in named_modules.items():
         if not isinstance(module, nn.Linear):
@@ -356,6 +358,9 @@ def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: l
             continue
         if module.in_features % 128 != 0 or module.out_features % 128 != 0:
             skipped_unaligned.append(f"{name}({module.in_features}->{module.out_features})")
+            continue
+        if module.bias is not None:
+            skipped_biased.append(name)
             continue
         parent_name, attr_name = name.rsplit(".", 1) if "." in name else ("", name)
         parent = model.get_submodule(parent_name) if parent_name else model
@@ -369,8 +374,9 @@ def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: l
     logger.info(
         f"Replaced {len(replaced_modules)} linear layers with FP8 blockwise linear "
         f"(skipped {len(skipped_modules)} by name, "
-        f"{len(skipped_unaligned)} by 128-divisibility); "
+        f"{len(skipped_unaligned)} by 128-divisibility, {len(skipped_biased)} by bias); "
         f"first replaced={replaced_modules[:3]}, "
         f"first skipped(name)={skipped_modules[:3]}, "
-        f"first skipped(unaligned)={skipped_unaligned[:3]}"
+        f"first skipped(unaligned)={skipped_unaligned[:3]}, "
+        f"first skipped(bias)={skipped_biased[:3]}"
     )
