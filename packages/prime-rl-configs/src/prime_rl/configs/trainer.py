@@ -841,10 +841,9 @@ class TrainerConfig(BaseTrainerConfig):
     disable with ``--no-annotations`` to skip that work."""
 
     warmup: bool = True
-    """Before waiting for the first batch, run forward and backward on synthetic micro batches and take a dry
-    optimizer step, so compilation, kernel JIT and optimizer state setup happen while the trainer would idle.
-    The warmup leaves the weights and the optimizer state unchanged. It is skipped with ``model.offload = "full"``,
-    whose optimizer updates the weights during backward."""
+    """Before waiting for the first batch, run the training step's forward and backward on synthetic micro batches
+    that train nothing, and take a dry optimizer step, so compilation, kernel JIT and optimizer state setup happen
+    while the trainer would idle. The warmup leaves the weights and the optimizer state unchanged."""
 
     enable_router_replay: bool = False
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""

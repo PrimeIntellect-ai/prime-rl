@@ -1,4 +1,5 @@
 import time
+from collections.abc import Callable
 
 import torch
 from dion import Muon
@@ -6,14 +7,12 @@ from torch import Tensor, nn
 from torch.optim import AdamW
 
 from prime_rl.configs.trainer import TrainerConfig, rl_micro_batch_multiple
-from prime_rl.trainer.model import forward, is_tt_moe_model, take_moe_routing_stats
+from prime_rl.trainer.model import iter_moe_blocks
 from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
 from prime_rl.trainer.optim.sign_sgd import SignSGD
-from prime_rl.trainer.parallel_dims import ParallelDims
-from prime_rl.trainer.rl.loss import selective_log_softmax, shift_tensor_left
+from prime_rl.trainer.rl.data import TensorMicroBatch
 from prime_rl.trainer.utils import clip_grad_norm_, get_peak_memory_across_ranks
-from prime_rl.utils.act_offloading import maybe_activation_offloading
-from prime_rl.utils.cp import setup_cp_params, shard_for_cp
+from prime_rl.trainer.vlm import get_language_model
 from prime_rl.utils.logger import format_time, get_logger
 
 # Their state starts at zero and stays zero under zero gradients, and lr scales both the update and the
@@ -39,7 +38,8 @@ def warmup_micro_batches(seq_len: int, multiple: int) -> list[list[int]]:
     last micro batch has one.
     """
     generator = torch.Generator().manual_seed(0)
-    full = seq_len // multiple * multiple
+    # Real micro batches are padded up to a multiple, so the longest one can exceed `seq_len`
+    full = -(-seq_len // multiple) * multiple
     near_full = max(multiple, full - multiple)
     return [
         warmup_doc_lens(full, 0, generator),
@@ -48,44 +48,61 @@ def warmup_micro_batches(seq_len: int, multiple: int) -> list[list[int]]:
     ]
 
 
-def forward_backward(
-    model: nn.Module,
-    doc_lens: list[int],
-    vocab_size: int,
-    config: TrainerConfig,
-    parallel_dims: ParallelDims,
-    final_backward: bool,
-) -> None:
-    """Run the training forward and a backward of zero loss on random tokens."""
-    seq_lens = torch.tensor(doc_lens, dtype=torch.long)
-    generator = torch.Generator().manual_seed(0)
-    input_ids = torch.randint(0, vocab_size, (1, int(seq_lens.sum())), generator=generator).cuda()
-    position_ids = torch.cat([torch.arange(doc_len) for doc_len in doc_lens]).unsqueeze(0).cuda()
-    labels = shift_tensor_left(input_ids)
-    temperatures = torch.ones(input_ids.shape, device="cuda")
-    if parallel_dims.cp_enabled:
-        cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
-        input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, parallel_dims.cp)
-        labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=parallel_dims.cp)
-        temperatures = shard_for_cp(temperatures, cp_rank=cp_rank, cp_world_size=parallel_dims.cp)
+def warmup_routed_experts(model: nn.Module, num_tokens: int, generator: torch.Generator) -> Tensor | None:
+    """Distinct random experts per token and layer, in the layout inference returns for router replay."""
+    routers = [moe.router for moe in iter_moe_blocks(model)]
+    if not routers:
+        return None
+    num_experts = min(router.num_experts for router in routers)
+    num_layers = len(get_language_model(model).layers)
+    first = torch.randint(0, num_experts, (1, num_tokens, num_layers, 1), generator=generator, dtype=torch.int32)
+    return (first + torch.arange(routers[0].top_k, dtype=torch.int32)) % num_experts
 
-    with maybe_activation_offloading(config.model.ac_offloading, model):
-        out = forward(
-            model,
-            input_ids,
-            position_ids,
-            labels=labels,
-            temperature=temperatures,
-            seq_lens=seq_lens.cuda(),
-            seq_lens_are_pre_shard=parallel_dims.cp_enabled,
-        )
-    logprobs = out.get("logprobs")
-    if logprobs is None:
-        logprobs = selective_log_softmax(out["logits"] / temperatures.unsqueeze(-1), labels)
 
-    if parallel_dims.dp_replicate_enabled:
-        model.set_requires_all_reduce(final_backward)
-    (logprobs.sum() * 0.0).backward()
+def synthetic_micro_batch(
+    doc_lens: list[int], model: nn.Module, config: TrainerConfig, generator: torch.Generator
+) -> TensorMicroBatch:
+    """A micro batch with no token in any loss component, so it trains nothing, like a dropped micro batch. It
+    carries the inputs that the trainer config makes real micro batches carry."""
+    num_tokens = sum(doc_lens)
+    vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
+    micro_batch = TensorMicroBatch(
+        input_ids=torch.randint(0, vocab_size, (1, num_tokens), generator=generator),
+        position_ids=torch.cat([torch.arange(doc_len) for doc_len in doc_lens]).unsqueeze(0),
+        advantages=torch.zeros(1, num_tokens),
+        inference_logprobs=torch.zeros(1, num_tokens),
+        ref_logprobs=None,
+        loss_mask=torch.zeros(1, num_tokens, dtype=torch.bool),
+        temperatures=torch.ones(1, num_tokens),
+        env_names=["warmup"] * len(doc_lens),
+        sequence_lengths=doc_lens,
+        padding=0,
+        trace_ids=None,
+        branch_indices=None,
+        seq_lens=torch.tensor(doc_lens, dtype=torch.long),
+        routed_experts=warmup_routed_experts(model, num_tokens, generator) if config.enable_router_replay else None,
+        support_ids=None,
+        support_logprobs=None,
+        support_offsets=None,
+        support_replayed=None,
+        # Score centering supports are heads of the sampler's distribution, which take the dense backward
+        sparse_head_backward=False,
+        mm_refs=None,
+        mm_kwargs=None,
+        mm_token_type_ids=None,
+        rl_weights=None,
+        ce_weights=None,
+        ref_kl_weights=None,
+        staleness=None,
+    )
+    if config.loss.type == "icepop" and config.loss.score_centering:
+        k = config.loss.score_centering_topk
+        first = torch.randint(0, vocab_size, (num_tokens, 1), generator=generator, dtype=torch.int32)
+        micro_batch["support_ids"] = ((first + torch.arange(k, dtype=torch.int32)) % vocab_size).flatten()
+        micro_batch["support_logprobs"] = -torch.rand(num_tokens * k, generator=generator)
+        micro_batch["support_offsets"] = torch.arange(0, num_tokens * k + 1, k, dtype=torch.long)
+        micro_batch["support_replayed"] = torch.zeros(num_tokens, dtype=torch.bool)
+    return micro_batch
 
 
 def dry_optimizer_step(optimizer: OptimizerLike, model: nn.Module, max_norm: float | None) -> bool:
@@ -126,25 +143,32 @@ def warmup(
     model: nn.Module,
     optimizer: OptimizerLike,
     config: TrainerConfig,
-    parallel_dims: ParallelDims,
+    forward_backward: Callable[..., object],
 ) -> float:
     """Do the trainer's one-time work (compilation, kernel JIT, communicator setup, optimizer state) before the
-    first batch arrives. Returns the time it took."""
+    first batch arrives. `forward_backward` is the training step's forward and backward. Returns the time it took."""
     logger = get_logger()
     logger.info("Warming up the trainer")
     torch.cuda.reset_peak_memory_stats()
     start_time = time.perf_counter()
-    vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
-    micro_batches = warmup_micro_batches(config.model.seq_len, rl_micro_batch_multiple(config.model))
-    for index, doc_lens in enumerate(micro_batches):
-        forward_backward(model, doc_lens, vocab_size, config, parallel_dims, index == len(micro_batches) - 1)
-    if is_tt_moe_model(model):
-        take_moe_routing_stats(model)
+    generator = torch.Generator().manual_seed(0)
+    micro_batches = [
+        synthetic_micro_batch(doc_lens, model, config, generator)
+        for doc_lens in warmup_micro_batches(config.model.seq_len, rl_micro_batch_multiple(config.model))
+    ]
+    # Under full offload, the gradients then stay in the offload buffers instead of updating the weights
+    forward_backward(micro_batches, prepare=lambda micro_batch: micro_batch, overlap_optimizer=False, annotate=False)
+    del micro_batches
     torch.cuda.synchronize()
     forward_backward_time = time.perf_counter() - start_time
 
     optimizer_start_time = time.perf_counter()
-    stepped = dry_optimizer_step(optimizer, model, config.optim.max_norm)
+    # The full offload optimizer runs on the CPU and creates its state up front, so it has nothing to warm up
+    if config.model.offload == "full":
+        optimizer.zero_grad()
+        stepped = False
+    else:
+        stepped = dry_optimizer_step(optimizer, model, config.optim.max_norm)
     torch.cuda.synchronize()
     optimizer_time = time.perf_counter() - optimizer_start_time
 
