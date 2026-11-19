@@ -2,7 +2,8 @@
 
 Each case builds a tiny seeded model with `setup_model` on its layout (activation checkpointing with offloading, then
 torch.compile per layer, then FSDP, CP or EP) and runs one forward and backward. A case passes when the loss and grad
-norm are finite, at least one compiled graph ran, and Dynamo counted no graph break. One `torchrun` launch runs every
+norm are finite, Dynamo counted no graph break, and every frame Dynamo compiled produced a graph, at least one per kind
+of decoder layer (a skipped frame only logs under fullgraph and runs eagerly). One `torchrun` launch runs every
 selected case of a group; each case reports as its own test. A case that fails today sets `known_failure` to a
 substring of its error and runs as a strict xfail.
 
@@ -44,6 +45,7 @@ from prime_rl.trainer.models.layers.mega_moe import mega_moe_available
 from prime_rl.trainer.moe_runtime import setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import ParallelDims, get_parallel_dims
 from prime_rl.trainer.utils import clip_grad_norm_, setup_torch_distributed
+from prime_rl.trainer.vlm import get_language_model
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 from prime_rl.utils.cp import setup_context_parallel
@@ -174,11 +176,21 @@ def isolated(run, *args) -> dict:
         return {"error": "".join(traceback.format_exception_only(error)).strip()}
 
 
-def run_step(config: ModelConfig, parallel_dims: ParallelDims, rows: list[dict]) -> dict:
-    """One forward and backward of this rank's row through the trainer's model, with its summed loss and grad norm."""
+def layer_kinds(model: torch.nn.Module) -> set[tuple[str, ...]]:
+    """The decoder layers' distinct sets of module classes. Layers of different kinds cannot share a compiled graph."""
+    layers = [getattr(layer, "_checkpoint_wrapped_module", layer) for layer in get_language_model(model).layers]
+    return {tuple(sorted({type(module).__name__ for module in layer.modules()})) for layer in layers}
+
+
+def run_step(config: ModelConfig, parallel_dims: ParallelDims, rows: list[dict], progress: dict) -> dict:
+    """One forward and backward of this rank's row through the trainer's model, with its summed loss and grad norm.
+    `progress` holds the stage reached and the number of decoder layer kinds, also when the step raises."""
+    progress["stage"] = "setup"
     model = setup_model(config, parallel_dims)
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config, parallel_dims)
+    progress["layer_kinds"] = len(layer_kinds(model))
+    progress["stage"] = "step"
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if parallel_dims.cp_enabled else 0
     row = rows[parallel_dims.get_mesh("dp").get_local_rank()]
     with maybe_activation_offloading(config.ac_offloading, model):
@@ -195,8 +207,15 @@ def failures(result: dict) -> list[str]:
     for metric in ("loss_sum", "grad_norm"):
         if metric in result and not math.isfinite(result[metric]):
             found.append(f"{metric} is {result[metric]}")
-    if "error" not in result and result["unique_graphs"] < 1:
-        found.append("no compiled graph ran")
+    if "error" not in result:
+        if result["unique_graphs"] < 1:
+            found.append("no compiled graph ran")
+        eager_frames = [frame for frame in result["frames"] if not frame["guarded"] or not frame["ops"]]
+        if eager_frames:
+            found.append(f"frames Dynamo compiled without a graph, which ran eagerly: {eager_frames}")
+        num_graphs = len(result["frames"]) - len(eager_frames)
+        if num_graphs < result["layer_kinds"]:
+            found.append(f"{num_graphs} compiled graphs for {result['layer_kinds']} decoder layer kinds")
     if result.get("graph_breaks"):
         found.append(f"graph breaks: {result['graph_breaks']}")
     return found
@@ -207,13 +226,22 @@ def compile_case(config: ModelConfig, parallel_dims: ParallelDims, rows: list[di
     counters.clear()
     clear_compilation_metrics()
     start = time.perf_counter()
-    result = isolated(run_step, config, parallel_dims, rows)
+    progress = {}
+    result = isolated(run_step, config, parallel_dims, rows, progress)
+    result.update(progress)
     result["seconds"] = time.perf_counter() - start
     result["unique_graphs"] = counters["stats"]["unique_graphs"]
     result["graph_breaks"] = dict(counters["graph_break"])
-    result["recompiles"] = [
-        metrics.recompile_reason for metrics in get_compilation_metrics() if metrics.recompile_reason
+    forward_compiles = [metrics for metrics in get_compilation_metrics() if metrics.is_forward]
+    result["frames"] = [
+        {
+            "code": f"{metrics.co_name} ({Path(metrics.co_filename or '').name}:{metrics.co_firstlineno})",
+            "ops": metrics.graph_op_count,
+            "guarded": metrics.has_guarded_code,
+        }
+        for metrics in forward_compiles
     ]
+    result["recompiles"] = [metrics.recompile_reason for metrics in forward_compiles if metrics.recompile_reason]
     torch.cuda.empty_cache()
     return result
 
@@ -246,7 +274,7 @@ def main(output_dir: Path, cases: list[CompileCase]) -> None:
         if skip_reasons[case.name] is not None:
             result = {"skipped": skip_reasons[case.name]}
         elif "error" in built[case.model]:
-            result = dict(built[case.model])
+            result = {**built[case.model], "stage": "build"}
         else:
             if (case.cp, case.ep) not in layouts:
                 layouts[case.cp, case.ep] = get_parallel_dims(configs[case.name])
