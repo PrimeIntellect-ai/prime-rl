@@ -209,10 +209,10 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
         for layer_index, decoder_layer in enumerate(self.layers):
             layer_routed_experts = routed_experts[:, :, layer_index] if routed_experts is not None else None
             hidden_states = decoder_layer(
-                hidden_states,
-                self.ngram.embed(ngram_ids, layer_index),
-                position_embeddings,
-                cu_seqlens,
+                hidden_states=hidden_states,
+                ngram_embedding=self.ngram.embed(ngram_ids, layer_index),
+                position_embeddings=position_embeddings,
+                cu_seqlens=cu_seqlens,
                 routed_experts=layer_routed_experts,
             )
         hidden_states, _ = self.hyper_connection_mixer(hidden_states)
