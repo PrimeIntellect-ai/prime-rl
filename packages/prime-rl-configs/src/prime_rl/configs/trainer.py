@@ -13,6 +13,7 @@ from prime_rl.configs.shared import (
     FileSystemWeightBroadcastConfig,
     GCConfig,
     HeartbeatConfig,
+    PluginConfig,
     ResumeConfig,
     TrainerLogConfig,
     TransportConfig,
@@ -357,9 +358,33 @@ class PretrainedInit(BaseConfig):
 InitConfig: TypeAlias = Annotated[ScratchInit | PretrainedInit, Field(discriminator="type")]
 
 
+IMPLEMENTATION_NOT_SERVED = (
+    "model.implementation cannot be served: the class has no vLLM counterpart, so its weights cannot be broadcast to "
+    "inference"
+)
+
+
+class ModelImplementationConfig(PluginConfig):
+    """The model class to build from the checkpoint at ``model.name``: ``import_path`` names a subclass of prime-rl's
+    class for the checkpoint's architecture. Only the trainer builds it and it has no vLLM counterpart, so it is refused
+    with weight broadcasts to inference (RL, online evals)."""
+
+    @model_validator(mode="after")
+    def validate_no_kwargs(self):
+        if self.kwargs:
+            raise ValueError(
+                "model.implementation takes no kwargs: put the class's hyperparameters in the checkpoint's config.json"
+            )
+        return self
+
+
 class ModelConfig(BaseModelConfig):
     vlm: VLMConfig | None = None
     """VLM configuration. Setting this enables vision-language model support."""
+
+    implementation: ModelImplementationConfig | None = None
+    """The model class to build from the checkpoint at ``name``, for a model that extends a supported one (e.g. an
+    added head). If None, uses prime-rl's class for the checkpoint's architecture."""
 
     conversion_dir: Path | None = None
     """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
@@ -434,6 +459,12 @@ class ModelConfig(BaseModelConfig):
 
     fused_lm_head_token_chunk_size: int | Literal["disabled"] = 8192
     """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. In SFT the fused head computes the summed cross-entropy and its gradients chunk by chunk, holding one chunk's full-vocab logits at a time."""
+
+    @model_validator(mode="after")
+    def implementation_without_vlm(self):
+        if self.implementation is not None and self.vlm is not None:
+            raise ValueError("model.implementation is not supported with model.vlm")
+        return self
 
     @model_validator(mode="after")
     def validate_scratch_lora(self):
@@ -864,6 +895,12 @@ class TrainerConfig(BaseTrainerConfig):
                 f"'{self.weight_broadcast.type}': a restarted trainer cannot rejoin its transfer group. "
                 "Use weight_broadcast.type = 'filesystem'."
             )
+        return self
+
+    @model_validator(mode="after")
+    def implementation_is_not_served(self):
+        if self.model.implementation is not None and self.data.fake is None:
+            raise ValueError(IMPLEMENTATION_NOT_SERVED)
         return self
 
     @model_validator(mode="after")
