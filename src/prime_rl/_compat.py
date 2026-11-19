@@ -37,3 +37,22 @@ if _hub_kernels is not None:
             return None
 
     _hub_kernels.lazy_load_kernel = _patched_lazy_load_kernel
+
+# ---------------------------------------------------------------------------
+# Inductor compile-worker fork deadlock (pytorch/pytorch#200848)
+#
+# Inductor shuts its compile-worker pool down when idle and re-forks it on the
+# next compile; a fork during the old pool's teardown can deadlock the rank.
+#
+# Fix: keep the pool alive, and fail after 30 min instead of hanging. Both env
+# vars still take precedence.
+# Remove the quiesce line once the minimum torch contains the fix for
+# pytorch/pytorch#200848.
+# ---------------------------------------------------------------------------
+import os
+
+import torch._inductor.config
+
+torch._inductor.config.quiesce_async_compile_pool = False
+if "TORCHINDUCTOR_COMPILE_WORKER_WAIT_TIMEOUT" not in os.environ:
+    torch._inductor.config.compile_worker_wait_timeout = 1800

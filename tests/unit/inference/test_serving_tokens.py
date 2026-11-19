@@ -173,6 +173,7 @@ async def test_gpu_capture_matches_native_evidence_and_metadata(flat, replay, ro
     )
     serving.enable_prompt_tokens_details = True
     serving.enable_log_outputs = False
+    serving.return_tokens_as_token_ids = False
     sampled_ids = [2, 3] if replay else [2, 7]
     probabilities = {1: 0.6, 2: 0.2, 3: 0.2, 4: 0.0} if replay else {1: 0.6, 2: 0.25, 3: 0.1, 4: 0.04, 7: 0.01}
     with np.errstate(divide="ignore"):
@@ -370,6 +371,7 @@ async def test_flat_sampled_logprobs_are_packed():
     )
     serving.enable_prompt_tokens_details = False
     serving.enable_log_outputs = False
+    serving.return_tokens_as_token_ids = False
     logprobs = FlatLogprobs()
     for sampled, value in [(2, -0.25), (7, -20000.0)]:
         logprobs.append_fast([sampled], [value], iter(range(1)), [None])
