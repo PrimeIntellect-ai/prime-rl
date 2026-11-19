@@ -171,7 +171,7 @@ def train(config: SFTConfig | PretrainConfig):
     system_one = isinstance(config, SFTConfig) and config.data.type == "system_one"
     strategy_cls = raw_dataset = val_raw_dataset = None
     if system_one:
-        strategy_cls = get_system_one_strategy_cls(model_files.config)
+        strategy_cls = get_system_one_strategy_cls(model_files.config, model_files.selection)
         raw_dataset = load_sft_dataset(config.data)
         record_datasets = [(raw_dataset, config.data.columns)]
         if config.val is not None:

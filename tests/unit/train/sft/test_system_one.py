@@ -16,7 +16,7 @@ import prime_rl.trainer.parallel_dims as parallel_dims_module
 from prime_rl.configs.sft import SystemOneColumnsConfig
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.data import CatDataset
-from prime_rl.trainer.model import forward, reshard_module, setup_fsdp
+from prime_rl.trainer.model import ExtraConfigSelection, forward, reshard_module, setup_fsdp
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.parallel_dims import get_parallel_dims
@@ -309,6 +309,10 @@ def test_get_system_one_strategy_cls_looks_up_the_architecture(monkeypatch):
         get_system_one_strategy_cls(PretrainedConfig(architectures=["Qwen3ForCausalLM", "StubDecisionModel"]))
     with pytest.raises(ValueError, match=r"architectures \[\] do not start with one"):
         get_system_one_strategy_cls(PretrainedConfig())
+    # A class selected by an extra config file is looked up by its name
+    stock = PretrainedConfig(architectures=["Qwen3ForCausalLM"])
+    selection = ExtraConfigSelection(type("StubDecisionModel", (), {}), {})
+    assert get_system_one_strategy_cls(stock, selection) is StubStrategy
 
 
 class StubDecisionModel:
