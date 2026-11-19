@@ -6,6 +6,7 @@ from fla.ops.cp import build_cp_context
 from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 from torch import nn
 
+from prime_rl.trainer.models.layers import fla_ops
 from prime_rl.trainer.models.layers.attn import delta_rule_flops
 from prime_rl.utils.cp import CPContext
 
@@ -98,15 +99,17 @@ class GatedDeltaNet(nn.Module):
                 conv1d_kernel_size=self.conv_kernel_size,
             )
 
-        convolution = causal_conv1d_with_context_parallelism if context is not None else causal_conv1d
-        mixed_qkv, _ = convolution(
-            x=mixed_qkv,
-            weight=self.conv1d.weight.squeeze(1),
-            bias=self.conv1d.bias,
-            activation=self.activation,
-            cu_seqlens=cu_seqlens,
-            cp_context=context,
-        )
+        if context is None:
+            mixed_qkv = fla_ops.causal_conv1d(mixed_qkv, self.conv1d.weight.squeeze(1), self.activation, cu_seqlens)
+        else:
+            mixed_qkv, _ = causal_conv1d_with_context_parallelism(
+                x=mixed_qkv,
+                weight=self.conv1d.weight.squeeze(1),
+                bias=self.conv1d.bias,
+                activation=self.activation,
+                cu_seqlens=cu_seqlens,
+                cp_context=context,
+            )
 
         query, key, value = torch.split(mixed_qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)
         query = query.reshape(batch_size, sequence_length, self.num_key_heads, self.key_head_dim)
@@ -118,20 +121,26 @@ class GatedDeltaNet(nn.Module):
             query = query.repeat_interleave(heads_per_key, dim=2)
             key = key.repeat_interleave(heads_per_key, dim=2)
 
-        core_output, _ = chunk_gated_delta_rule(
-            q=query,
-            k=key,
-            v=value,
-            g=decay,
-            beta=beta,
-            use_qk_l2norm_in_kernel=True,
-            cu_seqlens=context.cu_seqlens if context is not None else cu_seqlens,
-            cp_context=context,
-        )
+        if context is None:
+            core_output = fla_ops.chunk_gated_delta_rule(query, key, value, decay, beta, cu_seqlens)
+        else:
+            core_output, _ = chunk_gated_delta_rule(
+                q=query,
+                k=key,
+                v=value,
+                g=decay,
+                beta=beta,
+                use_qk_l2norm_in_kernel=True,
+                cu_seqlens=context.cu_seqlens,
+                cp_context=context,
+            )
 
-        core_output = self.norm(
+        core_output = fla_ops.rms_norm_gated(
             core_output.reshape(-1, self.value_head_dim),
             output_gate.reshape(-1, self.value_head_dim),
+            self.norm.weight,
+            self.norm.eps,
+            self.norm.activation,
         ).reshape(batch_size, sequence_length, self.value_dim)
         return self.out_proj(core_output)
 
