@@ -375,7 +375,7 @@ Pulled from the console log and mirrored to W&B.
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
 - `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
-- `progress/<name>/{num_tokens,unique_tokens,repetitions,mean_segment_length}` — pretraining: a source's tokens read, the unique ones among them (at most its subset's), their ratio, and the mean length of its document pieces in the step's rows; `progress/{unique_tokens,repetitions,mean_segment_length}` over all sources. In pretraining, `progress/epoch` is the tokens read over all sources' tokens.
+- `progress/<name>/{num_tokens,unique_tokens,repetitions,mean_segment_length}` — with `documents` data: a source's tokens read, the unique ones among them (at most its subset's), their ratio, and the mean length of its document pieces in the step's rows; `progress/{unique_tokens,repetitions,mean_segment_length}` over all sources. With `documents` data, `progress/epoch` is the tokens read over all sources' tokens.
 
 **Stability and optimization:**
 
