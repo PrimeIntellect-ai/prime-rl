@@ -9,6 +9,8 @@ from prime_rl.utils.logger import get_logger
 if TYPE_CHECKING:
     import verifiers.v1 as vf
 
+    from prime_rl.eval.summary import EpisodeSummary
+
 Kind = Literal["train", "eval"]
 Subset = Literal["all", "effective"]
 
@@ -66,8 +68,8 @@ class Monitor(ABC):
         """Log how many episodes the eval epoch of ``env_name`` at ``step`` will produce,
         known once its tasks are counted. Monitors that only carry results ignore it."""
 
-    async def log_eval_epoch(self, env_name: str, step: int, episodes: list[vf.Episode]) -> None:
-        """Log one finished eval epoch: every episode ``env_name`` produced for ``step``,
+    async def log_eval_epoch(self, env_name: str, step: int, episodes: list[EpisodeSummary]) -> None:
+        """Log one finished eval epoch: a reporting summary for every episode ``env_name`` produced for ``step``,
         errored ones included. Fires once per epoch, after the episodes streamed through
         ``log``. Monitors that carry episodes as they arrive ignore it."""
 

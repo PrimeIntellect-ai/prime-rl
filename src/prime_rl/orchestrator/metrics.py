@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import verifiers.v1 as vf
 
+from prime_rl.eval.summary import EpisodeSummary, TraceSummary
 from prime_rl.orchestrator.algo.routing import is_trainable, scalar_advantage
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation
 from prime_rl.orchestrator.utils import compute_pass_metrics, episode_env_name, episode_group_id
@@ -29,13 +30,13 @@ def dispatch_failure_metrics(failures: list[DispatchFailure], *, prefix: str, to
 
 
 @dataclass(frozen=True)
-class TraceRecord:
+class TraceRecord[EpisodeT, TraceT]:
     """A trace joined with its episode and training selection state.
     ``cancelled`` marks episodes the pipeline voided (stale or shutdown) — a
     selection verdict disjoint from trace errors."""
 
-    episode: vf.Episode
-    trace: vf.Trace
+    episode: EpisodeT
+    trace: TraceT
     sampled: bool
     admitted: bool
     cancelled: bool
@@ -152,7 +153,7 @@ class StatGroup:
         self.records = records
 
     @property
-    def traces(self) -> list[vf.Trace]:
+    def traces(self) -> list[vf.Trace | TraceSummary]:
         return [record.trace for record in self.records]
 
     def stats(self) -> dict[str, Stat]:
@@ -337,7 +338,7 @@ class TraceMetrics(StatGroup):
 class EpisodeMetrics:
     def __init__(
         self,
-        episodes: list[vf.Episode],
+        episodes: Sequence[vf.Episode | EpisodeSummary],
         records: list[TraceRecord],
         cancelled: set[str] | None = None,
     ) -> None:
@@ -454,7 +455,9 @@ def pass_at_k(records: list[TraceRecord]) -> dict[str, float]:
 
 
 class EvalMetrics(EpisodeMetrics):
-    def __init__(self, episodes: list[vf.Episode], records: list[TraceRecord], group_size: int) -> None:
+    def __init__(
+        self, episodes: Sequence[vf.Episode | EpisodeSummary], records: list[TraceRecord], group_size: int
+    ) -> None:
         super().__init__(episodes, records)
         self.group_size = group_size
 
@@ -647,6 +650,10 @@ class RolloutWindow:
         self.metrics.count("rollout/traces/discarded", float(episodes.num_traces - len(queued_trace_ids)))
 
 
+def effective_eval_trace(trace: vf.Trace | TraceSummary) -> bool:
+    return not trace.has_error and not trace.is_dropped and trace.agent.trainable
+
+
 class EvalEpisodes(EpisodeCollection):
     def __init__(
         self,
@@ -662,9 +669,7 @@ class EvalEpisodes(EpisodeCollection):
         return EvalEpisodes(
             self.episodes,
             self.group_size,
-            predicate=lambda record: (
-                not record.trace.has_error and not record.trace.is_dropped and record.trace.agent.trainable
-            ),
+            predicate=lambda record: effective_eval_trace(record.trace),
         )
 
     @property

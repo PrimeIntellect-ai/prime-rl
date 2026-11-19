@@ -13,11 +13,13 @@ episodes are reused. Intentional changes require ``--resume.skip-checks``.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import orjson
 import verifiers.v1 as vf
+from verifiers.v1.task import WireTaskData
 
 from prime_rl.configs.eval import EvalConfig
 from prime_rl.monitors.file.traces import get_trace_stream
@@ -37,16 +39,18 @@ def stamp_config(run_dir: Path, config: dict) -> None:
     (directory / CONFIG_NAME).write_bytes(orjson.dumps(config, option=orjson.OPT_INDENT_2))
 
 
-def read_records(stream: Path) -> Iterator[dict]:
+def indexed_records(stream: Path) -> Iterator[tuple[int, int, dict]]:
     """Every record of a trace stream, in order. A torn last line (the interrupted
     process died mid-append) ends the stream."""
     for number in sorted(chunk_numbers(stream)):
         with open_chunk(stream, number) as chunk:
+            offset = 0
             for line in chunk:
                 try:
-                    yield orjson.loads(line)
+                    yield number, offset, orjson.loads(line)
                 except orjson.JSONDecodeError:
                     return
+                offset += len(line)
 
 
 def archives(run_dir: Path) -> list[Path]:
@@ -56,8 +60,28 @@ def archives(run_dir: Path) -> list[Path]:
     return sorted(monitors.glob("file.attempt_*"), key=lambda path: int(path.name.rsplit("_", 1)[1]))
 
 
-def take_landed(run_dir: Path, config: EvalConfig) -> list[vf.WireEpisode]:
-    """Successful episodes from every attempt; the planner deduplicates them.
+@dataclass
+class SavedEpisode:
+    header: vf.WireEpisode
+    stream: Path
+    chunk: int
+    offset: int
+
+    def load(self, group: vf.GroupInfo | None) -> vf.WireEpisode:
+        with open_chunk(self.stream, self.chunk) as chunk:
+            chunk.seek(self.offset)
+            episode = vf.WireEpisode.model_validate(orjson.loads(chunk.readline()))
+        episode.group = group
+        return episode
+
+
+def replay(saved: dict[tuple[str, str], SavedEpisode], planned: Iterable[vf.WireEpisode]) -> Iterator[vf.WireEpisode]:
+    for header in planned:
+        yield saved[header.env.name or header.env.id, header.id].load(header.group)
+
+
+def take_landed(run_dir: Path, config: EvalConfig) -> dict[tuple[str, str], SavedEpisode]:
+    """Validated, distinct successful episode locations, oldest attempt first.
     The current file monitor directory joins the archives so the resumed attempt writes a
     fresh stream, plan and metrics; nothing is deleted."""
     current = get_file_monitor_dir(run_dir)
@@ -72,7 +96,8 @@ def take_landed(run_dir: Path, config: EvalConfig) -> list[vf.WireEpisode]:
         get_logger().warning(
             "Skipping resume compatibility checks; saved episodes may use different experiment settings."
         )
-    landed: list[vf.WireEpisode] = []
+    landed: dict[tuple[str, str], SavedEpisode] = {}
+    archive = current.with_name(f"file.attempt_{len(archives(run_dir)) + 1}")
     for directory in directories:
         if not skip_checks:
             saved_path = directory / CONFIG_NAME
@@ -95,10 +120,15 @@ def take_landed(run_dir: Path, config: EvalConfig) -> list[vf.WireEpisode]:
                     "Use the saved config, start a fresh run, or set --resume.skip-checks if the changes are intentional."
                 )
         if (directory / stream).is_dir():
-            for record in read_records(directory / stream):
+            saved_stream = (archive if directory == current else directory) / stream
+            for number, offset, record in indexed_records(directory / stream):
                 episode = vf.WireEpisode.model_validate(record)
-                if episode.ok and "traces" in record:
-                    landed.append(episode)
+                key = (episode.env.name or episode.env.id, episode.id)
+                if episode.ok and "traces" in record and key not in landed:
+                    task_hash = episode.task.hash if episode.task.hash is not None else vf.Task(episode.task.data).hash
+                    task = episode.task.model_copy(update={"hash": task_hash, "data": WireTaskData()})
+                    header = vf.WireEpisode(id=episode.id, env=episode.env, task=task)
+                    landed[key] = SavedEpisode(header, saved_stream, number, offset)
     if current.is_dir():
-        current.rename(current.with_name(f"file.attempt_{len(archives(run_dir)) + 1}"))
+        current.rename(archive)
     return landed

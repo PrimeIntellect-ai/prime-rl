@@ -2,8 +2,8 @@
 
 Monitors are registered once per process via ``setup`` and used through the
 module-level functions (``log``, ``finalize``, ...), which fan out to every
-registered monitor. Fan-out never raises — a monitoring failure must not take
-down training.
+registered monitor. Standalone evals require their configured trace file for resume.
+Other monitor deliveries are best-effort.
 """
 
 from __future__ import annotations
@@ -27,6 +27,8 @@ from prime_rl.utils.logger import format_time, get_logger
 
 if TYPE_CHECKING:
     import verifiers.v1 as vf
+
+    from prime_rl.eval.summary import EpisodeSummary
 
 __all__ = [
     "Monitor",
@@ -125,6 +127,8 @@ async def log(
         try:
             await monitor.log(data, step=step, kind=kind, subset=subset)
         except Exception as e:
+            if kind == "eval" and subset == "all" and isinstance(monitor, FileMonitor) and monitor.producer == "eval":
+                raise
             get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
 
 
@@ -155,7 +159,7 @@ async def log_live(events: list[dict[str, Any]]) -> None:
             get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
 
 
-async def log_eval_epoch(env_name: str, step: int, episodes: list[vf.Episode]) -> None:
+async def log_eval_epoch(env_name: str, step: int, episodes: list[EpisodeSummary]) -> None:
     """Log one finished eval epoch to all registered monitors."""
     for monitor in MONITORS:
         try:

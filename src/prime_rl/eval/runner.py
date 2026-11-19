@@ -17,7 +17,7 @@ import asyncio
 import os
 import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import verifiers.v1 as vf
@@ -27,17 +27,17 @@ from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
 from prime_rl.control.server import serve
 from prime_rl.eval.control import create_app
 from prime_rl.orchestrator import live
-from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
+from prime_rl.orchestrator.annotations import stamp_arrival
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs
-from prime_rl.orchestrator.eval_sink import EvalSink
+from prime_rl.orchestrator.eval_sink import EvalBatch, EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.metrics import dispatch_failure_metrics
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
-from prime_rl.orchestrator.types import DispatchFailure, EvalBatch, GroupCancellation, Policy
+from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Policy
 from prime_rl.orchestrator.utils import (
     eval_work,
     intercept_vf_logging,
@@ -58,6 +58,7 @@ class EvalRunner:
         self.run_dir = run_dir
         intercept_vf_logging(logger="verifiers.v1", level=config.log.level)
 
+        self.eval_sink: EvalSink | None = None
         self.eval_triggered_at: dict[tuple[str, int], float] = {}
         self.dispatcher_task: asyncio.Task | None = None
         self.control_task: asyncio.Task | None = None
@@ -178,7 +179,7 @@ class EvalRunner:
         fired: list[str],
         step: int,
         *,
-        restored: Sequence[vf.Episode] = (),
+        restored: Iterable[vf.Episode] = (),
         superseding_step: Callable[[], int | None] | None = None,
     ) -> None:
         """Run the epoch ``EvalSource.trigger`` queued for ``step`` in the fired envs and
@@ -197,15 +198,15 @@ class EvalRunner:
             for request in self.eval_source.queue
             if request.step == step and request.env_name in fired
         )
-        restored_part = f", {len(restored)} restored" if restored else ""
-        get_logger().info(
-            f"Starting evals in {', '.join(fired)} at step {step} ({total_rollouts} total rollouts{restored_part})"
-        )
+        get_logger().info(f"Starting evals in {', '.join(fired)} at step {step} ({total_rollouts} total rollouts)")
         self.dispatcher.switch_mode(DispatcherMode.PREFER_EVAL, reason=f"eval was triggered at step {step}")
 
         pending = {env_name for env_name in fired if self.eval_sink.batch_size_for(env_name) > 0}
-        for episode in restored:
-            await self.land(episode, pending)
+        if restored:
+            archived = iter(restored)
+            while (episode := await asyncio.to_thread(next, archived, None)) is not None:
+                await self.land(episode, pending)
+                del episode
         cancellation_task: asyncio.Task[int] | None = None
         newer_step: int | None = None
 
@@ -241,6 +242,7 @@ class EvalRunner:
                 if self.heart is not None:
                     self.heart.beat()
                 await self.land(item, pending)
+                del item
                 continue
             if eval_batch is not None:
                 await self.finalize_eval_batch(eval_batch)
@@ -257,7 +259,7 @@ class EvalRunner:
         its env's batch, which is finalized once the epoch is complete."""
         step = eval_work(episode).step
         await monitors.log([episode], step, "eval", "all")
-        eval_batch = self.eval_sink.add(episode)
+        eval_batch = await self.eval_sink.add(episode)
         if eval_batch is not None:
             await self.finalize_eval_batch(eval_batch)
             pending.discard(eval_batch.env_name)
@@ -270,21 +272,16 @@ class EvalRunner:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no attempts returned, skipping log")
             return
 
-        episodes = batch.episodes
-        effective = episodes.effective
-        effective_episodes = await asyncio.to_thread(lambda: effective.vf_episodes)
-        if effective_episodes:
-            await monitors.log(effective_episodes, batch.step, "eval", "effective")
-            annotations = await asyncio.to_thread(stamp_batch, effective_episodes, batch.step)
-            await monitors.log_annotations(annotations)
-        await monitors.log_eval_epoch(batch.env_name, batch.step, episodes.vf_episodes)
+        await batch.log_annotations()
+        await monitors.log_eval_epoch(batch.env_name, batch.step, batch.episodes)
 
-        total_attempts = len(episodes) + len(batch.failures) + batch.cancelled
+        total_attempts = len(batch.episodes) + len(batch.failures) + batch.cancelled
 
         def epoch_metrics() -> dict[str, float]:
             metrics: dict[str, float] = {}
-            for subset, pool in (("all", episodes), ("effective", effective)):
-                metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
+            for subset in ("all", "effective"):
+                pool = batch.metrics(effective=subset == "effective")
+                metrics |= pool.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
             metrics |= dispatch_failure_metrics(
                 batch.failures,
                 prefix=f"eval/{batch.env_name}/all",
@@ -304,14 +301,13 @@ class EvalRunner:
         await asyncio.to_thread(self.log_eval_batch, batch, total_attempts=total_attempts, elapsed=elapsed)
 
     def log_eval_batch(self, batch: EvalBatch, *, total_attempts: int, elapsed: float) -> None:
-        episodes = batch.episodes
-        eff, full = episodes.effective.metrics, episodes.metrics
+        eff, full = batch.metrics(effective=True), batch.metrics()
         if batch.cancelled:
             get_logger().warning(
                 f"Partially evaluated {batch.env_name} (Step {batch.step}) | "
                 f"{format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
                 f"Error {full.has_error.mean():.1%} | "
-                f"Completed {len(episodes)}/{total_attempts} | Cancelled {batch.cancelled}/{total_attempts}"
+                f"Completed {len(batch.episodes)}/{total_attempts} | Cancelled {batch.cancelled}/{total_attempts}"
             )
             return
         get_logger().success(
@@ -349,6 +345,8 @@ class EvalRunner:
 
     async def stop(self) -> None:
         """Best-effort teardown; tolerates a partially completed ``setup()``."""
+        if self.eval_sink is not None:
+            self.eval_sink.close()
         if self.control_task is not None:
             await safe_cancel(self.control_task)
         if self.periodic_logger is not None:

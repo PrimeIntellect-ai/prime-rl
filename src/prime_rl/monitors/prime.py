@@ -27,6 +27,8 @@ from prime_rl.utils.utils import sanitize
 if TYPE_CHECKING:
     import verifiers.v1 as vf
 
+    from prime_rl.eval.summary import EpisodeSummary
+
 BASE_URL_VAR = "PRIME_API_BASE"
 EVAL_ID_VAR = "PRIME_RUNS_EVAL_ID"
 # How long finish() and the SDK's atexit crash hook let queued uploads drain. The SDK
@@ -345,7 +347,7 @@ class PrimeMonitor(Monitor):
         if self.run is None:
             await self.run_for(env_name, step, expected)
 
-    async def log_eval_epoch(self, env_name: str, step: int, episodes: list[vf.Episode]) -> None:
+    async def log_eval_epoch(self, env_name: str, step: int, episodes: list[EpisodeSummary]) -> None:
         if self.run is not None:
             return
         run = await self.run_for(env_name, step)
