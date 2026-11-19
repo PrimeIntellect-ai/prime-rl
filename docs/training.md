@@ -332,11 +332,11 @@ Pulled from the console log and mirrored to W&B.
 **Progress and loss:**
 
 - `loss/mean`, `loss/perplexity` — main signal. Should decrease through the run.
-- `val/loss`, `val/perplexity` — validation metrics when `[val]` is set, logged every `val.interval` steps.
+- `val/loss`, `val/perplexity` — SFT validation metrics when `[val]` is set, logged every `val.interval` steps. Pretraining logs `val/<name>/loss@<seq_len>` and `val/<name>/bpb@<seq_len>` per validation set; see [Pretraining](#pretraining).
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
 - `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
-- `progress/<name>/{num_tokens,unique_tokens,repetitions,mean_segment_length}` — pretraining: a source's tokens read, the unique ones among them (at most its subset's), their ratio, and the mean length of its document pieces in the step's rows; `progress/{unique_tokens,repetitions,mean_segment_length}` over all sources.
+- `progress/<name>/{num_tokens,unique_tokens,repetitions,mean_segment_length}` — pretraining: a source's tokens read, the unique ones among them (at most its subset's), their ratio, and the mean length of its document pieces in the step's rows; `progress/{unique_tokens,repetitions,mean_segment_length}` over all sources. In pretraining, `progress/epoch` is the tokens read over all sources' tokens.
 
 **Stability and optimization:**
 
@@ -382,7 +382,7 @@ LocalPipelineExecutor(
 ).run()
 ```
 
-**Configure.** Only `data.sources` (a name and a folder each) is required:
+**Configure.** Only `[[data.source]]` (a name and a folder each) is required:
 
 ```toml
 mode = "pretrain"          # optional; lets `uv run launch` run this config
@@ -395,35 +395,36 @@ name = "Qwen/Qwen3-0.6B"   # only the architecture is read
 seq_len = 2048
 batch_size = 256
 
-[[data.sources]]
+[[data.source]]
 name = "web"
 path = "data/fineweb-edu"
-weight = 0.7               # share of the training tokens; leave out on all sources for natural shares
+weight = 7                 # relative to the other weights; leave it out on every source for natural shares
 
-[[data.sources]]
+[[data.source]]
 name = "code"
 path = "data/code"
-weight = 0.3
-repetitions = 4            # optional: every token seen 4 times, so a subset of 0.3 x the run's tokens / 4
+weight = 3
+repetitions = 4            # optional: every token seen 4 times, so a subset of its share (3/10) x the run's tokens / 4
 
 [val]                      # optional
 interval = 100
-num_samples = 512          # documents per validation; leave out to score every held-out document
+num_samples = 512          # optional: the first 512 documents of each set; default: all of them
 
-[val.data]
-paths = ["data/fineweb-edu-val"]
-seq_len = 2048
+[[val.set]]
+type = "documents"
+name = "fineweb-edu"
+path = "data/fineweb-edu-val"
 ```
 
-**Mixture.** A source's `weight` is its share of the training tokens. Set it on every source (summing to 1) or on none; then each source gets its share of all sources' tokens. The sources take turns deterministically, so every step holds the mixture up to about one document per source.
+**Mixture.** Weights are relative: a source's share of the training tokens is its weight over the sum of all weights, so `7` and `3` give the same mixture as `0.7` and `0.3`. Set `weight` on every source or on none; without weights, a source's share is its share of all sources' tokens. The sources take turns deterministically, so every step holds the mixture up to about one document per source.
 
-**Repetitions.** `repetitions` is how often every token of a source is seen over the run (`max_steps * batch_size * seq_len` tokens; needs `max_steps`). The source then reads a fixed, seeded subset of `weight * run tokens / repetitions` tokens that many times. Without it, a source is read whole, in a new order on every pass.
+**Repetitions.** `repetitions` is how often every token of a source is seen over the run (`max_steps * batch_size * seq_len` tokens; needs `max_steps`). The source then reads a fixed, seeded subset of `share * run tokens / repetitions` tokens that many times. Without it, a source is read whole, in a new order on every pass.
 
 **Rows.** Documents longer than `seq_len` are cut into `seq_len` pieces. A step's documents fill `batch_size` rows of exactly `seq_len` tokens, without padding and without losing a prediction within a document. Attention and positions restart at every document and piece (`data.document_masking = false` makes a row one sequence). With `data.eod_mask_loss` (on by default), positions whose input is the separator have no loss: their target is the first token of another document.
 
-**Resume.** A resume is exact, also on another number of GPUs, if `data.num_workers` is unchanged. It stops with an error if `seq_len`, `batch_size`, `seed`, the sources, weights or repetitions change (or `max_steps`, with repetitions); `ckpt.skip_dataloader` starts the data over. `data.batch_size` must be a multiple of dp × `num_workers` × `micro_batch_size`.
+**Resume.** A resume is exact, also on another number of GPUs. It stops with an error that names the old and new value of every changed setting: `seq_len`, `batch_size`, `seed`, `num_workers`, a source's name or files (their tokens and documents), the weights or repetitions (or `max_steps`, with repetitions). A source may move to another folder. With `ckpt.skip_dataloader`, the run resumes without the data state: the data starts over from step 0, in the same order as at the run's start (a different `data.seed` gives a different order). `data.batch_size` must be a multiple of dp × `num_workers` × `micro_batch_size`.
 
-Validation scores every document in `val.data.paths` on its own, from its first token, and logs the mean loss over all scored tokens as `val/loss`. A document is cut into non-overlapping windows of `val.data.seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it. Every token after a document's first is scored, and no position predicts a token of another document. The windows are packed into rows of `val.data.seq_len * val.data.micro_batch_size` tokens and shared out over the data-parallel ranks. `val.num_samples` limits every validation to the first documents of the held-out shards, the same ones every time; without it, every validation scores all of them.
+**Validation.** `[val]` scores named held-out document sets every `val.interval` steps (also before the first step with `val.eval_on_start`). Each `[[val.set]]` table has `type = "documents"`, a unique `name`, a `path` (a folder of datatrove tokenized shards) and an optional `seq_len` (default: `data.seq_len`). Every document is scored on its own, from its first token, with the tokens as stored, in non-overlapping windows of `seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it. Every set logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and with a byte-level BPE tokenizer `val/<name>/bpb@<seq_len>`, the bits per UTF-8 byte of the scored tokens (special tokens count 0 bytes), e.g. `val/fineweb-edu/bpb@2k`. With another tokenizer (e.g. SentencePiece), the trainer logs one warning and only the loss. The sets are read once at startup. At every validation, the windows of all sets are packed longest first into rows of `val.micro_batch_tokens` tokens (default: the training micro-batch, `data.seq_len * data.micro_batch_size`, or the longest set `seq_len` if that is longer, rounded up to a multiple of `model.cp`), with attention and positions restarting at every window and the rest of a row padded, and the rows are shared out over the data-parallel ranks. The log-probs are computed in fp32. `val.num_samples` limits every validation to the first documents of each set, the same ones every time. `val.save_arrays` writes the per-document arrays of every set (summed loss, scored tokens, greedy hits and bytes) to `<run_dir>/val/step_N/`.
 
 **Launch.**
 

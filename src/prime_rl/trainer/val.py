@@ -1,0 +1,312 @@
+"""Validation sets (``[[val.set]]``), scored on the training model. Every set is read once at startup into requests
+(`documents_set`). Every validation scores the requests of all sets together (`score`, with the model's LM head swapped
+for `scoring_head`) and summarizes each set (`ValSet.summarize`)."""
+
+import json
+import math
+import time
+import types
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+import torch
+import torch.distributed as dist
+from torch import nn
+from transformers.tokenization_utils import PreTrainedTokenizer
+
+from prime_rl.configs.supervised import DocumentsValSetConfig, ValConfig
+from prime_rl.trainer.model import forward
+from prime_rl.trainer.models.layers.fp32_linear import fp32_output_mm
+from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
+from prime_rl.trainer.parallel_dims import ParallelDims
+from prime_rl.trainer.pretrain.data import TokenShards, special_token_ids
+from prime_rl.trainer.world import get_world
+from prime_rl.utils.logger import get_logger
+
+Request = tuple[np.ndarray, np.ndarray]
+"""Input token ids and their labels: the next token where it is scored, else ``IGNORE_INDEX``."""
+
+
+def loss_and_bpb(nll: np.ndarray, tokens: np.ndarray, num_bytes: np.ndarray | None) -> dict[str, float]:
+    """Mean loss per scored token, and bits per UTF-8 byte of the scored tokens when their bytes are known."""
+    summary = {"loss": nll.sum() / tokens.sum()}
+    if num_bytes is not None:
+        summary["bpb"] = nll.sum() / (num_bytes.sum() * math.log(2))
+    return summary
+
+
+@dataclass
+class ValSet:
+    """A set's requests and the item (document) every request belongs to."""
+
+    name: str
+    seq_len: int
+    requests: list[Request]
+    items: np.ndarray
+    num_items: int
+
+    def summarize(
+        self, logprobs: np.ndarray, hits: np.ndarray, tokens: np.ndarray, num_bytes: np.ndarray | None
+    ) -> tuple[dict[str, float], dict[str, np.ndarray]]:
+        """Summary metrics and per-item arrays, from every request's summed log-prob, greedy hits, scored tokens and
+        their UTF-8 bytes (None if the tokenizer is not byte-level BPE)."""
+
+        def per_item(values: np.ndarray) -> np.ndarray:
+            return np.bincount(self.items, weights=values, minlength=self.num_items)
+
+        arrays = {
+            "nll": per_item(-logprobs),
+            "tokens": per_item(tokens).astype(np.int64),
+            "greedy_tokens": per_item(hits).astype(np.int64),
+        }
+        if num_bytes is not None:
+            arrays["bytes"] = per_item(num_bytes).astype(np.int64)
+        return loss_and_bpb(arrays["nll"], arrays["tokens"], arrays.get("bytes")), arrays
+
+
+Window = tuple[int, int, int]
+"""File index and the token range ``[start, end)`` of a window in the file."""
+
+
+def document_windows(shards: TokenShards, seq_len: int, num_documents: int | None = None) -> list[list[Window]]:
+    """Every document of ``shards`` as stored (or the first ``num_documents``), each cut into non-overlapping windows
+    of ``seq_len`` scored tokens. A window holds up to ``seq_len + 1`` tokens and scores all but its first. The next
+    window starts at the last token of the one before and sees none of the tokens before it."""
+    documents = []
+    for file_index in range(len(shards.files)):
+        begin = 0
+        for end in shards.index(file_index).tolist():
+            if len(documents) == num_documents:
+                return documents
+            documents.append(
+                [(file_index, window, min(window + seq_len + 1, end)) for window in range(begin, end - 1, seq_len)]
+            )
+            begin = end
+    return documents
+
+
+def documents_set(config: DocumentsValSetConfig, num_samples: int | None) -> ValSet:
+    """Every document (or the first ``num_samples``) in windows of ``seq_len`` scored tokens, as stored."""
+    shards = TokenShards([config.path])
+    documents = document_windows(shards, config.seq_len, num_samples)
+    requests, items = [], []
+    for item, windows in enumerate(documents):
+        for file_index, start, end in windows:
+            ids = shards.tokens(file_index)[start:end].astype(np.int32)
+            requests.append((ids[:-1], ids[1:]))
+            items.append(item)
+    return ValSet(config.name, config.seq_len, requests, np.array(items, dtype=np.int64), len(documents))
+
+
+# The 256 characters byte-level BPE tokenizers (GPT-2, Llama 3, Qwen, DeepSeek) write the bytes as.
+BYTE_CHARS = {chr(c) for c in [*range(33, 127), *range(161, 173), *range(174, 256), *range(256, 324)]}
+
+
+def token_byte_lengths(tokenizer: PreTrainedTokenizer) -> np.ndarray | None:
+    """The UTF-8 bytes of every token id, special tokens 0. None if the tokenizer is not byte-level BPE."""
+    special = special_token_ids(tokenizer)
+    lengths = np.zeros(len(tokenizer), dtype=np.int64)
+    for token_id, token in enumerate(tokenizer.convert_ids_to_tokens(list(range(len(tokenizer))))):
+        if token_id in special:
+            continue
+        if token_id in tokenizer.added_tokens_decoder:
+            # Added tokens hold their text as is, not in the byte alphabet.
+            lengths[token_id] = len(token.encode())
+            continue
+        if not set(token) <= BYTE_CHARS:
+            return None
+        lengths[token_id] = len(token)
+    return lengths
+
+
+def head_logprobs(hidden, weight, targets, chunk: int = 2048, softcap: float | None = None):
+    """Log-prob and greedy hit of ``targets`` under fp32 logits ``hidden @ weight.T``, in chunks over tokens, so the
+    logits stay at ``chunk x vocab``. With ``softcap`` (the head's final-logit soft-cap, as in training) the logits
+    are ``softcap * tanh(logits / softcap)`` first."""
+    logprobs, hits = [], []
+    # At least one chunk: a CP shard without scored tokens returns empty tensors.
+    for start in range(0, max(len(targets), 1), chunk):
+        logits = fp32_output_mm(hidden[start : start + chunk], weight)
+        if softcap is not None:
+            logits = softcap * torch.tanh(logits / softcap)
+        target = targets[start : start + chunk]
+        logprobs.append(logits.gather(-1, target[:, None])[:, 0] - torch.logsumexp(logits, -1))
+        hits.append(logits.argmax(-1) == target)
+    return torch.cat(logprobs), torch.cat(hits)
+
+
+def scoring_head(self, hidden_states, labels, temperature=None, support=None):
+    """Replaces the forward of prime-rl's LM head: log-prob and greedy hit of every label that is not
+    IGNORE_INDEX, from fp32 logits (an fp32 model's without TF32), returned in the ``logprobs`` / ``entropy`` slots
+    of its output dict."""
+    hidden = hidden_states.reshape(-1, hidden_states.shape[-1])
+    labels = labels.reshape(-1)
+    keep = labels != IGNORE_INDEX
+    precision = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("highest")
+    try:
+        logprobs, hits = head_logprobs(hidden[keep], self.weight, labels[keep], softcap=getattr(self, "softcap", None))
+    finally:
+        torch.set_float32_matmul_precision(precision)
+    return {"logprobs": logprobs, "entropy": hits}
+
+
+@contextmanager
+def scoring_head_active(model: nn.Module) -> Iterator[None]:
+    """The model's LM head returns per-token log-probs and greedy hits (`scoring_head`) inside the block."""
+    model.lm_head.forward = types.MethodType(scoring_head, model.lm_head)
+    try:
+        yield
+    finally:
+        del model.lm_head.forward
+
+
+def pack_rows(lengths: list[int], micro_batch_tokens: int) -> list[list[int]]:
+    """Request indices grouped into rows of at most ``micro_batch_tokens`` tokens, longest first."""
+    order = sorted(range(len(lengths)), key=lambda i: -lengths[i])
+    rows, row, total = [], [], 0
+    for index in order:
+        if row and total + lengths[index] > micro_batch_tokens:
+            rows.append(row)
+            row, total = [], 0
+        row.append(index)
+        total += lengths[index]
+    if row:
+        rows.append(row)
+    return rows
+
+
+def rank_rows(
+    requests: list[Request], micro_batch_tokens: int, data_rank: int, data_world_size: int, cp_rank: int, cp_size: int
+) -> Iterator[tuple[np.ndarray, np.ndarray, np.ndarray, list[int], np.ndarray | None]]:
+    """The rows one rank runs. The requests are packed into document-masked rows of ``micro_batch_tokens`` tokens
+    (positions restart per request, the segment lengths mark them), padded with unscored tokens, so every forward has
+    the same shape. The rows are dealt round-robin over the data ranks, which all run the same number of rows (each
+    forward is an FSDP collective): a rank short of a row runs the first one again, unscored. With CP, a rank holds a
+    contiguous shard of the row, as in training.
+
+    Yields the shard's input ids, position ids and labels, the whole row's segment lengths, and the request of every
+    scored label in the shard (None for a row that is not scored)."""
+    rows = pack_rows([len(inputs) for inputs, _ in requests], micro_batch_tokens)
+    mine = rows[data_rank::data_world_size]
+    for i in range(-(-len(rows) // data_world_size)):
+        row = mine[i] if i < len(mine) else rows[0]
+        lengths = [len(requests[index][0]) for index in row]
+        inputs = np.concatenate([requests[index][0] for index in row])
+        labels = np.concatenate([requests[index][1] for index in row])
+        owners = np.where(labels != IGNORE_INDEX, np.repeat(row, lengths), -1)
+        padding = micro_batch_tokens - len(inputs)
+        if padding:
+            # The row's own tokens, as in training: identical pad tokens would all route to the same MoE experts.
+            inputs = np.concatenate([inputs, np.resize(inputs, padding)])
+            labels = np.concatenate([labels, np.full(padding, IGNORE_INDEX)])
+            owners = np.concatenate([owners, np.full(padding, -1)])
+            lengths.append(padding)
+        positions = np.concatenate([np.arange(length) for length in lengths])
+        inputs, positions, labels, owners = (np.split(x, cp_size)[cp_rank] for x in (inputs, positions, labels, owners))
+        yield inputs, positions, labels, lengths, owners[owners >= 0] if i < len(mine) else None
+
+
+def score(
+    model: nn.Module, requests: list[Request], micro_batch_tokens: int, parallel_dims: ParallelDims
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Summed log-prob and greedy hits of every request's scored tokens, on rank 0 (None on the others). Every rank
+    scores its rows (`rank_rows`), and the sums are gathered on rank 0."""
+    world = get_world()
+    dp = parallel_dims.get_mesh("dp")
+    cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if parallel_dims.cp_enabled else 0
+    rows = rank_rows(requests, micro_batch_tokens, dp.get_local_rank(), dp.size(), cp_rank, parallel_dims.cp)
+    indices, logprob_sums, hit_sums = [], [], []
+    for inputs, positions, labels, lengths, owners in rows:
+        out = forward(
+            model,
+            torch.from_numpy(inputs.astype(np.int64))[None].cuda(),
+            torch.from_numpy(positions)[None].cuda(),
+            seq_lens=torch.tensor(lengths, device="cuda"),
+            labels=torch.from_numpy(labels.astype(np.int64))[None].cuda(),
+            seq_lens_are_pre_shard=parallel_dims.cp_enabled,
+        )
+        if owners is None:
+            continue
+        logprobs, hits = out["logprobs"].double().cpu().numpy(), out["entropy"].cpu().numpy()
+        # The scored tokens of a request are contiguous in the output: one run per request.
+        starts = np.flatnonzero(np.diff(owners, prepend=-1))
+        for start, end in zip(starts, [*starts[1:], len(owners)]):
+            indices.append(owners[start])
+            logprob_sums.append(logprobs[start:end].sum())
+            hit_sums.append(int(hits[start:end].sum()))
+    gathered = [None] * world.world_size if world.is_master else None
+    sums = (np.array(indices, dtype=np.int64), np.array(logprob_sums), np.array(hit_sums, dtype=np.int64))
+    dist.gather_object(sums, gathered, dst=0)
+    if not world.is_master:
+        return None
+    logprobs, hits = np.zeros(len(requests)), np.zeros(len(requests), dtype=np.int64)
+    for rank_indices, rank_logprobs, rank_hits in gathered:
+        np.add.at(logprobs, rank_indices, rank_logprobs)
+        np.add.at(hits, rank_indices, rank_hits)
+    return logprobs, hits
+
+
+def length_label(seq_len: int) -> str:
+    return f"{seq_len // 1024}k" if seq_len % 1024 == 0 else str(seq_len)
+
+
+class Validation:
+    """The ``[[val.set]]``, read once at startup and scored on the training model at every validation."""
+
+    def __init__(self, config: ValConfig, tokenizer: PreTrainedTokenizer, parallel_dims: ParallelDims, run_dir: Path):
+        start_time = time.perf_counter()
+        self.config = config
+        self.parallel_dims = parallel_dims
+        self.run_dir = run_dir
+        self.sets = [documents_set(val_set, config.num_samples) for val_set in config.set]
+        for val_set in self.sets:
+            if not val_set.requests:
+                raise ValueError(f"Validation set {val_set.name} has nothing to score")
+        self.requests = [request for val_set in self.sets for request in val_set.requests]
+        byte_lengths = token_byte_lengths(tokenizer)
+        if byte_lengths is None:
+            get_logger().warning("The tokenizer is not byte-level BPE: validation logs no bits per byte")
+        tokens, num_bytes = [], []
+        for _, labels in self.requests:
+            scored = labels[labels != IGNORE_INDEX]
+            tokens.append(len(scored))
+            if byte_lengths is not None:
+                num_bytes.append(byte_lengths[scored].sum())
+        self.tokens = np.array(tokens)
+        self.bytes = np.array(num_bytes) if byte_lengths is not None else None
+        get_logger().info(
+            f"Prepared {len(self.sets)} validation sets ({len(self.requests)} requests, {self.tokens.sum()} scored "
+            f"tokens) in {time.perf_counter() - start_time:.0f}s"
+        )
+
+    @torch.no_grad()
+    def run(self, model: nn.Module, step: int) -> dict[str, float]:
+        """Score every set at step ``step``. The metrics are on rank 0 only."""
+        with scoring_head_active(model):
+            scored = score(model, self.requests, self.config.micro_batch_tokens, self.parallel_dims)
+        if scored is None:
+            return {}
+        logprobs, hits = scored
+        metrics, offset = {}, 0
+        for val_set in self.sets:
+            window = slice(offset, offset + len(val_set.requests))
+            offset = window.stop
+            num_bytes = self.bytes[window] if self.bytes is not None else None
+            summary, arrays = val_set.summarize(logprobs[window], hits[window], self.tokens[window], num_bytes)
+            length = length_label(val_set.seq_len)
+            label = f"{val_set.name}@{length}"
+            metrics |= {f"val/{val_set.name}/{key}@{length}": float(value) for key, value in summary.items()}
+            get_logger().success(
+                f"Validation | Step {step} | {label} | "
+                + " | ".join(f"{key} {value:.4f}" for key, value in summary.items())
+            )
+            if self.config.save_arrays:
+                out = self.run_dir / "val" / f"step_{step}"
+                out.mkdir(parents=True, exist_ok=True)
+                np.savez(out / f"{label}.npz", **arrays)
+                (out / f"{label}.json").write_text(json.dumps(summary))
+        return metrics
