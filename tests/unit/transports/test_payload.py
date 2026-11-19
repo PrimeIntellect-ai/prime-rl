@@ -376,6 +376,19 @@ def test_rollout_store_keeps_trained_arrays_until_a_checkpoint_covers_them(tmp_p
     assert store.get("trained") is None and store.get("queued") == b"queued"
 
 
+def test_a_retaining_trainer_leaves_the_arrays_of_a_checkpoint_alone(tmp_path):
+    store = RolloutStore(tmp_path / "store", "127.0.0.1")
+    resumed = tmp_path / "checkpoints" / "resumed"
+    resumed.mkdir(parents=True)
+    loader = DataLoader.__new__(DataLoader)
+    loader.retain, loader.stores, loader.step = True, set(), 3
+    loader.receiver = SimpleNamespace(committed=2)
+    loader.payload_urls = [f"{store.url}/a", (resumed / "b").as_uri()]
+    loader.release_payloads()
+    wait_for_deletes()
+    assert loader.stores == {store.url}
+
+
 def test_a_pool_without_a_rollout_store_rejects_retention(tmp_path):
     require_rollout_store(RolloutStore(tmp_path, "127.0.0.1").url)
     with pytest.raises(RuntimeError, match="no rollout store"):
