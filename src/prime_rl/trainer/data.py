@@ -1,6 +1,7 @@
 from collections import defaultdict
 from typing import Any, TypedDict
 
+import numpy as np
 import torch
 from jaxtyping import Bool, Int
 from torch import Tensor
@@ -9,19 +10,17 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 from prime_rl.configs.supervised import BaseDataConfig
-from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.sequence import repeat_to_length
 
 
 class Sample(TypedDict):
-    input_ids: list[int]
-    position_ids: list[int]
-    loss_mask: list[bool]
-    target_ids: list[int]
+    input_ids: Int[np.ndarray, "seq"]
+    position_ids: Int[np.ndarray, "seq"]
+    loss_mask: Bool[np.ndarray, "seq"]
+    target_ids: Int[np.ndarray, "seq"]
     seq_lens: list[int]
     mm_kwargs: dict[str, Tensor] | None
-    mm_token_type_ids: list[int] | None
+    mm_token_type_ids: Int[np.ndarray, "seq"] | None
 
 
 class Batch(TypedDict):
@@ -35,14 +34,15 @@ class Batch(TypedDict):
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
-    """SFT dataset are iterable (infinite) and stateful (can be checkpointed)."""
+    """Iterable (infinite) and stateful (checkpointable) dataset, read by data rank ``dp_rank * num_workers +
+    worker_id`` of ``dp_size * num_workers`` (`ParallelDims.data_parallel`)."""
 
-    def __init__(self, non_dp_size: int = 1):
+    def __init__(self, dp_rank: int = 0, dp_size: int = 1):
         self.step, self.epoch = 0, 0
         self.num_samples = defaultdict(int)
         self.num_tokens = defaultdict(int)
         self.fast_forward = False
-        self.non_dp_size = non_dp_size
+        self.dp_rank, self.dp_size = dp_rank, dp_size
         self._setup_world_info()
 
     def state_dict(self) -> dict:
@@ -61,10 +61,8 @@ class StatefulIterableDataset(Stateful, IterableDataset):
             num_workers = worker_info.num_workers
         else:
             worker_id, num_workers = 0, 1
-        world = get_world()
-        assert world.world_size % self.non_dp_size == 0, "world_size must be divisible by non_dp_size"
-        self.data_rank = world.rank // self.non_dp_size * num_workers + worker_id
-        self.data_world_size = world.world_size // self.non_dp_size * num_workers
+        self.data_rank = self.dp_rank * num_workers + worker_id
+        self.data_world_size = self.dp_size * num_workers
 
 
 class CatDataset(StatefulIterableDataset):
@@ -122,18 +120,15 @@ class CatDataset(StatefulIterableDataset):
                 packed_samples["mm_token_type_ids"] = None
                 seq_len = 0
 
-            existing_len = len(packed_samples["input_ids"])
             for key in ("input_ids", "position_ids", "loss_mask", "target_ids"):
-                value = sample[key]
-                assert isinstance(value, list)
-                packed_samples[key].extend(value)
+                packed_samples[key].append(sample[key])
             packed_samples["seq_lens"].extend(sample["seq_lens"])
 
             sample_mm_kwargs = sample.get("mm_kwargs")
             sample_mm_type_ids = sample.get("mm_token_type_ids")
             if sample_mm_kwargs is None:
                 if packed_samples["mm_token_type_ids"] is not None:
-                    packed_samples["mm_token_type_ids"].extend([0] * sample_len)
+                    packed_samples["mm_token_type_ids"].append(np.zeros(sample_len, dtype=np.int64))
             else:
                 if packed_samples["mm_kwargs"] is not None and (
                     (packed_samples["mm_token_type_ids"] is None) != (sample_mm_type_ids is None)
@@ -149,9 +144,9 @@ class CatDataset(StatefulIterableDataset):
                         packed_samples["mm_kwargs"][key] = torch.cat([packed_samples["mm_kwargs"][key], value], dim=0)
 
                 if packed_samples["mm_token_type_ids"] is None and sample_mm_type_ids is not None:
-                    packed_samples["mm_token_type_ids"] = [0] * existing_len
+                    packed_samples["mm_token_type_ids"] = [np.zeros(seq_len, dtype=np.int64)]
                 if packed_samples["mm_token_type_ids"] is not None:
-                    packed_samples["mm_token_type_ids"].extend(sample_mm_type_ids or [0] * sample_len)
+                    packed_samples["mm_token_type_ids"].append(sample_mm_type_ids)
 
             seq_len += sample_len
 
@@ -167,7 +162,7 @@ class CatDataset(StatefulIterableDataset):
 
     def _finalize_pack(self, packed: dict[str, Any], seq_len: int) -> dict:
         result: dict[str, Any] = {
-            k: packed[k][:seq_len] for k in ("input_ids", "position_ids", "loss_mask", "target_ids")
+            k: np.concatenate(packed[k])[:seq_len] for k in ("input_ids", "position_ids", "loss_mask", "target_ids")
         }
         result["seq_lens"] = []
         remaining = len(result["input_ids"])
@@ -184,16 +179,18 @@ class CatDataset(StatefulIterableDataset):
             # their own tokens. Multimodal packs keep a constant id: a repeated image placeholder would have no feature
             # to receive.
             if packed["mm_kwargs"] is None:
-                result["input_ids"].extend(repeat_to_length(result["input_ids"], pad_len))
+                padding = np.resize(result["input_ids"], pad_len)
             else:
-                result["input_ids"].extend([0] * pad_len)
-            result["position_ids"].extend(range(pad_len))
-            result["loss_mask"].extend([False] * pad_len)
-            result["target_ids"].extend([0] * pad_len)
+                padding = np.zeros(pad_len, dtype=np.int64)
+            result["input_ids"] = np.concatenate([result["input_ids"], padding])
+            result["position_ids"] = np.concatenate([result["position_ids"], np.arange(pad_len)])
+            result["loss_mask"] = np.concatenate([result["loss_mask"], np.zeros(pad_len, dtype=bool)])
+            result["target_ids"] = np.concatenate([result["target_ids"], np.zeros(pad_len, dtype=np.int64)])
             result["seq_lens"][-1] += pad_len
         result["mm_kwargs"] = packed["mm_kwargs"]
         if packed["mm_token_type_ids"] is not None:
-            result["mm_token_type_ids"] = packed["mm_token_type_ids"][:seq_len] + [0] * pad_len
+            type_ids = np.concatenate(packed["mm_token_type_ids"])[:seq_len]
+            result["mm_token_type_ids"] = np.concatenate([type_ids, np.zeros(pad_len, dtype=np.int64)])
         else:
             result["mm_token_type_ids"] = None
         return result
@@ -205,15 +202,15 @@ def cat_collate(samples: list[Sample]) -> Batch:
     mm_kwargs = sample.get("mm_kwargs")
     mm_token_type_ids = sample.get("mm_token_type_ids")
     return {
-        "input_ids": torch.tensor(sample["input_ids"], dtype=torch.long).unsqueeze(0),
-        "position_ids": torch.tensor(sample["position_ids"], dtype=torch.long).unsqueeze(0),
-        "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool).unsqueeze(0),
-        "target_ids": torch.tensor(sample["target_ids"], dtype=torch.long).unsqueeze(0),
+        "input_ids": torch.from_numpy(sample["input_ids"]).unsqueeze(0),
+        "position_ids": torch.from_numpy(sample["position_ids"]).unsqueeze(0),
+        "loss_mask": torch.from_numpy(sample["loss_mask"]).unsqueeze(0),
+        "target_ids": torch.from_numpy(sample["target_ids"]).unsqueeze(0),
         "seq_lens": torch.tensor(sample["seq_lens"], dtype=torch.long),
         "mm_kwargs": dict(mm_kwargs) if mm_kwargs is not None else None,
-        "mm_token_type_ids": (
-            torch.tensor(mm_token_type_ids, dtype=torch.long).unsqueeze(0) if mm_token_type_ids is not None else None
-        ),
+        "mm_token_type_ids": torch.from_numpy(mm_token_type_ids).unsqueeze(0)
+        if mm_token_type_ids is not None
+        else None,
     }
 
 

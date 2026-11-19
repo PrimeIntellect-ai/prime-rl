@@ -44,6 +44,9 @@ DEFAULT_INFERENCE_ENV_VARS: dict[str, str] = {
     # nodes makes TP ranks load different compiled artifacts and hang.
     "VLLM_CACHE_ROOT": f"/tmp/.vllm-cache-{os.getuid()}",
     "FLASHINFER_WORKSPACE_BASE": f"/tmp/.flashinfer-cache-{os.getuid()}",
+    # vLLM's API server closes idle connections after 5 s, but the router keeps them pooled far longer and
+    # reuses ones the server is closing, failing requests with "error sending request".
+    "VLLM_HTTP_TIMEOUT_KEEP_ALIVE": "3600",
 }
 
 

@@ -75,7 +75,7 @@ def main() -> None:
     parser.add_argument("--scenarios", default="balanced,hot:50:4,hot:95:16,hot:95:1,zipf:1.2")
     parser.add_argument("--repush", action="store_true", help="mark LLEP's slots stale between forward and backward")
     parser.add_argument("--chunk-tokens", type=int, default=None, help="LLEP tokens per rank per kernel call")
-    parser.add_argument("--precision", default="bf16", help="Mega MoE precision (bf16, mxfp8_qat)")
+    parser.add_argument("--precision", default="bf16", help="Mega MoE precision (bf16, mxfp8, mxfp8_qat)")
     args = parser.parse_args()
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)

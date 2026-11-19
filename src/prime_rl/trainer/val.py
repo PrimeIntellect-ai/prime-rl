@@ -80,11 +80,8 @@ def document_windows(shards: TokenShards, seq_len: int, num_documents: int | Non
     window starts at the last token of the one before and sees none of the tokens before it."""
     documents = []
     for file_index in range(len(shards.files)):
-        if shards.starts[file_index + 1] == shards.starts[file_index]:
-            continue
-        _, doc_ends = shards.open(file_index)
         begin = 0
-        for end in doc_ends.tolist():
+        for end in shards.index(file_index).tolist():
             if len(documents) == num_documents:
                 return documents
             documents.append(
@@ -101,7 +98,7 @@ def documents_set(config: DocumentsValSetConfig, num_samples: int | None) -> Val
     requests, items = [], []
     for item, windows in enumerate(documents):
         for file_index, start, end in windows:
-            ids = shards.open(file_index)[0][start:end].astype(np.int32)
+            ids = shards.tokens(file_index)[start:end].astype(np.int32)
             requests.append((ids[:-1], ids[1:]))
             items.append(item)
     return ValSet(config.name, config.seq_len, requests, np.array(items, dtype=np.int64), len(documents))

@@ -6,6 +6,7 @@
 - **Don't touch `optimization_dtype` / `reduce_dtype`**: never change these model config fields (or their defaults in `trainer.py`) unless the user explicitly asks. They're load-bearing numerical knobs — flipping bfloat16/float32 silently changes training dynamics.
 - **Targeted comments**: don't explain your work process or reference old code. Use targeted comments sparingly to clarify ambiguous logic.
 - **Context parallelism**: a module that needs CP state holds a `CPContext` (`models/base.py`) as `self.cp_context`, defaulting to `CPContext()`, which is the non-CP case; `PreTrainedModelPrimeRL` supplies that default. `setup_context_parallel` in `utils/cp.py` builds one `CPContext` and assigns it to every module that has the field, so each module holds the same frozen object.
+- **Compiled decoder layers**: each decoder layer is compiled on its own, and Dynamo guards on the `_base` (the tensor a view was created from) of each layer's input, so every layer's input must share the same base layout. A layer must not return a view of a differently shaped buffer (allocate custom-op outputs in their final shape), and layer 0's input must not be a view of a larger tensor. Pass args named in `DYNAMIC_INT_ARGS` and `DYNAMIC_TENSOR_ARG_DIMS` (`trainer/model.py`) by keyword. With `TORCH_LOGS=recompiles`, each layer type of a new model should compile once.
 - **Zen of Python**: remember the Zen of Python when writing code.
 ```
 Beautiful is better than ugly.
@@ -61,6 +62,6 @@ Write tests as plain functions with pytest fixtures. Don't use class-based tests
 ## GitHub
 
 - **Draft PRs**: always create PRs as drafts (`gh pr create --draft`) to avoid triggering CI unnecessarily.
-- **GPU CI is opt-in**: pushes to a PR don't run GPU tests. The full GPU suite runs on the PR's current commit when someone applies the `gpu-ci` label. Only when the user asks, request a run with `gh pr edit <num> --add-label gpu-ci`. The workflow removes the label, so re-add it after new pushes.
+- **GPU CI**: pushes to a draft PR don't run GPU tests. Pushes to a non-draft PR run only the fast `Tiny (GPU)` job. The full GPU suite runs on the PR's current commit when someone applies the `gpu-ci` label. Only when the user asks, request a run with `gh pr edit <num> --add-label gpu-ci`. The workflow removes the label, so re-add it after new pushes.
 - **Pull requests**: do not include a "test plan" section in PR descriptions unless you actually ran tests to verify the changes or the user explicitly asked for one.
 - **Keep PR descriptions in sync**: every time you push commits to a PR, also update the PR description (`gh pr edit <num> --body-file ...`) so it reflects the current state of the branch — not just what was true when the PR was opened. Preserve any auto-generated blocks (e.g. `<!-- CURSOR_SUMMARY -->`).
