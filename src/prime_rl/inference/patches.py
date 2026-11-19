@@ -24,6 +24,7 @@ def apply_shared_vllm_patches():
     monkey_patch_clamp_kv_offload_loads_for_routed_experts()
     monkey_patch_routed_experts_cut_loaded_prefix_hits()
     monkey_patch_kv_xfer_finished_tolerate_freed()
+    monkey_patch_bidirectional_handle_spec_decode()
     monkey_patch_strip_routed_experts_from_chat()
     monkey_patch_skip_prompt_routing_for_chat()
     monkey_patch_dp_coordinator_startup_timeout()
@@ -540,6 +541,31 @@ def monkey_patch_aux_output_store():
             super().__init__(max_bytes=AUX_OUTPUT_STORE_HEADROOM * max_bytes, object_nbytes=object_nbytes)
 
     aux_worker.BlockObjectStore = _RoomyBlockObjectStore
+
+
+def monkey_patch_bidirectional_handle_spec_decode():
+    """Report only accepted tokens in decode's bidirectional KV handle under speculative decoding.
+
+    With bidirectional NIXL transfer, decode returns a handle whose ``remote_num_tokens`` is the request's
+    ``num_computed_tokens``. Under speculative decoding that count includes the last step's draft positions, so the
+    handle claims more tokens than prompt plus completion: vllm-router drops it (the next prefill recomputes the whole
+    conversation) while decode still pins the blocks for ``decoder_kv_blocks_ttl``, filling its KV cache. Clamp it
+    to the accepted tokens minus the last sampled one, whose KV is not written yet.
+    """
+    from vllm.distributed.kv_transfer.kv_connector.v1.nixl.pull_scheduler import NixlPullConnectorScheduler
+
+    original = NixlPullConnectorScheduler.request_finished
+    if getattr(original, "_prime_rl_clamps_spec_tokens", False):
+        return
+
+    def request_finished(self, request, block_ids):
+        delay_free, params = original(self, request, block_ids)
+        if params and params.get("do_remote_decode") and params.get("remote_num_tokens"):
+            params["remote_num_tokens"] = min(params["remote_num_tokens"], request.num_tokens - 1)
+        return delay_free, params
+
+    request_finished._prime_rl_clamps_spec_tokens = True
+    NixlPullConnectorScheduler.request_finished = request_finished
 
 
 def monkey_patch_kv_xfer_finished_tolerate_freed():
