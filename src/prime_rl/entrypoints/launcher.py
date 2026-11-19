@@ -474,8 +474,7 @@ def clean_stale_eval_artifacts(config: SupervisedTrainerConfig) -> None:
 
 
 def launch(config: SupervisedTrainerConfig, entrypoint: str):
-    # Fail before the model download when resume.dir forks another run kind's checkpoint; the
-    # trainer checks again before it loads one.
+    # Fail before the model download when resume.dir forks another run kind's checkpoint.
     check_resume_dir_mode(config.resume, entrypoint, ckpt=config.ckpt)
 
     # Launcher-only check: the trainer re-parses a sub-config with [inference] and

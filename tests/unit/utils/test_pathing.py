@@ -266,21 +266,8 @@ def test_resume_dir_from_another_mode_raises_for_rl(tmp_path):
     assert f'`trainer.model.init_from = "{step_dir}"`' in str(error.value)
 
 
-def test_sft_trainer_entrypoint_rejects_cross_mode_resume(tmp_path, monkeypatch):
-    """A hosted ``-m prime_rl.trainer.sft.train`` stops before the trainer's heavy imports."""
-    source_dir = tmp_path / "pretrain-run"
-    _write_run_configs(source_dir, "pretrain")
-    step_dir = _step_dir(source_dir, 5)
-
-    from prime_rl.trainer.sft.train import main
-
-    monkeypatch.setattr(sys, "argv", ["sft", "--resume.dir", str(step_dir)])
-    with pytest.raises(ValueError, match="this run is sft"):
-        main()
-
-
-def test_orchestrator_entrypoint_rejects_cross_mode_resume(tmp_path, monkeypatch):
-    """A hosted ``orchestrator`` stops on an sft checkpoint before it loads its own progress."""
+def test_orchestrator_launcher_rejects_cross_mode_resume(tmp_path, monkeypatch):
+    """The ``orchestrator`` launcher hosted runs invoke stops on an sft checkpoint before loading."""
     source_dir = tmp_path / "sft-run"
     _write_run_configs(source_dir, "sft")
     step_dir = _step_dir(source_dir, 10)
@@ -288,5 +275,18 @@ def test_orchestrator_entrypoint_rejects_cross_mode_resume(tmp_path, monkeypatch
     import prime_rl.entrypoints.orchestrator as entrypoint
 
     monkeypatch.setattr(sys, "argv", ["orchestrator", "--resume.dir", str(step_dir)])
+    with pytest.raises(ValueError, match="this run is rl"):
+        entrypoint.main()
+
+
+def test_trainer_launcher_rejects_cross_mode_resume(tmp_path, monkeypatch):
+    """The ``trainer`` launcher hosted runs invoke stops on an sft checkpoint before loading."""
+    source_dir = tmp_path / "sft-run"
+    _write_run_configs(source_dir, "sft")
+    step_dir = _step_dir(source_dir, 10)
+
+    import prime_rl.entrypoints.trainer as entrypoint
+
+    monkeypatch.setattr(sys, "argv", ["trainer", "--resume.dir", str(step_dir)])
     with pytest.raises(ValueError, match="this run is rl"):
         entrypoint.main()
