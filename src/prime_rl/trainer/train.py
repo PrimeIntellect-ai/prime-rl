@@ -43,10 +43,12 @@ from prime_rl.trainer.data import get_dataset_progress, get_dataset_state, setup
 from prime_rl.trainer.pretrain.data import (
     TokenShards,
     detect_separator,
+    documents_start_with_bos,
     setup_document_dataset,
     setup_token_dataset,
     warn_if_no_document_separator,
 )
+from prime_rl.trainer.pretrain.val_sets import ValSets
 from prime_rl.trainer.sft.data import load_sft_dataset, setup_sft_dataset
 from prime_rl.trainer.utils import (
     GarbageCollection,
@@ -221,6 +223,11 @@ def train(config: SFTConfig | PretrainConfig):
             f"Validation scores {len(val_document_dataset.windows)} windows of held-out documents "
             f"in {len(val_document_dataset.rows)} rows"
         )
+    val_sets = None
+    if isinstance(config, PretrainConfig) and config.val is not None and config.val.sets:
+        val_sets = ValSets(
+            config.val, tokenizer, bos=documents_start_with_bos(shards, tokenizer), run_dir=config.run_dir
+        )
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -376,6 +383,12 @@ def train(config: SFTConfig | PretrainConfig):
                 {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20)), "step": step}, step=step
             )
         )
+        if val_sets is not None:
+            metrics = val_sets.run(model, step)
+            if is_tt_moe_model(model):
+                take_moe_routing_stats(model)
+            logger.success(f"Validation sets | Step {step} | {len(val_sets.sets)} sets")
+            asyncio.run(monitors.log({**metrics, "step": step}, step=step))
 
     def logged_micro_batches(micro_batches):
         for micro_batch in micro_batches:
