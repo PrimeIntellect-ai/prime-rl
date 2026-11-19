@@ -34,7 +34,7 @@ This is of course just a quick vibe check and no full-fledged evaluation, but we
 
 ## SFT
 
-We will fine-tune `PrimeIntellect/Qwen3-0.6B` ([HF](https://huggingface.co/PrimeIntellect/Qwen3-0.6B)), which is a clone of `Qwen/Qwen3-0.6B` ([HF](https://huggingface.co/Qwen/Qwen3-0.6B)) with a chat template suitable for multi-turn RL, on `PrimeIntellect/Reverse-Text-SFT` ([HF](https://huggingface.co/datasets/PrimeIntellect/Reverse-Text-SFT)), which contains 1K examples of reversing 5-20 word sentences character-by-character into `<reversed_text>` tags. Its prompts use the `reverse-text` env's system prompt and tag its completions the same way, so the online eval measures the warmup instead of scoring 0.
+We will fine-tune `PrimeIntellect/Qwen3-0.6B` ([HF](https://huggingface.co/PrimeIntellect/Qwen3-0.6B)), which is a clone of `Qwen/Qwen3-0.6B` ([HF](https://huggingface.co/Qwen/Qwen3-0.6B)) with a chat template suitable for multi-turn RL, on `PrimeIntellect/Reverse-Text-SFT` ([HF](https://huggingface.co/datasets/PrimeIntellect/Reverse-Text-SFT)), which contains 1K examples of reversing 5-20 word sentences character-by-character into `<reversed_text>` tags. Its prompts use the `reverse-text` env's system prompt and tag its completions the same way, so the online eval measures the warmup — a 100-step run from `Qwen3-0.6B` on this dataset lands at ~0.289 reward on the env, instead of 0.
 
 *Check out the logs of the SFT run on [W&B](https://wandb.ai/primeintellect/examples?nw=s3p14m48jod).*
 
@@ -67,6 +67,8 @@ We have uploaded the final model as [`PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT
 ## RL
 
 For the RL we will only do 20 steps at 8x16 rollouts, for a total batch size of 128 and sequence length 128. Because of the small context, training should be extremely quick.
+
+`rl.toml` pins its starting weights to the published checkpoint [`PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT`](https://huggingface.co/PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT), so the ~0.8 reward curve below is reproducible from the config itself — it does not depend on the SFT run you just did. If you want to chain your own SFT output into RL instead, point the trainer at its step directory with `--trainer.model.init-from outputs/sft/checkpoints/step_100` (keep `model.name` pointing at a weights-compatible HF repo for the architecture and tokenizer). On the new SFT dataset we measured a smaller delta end-to-end: ~0.289 after SFT → ~0.304 after 20 RL steps.
 
 *Check out the logs of the RL run on [W&B](https://wandb.ai/primeintellect/examples?nw=yxjwjc556do).*
 
