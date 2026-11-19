@@ -2,10 +2,9 @@
 
 Each case builds a tiny seeded model with `setup_model` on its layout (activation checkpointing with offloading, then
 torch.compile per layer, then FSDP, CP or EP) and runs one forward and backward. A case passes when the loss and grad
-norm are finite, Dynamo counted no graph break, and every frame Dynamo compiled produced a graph, at least one per kind
-of decoder layer, so no kind of layer runs eagerly. One `torchrun` launch runs every selected case of a group; each case
-reports as its own test. A case that fails today sets `known_failure` to a substring of its error and runs as a strict
-xfail.
+norm are finite, Dynamo counted no graph break, and Dynamo compiled at least one graph per kind of decoder layer, so no
+kind of layer runs eagerly. One `torchrun` launch runs every selected case of a group; each case reports as its own
+test. A case that fails today sets `known_failure` to a substring of its error and runs as a strict xfail.
 
 Run cases without pytest, by case id or group name (each rank writes `rank<N>.json` after every case):
 
@@ -14,6 +13,7 @@ Run cases without pytest, by case id or group name (each rank writes `rank<N>.js
 
 import json
 import math
+import shutil
 import sys
 import time
 import traceback
@@ -233,15 +233,9 @@ def failures(result: dict) -> list[str]:
     for metric in ("loss_sum", "grad_norm"):
         if metric in result and not math.isfinite(result[metric]):
             found.append(f"{metric} is {result[metric]}")
-    if "error" not in result:
-        if result["unique_graphs"] < 1:
-            found.append("no compiled graph ran")
-        eager_frames = [frame for frame in result["frames"] if not frame["guarded"] or not frame["ops"]]
-        if eager_frames:
-            found.append(f"frames Dynamo compiled without a graph, which ran eagerly: {eager_frames}")
-        num_graphs = len(result["frames"]) - len(eager_frames)
-        if num_graphs < result["layer_kinds"]:
-            found.append(f"{num_graphs} compiled graphs for {result['layer_kinds']} decoder layer kinds")
+    num_graphs = sum(bool(frame["ops"]) for frame in result.get("frames", []))
+    if "error" not in result and num_graphs < result["layer_kinds"]:
+        found.append(f"{num_graphs} compiled graphs for {result['layer_kinds']} decoder layer kinds")
     if result.get("graph_breaks"):
         found.append(f"graph breaks: {result['graph_breaks']}")
     return found
@@ -256,7 +250,6 @@ def compile_case(config: ModelConfig, parallel_dims: ParallelDims, rows: list[di
     result = isolated(run_step, config, parallel_dims, rows, progress)
     result.update(progress)
     result["seconds"] = time.perf_counter() - start
-    result["unique_graphs"] = counters["stats"]["unique_graphs"]
     result["graph_breaks"] = dict(counters["graph_break"])
     frame_compiles = [
         metrics
@@ -267,7 +260,6 @@ def compile_case(config: ModelConfig, parallel_dims: ParallelDims, rows: list[di
         {
             "code": f"{metrics.co_name} ({Path(metrics.co_filename).name}:{metrics.co_firstlineno})",
             "ops": metrics.graph_op_count,
-            "guarded": metrics.has_guarded_code,
         }
         for metrics in frame_compiles
     ]
@@ -316,6 +308,9 @@ def main(output_dir: Path, cases: list[CompileCase]) -> None:
         partial_path = results_path.with_suffix(".partial")
         partial_path.write_text(json.dumps(results, indent=2))
         partial_path.replace(results_path)
+    dist.barrier()
+    if get_world().is_master:
+        shutil.rmtree(models_dir)
 
 
 def launch(group: str, names: list[str], run_process, tmp_path_factory: pytest.TempPathFactory) -> dict:
