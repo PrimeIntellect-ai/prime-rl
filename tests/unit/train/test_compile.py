@@ -2,9 +2,10 @@
 
 Each case builds a tiny seeded model with `setup_model` on its layout (activation checkpointing with offloading, then
 torch.compile per layer, then FSDP, CP or EP) and runs one forward and backward. A case passes when the loss and grad
-norm are finite, Dynamo counted no graph break, and Dynamo compiled at least one graph per kind of decoder layer, so no
-kind of layer runs eagerly. One `torchrun` launch runs every selected case, and each case reports as its own test. A
-case that crashes or hangs the launch fails, and a relaunch runs the cases it did not reach.
+norm are finite, Dynamo counted no graph break, and Dynamo compiled exactly one graph per kind of decoder layer, so no
+kind of layer runs eagerly or compiles twice (as PR #4609 fixed for layers whose inputs differed in their view base).
+One `torchrun` launch runs every selected case, and each case reports as its own test. A case that crashes or hangs the
+launch fails, and a relaunch runs the cases it did not reach.
 
 Run cases without pytest by case id, or every case if none is given (each rank writes `rank<N>.json` around each case):
 
@@ -171,7 +172,7 @@ def failures(result: dict) -> list[str]:
         if metric in result and not math.isfinite(result[metric]):
             found.append(f"{metric} is {result[metric]}")
     num_graphs = sum(bool(frame["ops"]) for frame in result.get("frames", []))
-    if "error" not in result and num_graphs < result["layer_kinds"]:
+    if "error" not in result and num_graphs != result["layer_kinds"]:
         found.append(f"{num_graphs} compiled graphs for {result['layer_kinds']} decoder layer kinds")
     if result.get("graph_breaks"):
         found.append(f"graph breaks: {result['graph_breaks']}")
