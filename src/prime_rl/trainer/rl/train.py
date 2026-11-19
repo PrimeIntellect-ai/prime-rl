@@ -52,6 +52,7 @@ from prime_rl.trainer.rl.loss import (
 )
 from prime_rl.trainer.models.layers.lm_head import TokenSupport, support_replay_mask
 from prime_rl.trainer.rl.annotations import AnnotationWriter
+from prime_rl.trainer.rl.warmup import warmup
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
@@ -364,6 +365,15 @@ def train(config: TrainerConfig):
             logger.debug(
                 f"Broadcast startup policy weights (v{startup_version}) in {format_time(time.perf_counter() - t0)}"
             )
+
+        # Warm up while the first batch is still being generated
+        if progress.step == start_step and config.warmup:
+            if config.model.offload == "full":
+                logger.info("Skipping the trainer warmup: full optimizer offload updates the weights during backward")
+            else:
+                with maybe_record_function("warmup"):
+                    warmup_time = warmup(model, optimizer, config, parallel_dims)
+                asyncio.run(monitors.log({"time/warmup": warmup_time, "step": progress.step}, step=progress.step))
 
         # Wait for the batch to be available
         logger.debug("Waiting for training batch to arrive")
