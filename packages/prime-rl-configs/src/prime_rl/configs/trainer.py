@@ -27,6 +27,8 @@ from prime_rl.utils.config import BaseConfig, default_output_dir
 AttnImplementation: TypeAlias = Literal["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]
 DSABackend: TypeAlias = Literal["tilelang", "cudnn_flashmla"]
 
+MODULE_TARGET_SEPARATOR = "@"
+
 
 class ActivationCheckpointConfig(BaseConfig):
     mode: Literal["full", "selective"] = "full"
@@ -36,7 +38,19 @@ class ActivationCheckpointConfig(BaseConfig):
     """Apply activation checkpointing to every N layers."""
 
     targets: list[str] | None = None
-    """Operator names or namespaces retained in selective mode. ``None`` uses the default targets; an explicit list replaces them."""
+    """Operator names or namespaces retained in selective mode. ``None`` uses the default targets; an explicit list replaces them. Append ``@<module path pattern>`` to retain an operator only inside matching modules, for example ``"prime_rl::fp8_blockwise_mm@self_attn.o_b_proj"``. The pattern is an ``fnmatch`` glob over module paths relative to the checkpointed block, and it also covers the matching modules' descendants. Module-qualified targets require ``model.compile``, and the trainer raises after the first training forward if one matched no traced operation."""
+
+    @field_validator("targets")
+    @classmethod
+    def validate_targets(cls, targets: list[str] | None) -> list[str] | None:
+        for target in targets or []:
+            operation, separator, module_pattern = target.partition(MODULE_TARGET_SEPARATOR)
+            if not operation or (separator and (not module_pattern or MODULE_TARGET_SEPARATOR in module_pattern)):
+                raise ValueError(
+                    f"Invalid activation checkpointing target {target!r}: expected an operator or namespace, "
+                    "optionally followed by '@<module path pattern>'."
+                )
+        return targets
 
     token_chunk_size: int | None = Field(None, ge=3)
     """Experimental. Checkpoint token-local blocks in chunks of this many tokens per rank, so their recompute and backward hold one chunk's activations at a time. Only supported for Nemotron-H, whose MoE layers are the only blocks it chunks; it has no effect on other models. Requires ``ep == 1`` or ``ep == cp``. ``None`` checkpoints every block whole."""
@@ -267,13 +281,15 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     ``llep``, whose weight copies run next to the grid."""
 
     llep: LLEPConfig | None = None
-    """Balance imbalanced routing with least-loaded expert parallelism. Requires ``precision = "bf16"`` (SM90) or
-    ``"mxfp8_qat"`` (SM100)."""
+    """Balance imbalanced routing with least-loaded expert parallelism. Requires ``precision = "bf16"`` (SM90),
+    ``"mxfp8"`` or ``"mxfp8_qat"`` (SM100)."""
 
     @model_validator(mode="after")
     def validate_llep_precision(self):
-        if self.llep is not None and self.precision not in ("bf16", "mxfp8_qat"):
-            raise ValueError("model.moe.dispatch.llep requires model.moe.dispatch.precision 'bf16' or 'mxfp8_qat'.")
+        if self.llep is not None and self.precision not in ("bf16", "mxfp8", "mxfp8_qat"):
+            raise ValueError(
+                "model.moe.dispatch.llep requires model.moe.dispatch.precision 'bf16', 'mxfp8' or 'mxfp8_qat'."
+            )
         return self
 
     @model_validator(mode="after")
@@ -404,6 +420,9 @@ class ModelConfig(BaseModelConfig):
     dsv4_kv_precision: Literal["bf16", "fp8"] = "fp8"
     """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
 
+    dsv4_compressor_backend: Literal["cudnn", "torch"] = "cudnn"
+    """Backend of the DeepSeek V4 compressors' softmax-gated pooling. ``cudnn`` (default) runs the cuDNN frontend's fused CSA/HCA compressor where its kernels apply: an SM100 or newer GPU, bf16 activations, and a compress rate of 2 or 4, or 128 with head_dim 128 or 512. Elsewhere it silently runs the torch ops, so on SM90 GPUs such as the H100 and H200 ``cudnn`` runs torch. ``cudnn`` scans each entry's document list, so it wins on rows of few long documents and loses to the flat torch ops on rows of many short documents. ``torch`` always runs the torch ops."""
+
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
 
@@ -426,6 +445,16 @@ class ModelConfig(BaseModelConfig):
     def validate_cp(self):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]:
             raise ValueError("CP is only supported with flash attention 2, 3, or 4")
+        return self
+
+    @model_validator(mode="after")
+    def module_qualified_ac_targets_require_compile(self):
+        if (
+            self.compile is None
+            and self.ac is not None
+            and any(MODULE_TARGET_SEPARATOR in target for target in self.ac.targets or [])
+        ):
+            raise ValueError("Module-qualified model.ac.targets require model.compile.")
         return self
 
     @model_validator(mode="after")
