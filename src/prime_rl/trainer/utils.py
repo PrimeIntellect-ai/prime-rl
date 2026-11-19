@@ -43,9 +43,7 @@ class GarbageCollection:
     In multi-GPU training, Python's automatic GC can trigger unpredictably on one rank
     while others wait at a synchronization point, stalling the entire step. This class
     disables automatic GC and runs deterministic collections every `interval` steps so
-    all ranks collect simultaneously. It also collects once after the first step, where Triton
-    autotunes: each config that fails to launch leaves a reference cycle pinning the Python stack
-    that autotuned, including any compiled layer backward's buffers.
+    all ranks collect simultaneously.
 
     Based on the approach from torchtitan (https://arxiv.org/abs/2505.05713).
     """
@@ -53,14 +51,11 @@ class GarbageCollection:
     def __init__(self, interval: int = 50):
         assert interval > 0, "gc interval must be a positive integer"
         self.interval = interval
-        self.steps_started = 0
         gc.disable()
         self._collect()
 
     def run(self, step: int):
-        self.steps_started += 1
-        first_step_finished = self.steps_started == 2
-        if first_step_finished or (step > 0 and step % self.interval == 0):
+        if step > 0 and step % self.interval == 0:
             self._collect()
 
     def _collect(self, generation: int = 1):
