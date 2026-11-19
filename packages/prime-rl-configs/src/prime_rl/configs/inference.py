@@ -210,6 +210,9 @@ class CPUOffloadTier(BaseConfig):
     num_bytes: int = Field(..., ge=0)
     """CPU/DRAM offload capacity. For the ``native`` backend this is vLLM's aggregate ``cpu_bytes_to_use`` (scaled across workers internally; must be positive). For the ``mooncake`` backend this is the per-node store client's DRAM segment (``-global_segment_size``); 0 connects the node to the shared pool without contributing storage."""
 
+    head_node_num_bytes: int | None = Field(None, gt=0)
+    """``mooncake`` only: DRAM the head inference node (the first one, which also hosts the router and the Mooncake master) contributes to the shared pool. None (the default) contributes ``num_bytes`` like every other node."""
+
 
 class DiskOffloadTier(BaseConfig):
     path: Path

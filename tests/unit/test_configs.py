@@ -1388,6 +1388,39 @@ def test_pd_role_connectors():
         )
 
 
+def test_mooncake_head_node_num_bytes():
+    def offload(**cpu):
+        config = InferenceConfig(kv_cache_offload={"type": "mooncake", "cpu": {"num_bytes": 1000, **cpu}})
+        assert config.kv_cache_offload is not None
+        return config.kv_cache_offload
+
+    assert offload().cpu.head_node_num_bytes is None
+    assert offload(head_node_num_bytes=64).cpu.head_node_num_bytes == 64
+    with pytest.raises(ValidationError, match="head_node_num_bytes"):
+        offload(head_node_num_bytes=0)
+
+
+def test_mooncake_store_template_head_node_override():
+    from jinja2 import Environment, FileSystemLoader
+
+    templates_dir = Path(__file__).parents[2] / "src" / "prime_rl" / "templates"
+    template = Environment(loader=FileSystemLoader(templates_dir)).get_template("_mooncake_store.sh.j2")
+
+    def render(**cpu) -> str:
+        config = InferenceConfig(kv_cache_offload={"type": "mooncake", "cpu": {"num_bytes": 1000, **cpu}})
+        return template.render(mooncake_offloads={"all": config.kv_cache_offload}, is_disaggregated=False)
+
+    override = 'if [ "$SLURMD_NODENAME" = "$MC_HEAD" ]; then MC_SEGMENT_BYTES=64; fi'
+    default = render()
+    assert "MC_SEGMENT_BYTES=1000\n" in default
+    assert "-global_segment_size=$MC_SEGMENT_BYTES" in default
+    assert override not in default
+
+    rendered = render(head_node_num_bytes=64)
+    assert "MC_SEGMENT_BYTES=1000\n" in rendered
+    assert override in rendered
+
+
 CUSTOM_RENDERER_SOURCE = """
 from typing import Literal
 
