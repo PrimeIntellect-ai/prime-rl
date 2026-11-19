@@ -24,6 +24,7 @@ from prime_rl.trainer.models.glm5_next.converting_glm5_next import (
 from prime_rl.trainer.models.glm5_next.linear_attention import KimiDeltaAttention
 from prime_rl.trainer.models.glm5_next.sparse_attention import KPoolIndexer, PoolLayout, SparseMlaAttention
 from prime_rl.trainer.models.layers.activations import ClampedSilu
+from prime_rl.trainer.models.layers.fla_ops import prepare_chunk_indices
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
@@ -121,6 +122,7 @@ class Glm5NextDecoderLayer(GradientCheckpointingLayer):
         self,
         mhc_states: torch.Tensor,
         cu_seqlens: torch.LongTensor,
+        chunk_indices: torch.Tensor,
         pool_layout: PoolLayout,
         routed_experts: torch.LongTensor | None = None,
     ) -> torch.Tensor:
@@ -130,7 +132,7 @@ class Glm5NextDecoderLayer(GradientCheckpointingLayer):
         attention_input = self.input_layernorm(collapsed)
         if self.layer_type == "linear_attention":
             # KDA resets its recurrent state at each packed-document boundary.
-            attn_output = self.self_attn(attention_input, cu_seqlens)
+            attn_output = self.self_attn(attention_input, cu_seqlens, chunk_indices)
         else:
             # Sparse MLA attends to the pools the indexer selects within the query's own document.
             attn_output = self.self_attn(attention_input, pool_layout)
@@ -229,6 +231,7 @@ class Glm5NextTextModel(Glm5NextPreTrainedModel):
         )
         # A hint, not a constraint: a one-document row (2-entry cu_seqlens) gets its own graph.
         torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
+        chunk_indices = prepare_chunk_indices(cu_seqlens)
         pool_layout = PoolLayout.build(
             cu_seqlens,
             inputs_embeds.shape[1],
@@ -243,6 +246,7 @@ class Glm5NextTextModel(Glm5NextPreTrainedModel):
             mhc_states = decoder_layer(
                 mhc_states=mhc_states,
                 cu_seqlens=cu_seqlens,
+                chunk_indices=chunk_indices,
                 pool_layout=pool_layout,
                 routed_experts=layer_routed_experts,
             )
