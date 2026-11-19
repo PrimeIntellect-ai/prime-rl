@@ -61,8 +61,7 @@ class DocumentsValSetConfig(BaseValSetConfig):
     type: Literal["documents"] = "documents"
 
     path: Path
-    """Folder of datatrove tokenized shards, as in ``documents`` data's ``data.paths``. The tokens are scored as
-    stored."""
+    """Folder of datatrove tokenized shards, as a ``documents`` data source's ``path``. The tokens are scored as stored."""
 
 
 class ChatValSetConfig(BaseValSetConfig):

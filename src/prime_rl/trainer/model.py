@@ -31,6 +31,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
 from prime_rl.configs.trainer import (
+    MODULE_TARGET_SEPARATOR,
     ActivationCheckpointConfig,
     CompileConfig,
     FP8Config,
@@ -41,6 +42,7 @@ from prime_rl.configs.trainer import (
 from prime_rl.trainer.activation_checkpointing import (
     TokenChunkedCheckpointWrapper,
     get_activation_checkpoint_wrapper,
+    unmatched_module_patterns,
 )
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
@@ -377,6 +379,7 @@ def get_model(
     model_config.dsa_backend = config.dsa_backend
     if model_config.model_type == "deepseek_v4":
         model_config.kv_precision = config.dsv4_kv_precision
+        model_config.compressor_backend = config.dsv4_compressor_backend
     # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
     # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
     indexer_types = getattr(model_config, "indexer_types", None)
@@ -828,18 +831,37 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
     # FLA's metadata cache must not skip operations during checkpoint replay.
     fla.utils.FLA_DISABLE_TENSOR_CACHE = True
     language_model = get_language_model(model)
-    wrap_block = get_activation_checkpoint_wrapper(ac_config)
-    checkpointed_layers = 0
+    matched_module_targets: set[str] = set()
+    wrap_block = get_activation_checkpoint_wrapper(ac_config, matched_module_targets)
+    checkpointed_blocks = []
 
     for layer_id, (layer_name, transformer_block) in enumerate(language_model.layers.named_children()):
         if layer_id % ac_config.freq != 0:
             continue
 
         language_model.layers.register_module(layer_name, wrap_block(transformer_block))
-        checkpointed_layers += 1
+        checkpointed_blocks.append(transformer_block)
+
+    if ac_config.mode == "selective" and ac_config.targets is not None:
+        unmatched = unmatched_module_patterns(ac_config.targets, checkpointed_blocks)
+        if unmatched:
+            raise ValueError(f"Activation checkpointing module patterns match no checkpointed submodule: {unmatched}")
+
+        module_targets = [target for target in ac_config.targets if MODULE_TARGET_SEPARATOR in target]
+        if module_targets:
+
+            def check_module_targets_after_first_training_forward(_module, _args, _output) -> None:
+                if not torch.is_grad_enabled():
+                    return
+                check_once.remove()
+                untraced = [target for target in module_targets if target not in matched_module_targets]
+                if untraced:
+                    raise ValueError(f"Activation checkpointing targets matched no traced operation: {untraced}")
+
+            check_once = language_model.register_forward_hook(check_module_targets_after_first_training_forward)
 
     get_logger().info(
-        f"Applied {ac_config.mode} activation checkpointing to {checkpointed_layers} layers (freq={ac_config.freq})"
+        f"Applied {ac_config.mode} activation checkpointing to {len(checkpointed_blocks)} layers (freq={ac_config.freq})"
     )
 
 
@@ -857,7 +879,7 @@ DYNAMIC_INT_ARGS = (
 # layer: FSDP2's pre-forward hook hands the layer a new view of its input, without the mark. A dynamic source names
 # the arg instead, so callers must pass these args by keyword.
 DYNAMIC_TENSOR_ARG_DIMS = (
-    # DeepSeek V4: the decoder layer input, (batch, seq, hc_mult, hidden). seq follows this rank's row length.
+    # DeepSeek V4, GLM5-next: decoder layer input, (batch, seq, hc_mult, hidden). seq follows this rank's row length.
     ("mhc_states", 1),
 )
 

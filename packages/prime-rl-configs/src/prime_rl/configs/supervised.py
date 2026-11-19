@@ -52,29 +52,56 @@ class BaseDataConfig(BaseConfig):
         return self
 
 
+class TokenSourceConfig(BaseConfig):
+    """A folder of datatrove tokenized shards, one source of ``documents`` data."""
+
+    name: str
+    """Names the source in the ``progress/<name>/*`` metrics."""
+
+    path: Path
+    """Folder of ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``."""
+
+    weight: float | None = Field(None, ge=0)
+    """The source's relative weight: its share of the training tokens is its weight over the sum of all weights. If
+    None on every source, the share is the source's share of all sources' tokens."""
+
+    repetitions: float | None = Field(None, ge=1)
+    """How often every token of a fixed subset of the source is seen over the run (needs ``max_steps``). If None, the
+    whole source is read."""
+
+
 class DocumentsDataConfig(BaseDataConfig):
-    """Tokenized shards written by datatrove's ``DocumentTokenizer``, read as one token pool and cut into samples of
-    ``seq_len`` tokens."""
+    """Tokenized shards written by datatrove's ``DocumentTokenizer``: documents sampled from one or more sources into
+    rows of ``seq_len`` tokens."""
 
     type: Literal["documents"] = "documents"
 
-    paths: list[Path] = Field(min_length=1)
-    """Folders of datatrove tokenized shards: ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``.
-    The files of all folders (in folder order, then file name order) are read as one token pool."""
+    source: list[TokenSourceConfig] = Field(min_length=1)
+    """The folders to sample documents from (``[[data.source]]``)."""
 
-    seed: int = 0
-    """Seed for the sample order: each epoch reads every ``seq_len`` window of the pool once, in a new random order
-    and from a new random offset."""
+    seed: int = Field(0, ge=0)
+    """Seed for the order of the documents, within rows too, and for the subsets."""
 
     document_masking: bool = True
-    """Attention and positions restart at every document. If False, a sample is one sequence: attention spans the
-    whole sample and positions run over it."""
+    """Attention and positions restart at every document and piece. If False, a row is one sequence."""
 
     eod_mask_loss: bool = True
     """Don't train the model to predict the first token of the next, unrelated document: no loss where the input is
     the document separator. The separator is the special token the training shards' documents end with, detected at
     startup; startup fails if they don't all end with one, unless they start with BOS (then there is nothing to
     mask)."""
+
+    @model_validator(mode="after")
+    def validate_sources(self):
+        names = [source.name for source in self.source]
+        if len(set(names)) < len(names):
+            raise ValueError(f"data.source: the names must be unique, got {names}")
+        weights = [source.weight for source in self.source]
+        if None in weights and any(weight is not None for weight in weights):
+            raise ValueError("data.source: set weight on every source or on none (natural shares)")
+        if None not in weights and sum(weights) <= 0:
+            raise ValueError("data.source: the weights must sum to more than 0")
+        return self
 
 
 class ChatDataConfig(BaseDataConfig):
@@ -445,6 +472,16 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
 
     def renders_conversations(self) -> bool:
         return self.data.type == "chat" or super().renders_conversations()
+
+    @model_validator(mode="after")
+    def validate_repetitions(self):
+        if self.data.type != "documents" or self.max_steps is not None:
+            return self
+        if any(source.repetitions is not None for source in self.data.source):
+            raise ValueError(
+                "data.source: repetitions sizes a source's subset by the run's tokens, so it needs max_steps"
+            )
+        return self
 
     @model_validator(mode="after")
     def validate_vlm_constraints(self):

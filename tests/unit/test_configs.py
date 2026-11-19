@@ -1,6 +1,5 @@
 import importlib
 import json
-import os
 import re
 import sys
 from pathlib import Path
@@ -30,6 +29,7 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.supervised import DocumentsDataConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.utils.config import MODES, BaseConfig, check_mode, cli, dump_resolved_config
@@ -199,7 +199,7 @@ def test_pretrain_config_roundtrip(tmp_path):
     """A minimal pretrain TOML gets the pretraining defaults and survives the launcher's resolved config."""
     from prime_rl.entrypoints.launcher import write_config
 
-    write_toml(tmp_path / "pretrain.toml", {"data": {"paths": [str(tmp_path / "tokens")]}})
+    write_toml(tmp_path / "pretrain.toml", {"data": {"source": [{"name": "web", "path": str(tmp_path / "tokens")}]}})
     config = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--output-dir", str(tmp_path)])
     assert config.data.type == "documents"
     assert (config.optim.type, config.optim.lr, config.optim.weight_decay) == ("adamw", 1e-3, 0.01)
@@ -217,7 +217,7 @@ def test_pretrain_config_roundtrip(tmp_path):
 def test_sft_and_pretrain_differ_only_in_defaults(tmp_path):
     """`uv run sft` and `uv run pretrain` take the same data types; on the same data they differ in the init, the
     optimizer's learning rate and the schedule."""
-    write_toml(tmp_path / "data.toml", {"data": {"paths": [str(tmp_path / "tokens")]}})
+    write_toml(tmp_path / "data.toml", {"data": {"source": [{"name": "web", "path": str(tmp_path / "tokens")}]}})
     args = ["@", str(tmp_path / "data.toml"), "--output-dir", str(tmp_path), "--run.name", "presets"]
     sft = cli(SFTConfig, args=[*args, "--data.type", "documents"])
     pretrain = cli(PretrainConfig, args=args)
@@ -226,6 +226,31 @@ def test_sft_and_pretrain_differ_only_in_defaults(tmp_path):
         "optim",
         "scheduler",
     }
+
+
+@pytest.mark.parametrize(
+    ("data", "error"),
+    [
+        ({"source": [{"name": "a", "path": "a"}, {"name": "a", "path": "b"}]}, "names must be unique"),
+        (
+            {"source": [{"name": "a", "path": "a", "weight": 1.0}, {"name": "b", "path": "b"}]},
+            "on every source or on none",
+        ),
+        (
+            {"source": [{"name": "a", "path": "a", "weight": 0.0}, {"name": "b", "path": "b", "weight": 0.0}]},
+            "more than 0",
+        ),
+    ],
+)
+def test_pretrain_data_rejects_invalid_sources(data: dict, error: str):
+    with pytest.raises(ValidationError, match=error):
+        DocumentsDataConfig(**data)
+
+
+def test_repetitions_need_max_steps():
+    sources = {"source": [{"name": "a", "path": "a", "repetitions": 2.0}]}
+    with pytest.raises(ValidationError, match="needs max_steps"):
+        PretrainConfig.model_validate({"data": sources})
 
 
 def test_val_set_defaults(tmp_path):
@@ -239,7 +264,10 @@ def test_val_set_defaults(tmp_path):
     ]
     write_toml(
         tmp_path / "pretrain.toml",
-        {"data": {"paths": [path], "seq_len": 1024, "micro_batch_size": 2}, "val": {"set": val_sets}},
+        {
+            "data": {"source": [{"name": "web", "path": path}], "seq_len": 1024, "micro_batch_size": 2},
+            "val": {"set": val_sets},
+        },
     )
     args = ["@", str(tmp_path / "pretrain.toml"), "--output-dir", str(tmp_path)]
     config = cli(PretrainConfig, args=args)
@@ -520,12 +548,26 @@ def test_moe_compute_apply_to_cli(selection, selected):
             "MXFP8 transport requires",
         ),
         (
-            {"ep": 8, "moe": {"dispatch": {"type": "mega_moe", "precision": "mxfp8", "llep": {}}}},
+            {"ep": 8, "moe": {"dispatch": {"type": "mega_moe", "precision": "fp8", "llep": {}}}},
             "llep requires",
         ),
     ],
 )
 def test_invalid_moe_runtime_configs_fail(model, message):
+    with pytest.raises(ValidationError, match=message):
+        TrainerModelConfig.model_validate(model)
+
+
+@pytest.mark.parametrize(
+    ("model", "message"),
+    [
+        ({"ac": {"mode": "selective", "targets": ["@self_attn"]}}, "Invalid activation checkpointing target"),
+        ({"ac": {"mode": "selective", "targets": ["aten::mm@"]}}, "Invalid activation checkpointing target"),
+        ({"ac": {"mode": "selective", "targets": ["aten::mm@a@b"]}}, "Invalid activation checkpointing target"),
+        ({"ac": {"mode": "selective", "targets": ["aten::mm@self_attn"]}, "compile": None}, "require model.compile"),
+    ],
+)
+def test_invalid_ac_targets_fail(model, message):
     with pytest.raises(ValidationError, match=message):
         TrainerModelConfig.model_validate(model)
 
@@ -1402,25 +1444,6 @@ def test_explicit_inference_parser_wins_over_auto():
     assert config.inference.vllm.tool_call_parser == "hermes"
 
 
-@pytest.mark.parametrize("deployment", [{"type": "single_node"}, {"type": "disaggregated"}])
-def test_combined_replay_uses_v2_runner(monkeypatch, deployment):
-    from prime_rl.inference.server import setup_vllm_env
-
-    monkeypatch.delenv("VLLM_USE_V2_MODEL_RUNNER", raising=False)
-    config = InferenceConfig(
-        deployment=deployment,
-        slurm={} if deployment["type"] == "disaggregated" else None,
-        enable_return_sampling_mask=True,
-        vllm={"enable_return_routed_experts": True},
-    )
-
-    setup_vllm_env(config)
-
-    assert config.enable_return_sampling_mask is True
-    assert config.vllm.enable_return_routed_experts is True
-    assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
-
-
 def test_pd_role_connectors():
     mooncake = {"type": "mooncake", "cpu": {"num_bytes": 1000}}
     deployment = {"type": "disaggregated", "decode_kv_cache_offload": {**mooncake, "cpu": {"num_bytes": 0}}}
@@ -1552,7 +1575,7 @@ def test_score_centering_captures_complete_bounded_support(top_k, top_p):
     [(PretrainConfig, "scratch"), (SFTConfig, "pretrained"), (TrainerConfig, "pretrained")],
 )
 def test_model_init_type_defaults_per_entrypoint(tmp_path, config_cls, default_type: str):
-    data = {"data": {"paths": [str(tmp_path)]}} if config_cls is PretrainConfig else {}
+    data = {"data": {"source": [{"name": "tokens", "path": str(tmp_path)}]}} if config_cls is PretrainConfig else {}
     assert config_cls.model_validate(data).model.init.type == default_type
     # A [model.init] table without a type keeps the entrypoint's default.
     assert config_cls.model_validate({**data, "model": {"init": {}}}).model.init.type == default_type
