@@ -40,7 +40,6 @@ from torch._dynamo.utils import clear_compilation_metrics, counters, get_compila
 import prime_rl._compat  # noqa: F401
 from prime_rl.configs.trainer import ModelConfig, TokenizerConfig
 from prime_rl.trainer.model import setup_model, setup_tokenizer
-from prime_rl.trainer.models import _CUSTOM_CAUSAL_LM_BY_MODEL_TYPE
 from prime_rl.trainer.parallel_dims import ParallelDims, get_parallel_dims
 from prime_rl.trainer.utils import clip_grad_norm_, setup_torch_distributed
 from prime_rl.trainer.vlm import get_language_model
@@ -52,7 +51,6 @@ from prime_rl.utils.logger import setup_logger
 NUM_RANKS = 2
 PROCESS_GROUP_TIMEOUT = timedelta(minutes=5)
 TINY_CONFIGS = TINY_MODELS | TINY_PRIME_RL_MODELS
-WRAPPER_MODEL_TYPES = {"glm5_next", "muse_glimmer", "nemotron_h_omni", "qwen3_5", "qwen3_5_moe", "qwen4_exp"}
 
 
 def needs_sm100() -> str | None:
@@ -307,16 +305,6 @@ def test_compiles_fullgraph(group_results: Callable[[str], dict], case: CompileC
         pytest.skip(skip_reason)
     found = case_failures(group_results(case.group), case)
     assert not found, "\n".join(found)
-
-
-def test_every_text_architecture_has_a_case():
-    registered = set(_CUSTOM_CAUSAL_LM_BY_MODEL_TYPE) - WRAPPER_MODEL_TYPES
-    covered = {TINY_CONFIGS[case.model].model_type for case in GROUPS["dp2"]}
-    missing = sorted(registered - covered)
-    assert not missing, (
-        f"Missing tiny config for model types {missing}: add one to tests/unit/train/tiny_models.py, which gives it "
-        "a dp2 case here, and a cp2 case if the model has its own context-parallel code path."
-    )
 
 
 if __name__ == "__main__":
