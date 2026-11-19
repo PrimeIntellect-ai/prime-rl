@@ -1,5 +1,5 @@
 from collections.abc import Iterable
-from typing import Protocol, runtime_checkable
+from typing import ClassVar, Protocol, runtime_checkable
 
 from torch import Tensor, nn
 from transformers.modeling_utils import PreTrainedModel
@@ -53,6 +53,23 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
     """
 
     cp_context: CPContext = CPContext()
+
+    # A class selected by an extra config file next to its family's stock config.json sets these four.
+    extra_config_file: ClassVar[str | None] = None
+    """The JSON file next to config.json that selects this class."""
+
+    extra_config_attr: ClassVar[str | None] = None
+    """The config attribute that holds the file's content."""
+
+    stock_model_type: ClassVar[str | None] = None
+    """The model_type of the config.json the file extends."""
+
+    stock_architecture: ClassVar[str | None] = None
+    """The only architecture of that config.json."""
+
+    export_files: ClassVar[dict[str, str]] = {}
+    """Weights the export writes to one file outside the weight index without their prefix, as {state-dict prefix:
+    file name}. Loading adds the prefix back."""
 
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:

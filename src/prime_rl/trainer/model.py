@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import shutil
@@ -6,7 +7,7 @@ import time
 import types
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import cast
+from typing import NamedTuple, cast
 
 # Disable transformers hub kernel interception. Installed hub kernels can otherwise replace
 # modules with implementations that have incompatible CUDA requirements.
@@ -17,7 +18,9 @@ import torch
 import torch._dynamo
 import torch.distributed as dist
 import torch.nn as nn
-from huggingface_hub import snapshot_download
+from huggingface_hub import constants as hf_constants
+from huggingface_hub import hf_hub_download, snapshot_download, try_to_load_from_cache
+from huggingface_hub.errors import RemoteEntryNotFoundError
 from jaxtyping import Int
 from torch import Tensor
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
@@ -28,6 +31,7 @@ from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
 from torch.distributed.tensor import DTensor, Shard
 from transformers import AutoConfig, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
+from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
 from transformers.utils.import_utils import is_flash_attn_3_available
 
 from prime_rl.configs.trainer import (
@@ -51,8 +55,10 @@ from prime_rl.trainer.models import (
     cast_float_and_contiguous,
     get_custom_causal_lm_cls,
     get_custom_vlm_cls,
+    get_selected_by_extra_config,
     supports_custom_impl,
 )
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Indexer
 from prime_rl.trainer.models.fusions import (
     apply_model_fusions,
@@ -78,6 +84,7 @@ from prime_rl.utils.utils import format_time
 from prime_rl.utils.weights import (
     load_state_dict,
     load_state_dict_keys,
+    name_as_stored,
     save_state_dict,
 )
 
@@ -353,6 +360,65 @@ def get_expert_load_stats(tokens_per_expert: Tensor, group: dist.ProcessGroup) -
     return {name: value.item() for name, value in compute_expert_load_stats(tokens_per_expert).items()}
 
 
+def read_extra_config(model_name: str, file: str) -> dict | None:
+    """The content of ``file`` next to the config.json of ``model_name`` (a directory or a Hub id), or None if it has
+    none. For a Hub model whose weights are cached, the cache alone answers."""
+    if Path(model_name).is_dir():
+        path = Path(model_name) / file
+        if not path.is_file():
+            return None
+    elif isinstance(cached := try_to_load_from_cache(model_name, file), str):
+        path = Path(cached)
+    elif cached is not None or any(
+        isinstance(try_to_load_from_cache(model_name, weights), str)
+        for weights in (SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME)
+    ):
+        return None
+    elif hf_constants.HF_HUB_OFFLINE:
+        if get_world().is_master:
+            get_logger().warning(f"Could not check for a {file} in {model_name} offline: it counts as absent")
+        return None
+    else:
+        try:
+            path = Path(hf_hub_download(model_name, file))
+        except RemoteEntryNotFoundError:
+            return None
+    try:
+        content = json.loads(path.read_text())
+    except json.JSONDecodeError as error:
+        raise ValueError(f"{path} is not valid JSON: {error}") from None
+    if not isinstance(content, dict):
+        raise ValueError(f"{path} must hold a JSON object, got {type(content).__name__}")
+    return content
+
+
+class ExtraConfigSelection(NamedTuple):
+    """A class an extra config file selects, and the file's content."""
+
+    cls: type[PreTrainedModelPrimeRL]
+    content: dict
+
+
+def select_by_extra_config(
+    model_type: str | None, architectures: list[str] | None, model_name: str
+) -> ExtraConfigSelection | None:
+    """The listed class that an extra config file next to ``model_name``'s config.json (``model_type``,
+    ``architectures``) selects, with the file's content, or None."""
+    classes = get_selected_by_extra_config()
+    architectures = architectures or []
+    for cls in classes:
+        if cls.__name__ in architectures:
+            raise ValueError(
+                f"The config.json of {model_name} names {cls.__name__}, which is selected by {cls.extra_config_file} "
+                f"next to a config.json with the architecture {cls.stock_architecture}"
+            )
+    for cls in classes:
+        if cls.stock_model_type == model_type and architectures == [cls.stock_architecture]:
+            content = read_extra_config(model_name, cls.extra_config_file)
+            return None if content is None else ExtraConfigSelection(cls, content)
+    return None
+
+
 def get_model(
     config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
 ) -> nn.Module:
@@ -432,6 +498,10 @@ def get_model(
         if getattr(target_config, "layer_types", None) is not None:
             target_config.layer_types = target_config.layer_types[:num_hidden_layers]
 
+    selection = select_by_extra_config(model_config.model_type, model_config.architectures, config.name)
+    if selection is not None:
+        setattr(model_config, selection.cls.extra_config_attr, selection.content)
+
     custom_vlm_cls = get_custom_vlm_cls(model_config)
     if custom_vlm_cls is None and not supports_custom_impl(model_config):
         raise ValueError(
@@ -441,7 +511,9 @@ def get_model(
 
     # Queried here so a misconfigured job dies at setup rather than at the first forward.
     if config.cp > 1:
-        cp_model_cls = custom_vlm_cls or get_custom_causal_lm_cls(model_config)
+        cp_model_cls = (
+            selection.cls if selection is not None else custom_vlm_cls or get_custom_causal_lm_cls(model_config)
+        )
         cp_blocker = cp_model_cls.cp_blocker(model_config, config.cp)
         if cp_blocker is not None:
             raise ValueError(f"{model_config.model_type!r} cannot train with context parallelism: {cp_blocker}")
@@ -452,7 +524,7 @@ def get_model(
         )
 
     with device:
-        model_cls = custom_vlm_cls or AutoModelForCausalLMPrimeRL
+        model_cls = selection.cls if selection is not None else custom_vlm_cls or AutoModelForCausalLMPrimeRL
 
         load_model_start_time = time.perf_counter()
         if device == torch.device("meta"):
@@ -754,7 +826,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     # Only master loads the full state dict when conversion is actually needed.
     source_path = snapshot_path
     convert_dir = config.conversion_dir or source_path
-    snapshot_keys = dict.fromkeys(load_state_dict_keys(source_path))
+    snapshot_keys = dict.fromkeys(load_state_dict_keys(source_path, model.export_files))
     model_keys = dict.fromkeys(model.state_dict().keys())
 
     if source_path.name == "prime" and not (source_path / ".prime-v1").is_file():
@@ -776,7 +848,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
             logger.debug(
                 f"Converting snapshot state dict to PrimeRL format and saving to {snapshot_path} on master rank. This is a one-time operation."
             )
-            snapshot_state_dict = load_state_dict(source_path)
+            snapshot_state_dict = load_state_dict(source_path, model.export_files)
             model.convert_to_prime(snapshot_state_dict)
             save_state_dict(snapshot_state_dict, snapshot_path)
             (snapshot_path / ".prime-v1").touch()
@@ -791,7 +863,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
             logger.debug(
                 f"Converting snapshot state dict to HF format and saving to {snapshot_path} on master rank. This is a one-time operation."
             )
-            snapshot_state_dict = load_state_dict(source_path)
+            snapshot_state_dict = load_state_dict(source_path, model.export_files)
             model.convert_to_hf(snapshot_state_dict)
             save_state_dict(snapshot_state_dict, snapshot_path)
             del snapshot_state_dict
@@ -812,7 +884,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
         )
         state_dict.pop("lm_head.weight")
     dcp_load(
-        state_dict,
+        name_as_stored(state_dict, model.export_files, snapshot_path),
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
         process_group=get_dcp_group(),
     )

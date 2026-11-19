@@ -31,6 +31,7 @@ from transformers import AutoConfig, GenerationConfig, PretrainedConfig, PreTrai
 from prime_rl.configs.shared import ResumeConfig
 from prime_rl.configs.trainer import CheckpointConfig, ModelConfig
 from prime_rl.trainer.lora import has_lora_layers
+from prime_rl.trainer.model import ExtraConfigSelection, select_by_extra_config
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.conversion_ops import view_mapping
 from prime_rl.trainer.models.fusions import (
@@ -62,6 +63,8 @@ class ModelFiles:
     tokenizer: PreTrainedTokenizerBase
     processor: ProcessorMixin | None
     generation_config: GenerationConfig | None
+    selection: ExtraConfigSelection | None = None
+    """The class an extra config file next to config.json selects, with the file's content, if any."""
 
     def save(self, directory: Path) -> None:
         directory.mkdir(parents=True, exist_ok=True)
@@ -82,7 +85,8 @@ def setup_model_files(
     except OSError:  # Not every model has a generation_config.json
         generation_config = None
     model_config = AutoConfig.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
-    return ModelFiles(model_config, tokenizer, processor, generation_config)
+    selection = select_by_extra_config(model_config.model_type, model_config.architectures, config.name)
+    return ModelFiles(model_config, tokenizer, processor, generation_config, selection)
 
 
 # Fields of a saved config.json that are metadata, not architecture.
