@@ -20,6 +20,7 @@ from torch import nn
 from torch.distributed.tensor import DTensor
 
 import prime_rl.trainer.parallel_dims as parallel_dims_module
+from prime_rl.configs.sft import SystemOneColumnsConfig
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import forward, load_dcp_from_hf, setup_fsdp
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
@@ -27,11 +28,16 @@ from prime_rl.trainer.models.qwen3_5 import clef_joint_schema as batched
 from prime_rl.trainer.models.qwen3_5.clef_joint_schema import MAX_LOGIT_SCALE, NUM_QUESTION_TYPES, RecordSchema
 from prime_rl.trainer.models.qwen3_5.modeling_clef_flash import SCALARS, ClefFlashForJointSchema, prime_name
 from prime_rl.trainer.parallel_dims import get_parallel_dims
+from prime_rl.trainer.sft.system_one.clef_flash import ClefFlashStrategy
+from prime_rl.trainer.sft.system_one.data import render_sample
+from prime_rl.trainer.sft.system_one.loss import build_decision_loss_inputs
+from prime_rl.trainer.sft.system_one.record import SystemOneRequest, parse_record
 from tests.unit.train.models.qwen3_5.clef_flash_release import (
     JOINT_HEAD_CONFIG,
     clef_config,
     load_release,
     meta_model,
+    tokenizer,
     write_release,
 )
 
@@ -480,3 +486,54 @@ def test_the_bf16_export_writes_the_release_layout_and_loads_back(tmp_path, monk
     assert loaded.keys() == state.keys()
     for name, tensor in state.items():
         assert torch.equal(loaded[name], tensor.to(loaded[name].dtype)), name
+
+
+QUESTIONS = [
+    {
+        "outage": {"type": "noul", "instructions": "Is a service down?", "criteria": {"true": "A service is down."}},
+        "team": {
+            "type": "choice",
+            "instructions": "Who?",
+            "criteria": {"technical": "Bugs", "billing": None, "x": None},
+        },
+    },
+    {"urgency": {"type": "score", "instructions": "How urgent?", "criteria": ["Can wait", "This week", "Today"]}},
+]
+
+
+def requests() -> list[SystemOneRequest]:
+    rows = [
+        {"id": f"r{i}", "state": json.dumps({"ticket": f"Checkout fails {i}."}), "questions": json.dumps(questions)}
+        for i, questions in enumerate(QUESTIONS)
+    ]
+    return [parse_record(row, SystemOneColumnsConfig())[0] for row in rows]
+
+
+def packed_row(strategy: ClefFlashStrategy) -> tuple[torch.Tensor, list[int], list[dict]]:
+    """Two records' samples, packed into one row with padding: its input ids, sample lengths and sample data."""
+    samples = [render_sample(strategy, request, 4096) for request in requests()]
+    input_ids = torch.tensor([token for sample in samples for token in sample["input_ids"]] + [0] * PADDING)
+    return input_ids, [len(sample["input_ids"]) for sample in samples], [sample["sample_data"] for sample in samples]
+
+
+def test_option_logits_read_every_record_with_one_head_call(tmp_path, monkeypatch):
+    write_release(tmp_path / "release")
+    model = load_release(tmp_path / "release", monkeypatch).float()
+    strategy = ClefFlashStrategy(tokenizer(), model.config)
+    input_ids, sample_lens, sample_data = packed_row(strategy)
+    torch.manual_seed(0)
+    hidden_states = torch.randn(len(input_ids), JOINT_HEAD_CONFIG["hidden_size"])
+    calls = []
+    model.pooler.head.register_forward_hook(lambda *args: calls.append(1))
+
+    questions = build_decision_loss_inputs(sample_lens, sample_data).questions
+    logits = strategy.option_logits(model, hidden_states, input_ids, questions)
+    assert len(calls) == 1 and logits.dtype == torch.float32 and logits.shape == (3 + 2 + 3,)
+
+    alone, start = [], 0
+    for sample_len, data in zip(sample_lens, sample_data):
+        ids = input_ids[start : start + sample_len]
+        record_questions = build_decision_loss_inputs([sample_len], [data]).questions
+        alone.append(strategy.option_logits(model, hidden_states[start : start + sample_len], ids, record_questions))
+        start += sample_len
+    torch.testing.assert_close(logits, torch.cat(alone), rtol=1e-5, atol=1e-5)

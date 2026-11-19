@@ -4,12 +4,13 @@ from typing import TYPE_CHECKING
 
 from transformers import PretrainedConfig
 
+from prime_rl.trainer.sft.system_one.clef_flash import ClefFlashStrategy
 from prime_rl.trainer.sft.system_one.data import SystemOneStrategy
 
 if TYPE_CHECKING:
     from prime_rl.trainer.model import ExtraConfigSelection
 
-SYSTEM_ONE_STRATEGIES: dict[str, type[SystemOneStrategy]] = {}
+SYSTEM_ONE_STRATEGIES: dict[str, type[SystemOneStrategy]] = {"ClefFlashForJointSchema": ClefFlashStrategy}
 """Architecture name -> strategy."""
 
 
