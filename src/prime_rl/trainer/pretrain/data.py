@@ -15,7 +15,7 @@ import numpy as np
 import torch.distributed as dist
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.pretrain import PretrainDataConfig
+from prime_rl.configs.supervised import DocumentsDataConfig
 from prime_rl.trainer.data import StatefulIterableDataset
 from prime_rl.utils.bin_packing import fill_rows
 from prime_rl.utils.logger import get_logger
@@ -600,7 +600,7 @@ def warn_if_no_document_separator(shards: TokenShards, tokenizer: PreTrainedToke
 
 
 def setup_token_dataset(
-    config: PretrainDataConfig,
+    config: DocumentsDataConfig,
     *,
     dp_rank: int,
     dp_size: int,

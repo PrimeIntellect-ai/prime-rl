@@ -1,7 +1,7 @@
 import uuid
 import warnings
 from pathlib import Path
-from typing import Annotated, TypeAlias
+from typing import Annotated, Literal, TypeAlias
 from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
@@ -21,6 +21,7 @@ from prime_rl.configs.shared import (
     WeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import BaseTrainerConfig, mega_moe_max_tokens_per_rank
+from prime_rl.configs.val import LossMaskConfig, SFTColumnsConfig
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 
 
@@ -51,6 +52,133 @@ class BaseDataConfig(BaseConfig):
         return self
 
 
+class TokenSourceConfig(BaseConfig):
+    """A folder of datatrove tokenized shards, one source of ``documents`` data."""
+
+    name: str
+    """Names the source in the ``progress/<name>/*`` metrics."""
+
+    path: Path
+    """Folder of ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``."""
+
+    weight: float | None = Field(None, ge=0)
+    """The source's relative weight: its share of the training tokens is its weight over the sum of all weights. If
+    None on every source, the share is the source's share of all sources' tokens."""
+
+    repetitions: float | None = Field(None, ge=1)
+    """How often every token of a fixed subset of the source is seen over the run (needs ``max_steps``). If None, the
+    whole source is read."""
+
+
+class DocumentsDataConfig(BaseDataConfig):
+    """Tokenized shards written by datatrove's ``DocumentTokenizer``: documents sampled from one or more sources into
+    rows of ``seq_len`` tokens."""
+
+    type: Literal["documents"] = "documents"
+
+    source: list[TokenSourceConfig] = Field(min_length=1)
+    """The folders to sample documents from (``[[data.source]]``)."""
+
+    seed: int = Field(0, ge=0)
+    """Seed for the order of the documents, within rows too, and for the subsets."""
+
+    document_masking: bool = True
+    """Attention and positions restart at every document and piece. If False, a row is one sequence."""
+
+    eod_mask_loss: bool = True
+    """Don't train the model to predict the first token of the next, unrelated document: no loss where the input is
+    the document separator. The separator is the special token the training shards' documents end with, detected at
+    startup; startup fails if they don't all end with one, unless they start with BOS (then there is nothing to
+    mask)."""
+
+    @model_validator(mode="after")
+    def validate_sources(self):
+        names = [source.name for source in self.source]
+        if len(set(names)) < len(names):
+            raise ValueError(f"data.source: the names must be unique, got {names}")
+        weights = [source.weight for source in self.source]
+        if None in weights and any(weight is not None for weight in weights):
+            raise ValueError("data.source: set weight on every source or on none (natural shares)")
+        if None not in weights and sum(weights) <= 0:
+            raise ValueError("data.source: the weights must sum to more than 0")
+        return self
+
+
+class ChatDataConfig(BaseDataConfig):
+    """Conversations from an HF dataset, rendered with the renderer; the tokens of ``loss_mask``'s message types are
+    trained on."""
+
+    type: Literal["chat"] = "chat"
+
+    path: str = "PrimeIntellect/Reverse-Text-SFT"
+    """HF dataset name or local directory."""
+
+    revision: str | None = None
+    """HF dataset revision to load. Ignored for a local path."""
+
+    subsets: list[str] | None = None
+    """Subsets to load from the HF dataset."""
+
+    splits: list[str] | None = None
+    """Splits to load from the HF dataset."""
+
+    probabilities: list[float] | None = None
+    """Sampling probabilities for each subset/split."""
+
+    stopping_strategy: Literal["first_exhausted", "all_exhausted"] = "all_exhausted"
+    """Stopping strategy when interleaving multiple subsets/splits."""
+
+    shuffle: bool = True
+    """Shuffle the dataset at the start of each epoch."""
+
+    seed: int = 0
+    """Random seed for shuffling. Re-shuffled per epoch by adding the epoch count to the seed."""
+
+    columns: SFTColumnsConfig = SFTColumnsConfig()
+    """Columns that carry per-sample renderer arguments."""
+
+    loss_mask: LossMaskConfig = LossMaskConfig()
+    """Which message types contribute to the loss."""
+
+    @model_validator(mode="after")
+    def validate_subsets_and_splits(self):
+        if self.subsets is not None or self.splits is not None:
+            if self.subsets is not None and self.splits is not None:
+                if len(self.subsets) != len(self.splits):
+                    raise ValueError(
+                        "Number of subsets must be equal to number of splits. Please specify which split to load for each subset."
+                    )
+            if self.subsets is not None and self.probabilities is not None:
+                if len(self.probabilities) != len(self.subsets):
+                    raise ValueError(
+                        "Number of probabilities must be equal to number of subsets. Please specify a probability for each subset."
+                    )
+            if self.splits is not None and self.probabilities is not None:
+                if len(self.probabilities) != len(self.splits):
+                    raise ValueError(
+                        "Number of probabilities must be equal to number of splits. Please specify a probability for each split."
+                    )
+        return self
+
+
+class FakeDataConfig(BaseDataConfig):
+    """Generated tokens, e.g. for performance runs."""
+
+    type: Literal["fake"] = "fake"
+
+    length: Literal["fixed", "variable"] = "fixed"
+    """Use fixed-length samples or variable-length samples."""
+
+    input_ids: Literal["increasing", "random"] = "increasing"
+    """Token id generator: ``increasing`` for deterministic sequences, ``random`` for random ids."""
+
+    seed: int = 0
+    """Seed for the per-rank packing/token generator, combined with the data rank."""
+
+
+DataConfig: TypeAlias = Annotated[DocumentsDataConfig | ChatDataConfig | FakeDataConfig, Field(discriminator="type")]
+
+
 class SingleNodeDeploymentConfig(BaseSingleNodeDeploymentConfig):
     @model_validator(mode="after")
     def validate_gpu_count(self):
@@ -71,13 +199,16 @@ SupervisedDeploymentConfig: TypeAlias = Annotated[
 
 
 class SupervisedTrainerConfig(BaseTrainerConfig):
-    """SFT and pretraining: next-token loss on a fixed dataset, as opposed to RL."""
+    """SFT and pretraining: next-token loss on a fixed dataset, as opposed to RL. ``uv run sft`` (``SFTConfig``) and
+    ``uv run pretrain`` (``PretrainConfig``) only differ in defaults."""
 
     auto_freeze_moe_router = False
     # Standard L2 regularization for supervised training.
     auto_weight_decay = 0.01
 
-    data: BaseDataConfig
+    data: DataConfig
+    """Training data: tokenized ``documents``, ``chat`` conversations rendered with ``renderer``, or ``fake``
+    tokens."""
 
     eval: SupervisedOnlineEvalConfig | None = None
     """Online evaluation configuration: rollout-based evals against a live inference
@@ -117,7 +248,7 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
         default the run directory, W&B run name and platform run name to it when not
         set explicitly."""
         if self.run.name is None:
-            dataset = str(getattr(self.data, "name", "")).split("/")[-1]
+            dataset = str(getattr(self.data, "path", "")).split("/")[-1]
             model = self.model.name.split("/")[-1]
             parts = [part for part in (dataset, model) if part]
             self.run.name = "--".join([*parts, uuid.uuid4().hex[:8]]).lower()
@@ -340,7 +471,27 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
         return self
 
     def renders_conversations(self) -> bool:
-        return self.data.type == "sft" or super().renders_conversations()
+        return self.data.type == "chat" or super().renders_conversations()
+
+    @model_validator(mode="after")
+    def validate_repetitions(self):
+        if self.data.type != "documents" or self.max_steps is not None:
+            return self
+        if any(source.repetitions is not None for source in self.data.source):
+            raise ValueError(
+                "data.source: repetitions sizes a source's subset by the run's tokens, so it needs max_steps"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_vlm_constraints(self):
+        if self.model.vlm is None:
+            return self
+        if self.data.type == "documents":
+            raise ValueError("[model.vlm] trains on chat data, not documents: set data.type = 'chat'.")
+        if self.data.micro_batch_size != 1:
+            raise ValueError("VLM training requires data.micro_batch_size = 1.")
+        return self
 
     ### Auto-setup and validate shared configs
 

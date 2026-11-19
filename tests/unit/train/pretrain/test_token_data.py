@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 import prime_rl.trainer.pretrain.data as pretrain_data
-from prime_rl.configs.pretrain import PretrainDataConfig
+from prime_rl.configs.supervised import DocumentsDataConfig
 from prime_rl.trainer.data import setup_dataloader
 from prime_rl.trainer.pretrain.data import (
     TokenShards,
@@ -34,9 +34,9 @@ def consecutive_documents(lengths: list[int], first: int = 0) -> list[list[int]]
     return [list(range(start, start + length)) for start, length in zip(starts, lengths)]
 
 
-def data_config(tmp_path: Path, sources: dict[str, dict], **data) -> PretrainDataConfig:
+def data_config(tmp_path: Path, sources: dict[str, dict], **data) -> DocumentsDataConfig:
     """Sources of the folders ``tmp_path / name``, with their settings (weight, repetitions)."""
-    return PretrainDataConfig(
+    return DocumentsDataConfig(
         source=[{"name": name, "path": tmp_path / name, **settings} for name, settings in sources.items()],
         **{"seq_len": 16, "batch_size": 4, **data},
     )
@@ -183,7 +183,7 @@ def test_subsets_and_resumes_fail_clearly(tmp_path):
         ).load_state_dict(state)
 
 
-def global_rows(config: PretrainDataConfig, gpus: int, steps: int, states=None) -> tuple[list[list], list[dict]]:
+def global_rows(config: DocumentsDataConfig, gpus: int, steps: int, states=None) -> tuple[list[list], list[dict]]:
     """Every step's rows over all GPUs (sorted), and every GPU's dataloader state after the last step, with two
     dataloader workers per GPU."""
     rows, new_states = [[] for _ in range(steps)], []

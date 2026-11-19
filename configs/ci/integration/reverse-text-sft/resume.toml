@@ -9,6 +9,6 @@ step = 5
 name = "PrimeIntellect/Qwen3-0.6B"
 
 [data]
-name = "PrimeIntellect/Reverse-Text-SFT"
+path = "PrimeIntellect/Reverse-Text-SFT"
 batch_size = 4
 seq_len = 1024

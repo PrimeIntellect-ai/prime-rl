@@ -66,7 +66,7 @@ the mount; a training volume is not automatically mounted in rollout sandboxes.
 
 Start from [examples/basic/reverse-text/sft.toml](../../../examples/basic/reverse-text/sft.toml)
 in the selected revision. Model Factory SFT requires real datasets on a named volume;
-`HF_TOKEN` alone does not turn a Hub ID in `[data].name` into a volume dataset.
+`HF_TOKEN` alone does not turn a Hub ID in `[data].path` into a volume dataset.
 Use HF `load_dataset`-readable Parquet/JSON with `messages` or
 `prompt`/`completion` columns, not a `save_to_disk` directory.
 
@@ -86,8 +86,8 @@ upload dataset files, not the HF credential. Check the staging directory contain
 only the intended files. For HF authentication and download options, see the
 [HF CLI guide](https://huggingface.co/docs/huggingface_hub/guides/cli).
 
-In the copied SFT config, set `[data].name = "datasets/training-data"` (or
-`"/volume/datasets/training-data"`), `type = "sft"`, and the appropriate splits /
+In the copied SFT config, set `[data].path = "datasets/training-data"` (or
+`"/volume/datasets/training-data"`), `type = "chat"`, and the appropriate splits /
 subsets / column mapping. Verify loading in a fresh process with the same dataset
 library and options, without logging private rows. Pin and record the download
 revision; a local dataset path does not fetch `[data].revision` from the Hub.
