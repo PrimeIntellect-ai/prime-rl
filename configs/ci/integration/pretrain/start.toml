@@ -17,12 +17,12 @@ micro_batch_size = 2
 [val]
 interval = 10
 
-[[val.sets]]
+[[val.set]]
 type = "documents"
 name = "reverse-text"
 path = "set-by-the-test"
 
-[[val.sets]]
+[[val.set]]
 type = "chat"
 name = "reverse-text-chat"
 path = "PrimeIntellect/Reverse-Text-SFT"

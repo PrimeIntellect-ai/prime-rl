@@ -143,8 +143,8 @@ class ValConfig(BaseConfig):
     eval_on_start: bool = False
     """Run validation before the first training step."""
 
-    sets: list[ValSetConfig] = Field(min_length=1)
-    """The validation sets (``[[val.sets]]``). Each logs ``val/<name>/loss@<seq_len>``, the mean loss per scored
+    set: list[ValSetConfig] = Field(min_length=1)
+    """The validation sets (``[[val.set]]``). Each logs ``val/<name>/loss@<seq_len>``, the mean loss per scored
     token, and with a byte-level BPE tokenizer ``val/<name>/bpb@<seq_len>``, bits per UTF-8 byte of the scored
     tokens."""
 
@@ -162,9 +162,9 @@ class ValConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_unique_names(self):
-        names = [val_set.name for val_set in self.sets]
+        names = [val_set.name for val_set in self.set]
         if len(set(names)) < len(names):
-            raise ValueError(f"val.sets names must be unique: {names}")
+            raise ValueError(f"val.set names must be unique: {names}")
         return self
 
 
@@ -434,10 +434,10 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     def auto_setup_val(self):
         if self.val is None:
             return self
-        for val_set in self.val.sets:
+        for val_set in self.val.set:
             if val_set.seq_len is None:
                 val_set.seq_len = self.data.seq_len
-        longest = max(val_set.seq_len for val_set in self.val.sets)
+        longest = max(val_set.seq_len for val_set in self.val.set)
         if self.val.micro_batch_tokens is None:
             row_len = max(self.data.seq_len * self.data.micro_batch_size, longest)
             self.val.micro_batch_tokens = -(-row_len // self.model.cp) * self.model.cp
@@ -484,7 +484,7 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     @model_validator(mode="after")
     def validate_typed_renderer(self):
         """Require a typed renderer whenever the trainer renders real samples: SFT data or a ``chat`` validation set."""
-        renders_val_sets = self.val is not None and any(val_set.type == "chat" for val_set in self.val.sets)
+        renders_val_sets = self.val is not None and any(val_set.type == "chat" for val_set in self.val.set)
         if self.data.type != "sft" and not renders_val_sets:
             return self
 

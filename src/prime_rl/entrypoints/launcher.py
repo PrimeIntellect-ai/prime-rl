@@ -492,7 +492,7 @@ def launch(config: SupervisedTrainerConfig, entrypoint: str):
 
         pre_download_model(config.model.name, skip_weights=config.model.init.type == "scratch")
         pre_download_data(config.data, config.env_vars)
-        for val_set in config.val.sets if config.val is not None else []:
+        for val_set in config.val.set if config.val is not None else []:
             if val_set.type == "chat":
                 val_set.path = pre_download_dataset(val_set.path, val_set.revision, config.env_vars)
 

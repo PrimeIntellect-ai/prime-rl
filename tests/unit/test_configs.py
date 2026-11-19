@@ -218,7 +218,7 @@ def test_pretrain_config_roundtrip(tmp_path):
 
 
 def test_val_set_defaults(tmp_path):
-    """[[val.sets]] are scored at the training seq_len unless they set their own, in rows of val.micro_batch_tokens:
+    """[[val.set]] are scored at the training seq_len unless they set their own, in rows of val.micro_batch_tokens:
     the training micro-batch or the longest set seq_len, whichever is larger, rounded up to a multiple of the CP
     degree."""
     path = str(tmp_path / "tokens")
@@ -228,15 +228,15 @@ def test_val_set_defaults(tmp_path):
     ]
     write_toml(
         tmp_path / "pretrain.toml",
-        {"data": {"paths": [path], "seq_len": 1024, "micro_batch_size": 2}, "val": {"sets": val_sets}},
+        {"data": {"paths": [path], "seq_len": 1024, "micro_batch_size": 2}, "val": {"set": val_sets}},
     )
     args = ["@", str(tmp_path / "pretrain.toml"), "--output-dir", str(tmp_path)]
     config = cli(PretrainConfig, args=args)
-    assert [val_set.seq_len for val_set in config.val.sets] == [1024, 4096]
+    assert [val_set.seq_len for val_set in config.val.set] == [1024, 4096]
     assert config.val.micro_batch_tokens == 4096
     assert not can_parse(PretrainConfig, [*args, "--val.micro-batch-tokens", "2048"])
     odd_set = json.dumps([{**val_sets[1], "seq_len": 4097}])
-    cp_args = [*args, "--model.cp", "2", "--data.micro-batch-size", "1", "--val.sets", odd_set]
+    cp_args = [*args, "--model.cp", "2", "--data.micro-batch-size", "1", "--val.set", odd_set]
     assert cli(PretrainConfig, args=cp_args).val.micro_batch_tokens == 4098
 
 
