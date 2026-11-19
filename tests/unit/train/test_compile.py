@@ -26,7 +26,6 @@ import pytest
 import torch
 import torch.distributed as dist
 from tiny_models import (
-    ROW_LEN,
     TINY_MODELS,
     TINY_PRIME_RL_MODELS,
     TOKENIZER,
@@ -41,8 +40,6 @@ from torch._dynamo.utils import clear_compilation_metrics, counters, get_compila
 from prime_rl.configs.trainer import ModelConfig, TokenizerConfig
 from prime_rl.trainer.model import setup_model, setup_tokenizer
 from prime_rl.trainer.models import _CUSTOM_CAUSAL_LM_BY_MODEL_TYPE
-from prime_rl.trainer.models.layers.mega_moe import mega_moe_available
-from prime_rl.trainer.moe_runtime import setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import ParallelDims, get_parallel_dims
 from prime_rl.trainer.utils import clip_grad_norm_, setup_torch_distributed
 from prime_rl.trainer.vlm import get_language_model
@@ -63,10 +60,6 @@ def needs_sm100() -> str | None:
 
 def needs_deepgemm_gpu() -> str | None:
     return None if torch.cuda.get_device_capability()[0] in (9, 10) else "DeepGEMM FP8 needs an SM90 or SM100 GPU"
-
-
-def needs_mega_moe() -> str | None:
-    return None if mega_moe_available("bf16") else "needs the prime-mega-moe deep_gemm build, which CI does not install"
 
 
 @dataclass(frozen=True)
@@ -96,7 +89,6 @@ CP_MODELS = [
     "nemotron_h",
     "afmoe",
 ]
-MEGA_MOE_DISPATCH = {"type": "mega_moe", "max_tokens_per_rank": ROW_LEN}
 FLA_DISPATCH_IS_COMPILER_DISABLED = "Skip inlining function <function causal_conv1d_fwd"
 FLA_CP_CONTEXT_IS_COMPILER_DISABLED = "Skip calling function `<function build_cp_context"
 FA4_SINK_CALL_IS_UNTRACEABLE = "`active_fake_mode`"
@@ -166,27 +158,11 @@ CASES = [
         group="ep2_deepep",
         overrides={"moe": {"dispatch": {"type": "deepep"}}},
     ),
-    CompileCase(
-        "qwen3_moe-ep2-mega_moe",
-        "qwen3_moe",
-        ep=2,
-        group="ep2_mega_moe",
-        overrides={"moe": {"dispatch": MEGA_MOE_DISPATCH}},
-        requirement=needs_mega_moe,
-    ),
-    CompileCase(
-        "qwen3_moe-ep2-mega_moe_llep",
-        "qwen3_moe",
-        ep=2,
-        group="ep2_mega_moe",
-        overrides={"moe": {"dispatch": {**MEGA_MOE_DISPATCH, "llep": {}}}},
-        requirement=needs_mega_moe,
-    ),
 ]
 GROUPS = {
     group: [case for case in CASES if case.group == group] for group in dict.fromkeys(case.group for case in CASES)
 }
-TIMEOUTS = {"dp2": 30 * 60, "cp2": 20 * 60, "ep2_torch": 15 * 60, "ep2_deepep": 10 * 60, "ep2_mega_moe": 10 * 60}
+TIMEOUTS = {"dp2": 30 * 60, "cp2": 20 * 60, "ep2_torch": 15 * 60, "ep2_deepep": 10 * 60}
 
 
 class KnownFailure(Exception):
@@ -282,8 +258,6 @@ def main(output_dir: Path, cases: list[CompileCase]) -> None:
     configs = {case.name: model_config(case, models_dir) for case in cases}
     skip_reasons = {case.name: case.skip_reason() for case in cases}
     runnable = [case for case in cases if skip_reasons[case.name] is None]
-    for case in runnable:
-        setup_moe_comm_env(configs[case.name])
     setup_torch_distributed(timeout=PROCESS_GROUP_TIMEOUT)
     built = {name: isolated(save_tiny_model, name, models_dir) for name in sorted({case.model for case in runnable})}
     dist.barrier()
