@@ -82,10 +82,6 @@ path = "metrics.jsonl"
 compress = true
 float_decimals = 6
 
-[inference]
-enable_fp32_lm_head = true
-enable_fp32_router_logits = true
-
 [inference.vllm]
 seed = 0
 dtype = "bfloat16"

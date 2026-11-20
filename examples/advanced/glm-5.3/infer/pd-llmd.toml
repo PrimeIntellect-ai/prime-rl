@@ -7,7 +7,6 @@
 output_dir = "/shared/outputs/glm5.2-16node-llmd"
 
 use_deep_gemm = true
-enable_fp32_lm_head = true
 
 [kv_cache_offload]
 type = "mooncake"

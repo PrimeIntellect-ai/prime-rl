@@ -140,4 +140,3 @@ env.agent.runtime.labels = ["glm5"]
 [inference]
 # <0.80 because glm5 layers are too large for 0.85
 use_deep_gemm = true
-enable_fp32_lm_head = true

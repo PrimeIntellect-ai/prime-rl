@@ -123,7 +123,7 @@ kernels and does not share this accumulation guarantee.
 
 ### LM head precision
 
-The LM head computes FP32 logits from its BF16 operands: one GEMM writes the logits in FP32 instead of rounding them to BF16 (fused and vanilla head). Gradients stay BF16. This matches inference, whose `enable_fp32_lm_head` defaults to `true` (vLLM's FP32 head), and lowers the trainer–inference mismatch.
+The LM head computes FP32 logits from its BF16 operands: one GEMM writes the logits in FP32 instead of rounding them to BF16 (fused and vanilla head). Gradients stay BF16. This matches inference, which serves FP32 LM-head and router logits by default (vLLM's `head_dtype` and `moe_router_dtype` HF overrides), and lowers the trainer–inference mismatch. To serve BF16 logits instead, set `inference.vllm.hf_overrides = {head_dtype = "model", moe_router_dtype = "bfloat16"}`.
 
 ### Expert Parallelism Backends
 
