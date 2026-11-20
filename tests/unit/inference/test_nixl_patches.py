@@ -1,11 +1,13 @@
 from types import SimpleNamespace
 
 import pytest
+from vllm.distributed.kv_transfer.kv_connector.v1.multi_connector import MultiConnector
 from vllm.distributed.kv_transfer.kv_connector.v1.nixl.base_scheduler import NixlBaseConnectorScheduler
 from vllm.distributed.kv_transfer.kv_connector.v1.nixl.pull_scheduler import NixlPullConnectorScheduler
 from vllm.v1.kv_cache_interface import FullAttentionSpec, SlidingWindowMLASpec, SlidingWindowSpec
 
 from prime_rl.inference.patches import (
+    monkey_patch_multi_connector_first_claim,
     monkey_patch_nixl_bidirectional_single_pull,
     monkey_patch_nixl_sliding_window_backoff,
 )
@@ -39,6 +41,38 @@ def test_bidirectional_prefill_pulls_decode_blocks_once(monkeypatch):
     assert scheduler.get_num_new_matched_tokens(_turn2_request(), 0) == (768, True)
     # Back through the lookup after the pull (failed read under `recompute`, or preempted and evicted): prefill locally.
     assert scheduler.get_num_new_matched_tokens(_turn2_request(_remote_blocks_processed=True), 0) == (0, False)
+
+
+class _FakeConnector:
+    def __init__(self, matched):
+        self.matched = matched
+        self.calls = 0
+
+    def get_num_new_matched_tokens(self, request, num_computed_tokens):
+        self.calls += 1
+        return self.matched
+
+
+def test_multi_connector_stops_at_first_claim(monkeypatch):
+    monkeypatch.setattr(MultiConnector, "get_num_new_matched_tokens", MultiConnector.get_num_new_matched_tokens)
+    monkey_patch_multi_connector_first_claim()
+    patched = MultiConnector.get_num_new_matched_tokens
+    monkey_patch_multi_connector_first_claim()
+    assert MultiConnector.get_num_new_matched_tokens is patched
+
+    def lookup(*matched):
+        multi = object.__new__(MultiConnector)
+        multi._connectors = [_FakeConnector(m) for m in matched]
+        multi._requests_to_connector = {}
+        result = multi.get_num_new_matched_tokens(SimpleNamespace(request_id="turn-2"), 0)
+        return result, [c.calls for c in multi._connectors], multi._requests_to_connector.get("turn-2")
+
+    # NIXL claims the turn through decode's handle: the store is not asked.
+    assert lookup((768, True), (1024, True)) == ((768, True), [1, 0], 0)
+    # No decode handle, or back through the lookup after a failed read: the store still serves it.
+    assert lookup((0, False), (1024, True)) == ((1024, True), [1, 1], 1)
+    # A connector still looking up: retry on a later step.
+    assert lookup((0, False), (None, False)) == ((None, False), [1, 1], None)
 
 
 def _backoff_scheduler(*specs):
