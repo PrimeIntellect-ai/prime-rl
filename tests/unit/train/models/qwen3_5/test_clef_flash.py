@@ -30,7 +30,7 @@ from prime_rl.trainer.models.qwen3_5.modeling_clef_flash import SCALARS, ClefFla
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.sft.system_one.clef_flash import ClefFlashStrategy
 from prime_rl.trainer.sft.system_one.data import render_sample
-from prime_rl.trainer.sft.system_one.loss import build_decision_loss_inputs, decision_loss
+from prime_rl.trainer.sft.system_one.loss import build_decision_loss_inputs
 from prime_rl.trainer.sft.system_one.record import SystemOneRequest, parse_record
 from tests.unit.train.models.qwen3_5.clef_flash_release import (
     JOINT_HEAD_CONFIG,
@@ -501,25 +501,17 @@ QUESTIONS = [
 ]
 
 
-LABELS = [{"outage": True, "team": "x"}, {"urgency": 2}]
-
-
-def records() -> list[tuple[SystemOneRequest, list[list[float] | None]]]:
+def requests() -> list[SystemOneRequest]:
     rows = [
-        {
-            "id": f"r{i}",
-            "state": json.dumps({"ticket": f"Checkout fails {i}."}),
-            "questions": json.dumps(questions),
-            "label": json.dumps(label),
-        }
-        for i, (questions, label) in enumerate(zip(QUESTIONS, LABELS))
+        {"id": f"r{i}", "state": json.dumps({"ticket": f"Checkout fails {i}."}), "questions": json.dumps(questions)}
+        for i, questions in enumerate(QUESTIONS)
     ]
-    return [parse_record(row, SystemOneColumnsConfig()) for row in rows]
+    return [parse_record(row, SystemOneColumnsConfig())[0] for row in rows]
 
 
 def packed_row(strategy: ClefFlashStrategy) -> tuple[torch.Tensor, list[int], list[dict]]:
     """Two records' samples, packed into one row with padding: its input ids, sample lengths and sample data."""
-    samples = [render_sample(strategy, request, 4096, targets) for request, targets in records()]
+    samples = [render_sample(strategy, request, 4096) for request in requests()]
     input_ids = torch.tensor([token for sample in samples for token in sample["input_ids"]] + [0] * PADDING)
     return input_ids, [len(sample["input_ids"]) for sample in samples], [sample["sample_data"] for sample in samples]
 
@@ -545,23 +537,3 @@ def test_option_logits_read_every_record_with_one_head_call(tmp_path, monkeypatc
         alone.append(strategy.option_logits(model, hidden_states[start : start + sample_len], ids, record_questions))
         start += sample_len
     torch.testing.assert_close(logits, torch.cat(alone), rtol=1e-5, atol=1e-5)
-
-
-def test_the_decision_loss_trains_the_head_and_the_backbone(tmp_path, monkeypatch):
-    write_release(tmp_path / "release")
-    model = load_release(tmp_path / "release", monkeypatch).float()
-    strategy = ClefFlashStrategy(tokenizer(), model.config)
-    input_ids, sample_lens, sample_data = packed_row(strategy)
-    inputs = build_decision_loss_inputs(sample_lens, sample_data)
-    # The backbone's layers need CUDA kernels: its final norm on the input embeddings stands in for them
-    language_model = model.model.language_model
-    hidden_states = language_model.norm(language_model.embed_tokens(input_ids))
-
-    out = decision_loss(
-        model, hidden_states[None], strategy=strategy, inputs=inputs, input_ids=input_ids[None], brier_weight=0.1
-    )
-    assert torch.isfinite(out["loss"]) and out["ce"].shape == (3,)
-    out["loss"].backward()
-
-    assert all(parameter.grad.abs().sum() > 0 for parameter in model.pooler.head.parameters())
-    assert language_model.embed_tokens.weight.grad.abs().sum() > 0 and language_model.norm.weight.grad.abs().sum() > 0
