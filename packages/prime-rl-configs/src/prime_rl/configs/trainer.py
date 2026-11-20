@@ -131,6 +131,7 @@ _DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
     "weights_proj",
     "in_proj_a",
     "in_proj_b",
+    r"pooler\.head\.",  # Clef joint schema head: vLLM runs it in BF16
 ]
 
 

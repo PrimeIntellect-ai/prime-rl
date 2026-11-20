@@ -68,7 +68,8 @@ class SystemOneStrategy(ABC):
     ) -> Float[Tensor, "options"]:
         """Every question's option logits, concatenated in ``questions`` order, each in its ``options`` order. Runs
         once per micro-batch inside the forward: call the same head modules, once each, on every micro-batch, rather
-        than reading their weights; the model class freezes parameters this never uses."""
+        than reading their weights; the model class freezes parameters this never uses. An untied LM head's weight
+        may be read: it stays gathered with the final norm through the forward."""
 
 
 def _is_int(value) -> bool:
