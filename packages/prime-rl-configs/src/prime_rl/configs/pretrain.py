@@ -3,7 +3,13 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
-from prime_rl.configs.supervised import BaseDataConfig, SupervisedTrainerConfig, ValConfig
+from prime_rl.configs.supervised import (
+    BaseDataConfig,
+    BaseSourceConfig,
+    SupervisedTrainerConfig,
+    ValConfig,
+    check_sources,
+)
 from prime_rl.configs.trainer import (
     AdamWConfig,
     ConstantSchedulerConfig,
@@ -15,21 +21,13 @@ from prime_rl.configs.trainer import (
     ScratchInit,
     SignSGDConfig,
 )
-from prime_rl.utils.config import BaseConfig
 
 
-class TokenSourceConfig(BaseConfig):
+class TokenSourceConfig(BaseSourceConfig):
     """A folder of datatrove tokenized shards, one source of the training data."""
-
-    name: str
-    """Names the source in the ``progress/<name>/*`` metrics."""
 
     path: Path
     """Folder of ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``."""
-
-    weight: float | None = Field(None, ge=0)
-    """The source's relative weight: its share of the training tokens is its weight over the sum of all weights. If
-    None on every source, the share is the source's share of all sources' tokens."""
 
     repetitions: float | None = Field(None, ge=1)
     """How often every token of a fixed subset of the source is seen over the run (needs ``max_steps``). If None, the
@@ -58,14 +56,7 @@ class PretrainDataConfig(BaseDataConfig):
 
     @model_validator(mode="after")
     def validate_sources(self):
-        names = [source.name for source in self.source]
-        if len(set(names)) < len(names):
-            raise ValueError(f"data.source: the names must be unique, got {names}")
-        weights = [source.weight for source in self.source]
-        if None in weights and any(weight is not None for weight in weights):
-            raise ValueError("data.source: set weight on every source or on none (natural shares)")
-        if None not in weights and sum(weights) <= 0:
-            raise ValueError("data.source: the weights must sum to more than 0")
+        check_sources(self.source)
         return self
 
 

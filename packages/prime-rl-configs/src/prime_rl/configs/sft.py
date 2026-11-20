@@ -4,7 +4,13 @@ from pydantic import Field, model_validator
 from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
 from renderers.base import MODEL_RENDERER_MAP
 
-from prime_rl.configs.supervised import BaseDataConfig, BaseValConfig, SupervisedTrainerConfig
+from prime_rl.configs.supervised import (
+    BaseDataConfig,
+    BaseSourceConfig,
+    BaseValConfig,
+    SupervisedTrainerConfig,
+    check_sources,
+)
 from prime_rl.utils.config import BaseConfig
 
 
@@ -44,11 +50,8 @@ class SFTColumnsConfig(BaseConfig):
     """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``reasoning_effort = "effort"``. A row's non-null value overrides the ``[renderer]`` setting; rows and datasets without the column use it unchanged."""
 
 
-class HFSourceConfig(BaseConfig):
+class HFDatasetSourceConfig(BaseSourceConfig):
     """One ``(dataset, subset, split)`` of a Hugging Face dataset."""
-
-    name: str = Field(pattern=r"^[^/]+$")
-    """Names the source in the ``progress/<name>/*`` metrics."""
 
     dataset: str
     """HF dataset name or local path."""
@@ -61,10 +64,6 @@ class HFSourceConfig(BaseConfig):
 
     split: str = "train"
     """Split of the dataset."""
-
-    weight: float | None = Field(None, ge=0)
-    """The source's relative weight: its share of the training samples is its weight over the sum of all weights. If
-    None on every source, the share is the source's share of all sources' rows."""
 
     columns: SFTColumnsConfig | None = None
     """Columns of this source. Unset fields keep ``data.columns``."""
@@ -87,8 +86,8 @@ class FakeDataConfig(BaseConfig):
 class SFTDataConfig(BaseDataConfig):
     """Samples drawn from one or more sources into packed rows of ``seq_len`` tokens."""
 
-    source: list[HFSourceConfig] = Field(
-        default_factory=lambda: [HFSourceConfig(name="reverse-text", dataset="PrimeIntellect/Reverse-Text-SFT")],
+    source: list[HFDatasetSourceConfig] = Field(
+        default_factory=lambda: [HFDatasetSourceConfig(name="reverse-text", dataset="PrimeIntellect/Reverse-Text-SFT")],
         min_length=1,
     )
     """The sources to draw samples from (``[[data.source]]``)."""
@@ -110,14 +109,7 @@ class SFTDataConfig(BaseDataConfig):
 
     @model_validator(mode="after")
     def validate_sources(self):
-        names = [source.name for source in self.source]
-        if len(set(names)) < len(names):
-            raise ValueError(f"data.source: the names must be unique, got {names}")
-        weights = [source.weight for source in self.source]
-        if None in weights and any(weight is not None for weight in weights):
-            raise ValueError("data.source: set weight on every source or on none (natural shares)")
-        if None not in weights and sum(weights) <= 0:
-            raise ValueError("data.source: the weights must sum to more than 0")
+        check_sources(self.source)
         for source in self.source:
             overrides = source.columns.model_dump(exclude_unset=True) if source.columns is not None else {}
             source.columns = SFTColumnsConfig.model_validate({**self.columns.model_dump(), **overrides})
