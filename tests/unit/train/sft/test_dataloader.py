@@ -267,13 +267,14 @@ def test_resume_with_another_mix_reads_on(dummy_renderer):
         for s in snapshots
         if "pending_sample" in s["dataset_state"]
     }
-    # As the trainer does: the new mixture starts at the furthest draw of any worker.
-    furthest = max(state["step"] for _, dataloader in before for state in get_dataset_state(dataloader).values())
     after = loaders({"b": 3, "a": 1, "c": 1})
-    since_resume = []
-    for (dataset, dataloader), state in zip(after, states):
-        dataset.resume_step = furthest
+    for (_, dataloader), state in zip(after, states):
         dataloader.load_state_dict(state)
+    # As the trainer does: the new mixture starts at the furthest draw of any worker.
+    furthest = max(state["step"] for _, dataloader in after for state in get_dataset_state(dataloader).values())
+    since_resume = []
+    for dataset, dataloader in after:
+        dataset.resume_step = furthest
         since_resume += read(dataloader, 8)
 
     assert len(contents + since_resume) == len(set(contents + since_resume))

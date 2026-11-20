@@ -79,15 +79,15 @@ def due(read: np.ndarray, start: np.ndarray, weights: np.ndarray) -> np.ndarray:
 
 
 def mixture_changed(saved: dict[str, dict], now: dict[str, dict], log: bool) -> bool:
-    """Whether the mixture of the sources ``now`` differs from that of a checkpoint's sources ``saved`` (by name, each
-    a weight and the facts of its data). Sources match by name: a kept source reads on where it stopped, which needs
+    """Whether the mixture of the sources ``now`` differs, in shares or order, from that of a checkpoint's sources
+    ``saved`` (by name, each a weight and the facts of its data). Sources match by name: a kept source reads on where it stopped, which needs
     the same data, so one whose facts differ raises. With ``log``, a changed mixture logs a line per source."""
-    for name in [name for name in now if name in saved]:
-        for key, value in now[name].items():
-            if key != "weight" and saved[name].get(key) != value:
+    for name, source in now.items():
+        for key, value in source.items():
+            if name in saved and key != "weight" and saved[name].get(key) != value:
                 raise ValueError(
-                    f"Source {name}: {key} {saved[name].get(key)!r} -> {value!r}. A kept source reads on where it "
-                    "stopped only with the same data: resume with it, or rename the source to read it from the "
+                    f"Source {name}: {key} {saved[name].get(key)!r} -> {value!r}, so it can't read on where it "
+                    "stopped. Keep its data and the settings that size it, or rename the source to read it from the "
                     f"start. {SKIP_DATALOADER}"
                 )
 
@@ -95,8 +95,9 @@ def mixture_changed(saved: dict[str, dict], now: dict[str, dict], log: bool) -> 
         total = sum(source["weight"] for source in sources.values())
         return {name: source["weight"] / total for name, source in sources.items()}
 
+    # In order too: ties go to the first source.
     before, after = shares(saved), shares(now)
-    if before == after:
+    if list(before.items()) == list(after.items()):
         return False
     if log:
         for name, share in after.items():
@@ -271,14 +272,16 @@ def setup_dataloader(dataset: StatefulIterableDataset, config: BaseDataConfig, c
 
 
 def get_dataset_state(dataloader: StatefulDataLoader) -> dict:
-    """Dataset position per worker for the startup log, parsed from ``StatefulDataLoader.state_dict()``.
+    """Dataset position per worker, parsed from the loader's state.
 
     The loader is the only source that is correct in every case: after a resume's
     ``load_state_dict`` the restored position exists solely in the loader's stashed
     state (it reaches the dataset copies inside workers when the iterator forks them;
-    the main-process dataset object stays at position zero). The keys are torchdata's
-    private worker-snapshot layout."""
-    snapshots = dataloader.state_dict()["_snapshot"]["_worker_snapshots"]
+    the main-process dataset object stays at position zero). Read from the stash, so
+    the workers don't fork yet: ``state_dict()`` would start them. The keys are
+    torchdata's private worker-snapshot layout."""
+    state = dataloader.next_iter_state or dataloader.state_dict()
+    snapshots = state["_snapshot"]["_worker_snapshots"]
     return {wid: snap["dataset_state"]["dataset"] for wid, snap in sorted(snapshots.items())}
 
 
