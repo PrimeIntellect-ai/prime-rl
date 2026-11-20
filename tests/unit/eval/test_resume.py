@@ -5,7 +5,7 @@ import orjson
 import pytest
 import verifiers.v1 as vf
 from pydantic import ValidationError
-from verifiers.v1.utils.eval import plan_rollouts
+from verifiers.v1 import plan_rollouts
 
 from prime_rl.configs.eval import EvalConfig
 from prime_rl.eval import resume

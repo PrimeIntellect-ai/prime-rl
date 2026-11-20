@@ -3,7 +3,7 @@
 included."""
 
 import pytest
-from verifiers.v1.utils.loaders import resolve_env_config
+from verifiers.v1 import resolve_env_config
 
 
 @pytest.mark.parametrize(

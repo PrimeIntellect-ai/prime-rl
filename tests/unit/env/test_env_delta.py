@@ -7,12 +7,21 @@ import copy
 import numpy as np
 import pytest
 import verifiers.v1 as vf
-from verifiers.v1.delta import DeltaStreamer, EpisodeAssembly, dump
-from verifiers.v1.episode import EnvInfo, Episode, WireEpisode
-from verifiers.v1.graph import MessageNode
-from verifiers.v1.semantic import ParentLink
-from verifiers.v1.trace import ModelCall, TimeSpan, TraceTask
-from verifiers.v1.types import AssistantMessage, Usage, UserMessage
+from verifiers.v1 import (
+    AssistantMessage,
+    DeltaStreamer,
+    EnvInfo,
+    Episode,
+    EpisodeAssembly,
+    MessageNode,
+    ModelCall,
+    ParentLink,
+    TimeSpan,
+    TraceTask,
+    Usage,
+    UserMessage,
+    WireEpisode,
+)
 
 from prime_rl.env.client import assemble_episode
 from prime_rl.env.encoding import pack, unpack
@@ -59,7 +68,7 @@ def add_turn(trace: vf.Trace, reply: str) -> None:
             time=TimeSpan(start=1.0, end=2.0),
         )
     )
-    trace.notify()
+    trace._notify()
 
 
 @pytest.mark.asyncio
@@ -107,7 +116,7 @@ async def test_deltas_stream_once_and_reassemble_the_episode():
         traces.append(trace)
         streamer.watch(trace)
         trace.timing.boot.start = 1.0
-        trace.notify()
+        trace._notify()
         await settle()
         assert len(frames) == 1, "the mint and the boot span coalesce into one delta"
         add_turn(trace, "a1")
@@ -135,7 +144,7 @@ async def test_deltas_stream_once_and_reassemble_the_episode():
     for delta in deltas:
         assembly.apply(delta)
     assert deltas == handed, "assembling never mutates a delta the caller holds"
-    head = dump(episode, exclude={"traces"})
+    head = episode.model_dump(mode="python", serialize_as_any=True, exclude={"traces"})
     summaries = [TraceSummary(id=trace.id, nodes=len(trace.nodes), calls=len(trace.calls))]
     rebuilt = WireEpisode.model_validate(unpack(pack(assemble_episode(assembly, head, summaries))))
     assert rebuilt.ok and rebuilt.traces[0].id == trace.id

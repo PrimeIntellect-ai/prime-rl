@@ -12,7 +12,7 @@ from prime_runs.projection import build_samples, episodes_to_parquet_bytes
 from prime_runs.sinks.base import stamp_run, to_mapping
 from prime_runs.sinks.traces import names_run
 from prime_traces.traces import _encode_record
-from verifiers.v1.delta import DeltaStreamer, EpisodeAssembly, dump
+from verifiers.v1 import DeltaStreamer, EpisodeAssembly
 
 from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.env.client import assemble_episode
@@ -42,7 +42,7 @@ def _over_the_wire(source: vf.Episode) -> tuple[vf.WireEpisode, list[dict]]:
         assembly.apply(delta)
         deltas.append(delta)
     summaries = [TraceSummary(id=t.id, nodes=len(t.nodes), calls=len(t.calls)) for t in traces]
-    head = dump(source, exclude={"traces"})
+    head = source.model_dump(mode="python", serialize_as_any=True, exclude={"traces"})
     return vf.WireEpisode.model_validate(assemble_episode(assembly, head, summaries)), deltas
 
 

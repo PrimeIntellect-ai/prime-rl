@@ -13,7 +13,7 @@ from itertools import zip_longest
 from typing import TYPE_CHECKING
 
 import verifiers.v1 as vf
-from verifiers.v1.utils.eval import plan_rollouts
+from verifiers.v1 import plan_rollouts
 
 from prime_rl.control.types import ConfigUpdate, Reconfigurable
 from prime_rl.orchestrator.types import TaskRequest

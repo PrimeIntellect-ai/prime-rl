@@ -6,13 +6,7 @@ from typing import Protocol
 import msgpack
 import zmq
 import zmq.asyncio
-from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.env import EnvConfig
-from verifiers.v1.configs.sampling import SamplingConfig
-from verifiers.v1.delta import DeltaStreamer, dump
-from verifiers.v1.episode import Episode
-from verifiers.v1.task import Task
-from verifiers.v1.utils.loaders import load_environment
+from verifiers.v1 import DeltaStreamer, EnvConfig, Episode, ModelContext, SamplingConfig, Task, load_environment
 
 from prime_rl.env.encoding import pack
 from prime_rl.env.types import (
@@ -166,7 +160,7 @@ class EnvWorker:
                     raise
                 self._kept[request_id] = (hook, episode)
         return RunResponse(
-            head=dump(episode, exclude={"traces"}),
+            head=episode.model_dump(mode="python", serialize_as_any=True, exclude={"traces"}),
             traces=[
                 TraceSummary(id=trace.id, nodes=len(trace.nodes), calls=len(trace.calls)) for trace in episode.traces
             ],

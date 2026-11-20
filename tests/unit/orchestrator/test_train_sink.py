@@ -7,9 +7,16 @@ import msgspec
 import numpy as np
 import pytest
 import verifiers.v1 as vf
-from verifiers.v1.graph import MessageNode
-from verifiers.v1.trace import ModelCall
-from verifiers.v1.types import AssistantMessage, Tool, ToolMessage, Usage, UserMessage, WeightVersionSpan
+from verifiers.v1 import (
+    AssistantMessage,
+    MessageNode,
+    ModelCall,
+    Tool,
+    ToolMessage,
+    Usage,
+    UserMessage,
+    WeightVersionSpan,
+)
 
 from prime_rl.configs.algorithm import GRPOAlgoConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
