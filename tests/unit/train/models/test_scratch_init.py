@@ -54,6 +54,9 @@ LAYER_KINDS = {
             "compressed_sparse_attention",
         ],
     ),
+    "deepseek_v41_text": dict(
+        engram_num_embeddings=[240, 306], engram_vocab_size=50, engram_max_ngram_size=3, engram_n_heads=2
+    ),
     "glm5_next_text": dict(num_hidden_layers=4, layer_types=["linear_attention", "deepseek_sparse_attention"] * 2),
 }
 

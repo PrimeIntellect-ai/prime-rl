@@ -33,13 +33,41 @@ class RowDispatchState:
     ids_shape: torch.Size
 
 
-class RowShardedLookup:
-    """Look up a table sharded `Shard(0)` over a 1-D mesh by sending each id to the rank that owns its row."""
+class ExpandUniqueRows(torch.autograd.Function):
+    """`unique_rows[inverse]`, summing the gradients of repeated ids in fp32."""
 
-    def __init__(self, mesh: DeviceMesh) -> None:
+    @staticmethod
+    def forward(ctx, unique_rows: Tensor, inverse: Tensor) -> Tensor:
+        ctx.save_for_backward(inverse)
+        ctx.num_unique = unique_rows.shape[0]
+        return unique_rows[inverse]
+
+    @staticmethod
+    def backward(ctx, grad_output: Tensor) -> tuple[Tensor, None]:
+        (inverse,) = ctx.saved_tensors
+        head_dim = grad_output.shape[-1]
+        grad_unique = grad_output.new_zeros(ctx.num_unique, head_dim, dtype=torch.float32)
+        grad_unique.index_add_(0, inverse.flatten(), grad_output.reshape(-1, head_dim).float())
+        return grad_unique.to(grad_output.dtype), None
+
+
+class RowShardedLookup:
+    """Look up a table sharded `Shard(0)` over a 1-D mesh by sending each id to the rank that owns its row.
+
+    With `deduplicate`, repeated ids are sent and fetched once.
+    """
+
+    def __init__(self, mesh: DeviceMesh, deduplicate: bool = False) -> None:
         self.mesh = mesh
+        self.deduplicate = deduplicate
 
     def __call__(self, weight: DTensor, ids: Int[Tensor, "..."]) -> Float[Tensor, "... head_dim"]:
+        if not self.deduplicate:
+            return self.lookup(weight, ids)
+        unique_ids, inverse = torch.unique(ids, return_inverse=True)
+        return ExpandUniqueRows.apply(self.lookup(weight, unique_ids), inverse)
+
+    def lookup(self, weight: DTensor, ids: Int[Tensor, "..."]) -> Float[Tensor, "... head_dim"]:
         rows_per_rank = (weight.shape[0] + self.mesh.size() - 1) // self.mesh.size()
         owned_ids, state = self.dispatch(ids, rows_per_rank)
         owned_rows = self.lookup_owned_rows(weight, owned_ids, rows_per_rank)
