@@ -1,0 +1,27 @@
+# H200 overlay for rl.toml: 1 trainer node + 3 one-node inference replicas. Change the replica
+# count with `--deployment.num-infer-replicas`.
+#
+#   uv run rl @ examples/advanced/qwen3.6-35b-a3b/rl.toml @ examples/advanced/qwen3.6-35b-a3b/gpu/h200.toml
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+# With one replica, the trainer waited for batches 73% of the time on scaleswe.
+num_infer_replicas = 3
+
+# --- Trainer: one 262144-token sample per micro batch fits with cp 4 at 87 GiB peak ---
+
+[trainer.model]
+ep = 8
+cp = 4
+# Offloading would save 8 GiB of the 87 GiB peak but cost 6% throughput.
+ac_offloading = "None"
+
+# --- Inference: tp 2 x dp 4 per node ---
+
+[inference.vllm]
+# The model has 2 KV heads: TP above 2 replicates the KV cache.
+tensor_parallel_size = 2
+data_parallel_size = 4
+gpu_memory_utilization = 0.85
