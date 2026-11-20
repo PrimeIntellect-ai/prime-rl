@@ -26,10 +26,10 @@ env.taskset.dataset_subset = "default"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 
-[orchestrator.eval]
+[eval]
 interval = 50
 
-[[orchestrator.eval.source]]
+[[eval.source]]
 name = "aime2024"
 group_size = 32
 env.taskset.id = "aime24"

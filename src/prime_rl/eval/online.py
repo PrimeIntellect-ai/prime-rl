@@ -17,7 +17,7 @@ import json
 import os
 
 from prime_rl import monitors
-from prime_rl.configs.eval import SFTOnlineEvalConfig
+from prime_rl.configs.eval import OnlineEvalProcessConfig
 from prime_rl.configs.shared import FileSystemWeightBroadcastConfig
 from prime_rl.eval.runner import POLL_INTERVAL_S, EvalRunner
 from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
@@ -33,8 +33,8 @@ STARTUP_BROADCAST_TIMEOUT_S = 1200
 
 
 class OnlineEval:
-    def __init__(self, config: SFTOnlineEvalConfig) -> None:
-        assert config.model is not None, "the sft launcher fills eval.model"
+    def __init__(self, config: OnlineEvalProcessConfig) -> None:
+        assert config.model is not None, "the sft and pretrain launchers fill eval.model"
         self.config = config
         self.runner = EvalRunner(config, run_dir=config.output_dir)
         # The last weight-broadcast step already handled (evaluated or skipped).
@@ -199,7 +199,7 @@ class OnlineEval:
 
 
 @clean_exit
-async def run_online_eval(config: SFTOnlineEvalConfig) -> None:
+async def run_online_eval(config: OnlineEvalProcessConfig) -> None:
     evaluation = OnlineEval(config)
     try:
         await evaluation.run()
@@ -211,7 +211,7 @@ async def run_online_eval(config: SFTOnlineEvalConfig) -> None:
 
 def main():
     set_proc_title("OnlineEvals")
-    config = cli(SFTOnlineEvalConfig)
+    config = cli(OnlineEvalProcessConfig)
     config_dir, log_dir = prepare_attempt_dirs(config.output_dir)
     os.environ["PRL_ATTEMPT_CONFIG_DIR"] = str(config_dir)
     os.environ["PRL_ATTEMPT_LOG_DIR"] = str(log_dir)

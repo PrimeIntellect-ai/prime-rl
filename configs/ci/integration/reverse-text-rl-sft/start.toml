@@ -54,16 +54,16 @@ env.taskset.id = "reverse-text"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 
-[orchestrator.eval]
+[eval]
 interval = 1
 
-[orchestrator.eval.select]
+[eval.select]
 limit = 16
 
-[orchestrator.eval.sampling]
+[eval.sampling]
 max_completion_tokens = 128
 
-[[orchestrator.eval.source]]
+[[eval.source]]
 name = "reverse-text"
 env.taskset.id = "reverse-text"
 env.agent.harness.id = "null"

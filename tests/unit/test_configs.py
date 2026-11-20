@@ -14,13 +14,12 @@ from renderers import custom_renderer_config
 
 from prime_rl.configs.algorithm import GRPOAlgoConfig, LinearLengthPenaltyConfig, LinearSubagentLengthPenaltyConfig
 from prime_rl.configs.env_worker_pool import EnvWorkerPoolConfig
-from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
+from prime_rl.configs.eval import EvalConfig, SupervisedOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.orchestrator import (
     EvalSourcesConfig,
+    OnlineEvalConfig,
     OrchestratorConfig,
-    RLOnlineEvalConfig,
-    ScheduledEvalConfig,
     TrainConfig,
     TrainSourceConfig,
 )
@@ -267,20 +266,23 @@ def test_val_source_defaults(tmp_path):
     assert cli(PretrainConfig, args=cp_args).val.micro_batch_tokens == 4098
 
 
-def test_rl_val_is_set_at_the_top_level(tmp_path):
-    """An rl config takes [val] as SFT and pretraining do: it fills trainer.val (with RL's model.seq_len defaults),
-    which is not set directly, and chat sources render like the policy's rollouts."""
+def test_rl_val_and_eval_are_set_at_the_top_level(tmp_path):
+    """An rl config takes [val] and [eval] as SFT and pretraining do: they fill trainer.val (with RL's model.seq_len
+    defaults) and orchestrator.eval, which are not set directly, and chat sources render like the policy's rollouts."""
     base = ["@", "configs/ci/integration/reverse-text/start.toml", "--output-dir", str(tmp_path)]
     val = {"source": [{"type": "documents", "name": "held-out", "path": str(tmp_path)}]}
-    write_toml(tmp_path / "shared.toml", {"val": val})
+    source = {"name": "reverse-text-eval", "env": {"taskset": {"id": "reverse-text"}}}
+    write_toml(tmp_path / "shared.toml", {"val": val, "eval": {"interval": 5, "source": [source]}})
     config = cli(RLConfig, args=[*base, "@", str(tmp_path / "shared.toml")])
     assert config.trainer.val.source[0].seq_len == config.trainer.val.micro_batch_tokens == 2048
+    assert config.orchestrator.eval.intervals == {"reverse-text-eval": 5}
     assert config.trainer.renderer == config.orchestrator.renderer
     (tmp_path / "rl.json").write_text(json.dumps(dump_resolved_config(config)))
     assert cli(RLConfig, args=["@", str(tmp_path / "rl.json")]) == config
 
-    write_toml(tmp_path / "direct.toml", {"trainer": {"val": val}})
-    assert not can_parse(RLConfig, [*base, "@", str(tmp_path / "direct.toml")])
+    for direct in ({"trainer": {"val": val}}, {"orchestrator": {"eval": {"source": [source]}}}):
+        write_toml(tmp_path / "direct.toml", direct)
+        assert not can_parse(RLConfig, [*base, "@", str(tmp_path / "direct.toml")])
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -693,7 +695,7 @@ def test_resolved_json_roundtrips_explicit_none(tmp_path):
             "PRIME_API_KEY",
         ),
         (
-            SFTOnlineEvalConfig,
+            SupervisedOnlineEvalConfig,
             ["--source", '[{"env":{"id":"single_agent"}}]'],
             "http://localhost:8000/v1",
             "VLLM_API_KEY",
@@ -795,7 +797,7 @@ def test_sources_inherit_the_group_fields_they_leave_unset(
     reloaded = EvalConfig.model_validate(config.model_dump(mode="json"))
     assert reloaded.source[1].model_dump() == b.model_dump()
 
-    online = RLOnlineEvalConfig.model_validate(
+    online = OnlineEvalConfig.model_validate(
         {
             "interval": 5,
             "source": [
@@ -831,7 +833,7 @@ def test_train_sources_can_use_their_own_group_sizes():
 
 
 @pytest.mark.parametrize(
-    "group", [TrainConfig, EvalSourcesConfig, ScheduledEvalConfig, EvalConfig, SFTOnlineEvalConfig]
+    "group", [TrainConfig, EvalSourcesConfig, OnlineEvalConfig, EvalConfig, SupervisedOnlineEvalConfig]
 )
 def test_group_defaults_match_source_defaults(group):
     # An unset group field is not layered, so its default must be the source's.

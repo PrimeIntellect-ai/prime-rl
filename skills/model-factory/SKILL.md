@@ -103,7 +103,7 @@ Adapt the example to the requested experiment:
   consult the [configs skill](../configs/SKILL.md) for config structure. The
   selected revision's schema takes precedence over snippets from another build.
 - Keep RL train/eval sources separate under `orchestrator.train.source` and
-  `orchestrator.eval.source`. Dataset arguments belong to the selected taskset's
+  `eval.source`. Dataset arguments belong to the selected taskset's
   config under `env.taskset`; inspect its supported fields before setting them.
 - SFT uses `[data]` and needs real data staged on a volume. The checked-in SFT
   example also enables online eval; check CLI and cluster support before using

@@ -55,10 +55,10 @@ env.taskset.id = "i3_math"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 
-[orchestrator.eval]
+[eval]
 interval = 25
 
-[[orchestrator.eval.source]]
+[[eval.source]]
 name = "aime2025"
 env.taskset.id = "aime25"
 env.agent.harness.id = "null"

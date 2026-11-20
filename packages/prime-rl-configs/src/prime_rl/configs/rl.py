@@ -8,7 +8,12 @@ from pydantic import Field, model_validator
 from prime_rl.configs.inference import InferenceConfig, setup_dummy_load
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig
-from prime_rl.configs.orchestrator import OrchestratorConfig, SpeculativeDecodingConfig, TrainSamplingConfig
+from prime_rl.configs.orchestrator import (
+    OnlineEvalConfig,
+    OrchestratorConfig,
+    SpeculativeDecodingConfig,
+    TrainSamplingConfig,
+)
 from prime_rl.configs.shared import (
     BaseMultiNodeDeploymentConfig,
     BaseSingleNodeDeploymentConfig,
@@ -234,6 +239,9 @@ class RLConfig(BaseConfig):
 
     val: ValConfig | None = None
     """Validation of the trainer's weights, as in SFT and pretraining. Fills ``trainer.val``, which is not set directly. If None, no validation runs."""
+
+    eval: OnlineEvalConfig | None = None
+    """Online evals, as in SFT and pretraining, run by the orchestrator on the policy the train rollouts see. Fills ``orchestrator.eval``, which is not set directly. If None, no online evals run."""
 
     weight_broadcast: WeightBroadcastConfig | None = None
 
@@ -861,9 +869,10 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def sync_val(self):
-        """``val`` holds what the trainer resolved, so a written config re-parses."""
+    def sync_val_and_eval(self):
+        """``val`` and ``eval`` hold what the trainer and the orchestrator resolved, so a written config re-parses."""
         self.val = self.trainer.val
+        self.eval = self.orchestrator.eval
         return self
 
     ### Warnings

@@ -74,10 +74,10 @@ name = "scaleswe"
 env.taskset.id = "scaleswe"
 env.agent.harness.id = "bash"
 
-[orchestrator.eval]
+[eval]
 interval = 20
 
-[[orchestrator.eval.source]]
+[[eval.source]]
 name = "swebench-verified"
 group_size = 1
 env.taskset.id = "swebench-verified"

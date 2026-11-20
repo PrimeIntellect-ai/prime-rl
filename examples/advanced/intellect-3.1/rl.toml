@@ -91,16 +91,16 @@ env.taskset.id = "i3_code"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 
-[orchestrator.eval]
+[eval]
 interval = 25
 
-[[orchestrator.eval.source]]
+[[eval.source]]
 name = "swe-bench-verified"
 env.taskset.id = "swebench-verified"
 env.agent.harness.id = "bash"
 env.agent.runtime.labels = ["intellect-3.1", "swe-bench-verified"]
 
-[[orchestrator.eval.source]]
+[[eval.source]]
 name = "aime2025"
 env.taskset.id = "aime25"
 env.agent.harness.id = "null"

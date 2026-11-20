@@ -102,30 +102,30 @@ env.taskset.id = "tmax"
 
 # --- Eval: swebench-verified (avg@1) + terminal-bench-2 (full, avg@4) every 20 steps, incl. step 0 ---
 
-[orchestrator.eval]
+[eval]
 interval = 20
 
-[[orchestrator.eval.source]]
+[[eval.source]]
 name = "swebench-verified"
 env.agent.harness.id = "rlm"
 env.agent.harness.compaction.summarize_at_tokens = 98304
 env.agent.runtime.labels = ["glm45air-terminal"]
 env.agent.timeout.rollout = 3600
 env.taskset.id = "swebench-verified"
-# [[orchestrator.eval.source.env.taskset.judges]]
+# [[eval.source.env.taskset.judges]]
 # id = "rubric"
 # name = "rlm"
 # path = "deps/prime-envs/rubrics/rlm.toml"
 # model = "zai-org/GLM-5.2"
 # weight = 0.0
-# [[orchestrator.eval.source.env.taskset.judges]]
+# [[eval.source.env.taskset.judges]]
 # id = "rubric"
 # name = "swe"
 # path = "deps/prime-envs/rubrics/swe.toml"
 # model = "zai-org/GLM-5.2"
 # weight = 0.0
 
-[[orchestrator.eval.source]]
+[[eval.source]]
 name = "terminal-bench-2"
 group_size = 4 # avg@4
 env.agent.harness.id = "rlm"
@@ -134,14 +134,14 @@ env.agent.runtime.labels = ["glm45air-terminal"]
 env.agent.timeout.rollout = 3600
 env.taskset.id = "terminal-bench-2"
 
-# [[orchestrator.eval.source.env.taskset.judges]]
+# [[eval.source.env.taskset.judges]]
 # id = "rubric"
 # name = "rlm"
 # path = "deps/prime-envs/rubrics/rlm.toml"
 # model = "zai-org/GLM-5.2"
 # weight = 0.0
 
-# [[orchestrator.eval.source.env.taskset.judges]]
+# [[eval.source.env.taskset.judges]]
 # id = "rubric"
 # name = "swe"
 # path = "deps/prime-envs/rubrics/swe.toml"

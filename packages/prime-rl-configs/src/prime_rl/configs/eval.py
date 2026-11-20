@@ -6,7 +6,7 @@ import verifiers.v1 as vf
 from pydantic import AliasChoices, Field, model_validator
 
 from prime_rl.configs.monitors import MonitorsConfig
-from prime_rl.configs.orchestrator import ConcurrencyConfig, EvalSourcesConfig, ScheduledEvalConfig
+from prime_rl.configs.orchestrator import ConcurrencyConfig, EvalSourcesConfig, OnlineEvalConfig
 from prime_rl.configs.shared import (
     ClientConfig,
     ControlConfig,
@@ -153,19 +153,21 @@ class EvalConfig(ServedEvalConfig):
         return self
 
 
-class SFTOnlineEvalConfig(ScheduledEvalConfig, ServedEvalConfig):
-    """The ``[eval]`` block of the ``sft`` entrypoint, and the config of the online-eval
-    process the launcher spawns from it: interval-driven eval sources against the inference
-    server that receives the trainer's weight broadcasts. The process watches the
-    broadcasts directory, moves the inference server onto each broadcast, and runs the
-    due sources against the updated weights. The launcher fills the run-level fields
-    (``model``, ``weight_broadcast``, ``broadcasts_dir``, ``max_steps``, ``resume_step``,
-    ``output_dir``, ``log``, ``monitors``) from the resolved SFT config."""
+class SupervisedOnlineEvalConfig(OnlineEvalConfig, ServedEvalConfig):
+    """The ``[eval]`` block of the ``sft`` and ``pretrain`` entrypoints: online evals run by a separate process
+    against the inference server that receives the trainer's weight broadcasts, with that process's client and
+    concurrency."""
 
     cancel_on_new_checkpoint: bool = True
     """Cancel unfinished episodes when a newer trainer checkpoint is ready. Disable to
     finish every triggered eval epoch before loading later weights. The trainer can idle
     while it waits for slow evals."""
+
+
+class OnlineEvalProcessConfig(SupervisedOnlineEvalConfig):
+    """The config of the online-eval process the ``sft`` and ``pretrain`` launchers spawn: the ``[eval]`` block plus
+    the run-level fields the launcher fills from the trainer's config. The process watches the broadcasts directory,
+    moves the inference server onto each broadcast, and runs the due sources against the updated weights."""
 
     model: str | None = None
     """Name the inference server serves the model under. The name stays fixed across

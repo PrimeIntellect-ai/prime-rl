@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
 
-from prime_rl.configs.eval import SFTOnlineEvalConfig
+from prime_rl.configs.eval import SupervisedOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig, setup_dummy_load
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import MonitorsConfig
@@ -104,7 +104,7 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
 
     data: BaseDataConfig
 
-    eval: SFTOnlineEvalConfig | None = None
+    eval: SupervisedOnlineEvalConfig | None = None
     """Online evaluation configuration: rollout-based evals against a live inference
     server that receives the trainer's weight broadcasts. If None, no online evals run."""
 

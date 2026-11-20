@@ -30,10 +30,10 @@ env.agent.runtime.labels = ["glm45air-swe-2-node"]
 
 # --- Eval: SWE-Bench Verified at step 0 + every 20 steps, bash harness on prime ---
 
-[orchestrator.eval]
+[eval]
 interval = 20
 
-[[orchestrator.eval.source]]
+[[eval.source]]
 name = "swebench-verified"
 env.taskset.id = "swebench-verified"
 env.agent.harness.id = "bash"
