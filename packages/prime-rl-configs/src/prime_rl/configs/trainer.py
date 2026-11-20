@@ -842,6 +842,10 @@ class TrainerConfig(BaseTrainerConfig):
     """Resume training from a checkpoint. None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step, ``resume.dir`` from an external checkpoint step directory. Without ``ckpt`` the run loads but saves no new checkpoints."""
 
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
+
+    weight_broadcast_interval: int = Field(1, ge=1)
+    """Broadcast the policy to the engines every N steps (and on the last step). Between broadcasts the engines keep
+    sampling from an older policy, so rollouts reach the trainer up to N - 1 steps staler: for staleness experiments."""
     """Transport used to broadcast updated weights from trainer to inference."""
 
     rollout_transport: TransportConfig = ZMQTransportConfig()
