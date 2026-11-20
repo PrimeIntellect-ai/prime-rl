@@ -47,7 +47,7 @@ from prime_rl.trainer.pretrain.data import (
     setup_token_dataset,
     warn_if_no_document_separator,
 )
-from prime_rl.trainer.sft.data import load_sft_dataset, setup_sft_dataset
+from prime_rl.trainer.sft.data import SFTDataset, load_sft_dataset, setup_sft_dataset
 from prime_rl.trainer.val import Validation
 from prime_rl.trainer.utils import (
     GarbageCollection,
@@ -243,10 +243,10 @@ def train(config: SFTConfig | PretrainConfig):
         )
     dataloader = setup_dataloader(dataset, config.data, config.model.cp)
 
-    val_raw_dataset = None
+    val_raw_datasets = None
     if config.val is not None and isinstance(config, SFTConfig):
         logger.info(f"Loading validation dataset ({config.val.data})")
-        val_raw_dataset = load_sft_dataset(config.val.data)
+        val_raw_datasets = load_sft_dataset(config.val.data)
     validation = None
     if config.val is not None and isinstance(config, PretrainConfig):
         validation = Validation(config.val, tokenizer, parallel_dims, config.run_dir)
@@ -380,7 +380,7 @@ def train(config: SFTConfig | PretrainConfig):
             dp_rank=dp_rank,
             dp_size=dp_size,
             max_epochs=1,
-            raw_dataset=val_raw_dataset,
+            raw_datasets=val_raw_datasets,
             renderer_config=config.renderer,
             processor=processor,
             multimodal=multimodal,
@@ -618,18 +618,19 @@ def train(config: SFTConfig | PretrainConfig):
             "progress/num_tokens": progress.total_tokens,
             "step": progress.step,
         }
-        # At least two subsets/splits
         if len(samples_by_source) > 1:
             progress_metrics.update(
                 **{
-                    f"progress/{subset_or_split}/ratio_samples": num_samples / total_samples
-                    for subset_or_split, num_samples in samples_by_source.items()
+                    f"progress/{name}/ratio_samples": num_samples / total_samples
+                    for name, num_samples in samples_by_source.items()
                 },
                 **{
-                    f"progress/{subset_or_split}/ratio_tokens": num_tokens / total_tokens
-                    for subset_or_split, num_tokens in tokens_by_source.items()
+                    f"progress/{name}/ratio_tokens": num_tokens / total_tokens
+                    for name, num_tokens in tokens_by_source.items()
                 },
             )
+        if isinstance(dataset, SFTDataset):
+            progress_metrics.update(dataset.progress(dataset_progress))
         if isinstance(dataset, TokenDataset):
             progress_metrics.update(dataset.sampler.progress(dataset_progress["cursor"]))
         asyncio.run(monitors.log(progress_metrics, step=progress.step))
