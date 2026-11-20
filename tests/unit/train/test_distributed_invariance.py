@@ -271,7 +271,7 @@ def init_weights(model: torch.nn.Module) -> None:
             module.tid2eid.copy_(experts[:, : module.top_k])
 
 
-def load_rows(tokenizer) -> list[dict]:
+def load_rows(tokenizer, num_rows: int = NUM_ROWS) -> list[dict]:
     """The first rows of Reverse-Text-SFT, packed as the SFT trainer packs them, identical on every rank. Rows of one
     length keep torch.compile from recompiling for a second shape."""
     config = SFTDataConfig(
@@ -281,7 +281,7 @@ def load_rows(tokenizer) -> list[dict]:
         pad_to_seq_len=True,
     )
     dataset = setup_sft_dataset(tokenizer, config, dp_rank=0, dp_size=1, renderer_config=AutoRendererConfig())
-    return list(islice(setup_dataloader(dataset, config, cp=2), NUM_ROWS))
+    return list(islice(setup_dataloader(dataset, config, cp=2), num_rows))
 
 
 def compute_loss(

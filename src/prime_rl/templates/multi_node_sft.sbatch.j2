@@ -146,6 +146,12 @@ CLEANUP_SH
 # node terminates the other roles. Clean trainer exits let the final eval drain.
 # The run owner registers the Prime run around the step and fails it when the
 # step fails; every role attaches through the $RUN_ID it exports.
+{% if admin_token.guards %}
+# The run's admin token, which guards the engines' admin routes and the control APIs.
+# Generated here unless the submitting environment or .env provides one, so it is
+# never written to this script.
+export PRL_ADMIN_TOKEN=${{ '{' }}{{ admin_token.names[0] }}:-$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")}
+{% endif %}
 python -m prime_rl.entrypoints.run_owner {{ entrypoint }} {{ run_config_path }} srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     set -o pipefail
 {%- if wandb_shared %}
@@ -156,6 +162,15 @@ python -m prime_rl.entrypoints.run_owner {{ entrypoint }} {{ run_config_path }} 
     cd $PROJECT_DIR
     [ -f .env ] && source .env
     source $PROJECT_DIR/.venv/bin/activate
+{%- if admin_token.guards %}
+    # Keep the admin token out of the environment: only the orchestrator, whose online evals call
+    # the engines' admin routes, is started with it. The engines and the trainer's control
+    # API only check it, so they get its SHA-256 digest; the env worker pools and the
+    # router get neither.
+    ADMIN_TOKEN=$PRL_ADMIN_TOKEN
+    ADMIN_TOKEN_DIGEST=$(printf '%s' "$ADMIN_TOKEN" | sha256sum | cut -d' ' -f1)
+    unset PRL_ADMIN_TOKEN{% for name in admin_token.names %} {{ name }} {{ name }}_SHA256{% endfor %}
+{%- endif %}
     ulimit -n 65536
 
     IB_HCA=$(ibv_devinfo 2>/dev/null | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" | paste -sd,)
@@ -172,6 +187,9 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     export {{ key }}="{{ value }}"
 {%- endfor %}
 
+{%- if admin_token.guards and admin_token.by_process.inference.checks %}
+    ADMIN_TOKEN_ENV="{{ admin_token.by_process.inference.checks }}_SHA256=$ADMIN_TOKEN_DIGEST"
+{%- endif %}
 {% include '_launch_rank.sh.j2' %}
 {% include '_launch_router.sh.j2' %}
 
@@ -216,7 +234,7 @@ else
 {%- for key, value in orchestrator_env_vars.items() %}
             export {{ key }}="{{ value }}"
 {%- endfor %}
-            PRL_LOG_DIR=$LOG_DIR WANDB_SHARED_LABEL=orchestrator uv run python -m prime_rl.orchestrator.supervised \
+            {% if admin_token.guards and admin_token.by_process.orchestrator.sends %}{{ admin_token.by_process.orchestrator.sends }}="$ADMIN_TOKEN" {% endif %}{% if admin_token.guards and admin_token.by_process.orchestrator.checks %}{{ admin_token.by_process.orchestrator.checks }}_SHA256="$ADMIN_TOKEN_DIGEST" {% endif %}PRL_LOG_DIR=$LOG_DIR WANDB_SHARED_LABEL=orchestrator uv run python -m prime_rl.orchestrator.supervised \
                 @ $CONFIG_DIR/orchestrator.json \
 {%- if online_eval %}
                 --eval.client.base-url $INFER_URLS \
@@ -241,7 +259,7 @@ else
 
     echo $ALL_HOSTNAMES_STR | tee $LOG_DIR/trainer/node_${TRAIN_NODE_RANK}.log
     (
-        WANDB_SHARED_LABEL=trainer uv run torchrun \
+        {% if admin_token.guards and admin_token.by_process.trainer.checks %}{{ admin_token.by_process.trainer.checks }}_SHA256="$ADMIN_TOKEN_DIGEST" {% endif %}WANDB_SHARED_LABEL=trainer uv run torchrun \
             --role=trainer \
             --nnodes=$NUM_TRAIN_NODES \
             --nproc-per-node=$GPUS_PER_NODE \

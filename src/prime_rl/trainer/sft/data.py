@@ -1,5 +1,5 @@
+import itertools
 import json
-import math
 import time
 import uuid
 from pathlib import Path
@@ -12,6 +12,7 @@ from huggingface_hub import snapshot_download
 from renderers import AutoRendererConfig, RendererConfig, merge_chat_template_kwargs
 from renderers.base import MultiModalData, PlaceholderRange, Renderer, build_training_sample, create_renderer
 from torch import Tensor
+from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.sft import HFDatasetSourceConfig, SFTDataConfig
@@ -22,7 +23,14 @@ from prime_rl.configs.supervised import (
     LossMaskConfig,
     SFTColumnsConfig,
 )
-from prime_rl.trainer.data import Sample, StatefulIterableDataset
+from prime_rl.trainer.data import (
+    Sample,
+    StatefulIterableDataset,
+    due,
+    get_dataset_state,
+    mixture_changed,
+    with_workers,
+)
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import format_time, get_logger
 
@@ -369,11 +377,12 @@ class HFSource:
 class SFTDataset(StatefulIterableDataset):
     """Samples drawn from one or more sources by weight.
 
-    The sources take turns by due time (weighted fair queuing): the next draw goes to the source with the smallest
-    ``(draws + 1) / weight``, ties to the first, so every stretch of draws holds the mixture. Without weights, a
-    source's weight is its number of rows, and every ``sum(rows)`` draws read each source exactly once (an epoch).
-    Every data rank walks the same draws and keeps every ``data_world_size``-th one, so the draws are the same on
-    every rank, for any number of ranks, and after a resume."""
+    The sources take turns by due time (weighted fair queuing, `due`): the next draw goes to the source with the
+    smallest ``(draws + 1 - start) / weight``, ties to the first, so every stretch of draws holds the mixture; ``start``
+    is every source's draws when the mixture last changed. Without weights, a source's weight is its number of rows,
+    and every ``sum(rows)`` draws read each source exactly once (an epoch). Every data rank walks the same draws and
+    keeps every ``data_world_size``-th one, so the draws are the same on every rank, for any number of ranks, and
+    after a resume."""
 
     def __init__(
         self,
@@ -392,13 +401,21 @@ class SFTDataset(StatefulIterableDataset):
         self.num_rows = sum(source.size for source in sources if source.size is not None)
         assert max_epochs is None or self.num_rows > 0, "max_epochs needs a source with rows"
         self.max_epochs = max_epochs
-        self.draws = [0] * len(sources)
+        self.mixture = {
+            source.name: {"weight": weight, "rows": source.size} for source, weight in zip(sources, weights)
+        }
+        self.draws, self.start = [0] * len(sources), [0] * len(sources)
 
     def state_dict(self) -> dict:
+        names = [source.name for source in self.sources]
+        self._setup_world_info()
         return {
             "step": self.step,
             "epoch": self.epoch,
-            "draws": {source.name: draws for source, draws in zip(self.sources, self.draws)},
+            "draws": dict(zip(names, self.draws)),
+            "start": dict(zip(names, self.start)),
+            "sources": self.mixture,
+            "layout": [self.data_rank, self.data_world_size],
         }
 
     def load_state_dict(self, state_dict: dict):
@@ -412,11 +429,75 @@ class SFTDataset(StatefulIterableDataset):
                 total = sum(counts.values())
                 counts.clear()
                 counts[source.name] = total
-        self.draws = [state_dict["draws"].get(source.name, 0) for source in self.sources]
+        # Sources match by name (`mixture_changed`). A state from before they were recorded has the configured ones.
+        saved = state_dict.get("sources", self.mixture)
+        draws, start = state_dict["draws"], state_dict.get("start", {})
+        if draws.keys() != saved.keys():
+            raise ValueError(
+                f"The checkpoint's SFT data state has the sources {list(draws)}, not the configured {list(saved)}: "
+                "resume once with the sources it was saved with"
+            )
+        self._setup_world_info()
+        # A changed mixture, or one the state does not record, counts the due times from here.
+        if mixture_changed(saved, self.mixture, log=self.data_rank == 0) or "sources" not in state_dict:
+            start = draws
+        names = [source.name for source in self.sources]
+        self.draws = [draws.get(name, 0) for name in names]
+        self.start = [start.get(name, 0) for name in names]
+        for counts in (self.num_samples, self.num_tokens):
+            for name in counts.keys() - set(names):
+                del counts[name]
+
+    def saved_view(self, dataloader: StatefulDataLoader, directory: Path, rank: int, world_size: int) -> tuple:
+        """What rank ``rank`` of ``world_size`` adds to the decision of a resume (`start_together`), from the saved
+        files ``directory / rank_<rank>.pt``, ``rank_<rank + world_size>.pt``, ... (the ranks read every file between
+        them, also on fewer ranks than the saved run):
+
+        - the draw every saved worker had reached and whether it held a sample drawn but not packed, by its data rank
+          and number of data ranks;
+        - the dataset state of the saved worker that got furthest;
+        - whether something changed for this rank: the mixture, or its workers loaded states that other data ranks
+          saved (another number of GPUs, model-parallel layout or workers, or a state from before the layout was
+          recorded)."""
+        positions, furthest = {}, None
+        for saved_rank in itertools.count(rank, world_size):
+            path = directory / f"rank_{saved_rank}.pt"
+            if not path.exists():
+                break
+            for key, worker in torch.load(path, weights_only=False)["_snapshot"]["_worker_snapshots"].items():
+                state = worker["dataset_state"]
+                layout = tuple(state["dataset"].get("layout", [(saved_rank, key), None]))
+                positions[layout] = (state["dataset"]["step"], "pending_sample" in state)
+                if furthest is None or state["dataset"]["step"] > furthest["step"]:
+                    furthest = state["dataset"]
+        loaded = list(get_dataset_state(dataloader).values())
+        workers = dataloader.num_workers
+        layouts = [[self.dp_rank * workers + worker, self.dp_size * workers] for worker in range(workers)]
+        moved = [state.get("layout") for state in loaded] != layouts
+        changed = moved or mixture_changed(loaded[0].get("sources", self.mixture), self.mixture, log=False)
+        return positions, furthest, changed
+
+    def start_together(self, dataloader: StatefulDataLoader, views: list[tuple]) -> tuple[int, int] | None:
+        """Decide a resume the same way on every rank, from what every rank saw (`saved_view`). If anything changed,
+        every worker reads on from the dataset state of the saved worker that got furthest: at a draw, the state is
+        the same on every data rank. The others' draws up to there and the samples drawn but not packed are not
+        trained on. Returns that draw and the number of those draws (for states from before the layout was recorded,
+        as if every worker's last draw was its own), else None."""
+        if not any(changed for *_, changed in views):
+            return None
+        positions = {layout: position for saved, *_ in views for layout, position in saved.items()}
+        furthest = max((state for _, state, _ in views if state is not None), key=lambda state: state["step"])
+        dataloader.load_state_dict(with_workers(dataloader.next_iter_state, dataloader.num_workers, furthest))
+        skipped = 0
+        for (data_rank, data_world), (step, pending) in positions.items():
+            if data_world is None:
+                data_rank, data_world = (step - 1) % len(positions), len(positions)
+            # The draws of data rank d of W before draw n: those with k % W == d.
+            skipped += (furthest["step"] - data_rank - 1) // data_world - (step - data_rank - 1) // data_world + pending
+        return furthest["step"], skipped
 
     def next_source(self) -> int:
-        due = [(draws + 1) / weight if weight > 0 else math.inf for draws, weight in zip(self.draws, self.weights)]
-        return due.index(min(due))
+        return int(np.argmin(due(np.array(self.draws) + 1, np.array(self.start), np.array(self.weights))))
 
     def progress(self, state: dict) -> dict[str, float]:
         """Every source's draws and, for a source with rows, its passes over them (``epoch``) in ``state``."""
