@@ -1,13 +1,13 @@
 """Run prime-rl's GPU test suites on Modal, one container per test group.
 
-    uvx modal run scripts/modal_ci.py --suite tiny
+    uvx modal run scripts/modal_ci.py --suite tiny|full|parallel [--group name]
 
 The image installs the third-party dependencies from uv.lock and every pyproject.toml, then the local packages
 (packages/ and the deps/ submodules) as editable installs. The source, tests and configs are added when a container
-starts, so a code change does not rebuild the image. Each group's compile caches (Triton, Inductor, vLLM) persist in a
-Modal Volume, keyed by uv.lock and the GPU type.
+starts, so a code change does not rebuild the image. Each group's compile caches (Triton, Inductor, vLLM, TileLang)
+persist in a Modal Volume, keyed by uv.lock, the GPU type and the suite.
 
-Each suite's group without paths runs every test with the suite's marker that no other group claims, so a new test
+A suite's group without paths runs every test with the suite's marker that no other group claims, so a new test
 always runs somewhere.
 """
 
@@ -40,6 +40,8 @@ class Group:
     name: str
     gpus: int
     paths: tuple[str, ...] = ()
+    timeout: int = 20
+    """Minutes"""
 
 
 @dataclass(frozen=True)
@@ -63,6 +65,36 @@ SUITES = {
             Group("invariance", gpus=2, paths=("tests/unit/train/test_distributed_invariance.py",)),
             Group("rest", gpus=1),
         ),
+    ),
+    # gpu-full.yml runs each group as its own job: a new group needs an entry in its matrix
+    "full": Suite(
+        marker="gpu",
+        groups=(
+            Group("dsv4-kernels", gpus=1, timeout=25, paths=("tests/unit/train/models/test_deepseek_v4_kernels.py",)),
+            Group("dsv4", gpus=1, paths=("tests/unit/train/models/test_deepseek_v4.py",)),
+            Group("invariance", gpus=2, timeout=35, paths=("tests/unit/train/test_distributed_invariance.py",)),
+            Group("vllm-parity", gpus=1, paths=("tests/unit/train/models/test_vllm_parity.py",)),
+            Group("rest", gpus=2, timeout=30),
+            # Each integration test starts its own RL or SFT runs
+            *(
+                Group(test, gpus=2, timeout=30, paths=(f"tests/integration/test_{test}.py",))
+                for test in (
+                    "reverse_text",
+                    "reverse_text_lora",
+                    "reverse_text_moe",
+                    "reverse_text_rl_opd",
+                    "reverse_text_rl_sft",
+                    "reverse_text_sft",
+                    "reverse_text_sft_lora",
+                    "alphabet_sort",
+                    "pretrain",
+                )
+            ),
+        ),
+    ),
+    "parallel": Suite(
+        marker="gpu",
+        groups=(Group("invariance", gpus=4, paths=("tests/regression/test_parallel_invariance.py",)),),
     ),
 }
 
@@ -121,6 +153,8 @@ image = (
     # uv cannot check the lock without the local sources, which also lack their git versions here; the CPU tests
     # job runs `uv sync --locked`
     .run_commands("uv sync --frozen --all-extras --all-packages --no-install-local --compile-bytecode --no-cache")
+    # The integration tests' dashboard smoke test drives the headless Chromium of the locked playwright version
+    .run_commands("/opt/venv/bin/playwright install --with-deps --only-shell chromium")
     .add_local_dir(local_packages, REMOTE_REPO, copy=True)
     # hatchling puts src/ on the path only if it finds a module there; the source is added when a container starts.
     # Modal's builder sets UV_COMPILE_BYTECODE=1, which would recompile the whole venv in this layer.
@@ -174,7 +208,7 @@ def run_group(name: str, pytest_args: list[str], cache_key: str, ref_name: str) 
     archive = Path(CACHE, cache_key, f"{name}.tar")
     compile_cache = Path("/root/.cache/compile")
     restored = restore_cache(archive, compile_cache)
-    for kind in ("triton", "inductor", "vllm"):
+    for kind in ("triton", "inductor", "vllm", "tilelang"):
         (compile_cache / kind).mkdir(exist_ok=True)
     # The rl and sft launchers pin these two caches to /tmp paths (prime_rl/utils/process.py)
     os.symlink(compile_cache / "triton", f"/tmp/triton-{os.getuid()}")
@@ -191,6 +225,7 @@ def run_group(name: str, pytest_args: list[str], cache_key: str, ref_name: str) 
         "TRITON_CACHE_DIR": f"{compile_cache}/triton",
         "TORCHINDUCTOR_CACHE_DIR": f"{compile_cache}/inductor",
         "VLLM_CACHE_ROOT": f"{compile_cache}/vllm",
+        "TILELANG_CACHE_DIR": f"{compile_cache}/tilelang",
     }
     gpus = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True)
     region = os.environ.get("MODAL_REGION")
@@ -221,39 +256,44 @@ def run_group(name: str, pytest_args: list[str], cache_key: str, ref_name: str) 
 
 
 @app.local_entrypoint()
-async def main(suite: str = "tiny"):
+async def main(suite: str = "tiny", group: str = ""):
+    """`group`: run only the suite's group of that name."""
     lock_hash = hashlib.sha256((REPO / "uv.lock").read_bytes()).hexdigest()[:16]
     ref_name = os.environ.get("GITHUB_REF_NAME", "local")
     artifacts_dir = REPO / "outputs" / "modal-ci"
-    if artifacts_dir.exists():
-        shutil.rmtree(artifacts_dir)
     test_suite = SUITES[suite]
+    groups = [{g.name: g for g in test_suite.groups}[group]] if group else test_suite.groups
 
     async def run(group: Group) -> tuple[int, float, float]:
-        fn = run_group.with_options(gpu=f"{GPU}:{group.gpus}", cpu=8.0 * group.gpus, memory=65536 * group.gpus)
+        fn = run_group.with_options(
+            gpu=f"{GPU}:{group.gpus}", cpu=8.0 * group.gpus, memory=65536 * group.gpus, timeout=group.timeout * 60
+        )
         spawned = time.time()
         exit_code, artifacts, started, duration = await fn.remote.aio(
-            group.name, test_suite.pytest_args(group), f"{lock_hash}-{GPU}", ref_name
+            group.name, test_suite.pytest_args(group), f"{lock_hash}-{GPU}/{suite}", ref_name
         )
+        if (artifacts_dir / group.name).exists():
+            shutil.rmtree(artifacts_dir / group.name)
         with tarfile.open(fileobj=io.BytesIO(artifacts)) as tar:
             tar.extractall(artifacts_dir / group.name, filter="data")
         return exit_code, started - spawned, duration
 
     start = time.time()
-    results = await asyncio.gather(*(run(group) for group in test_suite.groups), return_exceptions=True)
+    results = await asyncio.gather(*(run(group) for group in groups), return_exceptions=True)
     wall = time.time() - start
 
-    print(f"\n{'group':<12}{'gpus':>5}  {'result':<8}{'startup':>9}{'run':>8}")
+    width = max(len(group.name) for group in groups) + 2
+    print(f"\n{'group':<{width}}{'gpus':>5}  {'result':<8}{'startup':>9}{'run':>8}")
     failed = False
-    for group, result in zip(test_suite.groups, results):
+    for group, result in zip(groups, results):
         if isinstance(result, BaseException):
             failed = True
-            print(f"{group.name:<12}{group.gpus:>5}  error: {result!r}")
+            print(f"{group.name:<{width}}{group.gpus:>5}  error: {result!r}")
             continue
         exit_code, startup, duration = result
         failed |= exit_code != 0
         status = "passed" if exit_code == 0 else f"exit {exit_code}"
-        print(f"{group.name:<12}{group.gpus:>5}  {status:<8}{startup:>8.0f}s{duration:>7.0f}s")
+        print(f"{group.name:<{width}}{group.gpus:>5}  {status:<8}{startup:>8.0f}s{duration:>7.0f}s")
     print(f"Suite {suite} on {GPU}: {'failed' if failed else 'passed'} in {wall:.0f}s. Logs: {artifacts_dir}")
     if failed:
         sys.exit(1)
