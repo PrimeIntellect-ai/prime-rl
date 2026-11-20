@@ -29,7 +29,7 @@ from prime_rl.configs.orchestrator import (
 )
 from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.rl import RLConfig
-from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.sft import SFTConfig, SFTCrossEntropyLossConfig, SFTDecisionLossConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.utils.config import MODES, BaseConfig, check_mode, cli, dump_resolved_config
@@ -1291,6 +1291,97 @@ def test_sft_allows_unused_default_renderer_for_fake_data():
         }
     )
     assert config.renderer.name == "default"
+
+
+SYSTEM_ONE_DATA = {"name": "org/records", "seq_len": 4096}
+
+
+def test_system_one_config_roundtrip(tmp_path):
+    """A System One config needs no typed renderer, its `[val.data]` takes the type of `[data]`, and it survives the
+    launcher's resolved config, which writes the default `[renderer]` out."""
+    data = {"type": "system_one", **SYSTEM_ONE_DATA}
+    write_toml(
+        tmp_path / "sft.toml",
+        {
+            "model": {"name": "not-a-real-org/not-a-real-model"},
+            "data": data,
+            "val": {"data": SYSTEM_ONE_DATA},
+            "loss": {"type": "decision", "brier_weight": 0.1},
+        },
+    )
+    config = cli(SFTConfig, args=["@", str(tmp_path / "sft.toml")])
+    assert config.data.type == config.val.data.type == "system_one"
+
+    (tmp_path / "sft.json").write_text(json.dumps(dump_resolved_config(config)))
+    assert cli(SFTConfig, args=["@", str(tmp_path / "sft.json")]) == config
+
+
+def test_system_one_data_defaults_to_the_decision_loss(tmp_path):
+    """System One data defaults to the decision loss and refuses cross-entropy; other data defaults to cross-entropy."""
+    data = {"type": "system_one", **SYSTEM_ONE_DATA}
+    assert SFTConfig.model_validate({"data": data}).loss == SFTDecisionLossConfig()
+    write_toml(tmp_path / "sft.toml", {"data": data})
+    assert cli(SFTConfig, args=["@", str(tmp_path / "sft.toml")]).loss.type == "decision"
+    with pytest.raises(ValidationError, match='cannot train with loss.type = "ce"'):
+        SFTConfig.model_validate({"data": data, "loss": {"type": "ce"}})
+    with pytest.raises(ConfigFileError, match='cannot train with loss.type = "ce"'):
+        cli(SFTConfig, args=["@", str(tmp_path / "sft.toml"), "--loss.type", "ce"])
+
+    decision = SFTDecisionLossConfig(brier_weight=0.1)
+    assert SFTConfig.model_validate({"data": data, "loss": {"brier_weight": 0.1}}).loss == decision
+    assert cli(SFTConfig, args=["@", str(tmp_path / "sft.toml"), "--loss.brier-weight", "0.1"]).loss == decision
+    write_toml(tmp_path / "brier.toml", {"data": data, "loss": {"brier_weight": 0.1}})
+    assert cli(SFTConfig, args=["@", str(tmp_path / "brier.toml")]).loss == decision
+    with pytest.raises(ValidationError, match="greater than or equal to 0"):
+        SFTConfig.model_validate({"data": data, "loss": {"brier_weight": -0.1}})
+    for value in ("inf", "nan"):
+        with pytest.raises(ValidationError, match="finite number"):
+            SFTConfig.model_validate({"data": data, "loss": {"brier_weight": value}})
+
+    assert SFTConfig().loss == SFTConfig.model_validate({"loss": {}}).loss == SFTCrossEntropyLossConfig()
+
+
+@pytest.mark.parametrize("data", [{}, {"type": "fake"}])
+def test_decision_loss_needs_system_one_data(data):
+    with pytest.raises(ValidationError, match="needs data.type"):
+        SFTConfig.model_validate({"data": data, "loss": {"type": "decision"}})
+
+
+@pytest.mark.parametrize(
+    "config, match",
+    [
+        ({"model": {"lora": {}}}, r"not supported with \[model.lora\]"),
+        ({"eval": {"source": [{"env": {"taskset": {"id": "harbor"}}}]}}, r"not supported with \[eval\]"),
+        ({"model": {"cp": 2}}, r"context parallelism \(model.cp > 1\) yet: it is a planned follow-up"),
+        ({"model": {"vlm": {}}}, r"\[model.vlm\] yet: it is a planned follow-up"),
+        ({"renderer": {"name": "default"}}, r"\[renderer\] is not used"),
+    ],
+)
+def test_system_one_data_refuses_what_decision_models_do_not_support(config, match):
+    data = {"type": "system_one", **SYSTEM_ONE_DATA}
+    with pytest.raises(ValidationError, match=match):
+        SFTConfig.model_validate({"data": data, **config})
+
+
+def test_chat_val_data_without_type_stays_chat(tmp_path):
+    """An existing chat-SFT config, whose `[val.data]` has no type, still parses: `[val.data]` takes "sft"."""
+    write_toml(tmp_path / "sft.toml", {"val": {"interval": 10, "data": {"name": "org/chat", "splits": ["test"]}}})
+    config = cli(SFTConfig, args=["@", str(tmp_path / "sft.toml")])
+    assert config.data.type == config.val.data.type == "sft"
+    assert config.val.data.name == "org/chat"
+    assert config.loss == SFTCrossEntropyLossConfig()
+
+
+def test_system_one_val_data_takes_its_type_and_seq_len_rules():
+    data = {"type": "system_one", **SYSTEM_ONE_DATA}
+    with pytest.raises(ValidationError, match='must both be "system_one" or neither'):
+        SFTConfig.model_validate({"data": data, "val": {"data": {"type": "sft"}}})
+    with pytest.raises(ValidationError, match='must both be "system_one" or neither'):
+        SFTConfig.model_validate({"val": {"data": {"type": "system_one", **SYSTEM_ONE_DATA}}})
+    config = SFTConfig.model_validate({"data": data, "val": {"data": {"name": "org/records"}}})
+    assert config.val.data.seq_len == 4096
+    with pytest.raises(ValidationError, match="val.data.seq_len \\(128\\) must equal data.seq_len \\(4096\\)"):
+        SFTConfig.model_validate({"data": data, "val": {"data": {"name": "org/records", "seq_len": 128}}})
 
 
 def test_orchestrator_explicit_renderer_skips_unmapped_check():

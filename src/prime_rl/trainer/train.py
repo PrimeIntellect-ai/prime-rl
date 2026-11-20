@@ -4,6 +4,7 @@ import math
 import time
 import asyncio
 from datetime import timedelta
+from functools import partial
 from pathlib import Path
 
 # Import environment before any other imports
@@ -39,7 +40,7 @@ from prime_rl.trainer.model import (
 from prime_rl.trainer.moe_runtime import setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.data import get_dataset_progress, get_dataset_state, setup_dataloader
+from prime_rl.trainer.data import cat_collate, get_dataset_progress, get_dataset_state, setup_dataloader
 from prime_rl.trainer.pretrain.data import (
     TokenShards,
     detect_separator,
@@ -48,9 +49,13 @@ from prime_rl.trainer.pretrain.data import (
     warn_if_no_document_separator,
 )
 from prime_rl.trainer.sft.data import load_sft_dataset, setup_sft_dataset
+from prime_rl.trainer.sft.system_one.data import check_records
+from prime_rl.trainer.sft.system_one.loss import DECISION_METRICS, decision_loss, system_one_collate
+from prime_rl.trainer.sft.system_one.strategies import get_system_one_strategy_cls
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
+    TensorStats,
     broadcast_step_action,
     clip_grad_norm_,
     get_ckpt_disk_metrics,
@@ -162,11 +167,28 @@ def train(config: SFTConfig | PretrainConfig):
         check_tensors=config.model.debug.num_layers is None,
     )
 
+    # Look up the strategy and check every record before any weights load
+    system_one = isinstance(config, SFTConfig) and config.data.type == "system_one"
+    strategy_cls = raw_dataset = val_raw_dataset = None
+    if system_one:
+        strategy_cls = get_system_one_strategy_cls(model_files.config)
+        raw_dataset = load_sft_dataset(config.data)
+        record_datasets = [(raw_dataset, config.data.columns)]
+        if config.val is not None:
+            val_raw_dataset = load_sft_dataset(config.val.data)
+            record_datasets.append((val_raw_dataset, config.val.data.columns))
+        check_start = time.perf_counter()
+        # Each rank parses its share of the records
+        for record_dataset, columns in record_datasets:
+            check_records(record_dataset, columns, world.rank, world.world_size)
+        logger.info(f"Checked the System One records in {format_time(time.perf_counter() - check_start)}")
+
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")
     from_checkpoint = config.model.init.type == "pretrained" and is_checkpoint_step_dir(config.model.name)
     loading_from_ckpt_later = checkpoint_step is not None or from_checkpoint
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
+    strategy = strategy_cls(tokenizer, model.config) if strategy_cls is not None else None
 
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
@@ -212,16 +234,19 @@ def train(config: SFTConfig | PretrainConfig):
             tokenizer,
             config.data,
             config.model.cp,
+            raw_dataset=raw_dataset,
             renderer_config=config.renderer,
             processor=processor,
             multimodal=multimodal,
+            strategy=strategy,
         )
-    dataloader = setup_dataloader(dataset, config.data, config.model.cp)
+    collate_fn = system_one_collate if system_one else cat_collate
+    dataloader = setup_dataloader(dataset, config.data, config.model.cp, collate_fn)
 
-    val_raw_dataset = None
-    if config.val is not None and isinstance(config, SFTConfig):
+    if config.val is not None and isinstance(config, SFTConfig) and val_raw_dataset is None:
         logger.info(f"Loading validation dataset ({config.val.data})")
         val_raw_dataset = load_sft_dataset(config.val.data)
+
     if config.val is not None and isinstance(config, PretrainConfig):
         val_document_dataset = setup_document_dataset(config.val.data, config.model.cp, config.val.num_samples)
         logger.info(
@@ -269,8 +294,39 @@ def train(config: SFTConfig | PretrainConfig):
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     cp_size = parallel_dims.cp
 
-    def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
+    def compute_decision_loss(micro_batch: dict, stats: TensorStats) -> tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass returning (loss_sum, labelled_count). Metrics go to ``stats``."""
+        assert stats is not None, "the decision loss logs its metrics"
+        input_ids = micro_batch["input_ids"].to("cuda", non_blocking=True)
+        position_ids = micro_batch["position_ids"].to("cuda", non_blocking=True)
+        seq_lens = micro_batch["seq_lens"].to("cuda", non_blocking=True)
+        inputs = micro_batch["decision_loss_inputs"].to("cuda")
+        # Filled on the device: copying a host int would sync
+        count = torch.full((), inputs.num_labelled, dtype=torch.int64, device="cuda")
+        # Bound in a partial, so FSDP does not cast the float32 targets to bf16 as it does forward inputs
+        loss_fn = partial(
+            decision_loss,
+            model,
+            strategy=strategy,
+            inputs=inputs,
+            input_ids=input_ids,
+            brier_weight=config.loss.brier_weight,
+        )
+
+        with maybe_activation_offloading(config.model.ac_offloading, model):
+            out = forward(model, input_ids, position_ids, seq_lens=seq_lens, hidden_states_fn=loss_fn)
+
+        # Leave a NaN micro-batch out of the metrics, as out of the loss
+        keep = ~torch.isnan(out["loss"].detach())
+        for name in DECISION_METRICS:
+            stats.add(name, out[name], mask=keep.expand(out[name].numel()))
+        return out["loss"], count
+
+    def compute_loss(micro_batch: dict, stats: TensorStats | None) -> tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass returning (loss_sum, count) over loss tokens, or labelled questions with System One data."""
+        if system_one:
+            return compute_decision_loss(micro_batch, stats)
+
         input_ids = micro_batch["input_ids"].to("cuda", non_blocking=True)
         position_ids = micro_batch["position_ids"].to("cuda", non_blocking=True)
         target_ids = micro_batch["target_ids"].to("cuda", non_blocking=True)
@@ -318,11 +374,18 @@ def train(config: SFTConfig | PretrainConfig):
         del out
         return loss_sum, token_count
 
+    def host_loss_count(micro_batch: dict) -> int:
+        """A micro-batch's loss count (tokens, or labelled questions), read on the host."""
+        if system_one:
+            return micro_batch["decision_loss_inputs"].num_labelled
+        return int(micro_batch["loss_mask"].sum())
+
     def run_eval_loop(data_iter):
-        """Validation forward loop. Returns token-weighted global mean loss."""
+        """Validation forward loop. Returns the global mean loss, NaN count and decision metrics."""
         total_loss_sum = torch.tensor(0.0, device="cuda")
         total_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
         nan_count = torch.tensor(0, device="cuda")
+        stats = TensorStats() if system_one else None
 
         # Variable-length packing yields different per-rank batch counts. Under FSDP
         # every forward is a collective, so all ranks must agree on when to stop —
@@ -337,7 +400,7 @@ def train(config: SFTConfig | PretrainConfig):
                 dist.all_reduce(has_data, op=dist.ReduceOp.MIN)
                 if has_data.item() == 0:
                     break
-                loss_sum, token_count = compute_loss(micro_batch)
+                loss_sum, token_count = compute_loss(micro_batch, stats)
                 if not torch.isnan(loss_sum.detach()):
                     total_loss_sum += loss_sum.detach()
                     total_token_count += token_count
@@ -349,7 +412,9 @@ def train(config: SFTConfig | PretrainConfig):
         dist.all_reduce(nan_count, op=dist.ReduceOp.SUM)
 
         mean_loss = (total_loss_sum / total_token_count).item() if total_token_count.item() > 0 else float("nan")
-        return mean_loss, nan_count.item()
+        # compute_stats all-reduces: every rank leaves the loop above together, so all call it
+        metrics = stats.compute_stats() if stats is not None else {}
+        return mean_loss, nan_count.item(), metrics
 
     def run_validation(step: int) -> None:
         if isinstance(config, PretrainConfig):
@@ -364,25 +429,26 @@ def train(config: SFTConfig | PretrainConfig):
                 renderer_config=config.renderer,
                 processor=processor,
                 multimodal=multimodal,
+                strategy=strategy,
             )
-        val_dataloader = setup_dataloader(val_dataset, config.val.data, config.model.cp)
+        val_dataloader = setup_dataloader(val_dataset, config.val.data, config.model.cp, collate_fn)
 
         # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
-        mean_loss, nan_count = run_eval_loop(val_dataloader)
+        mean_loss, nan_count, metrics = run_eval_loop(val_dataloader)
         if is_tt_moe_model(model):
             # Keep validation routing out of the next training step's statistics.
             take_moe_routing_stats(model)
         if nan_count > 0:
             logger.warning(f"Validation at step {step}: {nan_count} batches had NaN loss")
         if mean_loss != mean_loss:
-            logger.warning(f"Validation at step {step} had no valid tokens")
+            logger.warning(f"Validation at step {step} had no {'labelled questions' if system_one else 'valid tokens'}")
         else:
             logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
-        asyncio.run(
-            monitors.log(
-                {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20)), "step": step}, step=step
-            )
-        )
+        val_metrics = {"val/loss": mean_loss}
+        if not system_one:  # perplexity is exp(token cross-entropy)
+            val_metrics["val/perplexity"] = math.exp(min(mean_loss, 20))
+        val_metrics.update({f"val/{name}": value for name, value in metrics.items()})
+        asyncio.run(monitors.log({**val_metrics, "step": step}, step=step))
 
     def logged_micro_batches(micro_batches):
         for micro_batch in micro_batches:
@@ -427,6 +493,7 @@ def train(config: SFTConfig | PretrainConfig):
         logger.info(f"Tracing to {config.trace_path}")
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
     max_peak_memory = 0.0
+    loss_stats = TensorStats() if system_one else None
     controller = Controller(requires_step=False)
     control_server = ControlServer(controller, config.control if world.is_master else None, ckpt_manager.ckpt_dir)
     control_server.start()
@@ -454,14 +521,12 @@ def train(config: SFTConfig | PretrainConfig):
             micro_batches = (next(dataiter) for _ in range(grad_accum_steps))
         else:
             micro_batches = [next(dataiter) for _ in range(grad_accum_steps)]
-            local_token_count = sum(int(micro_batch["loss_mask"].sum()) for micro_batch in micro_batches)
-            global_step_token_count = torch.tensor(local_token_count, dtype=torch.int64, device="cuda")
-            dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
-            global_token_count_val = global_step_token_count.item() // cp_size
+            local_loss_count = sum(host_loss_count(micro_batch) for micro_batch in micro_batches)
+            global_step_loss_count = torch.tensor(local_loss_count, dtype=torch.int64, device="cuda")
+            dist.all_reduce(global_step_loss_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            global_loss_count_val = global_step_loss_count.item() // cp_size
             grad_scale = (
-                parallel_dims.fsdp_gradient_divide_factor / global_token_count_val
-                if global_token_count_val > 0
-                else 1.0
+                parallel_dims.fsdp_gradient_divide_factor / global_loss_count_val if global_loss_count_val > 0 else 1.0
             )
             prepare_gradient_offload(
                 gradient_manager,
@@ -471,17 +536,18 @@ def train(config: SFTConfig | PretrainConfig):
         if config.log.log_data:
             micro_batches = logged_micro_batches(micro_batches)
 
-        loss_tokens = torch.zeros((), dtype=torch.float64, device="cuda")
+        loss_count = torch.zeros((), dtype=torch.float64, device="cuda")
 
         def summed_loss(micro_batch: dict) -> torch.Tensor:
-            loss_sum, token_count = compute_loss(micro_batch)
-            loss_tokens.add_(token_count)
+            loss_sum, count = compute_loss(micro_batch, loss_stats)
+            loss_count.add_(count)
             return loss_sum
 
         # GPU time: the micro-batch loop only queues work.
         forward_backward_start, forward_backward_end = (torch.cuda.Event(enable_timing=True) for _ in range(2))
         forward_backward_start.record()
-        perf_counter = get_perf_counter(model)
+        # The decision loss skips the LM head
+        perf_counter = get_perf_counter(model, lm_head=not system_one)
         step_stats = run_micro_batches(
             model,
             micro_batches,
@@ -490,14 +556,24 @@ def train(config: SFTConfig | PretrainConfig):
             parallel_dims,
             perf_counter,
             gradient_manager,
-            sums={"loss_tokens": loss_tokens},
+            sums={"loss_count": loss_count},
         )
         if gradient_manager is None:
-            # The gradients of the summed loss are divided by the step's loss tokens once, after the last backward.
-            tokens = step_stats["loss_tokens"]
-            factor = parallel_dims.fsdp_gradient_divide_factor / tokens.clamp(min=1)
-            scale_gradients_(None, model, torch.where(tokens > 0, factor, 1.0).float())
+            # The gradients of the summed loss are divided by the step's loss count once, after the last backward.
+            count = step_stats["loss_count"]
+            factor = parallel_dims.fsdp_gradient_divide_factor / count.clamp(min=1)
+            scale_gradients_(None, model, torch.where(count > 0, factor, 1.0).float())
         forward_backward_end.record()
+
+        # Full offload creates every parameter's optimizer state up front, so resume needs no gradient there
+        if system_one and is_first_step and gradient_manager is None:
+            missing = [name for name, param in model.named_parameters() if param.requires_grad and param.grad is None]
+            if missing:
+                raise RuntimeError(
+                    f"These trainable parameters got no gradient in the first step: {missing}. The decision model's "
+                    "class must freeze (requires_grad_(False)) every parameter its readout never uses: a trainable "
+                    "parameter without a gradient has no optimizer state, which breaks resuming from a checkpoint."
+                )
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
         # optimizer step (so eval_on_start evaluates untrained weights)
@@ -524,7 +600,13 @@ def train(config: SFTConfig | PretrainConfig):
 
         step_stats, norms = to_host(step_stats, {"grad_norm": grad_norm} if grad_norm is not None else {})
         result = step_result(step_stats, parallel_dims)
-        loss = result.loss_sum / step_stats["loss_tokens"].item() if step_stats["loss_tokens"] > 0 else 0.0
+        loss = result.loss_sum / step_stats["loss_count"].item() if step_stats["loss_count"] > 0 else 0.0
+        # compute_stats all-reduces: every rank reaches it once per step
+        decision_metrics = (
+            {f"loss/{name}": value for name, value in loss_stats.compute_stats().items()}
+            if loss_stats is not None
+            else {}
+        )
         grad_norm_value = norms["grad_norm"].item() if norms else None
         forward_backward_time = forward_backward_start.elapsed_time(forward_backward_end) / 1000
         if result.nan_count > 0:
@@ -635,12 +717,10 @@ def train(config: SFTConfig | PretrainConfig):
             optim_metrics["optim/grad_norm"] = grad_norm_value
         asyncio.run(monitors.log(optim_metrics, step=progress.step))
 
-        loss_log_metrics = {
-            "loss/mean": loss,
-            "loss/perplexity": math.exp(min(loss, 20)),
-            "loss/nan_count": result.nan_count,
-            "step": progress.step,
-        }
+        loss_log_metrics = {"loss/mean": loss}
+        if not system_one:  # perplexity is exp(token cross-entropy)
+            loss_log_metrics["loss/perplexity"] = math.exp(min(loss, 20))
+        loss_log_metrics.update({"loss/nan_count": result.nan_count, **decision_metrics, "step": progress.step})
         # Log tensor stats
         asyncio.run(monitors.log(loss_log_metrics, step=progress.step))
 
