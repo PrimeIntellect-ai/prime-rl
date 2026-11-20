@@ -265,7 +265,8 @@ def test_resume_with_another_mix_reads_on(
         return [content for content in contents if content]
 
     before = loaders({"a": 1, "b": 1, "d": 1}, 2, 2)
-    contents = [content for _, dataloader in before for content in read(dataloader, 8)]
+    # Rank 1 gets further than rank 0, as packing samples of other lengths lets a rank do.
+    contents = [content for rank, (_, dataloader) in enumerate(before) for content in read(dataloader, 8 + 4 * rank)]
     states = [dataloader.state_dict() for _, dataloader in before]
     saved = [worker["dataset_state"] for state in states for worker in state["_snapshot"]["_worker_snapshots"].values()]
     pending = {text(state["pending_sample"]["target_ids"]) for state in saved if "pending_sample" in state}

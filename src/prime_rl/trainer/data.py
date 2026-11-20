@@ -300,10 +300,11 @@ def with_workers(state: dict, num_workers: int, own: bool = True) -> dict:
         return state
     furthest = max(saved, key=lambda worker: worker["dataset_state"]["dataset"]["step"])
     counts = {key: defaultdict(int) for key in ("num_samples", "num_tokens")}
-    for worker in saved if own else []:
-        for key, by_source in worker["dataset_state"].get("progress", {}).items():
-            for name, count in by_source.items():
-                counts[key][name] += count
+    if own:
+        for worker in saved:
+            for key, by_source in worker["dataset_state"].get("progress", {}).items():
+                for name, count in by_source.items():
+                    counts[key][name] += count
     workers = {}
     for worker_id in range(num_workers):
         dataset_state = {"dataset": furthest["dataset_state"]["dataset"]}
