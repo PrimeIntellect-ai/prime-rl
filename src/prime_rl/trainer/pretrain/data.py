@@ -250,6 +250,11 @@ class TokenSampler:
         Otherwise its subset holds the tokens it reads over the whole run, the ones already read and its share of the
         remaining steps at these settings, over its repetitions."""
         plan, read = state["plan"], dict(zip(state["plan"]["sources"], state["cursor"]["tokens"]))
+        if any(isinstance(saved, int) for saved in plan["subsets"].values()):
+            raise ValueError(
+                "The checkpoint's data state records its subsets without what they depend on, so the run can't resume "
+                f"it. {SKIP_DATALOADER}"
+            )
         for source in np.flatnonzero(self.subsets):
             name, saved = self.names[source], plan["subsets"].get(self.names[source])
             if saved is not None and (saved["settings"] == self.subset_settings(source) or self.weights[source] == 0):
@@ -668,7 +673,7 @@ def warn_if_no_document_separator(shards: TokenShards, tokenizer: PreTrainedToke
 def saved_data_state(directory: Path) -> dict:
     """The data state in a checkpoint's dataloader files in ``directory``: at a step boundary, every worker of every
     rank saves the same cursor and plan, so the first worker's of rank 0."""
-    workers = torch.load(directory / "rank_0.pt", weights_only=False)["_snapshot"]["_worker_snapshots"]
+    workers = torch.load(directory / "rank_0.pt", weights_only=True)["_snapshot"]["_worker_snapshots"]
     return next(iter(workers.values()))["dataset_state"]["dataset"]
 
 

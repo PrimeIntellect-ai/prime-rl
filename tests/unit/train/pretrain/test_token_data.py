@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import torch
 
 import prime_rl.trainer.pretrain.data as pretrain_data
 from prime_rl.configs.pretrain import PretrainDataConfig
@@ -14,6 +15,7 @@ from prime_rl.trainer.pretrain.data import (
     detect_separator,
     document_edges,
     permute,
+    saved_data_state,
     setup_token_dataset,
     warn_if_no_document_separator,
 )
@@ -158,8 +160,9 @@ def test_repetitions_read_a_subset_that_many_times(tmp_path):
 
 
 def test_subsets_and_resumes_fail_clearly(tmp_path):
-    """A subset larger than its source fails at startup. A resume fails when a source's files differ and on a state from
-    before the sources could change; a source may move to another folder."""
+    """A subset larger than its source fails at startup. A resume fails when a source's files differ, on a state from
+    before the sources could change, and on one whose subsets don't record what they depend on; a source may move to
+    another folder."""
     write_shard(tmp_path / "a" / "00.ds", consecutive_documents([8] * 100))
     with pytest.raises(ValueError, match="needs 1,600 unique tokens but has 800"):
         setup_token_dataset(
@@ -172,6 +175,11 @@ def test_subsets_and_resumes_fail_clearly(tmp_path):
     old = {**state, "cursor": {key: value for key, value in state["cursor"].items() if key != "mix_start"}}
     with pytest.raises(ValueError, match="from before the sources could change"):
         setup_token_dataset(data_config(tmp_path, {"a": {}}), max_steps=10, dp_rank=0, dp_size=1).load_state_dict(old)
+    subset = data_config(tmp_path, {"a": {"repetitions": 2.0}})
+    tokens_only = setup_token_dataset(subset, max_steps=10, dp_rank=0, dp_size=1).state_dict()
+    tokens_only["plan"]["subsets"]["a"] = tokens_only["plan"]["subsets"]["a"]["tokens"]
+    with pytest.raises(ValueError, match="records its subsets without what they depend on"):
+        setup_token_dataset(subset, max_steps=10, dp_rank=0, dp_size=1, resume=(tokens_only, 5))
     write_shard(tmp_path / "a" / "01.ds", consecutive_documents([8] * 10, 800))
     with pytest.raises(ValueError, match="Source a: files"):
         setup_token_dataset(data_config(tmp_path, {"a": {}}), max_steps=10, dp_rank=0, dp_size=1).load_state_dict(state)
@@ -341,7 +349,11 @@ def test_resume_sizes_the_subset_by_the_run(tmp_path, change, factor):
     before, states = global_rows(old, 2, 10, max_steps=20)
     after, end = global_rows(new, 2, 10, states, max_steps=20, steps_done=10)
     first = setup_token_dataset(old, dp_rank=0, dp_size=1, max_steps=20).sampler.set_tokens[0]
-    sampler = setup_token_dataset(new, dp_rank=0, dp_size=1, max_steps=20, resume=(data_state(states), 10)).sampler
+    # As the trainer: the data state comes from the checkpoint's dataloader files.
+    (tmp_path / "dataloader").mkdir()
+    torch.save(states[0], tmp_path / "dataloader" / "rank_0.pt")
+    resume = (saved_data_state(tmp_path / "dataloader"), 10)
+    sampler = setup_token_dataset(new, dp_rank=0, dp_size=1, max_steps=20, resume=resume).sampler
 
     assert abs(sampler.set_tokens[0] - factor * first) <= 2 * 16
     assert abs(cursor_of(end)["tokens"][0] / sampler.set_tokens[0] - 2) < 0.1
