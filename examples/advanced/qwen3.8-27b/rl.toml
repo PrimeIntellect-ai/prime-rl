@@ -1,0 +1,33 @@
+# Qwen3.8 27B (dense, hybrid Gated DeltaNet, 16 of 64 layers full attention) RL at 256k context.
+# Model settings only: compose it with a hardware overlay from `gpu/` and a data config from
+# `examples/advanced/data/`:
+#
+#   uv run rl @ examples/advanced/qwen3.8-27b/rl.toml @ examples/advanced/qwen3.8-27b/gpu/h200.toml @ examples/advanced/data/swe.toml
+#   uv run rl @ examples/advanced/qwen3.8-27b/rl.toml @ examples/advanced/qwen3.8-27b/gpu/h200.toml @ examples/advanced/data/swe-short.toml
+#   uv run rl @ examples/advanced/qwen3.8-27b/rl.toml @ examples/advanced/qwen3.8-27b/gpu/h200.toml @ examples/advanced/data/math.toml
+
+seq_len = 262144
+
+[slurm]
+
+[model]
+name = "Qwen/Qwen3.8-27B"
+
+[weight_broadcast]
+type = "nccl"
+
+[trainer.optim]
+type = "muon"
+lr = 1e-6
+
+[inference.vllm]
+max_model_len = 262144
+enable_prefix_caching = true
+mamba_cache_dtype = "float32"
+tool_call_parser = "qwen3_coder"
+reasoning_parser = "qwen3"
+
+# Text-only RL: skip the vision encoder.
+[inference.vllm.limit_mm_per_prompt]
+image = 0
+video = 0

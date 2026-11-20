@@ -590,7 +590,7 @@ def train(config: SFTConfig | PretrainConfig):
         mfu_6dn = perf_counter.get_step_mfu(
             perf_counter.flop_counter.flops_per_token_6dn * result.num_tokens, step_time
         )
-        peak_memory, non_torch_memory = get_peak_memory_across_ranks()
+        peak_memory, non_torch_memory, peak_allocated_memory = get_peak_memory_across_ranks()
         max_peak_memory = max(max_peak_memory, peak_memory)
 
         # Log step metrics
@@ -641,6 +641,7 @@ def train(config: SFTConfig | PretrainConfig):
             "perf/throughput_per_gpu": throughput / world.world_size,
             "perf/peak_memory": peak_memory,
             "perf/non_torch_memory": non_torch_memory,
+            "perf/peak_allocated_memory": peak_allocated_memory,
             "perf/mfu": mfu,
             "perf/mfu_6dn": mfu_6dn,
             "step": progress.step,

@@ -1,0 +1,23 @@
+# H200 overlay for rl.toml: 6 trainer nodes and one-node inference
+# replicas (inference not fitted yet). Trainer fit on fake 256k samples:
+# 6 nodes, ep 8, cp 8: 61.0k tok/s (1,270 per GPU), 94.6 GiB peak allocated. 4 and 5 nodes OOM.
+#
+#   uv run rl @ examples/advanced/glm-5.3-flash/rl.toml @ examples/advanced/glm-5.3-flash/gpu/h200.toml @ examples/advanced/fake.toml --trainer.model.debug.force-balanced-routing
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 6
+num_infer_nodes = 1
+# Trainer nodes peak near 3 TB host RAM with the optimizer offloaded; keep the orchestrator off them.
+orchestrator_on_inference = true
+
+[trainer.model]
+cp = 8
+ep = 8
+
+[inference.vllm]
+tensor_parallel_size = 8
+# vLLM sizes this hybrid model's pages at 640 tokens; DeepGEMM's k-pool indexer on SM90 needs a multiple of 256.
+block_size = 768
+# Higher values OOM on the first weight update while receiving an MoE layer.
+gpu_memory_utilization = 0.75

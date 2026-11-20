@@ -1,0 +1,30 @@
+# SWE agent RL on ScaleSWE with the bash harness (bash + edit tools) in prime sandboxes,
+# evaluated on SWE-bench Verified. Compose it after a model's rl.toml and hardware overlay:
+#
+#   uv run rl @ examples/advanced/qwen3.8-flash-next/rl.toml @ examples/advanced/qwen3.8-flash-next/gpu/h200.toml @ examples/advanced/data/swe.toml
+
+[orchestrator]
+batch_size = 256
+# Episodes span many trainer steps.
+max_staleness = 16
+
+[orchestrator.train]
+group_size = 8
+
+[orchestrator.train.algo]
+type = "grpo"
+
+[[orchestrator.train.source]]
+name = "scaleswe"
+env.taskset.id = "scaleswe"
+env.agent.harness.id = "bash"
+
+[orchestrator.eval]
+interval = 25
+
+[[orchestrator.eval.source]]
+name = "swebench-verified"
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "bash"
+env.agent.timeout.rollout = 3600
+group_size = 1
