@@ -49,15 +49,6 @@ class AfmoeAttentionConfig:
     attention_dropout: float = 0.0
 
 
-def _repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
-    """Repeat KV heads to match query heads for GQA."""
-    if n_rep == 1:
-        return hidden_states
-    batch, num_kv_heads, slen, head_dim = hidden_states.shape
-    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_kv_heads, n_rep, slen, head_dim)
-    return hidden_states.reshape(batch, num_kv_heads * n_rep, slen, head_dim)
-
-
 class AfmoeAttentionBase(nn.Module):
     def __init__(self, config: AfmoeAttentionConfig):
         super().__init__()

@@ -27,7 +27,7 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.configs.orchestrator import (
     ModelConfig as OrchestratorModelConfig,
 )
-from prime_rl.configs.pretrain import PretrainConfig
+from prime_rl.configs.pretrain import PretrainConfig, PretrainDataConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
@@ -200,7 +200,7 @@ def test_pretrain_config_roundtrip(tmp_path):
     `uv run sft` rejects."""
     from prime_rl.entrypoints.launcher import write_config
 
-    write_toml(tmp_path / "pretrain.toml", {"data": {"paths": [str(tmp_path / "tokens")]}})
+    write_toml(tmp_path / "pretrain.toml", {"data": {"source": [{"name": "web", "path": str(tmp_path / "tokens")}]}})
     config = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--output-dir", str(tmp_path)])
     assert config.data.type == "datatrove"
     assert (config.optim.type, config.optim.lr, config.optim.weight_decay) == ("adamw", 1e-3, 0.01)
@@ -214,6 +214,57 @@ def test_pretrain_config_roundtrip(tmp_path):
     assert muon.optim.lr == 1e-3
     warmup = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--scheduler.warmup-steps", "100"])
     assert (warmup.scheduler.warmup_steps, warmup.scheduler.decay_steps) == (100, 0)
+
+
+@pytest.mark.parametrize(
+    ("data", "error"),
+    [
+        ({"source": [{"name": "a", "path": "a"}, {"name": "a", "path": "b"}]}, "names must be unique"),
+        (
+            {"source": [{"name": "a", "path": "a", "weight": 1.0}, {"name": "b", "path": "b"}]},
+            "on every source or on none",
+        ),
+        (
+            {"source": [{"name": "a", "path": "a", "weight": 0.0}, {"name": "b", "path": "b", "weight": 0.0}]},
+            "more than 0",
+        ),
+    ],
+)
+def test_pretrain_data_rejects_invalid_sources(data: dict, error: str):
+    with pytest.raises(ValidationError, match=error):
+        PretrainDataConfig(**data)
+
+
+def test_repetitions_need_max_steps():
+    sources = {"source": [{"name": "a", "path": "a", "repetitions": 2.0}]}
+    with pytest.raises(ValidationError, match="needs max_steps"):
+        PretrainConfig.model_validate({"data": sources})
+
+
+def test_val_set_defaults(tmp_path):
+    """[[val.set]] are scored at the training seq_len unless they set their own, in rows of val.micro_batch_tokens:
+    the training micro-batch or the longest set seq_len, whichever is larger, rounded up to a multiple of the CP
+    degree."""
+    path = str(tmp_path / "tokens")
+    val_sets = [
+        {"type": "documents", "name": "short", "path": path},
+        {"type": "documents", "name": "long", "path": path, "seq_len": 4096},
+    ]
+    write_toml(
+        tmp_path / "pretrain.toml",
+        {
+            "data": {"source": [{"name": "web", "path": path}], "seq_len": 1024, "micro_batch_size": 2},
+            "val": {"set": val_sets},
+        },
+    )
+    args = ["@", str(tmp_path / "pretrain.toml"), "--output-dir", str(tmp_path)]
+    config = cli(PretrainConfig, args=args)
+    assert [val_set.seq_len for val_set in config.val.set] == [1024, 4096]
+    assert config.val.micro_batch_tokens == 4096
+    assert not can_parse(PretrainConfig, [*args, "--val.micro-batch-tokens", "2048"])
+    odd_set = json.dumps([{**val_sets[1], "seq_len": 4097}])
+    cp_args = [*args, "--model.cp", "2", "--data.micro-batch-size", "1", "--val.set", odd_set]
+    assert cli(PretrainConfig, args=cp_args).val.micro_batch_tokens == 4098
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -466,7 +517,7 @@ def test_moe_compute_apply_to_cli(selection, selected):
             "MXFP8 transport requires",
         ),
         (
-            {"ep": 8, "moe": {"dispatch": {"type": "mega_moe", "precision": "mxfp8", "llep": {}}}},
+            {"ep": 8, "moe": {"dispatch": {"type": "mega_moe", "precision": "fp8", "llep": {}}}},
             "llep requires",
         ),
     ],
@@ -1493,7 +1544,7 @@ def test_score_centering_captures_complete_bounded_support(top_k, top_p):
     [(PretrainConfig, "scratch"), (SFTConfig, "pretrained"), (TrainerConfig, "pretrained")],
 )
 def test_model_init_type_defaults_per_entrypoint(tmp_path, config_cls, default_type: str):
-    data = {"data": {"paths": [str(tmp_path)]}} if config_cls is PretrainConfig else {}
+    data = {"data": {"source": [{"name": "tokens", "path": str(tmp_path)}]}} if config_cls is PretrainConfig else {}
     assert config_cls.model_validate(data).model.init.type == default_type
     # A [model.init] table without a type keeps the entrypoint's default.
     assert config_cls.model_validate({**data, "model": {"init": {}}}).model.init.type == default_type
