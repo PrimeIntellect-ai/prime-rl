@@ -1,4 +1,4 @@
-# H200 overlay for rl.toml: 6 trainer nodes and one-node inference
+# H200 overlay for rl.toml: 6 trainer nodes and 6 one-node inference
 # replicas (inference not fitted yet). Trainer fit on fake 256k samples:
 # 6 nodes, ep 8, cp 8: 61.0k tok/s (1,270 per GPU), 94.6 GiB peak allocated. 4 and 5 nodes OOM.
 #
@@ -8,6 +8,8 @@
 type = "multi_node"
 num_train_nodes = 6
 num_infer_nodes = 1
+# As many inference nodes as trainer nodes.
+num_infer_replicas = 6
 # Trainer nodes peak near 3 TB host RAM with the optimizer offloaded; keep the orchestrator off them.
 orchestrator_on_inference = true
 
