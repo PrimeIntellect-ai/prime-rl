@@ -1,5 +1,4 @@
 import asyncio
-import socket
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -12,6 +11,7 @@ from prime_rl.transports.batch.base import BatchReceiver, BatchSender
 from prime_rl.transports.batch.filesystem import FileSystemBatchReceiver, FileSystemBatchSender
 from prime_rl.transports.batch.types import MicroBatch
 from prime_rl.transports.batch.zmq import ZMQBatchReceiver, ZMQBatchSender
+from prime_rl.utils.utils import get_free_port
 
 
 def _micro_batch(token: int) -> MicroBatch:
@@ -31,12 +31,6 @@ def _micro_batch(token: int) -> MicroBatch:
 MICRO_BATCH_GRID = [[_micro_batch(0)], [_micro_batch(1)]]
 # Two data ranks, each split across two trainer ranks (e.g. tensor parallel)
 RANK_TO_DATA_RANK = [0, 0, 1, 1]
-
-
-def _free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
 
 
 def _filesystem_receivers(output_dir: Path, transport: None = None) -> list[BatchReceiver]:
@@ -66,7 +60,7 @@ def _zmq_receivers(output_dir: Path, transport: ZMQTransportConfig) -> list[Batc
 
 
 def _zmq(output_dir: Path, retain: bool = False) -> tuple[BatchSender, list[BatchReceiver], ZMQTransportConfig]:
-    transport = ZMQTransportConfig(host="127.0.0.1", port=_free_port(), retain=retain)
+    transport = ZMQTransportConfig(host="127.0.0.1", port=get_free_port(), retain=retain)
     sender = ZMQBatchSender(output_dir, data_world_size=2, current_step=0, transport=transport)
     return sender, _zmq_receivers(output_dir, transport), transport
 

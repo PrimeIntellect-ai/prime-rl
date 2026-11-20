@@ -13,6 +13,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   ruff:
     name: Ruff
@@ -24,12 +27,12 @@ jobs:
         with:
           submodules: false
       - name: Run ruff
-        uses: astral-sh/ruff-action@v4.1.0
+        uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
         with:
           version: "0.15.14"
           args: "check --config=pyproject.toml"
       - name: Run ruff format (check)
-        uses: astral-sh/ruff-action@v4.1.0
+        uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
         with:
           version: "0.15.14"
           args: "format --check --config=pyproject.toml"

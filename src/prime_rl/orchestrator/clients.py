@@ -632,8 +632,8 @@ def _is_retryable_lora_error(exception: BaseException) -> bool:
 # (small adapter file + KV cache reset, single-digit seconds in practice) but
 # the global admin AsyncClient uses `timeout=None`, so a stuck server would
 # hang the orchestrator forever.
-# `_PER_ATTEMPT` converts a hang into a TimeoutException so tenacity retries;
-# `_TOTAL` is the wall-clock budget across all retries — pick whichever
+# `LORA_LOAD_READ_TIMEOUT_S` converts a hang into a TimeoutException so tenacity
+# retries; `LORA_LOAD_TOTAL_TIMEOUT_S` is the wall-clock budget across all retries — pick whichever
 # stop condition fires first.
 LORA_LOAD_READ_TIMEOUT_S = 30.0
 LORA_LOAD_TOTAL_TIMEOUT_S = 120.0

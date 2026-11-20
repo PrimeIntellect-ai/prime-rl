@@ -293,9 +293,9 @@ gpus_per_node = 8
 
 ### Examples
 
-Full multi-node configs ship under [`examples/advanced/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced):
+Full multi-node configs ship under [`examples/advanced/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced) and [`configs/advanced/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/configs/advanced):
 
-- [`nemotron-3-super/swe.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/configs/advanced/nemotron-3-super/swe.toml) — 4 trainer + 1 inference node RL on a 120B hybrid-Mamba MoE with NCCL weight broadcast.
+- [`configs/advanced/nemotron-3-super/swe.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/configs/advanced/nemotron-3-super/swe.toml) — 4 trainer + 1 inference node RL on a 120B hybrid-Mamba MoE with NCCL weight broadcast.
 - [`glm-5.3/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/glm-5.3) — large-scale and P/D-disaggregated inference across the GLM-5 family.
 - [`glm-4.5-air/swe-2-node.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/advanced/glm-4.5-air/swe-2-node.toml) — train a 100B+ MoE on only two nodes: a single-node sign-SGD trainer (full optimizer offload) paired with one inference replica at batch size 64. An overlay on the shared `swe-budget.toml` base — launch with `uv run rl @ swe-budget.toml @ swe-2-node.toml`.
 
@@ -339,7 +339,7 @@ To benchmark a parallelism config before committing a multi-day run, run a short
 
 ```bash
 # SFT trainer alone
-uv run sft @ sft.toml --data.type fake --max-steps 4
+uv run sft @ sft.toml --data.fake --max-steps 4
 
 # RL trainer alone (no inference involved) -- launch it under torchrun, like the `rl` launcher does
 uv run torchrun --nproc-per-node=8 src/prime_rl/trainer/rl/train.py @ train.toml --data.fake --max-steps 4 --no-monitors.prime

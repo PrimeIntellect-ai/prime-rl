@@ -1,7 +1,7 @@
 import uuid
 import warnings
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
@@ -53,6 +53,30 @@ class BaseDataConfig(BaseConfig):
         return self
 
 
+class BaseSourceConfig(BaseConfig):
+    """One named source of the training data (``[[data.source]]``), in pretraining and SFT."""
+
+    name: str = Field(pattern=r"^[^/]+$")
+    """Names the source in the ``progress/<name>/*`` metrics."""
+
+    weight: float | None = Field(None, ge=0)
+    """The source's relative weight: its share of the training data (tokens in pretraining, samples in SFT) is its
+    weight over the sum of all weights. If None on every source, the share is the source's share of all sources' data
+    (tokens in pretraining, rows in SFT)."""
+
+
+def check_sources(sources: list[BaseSourceConfig]) -> None:
+    """Raise if two sources share a name, or the weights are set on only some sources or sum to 0."""
+    names = [source.name for source in sources]
+    if len(set(names)) < len(names):
+        raise ValueError(f"data.source: the names must be unique, got {names}")
+    weights = [source.weight for source in sources]
+    if None in weights and any(weight is not None for weight in weights):
+        raise ValueError("data.source: set weight on every source or on none (natural shares)")
+    if None not in weights and sum(weights) <= 0:
+        raise ValueError("data.source: the weights must sum to more than 0")
+
+
 class LossMaskConfig(BaseConfig):
     system: bool = False
     """System messages contribute to the loss."""
@@ -89,6 +113,34 @@ class SFTColumnsConfig(BaseConfig):
     """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``reasoning_effort = "effort"``. A row's non-null value overrides the ``[renderer]`` setting; rows and datasets without the column use it unchanged."""
 
 
+class HFDatasetConfig(BaseConfig):
+    """One ``(dataset, subset, split)`` of a Hugging Face dataset, with its columns and chat-template kwargs."""
+
+    dataset: str
+    """HF dataset name or local path."""
+
+    revision: str | None = None
+    """HF dataset revision to load. Ignored for a local path."""
+
+    subset: str | None = None
+    """Subset (config name) of the dataset."""
+
+    split: str = "train"
+    """Split of the dataset."""
+
+    columns: SFTColumnsConfig | None = None
+    """Columns of this dataset. Unset fields keep ``data.columns`` (the defaults in pretraining)."""
+
+    renderer: dict[str, Any] = {}
+    """Chat-template kwargs for this dataset's rows, applied over ``[renderer]`` and under a row's
+    ``columns.renderer`` values, e.g. ``{ reasoning_effort = "high" }``."""
+
+    def resolve_columns(self, columns: SFTColumnsConfig) -> None:
+        """Fill the unset fields of ``self.columns`` from ``columns``."""
+        overrides = self.columns.model_dump(exclude_unset=True) if self.columns is not None else {}
+        self.columns = SFTColumnsConfig.model_validate({**columns.model_dump(), **overrides})
+
+
 class BaseValSourceConfig(BaseConfig):
     name: str = Field(pattern=r"^[^/]+$")
     """Names the source's metrics, ``val/<name>/<metric>@<seq_len>``, e.g. ``val/fineweb-edu/bpb@2k``."""
@@ -108,26 +160,12 @@ class DocumentsValSourceConfig(BaseValSourceConfig):
     """Folder of datatrove tokenized shards, as for a pretraining source's ``path``. The tokens are scored as stored."""
 
 
-class ChatValSourceConfig(BaseValSourceConfig):
-    """Conversations, rendered as SFT renders its training data. The tokens SFT trains on (``loss_mask``) are scored,
-    and a conversation is cut after ``seq_len`` input tokens."""
+class ChatValSourceConfig(HFDatasetConfig, BaseValSourceConfig):
+    """Conversations, rendered as SFT renders its training data: the fields of an SFT ``[[data.source]]`` but
+    ``weight``. The rows are scored in order; the tokens SFT trains on (``loss_mask``) are scored, and a conversation is
+    cut after ``seq_len`` input tokens."""
 
     type: Literal["chat"] = "chat"
-
-    path: str
-    """HF dataset name or local directory, as ``datasets.load_dataset`` takes it."""
-
-    split: str
-    """Split of the dataset. Its rows are scored in order."""
-
-    subset: str | None = None
-    """Subset (HF config name) of the dataset."""
-
-    revision: str | None = None
-    """HF dataset revision to load. Ignored for a local directory."""
-
-    columns: SFTColumnsConfig = SFTColumnsConfig()
-    """Dataset columns, as for SFT's ``data.columns``."""
 
     loss_mask: LossMaskConfig = LossMaskConfig()
     """Which message types are scored."""
@@ -237,11 +275,12 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
 
     @model_validator(mode="after")
     def auto_setup_run_identity(self):
-        """Auto-generate the run name (``<dataset>--<model>--<short-id>``) when unset and
-        default the run directory, W&B run name and platform run name to it when not
-        set explicitly."""
+        """Auto-generate the run name (``<source>--<model>--<short-id>``, with the source only if it is the only
+        one) when unset and default the run directory, W&B run name and platform run name to it when not set
+        explicitly."""
         if self.run.name is None:
-            dataset = str(getattr(self.data, "name", "")).split("/")[-1]
+            sources = getattr(self.data, "source", [])
+            dataset = "fake" if getattr(self.data, "fake", None) else sources[0].name if len(sources) == 1 else ""
             model = self.model.name.split("/")[-1]
             parts = [part for part in (dataset, model) if part]
             self.run.name = "--".join([*parts, uuid.uuid4().hex[:8]]).lower()
@@ -437,6 +476,8 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
         for val_source in self.val.source:
             if val_source.seq_len is None:
                 val_source.seq_len = self.data.seq_len
+            if val_source.type == "chat":
+                val_source.resolve_columns(getattr(self.data, "columns", SFTColumnsConfig()))
         longest = max(val_source.seq_len for val_source in self.val.source)
         if self.val.micro_batch_tokens is None:
             row_len = max(self.data.seq_len * self.data.micro_batch_size, longest)
@@ -481,12 +522,14 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
             raise ValueError("Validation scores text only: [val] does not support VLM models ([model.vlm]).")
         return self
 
+    def renders_conversations(self) -> bool:
+        """Whether the trainer renders conversations with ``renderer``: SFT data or a ``chat`` validation source."""
+        return self.val is not None and any(val_source.type == "chat" for val_source in self.val.source)
+
     @model_validator(mode="after")
     def validate_typed_renderer(self):
-        """Require a typed renderer whenever the trainer renders real samples: SFT data or a ``chat`` validation
-        source."""
-        renders_val_sources = self.val is not None and any(val_source.type == "chat" for val_source in self.val.source)
-        if self.data.type != "sft" and not renders_val_sources:
+        """Require a typed renderer whenever the trainer renders conversations."""
+        if not self.renders_conversations():
             return self
 
         model_id = self.tokenizer.name or self.model.name

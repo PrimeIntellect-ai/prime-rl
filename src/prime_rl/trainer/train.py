@@ -47,7 +47,7 @@ from prime_rl.trainer.pretrain.data import (
     setup_token_dataset,
     warn_if_no_document_separator,
 )
-from prime_rl.trainer.sft.data import setup_sft_dataset
+from prime_rl.trainer.sft.data import SFTDataset, setup_sft_dataset
 from prime_rl.trainer.val import Validation
 from prime_rl.trainer.utils import (
     GarbageCollection,
@@ -524,9 +524,8 @@ def train(config: SFTConfig | PretrainConfig):
             memory_profiler.step()
 
         # Throughput / MFU per step over the full step wall time, as torchtitan reports them with
-        # log_freq=1 (tokens since last log / elapsed time), instead of a smoothed sliding window.
+        # log_freq=1 (tokens since last log / elapsed time).
         step_time = time.perf_counter() - step_start_time
-        perf_counter.count_tokens(result.num_tokens)
         throughput = perf_counter.get_step_tokens_per_second(result.num_tokens, step_time)
         mfu = perf_counter.get_step_mfu(result.num_flops, step_time)
         mfu_6dn = perf_counter.get_step_mfu(
@@ -560,18 +559,19 @@ def train(config: SFTConfig | PretrainConfig):
             "progress/num_tokens": progress.total_tokens,
             "step": progress.step,
         }
-        # At least two subsets/splits
         if len(samples_by_source) > 1:
             progress_metrics.update(
                 **{
-                    f"progress/{subset_or_split}/ratio_samples": num_samples / total_samples
-                    for subset_or_split, num_samples in samples_by_source.items()
+                    f"progress/{name}/ratio_samples": num_samples / total_samples
+                    for name, num_samples in samples_by_source.items()
                 },
                 **{
-                    f"progress/{subset_or_split}/ratio_tokens": num_tokens / total_tokens
-                    for subset_or_split, num_tokens in tokens_by_source.items()
+                    f"progress/{name}/ratio_tokens": num_tokens / total_tokens
+                    for name, num_tokens in tokens_by_source.items()
                 },
             )
+        if isinstance(dataset, SFTDataset):
+            progress_metrics.update(dataset.progress(dataset_progress))
         if isinstance(dataset, TokenDataset):
             progress_metrics.update(dataset.sampler.progress(dataset_progress["cursor"]))
         asyncio.run(monitors.log(progress_metrics, step=progress.step))

@@ -274,7 +274,12 @@ def init_weights(model: torch.nn.Module) -> None:
 def load_rows(tokenizer) -> list[dict]:
     """The first rows of Reverse-Text-SFT, packed as the SFT trainer packs them, identical on every rank. Rows of one
     length keep torch.compile from recompiling for a second shape."""
-    config = SFTDataConfig(seq_len=ROW_LEN, shuffle=False, pad_to_seq_len=True)
+    config = SFTDataConfig(
+        source=[{"name": "reverse-text", "dataset": "PrimeIntellect/Reverse-Text-SFT"}],
+        seq_len=ROW_LEN,
+        shuffle=False,
+        pad_to_seq_len=True,
+    )
     dataset = setup_sft_dataset(tokenizer, config, dp_rank=0, dp_size=1, renderer_config=AutoRendererConfig())
     return list(islice(setup_dataloader(dataset, config, cp=2), NUM_ROWS))
 
