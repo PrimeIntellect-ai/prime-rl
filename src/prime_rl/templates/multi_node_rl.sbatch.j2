@@ -410,8 +410,8 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     export VLLM_NIXL_SIDE_CHANNEL_HOST=$LOCAL_IP
     export VLLM_NIXL_SIDE_CHANNEL_PORT=5600
 
-    # The kv_transfer_config (NIXL transfer + any KV offload connector) is built in
-    # InferenceConfig.to_namespace() from the per-node config, so it is no longer assembled here.
+    # InferenceConfig.to_namespace() builds the kv_transfer_config (NIXL transfer + any KV
+    # offload connector) from the per-node config.
 
     DECODE_COMPILE_CFG='{"cudagraph_mode":"FULL_DECODE_ONLY"}'
 
