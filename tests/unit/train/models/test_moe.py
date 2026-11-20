@@ -14,6 +14,7 @@ from prime_rl.trainer.models.layers.moe import (
     GroupedExperts,
     MoE,
     MoEArgs,
+    routing_agreement,
 )
 from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5Config,
@@ -306,3 +307,10 @@ def test_expert_load_stats():
     assert stats.keys() == expected.keys()
     for name, value in expected.items():
         assert stats[name].item() == pytest.approx(value)
+
+
+def test_routing_agreement():
+    # Token 0 matches fully (in another order), token 1 shares one of two experts, token 2 shares none.
+    selected = torch.tensor([[0, 1], [2, 3], [4, 5]])
+    replayed = torch.tensor([[1, 0], [3, 6], [6, 7]], dtype=torch.int32)
+    assert routing_agreement(selected, replayed).tolist() == [1.5, 1.0, 3.0]
