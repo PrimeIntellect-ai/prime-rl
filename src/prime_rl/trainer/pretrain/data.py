@@ -2,6 +2,7 @@
 ``seq_len`` tokens."""
 
 import hashlib
+import json
 import os
 import resource
 import socket
@@ -12,12 +13,12 @@ from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
-import torch.distributed as dist
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.pretrain import PretrainDataConfig
 from prime_rl.trainer.data import StatefulIterableDataset
 from prime_rl.utils.bin_packing import fill_rows
+from prime_rl.utils.distributed import all_gather_bytes
 from prime_rl.utils.logger import get_logger
 
 # Every step looks up documents in files of every source, so files stay open: up to the soft limit on open files (one
@@ -642,10 +643,9 @@ def check_ranks_see_same_data(sampler: TokenSampler) -> None:
     node that sees other files, tokens or documents would plan other steps and train on rows that overlap or miss the
     others'."""
     view = repr([sampler.inputs(), [str(path) for path in sampler.shards.paths]])
-    seen = [None] * dist.get_world_size()
-    dist.all_gather_object(seen, (hashlib.sha256(view.encode()).hexdigest(), socket.gethostname()))
+    seen = all_gather_bytes(json.dumps([hashlib.sha256(view.encode()).hexdigest(), socket.gethostname()]).encode())
     views = {}
-    for rank, (digest, host) in enumerate(seen):
+    for rank, (digest, host) in enumerate(map(json.loads, seen)):
         views.setdefault(digest, []).append(f"{rank} ({host})")
     if len(views) > 1:
         raise RuntimeError(

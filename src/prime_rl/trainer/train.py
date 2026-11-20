@@ -66,6 +66,7 @@ from prime_rl.trainer.vlm import setup_processor
 from prime_rl.trainer.world import get_world
 from prime_rl.control.controller import Controller
 from prime_rl.control.server import ControlServer
+from prime_rl.utils.distributed import broadcast_bytes
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.utils import clean_exit
@@ -218,12 +219,14 @@ def train(config: SFTConfig | PretrainConfig):
                 dataset = setup_dataset()
             except Exception as e:
                 error = e
-        rank_0_error = [f"{type(error).__name__}: {error}" if error is not None else None]
-        dist.broadcast_object_list(rank_0_error, src=0)
+        message = None
+        if world.rank == 0:
+            message = f"{type(error).__name__}: {error}".encode() if error is not None else b""
+        rank_0_error = broadcast_bytes(message).decode()
         if error is not None:
             raise error
-        if rank_0_error[0] is not None:
-            raise RuntimeError(f"Rank 0 failed to set up the data: {rank_0_error[0]}")
+        if rank_0_error:
+            raise RuntimeError(f"Rank 0 failed to set up the data: {rank_0_error}")
         if world.rank != 0:
             dataset = setup_dataset()
         check_ranks_see_same_data(dataset.sampler)
