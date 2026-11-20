@@ -11,7 +11,7 @@ name = "glm-5.3-flash"
 
 [data]
 type = "sft"
-name = "PrimeIntellect/INTELLECT-3-SFT-10K"
+name = "DATA_DIR/INTELLECT-3-SFT-10K"
 splits = ["chat", "if"]
 shuffle = true
 seed = 0
