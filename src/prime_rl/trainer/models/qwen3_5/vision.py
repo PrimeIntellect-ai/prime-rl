@@ -265,6 +265,8 @@ class Qwen3_5VisionModel(nn.Module):
 
 def materialize_qwen_vl_images(refs: MMRefs, processor: Any) -> dict[str, torch.Tensor]:
     """Decode the image refs of a micro batch into Qwen-VL vision forward kwargs."""
+    if refs.videos:
+        raise ValueError("Qwen3.5 training does not support video inputs")
     image_processor = getattr(processor, "image_processor", None)
     if image_processor is None:
         raise ValueError("Multimodal samples require a model image processor")

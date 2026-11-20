@@ -1,10 +1,12 @@
 import math
 from typing import Any
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
 from transformers.modeling_outputs import BaseModelOutputWithPooling
+from transformers.video_utils import VideoMetadata
 
 from prime_rl.trainer.models.layers.attn import (
     flash_attn_2_varlen_op,
@@ -13,7 +15,7 @@ from prime_rl.trainer.models.layers.attn import (
 )
 from prime_rl.trainer.models.layers.rotary_emb import rotate_half
 from prime_rl.trainer.models.qwen3_8_flash_next.configuration_qwen3_8_flash_next import Qwen3_8FlashNextVisionConfig
-from prime_rl.trainer.vlm import load_image
+from prime_rl.trainer.vlm import load_image, load_video
 from prime_rl.transports.batch import MMRefs
 
 
@@ -291,4 +293,101 @@ def materialize_qwen_vl_images(refs: MMRefs, processor: Any) -> dict[str, torch.
     return kwargs
 
 
-__all__ = ["Qwen3_8FlashNextVisionModel", "materialize_qwen_vl_images"]
+def qwen_vl_video_timestamps(metadata: dict[str, Any], video_processor: Any) -> list[float]:
+    """Seconds of each temporal patch of a video, as vLLM's Qwen3-VL processor computes them
+    (``Qwen3VLProcessingInfo._get_video_second_idx`` with the processor's default fps)."""
+    indices = list(metadata["frames_indices"])
+    if metadata["do_sample_frames"]:
+        # vLLM's loader kept every frame, so the HF video processor samples them; recompute its indices.
+        total_num_frames = metadata["total_num_frames"]
+        num_frames = int(total_num_frames / metadata["fps"] * video_processor.fps)
+        num_frames = min(max(num_frames, video_processor.min_frames), video_processor.max_frames, total_num_frames)
+        indices = np.linspace(0, total_num_frames - 1, num_frames).round().astype(int).tolist()
+    merge_size = video_processor.temporal_patch_size
+    if len(indices) % merge_size != 0:
+        indices = indices + [indices[-1]] * (merge_size - len(indices) % merge_size)
+    seconds = [index / metadata["fps"] for index in indices]
+    return [(seconds[i] + seconds[i + merge_size - 1]) / 2 for i in range(0, len(seconds), merge_size)]
+
+
+def qwen_vl_video_placeholder_ids(
+    *,
+    grid_thw: torch.Tensor,
+    timestamps: list[float],
+    tokenizer: Any,
+    merge_size: int,
+    vision_start_token_id: int,
+    vision_end_token_id: int,
+    video_token_id: int,
+) -> list[int]:
+    """vLLM's expansion of one video placeholder (``Qwen3VLMultiModalProcessor.get_video_repl``): per temporal
+    patch, its ``<t seconds>`` text tokenized on its own, then ``<|vision_start|>``, the video pads and
+    ``<|vision_end|>``."""
+    frames, height, width = (int(size) for size in grid_thw)
+    if len(timestamps) != frames:
+        raise ValueError(f"Video has {frames} temporal patches but {len(timestamps)} timestamps")
+    tokens_per_frame = height * width // (merge_size * merge_size)
+    token_ids: list[int] = []
+    for timestamp in timestamps:
+        token_ids.extend(tokenizer.encode(f"<{timestamp:.1f} seconds>", add_special_tokens=False))
+        token_ids.extend([vision_start_token_id, *[video_token_id] * tokens_per_frame, vision_end_token_id])
+    return token_ids
+
+
+def materialize_qwen_vl_videos(refs: MMRefs, processor: Any) -> dict[str, torch.Tensor]:
+    """Decode the video refs of a micro batch into Qwen-VL vision forward kwargs. Frames are sampled by
+    vLLM's own loader and preprocessed with the HF video processor, as vLLM's Qwen3-VL processor does."""
+    video_processor = getattr(processor, "video_processor", None)
+    if video_processor is None:
+        raise ValueError("Video samples require a model video processor")
+    pixel_values: list[torch.Tensor] = []
+    grids: list[torch.Tensor] = []
+    lengths: list[int] = []
+    for ref in refs.videos:
+        frames, metadata = load_video(ref.url, type(video_processor).__name__)
+        processed = video_processor(
+            videos=[frames],
+            video_metadata=[
+                VideoMetadata(**{key: value for key, value in metadata.items() if key != "do_sample_frames"})
+            ],
+            do_sample_frames=metadata["do_sample_frames"],
+            return_tensors="pt",
+        )
+        grid_thw = torch.as_tensor(processed["video_grid_thw"]).reshape(3)
+        pixel_values.append(torch.as_tensor(processed["pixel_values_videos"]))
+        grids.append(grid_thw)
+        placeholder_ids = qwen_vl_video_placeholder_ids(
+            grid_thw=grid_thw,
+            timestamps=qwen_vl_video_timestamps(metadata, video_processor),
+            tokenizer=processor.tokenizer,
+            merge_size=int(video_processor.merge_size),
+            vision_start_token_id=processor.vision_start_token_id,
+            vision_end_token_id=processor.vision_end_token_id,
+            video_token_id=processor.video_token_id,
+        )
+        lengths.append(len(placeholder_ids))
+    expected = [ref.length for ref in refs.videos]
+    if lengths != expected:
+        raise ValueError(f"Video placeholder lengths differ from vLLM: expected {expected}, got {lengths}")
+    return {
+        "pixel_values_videos": torch.cat(pixel_values).contiguous(),
+        "video_grid_thw": torch.stack(grids),
+    }
+
+
+def materialize_qwen_vl_media(refs: MMRefs, processor: Any) -> dict[str, torch.Tensor]:
+    """Decode the image and video refs of a micro batch into Qwen-VL vision forward kwargs."""
+    kwargs = materialize_qwen_vl_images(refs, processor) if refs.images else {}
+    if refs.videos:
+        kwargs.update(materialize_qwen_vl_videos(refs, processor))
+    return kwargs
+
+
+__all__ = [
+    "Qwen3_8FlashNextVisionModel",
+    "materialize_qwen_vl_images",
+    "materialize_qwen_vl_media",
+    "materialize_qwen_vl_videos",
+    "qwen_vl_video_placeholder_ids",
+    "qwen_vl_video_timestamps",
+]

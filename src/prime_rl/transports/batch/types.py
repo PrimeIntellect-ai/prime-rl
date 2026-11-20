@@ -8,8 +8,17 @@ class MMImageRef(msgspec.Struct, array_like=True, gc=False):
     length: int
 
 
+# A video's placeholder range as vLLM expands it: per frame group, the "<t seconds>" timestamp text,
+# <|vision_start|>, the video pads and <|vision_end|>.
+class MMVideoRef(msgspec.Struct, array_like=True, gc=False):
+    url: str
+    offset: int
+    length: int
+
+
 class MMRefs(msgspec.Struct, array_like=True, gc=False):
     images: list[MMImageRef]
+    videos: list[MMVideoRef] = msgspec.field(default_factory=list)
 
 
 # Routed experts are large per-token arrays. tolist() is too expensive, so we

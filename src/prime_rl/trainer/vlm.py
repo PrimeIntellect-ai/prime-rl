@@ -3,7 +3,9 @@ and the decoder at ``model.model.language_model``; text models keep the decoder 
 
 import base64
 from io import BytesIO
+from typing import Any
 
+import numpy as np
 import torch.nn as nn
 from PIL import Image
 
@@ -30,6 +32,17 @@ def load_image(data_url: str) -> Image.Image:
         raise ValueError("Multimodal training requires base64 data image URLs")
     with Image.open(BytesIO(base64.b64decode(payload, validate=True))) as image:
         return image.convert("RGB")
+
+
+def load_video(data_url: str, video_processor: str) -> tuple[np.ndarray, dict[str, Any]]:
+    """Decode a video exactly as vLLM's media connector does for ``video_processor`` (the HF video processor
+    class name, which picks vLLM's frame sampler). Returns the sampled RGB frames and vLLM's video metadata."""
+    header, separator, _ = data_url.partition(",")
+    if not separator or not header.startswith("data:video/") or ";base64" not in header:
+        raise ValueError("Multimodal training requires base64 data video URLs")
+    from vllm.multimodal.media import MediaConnector
+
+    return MediaConnector().fetch_video(data_url, video_processor=video_processor).media
 
 
 def setup_processor(config: ModelConfig):
