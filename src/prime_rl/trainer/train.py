@@ -271,6 +271,12 @@ def train(config: SFTConfig | PretrainConfig):
         # This redundant setup is necessary because loading the optimizer's state has side effects on the scheduler state dict
         if skip.skip_scheduler:
             scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
+        if isinstance(dataset, SFTDataset) and not skip.skip_dataloader:
+            # A changed SFT mixture starts at the same draw on every data rank: the furthest one reached.
+            steps = [state["step"] for state in get_dataset_state(dataloader).values()]
+            furthest = torch.tensor(max(steps), device="cuda")
+            dist.all_reduce(furthest, op=dist.ReduceOp.MAX)
+            dataset.resume_step = int(furthest)
         logger.info(
             f"Resuming from step {checkpoint_step} (total_tokens={progress.total_tokens}, "
             f"total_samples={progress.total_samples}, dataset_state={get_dataset_state(dataloader)})"

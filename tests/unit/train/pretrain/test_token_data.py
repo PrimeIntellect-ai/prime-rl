@@ -159,8 +159,8 @@ def test_repetitions_read_a_subset_that_many_times(tmp_path):
 
 def test_subsets_and_resumes_fail_clearly(tmp_path):
     """A subset larger than its source fails at startup. A resume fails when the seed, the number of workers, a source's
-    subset (max_steps with repetitions) or a source's files differ, naming what changed; max_steps may change without
-    repetitions, and a source may move to another folder."""
+    subset (max_steps with repetitions) or a source's files differ, naming what changed, and on a state from before
+    the sources could change; max_steps may change without repetitions, and a source may move to another folder."""
     write_shard(tmp_path / "a" / "00.ds", consecutive_documents([8] * 100))
     with pytest.raises(ValueError, match="needs 1,600 unique tokens but has 800"):
         setup_token_dataset(
@@ -171,6 +171,9 @@ def test_subsets_and_resumes_fail_clearly(tmp_path):
     shutil.copytree(tmp_path / "a", tmp_path / "moved" / "a")
     moved = data_config(tmp_path / "moved", {"a": {}})
     setup_token_dataset(moved, max_steps=10, dp_rank=0, dp_size=1).load_state_dict(state)
+    old = {**state, "cursor": {key: value for key, value in state["cursor"].items() if key != "mix_start"}}
+    with pytest.raises(ValueError, match="from before the sources could change"):
+        setup_token_dataset(data_config(tmp_path, {"a": {}}), max_steps=10, dp_rank=0, dp_size=1).load_state_dict(old)
     with pytest.raises(ValueError, match="seed 0 -> 1; num_workers 1 -> 2"):
         setup_token_dataset(
             data_config(tmp_path, {"a": {}}, seed=1, num_workers=2), max_steps=10, dp_rank=0, dp_size=1
@@ -178,12 +181,12 @@ def test_subsets_and_resumes_fail_clearly(tmp_path):
     state = setup_token_dataset(
         data_config(tmp_path, {"a": {"repetitions": 2.0}}), max_steps=10, dp_rank=0, dp_size=1
     ).state_dict()
-    with pytest.raises(ValueError, match="Source a: subset 320 tokens -> 512 tokens"):
+    with pytest.raises(ValueError, match="Source a: subset 320 -> 512"):
         setup_token_dataset(
             data_config(tmp_path, {"a": {"repetitions": 2.0}}), max_steps=16, dp_rank=0, dp_size=1
         ).load_state_dict(state)
     write_shard(tmp_path / "a" / "01.ds", consecutive_documents([8] * 10, 800))
-    with pytest.raises(ValueError, match="Source a: its files"):
+    with pytest.raises(ValueError, match="Source a: files"):
         setup_token_dataset(
             data_config(tmp_path, {"a": {"repetitions": 2.0}}), max_steps=10, dp_rank=0, dp_size=1
         ).load_state_dict(state)

@@ -65,6 +65,48 @@ class StatefulIterableDataset(Stateful, IterableDataset):
         self.data_world_size = self.dp_size * num_workers
 
 
+SKIP_DATALOADER = (
+    "With ckpt.skip_dataloader the run resumes without the data state: the data starts over from step 0, in the same "
+    "order as at the run's start (a different data.seed gives a different order)."
+)
+
+
+def due(read: np.ndarray, start: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """When the sources of a mixture are due (weighted fair queuing): what a source read (tokens in pretraining, draws
+    in SFT) since the mixture last changed (``start``), over its weight; never for a source without weight."""
+    with np.errstate(divide="ignore"):
+        return np.where(weights > 0, (read - start) / weights, np.inf)
+
+
+def mixture_changed(saved: dict[str, dict], now: dict[str, dict], log: bool) -> bool:
+    """Whether the mixture of the sources ``now`` differs from that of a checkpoint's sources ``saved`` (by name, each
+    a weight and the facts of its data). Sources match by name: a kept source reads on where it stopped, which needs
+    the same data, so one whose facts differ raises. With ``log``, a changed mixture logs a line per source."""
+    for name in [name for name in now if name in saved]:
+        for key, value in now[name].items():
+            if key != "weight" and saved[name].get(key) != value:
+                raise ValueError(
+                    f"Source {name}: {key} {saved[name].get(key)!r} -> {value!r}. A kept source reads on where it "
+                    "stopped only with the same data: resume with it, or rename the source to read it from the "
+                    f"start. {SKIP_DATALOADER}"
+                )
+
+    def shares(sources: dict[str, dict]) -> dict[str, float]:
+        total = sum(source["weight"] for source in sources.values())
+        return {name: source["weight"] / total for name, source in sources.items()}
+
+    before, after = shares(saved), shares(now)
+    if before == after:
+        return False
+    if log:
+        for name, share in after.items():
+            change = f"kept, share {before[name]:.4g} -> {share:.4g}" if name in before else f"added, share {share:.4g}"
+            get_logger().info(f"Source {name}: {change}")
+        for name in [name for name in before if name not in after]:
+            get_logger().info(f"Source {name}: removed, share {before[name]:.4g}")
+    return True
+
+
 class CatDataset(StatefulIterableDataset):
     """Pack samples into rows of at most `seq_len` tokens, padded to a multiple of `pad_to_multiple_of`."""
 

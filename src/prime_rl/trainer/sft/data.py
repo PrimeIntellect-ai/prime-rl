@@ -1,5 +1,4 @@
 import json
-import math
 import time
 import uuid
 from pathlib import Path
@@ -16,7 +15,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.sft import LossMaskConfig, SFTColumnsConfig, SFTDataConfig
 from prime_rl.configs.supervised import BaseDataConfig
-from prime_rl.trainer.data import Sample, StatefulIterableDataset
+from prime_rl.trainer.data import Sample, StatefulIterableDataset, due, mixture_changed
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import format_time, get_logger
 
@@ -363,11 +362,12 @@ class HFSource:
 class SFTDataset(StatefulIterableDataset):
     """Samples drawn from one or more sources by weight.
 
-    The sources take turns by due time (weighted fair queuing): the next draw goes to the source with the smallest
-    ``(draws + 1) / weight``, ties to the first, so every stretch of draws holds the mixture. Without weights, a
-    source's weight is its number of rows, and every ``sum(rows)`` draws read each source exactly once (an epoch).
-    Every data rank walks the same draws and keeps every ``data_world_size``-th one, so the draws are the same on
-    every rank, for any number of ranks, and after a resume."""
+    The sources take turns by due time (weighted fair queuing, `due`): the next draw goes to the source with the
+    smallest ``(draws + 1 - start) / weight``, ties to the first, so every stretch of draws holds the mixture; ``start``
+    is every source's draws when the mixture last changed. Without weights, a source's weight is its number of rows,
+    and every ``sum(rows)`` draws read each source exactly once (an epoch). Every data rank walks the same draws and
+    keeps every ``data_world_size``-th one, so the draws are the same on every rank, for any number of ranks, and
+    after a resume. ``resume_step`` (set by the trainer) is the furthest draw any data rank got to before a resume."""
 
     def __init__(
         self,
@@ -386,13 +386,20 @@ class SFTDataset(StatefulIterableDataset):
         self.num_rows = sum(source.size for source in sources if source.size is not None)
         assert max_epochs is None or self.num_rows > 0, "max_epochs needs a source with rows"
         self.max_epochs = max_epochs
-        self.draws = [0] * len(sources)
+        self.mixture = {
+            source.name: {"weight": weight, "rows": source.size} for source, weight in zip(sources, weights)
+        }
+        self.draws, self.start = [0] * len(sources), [0] * len(sources)
+        self.resume_step = None
 
     def state_dict(self) -> dict:
+        names = [source.name for source in self.sources]
         return {
             "step": self.step,
             "epoch": self.epoch,
-            "draws": {source.name: draws for source, draws in zip(self.sources, self.draws)},
+            "draws": dict(zip(names, self.draws)),
+            "start": dict(zip(names, self.start)),
+            "sources": self.mixture,
         }
 
     def load_state_dict(self, state_dict: dict):
@@ -406,11 +413,30 @@ class SFTDataset(StatefulIterableDataset):
                 total = sum(counts.values())
                 counts.clear()
                 counts[source.name] = total
-        self.draws = [state_dict["draws"].get(source.name, 0) for source in self.sources]
+        # Sources match by name (`mixture_changed`); a state from before the sources were recorded has the same ones.
+        saved = state_dict.get("sources", self.mixture)
+        draws, start = state_dict["draws"], state_dict.get("start", {})
+        self._setup_world_info()
+        if mixture_changed(saved, self.mixture, log=self.data_rank == 0):
+            # The new mixture starts at the same draw on every data rank, the furthest one reached: each walks the old
+            # mixture to there, skipping the draws it had not reached.
+            weights = np.array([source["weight"] for source in saved.values()])
+            old = np.array([draws[name] for name in saved])
+            old_start = np.array([start.get(name, 0) for name in saved])
+            target = max(self.resume_step or 0, self.step)
+            for _ in range(self.step, target):
+                old[np.argmin(due(old + 1, old_start, weights))] += 1
+            self.step = target
+            draws = start = dict(zip(saved, old.tolist()))
+        names = [source.name for source in self.sources]
+        self.draws = [draws.get(name, 0) for name in names]
+        self.start = [start.get(name, 0) for name in names]
+        for counts in (self.num_samples, self.num_tokens):
+            for name in counts.keys() - set(names):
+                del counts[name]
 
     def next_source(self) -> int:
-        due = [(draws + 1) / weight if weight > 0 else math.inf for draws, weight in zip(self.draws, self.weights)]
-        return due.index(min(due))
+        return int(np.argmin(due(np.array(self.draws) + 1, np.array(self.start), np.array(self.weights))))
 
     def progress(self, state: dict) -> dict[str, float]:
         """Every source's draws and, for a source with rows, its passes over them (``epoch``) in ``state``."""

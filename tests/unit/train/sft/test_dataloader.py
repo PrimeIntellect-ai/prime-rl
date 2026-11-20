@@ -19,6 +19,12 @@ def setup_fake_dataloader(config: SFTDataConfig, dp_rank: int = 0, dp_size: int 
     return dataset, setup_dataloader(dataset, config, cp=1)
 
 
+def positions(dataloader) -> dict:
+    """Every worker's position in the draws."""
+    states = get_dataset_state(dataloader).items()
+    return {worker: {key: state[key] for key in ("step", "epoch", "draws")} for worker, state in states}
+
+
 def test_fake_dataset_single_rank_state():
     # Setup stateful dataloader
     config = fake_config("fixed", "increasing", batch_size=1)
@@ -26,22 +32,22 @@ def test_fake_dataset_single_rank_state():
     dataiter = iter(dataloader)
 
     # Initial state
-    assert get_dataset_state(dataloader) == {"worker_0": {"step": 0, "epoch": 0, "draws": {"fake": 0}}}
+    assert positions(dataloader) == {"worker_0": {"step": 0, "epoch": 0, "draws": {"fake": 0}}}
 
     # Iterate over samples
     micro_batch = next(dataiter)
     print(micro_batch)
     assert micro_batch["input_ids"].unique().item() == 0
-    assert get_dataset_state(dataloader) == {"worker_0": {"step": 1, "epoch": 0, "draws": {"fake": 1}}}
+    assert positions(dataloader) == {"worker_0": {"step": 1, "epoch": 0, "draws": {"fake": 1}}}
     micro_batch = next(dataiter)
     assert micro_batch["input_ids"].unique().item() == 1
-    assert get_dataset_state(dataloader) == {"worker_0": {"step": 2, "epoch": 0, "draws": {"fake": 2}}}
+    assert positions(dataloader) == {"worker_0": {"step": 2, "epoch": 0, "draws": {"fake": 2}}}
     micro_batch = next(dataiter)
     assert micro_batch["input_ids"].unique().item() == 2
-    assert get_dataset_state(dataloader) == {"worker_0": {"step": 3, "epoch": 0, "draws": {"fake": 3}}}
+    assert positions(dataloader) == {"worker_0": {"step": 3, "epoch": 0, "draws": {"fake": 3}}}
     micro_batch = next(dataiter)
     assert micro_batch["input_ids"].unique().item() == 3
-    assert get_dataset_state(dataloader) == {"worker_0": {"step": 4, "epoch": 0, "draws": {"fake": 4}}}
+    assert positions(dataloader) == {"worker_0": {"step": 4, "epoch": 0, "draws": {"fake": 4}}}
 
 
 @pytest.mark.parametrize("dp_rank", [0, 1])
@@ -52,13 +58,13 @@ def test_fake_dataset_multi_rank_state(dp_rank: int):
     dataiter = iter(dataloader)
 
     # Initial state
-    assert get_dataset_state(dataloader) == {"worker_0": {"step": 0, "epoch": 0, "draws": {"fake": 0}}}
+    assert positions(dataloader) == {"worker_0": {"step": 0, "epoch": 0, "draws": {"fake": 0}}}
 
     for index in range(6):
         expected_sample = index * 2 + dp_rank
         micro_batch = next(dataiter)
         assert micro_batch["input_ids"].unique().item() == expected_sample
-        assert get_dataset_state(dataloader) == {
+        assert positions(dataloader) == {
             "worker_0": {"step": expected_sample + 1, "epoch": 0, "draws": {"fake": expected_sample + 1}}
         }
 
@@ -73,9 +79,7 @@ def test_fake_dataset_single_rank_resume():
         micro_batch = next(dataiter)
         assert micro_batch["input_ids"].shape == (1, 128)
         assert micro_batch["input_ids"].unique().item() == step
-        assert get_dataset_state(dataloader) == {
-            "worker_0": {"step": step + 1, "epoch": 0, "draws": {"fake": step + 1}}
-        }
+        assert positions(dataloader) == {"worker_0": {"step": step + 1, "epoch": 0, "draws": {"fake": step + 1}}}
 
     # Reload dataloader
     state_dict = dataloader.state_dict()
@@ -88,9 +92,7 @@ def test_fake_dataset_single_rank_resume():
         micro_batch = next(dataiter)
         assert micro_batch["input_ids"].shape == (1, 128)
         assert micro_batch["input_ids"].unique().item() == step
-        assert get_dataset_state(dataloader) == {
-            "worker_0": {"step": step + 1, "epoch": 0, "draws": {"fake": step + 1}}
-        }
+        assert positions(dataloader) == {"worker_0": {"step": step + 1, "epoch": 0, "draws": {"fake": step + 1}}}
 
 
 def test_fake_dataset_single_rank_state_with_packing():
@@ -109,7 +111,7 @@ def test_fake_dataset_single_rank_state_with_packing():
         worker_state = dataloader.state_dict()["_snapshot"]["_worker_snapshots"]["worker_0"]["dataset_state"]
         pending_sample = worker_state.get("pending_sample")
         expected_dataset_step = step + (pending_sample is not None)
-        assert get_dataset_state(dataloader) == {
+        assert positions(dataloader) == {
             "worker_0": {"step": expected_dataset_step, "epoch": 0, "draws": {"fake": expected_dataset_step}}
         }
         if pending_sample is not None:
@@ -217,3 +219,68 @@ def test_dataloader_progress_is_monotonic_with_uneven_workers():
     del dataiter, dataloader
     gc.collect()
     assert positions == sorted(positions)
+
+
+def test_resume_with_another_mix_reads_on(dummy_renderer):
+    """Resumed on 2 ranks x 2 workers with other weights, d removed and c added: no row is read twice, d no more (but
+    for samples drawn before and packed after), every worker starts the new mixture at the same draw, and from there
+    the draws hold the new shares."""
+    sizes = {"a": 60, "b": 80, "c": 50, "d": 40}
+    rows = {
+        name: Dataset.from_list(
+            [{"messages": [{"role": "assistant", "content": f"{name}{i:03d}" + "-" * (i % 4)}]} for i in range(size)]
+        )
+        for name, size in sizes.items()
+    }
+
+    def loaders(weights: dict[str, float]) -> list:
+        config = SFTDataConfig(
+            source=[{"name": name, "dataset": "unused"} for name in weights],
+            batch_size=1,
+            micro_batch_size=1,
+            seq_len=16,
+            num_workers=2,
+        )
+        result = []
+        for dp_rank in range(2):
+            sources = [HFSource(rows[name], lambda _: dummy_renderer, name=name, seq_len=16) for name in weights]
+            dataset = SFTDataset(sources, weights=list(weights.values()), dp_rank=dp_rank, dp_size=2)
+            result.append((dataset, setup_dataloader(dataset, config, cp=1)))
+        return result
+
+    def text(targets) -> str:
+        return "".join(chr(token - 2) for token in targets.tolist() if token > 1)
+
+    def read(dataloader, micro_batches: int) -> list[str]:
+        contents, dataiter = [], iter(dataloader)
+        for _ in range(micro_batches):
+            batch = next(dataiter)
+            contents += [text(targets) for targets in batch["target_ids"][0].split(batch["seq_lens"].tolist())]
+        return [content for content in contents if content]
+
+    before = loaders({"a": 1, "b": 1, "d": 1})
+    contents = [content for _, dataloader in before for content in read(dataloader, 8)]
+    states = [dataloader.state_dict() for _, dataloader in before]
+    snapshots = [snapshot for state in states for snapshot in state["_snapshot"]["_worker_snapshots"].values()]
+    pending = {
+        text(s["dataset_state"]["pending_sample"]["target_ids"])
+        for s in snapshots
+        if "pending_sample" in s["dataset_state"]
+    }
+    # As the trainer does: the new mixture starts at the furthest draw of any worker.
+    furthest = max(state["step"] for _, dataloader in before for state in get_dataset_state(dataloader).values())
+    after = loaders({"b": 3, "a": 1, "c": 1})
+    since_resume = []
+    for (dataset, dataloader), state in zip(after, states):
+        dataset.resume_step = furthest
+        dataloader.load_state_dict(state)
+        since_resume += read(dataloader, 8)
+
+    assert len(contents + since_resume) == len(set(contents + since_resume))
+    assert {content for content in since_resume if content.startswith("d")} <= pending
+    workers = [state for _, dataloader in after for state in get_dataset_state(dataloader).values()]
+    assert len({repr(state["start"]) for state in workers}) == 1
+    shares = {"a": 0.2, "b": 0.6, "c": 0.2}
+    for state in workers:
+        drawn = state["step"] - furthest
+        assert all(abs(state["draws"][n] - state["start"][n] - share * drawn) <= 1 for n, share in shares.items())
