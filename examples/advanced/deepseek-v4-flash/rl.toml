@@ -1,8 +1,7 @@
-# DeepSeek-V4-Flash agentic RL at 131k context with the bash harness on a prime sandbox runtime.
-# Task- and hardware-agnostic base: compose it with a task source from `tasks/` and a hardware
-# overlay from `gpu/`, e.g.
+# DeepSeek-V4-Flash agentic RL at 131k context with the bash harness on a prime sandbox runtime:
+# train on `scaleswe`, eval on SWE-bench Verified. Compose it with a hardware overlay from `gpu/`:
 #
-#   uv run rl @ examples/advanced/deepseek-v4-flash/rl.toml @ examples/advanced/deepseek-v4-flash/tasks/terminal.toml @ examples/advanced/deepseek-v4-flash/gpu/h200.toml
+#   uv run rl @ examples/advanced/deepseek-v4-flash/rl.toml @ examples/advanced/deepseek-v4-flash/gpu/h200.toml
 
 max_steps = 1000
 seq_len = 131072
@@ -19,6 +18,7 @@ name = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
 
 [monitors.wandb]
 project = "deepseek-v4-flash"
+name = "scaleswe"
 
 [weight_broadcast]
 type = "nccl"
@@ -41,10 +41,16 @@ score_centering = true
 [orchestrator]
 batch_size = 256
 # Episodes span many trainer steps at high concurrency.
-max_staleness = 32
+max_staleness = 64
 
 [orchestrator.train]
 group_size = 8
+
+[orchestrator.train.algo.length_penalty]
+type = "linear"
+num_output_tokens_weight = 0.0
+num_input_tokens_weight = 0.1
+num_turns_weight = 0.1
 
 [orchestrator.train.sampling]
 top_p = 0.97
@@ -56,6 +62,24 @@ enable_thinking = true
 # With tools present the encoder keeps all reasoning anyway; these make the settings agree.
 drop_thinking = false
 thinking_retention = "all"
+reasoning_effort = "low"
+
+[[orchestrator.train.source]]
+name = "scaleswe"
+env.taskset.id = "scaleswe"
+env.agent.harness.id = "bash"
+env.agent.harness.compaction.summarize_at_tokens = 98304
+
+[orchestrator.eval]
+interval = 50
+skip_first_step = true
+
+[[orchestrator.eval.source]]
+name = "swebench-verified"
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "bash"
+env.agent.harness.compaction.summarize_at_tokens = 98304
+env.agent.timeout.rollout = 3600
 
 # --- Inference: one DEP8 replica per node (attention data parallel, experts sharded 8 ways) ---
 
