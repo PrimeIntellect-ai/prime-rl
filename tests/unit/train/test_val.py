@@ -88,7 +88,7 @@ def test_chat_source_scores_the_tokens_sft_trains_on(tmp_path: Path):
     data = SFTDataConfig(source=[{"name": "chat", "dataset": str(tmp_path)}], seq_len=1024, shuffle=False)
     (sample,) = islice(setup_sft_dataset(tokenizer, data, dp_rank=0, dp_size=1, renderer_config=renderer), 1)
 
-    config = ChatValSourceConfig(name="chat", dataset=str(tmp_path), seq_len=1024)
+    config = ChatValSourceConfig(name="chat", dataset=str(tmp_path), seq_len=1024, loss_mask=data.loss_mask)
     config.resolve_columns(data.columns)
     # num_samples above the split's size scores every row.
     ((inputs, labels),) = chat_source(config, 5, tokenizer, renderer).requests
