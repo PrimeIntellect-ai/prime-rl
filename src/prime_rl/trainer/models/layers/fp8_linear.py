@@ -332,6 +332,7 @@ def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: l
     - sparse-MLA scalar projection (weights_proj)
     - GLM-5.1 MTP head (eh_proj)
     - hybrid-Mamba projections (in_proj_a, in_proj_b)
+    - Clef's joint schema head (pooler.head.)
 
     Independently of the name-based ignore list, we also skip any nn.Linear
     whose in_features or out_features is not a multiple of 128. Float8BlockwiseLinear
