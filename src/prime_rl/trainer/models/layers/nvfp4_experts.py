@@ -58,11 +58,12 @@ def quantize_weights(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, 
     )
 
 
-def _swizzled(block_scales: torch.Tensor) -> torch.Tensor:
-    """``[rows, K // 16]`` E4M3 block scales in cuBLAS's 128x4 block layout."""
-    from torchao.prototype.mx_formats.utils import to_blocked
-
-    return to_blocked(block_scales.view(torch.uint8)).view(torch.float8_e4m3fn)
+def _blocked(block_scales: torch.Tensor) -> torch.Tensor:
+    """``[..., rows, K // 16]`` E4M3 block scales, ``rows`` a multiple of 128 and ``K // 16`` of 4, in cuBLAS's 128x4
+    block layout: ``[..., rows // 128 * K // 64, 512]``, one 128x4 tile per row."""
+    *batch, rows, cols = block_scales.shape
+    tiles = block_scales.view(torch.uint8).view(*batch, rows // 128, 4, 32, cols // 4, 4)
+    return tiles.permute(*range(len(batch)), -5, -2, -3, -4, -1).reshape(*batch, -1, 512).view(torch.float8_e4m3fn)
 
 
 def _nvfp4_grouped_mm(x, weight, bounds: list[int]) -> torch.Tensor:
@@ -70,21 +71,37 @@ def _nvfp4_grouped_mm(x, weight, bounds: list[int]) -> torch.Tensor:
     rows past the last group are 0."""
     x_packed, x_block_scales, token_scales = x
     w_packed, w_block_scales, expert_scales = weight
-    out = torch.empty(x_packed.shape[0], w_packed.shape[1], dtype=torch.float32, device=x_packed.device)
-    out[bounds[-1] :].zero_()
+    device = x_packed.device
     counts = [end - start for start, end in zip(bounds[:-1], bounds[1:])]
+    # Every group's activation scales padded to whole 128-row tiles, so each group's blocked scales are one slice
+    tiles = [-(-count // 128) for count in counts]
+    tile_starts = [0]
+    for count_tiles in tiles:
+        tile_starts.append(tile_starts[-1] + count_tiles)
+    shift = torch.tensor([128 * tile - start for tile, start in zip(tile_starts, bounds)], device=device)
+    rows = torch.arange(bounds[-1], device=device)
+    rows += torch.repeat_interleave(shift[:-1], torch.tensor(counts, device=device), output_size=bounds[-1])
+    padded = torch.zeros(128 * tile_starts[-1], x_block_scales.shape[1], dtype=torch.uint8, device=device)
+    padded[rows] = x_block_scales[: bounds[-1]].view(torch.uint8)
+    x_scales = _blocked(padded)
+    w_scales = _blocked(w_block_scales)
+    tile_rows = x_block_scales.shape[1] // 4
+
+    out = torch.empty(x_packed.shape[0], w_packed.shape[1], dtype=torch.float32, device=device)
+    out[bounds[-1] :].zero_()
     for expert, (start, count) in enumerate(zip(bounds[:-1], counts)):
         if count:
+            first = tile_starts[expert] * tile_rows
             torch._scaled_mm(
                 x_packed[start : start + count].view(torch.float4_e2m1fn_x2),
                 w_packed[expert].view(torch.float4_e2m1fn_x2).T,
-                _swizzled(x_block_scales[start : start + count]),
-                _swizzled(w_block_scales[expert]),
+                x_scales[first : first + tiles[expert] * tile_rows].flatten(),
+                w_scales[expert].flatten(),
                 out_dtype=torch.float32,
                 out=out[start : start + count],
             )
     row_expert_scales = torch.repeat_interleave(
-        expert_scales, torch.tensor(counts, device=out.device), output_size=bounds[-1]
+        expert_scales, torch.tensor(counts, device=device), output_size=bounds[-1]
     )
     out[: bounds[-1]].mul_((token_scales[: bounds[-1]] * row_expert_scales).unsqueeze(-1))
     return out
@@ -157,6 +174,13 @@ class NVFP4ExpertCompute:
             raise ValueError("NVFP4 expert compute supports gated experts only.")
         if any(bias is not None for bias in (experts.gate_proj_bias, experts.up_proj_bias, experts.down_proj_bias)):
             raise ValueError("NVFP4 expert compute does not support expert biases.")
+        # Whole 128x4 scale tiles for the weights, whole 64-value tiles for the MXFP8 requantization
+        dim = experts.down_proj.shape[-2]
+        if dim % 128 or experts.hidden_dim % 64:
+            raise ValueError(
+                f"NVFP4 expert compute needs hidden size divisible by 128 and expert intermediate size by 64, got "
+                f"{dim} and {experts.hidden_dim}."
+            )
 
     def _linear(self, x: torch.Tensor, weight: torch.Tensor, offsets: torch.Tensor, bounds: list[int]) -> torch.Tensor:
         return _NVFP4GroupedLinear.apply(x, weight, offsets, bounds, self.four_over_six, self.mxfp8)
