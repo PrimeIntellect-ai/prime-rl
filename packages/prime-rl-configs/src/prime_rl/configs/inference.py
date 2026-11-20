@@ -490,12 +490,6 @@ class InferenceConfig(BaseConfig):
     sampling_support_capacity: int = Field(16 * 2**20, ge=1)
     """Entries (8 bytes each) in the per-step device buffer that holds captured sampling supports: the kept ids of every replayed request in one sampling step, plus sampler rows. Requests whose supports do not fit fail with an explicit error instead of being truncated; the server logs the maximum per-step total every minute."""
 
-    enable_fp32_lm_head: bool = True
-    """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented natively by vLLM's LogitsProcessor, which reads ``head_dtype`` off the HF config, so this flag injects ``hf_overrides = {"head_dtype": "float32"}``."""
-
-    enable_fp32_router_logits: bool = True
-    """Request FP32 MoE router logits via ``hf_overrides = {"moe_router_dtype": "float32"}``. Operand and weight precision depend on the serving model implementation; FP32 logits do not imply FP32 gate weights. Trainer routers use BF16 operands with FP32 logits; configure serving gate precision explicitly to match."""
-
     # Launcher-only fields
 
     deployment: InferenceDeploymentConfig = SingleNodeInferenceDeploymentConfig()
@@ -700,19 +694,15 @@ class InferenceConfig(BaseConfig):
         if "enable_scale_out" not in extra_fields:
             namespace.enable_scale_out = True
 
-        # vLLM's DeepseekV2-family (and transformers-backend MoE) gates read
-        # `moe_router_dtype` off the HF config to pick the router logits dtype.
-        if self.enable_fp32_router_logits:
-            hf_overrides = getattr(namespace, "hf_overrides", None) or {}
-            hf_overrides.setdefault("moe_router_dtype", "float32")
-            namespace.hf_overrides = hf_overrides
-
-        # vLLM's LogitsProcessor reads `head_dtype` off the HF config to pick the
-        # lm_head projection dtype (fp32 runs as a native bf16xbf16 -> fp32 GEMM).
-        if self.enable_fp32_lm_head:
-            hf_overrides = getattr(namespace, "hf_overrides", None) or {}
-            hf_overrides.setdefault("head_dtype", "float32")
-            namespace.hf_overrides = hf_overrides
+        # FP32 router logits and lm_head logits keep sampling logprobs close to the
+        # trainer's. vLLM's DeepseekV2-family (and transformers-backend MoE) gates read
+        # `moe_router_dtype` off the HF config; its LogitsProcessor reads `head_dtype`
+        # (fp32 runs as a native bf16xbf16 -> fp32 GEMM). An explicit
+        # `vllm.hf_overrides` entry wins.
+        hf_overrides = getattr(namespace, "hf_overrides", None) or {}
+        hf_overrides.setdefault("moe_router_dtype", "float32")
+        hf_overrides.setdefault("head_dtype", "float32")
+        namespace.hf_overrides = hf_overrides
 
         if self.enable_return_sampling_mask:
             namespace.return_sampling_mask = True
