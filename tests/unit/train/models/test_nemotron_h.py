@@ -5,7 +5,7 @@ import torch
 from transformers import AutoConfig
 
 from prime_rl.trainer.models import get_custom_causal_lm_cls
-from prime_rl.trainer.models.conversion_ops import view_mapping
+from prime_rl.trainer.models.conversion_ops import tensor_mapping
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM, NemotronHOmniConfig
 from prime_rl.trainer.models.nemotron_h.mamba import NemotronHMamba2
@@ -164,7 +164,7 @@ def test_nemotron_h_omni_conversion_roundtrip():
     # The same chain must export rank-local packets and checkpoint views.
     partial = model.convert_to_hf({"lm_head.weight": original["lm_head.weight"]})
     assert partial.keys() == {"language_model.lm_head.weight"}
-    mapping = view_mapping(model.conversion_chain(config), {key: value.shape for key, value in original.items()})
+    mapping = tensor_mapping(model.conversion_chain(config), {key: value.shape for key, value in original.items()})
     assert mapping is not None
     assert mapping.keys() == model.convert_to_hf(dict(original)).keys()
 

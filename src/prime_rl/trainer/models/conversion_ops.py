@@ -37,6 +37,7 @@ from typing import Callable
 
 import torch
 from torch import Tensor
+from torch.overrides import TorchFunctionMode
 
 StateDict = dict[str, Tensor]
 
@@ -351,15 +352,15 @@ def routed_experts_op(
     return Conditional(key_present(gate_up), then=fused_then, else_=stacks)
 
 
-def view_mapping(ops: list[ConvOp], shapes: dict[str, torch.Size]) -> dict[str, dict] | None:
+def tensor_mapping(ops: list[ConvOp], shapes: dict[str, torch.Size]) -> dict[str, dict] | None:
     """Each HF tensor of the prime -> HF conversion of a state dict with these keys and shapes, as
-    ``{"from": prime_key, "index": [...]}``, meaning ``prime[from][*index]``. Found by playing the
-    real conversion on meta tensors. None when an HF tensor is not such a view (a concat, a value
-    transform)."""
+    a view ``{"from": prime_key, "index": [...]}``, meaning ``prime[from][*index]``, or as views
+    concatenated along a dim, ``{"concat": [view, ...], "dim": dim}``. Found by playing the real
+    conversion on meta tensors. None when an HF tensor is neither (a value transform)."""
     prime = {key: torch.empty(shape, device="meta") for key, shape in shapes.items()}
     tensor_id_to_key = {id(tensor): key for key, tensor in prime.items()}
-    views = {}
-    for name, tensor in apply_prime_to_hf(dict(prime), ops).items():
+
+    def view(tensor: Tensor) -> dict | None:
         base = tensor if tensor._base is None else tensor._base
         lead = base.dim() - tensor.dim()
         if (
@@ -373,5 +374,37 @@ def view_mapping(ops: list[ConvOp], shapes: dict[str, torch.Size]) -> dict[str, 
         for stride in base.stride()[:lead]:
             index.append(offset // stride)
             offset %= stride
-        views[name] = {"from": tensor_id_to_key[id(base)], "index": index}
-    return views
+        return {"from": tensor_id_to_key[id(base)], "index": index}
+
+    with _Concatenations() as concatenations:
+        hf = apply_prime_to_hf(dict(prime), ops)
+    mapping = {}
+    for name, tensor in hf.items():
+        if id(tensor) in concatenations.result_id_to_cat:
+            _, parts, dim = concatenations.result_id_to_cat[id(tensor)]
+            views = [view(part) for part in parts]
+            entry = None if None in views else {"concat": views, "dim": dim}
+        else:
+            entry = view(tensor)
+        if entry is None:
+            return None
+        mapping[name] = entry
+    return mapping
+
+
+class _Concatenations(TorchFunctionMode):
+    """The ``torch.cat`` calls a conversion makes: each result's inputs and dim."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.result_id_to_cat: dict[int, tuple[Tensor, list[Tensor], int]] = {}
+
+    def __torch_function__(self, func, types, args=(), kwargs=None):
+        kwargs = kwargs or {}
+        result = func(*args, **kwargs)
+        if func is torch.cat:
+            tensors = args[0] if args else kwargs["tensors"]
+            dim = args[1] if len(args) > 1 else kwargs.get("dim", 0)
+            # The result is kept so its id is not reused by a later tensor.
+            self.result_id_to_cat[id(result)] = (result, list(tensors), dim)
+        return result
