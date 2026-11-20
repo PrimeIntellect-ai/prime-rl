@@ -25,7 +25,6 @@ type = "deepgemm_fp8"
 
 # --- Orchestrator ---
 
-# Start at, and never drop below, 1024 rollouts in flight; the controller may climb further.
 [orchestrator.concurrency]
 initial_inflight = 1024
 min_inflight = 1024

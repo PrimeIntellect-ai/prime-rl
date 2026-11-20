@@ -2,17 +2,6 @@
 # sides. Add inference replicas with `--deployment.num-infer-replicas`.
 #
 #   uv run rl @ examples/advanced/deepseek-v4-flash/rl.toml @ examples/advanced/deepseek-v4-flash/tasks/swe.toml @ examples/advanced/deepseek-v4-flash/gpu/b300.toml
-#
-# The checkpoint's dense weights sit exactly on the e4m3 grid (DeepSeek ships them as FP8), so an
-# lr-1e-6 update mostly rounds back to the base value when vLLM re-quantizes. A bf16 trainer then
-# drifts away from inference step by step; quantizing the trainer's forward identically keeps
-# both on the same weights.
-
-# FlashInfer autotuning takes ~20 min of each replica's startup. Its results are keyed by the vLLM
-# config hash and only rank 0 reads them, so a cache on shared storage is safe across nodes. It sits
-# at the top level because only these vars are exported by the sbatch, where $HOME expands.
-[env_vars]
-VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR = "$HOME/.cache/vllm-flashinfer-autotune"
 
 [deployment]
 type = "multi_node"
@@ -26,8 +15,8 @@ num_infer_replicas = 4
 dist_timeout_seconds = 14400
 
 [trainer.model]
-# DeepSeek V4 only supports ring CP. 131k / 8 = 16k tokens per rank.
-cp = 8
+# DeepSeek V4 only supports ring CP. 131k / 4 = 32k tokens per rank.
+cp = 4
 
 [trainer.model.moe.compute]
 type = "mxfp8"
@@ -48,7 +37,6 @@ extra_ignore_patterns = ["o_a_proj", 'compressor\.', 'indexer\.']
 # Loading and quantizing the 1.1 TB bf16 checkpoint over NFS takes well over the default timeout.
 wait_for_ready_timeout = 7200
 
-# Start at, and never drop below, 1024 rollouts in flight; the controller may climb further.
 [orchestrator.concurrency]
 initial_inflight = 1024
 min_inflight = 1024
