@@ -289,17 +289,18 @@ def get_dataset_state(dataloader: StatefulDataLoader) -> dict:
     return {wid: snap["dataset_state"]["dataset"] for wid, snap in sorted(snapshots.items())}
 
 
-def with_workers(state: dict, num_workers: int) -> dict:
-    """The dataloader state ``state`` for ``num_workers`` workers. With another number of workers, every worker reads
-    on from the dataset state of the saved worker that got furthest, without the sample that one had drawn but not
-    packed; the first worker keeps the sample counts of all. The keys are torchdata's private layout."""
+def with_workers(state: dict, num_workers: int, own: bool = True) -> dict:
+    """The dataloader state ``state`` (``own``: the rank's own) for ``num_workers`` workers. With another number of
+    workers or another rank's state, every worker reads on from the dataset state of the saved worker that got
+    furthest, without the samples drawn but not packed; with its own state, the first worker keeps the sample counts of
+    all. The keys are torchdata's private layout."""
     snapshot = state["_snapshot"]
     saved = list(snapshot["_worker_snapshots"].values())
-    if len(saved) == num_workers:
+    if len(saved) == num_workers and own:
         return state
     furthest = max(saved, key=lambda worker: worker["dataset_state"]["dataset"]["step"])
     counts = {key: defaultdict(int) for key in ("num_samples", "num_tokens")}
-    for worker in saved:
+    for worker in saved if own else []:
         for key, by_source in worker["dataset_state"].get("progress", {}).items():
             for name, count in by_source.items():
                 counts[key][name] += count

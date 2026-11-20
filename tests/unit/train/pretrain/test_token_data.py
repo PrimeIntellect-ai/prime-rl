@@ -187,7 +187,8 @@ def global_rows(
         loader = setup_dataloader(dataset, config, cp=1)
         if states is not None:
             # As the checkpoint manager: a rank the saved run did not have loads rank 0's state.
-            loader.load_state_dict(with_workers(states[rank] if rank < len(states) else states[0], config.num_workers))
+            own = rank < len(states)
+            loader.load_state_dict(with_workers(states[rank] if own else states[0], config.num_workers, own))
         batches = iter(loader)
         for step in range(steps):
             for _ in range(config.batch_size // (gpus * config.micro_batch_size)):

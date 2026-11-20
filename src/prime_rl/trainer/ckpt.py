@@ -572,19 +572,18 @@ class CheckpointManager:
 
         # Load the dataloader
         if dataloader is not None:
-            dataloader_path = path / "dataloader" / f"rank_{self.world.rank}.pt"
+            dataloader_path, own = path / "dataloader" / f"rank_{self.world.rank}.pt", True
             if not dataloader_path.exists():
                 self.logger.warning(
                     f"Did not find local dataloader checkpoint at path {dataloader_path}. This might be because you tried restarting the trainer with a different world size. Falling back to using the master rank's dataloader checkpoint. Note, that this may cause training inconsistencies."
                 )
-                dataloader_path = path / "dataloader" / "rank_0.pt"
+                dataloader_path, own = path / "dataloader" / "rank_0.pt", False
                 if not dataloader_path.exists():
                     raise RuntimeError(
                         f"Couldn't fallback to using the master rank's dataloader checkpoint, because dataloder checkpoint was not found at path {dataloader_path}. Cannot resume training."
                     )
-            dataloader.load_state_dict(
-                with_workers(torch.load(dataloader_path, weights_only=False), dataloader.num_workers)
-            )
+            state = torch.load(dataloader_path, weights_only=False)
+            dataloader.load_state_dict(with_workers(state, dataloader.num_workers, own))
 
         self.logger.debug(f"Loaded training checkpoint in {format_time(time.perf_counter() - start_time)}")
 
