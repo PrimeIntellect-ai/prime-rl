@@ -1687,15 +1687,22 @@ def test_ckpt_rollouts_is_off_by_default():
     assert config.orchestrator.ckpt.rollouts is False
 
 
-@pytest.mark.parametrize(
-    "ckpt",
-    [
-        {"ckpt": {"output_dir": "/ckpts"}, "trainer": {}},
-        {"ckpt": {}, "trainer": {"ckpt": {"output_dir": "/ckpts"}}},
-    ],
-    ids=["shared", "trainer-only"],
-)
-def test_the_orchestrator_knows_where_the_trainer_checkpoints(ckpt):
-    config = RLConfig.model_validate({**ckpt, "orchestrator": {"renderer": {"name": "default"}}})
-    assert config.trainer.ckpt.output_dir == Path("/ckpts")
-    assert config.orchestrator.ckpt.trainer_output_dir == Path("/ckpts")
+def test_shared_ckpt_reaches_trainer_and_orchestrator():
+    config = RLConfig.model_validate(
+        {
+            "ckpt": {"output_dir": "/ckpts", "keep_last": 3, "keep_interval": 100},
+            "trainer": {},
+            "orchestrator": {"renderer": {"name": "default"}},
+        }
+    )
+    for ckpt in (config.trainer.ckpt, config.orchestrator.ckpt):
+        assert (ckpt.output_dir, ckpt.keep_last, ckpt.keep_interval) == (Path("/ckpts"), 3, 100)
+
+
+@pytest.mark.parametrize("leaf", [("output_dir", "/ckpts"), ("keep_last", 3), ("keep_interval", 100)])
+def test_trainer_and_orchestrator_share_one_ckpt_dir_and_policy(leaf):
+    name, value = leaf
+    with pytest.raises(ValueError, match=f"ckpt.{name}"):
+        RLConfig.model_validate(
+            {"ckpt": {}, "trainer": {"ckpt": {name: value}}, "orchestrator": {"renderer": {"name": "default"}}}
+        )

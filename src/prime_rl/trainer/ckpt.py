@@ -44,6 +44,7 @@ from prime_rl.trainer.utils import DCP_TIMEOUT, empty_pinned, get_dcp_group
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import (
+    ckpt_output_dir,
     get_all_ckpt_steps,
     get_ckpt_dir,
     get_step_path,
@@ -644,10 +645,6 @@ def setup_ckpt_manager(
     return CheckpointManager(
         ckpt_output_dir(output_dir, ckpt_config), ckpt_config or CheckpointConfig(), model_files, resume
     )
-
-
-def ckpt_output_dir(output_dir: Path, ckpt_config: CheckpointConfig | None) -> Path:
-    return (ckpt_config.output_dir if ckpt_config else None) or output_dir
 
 
 def _load_app_state(

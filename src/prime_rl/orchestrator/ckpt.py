@@ -45,7 +45,7 @@ from prime_rl.transports.batch import TrainingSample
 from prime_rl.transports.batch.types import PAYLOAD_INFO_KEY
 from prime_rl.transports.payload import link_or_copy, persist_payloads
 from prime_rl.utils.logger import format_time, get_logger
-from prime_rl.utils.pathing import get_ckpt_dir, get_step_path
+from prime_rl.utils.pathing import ckpt_output_dir, get_ckpt_dir, get_step_path
 
 ROLLOUTS_DIR = "rollouts"
 ARRAYS_DIR = "arrays"
@@ -480,4 +480,4 @@ class SnapshotLedger:
 def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager:
     """The checkpoint manager always exists: ``resume`` decides whether it loads,
     ``ckpt`` whether it saves (a resume without ``ckpt`` loads but saves nothing)."""
-    return CheckpointManager(output_dir, config or CheckpointConfig())
+    return CheckpointManager(ckpt_output_dir(output_dir, config), config or CheckpointConfig())

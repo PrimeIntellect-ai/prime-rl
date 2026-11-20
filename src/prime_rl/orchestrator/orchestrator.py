@@ -105,7 +105,6 @@ from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.pathing import (
     get_all_ckpt_steps,
     get_broadcast_dir,
-    get_ckpt_dir,
     get_config_dir,
     kept_ckpt_steps,
     resolve_latest_ckpt_step,
@@ -1590,9 +1589,7 @@ def resolve_resume_step(config: OrchestratorConfig, ckpt_manager: CheckpointMana
         return config.resume.dir_step
     if config.resume.step is not None:
         return config.resume.step
-    trainer_output_dir = config.ckpt.trainer_output_dir if config.ckpt is not None else None
-    trainer_ckpt_dir = get_ckpt_dir(trainer_output_dir) if trainer_output_dir is not None else ckpt_manager.ckpt_dir
-    return resolve_latest_ckpt_step(trainer_ckpt_dir, ckpt_manager.ckpt_dir)
+    return resolve_latest_ckpt_step(ckpt_manager.ckpt_dir, ckpt_manager.ckpt_dir)
 
 
 def resume_path(config: OrchestratorConfig) -> Path | None:

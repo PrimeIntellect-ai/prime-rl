@@ -413,17 +413,15 @@ class RLConfig(BaseConfig):
                 "Checkpointing must be configured on both trainer and orchestrator. Use the shared [ckpt]."
             )
         if trainer.ckpt and orchestrator.ckpt:
-            require_equal(
-                "ckpt.interval",
-                {
-                    "trainer.ckpt.interval": trainer.ckpt.interval,
-                    "orchestrator.ckpt.interval": orchestrator.ckpt.interval,
-                },
-            )
-            if orchestrator.ckpt.trainer_output_dir is None:
-                orchestrator.ckpt.trainer_output_dir = trainer.ckpt.output_dir
-            orchestrator.ckpt.keep_last = trainer.ckpt.keep_last
-            orchestrator.ckpt.keep_interval = trainer.ckpt.keep_interval
+            # Both halves of a step share one directory and one retention policy.
+            for leaf in ("output_dir", "interval", "keep_last", "keep_interval"):
+                require_equal(
+                    f"ckpt.{leaf}",
+                    {
+                        f"trainer.ckpt.{leaf}": getattr(trainer.ckpt, leaf),
+                        f"orchestrator.ckpt.{leaf}": getattr(orchestrator.ckpt, leaf),
+                    },
+                )
         trainer_wandb, orchestrator_wandb = trainer.monitors.wandb, orchestrator.monitors.wandb
         if (trainer_wandb is None) != (orchestrator_wandb is None):
             raise ValueError(

@@ -80,13 +80,9 @@ def propagate_shared_fields(data: Any) -> Any:
     )
 
     # [ckpt] leaves. (Bare empty ``[ckpt]`` block enablement is at the end.)
-    # The orchestrator keeps its checkpoints in the run directory; it only reads the
-    # trainer's ``output_dir``.
-    propagate("ckpt.output_dir", "trainer.ckpt.output_dir", "orchestrator.ckpt.trainer_output_dir")
-    propagate("ckpt.interval", "trainer.ckpt.interval", "orchestrator.ckpt.interval")
+    for leaf in ("output_dir", "interval", "keep_last", "keep_interval"):
+        propagate(f"ckpt.{leaf}", f"trainer.ckpt.{leaf}", f"orchestrator.ckpt.{leaf}")
     propagate("ckpt.rollouts", "orchestrator.ckpt.rollouts")
-    propagate("ckpt.keep_last", "trainer.ckpt.keep_last")
-    propagate("ckpt.keep_interval", "trainer.ckpt.keep_interval")
     propagate("ckpt.async_save", "trainer.ckpt.async_save")
 
     # [monitors.wandb] leaves. (Bare empty ``[monitors.wandb]`` block enablement is at the end.)
@@ -159,8 +155,8 @@ def propagate_shared_fields(data: Any) -> Any:
     # without this an empty shared block would be a no-op. Leaf-level conflicts
     # (e.g. shared ``ckpt.interval`` vs ``trainer.ckpt.interval``) are already
     # caught above; the bare block is exempt because ``[ckpt]`` +
-    # ``[trainer.ckpt] keep_last = 3`` is a legitimate "enable + customise per
-    # side" pattern. CLI ``--no-ckpt`` / ``--no-monitors.wandb`` land as the
+    # ``[trainer.ckpt] skip_optimizer = true`` is a legitimate "enable + customise
+    # per side" pattern. CLI ``--no-ckpt`` / ``--no-monitors.wandb`` land as the
     # *string* ``"None"`` until ``BaseConfig``'s parent-class validator converts
     # it, which happens after this one — the disable must propagate too, since
     # the monitor sub-configs default to enabled.

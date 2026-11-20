@@ -13,7 +13,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from prime_rl.configs.orchestrator import EnvConfig
-from prime_rl.configs.shared import LogConfig
+from prime_rl.configs.shared import BaseCheckpointConfig, LogConfig
 from prime_rl.utils.config import BaseConfig, dump_resolved_config
 from prime_rl.utils.logger import get_logger
 
@@ -394,6 +394,11 @@ def is_complete_rl_ckpt(ckpt_dir: Path, orchestrator_ckpt_dir: Path, step: int) 
     trainer = get_step_path(ckpt_dir, step) / "trainer" / ".metadata"
     orchestrator = get_step_path(orchestrator_ckpt_dir, step) / "orchestrator" / "progress.pt"
     return trainer.exists() and orchestrator.exists()
+
+
+def ckpt_output_dir(output_dir: Path, ckpt_config: BaseCheckpointConfig | None) -> Path:
+    """Where a run's checkpoints live: ``ckpt.output_dir`` when set, else the run's ``output_dir``."""
+    return (ckpt_config.output_dir if ckpt_config else None) or output_dir
 
 
 def resolve_latest_ckpt_step(ckpt_dir: Path, orchestrator_ckpt_dir: Path | None = None) -> int | None:
