@@ -51,19 +51,18 @@ def registry_lock():
         yield
 
 
-def register_output_dir(output_dir: Path) -> None:
-    """Add the dir to the daemon's registry (idempotent, atomic)."""
+def register_dirs(dirs: list[Path]) -> None:
+    """Add dirs to the shared registry (idempotent, atomic)."""
     with registry_lock():
         try:
-            dirs = json.loads(DIRS_FILE.read_text())
+            known = list(json.loads(DIRS_FILE.read_text()))
         except (OSError, ValueError):
-            dirs = []
-        entry = str(output_dir.resolve())
-        if entry in dirs:
+            known = []
+        fresh = [str(d.resolve()) for d in dirs if str(d.resolve()) not in known]
+        if not fresh:
             return
-        dirs.append(entry)
         tmp = DIRS_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(dirs))
+        tmp.write_text(json.dumps(known + fresh))
         tmp.replace(DIRS_FILE)
 
 
@@ -91,7 +90,7 @@ def ensure_dashboard(output_dir: Path, logger) -> str | None:
     # The dir may not exist yet on a first run: create it up front, because the
     # daemon only serves registered dirs that exist (and refuses to start with none).
     output_dir.mkdir(parents=True, exist_ok=True)
-    register_output_dir(output_dir)
+    register_dirs([output_dir])
     daemon = find_daemon()
     if daemon is not None:
         return daemon["url"]
