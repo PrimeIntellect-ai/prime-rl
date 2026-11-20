@@ -1,9 +1,11 @@
 import re
 from pathlib import Path
-
-import torch
+from typing import TYPE_CHECKING
 
 from tests.conftest import ProcessResult
+
+if TYPE_CHECKING:
+    import torch
 
 
 def strip_escape_codes(text: str) -> str:
@@ -247,7 +249,7 @@ def check_hf_load(weights_dir: Path) -> None:
     assert all(torch.isfinite(param).all() for param in model.parameters())
 
 
-def assert_relative(actual: torch.Tensor, reference: torch.Tensor, rtol: float, label: str) -> None:
+def assert_relative(actual: "torch.Tensor", reference: "torch.Tensor", rtol: float, label: str) -> None:
     """Bound the largest absolute deviation by `rtol` times the reference's own scale."""
     actual, reference = actual.float(), reference.float()
     deviation = (actual - reference).abs().max()
