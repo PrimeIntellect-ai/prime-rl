@@ -4,11 +4,13 @@
 #   NoulQuestion and ScoreQuestion (146-162, 178-199, 219-234).
 # - vllm/entrypoints/generate/structured_decisions/serving.py: parse_questions (lines 27-53).
 # - vllm/entrypoints/openai/decisions/strategies.py: DecisionLimits (lines 83-89); JointSchemaStrategy (841-1068): its
-#   constants, __init__, limits, render_state, _render, _tokens, _options and encode; ClefFlashStrategy's MAX_LENGTH
-#   (1138-1142). Text only: the media (modalities, PLACEHOLDERS, _render_media) is not ported.
+#   constants, __init__, limits, _render, _tokens, _options and encode; ClefFlashStrategy's MAX_LENGTH (1138-1142).
+#   Text only: the media (modalities, PLACEHOLDERS, _render_media) is not ported.
 # - vllm/model_executor/models/clef_joint_schema.py: parse_joint_schema's spans (lines 222-229) and
 #   JointSchemaPooler.forward's lexical embeddings (lines 287-297), read from the LM head as
 #   vllm/model_executor/models/clef_flash.py's _embed_lexical reads them (lines 43-44).
+# Left out, as only vLLM's other strategies and its responses use them: Question.labels, DecisionLimits.labeled,
+# render_state and encode's prefix argument.
 """Clef-Flash's System One strategy: vLLM's ``ClefFlashStrategy`` prompt, read by the joint schema head."""
 
 import json
@@ -47,12 +49,11 @@ class Question:
     type: "QuestionType"
     instructions: str
     options: tuple[Option, ...]
-    labels: tuple[str, ...]
 
 
 class QuestionType(ABC):
     name: ClassVar[str]
-    # The labels of a question's options, in option order.
+    # vLLM's labels of a question's options, in option order. A question has at most as many options.
     label_set: ClassVar[tuple[str, ...]] = LABELS
 
     @abstractmethod
@@ -108,14 +109,7 @@ class ScoreQuestion(QuestionType):
 QUESTION_TYPES: dict[str, QuestionType] = {cls.name: cls() for cls in (ChoiceQuestion, NoulQuestion, ScoreQuestion)}
 
 
-def build_question(
-    qid: str,
-    type_name: str,
-    instructions: Any,
-    criteria: Any,
-    max_options: int,
-    labeled: bool = True,
-) -> Question:
+def build_question(qid: str, type_name: str, instructions: Any, criteria: Any, max_options: int) -> Question:
     if not qid:
         raise StructuredDecisionError("question ids must be non-empty")
     qtype = QUESTION_TYPES[type_name]
@@ -125,26 +119,18 @@ def build_question(
     names = [o.name for o in options]
     if len(set(names)) != len(names):
         raise StructuredDecisionError(f"question {qid!r}: duplicate option names")
-    limit = min(max_options, len(qtype.label_set)) if labeled else max_options
+    limit = min(max_options, len(qtype.label_set))
     if len(options) > limit:
         raise StructuredDecisionError(f"question {qid!r}: at most {limit} options for this model")
     if not isinstance(instructions, str):
         instructions = "" if instructions is None else str(instructions)
-    return Question(
-        id=qid,
-        type=qtype,
-        instructions=instructions,
-        options=tuple(options),
-        labels=qtype.label_set[: len(options)],
-    )
+    return Question(id=qid, type=qtype, instructions=instructions, options=tuple(options))
 
 
 @dataclass(frozen=True)
 class DecisionLimits:
     max_questions: int
     max_options: int
-    # Whether a question has at most as many options as its type has labels.
-    labeled: bool = True
 
 
 def parse_questions(questions: tuple[record.Question, ...], limits: DecisionLimits) -> list[Question]:
@@ -152,10 +138,7 @@ def parse_questions(questions: tuple[record.Question, ...], limits: DecisionLimi
         raise StructuredDecisionError("questions: needs at least one question")
     if len(questions) > limits.max_questions:
         raise StructuredDecisionError(f"questions: at most {limits.max_questions} for this model")
-    return [
-        build_question(q.id, q.type, q.instructions, q.criteria, limits.max_options, labeled=limits.labeled)
-        for q in questions
-    ]
+    return [build_question(q.id, q.type, q.instructions, q.criteria, limits.max_options) for q in questions]
 
 
 class ClefFlashStrategy(SystemOneStrategy):
@@ -185,9 +168,6 @@ class ClefFlashStrategy(SystemOneStrategy):
     def limits(self) -> DecisionLimits:
         return DecisionLimits(max_questions=64, max_options=len(LABELS))
 
-    def render_state(self, state: Any) -> str:
-        return self._render(state)
-
     @staticmethod
     def _render(value: Any) -> str:
         if isinstance(value, str):
@@ -197,36 +177,25 @@ class ClefFlashStrategy(SystemOneStrategy):
     def _tokens(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False)
 
-    def _options(self, q: Question) -> list[tuple[int, str, Any]]:
-        """Each option's index in ``q.options``, id and description, in the
-        model's order: choices sorted by name, noul true then false, score
-        levels by index."""
+    def _options(self, q: Question) -> list[tuple[str, Any]]:
+        """Each option's id and description, in the model's order: choices sorted by name, noul true then false,
+        score levels by index."""
         if q.type.name == "noul":
             return [
-                (
-                    i,
-                    key,
-                    self.NOUL_CRITERIA[key] if o.description is None else o.description,
-                )
-                for i, (key, o) in enumerate(zip(("true", "false"), q.options))
+                (key, self.NOUL_CRITERIA[key] if o.description is None else o.description)
+                for key, o in zip(("true", "false"), q.options)
             ]
         if q.type.name == "choice":
-            return sorted(
-                ((i, o.name, o.description) for i, o in enumerate(q.options)),
-                key=lambda option: option[1],
-            )
-        if q.type.name == "score":
-            return [(i, str(i), o.name) for i, o in enumerate(q.options)]
-        raise StructuredDecisionError(f"question {q.id!r}: this model does not answer {q.type.name!r} questions")
+            return sorted(((o.name, o.description) for o in q.options), key=lambda option: option[0])
+        return [(str(i), o.name) for i, o in enumerate(q.options)]
 
     def encode(
-        self, questions: list[Question], state: str, prefix: list[int] | None = None
-    ) -> tuple[list[int], dict[str, list[Any]], list[list[int]]]:
-        """The prompt, the head's schema with spans counted from the prompt's end, and each question's option indices
-        in the head's order."""
-        prefix = self.prefix if prefix is None else prefix
+        self, questions: list[Question], state: str
+    ) -> tuple[list[int], dict[str, list[Any]], list[list[str]], int]:
+        """The prompt, the head's schema with spans counted from the prompt's end, each question's option ids in the
+        head's order, and the number of tokens cut from the state's end."""
         schema_ids = self._tokens("\n\nSCHEMA FIELDS:\n")
-        question_spans, option_spans, orders = [], [], []
+        question_spans, option_spans, option_ids = [], [], []
         for n, q in enumerate(questions, start=1):
             schema_ids += self._tokens(f"\nFIELD {n}\nID: {q.id}\nTYPE: {q.type.name}\nINSTRUCTION: ")
             start = len(schema_ids)
@@ -234,7 +203,7 @@ class ClefFlashStrategy(SystemOneStrategy):
             question_spans.append([start, len(schema_ids)])
             schema_ids += self._tokens("\nALLOWED OPTIONS:\n")
             options = self._options(q)
-            for m, (_, option_id, description) in enumerate(options, start=1):
+            for m, (option_id, description) in enumerate(options, start=1):
                 schema_ids += self._tokens(f"OPTION {m}: ")
                 start = len(schema_ids)
                 semantics = {"option_id": option_id}
@@ -244,41 +213,38 @@ class ClefFlashStrategy(SystemOneStrategy):
                 option_spans.append([start, len(schema_ids)])
                 schema_ids += self._tokens("\n")
             schema_ids += self._tokens("END FIELD\n")
-            orders.append([i for i, _, _ in options])
+            option_ids.append([option_id for option_id, _ in options])
 
-        fixed = len(prefix) + len(schema_ids) + len(self.suffix)
+        fixed = len(self.prefix) + len(schema_ids) + len(self.suffix)
         if fixed > self.max_length:
             raise StructuredDecisionError(
                 f"the questions take {fixed} tokens, more than the {self.max_length} this model reads"
             )
-        state_ids = self._tokens(state)[: self.max_length - fixed]
-        prompt = prefix + state_ids + schema_ids + self.suffix
+        state_ids = self._tokens(state)
+        cut = max(0, fixed + len(state_ids) - self.max_length)
+        prompt = self.prefix + state_ids[: self.max_length - fixed] + schema_ids + self.suffix
         # The schema ends len(self.suffix) tokens before the prompt does.
         end = len(schema_ids) + len(self.suffix)
         schema: dict[str, list[Any]] = {
-            "question_types": [self.TYPE_IDS[q.type.name] for q in questions],
             "question_spans": [[s - end, e - end] for s, e in question_spans],
             "option_spans": [[s - end, e - end] for s, e in option_spans],
-            "option_counts": [len(order) for order in orders],
+            "option_counts": [len(ids) for ids in option_ids],
         }
-        return prompt, schema, orders
+        return prompt, schema, option_ids, cut
 
     def render_request(self, request: record.SystemOneRequest, max_tokens: int) -> RenderedRequest | None:
         """vLLM's prompt, with the state cut to fit ``MAX_LENGTH`` tokens as vLLM cuts it. A request vLLM refuses is
         skipped. Not bounded by ``max_tokens``: a longer rendering is skipped, and only a kept one's cut is logged."""
         try:
             questions = parse_questions(request.questions, self.limits())
-            state = self.render_state(request.state)
-            prompt, schema, _ = self.encode(questions, state)
+            prompt, schema, options, cut = self.encode(questions, self._render(request.state))
         except StructuredDecisionError as error:
             get_logger().warning(f"Skipping record {request.id!r}: vLLM refuses it: {error}")
             return None
-        if len(prompt) == self.max_length <= max_tokens:
-            cut = len(self.encode(questions, "")[0]) + len(self._tokens(state)) - self.max_length
-            if cut > 0:
-                get_logger().warning(
-                    f"Record {request.id!r}: the last {cut} tokens of its state are cut to fit {self.max_length}"
-                )
+        if cut and self.max_length <= max_tokens:
+            get_logger().warning(
+                f"Record {request.id!r}: the last {cut} tokens of its state are cut to fit {self.max_length}"
+            )
         prompt_len = len(prompt)
         question_spans = [(start + prompt_len, end + prompt_len) for start, end in schema["question_spans"]]
         option_spans = iter([(start + prompt_len, end + prompt_len) for start, end in schema["option_spans"]])
@@ -286,7 +252,6 @@ class ClefFlashStrategy(SystemOneStrategy):
             [question_span, *(next(option_spans) for _ in range(count))]
             for question_span, count in zip(question_spans, schema["option_counts"])
         ]
-        options = [[option_id for _, option_id, _ in self._options(q)] for q in questions]
         return RenderedRequest(input_ids=prompt, seq_lens=[prompt_len], read_spans=read_spans, options=options)
 
     def option_logits(
