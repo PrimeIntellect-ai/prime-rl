@@ -79,6 +79,10 @@ class WeightTransferPlan:
     groups: list[WeightTransferGroup]
 
 
+# Over the XPU allocator's 1 MiB small-pool limit; 16 MiB is the end-to-end-validated value.
+_XPU_MIN_RECEIVE_ARENA_BYTES = 16 * 1024 * 1024
+
+
 class NIXLWeightUpdateWorker(WeightRPCMixin, Worker):
     @property
     def raw_model(self) -> nn.Module:
@@ -302,10 +306,15 @@ class NIXLWeightUpdateWorker(WeightRPCMixin, Worker):
         receive_buffer_elements: dict[torch.dtype, int],
         receive_buffer_count: int,
     ) -> dict[torch.dtype, torch.Tensor]:
+        # On XPU, the caching allocator serves requests of 1 MiB or less from its small pool. NIXL RDMA writes
+        # into a small-pool arena can land in a different small-pool segment, so the arena never receives them.
+        # Requests over 1 MiB come from the large pool and are unaffected wherever they sit in a segment, so pad
+        # XPU arenas well past that. Only the planned elements are addressed, so the transfer plan is unchanged.
+        min_bytes = _XPU_MIN_RECEIVE_ARENA_BYTES if self.device.type == "xpu" else 0
         with use_cuda_malloc_pool():
             receive_arenas = {
                 dtype: torch.empty(
-                    receive_buffer_count * elements,
+                    max(receive_buffer_count * elements, -(-min_bytes // dtype.itemsize)),
                     dtype=dtype,
                     device=self.device,
                 )
