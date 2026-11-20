@@ -96,6 +96,8 @@ def iter_trainable_branches(trace: vf.Trace) -> Iterator[tuple[vf.Branch, np.nda
 
 def _loss_weights(branch: vf.Branch, name: str, trained_nodes: set[int]) -> np.ndarray | None:
     """Flatten one graph-native loss stream (float32), training each shared node once."""
+    if all(node.loss_weights is None or node.loss_weights.get(name) is None for node in branch.nodes):
+        return None
     parts: list[np.ndarray] = []
     for node in branch.nodes:
         node_weights = (node.loss_weights or {}).get(name)
