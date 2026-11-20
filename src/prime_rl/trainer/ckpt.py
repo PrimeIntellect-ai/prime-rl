@@ -31,6 +31,7 @@ from transformers import AutoConfig, GenerationConfig, PretrainedConfig, PreTrai
 
 from prime_rl.configs.shared import ResumeConfig
 from prime_rl.configs.trainer import CheckpointConfig, ModelConfig
+from prime_rl.trainer.checkpoint_writer import CheckpointFileWriter
 from prime_rl.trainer.lora import has_lora_layers
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.conversion_ops import view_mapping
@@ -501,7 +502,7 @@ class CheckpointManager:
         # Before the sharded state, so the mapping is in place once .metadata appears
         self._save_mapping(path, model)
         if not self.config.async_save:
-            dcp_save({"app": app_state}, checkpoint_id=path, process_group=get_dcp_group())
+            dcp_save({"app": app_state}, storage_writer=CheckpointFileWriter(path), process_group=get_dcp_group())
             self.logger.debug(f"Saved training checkpoint in {format_time(time.perf_counter() - start_time)}")
             return None
         return self._async_save(app_state, path, start_time)
