@@ -242,7 +242,8 @@ def test_repetitions_need_max_steps():
 
 
 def test_val_source_defaults(tmp_path):
-    """[[val.source]] are scored at the training seq_len unless they set their own, in rows of val.micro_batch_tokens:
+    """[[orchestrator.val.source]] are scored at the training seq_len unless they set their own, in rows of
+    orchestrator.val.micro_batch_tokens:
     the training micro-batch or the longest source seq_len, whichever is larger, rounded up to a multiple of the CP
     degree."""
     path = str(tmp_path / "tokens")
@@ -254,17 +255,17 @@ def test_val_source_defaults(tmp_path):
         tmp_path / "pretrain.toml",
         {
             "data": {"source": [{"name": "web", "path": path}], "seq_len": 1024, "micro_batch_size": 2},
-            "val": {"source": val_sources},
+            "orchestrator": {"val": {"source": val_sources}},
         },
     )
     args = ["@", str(tmp_path / "pretrain.toml"), "--output-dir", str(tmp_path)]
     config = cli(PretrainConfig, args=args)
-    assert [val_source.seq_len for val_source in config.val.source] == [1024, 4096]
-    assert config.val.micro_batch_tokens == 4096
-    assert not can_parse(PretrainConfig, [*args, "--val.micro-batch-tokens", "2048"])
+    assert [val_source.seq_len for val_source in config.orchestrator.val.source] == [1024, 4096]
+    assert config.orchestrator.val.micro_batch_tokens == 4096
+    assert not can_parse(PretrainConfig, [*args, "--orchestrator.val.micro-batch-tokens", "2048"])
     odd_source = json.dumps([{**val_sources[1], "seq_len": 4097}])
-    cp_args = [*args, "--model.cp", "2", "--data.micro-batch-size", "1", "--val.source", odd_source]
-    assert cli(PretrainConfig, args=cp_args).val.micro_batch_tokens == 4098
+    cp_args = [*args, "--model.cp", "2", "--data.micro-batch-size", "1", "--orchestrator.val.source", odd_source]
+    assert cli(PretrainConfig, args=cp_args).orchestrator.val.micro_batch_tokens == 4098
 
 
 @pytest.mark.parametrize("mode", MODES)

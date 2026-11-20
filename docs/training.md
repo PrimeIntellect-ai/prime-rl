@@ -231,7 +231,7 @@ columns.messages = "conversation"
 - **Columns and renderer.** `data.columns` applies to every source; a source's `columns` overrides single fields. A source's `renderer` table sets chat-template kwargs for its rows, over `[renderer]` and under a row's `[data.columns.renderer]` values. It needs a typed `[renderer]`.
 - **Fake data.** `[data.fake]` replaces the sources with synthetic token sequences of `seq_len` tokens (`length = "variable"` for random lengths, `input_ids = "random"` for random ids), as `[data.fake]` does for the RL trainer. It needs no renderer and is for throughput and plumbing tests.
 - **Resume.** The data state is the count of draws of every source. A resume continues the draws exactly, also on another number of GPUs.
-- **Validation.** A `chat` validation source (`[[val.source]]`, see [Validation](#validation)) takes the same fields but `weight`.
+- **Validation.** A `chat` validation source (`[[orchestrator.val.source]]`, see [Validation](#validation)) takes the same fields but `weight`.
 
 ### Dataset Format
 
@@ -299,20 +299,22 @@ uv run sft @ examples/basic/reverse-text/sft.toml --monitors.wandb
 
 Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manages this for you — see [Scaling § SFT and Torchrun](scaling.md#sft-and-torchrun) for non-default layouts; multi-node SFT goes through [SLURM](scaling.md#slurm)).
 
+Next to the trainer, the launcher starts the run's orchestrator (it logs to `logs/attempt_<n>/orchestrator.log`), in `sft` and `pretrain` alike. It owns the run's schedule: at the start of every step the trainer asks it whether to run [validation](#validation) (on the trainer's GPUs) and whether to broadcast its weights for [online evals](#online-evals), which the orchestrator runs. Both are configured in its section, `[orchestrator.val]` and `[orchestrator.eval]`.
+
 The run streams to the Prime Intellect platform by default — see [Prime](#prime).
 
 ### Online Evals
 
-`uv run sft` can evaluate the model on rollout-based envs as it trains, reusing the RL orchestrator's eval machinery. Configure an `[eval]` block — the same shape as `[orchestrator.eval]`: multiple `[[eval.source]]` envs with per-source `interval` / `select` / `group_size` / sampling overrides — plus an `[inference]` block for the vLLM server:
+`uv run sft` and `uv run pretrain` can evaluate the model on rollout-based envs as it trains, reusing the RL orchestrator's eval machinery. Configure an `[orchestrator.eval]` block — the same shape as in an `rl` config: multiple `[[orchestrator.eval.source]]` envs with per-source `interval` / `select` / `group_size` / sampling overrides, plus the orchestrator's `[orchestrator.eval.client]`, `[orchestrator.eval.concurrency]` and `orchestrator.eval.cancel_on_new_checkpoint` — and an `[inference]` block for the vLLM server:
 
 ```toml
-[eval]
+[orchestrator.eval]
 interval = 25
 
-[eval.select]
+[orchestrator.eval.select]
 limit = 32
 
-[[eval.source]]
+[[orchestrator.eval.source]]
 name = "reverse-text"
 env.taskset.id = "reverse-text"
 env.agent.harness.id = "null"
@@ -325,11 +327,11 @@ num_train_gpus = 1  # trainer
 num_infer_gpus = 1  # inference
 ```
 
-The launcher starts the inference server, one env worker pool per eval source, and an online-eval process next to the trainer (it logs to `logs/attempt_<n>/eval.log`). NCCL is the default weight transport. The trainer broadcasts weights at startup (fail-fast) and at every step an eval env is due, Every broadcast runs the same four-stage handshake in `broadcasts/step_{n}`: the trainer offers the version (`.sender_ready`) and blocks, the online-eval process acknowledges (`.receiver_ready`), then the trainer transfers (`.started`) and commits (`.finished`). It runs the due envs sequentially per broadcast, so every epoch measures exactly one policy version. Set `[weight_broadcast] type = "filesystem"` to reload weights from disk instead. LoRA and externally managed inference use filesystem broadcast automatically. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final broadcast always fires every env. In-flight eval episodes are cancelled by default when the next checkpoint is ready, so stale evals do not delay a weight update. Set `eval.cancel_on_new_checkpoint = false` to drain every triggered epoch instead. The trainer can idle while it waits for slow evals. They are sized by the same adaptive concurrency controller as the orchestrator; bound it with `[eval.concurrency]` (`min_inflight` / `max_inflight`; set them equal for fixed concurrency).
+The launcher starts the inference server and one env worker pool per eval source; the orchestrator runs the evals. NCCL is the default weight transport. The trainer broadcasts weights at startup (fail-fast) and at every step the orchestrator plans one for a due eval env. Every broadcast runs the same four-stage handshake in `broadcasts/step_{n}`: the trainer offers the version (`.sender_ready`) and blocks, the orchestrator acknowledges (`.receiver_ready`), then the trainer transfers (`.started`) and commits (`.finished`). It runs the due envs sequentially per broadcast, so every epoch measures exactly one policy version. Set `[weight_broadcast] type = "filesystem"` to reload weights from disk instead. LoRA and externally managed inference use filesystem broadcast automatically. The base model is evaluated before the first step (disable with `orchestrator.eval.skip_first_step`), and the final broadcast always fires every env. In-flight eval episodes are cancelled by default when the next checkpoint is ready, so stale evals do not delay a weight update. Set `orchestrator.eval.cancel_on_new_checkpoint = false` to drain every triggered epoch instead. The trainer can idle while it waits for slow evals. They are sized by the same adaptive concurrency controller as the RL orchestrator's; bound it with `[orchestrator.eval.concurrency]` (`min_inflight` / `max_inflight`; set them equal for fixed concurrency).
 
 #### Multi-Node Trainer and Inference Pool
 
-On a `multi_node` deployment, one SLURM job reserves `deployment.num_train_nodes + deployment.num_infer_nodes` nodes. The first `num_infer_nodes` run the inference pool, router, env worker pools, and online-eval process. The remaining nodes run the trainer. The inference pool runs one vLLM engine per DP rank behind one router, with `gpus_per_node / inference.vllm.tensor_parallel_size` engines per node:
+On a `multi_node` deployment, one SLURM job reserves `deployment.num_train_nodes + deployment.num_infer_nodes` nodes. The first `num_infer_nodes` run the inference pool, router and env worker pools. The remaining nodes run the trainer, and the first trainer node also runs the orchestrator. The inference pool runs one vLLM engine per DP rank behind one router, with `gpus_per_node / inference.vllm.tensor_parallel_size` engines per node:
 
 ```toml
 [deployment]
@@ -344,11 +346,11 @@ tensor_parallel_size = 8
 job_name = "my-run"
 ```
 
-The shared script passes the trainer rank-0 hostname directly to the online-eval process for NCCL weight broadcasts. Each transfer is synchronous, but eval rollout execution overlaps with later training steps. The allocation remains active while the final eval finishes. Without `max_steps`, online-eval never sees a final broadcast, so the job remains active until walltime. Trainer and online-eval log to one shared W&B run. The trainer creates it, and online-eval finalizes it.
+The shared script passes the trainer rank-0 hostname to the orchestrator for NCCL weight broadcasts. Each transfer is synchronous, but eval rollout execution overlaps with later training steps. The allocation remains active while the final eval finishes. Without `max_steps`, the trainer never reaches a final step, so the job remains active until walltime. Trainer and orchestrator log to one shared W&B run. The trainer creates it, and the orchestrator finalizes it.
 
 ### Validation
 
-`[val]` scores named validation sources on the training model every `val.interval` steps (also before the first step with `val.eval_on_start`), in SFT and in pretraining. Each `[[val.source]]` table has a `type`, a unique `name` and an optional `seq_len` (default: the training `data.seq_len`):
+`[orchestrator.val]` scores named validation sources on the training model every `orchestrator.val.interval` steps (also before the trainer's first step with `orchestrator.val.eval_on_start`), in SFT and in pretraining. The orchestrator schedules it; it runs on the trainer's GPUs after a step's forward and backward passes, before the optimizer step. Each `[[orchestrator.val.source]]` table has a `type`, a unique `name` and an optional `seq_len` (default: the training `data.seq_len`):
 
 | `type` | fields | scored |
 |---|---|---|
@@ -356,23 +358,23 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 | `chat` | the fields of an SFT source ([Sources](#sources)) but `weight`: `dataset`, `subset`, `split` (default `train`), `revision`, `columns`, `renderer`; plus `loss_mask` | every row of the split in order, rendered as SFT renders its training data; the tokens SFT trains on (`loss_mask`), cut after `seq_len` input tokens. Unset `columns` fields keep `data.columns` (the defaults in pretraining) |
 
 ```toml
-[val]
+[orchestrator.val]
 interval = 100
 num_samples = 512          # optional: the first 512 documents or rows of each source; default: all of them
 
-[[val.source]]
+[[orchestrator.val.source]]
 type = "documents"
 name = "fineweb-edu"
 path = "data/fineweb-edu-val"
 
-[[val.source]]
+[[orchestrator.val.source]]
 type = "chat"
 name = "reverse-text"
 dataset = "PrimeIntellect/Reverse-Text-SFT"
 seq_len = 2048             # optional; default: the training data.seq_len
 ```
 
-Every source logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and with a byte-level BPE tokenizer `val/<name>/bpb@<seq_len>`, the bits per UTF-8 byte of the scored tokens (special tokens count 0 bytes), e.g. `val/fineweb-edu/bpb@2k`. With another tokenizer (e.g. SentencePiece), the trainer logs one warning and only the loss. The sources are tokenized once at startup. At every validation, the sequences of all sources are packed longest first into rows of `val.micro_batch_tokens` tokens (default: the training micro-batch, `data.seq_len * data.micro_batch_size`, or the longest source `seq_len` if that is longer, rounded up to a multiple of `model.cp`), with attention and positions restarting at every sequence and the rest of a row padded, and the rows are shared out over the data-parallel ranks. The log-probs are computed in fp32. `val.save_arrays` writes the per-item arrays of every source (summed loss, scored tokens, greedy hits and bytes per document or row) to `<run_dir>/val/step_N/`. A `chat` source needs a typed renderer, also in pretraining. Validation does not support VLM models.
+Every source logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and with a byte-level BPE tokenizer `val/<name>/bpb@<seq_len>`, the bits per UTF-8 byte of the scored tokens (special tokens count 0 bytes), e.g. `val/fineweb-edu/bpb@2k`. With another tokenizer (e.g. SentencePiece), the trainer logs one warning and only the loss. The sources are tokenized once at startup. At every validation, the sequences of all sources are packed longest first into rows of `orchestrator.val.micro_batch_tokens` tokens (default: the training micro-batch, `data.seq_len * data.micro_batch_size`, or the longest source `seq_len` if that is longer, rounded up to a multiple of `model.cp`), with attention and positions restarting at every sequence and the rest of a row padded, and the rows are shared out over the data-parallel ranks. The log-probs are computed in fp32. `orchestrator.val.save_arrays` writes the per-item arrays of every source (summed loss, scored tokens, greedy hits and bytes per document or row) to `<run_dir>/val/step_N/`. A `chat` source needs a typed renderer, also in pretraining. Validation does not support VLM models.
 
 ### SFT-Specific Knobs
 
@@ -382,8 +384,8 @@ Every source logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, a
 | `data.batch_size` | Tokens per trainer step (packed) |
 | `data.seq_len` | Per-sample sequence length |
 | `loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |
-| `val.source` | Validation sources, scored every `val.interval` steps; see [Validation](#validation) |
-| `eval.interval` | Run online evals every N steps; see [Online Evals](#online-evals) |
+| `orchestrator.val.source` | Validation sources, scored every `orchestrator.val.interval` steps; see [Validation](#validation) |
+| `orchestrator.eval.interval` | Run online evals every N steps; see [Online Evals](#online-evals) |
 
 ### Important Metrics
 
@@ -392,8 +394,8 @@ Pulled from the console log and mirrored to W&B.
 **Progress and loss:**
 
 - `loss/mean`, `loss/perplexity` — main signal. Should decrease through the run.
-- `val/<name>/loss@<seq_len>`, `val/<name>/bpb@<seq_len>` — per validation source when `[val]` is set, logged every `val.interval` steps; see [Validation](#validation).
-- `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
+- `val/<name>/loss@<seq_len>`, `val/<name>/bpb@<seq_len>` — per validation source when `[orchestrator.val]` is set, logged every `orchestrator.val.interval` steps; see [Validation](#validation).
+- `eval/{env}/...` — online eval metrics when `[orchestrator.eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
 - `progress/<name>/{num_samples,epoch}` — SFT: a source's drawn samples over all ranks and its passes over its rows. With several sources, `progress/<name>/ratio_{samples,tokens}` is the realized mixture of rank 0's samples and tokens.
 - `progress/<name>/{num_tokens,unique_tokens,repetitions,mean_segment_length}` — pretraining: a source's tokens read, the unique ones among them (at most its subset's), their ratio, and the mean length of its document pieces in the step's rows; `progress/{unique_tokens,repetitions,mean_segment_length}` over all sources. In pretraining, `progress/epoch` is the tokens read over all sources' tokens.
@@ -466,11 +468,11 @@ path = "data/code"
 weight = 3
 repetitions = 4            # optional: every token seen 4 times, so a subset of its share (3/10) x the run's tokens / 4
 
-[val]                      # optional
+[orchestrator.val]         # optional
 interval = 100
 num_samples = 512          # optional: the first 512 documents of each source; default: all of them
 
-[[val.source]]
+[[orchestrator.val.source]]
 type = "documents"
 name = "fineweb-edu"
 path = "data/fineweb-edu-val"
@@ -485,6 +487,8 @@ path = "data/fineweb-edu-val"
 **Resume.** A resume is exact, also on another number of GPUs. It stops with an error that names the old and new value of every changed setting: `seq_len`, `batch_size`, `seed`, `num_workers`, a source's name or files (their tokens and documents), the weights or repetitions (or `max_steps`, with repetitions). A source may move to another folder. With `ckpt.skip_dataloader`, the run resumes without the data state: the data starts over from step 0, in the same order as at the run's start (a different `data.seed` gives a different order). `data.batch_size` must be a multiple of dp × `num_workers` × `micro_batch_size`.
 
 **Validation.** The `documents` source scores every document of the held-out folder on its own, from its first token, and logs `val/fineweb-edu/loss@2k` and `val/fineweb-edu/bpb@2k`; see [Validation](#validation) for the other source types and options.
+
+[Online evals](#online-evals) work as in SFT, from the first step: with a scratch init, the inference server starts without weights and receives them with the trainer's startup broadcast. A model trained from scratch has learned no chat format (and a custom tokenizer may ship no template), so set one with `inference.vllm.chat_template` (a Jinja template string or a file path); `configs/ci/integration/pretrain/eval.toml` is an example.
 
 **Launch.**
 
@@ -697,7 +701,7 @@ The launcher tees every process's stdout/stderr into `<run_dir>/logs/attempt_<n>
 <run_dir>/logs/latest/     # symlink -> attempt_<n>, one per launch
 ├── trainer.log                  # rank 0 only; symlink → trainer/node_0.log on multi-node
 ├── orchestrator.log             # single instance, single file
-├── eval.log                     # `uv run eval` process, or the SFT online-eval process
+├── eval.log                     # `uv run eval` process
 ├── inference.log                # symlink → inference/node_0.log on multi-node
 ├── trainer/
 │   ├── node_*.log               # per-node trainer stdout (multi-node only)
@@ -761,7 +765,7 @@ Name the Prime run in TOML:
 name = "my-experiment"
 ```
 
-The process that supervises the launch registers the run before the components start, and every component logs to it. That is the `rl` or `sft` launcher, also inside a single-node SLURM job, or the run owner that wraps a multi-node SLURM job's step. The run's id is also the run identity (`PRL_RUN_ID`) and the W&B run id. On `rl` the orchestrator uploads the episodes and its metrics, and the trainer uploads its per-step metrics. A trainer started without the `rl` launcher needs `--no-monitors.prime`. On `sft` the run carries the dataset-batched training fields (`max_steps`, `batch_size`, `seq_len`) and the trainer's per-step metrics and validation losses. Online evals log to the same run, like an `rl` run's: the online-eval process uploads its eval metrics and every eval episode. The components only flush their uploads; the process that registered the run finishes it once every component exited. A launch that fails marks the run failed, and so does a SLURM job that SLURM cancels or stops at its time limit.
+The process that supervises the launch registers the run before the components start, and every component logs to it. That is the `rl` or `sft` launcher, also inside a single-node SLURM job, or the run owner that wraps a multi-node SLURM job's step. The run's id is also the run identity (`PRL_RUN_ID`) and the W&B run id. On `rl` the orchestrator uploads the episodes and its metrics, and the trainer uploads its per-step metrics. A trainer started without the `rl` launcher needs `--no-monitors.prime`. On `sft` the run carries the dataset-batched training fields (`max_steps`, `batch_size`, `seq_len`) and the trainer's per-step metrics and validation losses. Online evals log to the same run, like an `rl` run's: the orchestrator uploads its eval metrics and every eval episode. The components only flush their uploads; the process that registered the run finishes it once every component exited. A launch that fails marks the run failed, and so does a SLURM job that SLURM cancels or stops at its time limit.
 
 The platform run needs `PRIME_API_KEY` (`prime login` or the env var) and a team (`PRIME_TEAM_ID`, or the team selected with `prime login`) enabled for external runs. Like the W&B monitor, a run without a key, or one whose registration fails (no team, a team outside the allowlist), fails at launch: authenticate, select a team with `prime switch`, or pass `--no-monitors.prime`. `PRIME_RUNS_MODE=disabled` keeps the monitor configured but opens no platform run; `RUN_ID=<id>` attaches to an external run a launcher already created instead of registering a new one. Currently internal-only.
 

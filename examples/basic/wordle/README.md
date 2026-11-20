@@ -54,12 +54,11 @@ To train on multiple GPUs, run
 
 ```bash
 # Run this in the other terminal
-uv run torchrun \
-  --local-ranks-filter 0 \
-  --nproc-per-node ... \
-  src/prime_rl/trainer/sft/train.py @ examples/basic/wordle/sft.toml \
+uv run sft @ examples/basic/wordle/sft.toml \
+  --run.name sft \
+  --deployment.num-train-gpus ... \
   --monitors.wandb.project ... \
-  --monitors.wandb.name ... 
+  --monitors.wandb.name ...
 ```
 
 After training completes, you will find the final DCP checkpoint in `outputs/sft/checkpoints/step_20`.

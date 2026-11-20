@@ -60,8 +60,8 @@ class EvalSource(Reconfigurable):
     ) -> tuple[list[str], list[vf.WireEpisode]]:
         """Fire eligible envs and return their names and matched saved episodes. On resume
         ``first_trigger`` is False, so the startup/base eval doesn't re-run.
-        ``force`` fires every env regardless of interval (e.g. the evals process's
-        final-checkpoint eval)."""
+        ``force`` fires every env regardless of interval (e.g. the sft/pretrain
+        orchestrator's final-checkpoint eval)."""
         is_first, self.first_trigger = self.first_trigger, False
         if is_first and self.skip_first_step:
             return [], []

@@ -148,32 +148,37 @@ def sdk_runs(monkeypatch):
 
 def test_online_evals_share_the_launchers_run(sdk_runs, tmp_path):
     """The sft launcher registers the run and makes its id the run identity; the trainer
-    and the online-eval process attach to it and only flush. The launcher finishes the
-    run once both exited."""
-    from prime_rl.entrypoints.launcher import build_online_eval_config
+    and the orchestrator, which runs the online evals, attach to it and only flush. The
+    launcher finishes the run once both exited."""
+    from prime_rl.entrypoints.launcher import build_orchestrator_config
     from prime_rl.monitors.prime import launch_run
 
     config = _sft_config(
-        {"eval": {"interval": 50, "source": [{"name": "rev", "env": {"taskset": {"id": "harbor"}}}]}, "inference": {}}
+        {
+            "orchestrator": {
+                "eval": {"interval": 50, "source": [{"name": "rev", "env": {"taskset": {"id": "harbor"}}}]}
+            },
+            "inference": {},
+        }
     )
-    eval_config = build_online_eval_config(config)
+    orchestrator_config = build_orchestrator_config(config)
     # Same run dir: dashboard visibility for the eval artifacts.
-    assert eval_config.output_dir == config.run_dir
+    assert orchestrator_config.output_dir == config.run_dir
 
-    trainer, online_eval = PrimeMonitor(config.monitors.prime), PrimeMonitor(eval_config.monitors.prime)
+    trainer, orchestrator = PrimeMonitor(config.monitors.prime), PrimeMonitor(orchestrator_config.monitors.prime)
     with launch_run(config, config.monitors.prime):
         launched = sdk_runs[0]
         assert launched.kwargs["model"] == "PrimeIntellect/Qwen3-0.6B" and not launched.attached
         assert os.environ["PRL_RUN_ID"] == os.environ["RUN_ID"] == launched.id
         asyncio.run(trainer.init(config=config, output_dir=tmp_path, producer="trainer"))
-        asyncio.run(online_eval.init(config=eval_config, output_dir=tmp_path, producer="online-eval"))
-        assert trainer.run.attached and online_eval.run.attached
-        assert trainer.run.id == online_eval.run.id == launched.id
+        asyncio.run(orchestrator.init(config=orchestrator_config, output_dir=tmp_path, producer="orchestrator"))
+        assert trainer.run.attached and orchestrator.run.attached
+        assert trainer.run.id == orchestrator.run.id == launched.id
 
         asyncio.run(trainer.finalize())
-        asyncio.run(online_eval.finalize())
-        assert trainer.run.flushed and online_eval.run.flushed
-        assert not (trainer.run.finished or online_eval.run.finished or launched.finished)
+        asyncio.run(orchestrator.finalize())
+        assert trainer.run.flushed and orchestrator.run.flushed
+        assert not (trainer.run.finished or orchestrator.run.finished or launched.finished)
     assert launched.finished and launched.failed is None
 
 

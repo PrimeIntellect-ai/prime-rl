@@ -62,13 +62,15 @@ uv run dashboard outputs
 
 #### SFT and Torchrun
 
-`uv run sft` handles distributed launch internally. To scale from 1 to N GPUs, set the deployment GPU count (or just let it pick up `WORLD_SIZE`). For non-default layouts, the manual equivalent is:
+`uv run sft` handles distributed launch internally. To scale from 1 to N GPUs, set the deployment GPU count (or just let it pick up `WORLD_SIZE`). For non-default layouts, start the run's orchestrator and the trainer yourself. The trainer asks the orchestrator what to do at every step, so run the orchestrator on the host of trainer rank 0; `--dry-run` writes its config. This covers runs without `[orchestrator.eval]`:
 
 ```bash
+uv run sft @ sft.toml --run.name my-run --dry-run
+uv run python -m prime_rl.orchestrator.supervised @ outputs/my-run/configs/latest/resolved/orchestrator.json &
 uv run torchrun \
   --nproc-per-node 8 \
   --local-ranks-filter 0 \
-  src/prime_rl/trainer/sft/train.py @ sft.toml
+  src/prime_rl/trainer/sft/train.py @ sft.toml --run.name my-run
 ```
 
 `--local-ranks-filter 0` keeps console output to rank 0 only; per-rank stdout/stderr is still captured in `<run_dir>/logs/latest/trainer/torchrun/`.

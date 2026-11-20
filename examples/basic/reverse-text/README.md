@@ -52,10 +52,9 @@ To train on multiple GPUs, run
 
 ```bash
 # Run this in the other terminal
-uv run torchrun \
-  --local-ranks-filter 0 \
-  --nproc-per-node ... \
-  src/prime_rl/trainer/sft/train.py @ examples/basic/reverse-text/sft.toml \
+uv run sft @ examples/basic/reverse-text/sft.toml \
+  --run.name sft \
+  --deployment.num-train-gpus ... \
   --monitors.wandb.project ... \
   --monitors.wandb.name ...
 ```
