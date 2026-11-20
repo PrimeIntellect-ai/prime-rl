@@ -313,7 +313,9 @@ def test_deepseek_v4_hash_table_survives_the_load_path(tmp_path, monkeypatch):
         buffer.copy_(expected.to(device=buffer.device))
 
     monkeypatch.setattr("prime_rl.trainer.model.dcp_load", fake_dcp_load)
-    monkeypatch.setattr("prime_rl.trainer.model.load_state_dict_keys", lambda path: meta_model.state_dict().keys())
+    monkeypatch.setattr(
+        "prime_rl.trainer.model.load_state_dict_keys", lambda path, export_files: meta_model.state_dict().keys()
+    )
     monkeypatch.setattr("torch.distributed.barrier", lambda *args, **kwargs: None)
     monkeypatch.setattr("prime_rl.trainer.model.wait_for_master", lambda *args, **kwargs: None)
     monkeypatch.setattr("prime_rl.trainer.model.get_dcp_group", lambda: None)

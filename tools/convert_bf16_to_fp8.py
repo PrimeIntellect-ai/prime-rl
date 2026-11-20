@@ -127,8 +127,24 @@ def list_shards(model_dir: Path) -> list[str]:
     raise FileNotFoundError(f"No safetensors checkpoint found in {model_dir}")
 
 
+def check_no_export_files(input_dir: Path) -> None:
+    """Refuse a checkpoint whose class, selected by an extra config file, has export files the conversion drops."""
+    if not {path.name for path in input_dir.glob("*.safetensors")} - set(list_shards(input_dir)):
+        return
+    # Export files sit outside the weight index, so only such checkpoints need prime-rl
+    from prime_rl.trainer.model import select_by_extra_config
+
+    config = json.loads((input_dir / "config.json").read_text())
+    selection = select_by_extra_config(config.get("model_type"), config.get("architectures"), str(input_dir))
+    if selection is not None and selection.cls.export_files:
+        raise ValueError(
+            f"{input_dir} holds {selection.cls.__name__}, whose export files FP8 conversion does not support"
+        )
+
+
 def convert(input_dir: Path, output_dir: Path | None = None, block_size: int = 128) -> Path:
     input_dir = input_dir.resolve()
+    check_no_export_files(input_dir)
     output_dir = output_dir or input_dir.with_name(input_dir.name + "-FP8")
     output_dir.mkdir(parents=True, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
