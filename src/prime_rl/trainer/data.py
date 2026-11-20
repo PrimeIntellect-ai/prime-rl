@@ -1,11 +1,8 @@
-import itertools
 from collections import defaultdict
-from pathlib import Path
 from typing import Any, TypedDict
 
 import numpy as np
 import torch
-import torch.distributed as dist
 from jaxtyping import Bool, Int
 from torch import Tensor
 from torch.distributed.checkpoint.stateful import Stateful
@@ -289,22 +286,21 @@ def get_dataset_state(dataloader: StatefulDataLoader) -> dict:
     return {wid: snap["dataset_state"]["dataset"] for wid, snap in sorted(snapshots.items())}
 
 
-def with_workers(state: dict, num_workers: int, own: bool = True) -> dict:
-    """The dataloader state ``state`` (``own``: the rank's own) for ``num_workers`` workers. With another number of
-    workers or another rank's state, every worker reads on from the dataset state of the saved worker that got
-    furthest, without the samples drawn but not packed; with its own state, the first worker keeps the sample counts of
-    all. The keys are torchdata's private layout."""
+def with_workers(state: dict, num_workers: int, keep_pending: bool = True) -> dict:
+    """The dataloader state ``state`` for ``num_workers`` workers. With another number of workers, or without
+    ``keep_pending``, every worker reads on from the dataset state of the saved worker that got furthest, without the
+    samples drawn but not packed, and the first worker keeps the sample counts of all. The keys are torchdata's private
+    layout."""
     snapshot = state["_snapshot"]
     saved = list(snapshot["_worker_snapshots"].values())
-    if len(saved) == num_workers and own:
+    if len(saved) == num_workers and keep_pending:
         return state
     furthest = max(saved, key=lambda worker: worker["dataset_state"]["dataset"]["step"])
     counts = {key: defaultdict(int) for key in ("num_samples", "num_tokens")}
-    if own:
-        for worker in saved:
-            for key, by_source in worker["dataset_state"].get("progress", {}).items():
-                for name, count in by_source.items():
-                    counts[key][name] += count
+    for worker in saved:
+        for key, by_source in worker["dataset_state"].get("progress", {}).items():
+            for name, count in by_source.items():
+                counts[key][name] += count
     workers = {}
     for worker_id in range(num_workers):
         dataset_state = {"dataset": furthest["dataset_state"]["dataset"]}
@@ -320,22 +316,6 @@ def with_workers(state: dict, num_workers: int, own: bool = True) -> dict:
         "_last_yielded_worker_id": num_workers - 1,
     }
     return {**state, "_snapshot": snapshot, "_steps_since_snapshot": 0}
-
-
-def furthest_step(directory: Path, rank: int, world_size: int) -> int:
-    """The furthest position any dataloader worker of a saved run had reached, from its states in ``directory``: rank
-    ``rank`` reads those of the saved ranks ``rank``, ``rank + world_size``, ... and the ranks take the max, so a run
-    on fewer ranks sees them all."""
-    steps = [0]
-    for saved_rank in itertools.count(rank, world_size):
-        path = directory / f"rank_{saved_rank}.pt"
-        if not path.exists():
-            break
-        workers = torch.load(path, weights_only=False)["_snapshot"]["_worker_snapshots"].values()
-        steps += [worker["dataset_state"]["dataset"]["step"] for worker in workers]
-    furthest = torch.tensor(max(steps), device="cuda")
-    dist.all_reduce(furthest, op=dist.ReduceOp.MAX)
-    return int(furthest)
 
 
 def get_dataset_progress(dataloader: StatefulDataLoader) -> dict:

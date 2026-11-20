@@ -1,3 +1,4 @@
+import itertools
 import json
 import time
 import uuid
@@ -11,11 +12,19 @@ from huggingface_hub import snapshot_download
 from renderers import AutoRendererConfig, RendererConfig, merge_chat_template_kwargs
 from renderers.base import MultiModalData, PlaceholderRange, Renderer, build_training_sample, create_renderer
 from torch import Tensor
+from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.sft import LossMaskConfig, SFTColumnsConfig, SFTDataConfig
 from prime_rl.configs.supervised import BaseDataConfig
-from prime_rl.trainer.data import Sample, StatefulIterableDataset, due, mixture_changed
+from prime_rl.trainer.data import (
+    Sample,
+    StatefulIterableDataset,
+    due,
+    get_dataset_state,
+    mixture_changed,
+    with_workers,
+)
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import format_time, get_logger
 
@@ -367,7 +376,7 @@ class SFTDataset(StatefulIterableDataset):
     is every source's draws when the mixture last changed. Without weights, a source's weight is its number of rows,
     and every ``sum(rows)`` draws read each source exactly once (an epoch). Every data rank walks the same draws and
     keeps every ``data_world_size``-th one, so the draws are the same on every rank, for any number of ranks, and
-    after a resume. ``resume_step`` (set by the trainer) is the furthest draw any data rank got to before a resume."""
+    after a resume. ``resume_step`` (set by `start_together`) is the draw every worker starts at after a resume."""
 
     def __init__(
         self,
@@ -394,13 +403,14 @@ class SFTDataset(StatefulIterableDataset):
 
     def state_dict(self) -> dict:
         names = [source.name for source in self.sources]
+        self._setup_world_info()
         return {
             "step": self.step,
             "epoch": self.epoch,
             "draws": dict(zip(names, self.draws)),
             "start": dict(zip(names, self.start)),
             "sources": self.mixture,
-            "world": [self.dp_size, self.data_world_size],
+            "layout": [self.data_rank, self.data_world_size],
         }
 
     def load_state_dict(self, state_dict: dict):
@@ -414,31 +424,74 @@ class SFTDataset(StatefulIterableDataset):
                 total = sum(counts.values())
                 counts.clear()
                 counts[source.name] = total
-        # Sources match by name (`mixture_changed`); a state from before the sources were recorded has the same ones.
+        # Sources match by name (`mixture_changed`). A state from before they were recorded has the configured ones.
         saved = state_dict.get("sources", self.mixture)
         draws, start = state_dict["draws"], state_dict.get("start", {})
+        if draws.keys() != saved.keys():
+            raise ValueError(
+                f"The checkpoint's SFT data state has the sources {list(draws)}, not the configured {list(saved)}: "
+                "resume once with the sources it was saved with"
+            )
         self._setup_world_info()
         changed = mixture_changed(saved, self.mixture, log=self.data_rank == 0)
-        world = [self.dp_size, self.data_world_size]
-        if changed or state_dict.get("world", world) != world:
-            # A new mixture, or draws dealt to other ranks or workers, start at the same draw on every data rank, the
-            # furthest one reached: each walks the old mixture to there, skipping the draws it had not reached.
+        if self.resume_step is not None:
+            # Every worker walks the old mixture to the common start, skipping the draws it had not reached.
             weights = np.array([source["weight"] for source in saved.values()])
             old = np.array([draws[name] for name in saved])
             old_start = np.array([start.get(name, 0) for name in saved])
-            target = max(self.resume_step or 0, self.step)
-            for _ in range(self.step, target):
+            for _ in range(self.step, self.resume_step):
                 old[np.argmin(due(old + 1, old_start, weights))] += 1
-            self.step = target
+            self.step = self.resume_step
             draws = dict(zip(saved, old.tolist()))
-            if changed:
-                start = draws
+        if changed:
+            start = draws
         names = [source.name for source in self.sources]
         self.draws = [draws.get(name, 0) for name in names]
         self.start = [start.get(name, 0) for name in names]
         for counts in (self.num_samples, self.num_tokens):
             for name in counts.keys() - set(names):
                 del counts[name]
+
+    def saved_view(self, dataloader: StatefulDataLoader, directory: Path, rank: int, world_size: int) -> tuple:
+        """What rank ``rank`` of ``world_size`` adds to the decision of a resume (`start_together`): the draw that
+        every saved dataloader worker in the files ``directory / rank_<rank>.pt``, ``rank_<rank + world_size>.pt``, ...
+        had reached and whether it held a sample drawn but not packed, by its data rank and number of data ranks (the
+        ranks read every file between them, also on fewer ranks than the saved run), and whether something changed for
+        this rank: the mixture, or its workers loaded states that other data ranks saved (another number of GPUs,
+        model-parallel layout or workers, or a state from before the layout was recorded)."""
+        positions = {}
+        for saved_rank in itertools.count(rank, world_size):
+            path = directory / f"rank_{saved_rank}.pt"
+            if not path.exists():
+                break
+            for key, worker in torch.load(path, weights_only=False)["_snapshot"]["_worker_snapshots"].items():
+                state = worker["dataset_state"]
+                layout = tuple(state["dataset"].get("layout", [(saved_rank, key), None]))
+                positions[layout] = (state["dataset"]["step"], "pending_sample" in state)
+        loaded = list(get_dataset_state(dataloader).values())
+        workers = dataloader.num_workers
+        layouts = [[self.dp_rank * workers + worker, self.dp_size * workers] for worker in range(workers)]
+        moved = [state.get("layout") for state in loaded] != layouts
+        return positions, moved or mixture_changed(loaded[0].get("sources", self.mixture), self.mixture, log=False)
+
+    def start_together(self, dataloader: StatefulDataLoader, views: list[tuple]) -> int | None:
+        """Decide a resume the same way on every rank, from what every rank saw (`saved_view`). If anything changed,
+        every worker starts at the furthest draw a saved worker had reached, without its sample drawn but not packed,
+        and this returns the draws that no worker trains on: the saved workers' own draws up to there and the dropped
+        samples (for states from before the layout was recorded, as if every worker's last draw was its own). Else
+        None."""
+        if not any(changed for _, changed in views):
+            return None
+        positions = {layout: position for saved, _ in views for layout, position in saved.items()}
+        self.resume_step = max(step for step, _ in positions.values())
+        dataloader.load_state_dict(with_workers(dataloader.next_iter_state, dataloader.num_workers, keep_pending=False))
+        skipped = 0
+        for (data_rank, data_world), (step, pending) in positions.items():
+            if data_world is None:
+                data_rank, data_world = (step - 1) % len(positions), len(positions)
+            # The draws of data rank d of W before draw n: those with k % W == d.
+            skipped += (self.resume_step - data_rank - 1) // data_world - (step - data_rank - 1) // data_world + pending
+        return skipped
 
     def next_source(self) -> int:
         return int(np.argmin(due(np.array(self.draws) + 1, np.array(self.start), np.array(self.weights))))

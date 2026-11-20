@@ -39,7 +39,7 @@ from prime_rl.trainer.model import (
 from prime_rl.trainer.moe_runtime import setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.data import furthest_step, get_dataset_progress, get_dataset_state, setup_dataloader
+from prime_rl.trainer.data import get_dataset_progress, get_dataset_state, setup_dataloader
 from prime_rl.trainer.pretrain.data import (
     TokenDataset,
     check_ranks_see_same_data,
@@ -272,9 +272,15 @@ def train(config: SFTConfig | PretrainConfig):
         if skip.skip_scheduler:
             scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
         if isinstance(dataset, SFTDataset) and not skip.skip_dataloader:
-            # A changed SFT mixture or data world starts at the same draw everywhere: the furthest one reached.
             path = resume_dir / "trainer" if resume_dir is not None else ckpt_manager.get_ckpt_path(checkpoint_step)
-            dataset.resume_step = furthest_step(path / "dataloader", world.rank, world.world_size)
+            views = [None] * world.world_size
+            view = dataset.saved_view(dataloader, path / "dataloader", world.rank, world.world_size)
+            dist.all_gather_object(views, view)
+            if (skipped := dataset.start_together(dataloader, views)) is not None:
+                logger.info(
+                    f"The SFT data changed: every dataloader worker starts at draw {dataset.resume_step}, the furthest "
+                    f"one reached; {skipped} draws up to there are not trained on"
+                )
         logger.info(
             f"Resuming from step {checkpoint_step} (total_tokens={progress.total_tokens}, "
             f"total_samples={progress.total_samples}, dataset_state={get_dataset_state(dataloader)})"

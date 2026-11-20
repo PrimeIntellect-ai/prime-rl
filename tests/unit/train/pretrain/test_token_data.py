@@ -187,8 +187,7 @@ def global_rows(
         loader = setup_dataloader(dataset, config, cp=1)
         if states is not None:
             # As the checkpoint manager: a rank the saved run did not have loads rank 0's state.
-            own = rank < len(states)
-            loader.load_state_dict(with_workers(states[rank] if own else states[0], config.num_workers, own))
+            loader.load_state_dict(with_workers(states[rank] if rank < len(states) else states[0], config.num_workers))
         batches = iter(loader)
         for step in range(steps):
             for _ in range(config.batch_size // (gpus * config.micro_batch_size)):
@@ -238,17 +237,23 @@ def first_in_order(sampler, source: int, num_tokens: int, first_pass: int = 0) -
     return tokens[:num_tokens]
 
 
-def test_resume_with_another_mix_reads_on(tmp_path):
-    """Resumed with other weights and a larger batch, every source reads on in its order: no unit twice, none skipped.
-    From the change on, every step holds the new mixture (the source that is behind does not catch up), and the
-    metrics count every source's tokens since the start."""
+@pytest.mark.parametrize(
+    ("weights_after", "gpus_after", "workers_after"), [((0.2, 0.8), 2, 2), ((0.2, 0.8), 4, 1), ((1.0, 0.0), 2, 2)]
+)
+def test_resume_with_another_mix_reads_on(tmp_path, weights_after, gpus_after, workers_after):
+    """Resumed with other weights (b paused by weight 0, or not) and a larger batch, also on other numbers of GPUs and
+    workers, every source reads on in its order: no unit twice, none skipped. From the change on, every step holds the
+    new mixture (the source that is behind does not catch up), and the metrics count every source's tokens since the
+    start."""
     write_source(tmp_path / "a", LENGTHS * 10)
     write_source(tmp_path / "b", [6, 30, 9, 2, 18, 4] * 40, 10**6)
-    settings = {"micro_batch_size": 1, "num_workers": 2}
-    old = data_config(tmp_path, {"a": {"weight": 0.5}, "b": {"weight": 0.5}}, batch_size=8, **settings)
-    new = data_config(tmp_path, {"a": {"weight": 0.2}, "b": {"weight": 0.8}}, batch_size=16, **settings)
+    old = data_config(
+        tmp_path, {"a": {"weight": 0.5}, "b": {"weight": 0.5}}, batch_size=8, micro_batch_size=1, num_workers=2
+    )
+    sources = {name: {"weight": weight} for name, weight in zip("ab", weights_after)}
+    new = data_config(tmp_path, sources, batch_size=16, micro_batch_size=1, num_workers=workers_after)
     before, states = global_rows(old, 2, 4)
-    after, states = global_rows(new, 2, 4, states)
+    after, states = global_rows(new, gpus_after, 4, states)
     sampler = setup_token_dataset(new, dp_rank=0, dp_size=1).sampler
     read = read_by_source(before + after)
     for source in (0, 1):
