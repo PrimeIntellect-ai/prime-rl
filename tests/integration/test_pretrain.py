@@ -15,6 +15,7 @@ from tests.utils import check_loss_goes_down, strip_escape_codes
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
 RUN_NAME = "pretrain"
+EVAL_RUN_NAME = "pretrain-eval"
 MODEL = "PrimeIntellect/Qwen3-0.6B"
 TIMEOUT = 300  # 5 minutes
 
@@ -48,16 +49,16 @@ def token_dir(output_dir: Path) -> Path:
 
 
 def val_sources(token_dir: Path) -> list[dict]:
-    """The config's [[val.source]], the documents source scoring the shards the test wrote."""
+    """The config's [[orchestrator.val.source]], the documents source scoring the shards the test wrote."""
     config = tomllib.loads(Path("configs/ci/integration/pretrain/start.toml").read_text())
     return [
         {**val_source, "path": token_dir.as_posix()} if val_source["type"] == "documents" else val_source
-        for val_source in config["val"]["source"]
+        for val_source in config["orchestrator"]["val"]["source"]
     ]
 
 
 def pretrain_command(
-    configs: list[str], token_dir: Path, wandb_project: str, wandb_name: str, output_dir: Path
+    configs: list[str], token_dir: Path, wandb_project: str, wandb_name: str, output_dir: Path, run_name: str = RUN_NAME
 ) -> list[str]:
     return [
         "uv",
@@ -66,10 +67,6 @@ def pretrain_command(
         *[arg for config in configs for arg in ("@", f"configs/ci/integration/pretrain/{config}")],
         "--data.source",
         f'[{{"name": "reverse-text", "path": "{token_dir.as_posix()}"}}]',
-        "--val.source",
-        json.dumps(val_sources(token_dir)),
-        "--deployment.num-train-gpus",
-        "2",
         "--monitors.wandb.project",
         wandb_project,
         "--monitors.wandb.name",
@@ -78,7 +75,7 @@ def pretrain_command(
         "--output-dir",
         output_dir.as_posix(),
         "--run.name",
-        RUN_NAME,
+        run_name,
     ]
 
 
@@ -87,7 +84,9 @@ def pretrain_process(
     run_process: Callable[..., ProcessResult], token_dir: Path, wandb_project: str, wandb_name: str, output_dir: Path
 ) -> ProcessResult:
     cmd = pretrain_command(["start.toml"], token_dir, wandb_project, wandb_name, output_dir)
-    return run_process([*cmd, "--clean"], timeout=TIMEOUT)
+    return run_process(
+        [*cmd, "--orchestrator.val.source", json.dumps(val_sources(token_dir)), "--clean"], timeout=TIMEOUT
+    )
 
 
 @pytest.fixture(scope="module")
@@ -100,7 +99,19 @@ def pretrain_resume_process(
     output_dir: Path,
 ) -> ProcessResult:
     cmd = pretrain_command(["start.toml", "resume.toml"], token_dir, wandb_project, f"{wandb_name}-resume", output_dir)
-    return run_process(cmd, timeout=TIMEOUT)
+    return run_process([*cmd, "--orchestrator.val.source", json.dumps(val_sources(token_dir))], timeout=TIMEOUT)
+
+
+@pytest.fixture(scope="module")
+def pretrain_eval_process(
+    run_process: Callable[..., ProcessResult],
+    token_dir: Path,
+    wandb_project: str,
+    wandb_name: str,
+    output_dir: Path,
+) -> ProcessResult:
+    cmd = pretrain_command(["eval.toml"], token_dir, wandb_project, f"{wandb_name}-eval", output_dir, EVAL_RUN_NAME)
+    return run_process([*cmd, "--clean"], timeout=TIMEOUT)
 
 
 def trainer_log(run_dir: Path, attempt: str = "latest") -> list[str]:
@@ -140,3 +151,11 @@ def test_resume_continues_from_the_checkpoint(pretrain_resume_process: ProcessRe
     last = step_losses(trainer_log(run_dir, "attempt_1"))[20]
     first = step_losses(trainer_log(run_dir))[21]
     assert abs(first - last) < 0.1 * last, f"Loss jumped from {last} at step 20 to {first} at step 21"
+
+
+def test_online_evals_from_scratch(pretrain_eval_process: ProcessResult, output_dir: Path):
+    """The inference server evaluates the scratch-initialized model's weight broadcasts at steps 0, 1 and 2."""
+    assert pretrain_eval_process.returncode == 0, f"Process has non-zero return code ({pretrain_eval_process})"
+    log = (output_dir / EVAL_RUN_NAME / "logs" / "latest" / "orchestrator.log").read_text()
+    steps = {int(step) for step in re.findall(r"Evaluated reverse-text \(Step (\d+)\)", strip_escape_codes(log))}
+    assert steps == {0, 1, 2}

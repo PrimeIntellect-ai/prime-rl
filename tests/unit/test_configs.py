@@ -242,7 +242,8 @@ def test_repetitions_need_max_steps():
 
 
 def test_val_source_defaults(tmp_path):
-    """[[val.source]] are scored at the training seq_len unless they set their own, in rows of val.micro_batch_tokens:
+    """[[orchestrator.val.source]] are scored at the training seq_len unless they set their own, in rows of
+    orchestrator.val.micro_batch_tokens:
     the training micro-batch or the longest source seq_len, whichever is larger, rounded up to a multiple of the CP
     degree."""
     path = str(tmp_path / "tokens")
@@ -254,17 +255,17 @@ def test_val_source_defaults(tmp_path):
         tmp_path / "pretrain.toml",
         {
             "data": {"source": [{"name": "web", "path": path}], "seq_len": 1024, "micro_batch_size": 2},
-            "val": {"source": val_sources},
+            "orchestrator": {"val": {"source": val_sources}},
         },
     )
     args = ["@", str(tmp_path / "pretrain.toml"), "--output-dir", str(tmp_path)]
     config = cli(PretrainConfig, args=args)
-    assert [val_source.seq_len for val_source in config.val.source] == [1024, 4096]
-    assert config.val.micro_batch_tokens == 4096
-    assert not can_parse(PretrainConfig, [*args, "--val.micro-batch-tokens", "2048"])
+    assert [val_source.seq_len for val_source in config.orchestrator.val.source] == [1024, 4096]
+    assert config.orchestrator.val.micro_batch_tokens == 4096
+    assert not can_parse(PretrainConfig, [*args, "--orchestrator.val.micro-batch-tokens", "2048"])
     odd_source = json.dumps([{**val_sources[1], "seq_len": 4097}])
-    cp_args = [*args, "--model.cp", "2", "--data.micro-batch-size", "1", "--val.source", odd_source]
-    assert cli(PretrainConfig, args=cp_args).val.micro_batch_tokens == 4098
+    cp_args = [*args, "--model.cp", "2", "--data.micro-batch-size", "1", "--orchestrator.val.source", odd_source]
+    assert cli(PretrainConfig, args=cp_args).orchestrator.val.micro_batch_tokens == 4098
 
 
 def test_chat_val_sources_score_the_training_loss_mask():
@@ -273,8 +274,10 @@ def test_chat_val_sources_score_the_training_loss_mask():
         {"type": "chat", "name": "inherited", "dataset": "x"},
         {"type": "chat", "name": "own", "dataset": "x", "loss_mask": {"user": True, "assistant": False}},
     ]
-    config = SFTConfig.model_validate({"data": {"loss_mask": {"tool": True}}, "val": {"source": sources}})
-    inherited, own = config.val.source
+    config = SFTConfig.model_validate(
+        {"data": {"loss_mask": {"tool": True}}, "orchestrator": {"val": {"source": sources}}}
+    )
+    inherited, own = config.orchestrator.val.source
     assert (inherited.loss_mask.tool, inherited.loss_mask.assistant) == (True, True)
     assert (own.loss_mask.user, own.loss_mask.assistant, own.loss_mask.tool) == (True, False, False)
 
@@ -962,23 +965,25 @@ def test_rl_launcher_gives_the_admin_token_to_callers_and_its_digest_to_checkers
     assert envs["inference"] == {"PRIME_RL_ADMIN_TOKEN_SHA256": admin_token_digest("from-operator")}
 
 
-def test_sft_launcher_gives_the_admin_token_to_online_evals_and_its_digest_to_checkers():
+def test_sft_launcher_gives_the_admin_token_to_the_orchestrator_and_its_digest_to_checkers():
     from prime_rl.entrypoints.launcher import admin_token_uses
     from prime_rl.utils.admin_token import admin_token_digest
 
     config = SFTConfig.model_validate(
         {
             "control": {},
-            "eval": {"source": [{"name": "reverse-text", "env": {"taskset": {"id": "reverse-text"}}}]},
+            "orchestrator": {
+                "eval": {"source": [{"name": "reverse-text", "env": {"taskset": {"id": "reverse-text"}}}]}
+            },
             "inference": {},
             "deployment": {"num_train_gpus": 1, "num_infer_gpus": 1},
         }
     )
 
     base, envs = admin_token_uses(config).split({"HOME": "/home/user"})
-    token = envs["online-eval"]["PRIME_RL_ADMIN_TOKEN"]
+    token = envs["orchestrator"]["PRIME_RL_ADMIN_TOKEN"]
     assert base == {"HOME": "/home/user"}
-    assert envs["online-eval"] == {"PRIME_RL_ADMIN_TOKEN": token}
+    assert envs["orchestrator"] == {"PRIME_RL_ADMIN_TOKEN": token}
     assert envs["inference"] == envs["trainer"] == {"PRIME_RL_ADMIN_TOKEN_SHA256": admin_token_digest(token)}
 
 

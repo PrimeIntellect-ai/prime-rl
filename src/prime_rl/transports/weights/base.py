@@ -112,7 +112,7 @@ class WeightSender(ABC):
             if now - start > self.timeout:
                 raise TimeoutError(f"No receiver joined the broadcast within {self.timeout}s ({ready_file})")
             if now - last_log > 60:
-                # A busy consumer (e.g. an evals process mid-epoch) can lag legitimately;
+                # A busy consumer (e.g. an orchestrator mid-eval-epoch) can lag legitimately;
                 # raise weight_broadcast.timeout if this trips on long eval epochs.
                 self.logger.warning(f"Still waiting for the broadcast receiver after {now - start:.0f}s")
                 last_log = now
@@ -137,8 +137,8 @@ class WeightSender(ABC):
 class WeightReceiver(ABC):
     """Consumer-side counterpart of ``WeightSender`` — moves the inference
     engines onto trainer-offered policy versions. It runs in the consumer
-    process (the RL orchestrator, or the SFT evals process): the weight
-    watcher, the orchestrator's startup rendezvous, and the evals process all
+    process (the RL orchestrator, or the sft/pretrain orchestrator): the weight
+    watcher, the orchestrator's startup rendezvous, and the online evals all
     drive the same object instead of hand-rolling transport branches. The
     engines' in-process receive hooks are its data plane, reached through the
     admin plane."""

@@ -60,7 +60,7 @@ class WandbMonitor(Monitor):
             primary = label == primary_label
             # The primary creates the run; the finisher writes its final state. They can
             # differ when the run's creator is not its last-alive writer (e.g. the SFT
-            # trainer creates the run, the evals process outlives it and finalizes).
+            # trainer creates the run, the orchestrator outlives it and finalizes).
             finisher = label == os.environ.get("WANDB_SHARED_FINISHER", primary_label)
             settings = wandb.Settings(
                 mode="shared",

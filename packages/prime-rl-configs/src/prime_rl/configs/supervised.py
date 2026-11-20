@@ -16,6 +16,7 @@ from prime_rl.configs.shared import (
     BaseMultiNodeDeploymentConfig,
     BaseSingleNodeDeploymentConfig,
     FileSystemWeightBroadcastConfig,
+    LogConfig,
     NCCLWeightBroadcastConfig,
     ResumeConfig,
     RunConfig,
@@ -183,9 +184,9 @@ class ValConfig(BaseConfig):
     """Run validation before the first training step."""
 
     source: list[ValSourceConfig] = Field(min_length=1)
-    """The validation sources (``[[val.source]]``). Each logs ``val/<name>/loss@<seq_len>``, the mean loss per
-    scored token, and with a byte-level BPE tokenizer ``val/<name>/bpb@<seq_len>``, bits per UTF-8 byte of the scored
-    tokens."""
+    """The validation sources (``[[orchestrator.val.source]]``). Each logs ``val/<name>/loss@<seq_len>``, the mean
+    loss per scored token, and with a byte-level BPE tokenizer ``val/<name>/bpb@<seq_len>``, bits per UTF-8 byte of the
+    scored tokens."""
 
     num_samples: int | None = Field(None, ge=1)
     """Items per source and validation: the first ``num_samples`` documents or rows of each source, the same ones
@@ -199,12 +200,56 @@ class ValConfig(BaseConfig):
     save_arrays: bool = False
     """Write the per-item arrays (npz) and summary (json) of every source to ``<run_dir>/val/step_N/``."""
 
+    def due(self, step: int, start_step: int) -> bool:
+        """Whether validation runs at ``step`` of a trainer whose first step is ``start_step``."""
+        return self.eval_on_start if step == start_step else step % self.interval == 0
+
     @model_validator(mode="after")
     def validate_unique_names(self):
         names = [val_source.name for val_source in self.source]
         if len(set(names)) < len(names):
-            raise ValueError(f"val.source names must be unique: {names}")
+            raise ValueError(f"orchestrator.val.source names must be unique: {names}")
         return self
+
+
+class SupervisedOrchestratorConfig(BaseConfig):
+    """The ``[orchestrator]`` of ``sft`` and ``pretrain``: the run's orchestrator, which owns its schedule. It tells the
+    trainer at which steps to validate and to broadcast its weights, and runs the online evals on the broadcasts."""
+
+    val: ValConfig | None = None
+    """Validation: named sources scored on the trainer's weights, on the trainer's GPUs. If None, no validation runs."""
+
+    eval: SFTOnlineEvalConfig | None = None
+    """Online evals: rollout-based evals against a live inference server that receives the trainer's weight
+    broadcasts. If None, no online evals run."""
+
+
+class SupervisedOrchestratorProcessConfig(SupervisedOrchestratorConfig):
+    """The config of the orchestrator process the ``sft`` and ``pretrain`` launchers start: the ``[orchestrator]``
+    block plus the run-level fields the launcher fills from the trainer's config."""
+
+    model: str
+    """Name the inference server serves the model under. The name stays fixed across weight updates (weights are
+    swapped in place), so per-step eval results are told apart by ``eval/{env}/policy_version``."""
+
+    resume_step: int | None = None
+    """Trainer step the run resumed from, the version of the trainer's startup broadcast. When set, the startup
+    (base-model) eval is skipped; set ``eval.retrigger_on_resume`` to re-fire interval-aligned evals at this step."""
+
+    max_steps: int | None = None
+    """Trainer step at which the run ends. A run resumed at it re-fires every eval env with
+    ``eval.retrigger_on_resume``, as its final step does."""
+
+    weight_broadcast: WeightBroadcastConfig | None = None
+    """Weight transport of the online evals."""
+
+    output_dir: Path = Field(default_factory=default_output_dir)
+    """The run directory, shared with the trainer."""
+
+    log: LogConfig = LogConfig()
+
+    monitors: MonitorsConfig = MonitorsConfig()
+    """The trainer's metric monitors, so the online evals log to the trainer's W&B and Prime runs."""
 
 
 class SingleNodeDeploymentConfig(BaseSingleNodeDeploymentConfig):
@@ -239,16 +284,12 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
 
     data: BaseDataConfig
 
-    val: ValConfig | None = None
-    """Validation configuration. If None, no validation runs."""
-
-    eval: SFTOnlineEvalConfig | None = None
-    """Online evaluation configuration: rollout-based evals against a live inference
-    server that receives the trainer's weight broadcasts. If None, no online evals run."""
+    orchestrator: SupervisedOrchestratorConfig = Field(default_factory=SupervisedOrchestratorConfig)
+    """The run's orchestrator: validation (``[orchestrator.val]``) and online evals (``[orchestrator.eval]``)."""
 
     inference: InferenceConfig | None = None
-    """Inference server for online evals. If None (with ``eval`` set), the launcher
-    does not start a server and evals connect to ``eval.client.base_url``."""
+    """Inference server for online evals. If None (with ``orchestrator.eval`` set), the launcher does not start a
+    server and evals connect to ``orchestrator.eval.client.base_url``."""
 
     weight_broadcast: WeightBroadcastConfig | None = None
     """Trainer-to-inference weight transport for online evals. Defaults to NCCL.
@@ -338,9 +379,11 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     @model_validator(mode="after")
     def auto_setup_online_eval(self):
         """Wire online evals and the trainer-to-inference weight transport."""
-        if self.eval is None:
+        if self.orchestrator.eval is None:
             if self.inference is not None:
-                raise ValueError("[inference] is only used for online evals — add an [eval] block or remove it.")
+                raise ValueError(
+                    "[inference] is only used for online evals — add an [orchestrator.eval] block or remove it."
+                )
             return self
 
         # LoRA runs broadcast the raw adapter, which evals reload via /load_lora_adapter
@@ -374,12 +417,12 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
                 )
 
         if self.deployment.type == "multi_node":
-            # Dedicated nodes in the SFT allocation run the inference pool, router,
-            # env worker pools, and evals process.
+            # Dedicated nodes in the SFT allocation run the inference pool, router
+            # and env worker pools.
             if self.inference is None:
                 raise ValueError(
                     "Multi-node online evals require an [inference] block - dedicated nodes in the "
-                    "SFT allocation run the inference pool and evals process."
+                    "SFT allocation run the inference pool."
                 )
             if self.deployment.num_infer_nodes < 1:
                 raise ValueError("Online evals on a multi-node deployment require deployment.num_infer_nodes >= 1.")
@@ -405,7 +448,7 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
             if self.max_steps is None:
                 warnings.warn(
-                    "Online evals without max_steps: the evals process never sees a final checkpoint, "
+                    "Online evals without max_steps: the orchestrator never sees a final step, "
                     "so the SFT SLURM job holds its allocation until its walltime.",
                     stacklevel=2,
                 )
@@ -416,10 +459,10 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
         if self.inference is None:
             warnings.warn(
                 "Online evals are configured without an [inference] block - the launcher will not "
-                f"start an inference server. Make sure one is running at eval.client.base_url "
-                f"({self.eval.client.base_url}) with weight_broadcast.type = 'filesystem', "
-                "otherwise the online-eval process will hang waiting for it. If a router fronts the "
-                "deployment, set eval.client.admin_base_url to the engine URLs - admin ops "
+                f"start an inference server. Make sure one is running at orchestrator.eval.client.base_url "
+                f"({self.orchestrator.eval.client.base_url}) with weight_broadcast.type = 'filesystem', "
+                "otherwise the orchestrator will hang waiting for it. If a router fronts the "
+                "deployment, set orchestrator.eval.client.admin_base_url to the engine URLs - admin ops "
                 "(pause/update_weights/resume) must bypass the router.",
                 stacklevel=2,
             )
@@ -456,12 +499,12 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
         self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
 
         host = self.inference.server.host or "localhost"
-        client = self.eval.client
+        client = self.orchestrator.eval.client
         if "base_url" not in client.model_fields_set:
             client.base_url = f"http://{host}:{self.inference.server.port}/v1"
         elif urlparse(client.base_url).port != self.inference.server.port:
             raise ValueError(
-                f"eval.client.base_url port ({urlparse(client.base_url).port}) does not match "
+                f"orchestrator.eval.client.base_url port ({urlparse(client.base_url).port}) does not match "
                 f"inference.server.port ({self.inference.server.port})."
             )
         if self.inference.router is not None and "admin_base_url" not in client.model_fields_set:
@@ -472,21 +515,24 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
 
     @model_validator(mode="after")
     def auto_setup_val(self):
-        if self.val is None:
+        val = self.orchestrator.val
+        if val is None:
             return self
-        for val_source in self.val.source:
+        for val_source in val.source:
             if val_source.seq_len is None:
                 val_source.seq_len = self.data.seq_len
             if val_source.type == "chat":
                 val_source.resolve_columns(getattr(self.data, "columns", SFTColumnsConfig()))
                 if val_source.loss_mask is None:
                     val_source.loss_mask = getattr(self.data, "loss_mask", LossMaskConfig())
-        longest = max(val_source.seq_len for val_source in self.val.source)
-        if self.val.micro_batch_tokens is None:
+        longest = max(val_source.seq_len for val_source in val.source)
+        if val.micro_batch_tokens is None:
             row_len = max(self.data.seq_len * self.data.micro_batch_size, longest)
-            self.val.micro_batch_tokens = -(-row_len // self.model.cp) * self.model.cp
-        elif self.val.micro_batch_tokens < longest:
-            raise ValueError(f"val.micro_batch_tokens must be at least the longest source seq_len ({longest})")
+            val.micro_batch_tokens = -(-row_len // self.model.cp) * self.model.cp
+        elif val.micro_batch_tokens < longest:
+            raise ValueError(
+                f"orchestrator.val.micro_batch_tokens must be at least the longest source seq_len ({longest})"
+            )
         return self
 
     @model_validator(mode="after")
@@ -494,8 +540,9 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
         if self.model.cp > 1:
             if self.data.seq_len % self.model.cp != 0:
                 raise ValueError("Sequence length must be divisible by CP degree")
-            if self.val is not None and self.val.micro_batch_tokens % self.model.cp != 0:
-                raise ValueError("val.micro_batch_tokens must be divisible by CP degree")
+            val = self.orchestrator.val
+            if val is not None and val.micro_batch_tokens % self.model.cp != 0:
+                raise ValueError("orchestrator.val.micro_batch_tokens must be divisible by CP degree")
         return self
 
     @model_validator(mode="after")
@@ -503,8 +550,8 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
         dispatch = self.model.moe.dispatch
         if dispatch.type == "mega_moe":
             row_lens = [self.data.micro_batch_size * self.data.seq_len]
-            if self.val is not None:
-                row_lens.append(self.val.micro_batch_tokens)
+            if self.orchestrator.val is not None:
+                row_lens.append(self.orchestrator.val.micro_batch_tokens)
             dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
                 dispatch.max_tokens_per_rank,
                 max(row_lens),
@@ -521,13 +568,16 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
 
     @model_validator(mode="after")
     def validate_vlm_val(self):
-        if self.model.vlm is not None and self.val is not None:
-            raise ValueError("Validation scores text only: [val] does not support VLM models ([model.vlm]).")
+        if self.model.vlm is not None and self.orchestrator.val is not None:
+            raise ValueError(
+                "Validation scores text only: [orchestrator.val] does not support VLM models ([model.vlm])."
+            )
         return self
 
     def renders_conversations(self) -> bool:
         """Whether the trainer renders conversations with ``renderer``: SFT data or a ``chat`` validation source."""
-        return self.val is not None and any(val_source.type == "chat" for val_source in self.val.source)
+        val = self.orchestrator.val
+        return val is not None and any(val_source.type == "chat" for val_source in val.source)
 
     @model_validator(mode="after")
     def validate_typed_renderer(self):

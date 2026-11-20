@@ -22,7 +22,7 @@ from prime_rl.utils.utils import clean_exit
 class Eval:
     def __init__(self, config: EvalConfig) -> None:
         self.config = config
-        self.runner = EvalRunner(config, run_dir=config.run_dir)
+        self.runner = EvalRunner(config, model=config.model, log=config.log, run_dir=config.run_dir)
 
     async def run(self) -> None:
         config = self.config

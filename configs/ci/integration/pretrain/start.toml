@@ -17,15 +17,18 @@ micro_batch_size = 2
 name = "reverse-text"
 path = "set-by-the-test"
 
-[val]
+[deployment]
+num_train_gpus = 2
+
+[orchestrator.val]
 interval = 10
 
-[[val.source]]
+[[orchestrator.val.source]]
 type = "documents"
 name = "reverse-text"
 path = "set-by-the-test"
 
-[[val.source]]
+[[orchestrator.val.source]]
 type = "chat"
 name = "reverse-text-chat"
 dataset = "PrimeIntellect/Reverse-Text-SFT"

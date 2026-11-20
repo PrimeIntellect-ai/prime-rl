@@ -1,5 +1,5 @@
 """EvalRunner: the eval engine shared by ``eval`` (one epoch against the served weights)
-and ``online-eval`` (an epoch per weight broadcast).
+and the orchestrator of ``sft`` and ``pretrain`` runs (an epoch per weight broadcast).
 
 Scheduling reuses the orchestrator pipeline unchanged: an eval-only ``Dispatcher``
 admits episodes under the adaptive ``ConcurrencyController``, fed by the
@@ -23,7 +23,8 @@ from pathlib import Path
 import verifiers.v1 as vf
 
 from prime_rl import monitors
-from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
+from prime_rl.configs.eval import ServedEvalConfig, SFTOnlineEvalConfig
+from prime_rl.configs.shared import LogConfig
 from prime_rl.control.server import serve
 from prime_rl.eval.control import create_app
 from prime_rl.orchestrator import live
@@ -53,10 +54,13 @@ POLL_INTERVAL_S = 2.0
 
 
 class EvalRunner:
-    def __init__(self, config: EvalConfig | SFTOnlineEvalConfig, *, run_dir: Path) -> None:
+    def __init__(self, config: ServedEvalConfig, *, model: str, log: LogConfig, run_dir: Path) -> None:
+        """``model`` is the name the inference server serves the evaluated model under."""
         self.config = config
+        self.model = model
+        self.log = log
         self.run_dir = run_dir
-        intercept_vf_logging(logger="verifiers.v1", level=config.log.level)
+        intercept_vf_logging(logger="verifiers.v1", level=log.level)
 
         self.eval_triggered_at: dict[tuple[str, int], float] = {}
         self.dispatcher_task: asyncio.Task | None = None
@@ -87,8 +91,8 @@ class EvalRunner:
         self.run_id = os.environ.get("PRL_RUN_ID") or uuid.uuid4().hex
         self.run_name = os.environ.get("PRL_RUN_NAME")
 
-        get_logger().info(f"Initializing inference pool (base_url={config.client.base_url}, model={config.model})")
-        self.clients = InferenceClient(config.client, model_name=config.model)
+        get_logger().info(f"Initializing inference pool (base_url={config.client.base_url}, model={self.model})")
+        self.clients = InferenceClient(config.client, model_name=self.model)
         self.admin_plane = AdminPlane(config.client, roles=config.inference_metrics_roles)
 
         get_logger().info("Loading eval environment(s)")
@@ -97,7 +101,7 @@ class EvalRunner:
         get_logger().info(f"Eval environment(s) ready ({', '.join(self.eval_envs.names)})")
 
         get_logger().info("Waiting for inference pool to be ready")
-        await self.admin_plane.wait_for_ready(config.model)
+        await self.admin_plane.wait_for_ready(self.model)
         get_logger().info("Inference pool ready")
 
         intervals = config.intervals if isinstance(config, SFTOnlineEvalConfig) else None
@@ -105,7 +109,7 @@ class EvalRunner:
             self.eval_envs, intervals=intervals, skip_first_step=skip_first_step, is_resumed=is_resumed
         )
         self.eval_sink = EvalSink(eval_envs=self.eval_envs)
-        self.policy = Policy(version=0, model_name=config.model)
+        self.policy = Policy(version=0, model_name=self.model)
 
         # Pessimistic per-episode token cost for the controller's starting cap,
         # only used when the engine doesn't report its max context length.
@@ -163,7 +167,7 @@ class EvalRunner:
         self.periodic_logger = PeriodicLogger(
             name="Eval",
             collect=self.collect_pipeline_view,
-            interval=config.log.interval,
+            interval=self.log.interval,
         )
 
     async def start(self) -> None:

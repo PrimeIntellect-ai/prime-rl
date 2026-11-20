@@ -14,7 +14,6 @@ from prime_rl.configs.shared import (
     LogConfig,
     RunConfig,
     VLLMClientConfig,
-    WeightBroadcastConfig,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir
 
@@ -154,50 +153,10 @@ class EvalConfig(ServedEvalConfig):
 
 
 class SFTOnlineEvalConfig(ScheduledEvalConfig, ServedEvalConfig):
-    """The ``[eval]`` block of the ``sft`` entrypoint, and the config of the online-eval
-    process the launcher spawns from it: interval-driven eval sources against the inference
-    server that receives the trainer's weight broadcasts. The process watches the
-    broadcasts directory, moves the inference server onto each broadcast, and runs the
-    due sources against the updated weights. The launcher fills the run-level fields
-    (``model``, ``weight_broadcast``, ``broadcasts_dir``, ``max_steps``, ``resume_step``,
-    ``output_dir``, ``log``, ``monitors``) from the resolved SFT config."""
+    """The ``[orchestrator.eval]`` block of the ``sft`` and ``pretrain`` entrypoints: interval-driven eval sources that
+    the run's orchestrator runs against the inference server that receives the trainer's weight broadcasts."""
 
     cancel_on_new_checkpoint: bool = True
     """Cancel unfinished episodes when a newer trainer checkpoint is ready. Disable to
     finish every triggered eval epoch before loading later weights. The trainer can idle
     while it waits for slow evals."""
-
-    model: str | None = None
-    """Name the inference server serves the model under. The name stays fixed across
-    weight updates (weights are swapped in place), so per-step results are told apart by
-    ``eval/{env}/policy_version``."""
-
-    weight_broadcast: WeightBroadcastConfig | None = None
-    """Weight transport. None reloads weights from the filesystem broadcasts."""
-
-    broadcasts_dir: Path | None = None
-    """Directory to watch for ``step_{n}`` weight broadcasts. Defaults to
-    ``<output_dir>/broadcasts``."""
-
-    max_steps: int | None = None
-    """Trainer step at which the run ends. The final checkpoint always fires every eval
-    env, and the process exits after processing it. If None, runs until terminated."""
-
-    resume_step: int | None = None
-    """Trainer step the run resumed from. When set, the startup (base-model) eval is
-    skipped; set ``retrigger_on_resume`` to re-fire interval-aligned evals at this step."""
-
-    output_dir: Path = Field(default_factory=default_output_dir)
-    """The run directory, shared with the trainer. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
-
-    log: LogConfig = LogConfig()
-
-    monitors: MonitorsConfig = MonitorsConfig()
-    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``): the
-    trainer's, so the process logs to the trainer's W&B and Prime runs."""
-
-    @model_validator(mode="after")
-    def auto_setup_broadcasts_dir(self):
-        if self.broadcasts_dir is None:
-            self.broadcasts_dir = self.output_dir / "broadcasts"
-        return self

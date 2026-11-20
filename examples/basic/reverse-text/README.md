@@ -38,24 +38,12 @@ We will fine-tune `PrimeIntellect/Qwen3-0.6B` ([HF](https://huggingface.co/Prime
 
 *Check out the logs of the SFT run on [W&B](https://wandb.ai/primeintellect/examples?nw=s3p14m48jod).*
 
-To train on a single GPU, run
+To train, run (add `--deployment.num-train-gpus N` to train on N GPUs)
 
 ```bash
 # Run this in the other terminal
 uv run sft @ examples/basic/reverse-text/sft.toml \
   --run.name sft \
-  --monitors.wandb.project ... \
-  --monitors.wandb.name ...
-```
-
-To train on multiple GPUs, run
-
-```bash
-# Run this in the other terminal
-uv run torchrun \
-  --local-ranks-filter 0 \
-  --nproc-per-node ... \
-  src/prime_rl/trainer/sft/train.py @ examples/basic/reverse-text/sft.toml \
   --monitors.wandb.project ... \
   --monitors.wandb.name ...
 ```

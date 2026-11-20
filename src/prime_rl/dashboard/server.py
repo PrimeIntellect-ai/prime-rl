@@ -292,7 +292,9 @@ def run_meta(run_dir: Path) -> dict:
     resolved = resolved_config_dir(run_dir)
 
     def envs(split: str) -> list[str]:
-        sources = (config.get(split) or {}).get("source") or []
+        # sft and pretrain configs hold their online evals under [orchestrator].
+        group = config.get(split) or (config.get("orchestrator") or {}).get(split) or {}
+        sources = group.get("source") or []
         names = {p.stem for p in (resolved / "envs" / split).glob("*.json")}
         for source in sources:
             env = source.get("env") or {}

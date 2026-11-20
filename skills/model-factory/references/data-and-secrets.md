@@ -93,7 +93,7 @@ the same dataset library and options, without logging private rows. Pin and reco
 the download revision; a local dataset path does not fetch the source's `revision`
 from the Hub.
 
-The repository's basic SFT example includes `[eval]` and `[inference]`. The
+The repository's basic SFT example includes `[orchestrator.eval]` and `[inference]`. The
 [Model Factory SFT docs](https://docs.primeintellect.ai/hosted-training/hosted-sft#online-evals)
 require chart 0.24.0+ for online eval. Check the CLI too: some versions reject those
 blocks. Preserve requested online eval and resolve missing support; for an intended

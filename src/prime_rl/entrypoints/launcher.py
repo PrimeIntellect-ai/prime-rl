@@ -3,12 +3,12 @@ import os
 import sys
 from pathlib import Path
 
-from prime_rl.configs.eval import SFTOnlineEvalConfig
 from prime_rl.configs.orchestrator import OnlineEvalSourceConfig
 from prime_rl.configs.shared import LogConfig
-from prime_rl.configs.supervised import SupervisedTrainerConfig
+from prime_rl.configs.supervised import SupervisedOrchestratorProcessConfig, SupervisedTrainerConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, run_links
 from prime_rl.entrypoints.slurm import load_slurm_template, submit_sbatch
+from prime_rl.transports.steps import ADDRESS_FILE
 from prime_rl.utils.admin_token import AdminTokenUses, TokenUse
 from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import setup_logger
@@ -16,7 +16,6 @@ from prime_rl.utils.pathing import (
     clean_future_steps,
     format_config_message,
     format_log_message,
-    get_broadcast_dir,
     get_ckpt_dir,
     get_launcher_dir,
     get_launcher_log_dir,
@@ -39,7 +38,7 @@ from prime_rl.utils.process import (
 TRAINER_CONFIG = "trainer.json"
 
 INFERENCE_CONFIG = "inference.json"
-ONLINE_EVAL_CONFIG = "eval.json"
+ORCHESTRATOR_CONFIG = "orchestrator.json"
 
 ENVS_DIR = "envs"
 
@@ -47,19 +46,19 @@ ENVS_DIR = "envs"
 def eval_env_worker_pools(config: SupervisedTrainerConfig) -> list[OnlineEvalSourceConfig]:
     """Every launcher-managed eval source. A source with ``serve.address`` set is
     externally managed — the launcher neither writes its config nor spawns a server for it."""
-    if config.eval is None:
+    if config.orchestrator.eval is None:
         return []
-    return [source for source in config.eval.source if source.serve.address is None]
+    return [source for source in config.orchestrator.eval.source if source.serve.address is None]
 
 
 def admin_token_uses(config: SupervisedTrainerConfig) -> AdminTokenUses:
-    """The online evals call the engines' admin routes, so they get the token; the inference
+    """The orchestrator's online evals call the engines' admin routes, so it gets the token; the inference
     server and the control APIs only check it, so they get its digest."""
-    online_eval = config.eval
+    online_eval = config.orchestrator.eval
     return AdminTokenUses(
         {
             "inference": TokenUse(checks=config.inference.server.admin_token_var if config.inference else None),
-            "online-eval": TokenUse(
+            "orchestrator": TokenUse(
                 sends=online_eval.client.admin_token_var if online_eval else None,
                 checks=online_eval.control.admin_token_var if online_eval and online_eval.control else None,
             ),
@@ -83,19 +82,17 @@ def resolve_resume_step(config: SupervisedTrainerConfig) -> int | None:
     return resolve_latest_ckpt_step(get_ckpt_dir(get_ckpt_base(config)))
 
 
-def build_online_eval_config(config: SupervisedTrainerConfig) -> SFTOnlineEvalConfig:
-    """The online-eval process's config: the resolved ``[eval]`` block with the run-level
-    fields filled from the SFT config. The launcher spawns the env worker pools itself; the
-    online-eval process finds each one through the address it publishes in the shared
-    config attempt."""
-    assert config.eval is not None
-    eval_config = config.eval.model_copy(deep=True)
-    run_fields = dict(
+def build_orchestrator_config(config: SupervisedTrainerConfig) -> SupervisedOrchestratorProcessConfig:
+    """The orchestrator's config: the ``[orchestrator]`` block with the run-level fields filled from the trainer's
+    config. The launcher spawns the eval env worker pools itself; the orchestrator finds each one through the address
+    it publishes in the shared config attempt."""
+    return SupervisedOrchestratorProcessConfig(
+        val=config.orchestrator.val,
+        eval=config.orchestrator.eval,
         model=config.model.name,
-        weight_broadcast=config.weight_broadcast,
-        broadcasts_dir=get_broadcast_dir(config.run_dir),
-        max_steps=config.max_steps,
         resume_step=resolve_resume_step(config),
+        max_steps=config.max_steps,
+        weight_broadcast=config.weight_broadcast,
         # Same run dir as the trainer: the dashboard reads the eval's
         # file-monitor artifacts from the run directory, so a separate
         # output dir would hide them. The train-vs-eval record collision
@@ -105,21 +102,20 @@ def build_online_eval_config(config: SupervisedTrainerConfig) -> SFTOnlineEvalCo
         log=LogConfig(level=config.log.level, json_logging=config.log.json_logging),
         monitors=config.monitors,
     )
-    return SFTOnlineEvalConfig(**{**eval_config.model_dump(exclude=set(run_fields)), **run_fields})
 
 
 def config_components(
     config: SupervisedTrainerConfig, config_dir: Path, entrypoint: str
 ) -> list[tuple[str, Path | str]]:
-    """The resolved configs a launch leaves in ``config_dir``: the entrypoint's config and, with
-    online evals, the inference, online-eval and env-worker-pool configs."""
+    """The resolved configs a launch leaves in ``config_dir``: the entrypoint's and the orchestrator's config and,
+    with online evals, the inference and env-worker-pool configs."""
     components: list[tuple[str, Path | str]] = [(entrypoint, config_dir / f"{entrypoint}.json")]
     if config.deployment.type == "multi_node":
         components.append(("Trainer", config_dir / TRAINER_CONFIG))
-    if config.eval is not None:
+    components.append(("Orchestrator", config_dir / ORCHESTRATOR_CONFIG))
+    if config.orchestrator.eval is not None:
         if config.inference is not None:
             components.append(("Inference", config_dir / INFERENCE_CONFIG))
-        components.append(("Eval", config_dir / ONLINE_EVAL_CONFIG))
         if eval_env_worker_pools(config):
             components.append(("Envs", f"{config_dir}/{ENVS_DIR}/eval/*.json"))
     return components
@@ -132,9 +128,12 @@ def write_config(config: SupervisedTrainerConfig, config_path: Path, exclude: se
         json.dump(dump_resolved_config(config, exclude=exclude), f, indent=2)
 
 
-def write_eval_subconfigs(config: SupervisedTrainerConfig, config_dir: Path, strip_router: bool = False) -> None:
-    """Write the inference, online-eval, and env-worker-pool configs for online evals."""
+def write_subconfigs(config: SupervisedTrainerConfig, config_dir: Path, strip_router: bool = False) -> None:
+    """Write the orchestrator config and, for online evals, the inference and env-worker-pool configs."""
     config_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(config_dir / ORCHESTRATOR_CONFIG, "w") as f:
+        json.dump(dump_resolved_config(build_orchestrator_config(config)), f, indent=2)
 
     if config.inference is not None:
         # Exclude launcher-only fields that are not needed by the vLLM server
@@ -146,12 +145,9 @@ def write_eval_subconfigs(config: SupervisedTrainerConfig, config_dir: Path, str
         with open(config_dir / INFERENCE_CONFIG, "w") as f:
             json.dump(inference_dict, f, indent=2)
 
-    with open(config_dir / ONLINE_EVAL_CONFIG, "w") as f:
-        json.dump(dump_resolved_config(build_online_eval_config(config)), f, indent=2)
-
     # One EnvWorkerPoolConfig per launcher-managed eval source: `env-worker-pool @ <path>` binds an
     # OS-assigned port and publishes it to the source's address file, where the
-    # online-eval process picks it up.
+    # orchestrator picks it up.
     for source in eval_env_worker_pools(config):
         write_env_worker_pool_config(config_dir, "eval", source, config.log)
 
@@ -190,7 +186,7 @@ def write_slurm_script(
             entrypoint=entrypoint,
         )
     else:
-        online_eval = config.eval is not None
+        online_eval = config.orchestrator.eval is not None
         eval_vars = {}
         if online_eval:
             assert config.inference is not None
@@ -208,11 +204,6 @@ def write_slurm_script(
                 "dp_per_node": config.deployment.gpus_per_node // config.inference.vllm.tensor_parallel_size,
                 "enable_expert_parallel": config.inference.vllm.enable_expert_parallel,
                 "inference_env_vars": inference_env_vars,
-                "online_eval_env_vars": {
-                    **DEFAULT_COMMON_ENV_VARS,
-                    "LOGURU_FORCE_COLORS": "1",
-                    **config.env_vars,
-                },
                 "eval_env_names": [source.resolved_name for source in eval_env_worker_pools(config)],
             }
         script = template.render(
@@ -225,6 +216,7 @@ def write_slurm_script(
             launcher_dir=get_launcher_dir(config.run_dir),
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
             trainer_env_vars=trainer_env_vars,
+            orchestrator_env_vars={**DEFAULT_COMMON_ENV_VARS, "LOGURU_FORCE_COLORS": "1", **config.env_vars},
             num_nodes=config.deployment.num_train_nodes,
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=config.deployment.num_infer_nodes if online_eval else 0,
@@ -236,7 +228,7 @@ def write_slurm_script(
             online_eval=online_eval,
             admin_token=admin_token_uses(config),
             use_nccl_broadcast=(
-                config.eval is not None
+                config.orchestrator.eval is not None
                 and config.weight_broadcast is not None
                 and config.weight_broadcast.type == "nccl"
             ),
@@ -250,12 +242,12 @@ def write_slurm_script(
 
 
 def launch_slurm(config: SupervisedTrainerConfig, entrypoint: str):
-    """Run SFT training and its online-eval deployment in one SLURM allocation."""
+    """Run the trainer, the orchestrator and the online-eval inference pool in one SLURM allocation."""
     assert config.slurm is not None
 
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
-    online_eval = config.deployment.type == "multi_node" and config.eval is not None
+    online_eval = config.deployment.type == "multi_node" and config.orchestrator.eval is not None
 
     logger.info(f"Starting {entrypoint} run")
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
@@ -267,7 +259,7 @@ def launch_slurm(config: SupervisedTrainerConfig, entrypoint: str):
         trainer_config_path = config_dir / TRAINER_CONFIG
         exclude = {"deployment", "slurm", "dry_run", "clean"}
         if online_eval:
-            # The trainer job only needs [eval] for the weight-broadcast cadence; the
+            # The trainer only needs to know that a run has online evals, to broadcast its weights; the
             # inference pool runs on its dedicated nodes in the same allocation.
             exclude = exclude | {"inference"}
         write_config(config, trainer_config_path, exclude=exclude)
@@ -275,12 +267,12 @@ def launch_slurm(config: SupervisedTrainerConfig, entrypoint: str):
         write_config(config, config_path, exclude={"slurm", "dry_run", "clean"})
         trainer_config_path = config_path
 
-    # Trainer and online-eval processes log to a single shared W&B run.
+    # Trainer and orchestrator log to a single shared W&B run.
     wandb_shared = online_eval and config.monitors.wandb is not None
 
     launcher_dir = get_launcher_dir(config.run_dir)
-    if online_eval:
-        write_eval_subconfigs(config, config_dir, strip_router=True)
+    if config.deployment.type == "multi_node":
+        write_subconfigs(config, config_dir, strip_router=True)
     logger.info(
         f"Configs:\n{format_config_message(config_dir, entrypoint, config_components(config, config_dir, entrypoint))}"
     )
@@ -301,8 +293,8 @@ def launch_slurm(config: SupervisedTrainerConfig, entrypoint: str):
     log_message = format_log_message(
         log_dir=log_dir,
         trainer=True,
+        orchestrator=True,
         num_train_nodes=num_nodes,
-        eval=online_eval,
         inference=online_eval,
         env_names={"eval": [source.resolved_name for source in eval_env_worker_pools(config)]} if online_eval else None,
         num_infer_nodes=config.deployment.num_infer_nodes if online_eval else 0,
@@ -329,8 +321,7 @@ def launch_local(config: SupervisedTrainerConfig, entrypoint: str):
     write_launch_artifacts(config_dir, entrypoint)
     config_path = config_dir / f"{entrypoint}.json"
     write_config(config, config_path)
-    if config.eval is not None:
-        write_eval_subconfigs(config, config_dir)
+    write_subconfigs(config, config_dir)
     logger.info(
         f"Configs:\n{format_config_message(config_dir, entrypoint, config_components(config, config_dir, entrypoint))}"
     )
@@ -343,7 +334,7 @@ def launch_local(config: SupervisedTrainerConfig, entrypoint: str):
         format_log_message(
             log_dir=log_dir,
             trainer=True,
-            eval=config.eval is not None,
+            orchestrator=True,
             inference=config.inference is not None,
             env_names={"eval": [source.resolved_name for source in eval_env_worker_pools(config)]},
         )
@@ -359,21 +350,23 @@ def launch_local(config: SupervisedTrainerConfig, entrypoint: str):
             config.deployment.num_infer_gpus, config.deployment.num_train_gpus
         )
 
-    # Trainer and online-eval log to a single shared W&B run whose id ($WANDB_RUN_ID)
-    # equals $PRL_RUN_ID, one label per process.
+    # With online evals, the trainer and the orchestrator log to a single shared W&B run whose id
+    # ($WANDB_RUN_ID) equals $PRL_RUN_ID, one label per process.
     wandb_shared_env: dict[str, str] = {}
-    if config.eval is not None:
-        # The trainer creates the run; the online-eval process (which drains its final
-        # evals after the trainer exits) finalizes it.
+    if config.orchestrator.eval is not None:
+        # The trainer creates the run; the orchestrator (which drains its final evals
+        # after the trainer exits) finalizes it.
         wandb_shared_env = {
             "WANDB_SHARED_MODE": "1",
             "WANDB_RUN_ID": os.environ["PRL_RUN_ID"],
             "WANDB_SHARED_PRIMARY": "trainer",
-            "WANDB_SHARED_FINISHER": "online-eval",
+            "WANDB_SHARED_FINISHER": "orchestrator",
             "WANDB_PROGRAM": f"uv run {entrypoint}",
             "WANDB_ARGS": json.dumps(sys.argv),
         }
 
+    # A requeued job reuses the attempt dir: drop the address a previous orchestrator published.
+    (config_dir / ADDRESS_FILE).unlink(missing_ok=True)
     base_env, admin_envs = admin_token_uses(config).split(os.environ)
 
     with ProcessGroup() as processes:
@@ -395,7 +388,7 @@ def launch_local(config: SupervisedTrainerConfig, entrypoint: str):
                 log_path=log_dir / "inference.log",
             )
 
-        # Start one env worker pool per eval source. The online-eval process waits for each
+        # Start one env worker pool per eval source. The orchestrator waits for each
         # server's published address and polls until it answers.
         for source in eval_env_worker_pools(config):
             name = source.resolved_name
@@ -407,25 +400,29 @@ def launch_local(config: SupervisedTrainerConfig, entrypoint: str):
                 log_path=log_dir / ENVS_DIR / "eval" / f"{name}.log",
             )
 
-        if config.eval is not None:
-            logger.info("Starting online evals")
-            processes.start(
-                "online-eval",
-                [sys.executable, "-m", "prime_rl.eval.online", "@", (config_dir / ONLINE_EVAL_CONFIG).as_posix()],
-                env={
-                    **base_env,
-                    **DEFAULT_COMMON_ENV_VARS,
-                    "LOGURU_FORCE_COLORS": "1",
-                    **config.env_vars,
-                    **admin_envs.get("online-eval", {}),
-                    "PRL_ATTEMPT_CONFIG_DIR": str(config_dir),
-                    "PRL_ATTEMPT_LOG_DIR": str(log_dir),
-                    "PRL_LOG_DIR": str(log_dir),
-                    **wandb_shared_env,
-                    "WANDB_SHARED_LABEL": "online-eval",
-                },
-                log_path=log_dir / "eval.log",
-            )
+        logger.info("Starting orchestrator")
+        processes.start(
+            "orchestrator",
+            [
+                sys.executable,
+                "-m",
+                "prime_rl.orchestrator.supervised",
+                "@",
+                (config_dir / ORCHESTRATOR_CONFIG).as_posix(),
+            ],
+            env={
+                **base_env,
+                **DEFAULT_COMMON_ENV_VARS,
+                "LOGURU_FORCE_COLORS": "1",
+                **config.env_vars,
+                **admin_envs.get("orchestrator", {}),
+                **launcher_attempt_env(config_dir, log_dir),
+                "PRL_LOG_DIR": str(log_dir),
+                **wandb_shared_env,
+                "WANDB_SHARED_LABEL": "orchestrator",
+            },
+            log_path=log_dir / "orchestrator.log",
+        )
 
         gpus_suffix = f" on GPU(s) {' '.join(map(str, trainer_gpu_ids))}" if trainer_gpu_ids else ""
         logger.info(f"Starting {entrypoint} trainer with {config.deployment.num_train_gpus} GPU(s){gpus_suffix}")
@@ -438,7 +435,7 @@ def launch_local(config: SupervisedTrainerConfig, entrypoint: str):
             **wandb_shared_env,
             **launcher_attempt_env(config_dir, log_dir),
         }
-        if config.eval is not None:
+        if config.orchestrator.eval is not None:
             trainer_env["LOGURU_FORCE_COLORS"] = "1"
             trainer_env["WANDB_SHARED_LABEL"] = "trainer"
         if trainer_gpu_ids:
@@ -460,21 +457,22 @@ def launch_local(config: SupervisedTrainerConfig, entrypoint: str):
         links = run_links(config.run_dir, log_dir, config.monitors, lambda: bool(processes.error_queue))
         log_run_links(dashboard_url, links)
 
-        # Wait for the trainer (and the online-eval process, which drains its final evals
-        # after the trainer's last checkpoint) while surfacing any process failure.
-        processes.wait("trainer", *(["online-eval"] if config.eval is not None else []))
+        # Wait for the trainer and the orchestrator, which drains its final evals after the
+        # trainer's last checkpoint, while surfacing any process failure.
+        processes.wait("trainer", "orchestrator")
         logger.success("Training finished!")
 
 
 def clean_stale_eval_artifacts(config: SupervisedTrainerConfig) -> None:
     """Remove eval artifacts a previous run left behind: weight broadcasts and rollout
     trace dirs — everything on a fresh start, steps past the resume step on resume.
-    Without this the online-eval process would replay stale broadcasts (and then skip the
-    re-trained ones at the same steps), and the append-only trace files would mix two
-    policies' rollouts under one step."""
+    Without this the orchestrator could take a stale broadcast for the trainer's offer, and
+    the append-only trace files would mix two policies' rollouts under one step."""
     logger = setup_logger(config.log.level or "info")
     if os.environ.get("NEVER_CLEAN"):
-        logger.warning("NEVER_CLEAN is set - keeping stale weight broadcasts; the online-eval process may replay them")
+        logger.warning(
+            "NEVER_CLEAN is set - keeping stale weight broadcasts; the orchestrator may take them for new ones"
+        )
         return
     resume_step = resolve_resume_step(config)
     clean_future_steps(config.run_dir, resume_step if resume_step is not None else -1)
@@ -491,7 +489,7 @@ def launch(config: SupervisedTrainerConfig, entrypoint: str):
 
     prepare_run(config, config.ckpt.output_dir if config.ckpt else None)
 
-    if config.eval is not None and not config.dry_run:
+    if config.orchestrator.eval is not None and not config.dry_run:
         clean_stale_eval_artifacts(config)
 
     if not config.dry_run:
@@ -500,8 +498,8 @@ def launch(config: SupervisedTrainerConfig, entrypoint: str):
 
         pre_download_model(config.model.name, skip_weights=config.model.init.type == "scratch")
         pre_download_data(config.data, config.env_vars)
-        if config.val is not None:
-            chat_sources = [val_source for val_source in config.val.source if val_source.type == "chat"]
+        if config.orchestrator.val is not None:
+            chat_sources = [val_source for val_source in config.orchestrator.val.source if val_source.type == "chat"]
             pre_download_sources(chat_sources, config.env_vars)
 
     from prime_rl.monitors.prime import launch_run

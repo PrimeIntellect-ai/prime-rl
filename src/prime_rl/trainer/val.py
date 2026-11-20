@@ -1,6 +1,6 @@
-"""Validation sources (``[[val.source]]``), scored on the training model. Every source is tokenized once at startup
-into requests (`prepare_source`). Every validation scores the requests of all sources together (`score`, with the
-model's LM head swapped for `scoring_head`) and summarizes each source (`ValSource.summarize`)."""
+"""Validation sources (``[[orchestrator.val.source]]``), scored on the training model. Every source is tokenized once
+at startup into requests (`prepare_source`). Every validation scores the requests of all sources together (`score`,
+with the model's LM head swapped for `scoring_head`) and summarizes each source (`ValSource.summarize`)."""
 
 import json
 import math
@@ -294,7 +294,8 @@ def length_label(seq_len: int) -> str:
 
 
 class Validation:
-    """The ``[[val.source]]``, tokenized once at startup and scored on the training model at every validation."""
+    """The ``[[orchestrator.val.source]]``, tokenized once at startup and scored on the training model at every
+    validation."""
 
     def __init__(
         self,

@@ -5,6 +5,7 @@ import time
 import asyncio
 from datetime import timedelta
 from pathlib import Path
+from typing import Literal
 
 # Import environment before any other imports
 # ruff: noqa: I001
@@ -13,10 +14,17 @@ from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity
 from prime_rl.trainer.ckpt import Progress, ckpt_output_dir, setup_ckpt_manager, setup_model_files
-from prime_rl.utils.pathing import get_ckpt_dir, get_step_path, is_checkpoint_step_dir, resolve_latest_ckpt_step
+from prime_rl.utils.pathing import (
+    get_ckpt_dir,
+    get_config_dir,
+    get_step_path,
+    is_checkpoint_step_dir,
+    resolve_latest_ckpt_step,
+)
 from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import CheckpointConfig
+from prime_rl.transports.steps import StepPlan, StepPlanClient, StepRequest
 from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
 from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp, validate_cp_seq_lens
 from prime_rl.trainer.lora import get_lora_state
@@ -91,7 +99,9 @@ def train(config: SFTConfig | PretrainConfig):
             file=config.monitors.file,
             output_dir=config.run_dir,
             run_config=config,
-            eval_env_names=[source.resolved_name for source in config.eval.source] if config.eval else [],
+            eval_env_names=[source.resolved_name for source in config.orchestrator.eval.source]
+            if config.orchestrator.eval
+            else [],
             overview_flavor="sft",
         )
     )
@@ -244,8 +254,8 @@ def train(config: SFTConfig | PretrainConfig):
     dataloader = setup_dataloader(dataset, config.data, config.model.cp)
 
     validation = None
-    if config.val is not None:
-        validation = Validation(config.val, tokenizer, config.renderer, parallel_dims, config.run_dir)
+    if config.orchestrator.val is not None:
+        validation = Validation(config.orchestrator.val, tokenizer, config.renderer, parallel_dims, config.run_dir)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -364,15 +374,22 @@ def train(config: SFTConfig | PretrainConfig):
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
-    # A broadcast must land at every step an online eval env is due. The schedule is
-    # deterministic, so all ranks agree when to enter the transport collective.
-    online_eval_intervals = sorted({source.interval for source in config.eval.source}) if config.eval else []
+    # The run's orchestrator decides at which steps the trainer validates and broadcasts its weights.
+    step_plans = StepPlanClient(get_config_dir(config.run_dir)) if world.is_master else None
 
-    def is_online_eval_step(step: int) -> bool:
-        return any(step % interval == 0 for interval in online_eval_intervals)
+    def request_plan(step: int, stop: Literal["finish", "pause"] | None) -> StepPlan:
+        """The master's plan for ``step``, followed by every rank."""
+        values = [False, False]
+        if world.is_master:
+            plan = step_plans.plan(StepRequest(step, stop))
+            values = [plan.validate, plan.broadcast]
+        flags = torch.tensor(values, dtype=torch.int64, device="cuda")
+        dist.broadcast(flags, src=0)
+        validate, broadcast = map(bool, flags.tolist())
+        return StepPlan(validate=validate, broadcast=broadcast)
 
     weight_sender = None
-    if online_eval_intervals:
+    if config.orchestrator.eval is not None:
         assert config.weight_broadcast is not None
         logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
         weight_sender = setup_weight_sender(
@@ -383,7 +400,7 @@ def train(config: SFTConfig | PretrainConfig):
             model_name=config.model.name,
         )
         # Startup broadcast of the incoming policy: fails fast on a broken
-        # transport and lets the evals process re-trigger at the resume step
+        # transport and lets the orchestrator re-trigger at the resume step
         # (older broadcasts may have been cleaned).
         startup_version = checkpoint_step or 0
         if world.is_master:
@@ -393,7 +410,6 @@ def train(config: SFTConfig | PretrainConfig):
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
-    is_first_step = True
     if config.trace_path:
         logger.info(f"Tracing to {config.trace_path}")
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
@@ -410,6 +426,7 @@ def train(config: SFTConfig | PretrainConfig):
         step_action = broadcast_step_action(controller, progress.step) if config.control is not None else None
         paused = step_action == "pause"
         is_last_step = is_last_step or paused
+        plan = request_plan(progress.step, "pause" if paused else "finish" if is_last_step else None)
 
         memory_profiler = (
             MemoryProfiler(progress.step, config.memory_profiler_path) if config.memory_profiler_path else None
@@ -417,10 +434,6 @@ def train(config: SFTConfig | PretrainConfig):
 
         step_start_time = time.perf_counter()
 
-        run_validation_this_step = config.val is not None and (
-            (is_first_step and config.val.eval_on_start)
-            or (not is_first_step and progress.step % config.val.interval == 0)
-        )
         if gradient_manager is None:
             micro_batches = (next(dataiter) for _ in range(grad_accum_steps))
         else:
@@ -437,7 +450,7 @@ def train(config: SFTConfig | PretrainConfig):
             prepare_gradient_offload(
                 gradient_manager,
                 grad_scale,
-                overlap_optimizer=not run_validation_this_step,
+                overlap_optimizer=not plan.validate,
             )
         if config.log.log_data:
             micro_batches = logged_micro_batches(micro_batches)
@@ -472,7 +485,7 @@ def train(config: SFTConfig | PretrainConfig):
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
         # optimizer step (so eval_on_start evaluates untrained weights)
-        if run_validation_this_step:
+        if plan.validate:
             run_validation(progress.step)
             # The no-grad validation forward leaves the [lm_head, norm] FSDP2 group unsharded (it
             # opts out of reshard_after_forward), so clip_grad_norm_ below would skip its grad-less
@@ -507,8 +520,8 @@ def train(config: SFTConfig | PretrainConfig):
         progress.total_samples = dataset_progress["step"]
 
         # Checkpoint the step we just finished. The last step's checkpoint is written once after
-        # the loop, so skip it here to avoid a double-save. Weight broadcasts land at
-        # online-eval steps — they are how the inference server picks up the new policy.
+        # the loop, so skip it here to avoid a double-save. Weight broadcasts land at the steps
+        # the orchestrator plans them — they are how the inference server picks up the new policy.
         save_ckpt_time = 0
         is_ckpt_step = bool(config.ckpt and config.ckpt.interval) and progress.step % config.ckpt.interval == 0
         if (is_ckpt_step or step_action == "checkpoint") and not is_last_step:
@@ -524,7 +537,7 @@ def train(config: SFTConfig | PretrainConfig):
             ckpt_manager.maybe_clean()
 
         broadcast_weights_time = 0
-        if weight_sender is not None and not is_last_step and is_online_eval_step(progress.step):
+        if plan.broadcast and not is_last_step:
             logger.info(f"Broadcasting weights at step {progress.step}")
             broadcast_start_time = time.perf_counter()
             weight_sender.broadcast(model, step=progress.step)
@@ -635,8 +648,6 @@ def train(config: SFTConfig | PretrainConfig):
         if result.metrics:
             asyncio.run(monitors.log({**result.metrics, "step": progress.step}, step=progress.step))
 
-        is_first_step = False
-
         # Send heartbeat if configured
         if heart is not None:
             heart.beat()
@@ -663,9 +674,8 @@ def train(config: SFTConfig | PretrainConfig):
         if not paused:
             ckpt_manager.maybe_clean()
 
-    # Broadcast the final weights so the evals process can run its forced final epoch. A paused
-    # run has no final epoch.
-    if weight_sender is not None and not paused:
+    # Broadcast the final weights for the orchestrator's forced final eval epoch. A paused run has none.
+    if plan.broadcast:
         logger.info("Broadcasting final weights")
         weight_sender.broadcast(model, step=progress.step)
 

@@ -11,11 +11,11 @@ from typing import TYPE_CHECKING, Any
 import prime_runs as pr
 from prime_runs.config import Config
 
-from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
+from prime_rl.configs.eval import EvalConfig
 from prime_rl.configs.monitors import PrimeMonitorConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
-from prime_rl.configs.supervised import SupervisedTrainerConfig
+from prime_rl.configs.supervised import SupervisedOrchestratorProcessConfig, SupervisedTrainerConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.config import BaseConfig
@@ -167,8 +167,8 @@ class PrimeMonitor(Monitor):
         if isinstance(config, EvalConfig):
             await self._init_evaluations(config)
             return
-        # The SFT online-eval process and the RL trainer log into the run their launcher registers.
-        attaches = isinstance(config, (SFTOnlineEvalConfig, TrainerConfig))
+        # The orchestrator of sft and pretrain runs and the RL trainer log into the run their launcher registers.
+        attaches = isinstance(config, (SupervisedOrchestratorProcessConfig, TrainerConfig))
         run_id = os.getenv("RUN_ID")
         if attaches and run_id is None and mode == "online":
             raise RuntimeError(f"This process logs to its launcher's run: launch it with `rl` or `sft`, or {OFF_HINT}")

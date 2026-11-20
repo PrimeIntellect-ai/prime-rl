@@ -56,20 +56,19 @@ ln -sfn inference/node_0.log $LOG_DIR/inference.log
 # Clean exits do not trigger srun --kill-on-bad-exit. Each terminal role
 # publishes its successful exit so every node uses the same completion condition.
 export TRAINER_DONE=$LAUNCHER_DIR/.sft_trainer_done_$SLURM_JOB_ID
-{% if online_eval -%}
-export EVAL_DONE=$LAUNCHER_DIR/.sft_eval_done_$SLURM_JOB_ID
-{%- endif %}
+export ORCHESTRATOR_DONE=$LAUNCHER_DIR/.sft_orchestrator_done_$SLURM_JOB_ID
 mkdir -p "$LAUNCHER_DIR"
-rm -f "$TRAINER_DONE"{% if online_eval %} "$EVAL_DONE"{% endif %}
+# A requeued job reuses the attempt dir: drop the address a previous orchestrator published.
+rm -f "$TRAINER_DONE" "$ORCHESTRATOR_DONE" "$CONFIG_DIR/orchestrator.address"
 
 export PRL_RUN_ID={{ prl_run_id }}
 export PRL_RUN_NAME={{ run_name }}
 {% if wandb_shared %}
-# Trainer and online-eval log to one shared W&B run. The trainer creates the run,
-# and the online-eval process finalizes it after the final epoch.
+# Trainer and orchestrator log to one shared W&B run. The trainer creates the run,
+# and the orchestrator finalizes it after the final eval epoch.
 export WANDB_SHARED_MODE=1
 export WANDB_SHARED_PRIMARY=trainer
-export WANDB_SHARED_FINISHER=online-eval
+export WANDB_SHARED_FINISHER=orchestrator
 export WANDB_PROGRAM="uv run {{ entrypoint }}"
 {% endif %}
 
@@ -92,10 +91,12 @@ ADMIN_URLS=""
 ROUTER_ARGS=""
 for host in ${INFER_HOSTS[@]}; do
     for ((d=0; d<DP_PER_NODE; d++)); do
-        ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((BACKEND_PORT + d))/v1"
+        ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS,}\"http://${host}:$((BACKEND_PORT + d))/v1\""
         ROUTER_ARGS="$ROUTER_ARGS http://${host}:$((BACKEND_PORT + d))"
     done
 done
+# A JSON list: the orchestrator's nested eval.client takes a list as one argument.
+ADMIN_URLS="[$ADMIN_URLS]"
 export INFER_URLS
 export ADMIN_URLS
 export ROUTER_ARGS
@@ -141,7 +142,7 @@ srun bash -s <<'CLEANUP_SH'
     echo "[node-cleanup] $(hostname) procs=$procs gpu_mem=${gpu}MiB"
 CLEANUP_SH
 
-# Run trainer and online-eval roles in one SLURM step. A non-zero exit on any
+# Run the trainer, orchestrator and inference roles in one SLURM step. A non-zero exit on any
 # node terminates the other roles. Clean trainer exits let the final eval drain.
 # The run owner registers the Prime run around the step and fails it when the
 # step fails; every role attaches through the $RUN_ID it exports.
@@ -162,8 +163,8 @@ python -m prime_rl.entrypoints.run_owner {{ entrypoint }} {{ run_config_path }} 
     [ -f .env ] && source .env
     source $PROJECT_DIR/.venv/bin/activate
 {%- if admin_token.guards %}
-    # Keep the admin token out of the environment: only the online evals, which call the
-    # engines' admin routes, are started with it. The engines and the trainer's control
+    # Keep the admin token out of the environment: only the orchestrator, whose online evals call
+    # the engines' admin routes, is started with it. The engines and the trainer's control
     # API only check it, so they get its SHA-256 digest; the env worker pools and the
     # router get neither.
     ADMIN_TOKEN=$PRL_ADMIN_TOKEN
@@ -212,39 +213,44 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$LOG_DIR/inference/router.log"
 {%- if eval_env_names %}
 
+        # Each binds this node so the orchestrator connects across nodes.
         mkdir -p $LOG_DIR/envs/eval
 {%- for name in eval_env_names %}
-        uv run env-worker-pool @ $CONFIG_DIR/envs/eval/{{ name }}.json \
+        uv run env-worker-pool @ $CONFIG_DIR/envs/eval/{{ name }}.json --serve.address tcp://$LOCAL_IP:0 \
             > $LOG_DIR/envs/eval/{{ name }}.log 2>&1 &
 {%- endfor %}
 {%- endif %}
-
-        # Online evals drive inference through the router and send admin operations
-        # directly to each engine.
-{%- for key, value in online_eval_env_vars.items() %}
-        export {{ key }}="{{ value }}"
-{%- endfor %}
-        (
-            {% if admin_token.guards and admin_token.by_process['online-eval'].sends %}{{ admin_token.by_process['online-eval'].sends }}="$ADMIN_TOKEN" {% endif %}{% if admin_token.guards and admin_token.by_process['online-eval'].checks %}{{ admin_token.by_process['online-eval'].checks }}_SHA256="$ADMIN_TOKEN_DIGEST" {% endif %}PRL_LOG_DIR=$LOG_DIR WANDB_SHARED_LABEL=online-eval uv run python -m prime_rl.eval.online \
-                @ $CONFIG_DIR/eval.json \
-                --client.base-url $INFER_URLS \
-                --client.admin-base-url $ADMIN_URLS \
-{%- if use_nccl_broadcast %}
-                --weight-broadcast.host $MASTER_ADDR \
-{%- endif %}
-                2>&1 | tee $LOG_DIR/eval.log
-            COMPONENT_CODE=$?
-            if [ "$COMPONENT_CODE" -eq 0 ]; then
-                touch "$EVAL_DONE" || exit $?
-            fi
-            exit "$COMPONENT_CODE"
-        ) &
     fi
 else
     TRAIN_NODE_RANK=$((SLURM_PROCID - NUM_INFER_NODES))
 {%- else %}
     TRAIN_NODE_RANK=$SLURM_PROCID
 {%- endif %}
+
+    if [ "$TRAIN_NODE_RANK" -eq 0 ]; then
+        # The orchestrator runs next to the trainer master, which asks it for the plan of every step. Its online
+        # evals drive inference through the router and send admin operations directly to each engine.
+        (
+{%- for key, value in orchestrator_env_vars.items() %}
+            export {{ key }}="{{ value }}"
+{%- endfor %}
+            {% if admin_token.guards and admin_token.by_process.orchestrator.sends %}{{ admin_token.by_process.orchestrator.sends }}="$ADMIN_TOKEN" {% endif %}{% if admin_token.guards and admin_token.by_process.orchestrator.checks %}{{ admin_token.by_process.orchestrator.checks }}_SHA256="$ADMIN_TOKEN_DIGEST" {% endif %}PRL_LOG_DIR=$LOG_DIR WANDB_SHARED_LABEL=orchestrator uv run python -m prime_rl.orchestrator.supervised \
+                @ $CONFIG_DIR/orchestrator.json \
+{%- if online_eval %}
+                --eval.client.base-url $INFER_URLS \
+                --eval.client.admin-base-url "$ADMIN_URLS" \
+{%- endif %}
+{%- if use_nccl_broadcast %}
+                --weight-broadcast.host $MASTER_ADDR \
+{%- endif %}
+                2>&1 | tee $LOG_DIR/orchestrator.log
+            COMPONENT_CODE=$?
+            if [ "$COMPONENT_CODE" -eq 0 ]; then
+                touch "$ORCHESTRATOR_DONE" || exit $?
+            fi
+            exit "$COMPONENT_CODE"
+        ) &
+    fi
 
     # Trainer env vars: launcher defaults + [env_vars]
 {%- for key, value in trainer_env_vars.items() %}
@@ -279,11 +285,7 @@ else
 {% if online_eval %}fi{% endif %}
 
 # Every node stays in the shared srun step until all terminal roles finish.
-{% if online_eval -%}
-( until [ -f "$TRAINER_DONE" ] && [ -f "$EVAL_DONE" ]; do sleep 10; done ) &
-{% else -%}
-( until [ -f "$TRAINER_DONE" ]; do sleep 10; done ) &
-{% endif -%}
+( until [ -f "$TRAINER_DONE" ] && [ -f "$ORCHESTRATOR_DONE" ]; do sleep 10; done ) &
 COMPLETION_PID=$!
 
 # Ignore clean component exits until the shared completion condition is met.
