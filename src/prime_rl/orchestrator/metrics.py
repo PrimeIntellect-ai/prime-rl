@@ -39,6 +39,13 @@ class TraceRecord:
     sampled: bool
     admitted: bool
     cancelled: bool
+    values: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
+
+    def value(self, name: str) -> Any:
+        """The trace's ``name`` attribute, read once: the token counts walk every branch of the trace."""
+        if name not in self.values:
+            self.values[name] = getattr(self.trace, name)
+        return self.values[name]
 
 
 def _records(
@@ -46,6 +53,7 @@ def _records(
     sampled_trace_ids: set[str],
     admitted: set[str],
     cancelled: set[str],
+    values: dict[str, dict[str, Any]],
 ) -> list[TraceRecord]:
     return [
         TraceRecord(
@@ -54,6 +62,7 @@ def _records(
             sampled=trace.id in sampled_trace_ids,
             admitted=episode.id in admitted,
             cancelled=episode.id in cancelled,
+            values=values.setdefault(trace.id, {}),
         )
         for episode in episodes
         for trace in episode.traces
@@ -246,7 +255,7 @@ class TraceMetrics(StatGroup):
 
     def stats(self) -> dict[str, Stat]:
         return {
-            name: Stat([float(getattr(trace, name)) for trace in self.traces])
+            name: Stat([float(record.value(name)) for record in self.records])
             for name in (*self.DISTRIBUTIONS, *self.RATES)
         }
 
@@ -354,7 +363,7 @@ class EpisodeMetrics:
     def _episode_stat(self, attr: str) -> Stat:
         by_episode = {id(episode): 0.0 for episode in self.episodes}
         for record in self.records:
-            by_episode[id(record.episode)] += float(getattr(record.trace, attr))
+            by_episode[id(record.episode)] += float(record.value(attr))
         return Stat(list(by_episode.values()))
 
     @property
@@ -480,16 +489,19 @@ class EpisodeCollection:
         admitted: set[str] | None = None,
         cancelled: set[str] | None = None,
         predicate: Callable[[TraceRecord], bool] | None = None,
+        values: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.episodes = episodes if episodes is not None else []
         self.sampled_trace_ids = sampled_trace_ids if sampled_trace_ids is not None else set()
         self.admitted = admitted if admitted is not None else {episode.id for episode in self.episodes}
         self.cancelled = cancelled if cancelled is not None else set()
         self._predicate = predicate
+        # Trace attributes read through `TraceRecord.value`, by trace id; shared with this collection's views.
+        self._values = values if values is not None else {}
 
     @property
     def records(self) -> list[TraceRecord]:
-        records = _records(self.episodes, self.sampled_trace_ids, self.admitted, self.cancelled)
+        records = _records(self.episodes, self.sampled_trace_ids, self.admitted, self.cancelled, self._values)
         if self._predicate is None:
             return records
         return [record for record in records if self._predicate(record)]
@@ -507,7 +519,7 @@ class EpisodeCollection:
 
     @property
     def num_total_tokens(self) -> int:
-        return sum(record.trace.num_total_tokens for record in self.records)
+        return sum(record.value("num_total_tokens") for record in self.records)
 
     @property
     def vf_episodes(self) -> list[vf.Episode]:
@@ -579,6 +591,7 @@ class TrainEpisodes(EpisodeCollection):
                 and not record.trace.is_dropped
                 and record.trace.agent.trainable
             ),
+            values=self._values,
         )
 
     def by_env(self) -> dict[str, TrainEpisodes]:
@@ -586,7 +599,9 @@ class TrainEpisodes(EpisodeCollection):
         for episode in self.selected_episodes:
             grouped.setdefault(episode_env_name(episode), []).append(episode)
         return {
-            env_name: TrainEpisodes(episodes, self.sampled_trace_ids, self.admitted, self.cancelled, self._predicate)
+            env_name: TrainEpisodes(
+                episodes, self.sampled_trace_ids, self.admitted, self.cancelled, self._predicate, values=self._values
+            )
             for env_name, episodes in grouped.items()
         }
 
@@ -653,8 +668,9 @@ class EvalEpisodes(EpisodeCollection):
         episodes: list[vf.Episode],
         group_size: int,
         predicate: Callable[[TraceRecord], bool] | None = None,
+        values: dict[str, dict[str, Any]] | None = None,
     ) -> None:
-        super().__init__(episodes, predicate=predicate)
+        super().__init__(episodes, predicate=predicate, values=values)
         self.group_size = group_size
 
     @property
@@ -665,6 +681,7 @@ class EvalEpisodes(EpisodeCollection):
             predicate=lambda record: (
                 not record.trace.has_error and not record.trace.is_dropped and record.trace.agent.trainable
             ),
+            values=self._values,
         )
 
     @property
