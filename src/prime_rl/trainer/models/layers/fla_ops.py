@@ -190,6 +190,8 @@ def _causal_conv1d_cp(
     cp_boundary: Tensor,
     group_name: str,
 ) -> tuple[Tensor, Tensor]:
+    """FLA's CP causal convolution, which saves row 0 of FLA's per-document conv initial state (zeros on the first
+    rank) instead of the full `[N, D, W]` state, and the backward op rebuilds the full state from it."""
     cp_context = _fla_cp_context(cu_seqlens, cp_boundary, group_name)
     initial_state = CausalConv1dFunctionCP._prepare_initial_state_for_cp(
         x=x, weight=weight, cu_seqlens=cu_seqlens, context=cp_context, group=cp_context.group
