@@ -27,6 +27,7 @@ jobs:
           - {group: reverse_text_rl_sft, name: Integration / Reverse Text RL SFT}
           - {group: alphabet_sort, name: Integration / Alphabet Sort}
           - {group: reverse_text_moe, name: Integration / Reverse Text MoE}
+          - {group: compile, name: Unit (GPU) / Fullgraph compile}
           - {group: rest, name: Unit (GPU) / rest}
           - {group: invariance, name: Unit (GPU) / Distributed invariance}
           - {group: reverse_text_sft_lora, name: Integration / Reverse Text SFT LoRA}
