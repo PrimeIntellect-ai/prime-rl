@@ -21,6 +21,7 @@ from prime_rl.configs.shared import (
     WeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import BaseTrainerConfig, mega_moe_max_tokens_per_rank
+from prime_rl.configs.val import SFTColumnsConfig
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 
 
@@ -49,6 +50,30 @@ class BaseDataConfig(BaseConfig):
         if self.batch_size < self.micro_batch_size:
             raise ValueError("Batch size must be greater than or equal to micro batch size")
         return self
+
+
+class BaseSourceConfig(BaseConfig):
+    """One named source of the training data (``[[data.source]]``), in pretraining and SFT."""
+
+    name: str = Field(pattern=r"^[^/]+$")
+    """Names the source in the ``progress/<name>/*`` metrics."""
+
+    weight: float | None = Field(None, ge=0)
+    """The source's relative weight: its share of the training data (tokens in pretraining, samples in SFT) is its
+    weight over the sum of all weights. If None on every source, the share is the source's share of all sources' data
+    (tokens in pretraining, rows in SFT)."""
+
+
+def check_sources(sources: list[BaseSourceConfig]) -> None:
+    """Raise if two sources share a name, or the weights are set on only some sources or sum to 0."""
+    names = [source.name for source in sources]
+    if len(set(names)) < len(names):
+        raise ValueError(f"data.source: the names must be unique, got {names}")
+    weights = [source.weight for source in sources]
+    if None in weights and any(weight is not None for weight in weights):
+        raise ValueError("data.source: set weight on every source or on none (natural shares)")
+    if None not in weights and sum(weights) <= 0:
+        raise ValueError("data.source: the weights must sum to more than 0")
 
 
 class SingleNodeDeploymentConfig(BaseSingleNodeDeploymentConfig):
@@ -113,11 +138,12 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
 
     @model_validator(mode="after")
     def auto_setup_run_identity(self):
-        """Auto-generate the run name (``<dataset>--<model>--<short-id>``) when unset and
-        default the run directory, W&B run name and platform run name to it when not
-        set explicitly."""
+        """Auto-generate the run name (``<source>--<model>--<short-id>``, with the source only if it is the only
+        one) when unset and default the run directory, W&B run name and platform run name to it when not set
+        explicitly."""
         if self.run.name is None:
-            dataset = str(getattr(self.data, "name", "")).split("/")[-1]
+            sources = getattr(self.data, "source", [])
+            dataset = "fake" if getattr(self.data, "fake", None) else sources[0].name if len(sources) == 1 else ""
             model = self.model.name.split("/")[-1]
             parts = [part for part in (dataset, model) if part]
             self.run.name = "--".join([*parts, uuid.uuid4().hex[:8]]).lower()
@@ -309,7 +335,8 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     @model_validator(mode="after")
     def auto_setup_val(self):
         if self.val is not None:
-            self.val.resolve(self.data.seq_len, self.data.seq_len * self.data.micro_batch_size, self.model.cp)
+            columns = getattr(self.data, "columns", SFTColumnsConfig())
+            self.val.resolve(self.data.seq_len, self.data.seq_len * self.data.micro_batch_size, self.model.cp, columns)
         return self
 
     @model_validator(mode="after")
@@ -338,9 +365,6 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
             if self.data.micro_batch_size != 1:
                 raise ValueError("Micro batch size must be 1 when CP is enabled")
         return self
-
-    def renders_conversations(self) -> bool:
-        return self.data.type == "sft" or super().renders_conversations()
 
     ### Auto-setup and validate shared configs
 

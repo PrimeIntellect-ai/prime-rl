@@ -9,7 +9,6 @@ import triton.language as tl
 FP8_MAX = tl.constexpr(448.0)
 FP8_MIN = tl.constexpr(-448.0)
 FP8_MAX_RECIPROCAL = tl.constexpr(1.0 / 448.0)
-MIN_SCALE = 1e-4
 GROUP_ALIGNMENT = 128
 
 

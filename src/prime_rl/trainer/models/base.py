@@ -156,10 +156,6 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         """Convert one layer from PrimeRL to HuggingFace format in-place."""
         return self.convert_to_hf(state_dict)
 
-    def convert_layer_to_prime(self, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        """Convert one layer from HuggingFace to PrimeRL format in-place."""
-        return self.convert_to_prime(state_dict)
-
     @classmethod
     def convert_adapter_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         """

@@ -25,7 +25,7 @@ from prime_rl.trainer.models.layers.fp32_linear import fp32_output_mm
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.pretrain.data import TokenShards, special_token_ids
-from prime_rl.trainer.sft.data import RendererResolver, SFTDataset
+from prime_rl.trainer.sft.data import HFSource, source_renderers
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -110,9 +110,10 @@ def chat_source(
     """The rows of the split (or the first ``num_samples``), rendered as SFT renders them, with the tokens SFT trains
     on scored and every row cut after ``seq_len`` input tokens. A row with no scored token in that window scores
     nothing, as SFT skips it."""
-    dataset = SFTDataset(
-        load_dataset(config.path, config.subset, split=config.split, revision=config.revision),
-        RendererResolver(tokenizer, renderer, columns=config.columns.renderer),
+    source = HFSource(
+        load_dataset(config.dataset, config.subset, split=config.split, revision=config.revision),
+        source_renderers(tokenizer, renderer, config),
+        name=config.name,
         shuffle=False,
         seq_len=config.seq_len,
         loss_mask_config=config.loss_mask,
@@ -120,15 +121,15 @@ def chat_source(
         columns=config.columns,
     )
     requests, items = [], []
-    for item, example in enumerate(dataset.dataset):
-        sample = dataset.process(example)
+    for item, example in enumerate(source.dataset):
+        sample = source.process(example)
         if sample is None:
             continue
         inputs = np.array(sample["input_ids"][: config.seq_len], dtype=np.int32)
         labels = np.where(sample["loss_mask"], sample["target_ids"], IGNORE_INDEX)[: config.seq_len].astype(np.int32)
         requests.append((inputs, labels))
         items.append(item)
-    return ValSource(config.name, config.seq_len, requests, np.array(items, dtype=np.int64), len(dataset.dataset))
+    return ValSource(config.name, config.seq_len, requests, np.array(items, dtype=np.int64), source.size)
 
 
 def prepare_source(

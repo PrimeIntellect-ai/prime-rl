@@ -40,8 +40,7 @@ num_samples = 64
 [[val.source]]
 type = "chat"
 name = "reverse-text"
-path = "PrimeIntellect/Reverse-Text-SFT"
-split = "train"
+dataset = "PrimeIntellect/Reverse-Text-SFT"
 
 [inference]
 

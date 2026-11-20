@@ -13,8 +13,8 @@ prime-rl uses [`pydantic-config`](https://github.com/PrimeIntellect-ai/pydantic-
 uv run rl @ examples/basic/reverse-text/rl.toml                                  # single TOML
 uv run rl @ examples/basic/reverse-text/rl.toml --max-steps 50                   # CLI override
 uv run rl @ base.toml @ overlay.toml                                       # left-to-right merge
-uv run rl --model @ model.toml --data @ data.toml                          # nested section files
-uv run rl @ base.toml --trainer @ trainer.toml --trainer.lr 1e-3           # mixed
+uv run rl --model @ model.toml --orchestrator @ orch.toml                  # nested section files
+uv run rl @ base.toml --trainer @ trainer.toml --trainer.optim.lr 1e-3     # mixed
 ```
 
 A checked-in overlay (a TOML that only parses on top of a base) documents its stack in a header comment, `#   uv run rl @ base.toml @ overlay.toml` with repo-relative paths; CI parses every such command.
@@ -77,15 +77,15 @@ Every training entrypoint (`rl`, `sft`, `pretrain`) takes its online evals as a 
 
 **Discriminated unions** — set the `type` field to pick the variant (`[orchestrator.train.algo] type = "max_rl"`). Omit `type` to keep the default variant.
 
-**RL loss** — `[trainer.loss]` defaults to IPO with `eps = 0.1` and `adv_tau = 1.0`. Omit the section to use these defaults. Set `type = "icepop"` for ratio masking with `ratio_low = 0.2`, `ratio_high = 5.0`, and `adv_tau = 1.0`. Set `type = "custom"` with `import_path` and optional `kwargs` to load a custom RL loss. The `ce` and `ref_kl` components are fixed.
+**RL loss** — `[trainer.loss]` defaults to IPO with `eps = 0.3` and `adv_tau = 1.0`. Omit the section to use these defaults. Set `type = "icepop"` for ratio masking with `ratio_low = 0.2`, `ratio_high = 5.0`, and `adv_tau = 1.0`. Set `type = "custom"` with `import_path` and optional `kwargs` to load a custom RL loss. The `ce` and `ref_kl` components are fixed.
 
 **Algorithms** — `[orchestrator.train.algo] type = "grpo" | "max_rl" | "rae" | "hierarchical_grpo" | "opd" | "opsd" | "sft" | "echo"` — the type names the algorithm (credit assignment + loss routing, fused), and each type's class defaults are its vetted setting; any other key you set is your own assembly (e.g. `[orchestrator.train.algo.roles.user] alpha = 0.1` for echo — setting any echo role replaces the whole role table). `hierarchical_grpo` is only valid with a proposer-solver env: it compares solvers with attempts on the same proposed problem and proposers with other proposals in the group. There is no preset layer, and no config hook that points at user code — a new algorithm is a named class in the repo (subclass `Algorithm`, register it). Each train source inherits the group algorithm: a source `algo` with a different `type` is its own algorithm (`[orchestrator.train.source.algo] type = "opd"`), and params without a `type` keep the group's algorithm with those params changed. prime-rl only hosts the trainable policy; frozen models are inline external endpoints on the algorithm, named where the model is used — `[orchestrator.train.algo.teacher]` for opd (the frozen model scored against) and sft (the model it samples from), each with `name` + `base_url`. There is no shared `teacher` slot. opsd declares no model — it self-distills against the live policy. See `docs/algorithms.md`.
 
 **`BaseModel | None` fields** — bare flag enables defaults; nested override enables and sets:
 
 ```bash
---model.compile             # enables compile with defaults
---model.compile.fullgraph   # enables and sets fullgraph=true
+--ckpt                # enables checkpointing with defaults
+--ckpt.interval 50    # enables and sets interval=50
 ```
 
 In TOML, an empty section header (`[ckpt]`) does the same.

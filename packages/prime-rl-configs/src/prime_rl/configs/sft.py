@@ -1,13 +1,18 @@
-from typing import Annotated, Literal, TypeAlias
+from typing import Literal
 
 from pydantic import Field, model_validator
 
-from prime_rl.configs.supervised import BaseDataConfig, SupervisedTrainerConfig
-from prime_rl.configs.val import LossMaskConfig, SFTColumnsConfig
+from prime_rl.configs.supervised import BaseDataConfig, BaseSourceConfig, SupervisedTrainerConfig, check_sources
+from prime_rl.configs.val import HFDatasetConfig, LossMaskConfig, SFTColumnsConfig
+from prime_rl.utils.config import BaseConfig
 
 
-class FakeDataConfig(BaseDataConfig):
-    type: Literal["fake"] = "fake"
+class HFDatasetSourceConfig(HFDatasetConfig, BaseSourceConfig):
+    """One ``(dataset, subset, split)`` of a Hugging Face dataset, a source of the training data."""
+
+
+class FakeDataConfig(BaseConfig):
+    """Synthetic token sequences of up to ``data.seq_len`` tokens, for throughput and plumbing tests."""
 
     length: Literal["fixed", "variable"] = "fixed"
     """Use fixed-length samples or variable-length samples."""
@@ -15,66 +20,37 @@ class FakeDataConfig(BaseDataConfig):
     input_ids: Literal["increasing", "random"] = "increasing"
     """Token id generator: ``increasing`` for deterministic sequences, ``random`` for random ids."""
 
-    seed: int = 0
-    """Seed for the per-rank packing/token generator, combined with the data rank."""
-
 
 class SFTDataConfig(BaseDataConfig):
-    type: Literal["sft"] = "sft"
+    """Samples drawn from one or more sources into packed rows of ``seq_len`` tokens."""
 
-    name: str = "PrimeIntellect/Reverse-Text-SFT"
-    """HF dataset name or path."""
+    source: list[HFDatasetSourceConfig] = Field(
+        default_factory=lambda: [HFDatasetSourceConfig(name="reverse-text", dataset="PrimeIntellect/Reverse-Text-SFT")],
+        min_length=1,
+    )
+    """The sources to draw samples from (``[[data.source]]``)."""
 
-    revision: str | None = None
-    """HF dataset revision to load. Ignored for a local path."""
-
-    subsets: list[str] | None = None
-    """Subsets to load from the HF dataset."""
-
-    splits: list[str] | None = None
-    """Splits to load from the HF dataset."""
-
-    probabilities: list[float] | None = None
-    """Sampling probabilities for each subset/split."""
-
-    stopping_strategy: Literal["first_exhausted", "all_exhausted"] = "all_exhausted"
-    """Stopping strategy when interleaving multiple subsets/splits."""
+    fake: FakeDataConfig | None = None
+    """Train on synthetic token sequences instead of the sources. Needs no renderer."""
 
     shuffle: bool = True
-    """Shuffle the dataset at the start of each epoch."""
+    """Shuffle every source at the start of each of its passes."""
 
     seed: int = 0
-    """Random seed for shuffling. Re-shuffled per epoch by adding the epoch count to the seed."""
+    """Seed for the order of every source, re-shuffled per pass by adding the pass count, and for fake tokens."""
 
     columns: SFTColumnsConfig = SFTColumnsConfig()
-    """Columns that carry per-sample renderer arguments."""
+    """Columns of every source. A source's ``columns`` override single fields."""
 
-    # Configuring
     loss_mask: LossMaskConfig = LossMaskConfig()
     """Which message types contribute to the loss."""
 
     @model_validator(mode="after")
-    def validate_subsets_and_splits(self):
-        if self.subsets is not None or self.splits is not None:
-            if self.subsets is not None and self.splits is not None:
-                if len(self.subsets) != len(self.splits):
-                    raise ValueError(
-                        "Number of subsets must be equal to number of splits. Please specify which split to load for each subset."
-                    )
-            if self.subsets is not None and self.probabilities is not None:
-                if len(self.probabilities) != len(self.subsets):
-                    raise ValueError(
-                        "Number of probabilities must be equal to number of subsets. Please specify a probability for each subset."
-                    )
-            if self.splits is not None and self.probabilities is not None:
-                if len(self.probabilities) != len(self.splits):
-                    raise ValueError(
-                        "Number of probabilities must be equal to number of splits. Please specify a probability for each split."
-                    )
+    def validate_sources(self):
+        check_sources(self.source)
+        for source in self.source:
+            source.resolve_columns(self.columns)
         return self
-
-
-DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
 
 
 class SFTConfig(SupervisedTrainerConfig):
@@ -82,7 +58,10 @@ class SFTConfig(SupervisedTrainerConfig):
     """Run kind of this config. ``uv run launch`` picks the entrypoint from it; ``uv run sft`` accepts only
     "sft" (or no mode)."""
 
-    data: DataConfig = SFTDataConfig()
+    data: SFTDataConfig = SFTDataConfig()
+
+    def renders_conversations(self) -> bool:
+        return self.data.fake is None or super().renders_conversations()
 
     @model_validator(mode="after")
     def validate_vlm_constraints(self):

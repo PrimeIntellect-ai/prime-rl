@@ -1,7 +1,7 @@
 """Validation (``[val]``): named sources scored on the trainer's weights by the SFT, pretraining and RL trainers."""
 
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
@@ -44,6 +44,34 @@ class SFTColumnsConfig(BaseConfig):
     """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``reasoning_effort = "effort"``. A row's non-null value overrides the ``[renderer]`` setting; rows and datasets without the column use it unchanged."""
 
 
+class HFDatasetConfig(BaseConfig):
+    """One ``(dataset, subset, split)`` of a Hugging Face dataset, with its columns and chat-template kwargs."""
+
+    dataset: str
+    """HF dataset name or local path."""
+
+    revision: str | None = None
+    """HF dataset revision to load. Ignored for a local path."""
+
+    subset: str | None = None
+    """Subset (config name) of the dataset."""
+
+    split: str = "train"
+    """Split of the dataset."""
+
+    columns: SFTColumnsConfig | None = None
+    """Columns of this dataset. Unset fields keep ``data.columns`` (the defaults in pretraining and RL)."""
+
+    renderer: dict[str, Any] = {}
+    """Chat-template kwargs for this dataset's rows, applied over ``[renderer]`` and under a row's
+    ``columns.renderer`` values, e.g. ``{ reasoning_effort = "high" }``."""
+
+    def resolve_columns(self, columns: SFTColumnsConfig) -> None:
+        """Fill the unset fields of ``self.columns`` from ``columns``."""
+        overrides = self.columns.model_dump(exclude_unset=True) if self.columns is not None else {}
+        self.columns = SFTColumnsConfig.model_validate({**columns.model_dump(), **overrides})
+
+
 class BaseValSourceConfig(BaseConfig):
     name: str = Field(pattern=r"^[^/]+$")
     """Names the source's metrics, ``val/<name>/<metric>@<seq_len>``, e.g. ``val/fineweb-edu/bpb@2k``."""
@@ -64,26 +92,12 @@ class DocumentsValSourceConfig(BaseValSourceConfig):
     """Folder of datatrove tokenized shards, as for a pretraining source's ``path``. The tokens are scored as stored."""
 
 
-class ChatValSourceConfig(BaseValSourceConfig):
-    """Conversations, rendered as SFT renders its training data. The tokens SFT trains on (``loss_mask``) are scored,
-    and a conversation is cut after ``seq_len`` input tokens."""
+class ChatValSourceConfig(HFDatasetConfig, BaseValSourceConfig):
+    """Conversations, rendered as SFT renders its training data: the fields of an SFT ``[[data.source]]`` but
+    ``weight``. The rows are scored in order; the tokens SFT trains on (``loss_mask``) are scored, and a conversation is
+    cut after ``seq_len`` input tokens."""
 
     type: Literal["chat"] = "chat"
-
-    path: str
-    """HF dataset name or local directory, as ``datasets.load_dataset`` takes it."""
-
-    split: str
-    """Split of the dataset. Its rows are scored in order."""
-
-    subset: str | None = None
-    """Subset (HF config name) of the dataset."""
-
-    revision: str | None = None
-    """HF dataset revision to load. Ignored for a local directory."""
-
-    columns: SFTColumnsConfig = SFTColumnsConfig()
-    """Dataset columns, as for SFT's ``data.columns``."""
 
     loss_mask: LossMaskConfig = LossMaskConfig()
     """Which message types are scored."""
@@ -124,11 +138,14 @@ class ValConfig(BaseConfig):
             raise ValueError(f"val.source names must be unique: {names}")
         return self
 
-    def resolve(self, seq_len: int, micro_batch_tokens: int, cp: int) -> None:
-        """Fill the defaults from the trainer's sequence length and micro-batch tokens, and check the row size."""
+    def resolve(self, seq_len: int, micro_batch_tokens: int, cp: int, columns: SFTColumnsConfig) -> None:
+        """Fill the defaults from the trainer's sequence length, micro-batch tokens and data columns, and check the
+        row size."""
         for val_source in self.source:
             if val_source.seq_len is None:
                 val_source.seq_len = seq_len
+            if val_source.type == "chat":
+                val_source.resolve_columns(columns)
         longest = max(val_source.seq_len for val_source in self.source)
         if self.micro_batch_tokens is None:
             self.micro_batch_tokens = -(-max(micro_batch_tokens, longest) // cp) * cp

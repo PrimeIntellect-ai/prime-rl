@@ -88,10 +88,10 @@ class CatDataset(StatefulIterableDataset):
         return state
 
     def load_state_dict(self, state_dict: dict):
-        self.dataset.load_state_dict(state_dict["dataset"])
         progress = state_dict.get("progress", {})
         self.dataset.num_samples.update(progress.get("num_samples", {}))
         self.dataset.num_tokens.update(progress.get("num_tokens", {}))
+        self.dataset.load_state_dict(state_dict["dataset"])
         self.pending_sample = state_dict.get("pending_sample")
 
     def __iter__(self):

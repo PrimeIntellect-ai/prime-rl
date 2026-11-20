@@ -31,5 +31,4 @@ path = "set-by-the-test"
 [[val.source]]
 type = "chat"
 name = "reverse-text-chat"
-path = "PrimeIntellect/Reverse-Text-SFT"
-split = "train"
+dataset = "PrimeIntellect/Reverse-Text-SFT"
