@@ -183,9 +183,9 @@ class ValConfig(BaseConfig):
     """Run validation before the first training step."""
 
     source: list[ValSourceConfig] = Field(min_length=1)
-    """The validation sources (``[[orchestrator.val.source]]``). Each logs ``val/<name>/loss@<seq_len>``, the mean loss per
-    scored token, and with a byte-level BPE tokenizer ``val/<name>/bpb@<seq_len>``, bits per UTF-8 byte of the scored
-    tokens."""
+    """The validation sources (``[[orchestrator.val.source]]``). Each logs ``val/<name>/loss@<seq_len>``, the mean
+    loss per scored token, and with a byte-level BPE tokenizer ``val/<name>/bpb@<seq_len>``, bits per UTF-8 byte of the
+    scored tokens."""
 
     num_samples: int | None = Field(None, ge=1)
     """Items per source and validation: the first ``num_samples`` documents or rows of each source, the same ones
@@ -213,9 +213,7 @@ class ValConfig(BaseConfig):
 
 class SupervisedOrchestratorConfig(BaseConfig):
     """The ``[orchestrator]`` of ``sft`` and ``pretrain``: the run's orchestrator, which owns its schedule. It tells the
-    trainer at which steps to validate and to broadcast its weights, and runs the online evals on the broadcasts. The
-    launcher starts it from this block and fills the run-level fields (``model``, ``resume_step``,
-    ``weight_broadcast``, ``output_dir``, ``log``, ``monitors``) from the trainer's config."""
+    trainer at which steps to validate and to broadcast its weights, and runs the online evals on the broadcasts."""
 
     val: ValConfig | None = None
     """Validation: named sources scored on the trainer's weights, on the trainer's GPUs. If None, no validation runs."""
@@ -224,7 +222,12 @@ class SupervisedOrchestratorConfig(BaseConfig):
     """Online evals: rollout-based evals against a live inference server that receives the trainer's weight
     broadcasts. If None, no online evals run."""
 
-    model: str | None = None
+
+class SupervisedOrchestratorProcessConfig(SupervisedOrchestratorConfig):
+    """The config of the orchestrator process the ``sft`` and ``pretrain`` launchers start: the ``[orchestrator]``
+    block plus the run-level fields the launcher fills from the trainer's config."""
+
+    model: str
     """Name the inference server serves the model under. The name stays fixed across weight updates (weights are
     swapped in place), so per-step eval results are told apart by ``eval/{env}/policy_version``."""
 

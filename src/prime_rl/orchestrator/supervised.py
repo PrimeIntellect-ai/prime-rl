@@ -3,10 +3,11 @@
 The launcher starts it next to the trainer. At the start of every step the trainer asks it for the step's plan
 (``prime_rl.orchestrator.schedule``): whether to validate the weights (inline, on the trainer's GPUs) and whether to
 broadcast them for online evals. With ``[orchestrator.eval]`` it runs the online evals: it moves the inference server
-onto every broadcast it planned, in order, and runs the due eval sources against the updated weights, sequentially per broadcast so every
-epoch measures exactly one policy version. Every planned broadcast must be received, even when no eval is due - the
-trainer blocks inside the handshake until the receiver acknowledges. By default, a newer broadcast cancels
-unfinished episodes of the prior version; ``cancel_on_new_checkpoint = false`` drains every epoch instead."""
+onto every broadcast it planned, in order, and runs the due eval sources against the updated weights, sequentially
+per broadcast so every epoch measures exactly one policy version. Every planned broadcast must be received, even when
+no eval is due - the trainer blocks inside the handshake until the receiver acknowledges. By default, a newer
+broadcast cancels unfinished episodes of the prior version; ``cancel_on_new_checkpoint = false`` drains every epoch
+instead."""
 
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ import os
 from pathlib import Path
 
 from prime_rl import monitors
-from prime_rl.configs.supervised import SupervisedOrchestratorConfig
+from prime_rl.configs.supervised import SupervisedOrchestratorProcessConfig
 from prime_rl.eval.runner import EvalRunner
 from prime_rl.orchestrator.schedule import plan_step
 from prime_rl.transports.steps import StepPlan, StepPlanServer, StepRequest
@@ -33,7 +34,7 @@ STARTUP_BROADCAST_TIMEOUT_S = 1200
 
 
 class SupervisedOrchestrator:
-    def __init__(self, config: SupervisedOrchestratorConfig) -> None:
+    def __init__(self, config: SupervisedOrchestratorProcessConfig) -> None:
         self.config = config
         self.runner: EvalRunner | None = None
         if config.eval is not None:
@@ -138,7 +139,7 @@ class SupervisedOrchestrator:
 
 
 @clean_exit
-async def run_orchestrator(config: SupervisedOrchestratorConfig, config_dir: Path) -> None:
+async def run_orchestrator(config: SupervisedOrchestratorProcessConfig, config_dir: Path) -> None:
     # Bound before anything slow: the trainer waits for its address.
     server = StepPlanServer(config_dir)
     orchestrator = SupervisedOrchestrator(config)
@@ -154,7 +155,7 @@ async def run_orchestrator(config: SupervisedOrchestratorConfig, config_dir: Pat
 
 def main():
     set_proc_title("Orchestrator")
-    config = cli(SupervisedOrchestratorConfig)
+    config = cli(SupervisedOrchestratorProcessConfig)
     config_dir, log_dir = prepare_attempt_dirs(config.output_dir)
     os.environ["PRL_ATTEMPT_CONFIG_DIR"] = str(config_dir)
     os.environ["PRL_ATTEMPT_LOG_DIR"] = str(log_dir)

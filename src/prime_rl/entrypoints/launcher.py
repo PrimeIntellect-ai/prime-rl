@@ -5,7 +5,7 @@ from pathlib import Path
 
 from prime_rl.configs.orchestrator import OnlineEvalSourceConfig
 from prime_rl.configs.shared import LogConfig
-from prime_rl.configs.supervised import SupervisedOrchestratorConfig, SupervisedTrainerConfig
+from prime_rl.configs.supervised import SupervisedOrchestratorProcessConfig, SupervisedTrainerConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, run_links
 from prime_rl.entrypoints.slurm import load_slurm_template, submit_sbatch
 from prime_rl.transports.steps import ADDRESS_FILE
@@ -65,24 +65,24 @@ def resolve_resume_step(config: SupervisedTrainerConfig) -> int | None:
     return resolve_latest_ckpt_step(get_ckpt_dir(get_ckpt_base(config)))
 
 
-def build_orchestrator_config(config: SupervisedTrainerConfig) -> SupervisedOrchestratorConfig:
-    """The ``[orchestrator]`` block with the run-level fields filled from the trainer's config. The launcher spawns the
-    eval env worker pools itself; the orchestrator finds each one through the address it publishes in the shared
-    config attempt."""
-    return config.orchestrator.model_copy(
-        update=dict(
-            model=config.model.name,
-            resume_step=resolve_resume_step(config),
-            weight_broadcast=config.weight_broadcast,
-            # Same run dir as the trainer: the dashboard reads the eval's
-            # file-monitor artifacts from the run directory, so a separate
-            # output dir would hide them. The train-vs-eval record collision
-            # is resolved by record merging in prime_rl.monitors.prime, not
-            # by directory separation.
-            output_dir=config.run_dir,
-            log=LogConfig(level=config.log.level, json_logging=config.log.json_logging),
-            monitors=config.monitors,
-        )
+def build_orchestrator_config(config: SupervisedTrainerConfig) -> SupervisedOrchestratorProcessConfig:
+    """The orchestrator's config: the ``[orchestrator]`` block with the run-level fields filled from the trainer's
+    config. The launcher spawns the eval env worker pools itself; the orchestrator finds each one through the address
+    it publishes in the shared config attempt."""
+    return SupervisedOrchestratorProcessConfig(
+        val=config.orchestrator.val,
+        eval=config.orchestrator.eval,
+        model=config.model.name,
+        resume_step=resolve_resume_step(config),
+        weight_broadcast=config.weight_broadcast,
+        # Same run dir as the trainer: the dashboard reads the eval's
+        # file-monitor artifacts from the run directory, so a separate
+        # output dir would hide them. The train-vs-eval record collision
+        # is resolved by record merging in prime_rl.monitors.prime, not
+        # by directory separation.
+        output_dir=config.run_dir,
+        log=LogConfig(level=config.log.level, json_logging=config.log.json_logging),
+        monitors=config.monitors,
     )
 
 
