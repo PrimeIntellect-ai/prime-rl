@@ -37,6 +37,7 @@ from tiny_models import (
 )
 from torch._dynamo.utils import clear_compilation_metrics, counters, get_compilation_metrics
 
+import prime_rl._compat  # noqa: F401
 from prime_rl.configs.trainer import ModelConfig, TokenizerConfig
 from prime_rl.trainer.model import setup_model, setup_tokenizer
 from prime_rl.trainer.models import _CUSTOM_CAUSAL_LM_BY_MODEL_TYPE
