@@ -19,7 +19,6 @@ from prime_rl.configs.shared import (
     VLMConfig,
     WeightBroadcastConfig,
     ZMQTransportConfig,
-    validate_step_dir,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir
 
@@ -27,6 +26,8 @@ from prime_rl.utils.config import BaseConfig, default_output_dir
 
 AttnImplementation: TypeAlias = Literal["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]
 DSABackend: TypeAlias = Literal["tilelang", "cudnn_flashmla"]
+
+MODULE_TARGET_SEPARATOR = "@"
 
 
 class ActivationCheckpointConfig(BaseConfig):
@@ -37,7 +38,19 @@ class ActivationCheckpointConfig(BaseConfig):
     """Apply activation checkpointing to every N layers."""
 
     targets: list[str] | None = None
-    """Operator names or namespaces retained in selective mode. ``None`` uses the default targets; an explicit list replaces them."""
+    """Operator names or namespaces retained in selective mode. ``None`` uses the default targets; an explicit list replaces them. Append ``@<module path pattern>`` to retain an operator only inside matching modules, for example ``"prime_rl::fp8_blockwise_mm@self_attn.o_b_proj"``. The pattern is an ``fnmatch`` glob over module paths relative to the checkpointed block, and it also covers the matching modules' descendants. Module-qualified targets require ``model.compile``, and the trainer raises after the first training forward if one matched no traced operation."""
+
+    @field_validator("targets")
+    @classmethod
+    def validate_targets(cls, targets: list[str] | None) -> list[str] | None:
+        for target in targets or []:
+            operation, separator, module_pattern = target.partition(MODULE_TARGET_SEPARATOR)
+            if not operation or (separator and (not module_pattern or MODULE_TARGET_SEPARATOR in module_pattern)):
+                raise ValueError(
+                    f"Invalid activation checkpointing target {target!r}: expected an operator or namespace, "
+                    "optionally followed by '@<module path pattern>'."
+                )
+        return targets
 
     token_chunk_size: int | None = Field(None, ge=3)
     """Experimental. Checkpoint token-local blocks in chunks of this many tokens per rank, so their recompute and backward hold one chunk's activations at a time. Only supported for Nemotron-H, whose MoE layers are the only blocks it chunks; it has no effect on other models. Requires ``ep == 1`` or ``ep == cp``. ``None`` checkpoints every block whole."""
@@ -97,9 +110,6 @@ class LoRAConfig(BaseConfig):
 class DebugModelConfig(BaseConfig):
     num_layers: int | None = None
     """Override the number of transformer layers (truncates the model)."""
-
-    random_init: bool = False
-    """Randomly initialize the model instead of loading weights."""
 
     force_balanced_routing: bool = False
     """Replace MoE token-choice routing with a round-robin assignment so every expert sees an equal share. Intended for fake-data smoke tests where untrained routing would otherwise OOM under severe imbalance. Gating scores are still gathered from the override indices so the forward pass stays consistent."""
@@ -271,13 +281,15 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     ``llep``, whose weight copies run next to the grid."""
 
     llep: LLEPConfig | None = None
-    """Balance imbalanced routing with least-loaded expert parallelism. Requires ``precision = "bf16"`` (SM90) or
-    ``"mxfp8_qat"`` (SM100)."""
+    """Balance imbalanced routing with least-loaded expert parallelism. Requires ``precision = "bf16"`` (SM90),
+    ``"mxfp8"`` or ``"mxfp8_qat"`` (SM100)."""
 
     @model_validator(mode="after")
     def validate_llep_precision(self):
-        if self.llep is not None and self.precision not in ("bf16", "mxfp8_qat"):
-            raise ValueError("model.moe.dispatch.llep requires model.moe.dispatch.precision 'bf16' or 'mxfp8_qat'.")
+        if self.llep is not None and self.precision not in ("bf16", "mxfp8", "mxfp8_qat"):
+            raise ValueError(
+                "model.moe.dispatch.llep requires model.moe.dispatch.precision 'bf16', 'mxfp8' or 'mxfp8_qat'."
+            )
         return self
 
     @model_validator(mode="after")
@@ -323,6 +335,28 @@ class MoERuntimeConfig(BaseConfig):
     dispatch: MoEDispatchConfig = TorchMoEDispatchConfig()
 
 
+class ScratchInit(BaseConfig):
+    """The model's own random init (its ``_init_weights``, with the ``initializer_range`` of ``model.name``'s
+    config.json); ``model.name`` supplies only the architecture and the tokenizer."""
+
+    type: Literal["scratch"] = "scratch"
+
+    seed: int = 0
+    """Seed of the init: the same seed gives the same weights on the same GPU layout."""
+
+
+class PretrainedInit(BaseConfig):
+    """The weights stored at ``model.name``: an HF model (Hub id or local directory), or a checkpoint step directory
+    (``.../step_<N>``) of another run, whose ``trainer/`` weights load and whose ``config.json`` and tokenizer files
+    supply the architecture and the tokenizer. A step directory starts the run at step 0 with a fresh optimizer,
+    scheduler and data."""
+
+    type: Literal["pretrained"] = "pretrained"
+
+
+InitConfig: TypeAlias = Annotated[ScratchInit | PretrainedInit, Field(discriminator="type")]
+
+
 class ModelConfig(BaseModelConfig):
     vlm: VLMConfig | None = None
     """VLM configuration. Setting this enables vision-language model support."""
@@ -330,8 +364,8 @@ class ModelConfig(BaseModelConfig):
     conversion_dir: Path | None = None
     """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
 
-    init_from: Path | None = None
-    """Checkpoint step directory (e.g. ``other/run/checkpoints/step_500``) to initialize the weights from instead of ``name``'s, such as an SFT run's checkpoint to start RL from. Only the weights load: the run starts at step 0 with a fresh optimizer, scheduler and data. ``name`` still sets the architecture and tokenizer, and a resumed run loads its own checkpoint instead."""
+    init: InitConfig = PretrainedInit()
+    """Where the weights start. A resumed run loads its own checkpoint instead, whatever the type."""
 
     seq_len: int = 2048
     """Sequence length the model is trained on."""
@@ -386,6 +420,9 @@ class ModelConfig(BaseModelConfig):
     dsv4_kv_precision: Literal["bf16", "fp8"] = "fp8"
     """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
 
+    dsv4_compressor_backend: Literal["cudnn", "torch"] = "cudnn"
+    """Backend of the DeepSeek V4 compressors' softmax-gated pooling. ``cudnn`` (default) runs the cuDNN frontend's fused CSA/HCA compressor where its kernels apply: an SM100 or newer GPU, bf16 activations, and a compress rate of 2 or 4, or 128 with head_dim 128 or 512. Elsewhere it silently runs the torch ops, so on SM90 GPUs such as the H100 and H200 ``cudnn`` runs torch. ``cudnn`` scans each entry's document list, so it wins on rows of few long documents and loses to the flat torch ops on rows of many short documents. ``torch`` always runs the torch ops."""
+
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
 
@@ -399,15 +436,25 @@ class ModelConfig(BaseModelConfig):
     """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. In SFT the fused head computes the summed cross-entropy and its gradients chunk by chunk, holding one chunk's full-vocab logits at a time."""
 
     @model_validator(mode="after")
-    def validate_init_from(self):
-        if self.init_from is not None:
-            validate_step_dir(self.init_from, field="model.init_from")
+    def validate_scratch_lora(self):
+        if self.init.type == "scratch" and self.lora is not None:
+            raise ValueError('model.lora adapts pretrained weights, which model.init.type = "scratch" does not load')
         return self
 
     @model_validator(mode="after")
     def validate_cp(self):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]:
             raise ValueError("CP is only supported with flash attention 2, 3, or 4")
+        return self
+
+    @model_validator(mode="after")
+    def module_qualified_ac_targets_require_compile(self):
+        if (
+            self.compile is None
+            and self.ac is not None
+            and any(MODULE_TARGET_SEPARATOR in target for target in self.ac.targets or [])
+        ):
+            raise ValueError("Module-qualified model.ac.targets require model.compile.")
         return self
 
     @model_validator(mode="after")

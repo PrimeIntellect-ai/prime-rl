@@ -21,6 +21,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 - [Checkpointing](#checkpointing)
   - [Enabling Checkpoints](#enabling-checkpoints)
   - [Resuming a Run](#resuming-a-run)
+  - [Model Initialization](#model-initialization)
   - [Pausing or Checkpointing a Live Run](#pausing-or-checkpointing-a-live-run)
   - [Updating the Config Live](#updating-the-config-live)
   - [Serving Checkpoints](#serving-checkpoints)
@@ -331,10 +332,11 @@ Pulled from the console log and mirrored to W&B.
 **Progress and loss:**
 
 - `loss/mean`, `loss/perplexity` — main signal. Should decrease through the run.
-- `val/loss`, `val/perplexity` — validation metrics when `[val]` is set, logged every `val.interval` steps.
+- `val/loss`, `val/perplexity` — SFT validation metrics when `[val]` is set, logged every `val.interval` steps. Pretraining logs `val/<name>/loss@<seq_len>` and `val/<name>/bpb@<seq_len>` per validation set; see [Pretraining](#pretraining).
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
 - `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
+- `progress/<name>/{num_tokens,unique_tokens,repetitions,mean_segment_length}` — pretraining: a source's tokens read, the unique ones among them (at most its subset's), their ratio, and the mean length of its document pieces in the step's rows; `progress/{unique_tokens,repetitions,mean_segment_length}` over all sources. In pretraining, `progress/epoch` is the tokens read over all sources' tokens.
 
 **Stability and optimization:**
 
@@ -357,7 +359,7 @@ Pulled from the console log and mirrored to W&B.
 
 ## Pretraining
 
-`uv run pretrain` trains a model from scratch on tokenized text. It shares the trainer, launcher, checkpointing and monitoring with `uv run sft`. What differs is the data, and that the weights start from the model's own init: `model.name` only supplies the architecture, and a resumed run loads its weights from the checkpoint. The from-scratch init is tested on dense models. The defaults are SFT's, except `optim.lr = 1e-3` and a 10-step linear learning-rate warmup.
+`uv run pretrain` trains a model from scratch on tokenized text. It shares the trainer, launcher, checkpointing and monitoring with `uv run sft`. What differs is the data, and that the weights start from the model's own init (`model.init.type = "scratch"`, see [Model Initialization](#model-initialization)): `model.name` only supplies the architecture and the tokenizer. The from-scratch init is tested on dense models. The defaults are SFT's, except `optim.lr = 1e-3` and a 10-step linear learning-rate warmup.
 
 **Tokenize first.** prime-rl does not tokenize; it reads the output of [datatrove](https://github.com/huggingface/datatrove)'s `DocumentTokenizer`: `*.ds` token files, each with its `.ds.index` (document ends) and `.ds.metadata`. datatrove is a separate install (`pip install datatrove`), not a prime-rl dependency. Set `eos_token` to the tokenizer's end-of-text token, which is not always its EOS: for Qwen it is `<|endoftext|>`, not `<|im_end|>`. datatrove adds no separator by default and prime-rl adds none either, so without one the documents run together and the model never learns to stop; the trainer checks at startup that the documents end with one. If a document's text contains the separator string, the tokenizer may encode it as the separator token, and the loss at that position is then masked too.
 
@@ -380,7 +382,7 @@ LocalPipelineExecutor(
 ).run()
 ```
 
-**Configure.** Only `data.paths` is required:
+**Configure.** Only `[[data.source]]` (a name and a folder each) is required:
 
 ```toml
 mode = "pretrain"          # optional; lets `uv run launch` run this config
@@ -390,22 +392,39 @@ max_steps = 1000
 name = "Qwen/Qwen3-0.6B"   # only the architecture is read
 
 [data]
-paths = ["data/fineweb-edu"]
 seq_len = 2048
 batch_size = 256
 
+[[data.source]]
+name = "web"
+path = "data/fineweb-edu"
+weight = 7                 # relative to the other weights; leave it out on every source for natural shares
+
+[[data.source]]
+name = "code"
+path = "data/code"
+weight = 3
+repetitions = 4            # optional: every token seen 4 times, so a subset of its share (3/10) x the run's tokens / 4
+
 [val]                      # optional
 interval = 100
-num_samples = 512          # documents per validation; leave out to score every held-out document
+num_samples = 512          # optional: the first 512 documents of each set; default: all of them
 
-[val.data]
-paths = ["data/fineweb-edu-val"]
-seq_len = 2048
+[[val.set]]
+type = "documents"
+name = "fineweb-edu"
+path = "data/fineweb-edu-val"
 ```
 
-All files in `data.paths` (in folder order, then file name order) form one token pool. Each epoch reads every `seq_len` window of the pool once, in a new random order and from a new random offset drawn from `data.seed`. Attention and positions restart at every document; `data.document_masking = false` makes a window one sequence. In training, the model is not trained to predict the next document's first token: there is no loss where the input is the document separator (`data.eod_mask_loss = false` turns this off). The separator is the special token the training shards' documents end with, detected at startup; shards whose documents start with BOS have nothing to mask. A resumed run reads exactly the windows an uninterrupted run would, also on another number of GPUs, as long as `data.num_workers` stays the same.
+**Mixture.** Weights are relative: a source's share of the training tokens is its weight over the sum of all weights, so `7` and `3` give the same mixture as `0.7` and `0.3`. Set `weight` on every source or on none; without weights, a source's share is its share of all sources' tokens. The sources take turns deterministically, so every step holds the mixture up to about one document per source.
 
-Validation scores every document in `val.data.paths` on its own, from its first token, and logs the mean loss over all scored tokens as `val/loss`. A document is cut into non-overlapping windows of `val.data.seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it. Every token after a document's first is scored, and no position predicts a token of another document. The windows are packed into rows of `val.data.seq_len * val.data.micro_batch_size` tokens and shared out over the data-parallel ranks. `val.num_samples` limits every validation to the first documents of the held-out shards, the same ones every time; without it, every validation scores all of them.
+**Repetitions.** `repetitions` is how often every token of a source is seen over the run (`max_steps * batch_size * seq_len` tokens; needs `max_steps`). The source then reads a fixed, seeded subset of `share * run tokens / repetitions` tokens that many times. Without it, a source is read whole, in a new order on every pass.
+
+**Rows.** Documents longer than `seq_len` are cut into `seq_len` pieces. A step's documents fill `batch_size` rows of exactly `seq_len` tokens, without padding and without losing a prediction within a document. Attention and positions restart at every document and piece (`data.document_masking = false` makes a row one sequence). With `data.eod_mask_loss` (on by default), positions whose input is the separator have no loss: their target is the first token of another document.
+
+**Resume.** A resume is exact, also on another number of GPUs. It stops with an error that names the old and new value of every changed setting: `seq_len`, `batch_size`, `seed`, `num_workers`, a source's name or files (their tokens and documents), the weights or repetitions (or `max_steps`, with repetitions). A source may move to another folder. With `ckpt.skip_dataloader`, the run resumes without the data state: the data starts over from step 0, in the same order as at the run's start (a different `data.seed` gives a different order). `data.batch_size` must be a multiple of dp × `num_workers` × `micro_batch_size`.
+
+**Validation.** `[val]` scores named held-out document sets every `val.interval` steps (also before the first step with `val.eval_on_start`). Each `[[val.set]]` table has `type = "documents"`, a unique `name`, a `path` (a folder of datatrove tokenized shards) and an optional `seq_len` (default: `data.seq_len`). Every document is scored on its own, from its first token, with the tokens as stored, in non-overlapping windows of `seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it. Every set logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and with a byte-level BPE tokenizer `val/<name>/bpb@<seq_len>`, the bits per UTF-8 byte of the scored tokens (special tokens count 0 bytes), e.g. `val/fineweb-edu/bpb@2k`. With another tokenizer (e.g. SentencePiece), the trainer logs one warning and only the loss. The sets are read once at startup. At every validation, the windows of all sets are packed longest first into rows of `val.micro_batch_tokens` tokens (default: the training micro-batch, `data.seq_len * data.micro_batch_size`, or the longest set `seq_len` if that is longer, rounded up to a multiple of `model.cp`), with attention and positions restarting at every window and the rest of a row padded, and the rows are shared out over the data-parallel ranks. The log-probs are computed in fp32. `val.num_samples` limits every validation to the first documents of each set, the same ones every time. `val.save_arrays` writes the per-document arrays of every set (summed loss, scored tokens, greedy hits and bytes) to `<run_dir>/val/step_N/`.
 
 **Launch.**
 
@@ -422,6 +441,7 @@ Checkpointing is split across processes because the orchestrator and trainer can
 | Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<run_dir>/checkpoints/step_{n}/trainer/` |
 | Orchestrator | Progress, per-env data state | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
+| Trainer, orchestrator, inference | The model's `config.json` and `generation_config.json`, the tokenizer files and a VLM's processor files | `<run_dir>/checkpoints/step_{n}/` |
 
 ### Enabling Checkpoints
 
@@ -474,12 +494,9 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
 ```
 
-A fork continues the other run, so both runs must be of the same kind. To start a new stage from another run's weights, such as RL from an SFT checkpoint, set `trainer.model.init_from` instead. It loads only the weights, and the run starts at step 0 with a fresh optimizer, scheduler and orchestrator. `model.name` still sets the architecture and tokenizer.
+A resume checks that the checkpoint's `config.json` describes the same architecture as `model.name` and stops on a difference before loading. A checkpoint without a `config.json` resumes after a warning, without the check.
 
-```bash
-uv run rl @ rl.toml --max-steps 50 --ckpt --run.name my-rl \
-  --trainer.model.init-from outputs/my-sft/checkpoints/step_500
-```
+A fork continues the other run, so both runs must be of the same kind. To start a new stage from another run's weights, such as RL from an SFT checkpoint, set `model.name` to the checkpoint's step directory instead (see [Model Initialization](#model-initialization)).
 
 #### What a resume restores
 
@@ -498,6 +515,31 @@ A resume can add, remove or change train and eval sources.
 - A streaming taskset resumes at the same offset into the stream, so a changed stream does not resume at the same task.
 - A changed sampler type starts the sampler fresh. Admission gates match by name: a new gate starts fresh, and the state of a removed gate is dropped.
 - Eval sources hold no checkpointed state. A new eval source first runs at the next step that is a multiple of its interval.
+
+### Model Initialization
+
+`[model.init]` sets where the trainer's weights start. A resumed run loads its own checkpoint, whatever the type.
+
+| `model.init.type` | Weights | Architecture and tokenizer | Default for |
+|---|---|---|---|
+| `scratch` | The model's own random init, seeded with `model.init.seed` | `model.name` | `uv run pretrain` |
+| `pretrained` | The weights stored at `model.name`: an HF model (Hub id or local directory), or the trainer checkpoint in a step directory (`.../step_<N>`) of another run | `model.name`; for a step directory, its `config.json` and tokenizer files | `uv run sft`, `uv run rl` |
+
+Both types work with every entrypoint, and a `[model.init]` table without `type` keeps the entrypoint's default. In RL, set `name` and `init` in the shared `[model]`. The trainer recognizes a step directory by its `trainer/` directory when it loads the weights. A step directory supplies only the weights: the run starts at step 0 with a fresh optimizer, scheduler and data. To continue a run with its optimizer, scheduler and data state, use `[resume]` instead, or `--resume.dir` to fork another run of the same kind (see [Resuming a Run](#resuming-a-run)). A model without a from-scratch init fails at startup with `scratch`, naming the parameters its init does not reach. The renderer cannot be picked from a step directory, so a run from one sets it explicitly; inference's `"auto"` tool-call and reasoning parsers try `tokenizer.name` first, so setting it to the HF model name keeps them. A resumed trainer and the export read the `config.json` and tokenizer from the run's own checkpoint, which holds copies; the RL orchestrator and the inference servers still read `model.name`, so to resume once the source step directory is gone, set `model.name` to one of the run's own step directories.
+
+The trainer sends its weights to inference (RL, SFT online evals) at startup. When those weights are not HF weights stored at `model.name` (`scratch`, or a checkpoint step directory as `model.name`, which the inference server recognizes when it starts), the inference server starts with placeholder weights (`inference.vllm.load_format = "dummy"`) instead of loading them from disk.
+
+- LoRA sends only the adapter, so inference loads the base weights itself, and LoRA needs HF weights at `model.name`.
+- A speculative draft with its own `model` still loads from disk. A `draft_model` draft (vLLM loads it with the target's load format) and a draft that reads its weights from `model.name` (MTP, DSpark without a `model`) are rejected.
+- Setting `inference.vllm.load_format` explicitly overrides this.
+
+```bash
+# SFT from a pretraining checkpoint
+uv run sft @ sft.toml --model.name outputs/my-pretrain/checkpoints/step_5000 --renderer.name qwen3
+
+# RL from an SFT checkpoint
+uv run rl @ rl.toml --model.name outputs/my-sft/checkpoints/step_500 --orchestrator.renderer.name qwen3
+```
 
 ### Pausing or Checkpointing a Live Run
 

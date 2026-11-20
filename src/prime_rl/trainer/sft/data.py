@@ -30,16 +30,17 @@ class FakeDataset(StatefulIterableDataset):
         length: Literal["fixed", "variable"] = "fixed",
         input_ids: Literal["increasing", "random"] = "random",
         seed: int = 0,
-        non_dp_size: int = 1,
+        dp_rank: int = 0,
+        dp_size: int = 1,
     ):
-        super().__init__(non_dp_size)
+        super().__init__(dp_rank, dp_size)
         self.vocab_size = vocab_size
         self.seq_len = seq_len
         self.length = length
         self.input_ids = input_ids
         self.seed = seed
 
-    def _draw_sample(self, generator: torch.Generator) -> tuple[int, list[int] | None]:
+    def _draw_sample(self, generator: torch.Generator) -> tuple[int, np.ndarray | None]:
         # Consume this samples "randomness" - fast forwarding must replay it to restore the generator state
         seq_len = (
             int(torch.randint(1, self.seq_len, (1,), generator=generator).item())
@@ -47,7 +48,7 @@ class FakeDataset(StatefulIterableDataset):
             else self.seq_len
         )
         random_input_ids = (
-            torch.randint(0, self.vocab_size, (seq_len + 1,), generator=generator).long().tolist()
+            torch.randint(0, self.vocab_size, (seq_len + 1,), generator=generator).long().numpy()
             if self.input_ids == "random"
             else None
         )
@@ -73,14 +74,14 @@ class FakeDataset(StatefulIterableDataset):
                 continue
 
             seq_len, random_input_ids = self._draw_sample(generator)
-            input_ids = [self.step - 1] * (seq_len + 1) if random_input_ids is None else random_input_ids
-            position_ids = list(range(seq_len))
-            loss_mask = [True] * seq_len
+            input_ids = (
+                np.full(seq_len + 1, self.step - 1, dtype=np.int64) if random_input_ids is None else random_input_ids
+            )
             fake_sample = {
                 "input_ids": input_ids[:-1],
                 "target_ids": input_ids[1:],
-                "position_ids": position_ids,
-                "loss_mask": loss_mask,
+                "position_ids": np.arange(seq_len),
+                "loss_mask": np.ones(seq_len, dtype=bool),
                 "seq_lens": [seq_len],
                 "mm_kwargs": None,
                 "mm_token_type_ids": None,
@@ -212,14 +213,15 @@ class SFTDataset(StatefulIterableDataset):
         shuffle: bool = True,
         seed: int = 0,
         seq_len: int = 128,
-        non_dp_size: int = 1,
+        dp_rank: int = 0,
+        dp_size: int = 1,
         loss_mask_config: LossMaskConfig = LossMaskConfig(),
         max_examples: int | None = None,
         max_epochs: int | None = None,
         multimodal: bool = False,
         columns: SFTColumnsConfig = SFTColumnsConfig(),
     ):
-        super().__init__(non_dp_size)
+        super().__init__(dp_rank, dp_size)
         self.logger = get_logger()
         self.dataset = dataset
         self.num_examples = len(self.dataset)
@@ -367,13 +369,13 @@ class SFTDataset(StatefulIterableDataset):
             assert len(mm_token_type_ids) == len(input_ids)
 
         return {
-            "input_ids": input_ids,
-            "target_ids": target_ids,
-            "loss_mask": loss_mask,
-            "position_ids": list(range(len(input_ids))),
+            "input_ids": np.array(input_ids, dtype=np.int64),
+            "target_ids": np.array(target_ids, dtype=np.int64),
+            "loss_mask": np.array(loss_mask, dtype=bool),
+            "position_ids": np.arange(len(input_ids)),
             "seq_lens": [len(input_ids)],
             "mm_kwargs": mm_kwargs,
-            "mm_token_type_ids": mm_token_type_ids,
+            "mm_token_type_ids": np.array(mm_token_type_ids, dtype=np.int64) if mm_token_type_ids is not None else None,
         }
 
     def __iter__(self):
@@ -519,8 +521,9 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
 def setup_sft_dataset(
     tokenizer: PreTrainedTokenizer,
     config: DataConfig,
-    non_dp_size: int = 1,
     *,
+    dp_rank: int,
+    dp_size: int,
     max_epochs: int | None = None,
     raw_dataset: Dataset | None = None,
     renderer_config: RendererConfig | None = None,
@@ -534,7 +537,8 @@ def setup_sft_dataset(
             length=config.length,
             input_ids=config.input_ids,
             seed=config.seed,
-            non_dp_size=non_dp_size,
+            dp_rank=dp_rank,
+            dp_size=dp_size,
         )
     elif config.type == "sft":
         if renderer_config is None:
@@ -549,7 +553,8 @@ def setup_sft_dataset(
             seed=config.seed,
             seq_len=config.seq_len,
             loss_mask_config=config.loss_mask,
-            non_dp_size=non_dp_size,
+            dp_rank=dp_rank,
+            dp_size=dp_size,
             max_epochs=max_epochs,
             multimodal=multimodal,
             columns=config.columns,

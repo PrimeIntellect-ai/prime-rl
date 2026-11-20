@@ -526,12 +526,15 @@ def _cross_entropy(logits: Tensor, labels: Tensor, loss: Tensor, with_grad: bool
     ``with_grad`` it also returns the gradient w.r.t. ``logits``: softmax minus one-hot, zero on ignored rows. Where
     quack supports it, one quack kernel reads the logits once, does the math in fp32 and writes the gradient over them."""
     if _quack_cross_entropy_supported(logits):
-        # The kernel reads the label's logit unchecked: check the labels on the device, without a host sync.
+        # The kernel trusts the labels: check them on the device, without a host sync.
         in_vocab = (labels >= 0) & (labels < logits.shape[1])
         torch._assert_async((in_vocab | (labels == IGNORE_INDEX)).all())
+        # Left to itself, the kernel reads each label's logit from the logits while other CTAs of the row write the
+        # gradient over them, unordered, and sometimes gets the gradient. Gather the labels' logits first and pass them.
+        label_logits = logits.gather(1, labels.clamp(min=0).unsqueeze(1)).squeeze(1)
         # dx=None selects quack's online-softmax variant, which returns NaN when a warp's columns all lie past the
         # vocab (Dao-AILab/quack#64). Always writing the gradient keeps the two-pass variant.
-        _quack_cross_entropy_fwd_out()(logits, labels, None, loss, None, logits, None, IGNORE_INDEX)
+        _quack_cross_entropy_fwd_out()(logits, labels, label_logits, loss, None, logits, None, IGNORE_INDEX)
         return logits if with_grad else None
 
     valid = labels != IGNORE_INDEX

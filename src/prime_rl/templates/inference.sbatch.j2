@@ -194,6 +194,8 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
 
     # NIXL/RDMA registers pinned host memory (KV offload pools, the HiSparse host pool).
     ulimit -l unlimited
+    # The router holds a socket per in-flight request on each side; the default 1024 runs out at ~500.
+    ulimit -n 65536
 {%- if mooncake_offloads %}
 {% include "_mooncake_store.sh.j2" %}
 {%- endif %}

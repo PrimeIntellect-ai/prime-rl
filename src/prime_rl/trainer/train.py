@@ -4,6 +4,7 @@ import math
 import time
 import asyncio
 from datetime import timedelta
+from pathlib import Path
 
 # Import environment before any other imports
 # ruff: noqa: I001
@@ -11,8 +12,8 @@ from datetime import timedelta
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity
-from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
-from prime_rl.utils.pathing import resolve_latest_ckpt_step
+from prime_rl.trainer.ckpt import Progress, ckpt_output_dir, setup_ckpt_manager, setup_model_files
+from prime_rl.utils.pathing import get_ckpt_dir, get_step_path, is_checkpoint_step_dir, resolve_latest_ckpt_step
 from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import CheckpointConfig
@@ -29,22 +30,25 @@ from prime_rl.trainer.model import (
     get_full_offload_dtype_policy,
     is_tt_moe_model,
     reshard_module,
+    check_ckpt_dir,
     setup_tokenizer,
     setup_model,
     take_moe_routing_stats,
+    use_resumed_model_files,
 )
 from prime_rl.trainer.moe_runtime import setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.data import get_dataset_progress, get_dataset_state, setup_dataloader
 from prime_rl.trainer.pretrain.data import (
-    TokenShards,
+    TokenDataset,
+    check_ranks_see_same_data,
     detect_separator,
-    setup_document_dataset,
     setup_token_dataset,
     warn_if_no_document_separator,
 )
 from prime_rl.trainer.sft.data import load_sft_dataset, setup_sft_dataset
+from prime_rl.trainer.val import Validation
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
@@ -55,7 +59,7 @@ from prime_rl.trainer.utils import (
     prepare_gradient_offload,
     print_sample,
     scale_gradients_,
-    setup_full_cpu_optimizer_offload,
+    setup_cpu_offload,
     setup_torch_distributed,
 )
 from prime_rl.trainer.vlm import setup_processor
@@ -98,14 +102,26 @@ def train(config: SFTConfig | PretrainConfig):
         logger.info("Initializing heartbeat")
         heart = Heartbeat(config.heartbeat)
 
+    ckpt_dir = get_ckpt_dir(ckpt_output_dir(config.run_dir, config.ckpt))
+    checkpoint_step = None
+    if config.resume is not None:
+        if config.resume.dir is not None:
+            checkpoint_step = config.resume.dir_step
+        else:
+            checkpoint_step = config.resume.step
+            if checkpoint_step is None:
+                checkpoint_step = resolve_latest_ckpt_step(ckpt_dir)
+    if checkpoint_step is not None:
+        resume_step_dir = config.resume.dir or get_step_path(ckpt_dir, checkpoint_step)
+        use_resumed_model_files(config.model, config.tokenizer, resume_step_dir)
+
     # Set precision
     setup_moe_comm_env(config.model)
     setup_torch_distributed(
         timeout=timedelta(seconds=config.dist_timeout_seconds),
         enable_gloo=config.model.offload == "full",
     )
-    if config.model.offload == "full":
-        setup_full_cpu_optimizer_offload()
+    setup_cpu_offload(config.model)
     # Configurable to support ROCm/AMD GPUs where reduced precision
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.
@@ -128,35 +144,29 @@ def train(config: SFTConfig | PretrainConfig):
     if parallel_dims.cp_enabled:
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
 
+    logger.info(f"Initializing tokenizer ({config.tokenizer})")
+    check_ckpt_dir(config.model)
+    tokenizer = setup_tokenizer(config.tokenizer, config.model.name)
+    processor = setup_processor(config.model)
+    if config.model.vlm is not None and processor is None:
+        raise ValueError(f"[model.vlm] is set but no multimodal processor could be loaded for {config.model.name!r}")
+
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
-    ckpt_manager = setup_ckpt_manager(config.run_dir, config.ckpt, resume=config.resume)
+    model_files = setup_model_files(config.model, tokenizer, processor)
+    ckpt_manager = setup_ckpt_manager(config.run_dir, config.ckpt, model_files, resume=config.resume)
 
-    checkpoint_step = None
-    if config.resume is not None:
-        if config.resume.dir is not None:
-            checkpoint_step = config.resume.dir_step
-        else:
-            checkpoint_step = config.resume.step
-            if checkpoint_step is None:
-                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
-
-    # Initialize the model and tokenizer
+    # Initialize the model
     logger.info(f"Initializing model ({config.model})")
-    loading_from_ckpt_later = checkpoint_step is not None or config.model.init_from is not None
-    model = setup_model(config.model, parallel_dims, loading_from_ckpt_later, config.init_from_scratch)
+    from_checkpoint = config.model.init.type == "pretrained" and is_checkpoint_step_dir(config.model.name)
+    loading_from_ckpt_later = checkpoint_step is not None or from_checkpoint
+    model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
 
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
 
     if config.model.lora is not None:
         get_lora_state().reset_adapter_parameters()
-
-    logger.info(f"Initializing tokenizer ({config.tokenizer})")
-    tokenizer = setup_tokenizer(config.tokenizer)
-    processor = setup_processor(config.model)
-    if config.model.vlm is not None and processor is None:
-        raise ValueError(f"[model.vlm] is set but no multimodal processor could be loaded for {config.model.name!r}")
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -183,19 +193,50 @@ def train(config: SFTConfig | PretrainConfig):
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
     multimodal = config.model.vlm is not None
+    dp_rank, dp_size = parallel_dims.data_parallel
     if isinstance(config, PretrainConfig):
-        shards = TokenShards(config.data.paths)
+        rows = dp_size * config.data.num_workers * config.data.micro_batch_size
+        assert config.data.batch_size % rows == 0, (
+            f"batch_size ({config.data.batch_size}) must be divisible by data-parallel size x num_workers x "
+            f"micro_batch_size ({rows}), so every dataloader worker reads whole micro-batches of every step"
+        )
+
+        def setup_dataset() -> TokenDataset:
+            return setup_token_dataset(
+                config.data,
+                dp_rank=dp_rank,
+                dp_size=dp_size,
+                cache_dir=config.run_dir / "data",
+                max_steps=config.max_steps,
+            )
+
+        # Rank 0 writes the table of long documents to the cache, the other ranks then read it. Rank 0's error reaches
+        # every rank, so none waits for it.
+        error = None
+        if world.rank == 0:
+            try:
+                dataset = setup_dataset()
+            except Exception as e:
+                error = e
+        rank_0_error = [f"{type(error).__name__}: {error}" if error is not None else None]
+        dist.broadcast_object_list(rank_0_error, src=0)
+        if error is not None:
+            raise error
+        if rank_0_error[0] is not None:
+            raise RuntimeError(f"Rank 0 failed to set up the data: {rank_0_error[0]}")
+        if world.rank != 0:
+            dataset = setup_dataset()
+        check_ranks_see_same_data(dataset.sampler)
         if config.data.eod_mask_loss:
-            eod_mask_token = detect_separator(shards, tokenizer)
+            dataset.eod_mask_token = detect_separator(dataset.sampler.shards, tokenizer)
         else:
-            eod_mask_token = None
-            warn_if_no_document_separator(shards, tokenizer)
-        dataset = setup_token_dataset(config.data, config.model.cp, eod_mask_token=eod_mask_token)
+            warn_if_no_document_separator(dataset.sampler.shards, tokenizer)
     else:
         dataset = setup_sft_dataset(
             tokenizer,
             config.data,
-            config.model.cp,
+            dp_rank=dp_rank,
+            dp_size=dp_size,
             renderer_config=config.renderer,
             processor=processor,
             multimodal=multimodal,
@@ -206,12 +247,9 @@ def train(config: SFTConfig | PretrainConfig):
     if config.val is not None and isinstance(config, SFTConfig):
         logger.info(f"Loading validation dataset ({config.val.data})")
         val_raw_dataset = load_sft_dataset(config.val.data)
+    validation = None
     if config.val is not None and isinstance(config, PretrainConfig):
-        val_document_dataset = setup_document_dataset(config.val.data, config.model.cp, config.val.num_samples)
-        logger.info(
-            f"Validation scores {len(val_document_dataset.windows)} windows of held-out documents "
-            f"in {len(val_document_dataset.rows)} rows"
-        )
+        validation = Validation(config.val, tokenizer, parallel_dims, config.run_dir)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -237,8 +275,8 @@ def train(config: SFTConfig | PretrainConfig):
             f"Resuming from step {checkpoint_step} (total_tokens={progress.total_tokens}, "
             f"total_samples={progress.total_samples}, dataset_state={get_dataset_state(dataloader)})"
         )
-    elif config.model.init_from is not None:
-        ckpt_manager.load_weights(config.model.init_from / "trainer", model, [optimizer])
+    elif from_checkpoint:
+        ckpt_manager.load_weights(Path(config.model.name) / "trainer", model, [optimizer])
     else:
         logger.info("Starting from scratch")
 
@@ -335,38 +373,35 @@ def train(config: SFTConfig | PretrainConfig):
         mean_loss = (total_loss_sum / total_token_count).item() if total_token_count.item() > 0 else float("nan")
         return mean_loss, nan_count.item()
 
-    def run_validation(step: int) -> None:
-        if isinstance(config, PretrainConfig):
-            val_dataset = val_document_dataset
-        else:
-            val_dataset = setup_sft_dataset(
-                tokenizer,
-                config.val.data,
-                config.model.cp,
-                max_epochs=1,
-                raw_dataset=val_raw_dataset,
-                renderer_config=config.renderer,
-                processor=processor,
-                multimodal=multimodal,
-            )
+    def run_sft_validation(step: int) -> dict[str, float]:
+        val_dataset = setup_sft_dataset(
+            tokenizer,
+            config.val.data,
+            dp_rank=dp_rank,
+            dp_size=dp_size,
+            max_epochs=1,
+            raw_dataset=val_raw_dataset,
+            renderer_config=config.renderer,
+            processor=processor,
+            multimodal=multimodal,
+        )
         val_dataloader = setup_dataloader(val_dataset, config.val.data, config.model.cp)
-
-        # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
         mean_loss, nan_count = run_eval_loop(val_dataloader)
-        if is_tt_moe_model(model):
-            # Keep validation routing out of the next training step's statistics.
-            take_moe_routing_stats(model)
         if nan_count > 0:
             logger.warning(f"Validation at step {step}: {nan_count} batches had NaN loss")
         if mean_loss != mean_loss:
             logger.warning(f"Validation at step {step} had no valid tokens")
         else:
             logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
-        asyncio.run(
-            monitors.log(
-                {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20)), "step": step}, step=step
-            )
-        )
+        return {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20))}
+
+    def run_validation(step: int) -> None:
+        # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
+        metrics = validation.run(model, step) if validation is not None else run_sft_validation(step)
+        if is_tt_moe_model(model):
+            # Keep validation routing out of the next training step's statistics.
+            take_moe_routing_stats(model)
+        asyncio.run(monitors.log({**metrics, "step": step}, step=step))
 
     def logged_micro_batches(micro_batches):
         for micro_batch in micro_batches:
@@ -596,6 +631,8 @@ def train(config: SFTConfig | PretrainConfig):
                     for subset_or_split, num_tokens in tokens_by_source.items()
                 },
             )
+        if isinstance(dataset, TokenDataset):
+            progress_metrics.update(dataset.sampler.progress(dataset_progress["cursor"]))
         asyncio.run(monitors.log(progress_metrics, step=progress.step))
 
         # Log performance metrics

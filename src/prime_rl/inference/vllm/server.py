@@ -17,6 +17,7 @@ from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 from prime_rl.configs.inference import InferenceConfig
+from prime_rl.inference.server import setup_model_source
 from prime_rl.utils.specdec import check_draft_swap, local_draft_dir
 
 logger = init_logger("vllm.entrypoints.launchers.api_server.entry")
@@ -103,7 +104,8 @@ async def weight_fingerprint(request: Request, target: Literal["model", "draft"]
 
 @router.post("/load_lora_adapter")
 async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request, weight_version: str):
-    """Wrapper around vLLM's /v1/load_lora_adapter.
+    """Load a LoRA adapter through the handler behind vLLM's /v1/load_lora_adapter (which
+    ``drop_unused_routes`` removes).
 
     prime-rl reloads a fixed-name adapter with fresh weights every step (the path
     changes per policy version; the name is constant — the model name every client
@@ -200,19 +202,26 @@ from vllm.v1.utils import run_api_server_worker_proc as _original_run_api_server
 # adapters. prime-rl uses neither.
 SAGEMAKER_ROUTE_PATHS = frozenset({"/invocations", "/adapters", "/adapters/{adapter_name}"})
 
+# vLLM mounts its own LoRA routes when VLLM_ALLOW_RUNTIME_LORA_UPDATING is set, as it is for
+# LoRA runs. They sit behind vLLM's API key only when one is set, and the launchers set none.
+# prime-rl loads adapters through its own /load_lora_adapter and never unloads them.
+LORA_ROUTE_PATHS = frozenset({"/v1/load_lora_adapter", "/v1/unload_lora_adapter"})
 
-def drop_sagemaker_routes(app: FastAPI) -> None:
+UNUSED_ROUTE_PATHS = SAGEMAKER_ROUTE_PATHS | LORA_ROUTE_PATHS
+
+
+def drop_unused_routes(app: FastAPI) -> None:
     app.router.routes[:] = [
-        route for route in app.router.routes if getattr(route, "path", None) not in SAGEMAKER_ROUTE_PATHS
+        route for route in app.router.routes if getattr(route, "path", None) not in UNUSED_ROUTE_PATHS
     ]
 
 
 def custom_build_app(args: Namespace, supported_tasks: tuple, model_config=None):
     """
-    Wrap build_app to include our custom router and drop the SageMaker routes.
+    Wrap build_app to include our custom router and drop the vLLM routes prime-rl does not use.
     """
     app = _original_build_app(args, supported_tasks, model_config)
-    drop_sagemaker_routes(app)
+    drop_unused_routes(app)
     app.include_router(router)
     return app
 
@@ -246,6 +255,7 @@ def server(config: InferenceConfig):
     if lora_target_modules and not any("expert" in m for m in lora_target_modules):
         os.environ["PRIME_NO_MOE_LORA"] = "1"
 
+    setup_model_source(config)
     namespace = config.to_namespace()
 
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
