@@ -18,7 +18,9 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from prime_rl.trainer.models.kernels.nvfp4_epilogue import nvfp4_epilogue, swiglu_backward
 from prime_rl.trainer.models.kernels.nvfp4_to_mxfp8 import nvfp4_to_mxfp8_columns
+from prime_rl.trainer.models.layers.activations import ClampedSilu, Silu
 from prime_rl.trainer.models.layers.expert_compute import to_local
 
 if TYPE_CHECKING:
@@ -67,12 +69,12 @@ def _blocked(block_scales: torch.Tensor) -> torch.Tensor:
     return tiles.permute(*range(len(batch)), -5, -2, -3, -4, -1).reshape(*batch, -1, 512).view(torch.float8_e4m3fn)
 
 
-def _nvfp4_grouped_mm(x, weight, bounds: list[int], out: torch.Tensor, epilogue) -> torch.Tensor:
-    """Per expert group, ``x @ weight[e].T`` on NVFP4 operands with an FP32 result, scaled per token and per expert, as
-    the engine's GEMM epilogue does; ``epilogue(result, start)`` turns each group's FP32 result into its rows of
-    ``out``. Rows of ``out`` past the last group are left as they are."""
-    x_packed, x_block_scales, token_scales = x
-    w_packed, w_block_scales, expert_scales = weight
+def _nvfp4_grouped_mm(x, weight, bounds: list[int], epilogue) -> None:
+    """Per expert group, ``x @ weight[e].T`` on NVFP4 operands with an FP32 result, handed to
+    ``epilogue(result, expert, start)``, which applies the per-token and per-expert scales and stores it, as the
+    engine's GEMM epilogue does."""
+    x_packed, x_block_scales, _ = x
+    w_packed, w_block_scales, _ = weight
     device = x_packed.device
     counts = [end - start for start, end in zip(bounds[:-1], bounds[1:])]
     # Every group's activation scales padded to whole 128-row tiles, so each group's blocked scales are one slice
@@ -103,9 +105,16 @@ def _nvfp4_grouped_mm(x, weight, bounds: list[int], out: torch.Tensor, epilogue)
                 out_dtype=torch.float32,
                 out=result,
             )
-            result.mul_((token_scales[start : start + count] * expert_scales[expert]).unsqueeze(-1))
-            out[start : start + count] = epilogue(result, start)
-    return out
+            epilogue(result, expert, start)
+
+
+def _swiglu_limit(activation) -> float | None:
+    """The clamp of a SwiGLU the fused epilogue runs; raises for other activations."""
+    if activation is Silu or isinstance(activation, Silu):
+        return None
+    if isinstance(activation, ClampedSilu):
+        return activation.limit
+    raise ValueError(f"NVFP4 expert compute supports SiLU-gated experts, got {activation}.")
 
 
 def _mxfp8_backward(grad_output, x, weight, offsets, mx, need_input: bool, need_weight: bool):
@@ -153,8 +162,15 @@ class _NVFP4GroupedLinear(torch.autograd.Function):
     def forward(ctx, x, weight, offsets, bounds, four_over_six, mxfp8):
         x_quantized = quantize_activations(x, four_over_six)
         w_quantized = quantize_weights(weight)
-        out = x.new_zeros(x.shape[0], weight.shape[1])
-        _nvfp4_grouped_mm(x_quantized, w_quantized, bounds, out, lambda result, start: result)
+        token_scales, expert_scales = x_quantized[2], w_quantized[2]
+        out = x.new_empty(x.shape[0], weight.shape[1])
+        out[bounds[-1] :] = 0
+
+        def epilogue(result, expert, start):
+            rows = slice(start, start + len(result))
+            nvfp4_epilogue(result, token_scales[rows], expert_scales, expert, out[rows])
+
+        _nvfp4_grouped_mm(x_quantized, w_quantized, bounds, epilogue)
         ctx.save_for_backward(*x_quantized, *w_quantized, offsets)
         ctx.mxfp8 = mxfp8
         return out
@@ -174,35 +190,34 @@ class _NVFP4GroupedLinear(torch.autograd.Function):
 
 
 class _NVFP4GatedLinear(torch.autograd.Function):
-    """``activation(gate, up)`` of ``x @ gate_up[e].T`` per expert group, BF16 out: the activation runs on each group's
-    FP32 GEMM result, as in the engine's GEMM1 epilogue. The backward takes the activation's gradient on the BF16 GEMM
+    """``activation(gate, up)`` of ``x @ gate_up[e].T`` per expert group, BF16 out: the SwiGLU runs on each group's
+    FP32 GEMM result, as in the engine's GEMM1 epilogue. The backward takes the SwiGLU's gradient on the BF16 GEMM
     result, which only the forward has to see in FP32."""
 
     @staticmethod
     def forward(ctx, x, gate_up, offsets, bounds, four_over_six, mxfp8, activation):
         x_quantized = quantize_activations(x, four_over_six)
         w_quantized = quantize_weights(gate_up)
-        gate_up_out = x.new_zeros(x.shape[0], gate_up.shape[1])
-        out = x.new_zeros(x.shape[0], gate_up.shape[1] // 2)
+        token_scales, expert_scales = x_quantized[2], w_quantized[2]
+        limit = _swiglu_limit(activation)
+        gate_up_out = x.new_empty(x.shape[0], gate_up.shape[1])
+        out = x.new_empty(x.shape[0], gate_up.shape[1] // 2)
+        gate_up_out[bounds[-1] :] = 0
+        out[bounds[-1] :] = 0
 
-        def epilogue(result, start):
-            gate_up_out[start : start + len(result)] = result
-            return activation.apply(*result.chunk(2, dim=-1))
+        def epilogue(result, expert, start):
+            rows = slice(start, start + len(result))
+            nvfp4_epilogue(result, token_scales[rows], expert_scales, expert, out[rows], gate_up_out[rows], limit)
 
-        _nvfp4_grouped_mm(x_quantized, w_quantized, bounds, out, epilogue)
+        _nvfp4_grouped_mm(x_quantized, w_quantized, bounds, epilogue)
         ctx.save_for_backward(*x_quantized, *w_quantized, offsets, gate_up_out)
-        ctx.mxfp8, ctx.activation = mxfp8, activation
+        ctx.mxfp8, ctx.limit = mxfp8, limit
         return out
 
     @staticmethod
     def backward(ctx, grad_hidden):
         *quantized, offsets, gate_up_out = ctx.saved_tensors
-        with torch.enable_grad():
-            gate, up = gate_up_out.detach().chunk(2, dim=-1)
-            gate.requires_grad_()
-            up.requires_grad_()
-            grads = torch.autograd.grad(ctx.activation.apply(gate, up), (gate, up), grad_hidden)
-        grad_gate_up = torch.cat(grads, dim=-1)
+        grad_gate_up = swiglu_backward(gate_up_out, grad_hidden.bfloat16(), ctx.limit)
         grads = _mxfp8_backward(
             grad_gate_up, quantized[:3], quantized[3:], offsets, ctx.mxfp8, *ctx.needs_input_grad[:2]
         )
@@ -227,6 +242,7 @@ class NVFP4ExpertCompute:
             raise ValueError("NVFP4 expert compute supports gated experts only.")
         if any(bias is not None for bias in (experts.gate_proj_bias, experts.up_proj_bias, experts.down_proj_bias)):
             raise ValueError("NVFP4 expert compute does not support expert biases.")
+        _swiglu_limit(experts.activation)
         # Whole 128x4 scale tiles for the weights, whole 64-value tiles for the MXFP8 requantization
         dim = experts.down_proj.shape[-2]
         if dim % 128 or experts.hidden_dim % 64:
