@@ -13,7 +13,7 @@ num_infer_nodes = 1
 cp = 8
 ep = 8
 
+# One DEP8 replica per node: attention data parallel, experts sharded 8 ways.
 [inference.vllm]
-# 2 KV heads: TP above 2 replicates the KV cache.
-tensor_parallel_size = 2
-data_parallel_size = 4
+tensor_parallel_size = 1
+data_parallel_size = 8
