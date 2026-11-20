@@ -14,9 +14,9 @@ weight update and optimizer state is compared by relative error.
 - Load: a checkpoint of one strategy or layout, loaded into another, must restore the training state (FP32 weights,
   optimizer states, lr, scheduler, progress). The one-GPU suite loads checkpoints of the full suite on one GPU.
 
-`CASES` run in the tiny GPU subset, the other suites in the full GPU suite; known bugs are strict xfails. A case is one
-entry in its suite, a new strategy a `Setup` field. Run a suite without pytest (it writes `results-<suite>.json`;
-`one_gpu` runs with one process in the output dir of `full`):
+`CASES` run in the tiny GPU subset, the other suites in the full GPU suite. A case is one entry in its suite, a new
+strategy a `Setup` field. Run a suite without pytest (it writes `results-<suite>.json`; `one_gpu` runs with one process
+in the output dir of `full`):
 
     uv run torchrun --nproc-per-node=2 tests/unit/train/test_offload_checkpoint.py <output_dir> tiny|full
 """
@@ -59,7 +59,6 @@ from prime_rl.trainer.ckpt import AppState, CheckpointManager, Progress, setup_m
 from prime_rl.trainer.micro_batches import run_micro_batches
 from prime_rl.trainer.model import get_full_offload_dtype_policy, resolve_auto_attn, setup_model, setup_tokenizer
 from prime_rl.trainer.optim import setup_optimizer
-from prime_rl.trainer.optim.offload import FullCPUOffloadOptimizer
 from prime_rl.trainer.parallel_dims import ParallelDims, get_parallel_dims
 from prime_rl.trainer.perf import FlopCounter
 from prime_rl.trainer.scheduler import setup_scheduler
@@ -74,7 +73,6 @@ pytestmark = [pytest.mark.gpu]
 NUM_STEPS = 3
 SAVE_STEP = 2
 ROWS_PER_STEP = 4
-MASTER_WEIGHT = FullCPUOffloadOptimizer._MASTER_WEIGHT_STATE
 OPTIMIZERS = {"adamw": AdamWConfig, "muon": MuonConfig, "sign_sgd": SignSGDConfig}
 # The cosine schedule changes the lr every step, so a resume that loses the scheduler or the lr shows
 SCHEDULES = {"cosine": CosineSchedulerConfig(warmup_steps=0), "constant": ConstantSchedulerConfig()}
@@ -132,7 +130,6 @@ class Resume:
 
     name: str
     setup: Setup
-    bug: str | None = None
 
 
 @dataclass(frozen=True)
@@ -142,20 +139,7 @@ class Load:
     name: str
     saved: Setup
     setup: Setup
-    bug: str | None = None
 
-
-LR_BUG = "full offload resumes keep the configured lr: AppState.load_state_dict restores a copy's param groups"
-FUSED_BUG = "loading copies the saved fused=True into optimizer offload's AdamW, which fails on its CPU step counts"
-BF16_BUG = "full offload checkpoints hold BF16 weights under model, the FP32 masters only in the optimizer state"
-MASTERS_BUG = "full offload loads its FP32 masters from the optimizer state, which only its own checkpoints hold"
-LOAD_BUGS = {
-    ("none", "optimizer"): FUSED_BUG,
-    ("full", "none"): BF16_BUG,
-    ("full", "optimizer"): f"{BF16_BUG}; {FUSED_BUG}",
-    ("none", "full"): MASTERS_BUG,
-    ("optimizer", "full"): MASTERS_BUG,
-}
 
 DENSE, MOE = Setup("qwen3"), Setup("qwen3_moe")
 DENSE_CP2, MOE_EP2 = replace(DENSE, cp=2), replace(MOE, ep=2)
@@ -187,8 +171,7 @@ FULL_SUITE_CASES = [
     Resume("resume-qwen3-dp2-none-async", replace(DENSE, async_save=True)),
     Resume("resume-qwen3-dp2-optimizer", OPTIMIZER),
     Resume("resume-qwen3-dp2-muon-optimizer", replace(OPTIMIZER, optimizer="muon")),
-    Resume("resume-qwen3-dp2-full", FULL, bug=LR_BUG),
-    # A constant lr, which the lr bug leaves alone
+    Resume("resume-qwen3-dp2-full", FULL),
     Resume("resume-qwen3-dp2-full-constant_lr", replace(FULL, lr_schedule="constant")),
     Resume("resume-qwen3-dp2-full-async-constant_lr", replace(FULL, lr_schedule="constant", async_save=True)),
     Resume("resume-qwen3-dp2-sign_sgd-full-constant_lr", replace(FULL, optimizer="sign_sgd", lr_schedule="constant")),
@@ -199,12 +182,7 @@ FULL_SUITE_CASES = [
         replace(MOE_EP2, offload="full", lr_schedule="constant", freeze_moe_router=True),
     ),
     *(
-        Load(
-            f"load-qwen3-dp2-{saved}-to-{loaded}",
-            replace(DENSE, offload=saved),
-            replace(DENSE, offload=loaded),
-            LOAD_BUGS.get((saved, loaded)),
-        )
+        Load(f"load-qwen3-dp2-{saved}-to-{loaded}", replace(DENSE, offload=saved), replace(DENSE, offload=loaded))
         for saved, loaded in permutations(("none", "optimizer", "full"), 2)
     ),
     Load(
@@ -453,18 +431,15 @@ def differing(state: dict[str, str], reference: dict[str, str], label: str = "")
 
 
 def training_state(state: dict) -> dict:
-    """What a load must restore under any offloading: the FP32 weights of the trained parameters (full offload's
-    masters, else the model's), the optimizer states and step counters, the param groups' hyperparameters, the
-    scheduler and the progress counters. Works on states and on their hashes."""
+    """What a load must restore under any offloading: the FP32 weights of the trained parameters, the optimizer states
+    and step counters, the param groups' hyperparameters, the scheduler and the progress counters. Works on states and
+    on their hashes."""
     training = {}
     for key, value in state.items():
         if key.startswith("optimizers/state/"):
-            fqn, name = key.removeprefix("optimizers/state/").rsplit("/", 1)
-            if name == MASTER_WEIGHT:
-                training[f"weights/{fqn}"] = value
-            else:
-                training[key] = value
-                training.setdefault(f"weights/{fqn}", state[f"model/{fqn}"])
+            training[key] = value
+            fqn = key.removeprefix("optimizers/state/").rsplit("/", 1)[0]
+            training.setdefault(f"weights/{fqn}", state[f"model/{fqn}"])
         elif key.startswith(("scheduler/", "progress/")):
             training[key] = value
         elif key.startswith("optimizers/param_groups/") and key.rsplit("/", 1)[1] in HYPERPARAMETERS:
@@ -609,23 +584,18 @@ def check(result: dict) -> None:
     assert not result["differing"], f"differs from the reference: {result['differing'][:10]}"
 
 
-def params(cases: list) -> list:
-    marks = lambda case: pytest.mark.xfail(strict=True, reason=case.bug) if getattr(case, "bug", None) else ()
-    return [pytest.param(case, id=case.name, marks=marks(case)) for case in cases]
-
-
 @pytest.mark.tiny
-@pytest.mark.parametrize("case", params(CASES))
+@pytest.mark.parametrize("case", CASES, ids=[case.name for case in CASES])
 def test_offload_and_checkpoint(tiny_results: dict[str, dict], case):
     check(tiny_results[case.name])
 
 
-@pytest.mark.parametrize("case", params(FULL_SUITE_CASES))
+@pytest.mark.parametrize("case", FULL_SUITE_CASES, ids=[case.name for case in FULL_SUITE_CASES])
 def test_full_suite_offload_and_checkpoint(full_suite_results: dict[str, dict], case):
     check(full_suite_results[case.name])
 
 
-@pytest.mark.parametrize("case", params(ONE_GPU_CASES))
+@pytest.mark.parametrize("case", ONE_GPU_CASES, ids=[case.name for case in ONE_GPU_CASES])
 def test_one_gpu_loads_two_gpu_checkpoint(one_gpu_results: dict[str, dict], case):
     check(one_gpu_results[case.name])
 
