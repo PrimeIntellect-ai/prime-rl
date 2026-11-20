@@ -31,6 +31,13 @@ from prime_rl.utils.cp import CPContext, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
+def document_bounds(cu_seqlens: torch.Tensor, total_tokens: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Each token's document start and end (exclusive), so the compiled layers never see the document count."""
+    tokens = torch.arange(total_tokens, device=cu_seqlens.device)
+    documents = torch.searchsorted(cu_seqlens[1:], tokens, right=True)
+    return cu_seqlens[:-1][documents], cu_seqlens[1:][documents]
+
+
 class Qwen3_8FlashNextDecoderLayer(nn.Module):
     def __init__(self, config: Qwen3_8FlashNextTextConfig, layer_index: int) -> None:
         super().__init__()
@@ -98,16 +105,18 @@ class Qwen3_8FlashNextDecoderLayer(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor,
         chunk_indices: torch.Tensor,
+        document_starts: torch.Tensor,
+        document_ends: torch.Tensor,
         routed_experts: torch.LongTensor | None = None,
     ) -> torch.Tensor:
         if self.ple is not None:
-            hidden_states = hidden_states + self.ple(hidden_states, ngram_embedding, cu_seqlens)
+            hidden_states = hidden_states + self.ple(hidden_states, ngram_embedding, document_starts)
 
         block_input, (hidden_states, injection_weights) = self.attn_hyper_connection.mix(hidden_states)
         if self.layer_type == "linear_attention":
             block_output = self.linear_attn(block_input, cu_seqlens, chunk_indices)
         else:
-            block_output = self.self_attn(block_input, position_embeddings, cu_seqlens)
+            block_output = self.self_attn(block_input, position_embeddings, document_starts, document_ends)
 
         # The MLP's mix applies the attention's combine in the same pass.
         block_input, residual_state = self.mlp_hyper_connection.mix(hidden_states, (block_output, injection_weights))
@@ -205,6 +214,9 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
         )
         torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
         chunk_indices = prepare_chunk_indices(cu_seqlens)
+        document_starts, document_ends = document_bounds(
+            cu_seqlens, inputs_embeds.shape[1] * self.cp_context.cp_world_size
+        )
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
         ngram_ids = self.ngram.hash(input_ids, cu_seqlens)
 
@@ -217,6 +229,8 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
                 position_embeddings=position_embeddings,
                 cu_seqlens=cu_seqlens,
                 chunk_indices=chunk_indices,
+                document_starts=document_starts,
+                document_ends=document_ends,
                 routed_experts=layer_routed_experts,
             )
         hidden_states, _ = self.hyper_connection_mixer(hidden_states)
