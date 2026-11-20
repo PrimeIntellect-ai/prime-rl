@@ -42,6 +42,7 @@ def apply_shared_vllm_patches():
     monkey_patch_nixl_bidirectional_single_pull()
     monkey_patch_nixl_sliding_window_backoff()
     monkey_patch_nixl_bidirectional_spec_decode_coverage()
+    monkey_patch_multi_connector_first_claim()
     monkey_patch_keep_pause_ignores_held_kv()
     monkey_patch_freeze_nixl_leases_during_keep_pause()
     # Set by `server()` when the LoRA target modules include no expert layers.
@@ -177,6 +178,36 @@ def monkey_patch_nixl_bidirectional_spec_decode_coverage():
 
     request_finished._prime_rl_spec_decode_coverage = True
     cls.request_finished = request_finished
+
+
+def monkey_patch_multi_connector_first_claim():
+    """MultiConnector: once a connector claims a request, do not ask the connectors after it.
+
+    vLLM assigns a request to the first connector that reports new matched tokens, but still calls
+    ``get_num_new_matched_tokens`` on every connector, and returns None (retry next step) while any of them is still
+    looking up. Under bidirectional P/D, NIXL comes first and claims nearly every prefill turn through decode's handle,
+    so the Mooncake store lookup after it is a blocking round trip to the worker, over every block of the prompt,
+    whose answer is discarded. A turn NIXL does not claim (no decode handle, or a declined or failed read that comes
+    back through the lookup under the ``recompute`` policy) still reaches the store.
+    """
+    from vllm.distributed.kv_transfer.kv_connector.v1.multi_connector import MultiConnector
+
+    original = MultiConnector.get_num_new_matched_tokens
+    if getattr(original, "_prime_rl_first_claim", False):
+        return
+
+    def get_num_new_matched_tokens(self, request, num_computed_tokens):
+        for i, connector in enumerate(self._connectors):
+            toks, load_async = connector.get_num_new_matched_tokens(request, num_computed_tokens)
+            if toks is None:
+                return None, False
+            if toks > 0:
+                self._requests_to_connector[request.request_id] = i
+                return toks, load_async
+        return 0, False
+
+    get_num_new_matched_tokens._prime_rl_first_claim = True
+    MultiConnector.get_num_new_matched_tokens = get_num_new_matched_tokens
 
 
 def monkey_patch_keep_pause_ignores_held_kv():
