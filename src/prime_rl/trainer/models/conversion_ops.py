@@ -1,10 +1,8 @@
 """Declarative, invertible state-dict conversion operators.
 
 Every prime-rl model converts between the HuggingFace checkpoint layout and
-the PrimeRL training layout. Historically each model hand-wrote a pair of
-imperative ``convert_hf_*`` / ``convert_*_to_hf`` functions; this module
-replaces them with a declarative chain of small operators, each of which knows
-how to go *both* directions:
+the PrimeRL training layout. A model declares that conversion as a chain of
+small operators, each of which knows how to go *both* directions:
 
     forward  (``hf_to_prime``):  HF checkpoint  ->  PrimeRL training layout
     backward (``prime_to_hf``):  PrimeRL training layout  ->  HF checkpoint
@@ -18,16 +16,15 @@ Design constraints:
 
 * **Sharding-aware, no gathers.** Pure name ops (:class:`Rename`,
   :class:`PrefixRename`, :class:`Drop`) are value-agnostic, so they operate on
-  DTensors/local shards untouched. The only value-touching op,
-  :class:`Stack`, stacks/unstacks along a new (expert) dim and takes an
-  ``expert_offset`` so a rank can unstack just its *local* experts into
+  DTensors/local shards untouched. :class:`Stack` stacks/unstacks along a
+  new (expert) dim and takes an ``index_offset`` so a rank can unstack just its *local* experts into
   globally-numbered per-expert keys — no all-gather. Any op that genuinely
   needs a full tensor is the caller's responsibility to gather first (via the
   trainer's ``resolve_dtensors``); none of the ops here gather on their own.
 * **Every op is present-guarded** — it no-ops when its inputs are absent — so
   the same per-layer op list can be emitted for every layer and simply skips
-  dense / non-matching layers, exactly as the imperative loops did.
-* **"Backward" means "what the imperative ``*_to_hf`` did"**, not necessarily
+  dense / non-matching layers.
+* **"Backward" means "emit the HF checkpoint layout"**, not necessarily
   a strict mathematical inverse.
 """
 
@@ -267,8 +264,8 @@ class Conditional(ConvOp):
     The predicate is evaluated independently in each direction against the
     *current* state dict (``hf_to_prime`` sees HF keys, ``prime_to_hf`` sees
     PrimeRL keys), so the branch chosen on the way back can legitimately differ
-    from the way out — which is exactly what the imperative converters do (e.g.
-    accept a fused *or* per-expert HF input, but always emit per-expert)."""
+    from the way out (e.g. accept a fused *or* per-expert HF input, but always
+    emit per-expert)."""
 
     predicate: Callable[[StateDict], bool]
     then: list[ConvOp]

@@ -39,8 +39,8 @@ def conversion_chain(config) -> list[ConvOp]:
 
         # Expert bias. The base Rename handles the canonical `experts.` input and
         # the (always-singular) backward; the conditional adds the forward-only
-        # `gate.` alternate, firing only when the canonical input is absent so it
-        # matches the imperative's "experts wins" preference.
+        # `gate.` alternate, firing only when the canonical input is absent so the
+        # `experts.` key wins when both are present.
         ops.append(Rename(f"{p}.mlp.experts.e_score_correction_bias", f"{p}.mlp.router.selection_bias"))
         ops.append(
             Conditional(
