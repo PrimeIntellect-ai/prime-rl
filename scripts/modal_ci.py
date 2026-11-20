@@ -74,6 +74,7 @@ SUITES = {
             Group("dsv4-kernels", gpus=1, timeout=25, paths=("tests/unit/train/models/test_deepseek_v4_kernels.py",)),
             Group("dsv4", gpus=1, paths=("tests/unit/train/models/test_deepseek_v4.py",)),
             Group("invariance", gpus=2, timeout=35, paths=("tests/unit/train/test_distributed_invariance.py",)),
+            Group("offload", gpus=2, paths=("tests/unit/train/test_offload_checkpoint.py",)),
             Group("vllm-parity", gpus=1, paths=("tests/unit/train/models/test_vllm_parity.py",)),
             Group("rest", gpus=2, timeout=30),
             # Each integration test starts its own RL or SFT runs
