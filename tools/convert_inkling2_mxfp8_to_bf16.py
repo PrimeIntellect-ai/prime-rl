@@ -166,14 +166,34 @@ def convert_shard(input_dir: Path, output_dir: Path, shard: str) -> int:
     return n_experts
 
 
+def converted_shard_header(source: Path, converted: Path) -> dict:
+    original, _ = read_header(source)
+    header, header_len = read_header(converted)
+    original.pop("__metadata__", None)
+    header.pop("__metadata__", None)
+    expected = {name for name in original if not is_expert_scale(name, original)}
+    if header.keys() != expected:
+        raise ValueError(f"{converted} has unexpected or missing tensors")
+    offset = 0
+    for name, info in sorted(header.items(), key=lambda entry: entry[1]["data_offsets"][0]):
+        src = original[name]
+        dtype = "BF16" if is_expert_weight(name, src) else src["dtype"]
+        end = offset + int(np.prod(src["shape"], dtype=np.int64)) * DTYPE_ITEMSIZE[dtype]
+        if info != {"dtype": dtype, "shape": src["shape"], "data_offsets": [offset, end]}:
+            raise ValueError(f"{converted} has invalid metadata for {name}")
+        offset = end
+    if converted.stat().st_size != 8 + header_len + offset:
+        raise ValueError(f"{converted} has an incorrect file size")
+    return header
+
+
 def finalize(input_dir: Path, output_dir: Path) -> None:
     old_index = json.loads((input_dir / "model.safetensors.index.json").read_text())
     shards = sorted(set(old_index["weight_map"].values()))
     weight_map = {}
     total_size = 0
     for shard in shards:
-        header, _ = read_header(output_dir / shard)
-        header.pop("__metadata__", None)
+        header = converted_shard_header(input_dir / shard, output_dir / shard)
         total_size += max(info["data_offsets"][1] for info in header.values())
         for name in header:
             if name in weight_map:
@@ -211,12 +231,15 @@ def main() -> None:
 
     input_dir = args.input_dir.resolve()
     output_dir = (args.output_dir or input_dir.with_name(input_dir.name + "-BF16")).resolve()
+    if output_dir == input_dir:
+        parser.error("input and output directories must be different")
     output_dir.mkdir(parents=True, exist_ok=True)
     if not args.finalize:
         index = json.loads((input_dir / "model.safetensors.index.json").read_text())
         shards = [args.shard] if args.shard else sorted(set(index["weight_map"].values()))
         for shard in shards:
             if (output_dir / shard).exists():
+                converted_shard_header(input_dir / shard, output_dir / shard)
                 print(f"[skip] {shard}")
                 continue
             convert_shard(input_dir, output_dir, shard)
