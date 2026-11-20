@@ -80,8 +80,9 @@ def due(read: np.ndarray, start: np.ndarray, weights: np.ndarray) -> np.ndarray:
 
 def mixture_changed(saved: dict[str, dict], now: dict[str, dict], log: bool) -> bool:
     """Whether the mixture of the sources ``now`` differs, in shares or order, from that of a checkpoint's sources
-    ``saved`` (by name, each a weight and the facts of its data). Sources match by name: a kept source reads on where it stopped, which needs
-    the same data, so one whose facts differ raises. With ``log``, a changed mixture logs a line per source."""
+    ``saved`` (by name, each a weight and the facts of its data). Sources match by name: a kept source reads on where
+    it stopped, which needs the same data, so one whose facts differ raises. With ``log``, a changed mixture logs a line
+    per source."""
     for name, source in now.items():
         for key, value in source.items():
             if name in saved and key != "weight" and saved[name].get(key) != value:
