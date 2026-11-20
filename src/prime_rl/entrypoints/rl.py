@@ -1,7 +1,6 @@
 import json
 import os
 import socket
-import subprocess
 import sys
 import tempfile
 import time
@@ -15,6 +14,7 @@ from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, run_links
 from prime_rl.entrypoints.inference import mooncake_offloads, vllm_overrides_fragment, write_pd_configs
+from prime_rl.entrypoints.slurm import load_slurm_template, submit_sbatch
 from prime_rl.utils.config import check_mode, cli, dump_resolved_config, dump_rl_components
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
@@ -348,13 +348,8 @@ def rl_local(config: RLConfig):
 
 def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script_path: Path) -> None:
     """Write the SLURM script to disk."""
-    from jinja2 import Environment, FileSystemLoader
-
     assert config.slurm is not None
-    assert config.slurm.template_path is not None
-
-    env = Environment(loader=FileSystemLoader(config.slurm.template_path.parent), keep_trailing_newline=True)
-    template = env.get_template(config.slurm.template_path.name)
+    template = load_slurm_template(config.slurm)
 
     mooncake_vars = dict(mooncake_offloads=mooncake_offloads(config.inference))
 
@@ -558,13 +553,7 @@ def rl_slurm(config: RLConfig):
 
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
 
-    logger.info(f"Submitting: sbatch {script_path}")
-    result = subprocess.run(["sbatch", str(script_path)], capture_output=True, text=True)
-    if result.returncode != 0:
-        logger.error(f"sbatch failed: {result.stderr.strip()}")
-        sys.exit(1)
-
-    logger.success(f"{result.stdout.strip()}\n\n{log_message}")
+    submit_sbatch(script_path, log_message)
     log_run_links(dashboard_url)
 
 
