@@ -317,11 +317,16 @@ class EnvClient:
     async def save(self, directory: str, timeout: float | None = None) -> SaveResponse:
         """Take a memory checkpoint of every rollout running on the pool's workers, each
         written as a restore file under `directory`. The caller owns the snapshots of
-        the restore points it gets back."""
+        the restore points it gets back. Each saved rollout then waits at its restore
+        point until `release`: one that finished and shipped meanwhile would be both in a
+        trained batch and in the checkpoint as in flight, and a resume would train on it
+        twice."""
         return await self._request(SaveRequest(dir=directory), SaveResponse, timeout=timeout)
 
     async def release(self, timeout: float | None = 30.0) -> None:
-        """Let the rollouts the last `save` holds at their restore points go on."""
+        """Let the rollouts the last `save` holds at their restore points go on, once the
+        caller recorded them. A worker that never gets the release ends the hold itself
+        after two minutes."""
         await self._request(ReleaseRequest(), BaseResponse, timeout=timeout)
 
     async def discard(self, snapshots: list[dict], timeout: float | None = 120.0) -> list[str]:
