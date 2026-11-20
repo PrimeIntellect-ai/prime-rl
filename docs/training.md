@@ -353,7 +353,7 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 | `type` | fields | scored |
 |---|---|---|
 | `documents` | `path`: a folder of datatrove tokenized shards (see [Pretraining](#pretraining)) | every document on its own, from its first token, with the tokens as stored, in non-overlapping windows of `seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it |
-| `chat` | the fields of an SFT source ([Sources](#sources)) but `weight`: `dataset`, `subset`, `split` (default `train`), `revision`, `columns`, `renderer`; plus `loss_mask` | every row of the split in order, rendered as SFT renders its training data; the tokens SFT trains on (`loss_mask`), cut after `seq_len` input tokens. Unset `columns` fields keep `data.columns` (the defaults in pretraining) |
+| `chat` | the fields of an SFT source ([Sources](#sources)) but `weight`: `dataset`, `subset`, `split` (default `train`), `revision`, `columns`, `renderer`; plus `loss_mask` | every row of the split in order, rendered as SFT renders its training data; the tokens SFT trains on (`loss_mask`), cut after `seq_len` input tokens. Unset `columns` fields keep `data.columns`, and `loss_mask` defaults to `data.loss_mask` (the defaults in pretraining) |
 
 ```toml
 [val]

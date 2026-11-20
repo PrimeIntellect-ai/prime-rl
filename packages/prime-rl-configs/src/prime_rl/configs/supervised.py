@@ -167,8 +167,9 @@ class ChatValSourceConfig(HFDatasetConfig, BaseValSourceConfig):
 
     type: Literal["chat"] = "chat"
 
-    loss_mask: LossMaskConfig = LossMaskConfig()
-    """Which message types are scored."""
+    loss_mask: LossMaskConfig | None = None
+    """Which message types are scored. Defaults to the training ``data.loss_mask`` (the default mask in
+    pretraining)."""
 
 
 ValSourceConfig: TypeAlias = Annotated[DocumentsValSourceConfig | ChatValSourceConfig, Field(discriminator="type")]
@@ -478,6 +479,8 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
                 val_source.seq_len = self.data.seq_len
             if val_source.type == "chat":
                 val_source.resolve_columns(getattr(self.data, "columns", SFTColumnsConfig()))
+                if val_source.loss_mask is None:
+                    val_source.loss_mask = getattr(self.data, "loss_mask", LossMaskConfig())
         longest = max(val_source.seq_len for val_source in self.val.source)
         if self.val.micro_batch_tokens is None:
             row_len = max(self.data.seq_len * self.data.micro_batch_size, longest)
