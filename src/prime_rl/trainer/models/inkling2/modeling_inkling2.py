@@ -345,6 +345,7 @@ class Inkling2DecoderLayer(GradientCheckpointingLayer):
         cu_seqlens: Tensor,
         doc_ids: Tensor,
         block_masks: dict[str, BlockMask],
+        routed_experts: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         dtype = hidden_states.dtype
         block_residual = hidden_states
@@ -386,7 +387,7 @@ class Inkling2DecoderLayer(GradientCheckpointingLayer):
             residual = (block_residual.float() + attn_out.float()).to(dtype)
 
         mlp_in = self.mlp_input(mlp_query, block_states, residual)[..., 0, :]
-        mlp_out = self.mlp(self.post_attention_layernorm(mlp_in).to(dtype))
+        mlp_out = self.mlp(self.post_attention_layernorm(mlp_in).to(dtype), routed_experts=routed_experts)
         mlp_out = self.post_mlp_convolution(mlp_out, cu_seqlens, doc_ids)
         return ((residual.float() + mlp_out.float()).to(dtype), block_states)
 
@@ -491,8 +492,6 @@ class Inkling2Model(Inkling2PreTrainedModel):
     ) -> MoeModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
-        if routed_experts is not None:
-            raise NotImplementedError("routed_experts replay is not supported for Inkling 2")
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
         inputs_embeds = self.embed_norm(inputs_embeds)
@@ -524,6 +523,7 @@ class Inkling2Model(Inkling2PreTrainedModel):
                 cu_seqlens,
                 doc_ids,
                 block_masks,
+                routed_experts[:, :, layer_idx] if routed_experts is not None else None,
             )
 
         hidden_states = self.final_input(self.attn_res.output_query, block_states, hidden_states)[..., 0, :]
