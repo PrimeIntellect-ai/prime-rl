@@ -594,6 +594,7 @@ def train(config: TrainerConfig):
                 # VanillaOutputLinear was used - need to compute logprobs externally with per-token temps
                 assert out.get("logits") is not None, "Logits must be provided to compute logprobs"
                 logits = out["logits"]
+                assert (temperatures > 0).all(), "RL trainer requires positive temperatures to compute policy logprobs"
                 # Per-token temperature scaling: temperatures is [batch, seq], logits is [batch, seq, vocab]
                 scaled_logits = logits / temperatures.unsqueeze(-1)
                 if label_support is not None:
