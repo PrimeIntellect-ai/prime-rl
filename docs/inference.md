@@ -276,6 +276,18 @@ type = "mooncake"
 num_bytes = 0
 ```
 
+With `pool_only = true`, a role's nodes contribute their DRAM (and disk) to the pool, but its engines neither load from nor save to the store. Under [bidirectional KV transfer](#bidirectional-kv-transfer), decode needs no store connector, and pool-only decode nodes still grow the pool that prefill uses:
+
+```toml
+[inference.deployment.decode_kv_cache_offload]
+type = "mooncake"
+pool_only = true
+[inference.deployment.decode_kv_cache_offload.cpu]
+num_bytes = 1_000_000_000_000
+```
+
+On nodes without the `nvidia_peermem` kernel module, the launcher has Mooncake register GPU memory through DMA-BUF (`WITH_NVIDIA_PEERMEM=0`); otherwise every store put fails.
+
 Mooncake keys a block by model, parallel rank and content hash only. Roles that share the store must therefore use the same KV layout (tensor parallel size, `kv_cache_dtype`, block size): do not change these in only one role's `*_vllm_overrides`.
 
 ### HiSparse
@@ -313,7 +325,25 @@ The engine admin routes are `POST /update_draft_weights` with `{"weight_dir": "/
 
 For optimal P/D disaggregation deployment, we automatically set the decode `all2all_backend` to `deepep_low_latency` and the prefill `all2all_backend` to `deepep_high_throughput`. We currently don't support customizing all2all backends for P/D disaggragation out of the box. You can do this by overriding the slurm template only.
 
-For KV cache transfer, we utilize the NIXL connector. This is the default and only currently supported connector. We aim to support more advanced options, such as D->P transfer, or Mooncake Connector in the future.
+For KV cache transfer, we utilize the NIXL connector. This is the default and only currently supported connector.
+
+Each single-GPU engine (DP + EP, `tensor_parallel_size = 1`) sends its NIXL traffic through the RDMA port nearest its GPU in the PCIe tree, on one rail (`UCX_NET_DEVICES`, `UCX_MAX_RMA_RAILS=1`). Spreading GPUDirect RDMA over every NIC routes part of it across CPU sockets, and under sustained transfer load that has stalled GPUs (Xid 119 followed by Xid 154). Set `inference.deployment.nixl_nic_affinity = false` to use every port again.
+
+#### Bidirectional KV transfer
+
+In multi-turn rollouts each turn's prompt is the previous turn's prompt and completion plus new messages. With one-way transfer, prefill recomputes all of it (minus its own prefix-cache or Mooncake hits), although decode still holds the KV. Bidirectional transfer (vLLM's `bidirectional_kv_xfer`) reads it back instead:
+
+1. Decode keeps a finished turn's KV blocks for `decode_blocks_ttl_s` and returns their handle with the response.
+2. The router stores the handle per session (`x-session-id`) and sends it with the session's next turn to prefill, which reads those blocks from decode over NIXL and computes only the new tokens.
+3. Prefill sends the full prompt KV to decode as usual. Decode serves the old part from its own prefix cache, since sessions stay on their decode instance.
+
+```toml
+[inference.deployment.bidirectional_kv_transfer]
+decode_blocks_ttl_s = 480   # how long decode keeps a finished turn's blocks
+# router_ttl_s = 450        # how long the router keeps the handle; must be shorter, defaults to TTL - 30 s
+```
+
+A handle is used at most once. Decode frees the blocks after the first read, so reading them a second time (a retried turn, a client retry after an error) would load whatever KV has since been written there, and the model would continue from corrupted context. The router therefore drops the handle when a turn starts, and a retried turn runs a plain prefill. Requires the `vllm-router` router. HiSparse decode instances are not supported.
 
 > **Required:** The pip-wheel NIXL's bundled UCX segfaults on the prefill→decode KV transfer. You must build NIXL against UCX 1.19.x from source — see [Disaggregated Prefill/Decode Inference](advanced.md#disaggregated-prefilldecode-inference) in the Advanced docs for the full setup.
 
