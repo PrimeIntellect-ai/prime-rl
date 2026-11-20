@@ -574,23 +574,45 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_nvfp4_experts(self):
-        """NVFP4 trainer experts reproduce the engines' online ``nvfp4_per_token`` MoE, so the engines must run it,
-        with the trainer's FlashInfer quantizer settings."""
+        """NVFP4 trainer experts reproduce vLLM's online ``nvfp4_per_token`` experts on the FlashInfer TRT-LLM backend
+        (vLLM's other backends round differently), so every engine must run them, with the trainer's FlashInfer
+        quantizer settings. Disaggregated roles can override both, so each role is checked."""
         compute = self.trainer.model.moe.compute
         if not isinstance(compute, NVFP4MoEComputeConfig) or self.inference is None:
             return self
         vllm = self.inference.vllm
-        moe_quantization = (getattr(vllm, "quantization_config", None) or {}).get("moe")
-        if vllm.quantization != "online" or moe_quantization != "nvfp4_per_token":
-            raise ValueError(
-                "trainer.model.moe.compute.type = 'nvfp4' needs engines with the same routed-expert numerics: set "
-                "inference.vllm.quantization = 'online' and inference.vllm.quantization_config.moe = 'nvfp4_per_token'."
-            )
+        if getattr(vllm, "moe_backend", None) is None:
+            vllm.moe_backend = "flashinfer_trtllm"
         for name, value in compute.flashinfer_env.items():
-            if self.inference.env_vars.setdefault(name, value) != value:
+            self.inference.env_vars.setdefault(name, value)
+        deployment = self.inference.deployment
+        roles = {"inference": ({}, {})} | {
+            role: (getattr(deployment, f"{role}_vllm_overrides", {}), getattr(deployment, f"{role}_env_vars", {}))
+            for role in ("prefill", "decode")
+        }
+        for role, (overrides, env_vars) in roles.items():
+            quantization, quantization_config, moe_backend = (
+                overrides.get(key, getattr(vllm, key, None))
+                for key in ("quantization", "quantization_config", "moe_backend")
+            )
+            if (
+                quantization != "online"
+                or (quantization_config or {}).get("moe") != "nvfp4_per_token"
+                or moe_backend != "flashinfer_trtllm"
+            ):
                 raise ValueError(
-                    f"inference.env_vars.{name} = {self.inference.env_vars[name]!r} disagrees with the trainer's NVFP4 "
-                    f"experts ({value!r}); set it through trainer.model.moe.compute."
+                    "trainer.model.moe.compute.type = 'nvfp4' needs engines on vLLM's online nvfp4_per_token experts "
+                    f"with moe_backend = 'flashinfer_trtllm', but the {role} engines run quantization = "
+                    f"{quantization!r}, quantization_config = {quantization_config!r}, moe_backend = {moe_backend!r}."
+                )
+            env_vars = {**self.inference.env_vars, **env_vars}
+            disagreeing = {
+                name: env_vars[name] for name, value in compute.flashinfer_env.items() if env_vars[name] != value
+            }
+            if disagreeing:
+                raise ValueError(
+                    f"The {role} engines' {disagreeing} disagree with the trainer's NVFP4 experts "
+                    f"({compute.flashinfer_env}); set them through trainer.model.moe.compute."
                 )
         return self
 

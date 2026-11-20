@@ -1632,6 +1632,9 @@ def test_rl_nvfp4_experts_set_up_matching_engines():
     config = rl(nvfp4)
     assert config.inference.env_vars["FLASHINFER_NVFP4_4OVER6"] == "1"
     assert config.inference.env_vars["FLASHINFER_DISABLE_FP4_QUANT_FAST_MATH"] == "1"
+    assert config.inference.vllm.moe_backend == "flashinfer_trtllm"
+    with pytest.raises(ValueError, match="moe_backend"):
+        rl({**nvfp4, "moe_backend": "flashinfer_cutedsl"})
     with pytest.raises(ValueError, match="nvfp4_per_token"):
         rl({"quantization": "mxfp8"})
     with pytest.raises(ValueError, match="FLASHINFER_NVFP4_4OVER6"):
