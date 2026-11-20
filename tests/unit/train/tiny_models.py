@@ -100,8 +100,14 @@ TINY_PRIME_RL_MODELS: dict[str, PretrainedConfig] = {
     "deepseek_v4": DeepseekV4Config(
         vocab_size=151936,
         hidden_size=256,
-        num_hidden_layers=3,
-        layer_types=["sliding_attention", "compressed_sparse_attention", "heavily_compressed_attention"],
+        num_hidden_layers=5,
+        layer_types=[
+            "sliding_attention",
+            "sliding_attention",
+            "sliding_attention",
+            "compressed_sparse_attention",
+            "heavily_compressed_attention",
+        ],
         # The packed Reverse-Text-SFT documents are ~90-100 tokens, and a document shorter than the compress rate gets
         # no compressed entry, so the published rate of 128 would leave the heavily compressed attention unused
         compress_rates={"compressed_sparse_attention": 4, "heavily_compressed_attention": 16},
@@ -111,7 +117,7 @@ TINY_PRIME_RL_MODELS: dict[str, PretrainedConfig] = {
         n_routed_experts=8,
         num_experts_per_tok=2,
         moe_intermediate_size=128,
-        num_hash_layers=1,
+        num_hash_layers=3,
         max_position_embeddings=4096,
         dsa_backend="tilelang",
     ),
