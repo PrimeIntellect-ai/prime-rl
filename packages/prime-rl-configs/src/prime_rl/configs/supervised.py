@@ -1,10 +1,12 @@
 import uuid
 import warnings
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
+from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
+from renderers.base import MODEL_RENDERER_MAP
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig, setup_dummy_load
@@ -75,31 +77,102 @@ def check_sources(sources: list[BaseSourceConfig]) -> None:
         raise ValueError("data.source: the weights must sum to more than 0")
 
 
-class BaseValConfig(BaseConfig):
-    interval: int = Field(50, ge=1)
-    """Run validation every N training steps."""
+class LossMaskConfig(BaseConfig):
+    system: bool = False
+    """System messages contribute to the loss."""
 
-    eval_on_start: bool = False
-    """Run validation before the first training step."""
+    user: bool = False
+    """User messages contribute to the loss."""
 
-    data: BaseDataConfig
+    assistant: bool = True
+    """Assistant messages contribute to the loss."""
+
+    tool: bool = False
+    """Tool messages contribute to the loss."""
 
 
-class DocumentsValSetConfig(BaseConfig):
+class SFTColumnsConfig(BaseConfig):
+    """Dataset columns the trainer reads. Set a field to read a column under another name."""
+
+    messages: str = "messages"
+    """Column with the whole chat as a list of OpenAI chat messages."""
+
+    prompt: str = "prompt"
+    """Column with the prompt as a list of OpenAI chat messages, read with ``completion`` when a row has no messages."""
+
+    completion: str = "completion"
+    """Column with the completion as a list of OpenAI chat messages."""
+
+    tools: str = "tools"
+    """Column with the tool schemas in OpenAI function-calling format."""
+
+    message_loss_mask: str = "message_loss_mask"
+    """Optional column of booleans or integer 0/1 flags, one per resolved message (prompt + completion for split rows). Zero excludes a message from loss; one preserves its normal supervision. Missing or null masks leave supervision unchanged."""
+
+    renderer: dict[str, str] = {"reasoning_effort": "reasoning_effort"}
+    """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``reasoning_effort = "effort"``. A row's non-null value overrides the ``[renderer]`` setting; rows and datasets without the column use it unchanged."""
+
+
+class HFDatasetConfig(BaseConfig):
+    """One ``(dataset, subset, split)`` of a Hugging Face dataset, with its columns and chat-template kwargs."""
+
+    dataset: str
+    """HF dataset name or local path."""
+
+    revision: str | None = None
+    """HF dataset revision to load. Ignored for a local path."""
+
+    subset: str | None = None
+    """Subset (config name) of the dataset."""
+
+    split: str = "train"
+    """Split of the dataset."""
+
+    columns: SFTColumnsConfig | None = None
+    """Columns of this dataset. Unset fields keep ``data.columns`` (the defaults in pretraining)."""
+
+    renderer: dict[str, Any] = {}
+    """Chat-template kwargs for this dataset's rows, applied over ``[renderer]`` and under a row's
+    ``columns.renderer`` values, e.g. ``{ reasoning_effort = "high" }``."""
+
+    def resolve_columns(self, columns: SFTColumnsConfig) -> None:
+        """Fill the unset fields of ``self.columns`` from ``columns``."""
+        overrides = self.columns.model_dump(exclude_unset=True) if self.columns is not None else {}
+        self.columns = SFTColumnsConfig.model_validate({**columns.model_dump(), **overrides})
+
+
+class BaseValSourceConfig(BaseConfig):
+    name: str = Field(pattern=r"^[^/]+$")
+    """Names the source's metrics, ``val/<name>/<metric>@<seq_len>``, e.g. ``val/fineweb-edu/bpb@2k``."""
+
+    seq_len: int | None = Field(None, ge=1)
+    """Context length: the most input tokens a scored sequence has. Defaults to the training ``data.seq_len``."""
+
+
+class DocumentsValSourceConfig(BaseValSourceConfig):
     """Pre-tokenized documents. Every document is scored on its own, from its first token, in non-overlapping windows
     of ``seq_len`` scored tokens: a longer document continues in the next window, which does not see the tokens
     before it."""
 
     type: Literal["documents"] = "documents"
 
-    name: str = Field(pattern=r"^[^/]+$")
-    """Names the set's metrics, ``val/<name>/<metric>@<seq_len>``, e.g. ``val/fineweb-edu/bpb@2k``."""
-
     path: Path
     """Folder of datatrove tokenized shards, as for a pretraining source's ``path``. The tokens are scored as stored."""
 
-    seq_len: int | None = Field(None, ge=1)
-    """Context length: the most input tokens a scored sequence has. Defaults to the training ``data.seq_len``."""
+
+class ChatValSourceConfig(HFDatasetConfig, BaseValSourceConfig):
+    """Conversations, rendered as SFT renders its training data: the fields of an SFT ``[[data.source]]`` but
+    ``weight``. The rows are scored in order; the tokens SFT trains on (``loss_mask``) are scored, and a conversation is
+    cut after ``seq_len`` input tokens."""
+
+    type: Literal["chat"] = "chat"
+
+    loss_mask: LossMaskConfig | None = None
+    """Which message types are scored. Defaults to the training ``data.loss_mask`` (the default mask in
+    pretraining)."""
+
+
+ValSourceConfig: TypeAlias = Annotated[DocumentsValSourceConfig | ChatValSourceConfig, Field(discriminator="type")]
 
 
 class ValConfig(BaseConfig):
@@ -109,28 +182,28 @@ class ValConfig(BaseConfig):
     eval_on_start: bool = False
     """Run validation before the first training step."""
 
-    set: list[DocumentsValSetConfig] = Field(min_length=1)
-    """The validation sets (``[[val.set]]``). Each logs ``val/<name>/loss@<seq_len>``, the mean loss per scored
-    token, and with a byte-level BPE tokenizer ``val/<name>/bpb@<seq_len>``, bits per UTF-8 byte of the scored
+    source: list[ValSourceConfig] = Field(min_length=1)
+    """The validation sources (``[[val.source]]``). Each logs ``val/<name>/loss@<seq_len>``, the mean loss per
+    scored token, and with a byte-level BPE tokenizer ``val/<name>/bpb@<seq_len>``, bits per UTF-8 byte of the scored
     tokens."""
 
     num_samples: int | None = Field(None, ge=1)
-    """Items per set and validation: the first ``num_samples`` documents of each set, the same ones every time. If
-    None, every item."""
+    """Items per source and validation: the first ``num_samples`` documents or rows of each source, the same ones
+    every time. If None, every item."""
 
     micro_batch_tokens: int | None = Field(None, ge=1)
-    """Tokens per packed row of the sets (one forward pass). Defaults to the training micro-batch
-    (``data.seq_len * data.micro_batch_size``) or the longest set ``seq_len``, whichever is larger, rounded up to a
+    """Tokens per packed row of the sources (one forward pass). Defaults to the training micro-batch
+    (``data.seq_len * data.micro_batch_size``) or the longest source ``seq_len``, whichever is larger, rounded up to a
     multiple of ``model.cp``; must be at least that longest ``seq_len``."""
 
     save_arrays: bool = False
-    """Write the per-item arrays (npz) and summary (json) of every set to ``<run_dir>/val/step_N/``."""
+    """Write the per-item arrays (npz) and summary (json) of every source to ``<run_dir>/val/step_N/``."""
 
     @model_validator(mode="after")
     def validate_unique_names(self):
-        names = [val_set.name for val_set in self.set]
+        names = [val_source.name for val_source in self.source]
         if len(set(names)) < len(names):
-            raise ValueError(f"val.set names must be unique: {names}")
+            raise ValueError(f"val.source names must be unique: {names}")
         return self
 
 
@@ -159,9 +232,14 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     auto_freeze_moe_router = False
     # Standard L2 regularization for supervised training.
     auto_weight_decay = 0.01
+
+    renderer: RendererConfig = AutoRendererConfig()
+    """Renderer config, for SFT data and ``chat`` validation sources. Defaults to auto-selecting from the tokenizer
+    model name."""
+
     data: BaseDataConfig
 
-    val: BaseValConfig | ValConfig | None = None
+    val: ValConfig | None = None
     """Validation configuration. If None, no validation runs."""
 
     eval: SFTOnlineEvalConfig | None = None
@@ -394,17 +472,21 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
 
     @model_validator(mode="after")
     def auto_setup_val(self):
-        if not isinstance(self.val, ValConfig):
+        if self.val is None:
             return self
-        for val_set in self.val.set:
-            if val_set.seq_len is None:
-                val_set.seq_len = self.data.seq_len
-        longest = max(val_set.seq_len for val_set in self.val.set)
+        for val_source in self.val.source:
+            if val_source.seq_len is None:
+                val_source.seq_len = self.data.seq_len
+            if val_source.type == "chat":
+                val_source.resolve_columns(getattr(self.data, "columns", SFTColumnsConfig()))
+                if val_source.loss_mask is None:
+                    val_source.loss_mask = getattr(self.data, "loss_mask", LossMaskConfig())
+        longest = max(val_source.seq_len for val_source in self.val.source)
         if self.val.micro_batch_tokens is None:
             row_len = max(self.data.seq_len * self.data.micro_batch_size, longest)
             self.val.micro_batch_tokens = -(-row_len // self.model.cp) * self.model.cp
         elif self.val.micro_batch_tokens < longest:
-            raise ValueError(f"val.micro_batch_tokens must be at least the longest set seq_len ({longest})")
+            raise ValueError(f"val.micro_batch_tokens must be at least the longest source seq_len ({longest})")
         return self
 
     @model_validator(mode="after")
@@ -412,10 +494,8 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
         if self.model.cp > 1:
             if self.data.seq_len % self.model.cp != 0:
                 raise ValueError("Sequence length must be divisible by CP degree")
-            if isinstance(self.val, ValConfig) and self.val.micro_batch_tokens % self.model.cp != 0:
+            if self.val is not None and self.val.micro_batch_tokens % self.model.cp != 0:
                 raise ValueError("val.micro_batch_tokens must be divisible by CP degree")
-            if isinstance(self.val, BaseValConfig) and self.val.data.seq_len % self.model.cp != 0:
-                raise ValueError("Validation sequence length must be divisible by CP degree")
         return self
 
     @model_validator(mode="after")
@@ -423,10 +503,8 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
         dispatch = self.model.moe.dispatch
         if dispatch.type == "mega_moe":
             row_lens = [self.data.micro_batch_size * self.data.seq_len]
-            if isinstance(self.val, ValConfig):
+            if self.val is not None:
                 row_lens.append(self.val.micro_batch_tokens)
-            elif self.val is not None:
-                row_lens.append(self.val.data.micro_batch_size * self.val.data.seq_len)
             dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
                 dispatch.max_tokens_per_rank,
                 max(row_lens),
@@ -439,9 +517,40 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
         if self.model.cp > 1:
             if self.data.micro_batch_size != 1:
                 raise ValueError("Micro batch size must be 1 when CP is enabled")
-            if isinstance(self.val, BaseValConfig) and self.val.data.micro_batch_size != 1:
-                raise ValueError("Validation micro batch size must be 1 when CP is enabled")
         return self
+
+    @model_validator(mode="after")
+    def validate_vlm_val(self):
+        if self.model.vlm is not None and self.val is not None:
+            raise ValueError("Validation scores text only: [val] does not support VLM models ([model.vlm]).")
+        return self
+
+    def renders_conversations(self) -> bool:
+        """Whether the trainer renders conversations with ``renderer``: SFT data or a ``chat`` validation source."""
+        return self.val is not None and any(val_source.type == "chat" for val_source in self.val.source)
+
+    @model_validator(mode="after")
+    def validate_typed_renderer(self):
+        """Require a typed renderer whenever the trainer renders conversations."""
+        if not self.renders_conversations():
+            return self
+
+        model_id = self.tokenizer.name or self.model.name
+        if isinstance(self.renderer, AutoRendererConfig):
+            if model_id in MODEL_RENDERER_MAP:
+                return self
+            reason = f"no typed renderer is registered for {model_id!r}"
+        elif isinstance(self.renderer, DefaultRendererConfig):
+            reason = "renderer.name='default' selects DefaultRenderer"
+        else:
+            return self
+
+        raise ValueError(
+            f"Rendering SFT data or chat validation sources requires a typed renderer with sampled-token and content "
+            f"attribution, but {reason}. "
+            "Implement and register the renderer in the renderers package, or explicitly select an existing "
+            "typed renderer only when its template is verified to match."
+        )
 
     ### Auto-setup and validate shared configs
 

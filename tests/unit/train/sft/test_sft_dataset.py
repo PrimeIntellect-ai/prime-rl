@@ -350,7 +350,7 @@ def test_vlm_truncation_does_not_append_trainable_eos(monkeypatch, dummy_rendere
     monkeypatch.setattr(sft_data, "build_training_sample", fake_build_training_sample)
     dataset = HFSource(Dataset.from_list([]), lambda _: dummy_renderer, seq_len=2, multimodal=True)
 
-    assert dataset._process({"messages": [{"role": "assistant", "content": "ignored"}]}) is None
+    assert dataset.process({"messages": [{"role": "assistant", "content": "ignored"}]}) is None
 
 
 def _sft_sample(
@@ -603,10 +603,10 @@ def test_sft_message_selection(model, layout, column, mask):
         {"role": "assistant", "content": "Answer"},
     ]
     row = {"messages": messages} if layout == "messages" else {"prompt": messages[:2], "completion": messages[2:]}
-    baseline = HFSource(Dataset.from_list([row]), lambda _: renderer)._process(row)
+    baseline = HFSource(Dataset.from_list([row]), lambda _: renderer).process(row)
     row[column] = mask
     dataset = HFSource(Dataset.from_list([row]), lambda _: renderer, columns=SFTColumnsConfig(message_loss_mask=column))
-    sample = dataset._process(row)
+    sample = dataset.process(row)
     if mask == [0, 0, 0, 0]:
         assert sample is None
         return
@@ -635,4 +635,4 @@ def test_sft_rejects_invalid_message_selection(dummy_renderer, mask):
     row = {"messages": [{"role": "assistant", "content": "Answer"}], "message_loss_mask": mask}
     dataset = HFSource(Dataset.from_list([row]), lambda _: dummy_renderer)
     with pytest.raises(ValueError, match="message_loss_mask"):
-        dataset._process(row)
+        dataset.process(row)

@@ -6,7 +6,7 @@ from pathlib import Path
 from prime_rl.configs.eval import SFTOnlineEvalConfig
 from prime_rl.configs.orchestrator import OnlineEvalSourceConfig
 from prime_rl.configs.shared import LogConfig
-from prime_rl.configs.supervised import BaseValConfig, SupervisedTrainerConfig
+from prime_rl.configs.supervised import SupervisedTrainerConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, run_links
 from prime_rl.entrypoints.slurm import load_slurm_template, submit_sbatch
 from prime_rl.utils.admin_token import AdminTokenUses, TokenUse
@@ -496,12 +496,13 @@ def launch(config: SupervisedTrainerConfig, entrypoint: str):
 
     if not config.dry_run:
         from prime_rl.trainer.model import pre_download_model
-        from prime_rl.trainer.sft.data import pre_download_data
+        from prime_rl.trainer.sft.data import pre_download_data, pre_download_sources
 
         pre_download_model(config.model.name, skip_weights=config.model.init.type == "scratch")
         pre_download_data(config.data, config.env_vars)
-        if isinstance(config.val, BaseValConfig):
-            pre_download_data(config.val.data, config.env_vars)
+        if config.val is not None:
+            chat_sources = [val_source for val_source in config.val.source if val_source.type == "chat"]
+            pre_download_sources(chat_sources, config.env_vars)
 
     from prime_rl.monitors.prime import launch_run
 
