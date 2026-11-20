@@ -42,6 +42,8 @@ uv run rl @ base.toml --trainer @ trainer.toml                 # mixed
 
 > Mind the space: `@ path/to/x.toml`, not `@path/to/x.toml`.
 
+In an `rl` run, `[val]` and `[eval]` are top-level tables: a `--trainer @` or `--orchestrator @` file can't hold them.
+
 A checked-in TOML that only parses on top of a base is an overlay. Document how to compose it with a launch command in its header comment, using repo-relative paths:
 
 ```toml
