@@ -4,8 +4,8 @@
 
 The image installs the third-party dependencies from uv.lock and every pyproject.toml, then the local packages
 (packages/ and the deps/ submodules) as editable installs. The source, tests and configs are added when a container
-starts, so a code change does not rebuild the image. Each group's compile caches (Triton, Inductor, vLLM, TileLang)
-persist in a Modal Volume, keyed by uv.lock, the GPU type and the suite.
+starts, so a code change does not rebuild the image. Each group's compile caches (Triton, Inductor, vLLM, TileLang, C++
+extensions) persist in a Modal Volume, keyed by uv.lock, the GPU type and the suite.
 
 A suite's group without paths runs every test with the suite's marker that no other group claims, so a new test
 always runs somewhere.
@@ -63,6 +63,7 @@ SUITES = {
             Group("rl", gpus=2, paths=("tests/integration/test_reverse_text_tiny.py",)),
             Group("sft", gpus=2, paths=("tests/integration/test_reverse_text_sft.py",)),
             Group("invariance", gpus=2, paths=("tests/unit/train/test_distributed_invariance.py",)),
+            Group("offload", gpus=2, paths=("tests/unit/train/test_offload_checkpoint.py",)),
             Group("rest", gpus=1),
         ),
     ),
@@ -73,6 +74,7 @@ SUITES = {
             Group("dsv4-kernels", gpus=1, timeout=25, paths=("tests/unit/train/models/test_deepseek_v4_kernels.py",)),
             Group("dsv4", gpus=1, paths=("tests/unit/train/models/test_deepseek_v4.py",)),
             Group("invariance", gpus=2, timeout=35, paths=("tests/unit/train/test_distributed_invariance.py",)),
+            Group("offload", gpus=2, paths=("tests/unit/train/test_offload_checkpoint.py",)),
             Group("vllm-parity", gpus=1, paths=("tests/unit/train/models/test_vllm_parity.py",)),
             Group("rest", gpus=2, timeout=30),
             # Each integration test starts its own RL or SFT runs
@@ -208,7 +210,7 @@ def run_group(name: str, pytest_args: list[str], cache_key: str, ref_name: str) 
     archive = Path(CACHE, cache_key, f"{name}.tar")
     compile_cache = Path("/root/.cache/compile")
     restored = restore_cache(archive, compile_cache)
-    for kind in ("triton", "inductor", "vllm", "tilelang"):
+    for kind in ("triton", "inductor", "vllm", "tilelang", "torch_extensions"):
         (compile_cache / kind).mkdir(exist_ok=True)
     # The rl and sft launchers pin these two caches to /tmp paths (prime_rl/utils/process.py)
     os.symlink(compile_cache / "triton", f"/tmp/triton-{os.getuid()}")
@@ -226,6 +228,8 @@ def run_group(name: str, pytest_args: list[str], cache_key: str, ref_name: str) 
         "TORCHINDUCTOR_CACHE_DIR": f"{compile_cache}/inductor",
         "VLLM_CACHE_ROOT": f"{compile_cache}/vllm",
         "TILELANG_CACHE_DIR": f"{compile_cache}/tilelang",
+        # The CPU AdamW of full offload is a C++ extension built on first use
+        "TORCH_EXTENSIONS_DIR": f"{compile_cache}/torch_extensions",
     }
     gpus = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True)
     region = os.environ.get("MODAL_REGION")
