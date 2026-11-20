@@ -8,7 +8,7 @@ from renderers import AutoRendererConfig
 from transformers import AutoTokenizer
 
 from prime_rl.configs.sft import SFTDataConfig
-from prime_rl.configs.supervised import ChatValSourceConfig, DocumentsValSourceConfig
+from prime_rl.configs.val import ChatValSourceConfig, DocumentsValSourceConfig
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.sft.data import setup_sft_dataset
 from prime_rl.trainer.val import chat_source, documents_source, rank_rows, token_byte_lengths

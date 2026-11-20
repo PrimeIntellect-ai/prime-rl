@@ -36,12 +36,9 @@ from prime_rl.trainer.micro_batches import run_micro_batches, step_result, to_ho
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
-    is_tt_moe_model,
-    reshard_module,
     check_ckpt_dir,
     setup_tokenizer,
     setup_model,
-    take_moe_routing_stats,
     use_resumed_model_files,
 )
 from prime_rl.trainer.moe_runtime import setup_moe_comm_env
@@ -346,14 +343,6 @@ def train(config: SFTConfig | PretrainConfig):
         del out
         return loss_sum, token_count
 
-    def run_validation(step: int) -> None:
-        # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
-        metrics = validation.run(model, step)
-        if is_tt_moe_model(model):
-            # Keep validation routing out of the next training step's statistics.
-            take_moe_routing_stats(model)
-        asyncio.run(monitors.log({**metrics, "step": step}, step=step))
-
     def logged_micro_batches(micro_batches):
         for micro_batch in micro_batches:
             print_sample(
@@ -475,11 +464,9 @@ def train(config: SFTConfig | PretrainConfig):
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
         # optimizer step (so eval_on_start evaluates untrained weights)
         if plan.validate:
-            run_validation(progress.step)
-            # The no-grad validation forward leaves the [lm_head, norm] FSDP2 group unsharded (it
-            # opts out of reshard_after_forward), so clip_grad_norm_ below would skip its grad-less
-            # unsharded parameters. Reshard so clipping sees every gradient.
-            reshard_module(model)
+            asyncio.run(
+                monitors.log({**validation.run(model, progress.step), "step": progress.step}, step=progress.step)
+            )
 
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:

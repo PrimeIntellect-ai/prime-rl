@@ -15,13 +15,8 @@ from torch import Tensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.sft import HFDatasetSourceConfig, SFTDataConfig
-from prime_rl.configs.supervised import (
-    BaseDataConfig,
-    ChatValSourceConfig,
-    HFDatasetConfig,
-    LossMaskConfig,
-    SFTColumnsConfig,
-)
+from prime_rl.configs.supervised import BaseDataConfig
+from prime_rl.configs.val import ChatValSourceConfig, HFDatasetConfig, LossMaskConfig, SFTColumnsConfig
 from prime_rl.trainer.data import Sample, StatefulIterableDataset
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import format_time, get_logger

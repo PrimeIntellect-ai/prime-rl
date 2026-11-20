@@ -2,7 +2,7 @@
 evals. The orchestrator plans every step with it and tells the trainer."""
 
 from prime_rl.configs.orchestrator import ScheduledEvalConfig
-from prime_rl.configs.supervised import ValConfig
+from prime_rl.configs.val import ValConfig
 from prime_rl.transports.steps import StepPlan, StepRequest
 
 

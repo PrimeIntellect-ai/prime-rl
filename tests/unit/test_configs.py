@@ -268,6 +268,23 @@ def test_val_source_defaults(tmp_path):
     assert cli(PretrainConfig, args=cp_args).orchestrator.val.micro_batch_tokens == 4098
 
 
+def test_rl_orchestrator_val_fills_the_trainer_val(tmp_path):
+    """An rl config's [orchestrator.val] gives the trainer its validation sources (with RL's model.seq_len defaults),
+    which are not set directly, and chat sources render like the policy's rollouts."""
+    base = ["@", "configs/ci/integration/reverse-text/start.toml", "--output-dir", str(tmp_path)]
+    val = {"source": [{"type": "documents", "name": "held-out", "path": str(tmp_path)}]}
+    write_toml(tmp_path / "val.toml", {"orchestrator": {"val": val}})
+    config = cli(RLConfig, args=[*base, "@", str(tmp_path / "val.toml")])
+    assert config.trainer.val.source[0].seq_len == config.trainer.val.micro_batch_tokens == 2048
+    assert config.orchestrator.val == config.trainer.val
+    assert config.trainer.renderer == config.orchestrator.renderer
+    (tmp_path / "rl.json").write_text(json.dumps(dump_resolved_config(config)))
+    assert cli(RLConfig, args=["@", str(tmp_path / "rl.json")]) == config
+
+    write_toml(tmp_path / "direct.toml", {"trainer": {"val": val}})
+    assert not can_parse(RLConfig, [*base, "@", str(tmp_path / "direct.toml")])
+
+
 @pytest.mark.parametrize("mode", MODES)
 def test_launch_runs_the_entrypoint_of_the_mode(tmp_path, monkeypatch, mode: str):
     """`uv run launch` reads `mode` from the config files and runs that entrypoint with the same arguments."""

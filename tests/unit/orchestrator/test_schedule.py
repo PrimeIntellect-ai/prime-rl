@@ -1,7 +1,7 @@
 import pytest
 
 from prime_rl.configs.orchestrator import ScheduledEvalConfig
-from prime_rl.configs.supervised import ValConfig
+from prime_rl.configs.val import ValConfig
 from prime_rl.orchestrator.schedule import plan_step
 from prime_rl.transports.steps import StepPlan, StepRequest
 

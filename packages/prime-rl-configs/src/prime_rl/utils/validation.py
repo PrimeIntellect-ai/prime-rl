@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 
@@ -120,6 +121,19 @@ def propagate_shared_fields(data: Any) -> Any:
     )
 
     propagate("resume", "trainer.resume", "orchestrator.resume")
+
+    # The trainer scores the validation sources at the steps the orchestrator plans: trainer.val is filled from
+    # orchestrator.val and only accepted when it repeats it, as a written resolved config does.
+    val, trainer_val = get("orchestrator.val"), get("trainer.val")
+    if trainer_val is not None and trainer_val != val:
+        raise ValueError("trainer.val is filled from [orchestrator.val] and must match it: set only [orchestrator.val]")
+    if val is not None:
+        fill("trainer.val", copy.deepcopy(val))
+
+    # Chat validation sources render like the policy's rollouts.
+    orchestrator_renderer = get("orchestrator.renderer")
+    if orchestrator_renderer is not None:
+        fill("trainer.renderer", copy.deepcopy(orchestrator_renderer))
 
     # [rollout_transport] → both sub-configs (host is launcher-injected for zmq multi-node).
     propagate("rollout_transport", "trainer.rollout_transport", "orchestrator.rollout_transport")
