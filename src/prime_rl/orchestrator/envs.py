@@ -25,8 +25,6 @@ from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
 from renderers import RendererConfig
-from verifiers.v1.restore import unsaveable
-from verifiers.v1.utils.loaders import default_harness_id, harness_class
 
 from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
@@ -204,20 +202,6 @@ class Env:
         self._late_saves.discard(save)
         if not save.cancelled() and save.exception() is None:
             self.late_restores.extend(save.result().restores.values())
-
-    def unsaveable(self) -> str | None:
-        """Why this env's running rollouts can take no restore point, so a resume starts
-        them over; None when its config allows them. Only a single-agent env's rollouts
-        continue from a restore point."""
-        agent = getattr(self.config.env, "agent", None)
-        if not isinstance(agent, vf.AgentConfig):
-            return "its env has more than one agent"
-        reason = unsaveable(agent)
-        if reason is None and agent.harness is None:
-            harness = default_harness_id(self.config.env.taskset.id)
-            if not harness_class(harness).SUPPORTS_MEMORY_RESTORE:
-                reason = f"harness {harness!r} cannot continue from a memory snapshot"
-        return reason
 
     async def discard(self, snapshots: list[dict]) -> list[str]:
         """Delete box snapshots this run owns; returns the ids of the deleted."""

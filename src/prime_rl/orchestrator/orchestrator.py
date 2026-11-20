@@ -317,13 +317,6 @@ class Orchestrator:
             renderer_config=config.renderer,
             replicas=config.env_worker_pool_replicas,
         )
-        if self.saves_rollouts:
-            for env in self.train_envs:
-                if (reason := env.unsaveable()) is not None:
-                    get_logger().warning(
-                        f"ckpt.rollouts cannot continue the in-flight rollouts of {env.name} after a resume: "
-                        f"{reason}. They start over; its finished episodes are still restored."
-                    )
         if config.eval is not None:
             self.eval_envs = EvalEnvs(
                 config.eval.source, config.env_addresses, config_dir, replicas=config.env_worker_pool_replicas
