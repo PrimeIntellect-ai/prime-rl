@@ -283,19 +283,20 @@ def get_dataset_state(dataloader: StatefulDataLoader) -> dict:
     torchdata's private worker-snapshot layout."""
     state = dataloader.next_iter_state or dataloader.state_dict()
     snapshots = state["_snapshot"]["_worker_snapshots"]
-    return {wid: snap["dataset_state"]["dataset"] for wid, snap in sorted(snapshots.items())}
+    return {wid: snap["dataset_state"]["dataset"] for wid, snap in snapshots.items()}
 
 
-def with_workers(state: dict, num_workers: int, keep_pending: bool = True) -> dict:
-    """The dataloader state ``state`` for ``num_workers`` workers. With another number of workers, or without
-    ``keep_pending``, every worker reads on from the dataset state of the saved worker that got furthest, without the
-    samples drawn but not packed, and the first worker keeps the sample counts of all. The keys are torchdata's private
-    layout."""
+def with_workers(state: dict, num_workers: int, dataset: dict | None = None) -> dict:
+    """The dataloader state ``state`` for ``num_workers`` workers. With another number of workers, or a given dataset
+    state ``dataset``, every worker reads on from ``dataset`` (else from the dataset state of the saved worker that got
+    furthest), without the samples drawn but not packed, and the first worker keeps the sample counts of all. The keys
+    are torchdata's private layout."""
     snapshot = state["_snapshot"]
     saved = list(snapshot["_worker_snapshots"].values())
-    if len(saved) == num_workers and keep_pending:
+    if len(saved) == num_workers and dataset is None:
         return state
     furthest = max(saved, key=lambda worker: worker["dataset_state"]["dataset"]["step"])
+    dataset = furthest["dataset_state"]["dataset"] if dataset is None else dataset
     counts = {key: defaultdict(int) for key in ("num_samples", "num_tokens")}
     for worker in saved:
         for key, by_source in worker["dataset_state"].get("progress", {}).items():
@@ -303,7 +304,7 @@ def with_workers(state: dict, num_workers: int, keep_pending: bool = True) -> di
                 counts[key][name] += count
     workers = {}
     for worker_id in range(num_workers):
-        dataset_state = {"dataset": furthest["dataset_state"]["dataset"]}
+        dataset_state = {"dataset": dataset}
         dataset_state["progress"] = {
             key: dict(by_source) if worker_id == 0 else {} for key, by_source in counts.items()
         }

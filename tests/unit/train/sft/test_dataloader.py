@@ -230,6 +230,7 @@ def test_dataloader_progress_is_monotonic_with_uneven_workers():
         ({"a": 1, "b": 1, "d": 1}, 4, 2, 1, 2, False),  # fewer GPUs: 2 ranks read the 4 saved files
         ({"a": 1, "b": 1, "d": 1}, 2, 4, 2, 2, False),  # context parallel: 4 GPUs, still 2 data ranks
         ({"a": 1, "b": 1, "d": 1}, 2, 2, 1, 2, True),  # a state from before the layout was recorded
+        ({"b": 3, "a": 1, "d": 1}, 2, 2, 1, 2, True),  # the same, with other weights
     ],
 )
 def test_resume_starts_every_worker_at_the_same_draw(
@@ -300,12 +301,11 @@ def test_resume_starts_every_worker_at_the_same_draw(
         )
         after.append((dataset, dataloader))
     views = [dataset.saved_view(dl, directory, gpu, gpus_after) for gpu, (dataset, dl) in enumerate(after)]
-    skipped = {dataset.start_together(dl, views) for dataset, dl in after}
+    starts = {dataset.start_together(dl, views) for dataset, dl in after}
     iterators = [iter(dl) for _, dl in after]
     furthest = max(state["step"] for state in saved)
-    if not old_state:
-        # Every draw before the common start was trained on before it, or is counted as skipped.
-        assert skipped == {furthest - len(contents)}
+    # Every draw before the common start was trained on before it, or is counted as not trained on.
+    assert starts == {(furthest, furthest - len(contents))}
     assert {state["step"] for _, dl in after for state in get_dataset_state(dl).values()} == {furthest}
     since = [read(dataiter, 8) for dataiter in iterators]
 
