@@ -132,7 +132,7 @@ def propagate_shared_fields(data: Any) -> Any:
         if value is not None:
             fill(target, copy.deepcopy(value))
 
-    # Chat validation sets render like the policy's rollouts.
+    # Chat validation sources render like the policy's rollouts.
     orchestrator_renderer = get("orchestrator.renderer")
     if orchestrator_renderer is not None:
         fill("trainer.renderer", copy.deepcopy(orchestrator_renderer))

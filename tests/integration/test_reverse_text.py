@@ -123,7 +123,7 @@ def test_mismatch_kl_in_range(rl_process: ProcessResult, test_no_error, run_dir:
 
 
 def test_validation(rl_process: ProcessResult, test_no_error, run_dir: Path):
-    """The trainer scores the chat validation set, rendered with the orchestrator's renderer."""
+    """The trainer scores the chat validation source, rendered with the orchestrator's renderer."""
     with open(run_dir / "logs" / "latest" / "trainer.log") as f:
         lines = strip_escape_codes(f.read()).splitlines()
     assert any("Validation | Step 5 | reverse-text@2k | loss" in line for line in lines)

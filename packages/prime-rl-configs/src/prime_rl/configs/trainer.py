@@ -717,11 +717,11 @@ class BaseTrainerConfig(BaseConfig):
     tokenizer: TokenizerConfig = TokenizerConfig()
 
     renderer: RendererConfig = AutoRendererConfig()
-    """Renderer config, for SFT data and ``chat`` validation sets. Defaults to auto-selecting from the tokenizer model
-    name; the ``rl`` entrypoint fills it from ``orchestrator.renderer``."""
+    """Renderer config, for SFT data and ``chat`` validation sources. Defaults to auto-selecting from the tokenizer
+    model name; the ``rl`` entrypoint fills it from ``orchestrator.renderer``."""
 
     val: ValConfig | None = None
-    """Validation: named sets scored on the trainer's weights every ``val.interval`` steps. If None, no validation
+    """Validation: named sources scored on the trainer's weights every ``val.interval`` steps. If None, no validation
     runs."""
 
     optim: OptimizerConfig = AdamWConfig()
@@ -820,7 +820,7 @@ class BaseTrainerConfig(BaseConfig):
 
     def renders_conversations(self) -> bool:
         """Whether the trainer renders conversations with ``renderer``."""
-        return self.val is not None and any(val_set.type == "chat" for val_set in self.val.set)
+        return self.val is not None and any(val_source.type == "chat" for val_source in self.val.source)
 
     @model_validator(mode="after")
     def validate_vlm_val(self):
@@ -831,7 +831,7 @@ class BaseTrainerConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_typed_renderer(self):
         """Require a typed renderer whenever the trainer renders conversations: SFT data or a ``chat`` validation
-        set."""
+        source."""
         if not self.renders_conversations():
             return self
 
@@ -846,7 +846,7 @@ class BaseTrainerConfig(BaseConfig):
             return self
 
         raise ValueError(
-            f"Rendering SFT data or chat validation sets requires a typed renderer with sampled-token and content "
+            f"Rendering SFT data or chat validation sources requires a typed renderer with sampled-token and content "
             f"attribution, but {reason}. "
             "Implement and register the renderer in the renderers package, or explicitly select an existing "
             "typed renderer ([renderer], or [orchestrator.renderer] in an rl config) only when its template is verified "

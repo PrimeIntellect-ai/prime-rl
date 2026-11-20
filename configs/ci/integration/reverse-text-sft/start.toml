@@ -14,7 +14,7 @@ seq_len = 1024
 interval = 5
 num_samples = 64
 
-[[val.set]]
+[[val.source]]
 type = "chat"
 name = "reverse-text"
 path = "PrimeIntellect/Reverse-Text-SFT"

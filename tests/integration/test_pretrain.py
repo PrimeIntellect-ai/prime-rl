@@ -48,12 +48,12 @@ def token_dir(output_dir: Path) -> Path:
     return path
 
 
-def val_sets(token_dir: Path) -> list[dict]:
-    """The config's [[val.set]], the documents set scoring the shards the test wrote."""
+def val_sources(token_dir: Path) -> list[dict]:
+    """The config's [[val.source]], the documents source scoring the shards the test wrote."""
     config = tomllib.loads(Path("configs/ci/integration/pretrain/start.toml").read_text())
     return [
-        {**val_set, "path": token_dir.as_posix()} if val_set["type"] == "documents" else val_set
-        for val_set in config["val"]["set"]
+        {**val_source, "path": token_dir.as_posix()} if val_source["type"] == "documents" else val_source
+        for val_source in config["val"]["source"]
     ]
 
 
@@ -84,7 +84,7 @@ def pretrain_process(
     run_process: Callable[..., ProcessResult], token_dir: Path, wandb_project: str, wandb_name: str, output_dir: Path
 ) -> ProcessResult:
     cmd = pretrain_command(["start.toml"], token_dir, wandb_project, wandb_name, output_dir)
-    return run_process([*cmd, "--val.set", json.dumps(val_sets(token_dir)), "--clean"], timeout=TIMEOUT)
+    return run_process([*cmd, "--val.source", json.dumps(val_sources(token_dir)), "--clean"], timeout=TIMEOUT)
 
 
 @pytest.fixture(scope="module")
@@ -97,7 +97,7 @@ def pretrain_resume_process(
     output_dir: Path,
 ) -> ProcessResult:
     cmd = pretrain_command(["start.toml", "resume.toml"], token_dir, wandb_project, f"{wandb_name}-resume", output_dir)
-    return run_process([*cmd, "--val.set", json.dumps(val_sets(token_dir))], timeout=TIMEOUT)
+    return run_process([*cmd, "--val.source", json.dumps(val_sources(token_dir))], timeout=TIMEOUT)
 
 
 @pytest.fixture(scope="module")

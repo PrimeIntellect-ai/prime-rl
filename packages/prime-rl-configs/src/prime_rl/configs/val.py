@@ -1,4 +1,4 @@
-"""Validation (``[val]``): named sets scored on the trainer's weights by the SFT, pretraining and RL trainers."""
+"""Validation (``[val]``): named sources scored on the trainer's weights by the SFT, pretraining and RL trainers."""
 
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
@@ -44,16 +44,16 @@ class SFTColumnsConfig(BaseConfig):
     """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``reasoning_effort = "effort"``. A row's non-null value overrides the ``[renderer]`` setting; rows and datasets without the column use it unchanged."""
 
 
-class BaseValSetConfig(BaseConfig):
+class BaseValSourceConfig(BaseConfig):
     name: str = Field(pattern=r"^[^/]+$")
-    """Names the set's metrics, ``val/<name>/<metric>@<seq_len>``, e.g. ``val/fineweb-edu/bpb@2k``."""
+    """Names the source's metrics, ``val/<name>/<metric>@<seq_len>``, e.g. ``val/fineweb-edu/bpb@2k``."""
 
     seq_len: int | None = Field(None, ge=1)
     """Context length: the most input tokens a scored sequence has. Defaults to the training sequence length
     (``data.seq_len`` in SFT and pretraining, ``model.seq_len`` in RL)."""
 
 
-class DocumentsValSetConfig(BaseValSetConfig):
+class DocumentsValSourceConfig(BaseValSourceConfig):
     """Pre-tokenized documents. Every document is scored on its own, from its first token, in non-overlapping windows
     of ``seq_len`` scored tokens: a longer document continues in the next window, which does not see the tokens
     before it."""
@@ -64,7 +64,7 @@ class DocumentsValSetConfig(BaseValSetConfig):
     """Folder of datatrove tokenized shards, as for a pretraining source's ``path``. The tokens are scored as stored."""
 
 
-class ChatValSetConfig(BaseValSetConfig):
+class ChatValSourceConfig(BaseValSourceConfig):
     """Conversations, rendered as SFT renders its training data. The tokens SFT trains on (``loss_mask``) are scored,
     and a conversation is cut after ``seq_len`` input tokens."""
 
@@ -89,7 +89,7 @@ class ChatValSetConfig(BaseValSetConfig):
     """Which message types are scored."""
 
 
-ValSetConfig: TypeAlias = Annotated[DocumentsValSetConfig | ChatValSetConfig, Field(discriminator="type")]
+ValSourceConfig: TypeAlias = Annotated[DocumentsValSourceConfig | ChatValSourceConfig, Field(discriminator="type")]
 
 
 class ValConfig(BaseConfig):
@@ -99,40 +99,40 @@ class ValConfig(BaseConfig):
     eval_on_start: bool = False
     """Run validation before the first training step."""
 
-    set: list[ValSetConfig] = Field(min_length=1)
-    """The validation sets (``[[val.set]]``). Each logs ``val/<name>/loss@<seq_len>``, the mean loss per scored
-    token, and with a byte-level BPE tokenizer ``val/<name>/bpb@<seq_len>``, bits per UTF-8 byte of the scored
+    source: list[ValSourceConfig] = Field(min_length=1)
+    """The validation sources (``[[val.source]]``). Each logs ``val/<name>/loss@<seq_len>``, the mean loss per
+    scored token, and with a byte-level BPE tokenizer ``val/<name>/bpb@<seq_len>``, bits per UTF-8 byte of the scored
     tokens."""
 
     num_samples: int | None = Field(None, ge=1)
-    """Items per set and validation: the first ``num_samples`` documents or rows of each set, the same ones every
-    time. If None, every item."""
+    """Items per source and validation: the first ``num_samples`` documents or rows of each source, the same ones
+    every time. If None, every item."""
 
     micro_batch_tokens: int | None = Field(None, ge=1)
-    """Tokens per packed row of the sets (one forward pass). Defaults to the training micro-batch
-    (``data.seq_len * data.micro_batch_size`` in SFT and pretraining, ``model.seq_len`` in RL) or the longest set
+    """Tokens per packed row of the sources (one forward pass). Defaults to the training micro-batch
+    (``data.seq_len * data.micro_batch_size`` in SFT and pretraining, ``model.seq_len`` in RL) or the longest source
     ``seq_len``, whichever is larger, rounded up to a multiple of ``model.cp``; must be at least that longest
     ``seq_len`` and divisible by ``model.cp``."""
 
     save_arrays: bool = False
-    """Write the per-item arrays (npz) and summary (json) of every set to ``<run_dir>/val/step_N/``."""
+    """Write the per-item arrays (npz) and summary (json) of every source to ``<run_dir>/val/step_N/``."""
 
     @model_validator(mode="after")
     def validate_unique_names(self):
-        names = [val_set.name for val_set in self.set]
+        names = [val_source.name for val_source in self.source]
         if len(set(names)) < len(names):
-            raise ValueError(f"val.set names must be unique: {names}")
+            raise ValueError(f"val.source names must be unique: {names}")
         return self
 
     def resolve(self, seq_len: int, micro_batch_tokens: int, cp: int) -> None:
         """Fill the defaults from the trainer's sequence length and micro-batch tokens, and check the row size."""
-        for val_set in self.set:
-            if val_set.seq_len is None:
-                val_set.seq_len = seq_len
-        longest = max(val_set.seq_len for val_set in self.set)
+        for val_source in self.source:
+            if val_source.seq_len is None:
+                val_source.seq_len = seq_len
+        longest = max(val_source.seq_len for val_source in self.source)
         if self.micro_batch_tokens is None:
             self.micro_batch_tokens = -(-max(micro_batch_tokens, longest) // cp) * cp
         elif self.micro_batch_tokens < longest:
-            raise ValueError(f"val.micro_batch_tokens must be at least the longest set seq_len ({longest})")
+            raise ValueError(f"val.micro_batch_tokens must be at least the longest source seq_len ({longest})")
         elif self.micro_batch_tokens % cp != 0:
             raise ValueError("val.micro_batch_tokens must be divisible by CP degree")
