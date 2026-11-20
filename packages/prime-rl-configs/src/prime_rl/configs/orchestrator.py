@@ -511,9 +511,6 @@ class OrchestratorConfig(BaseConfig):
     monitors: MonitorsConfig = MonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
-    collect_inference_metrics: bool = True
-    """Mirror inference-server metrics to W&B (requires wandb). The ``/metrics`` poll itself always runs — it feeds the concurrency controller."""
-
     inference_metrics_roles: list[Literal["prefill", "decode"]] | None = None
     """P/D role of each policy admin client: labels inference metrics, and prefill engines pause before decode engines on weight updates."""
 
