@@ -4,6 +4,7 @@ from transformers.modeling_outputs import BaseModelOutput
 from transformers.utils import torch_compilable_check
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, count_active_params
+from prime_rl.trainer.models.layers.fla_ops import prepare_chunk_indices
 from prime_rl.trainer.models.layers.gated_delta_net import GatedDeltaNet
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, VanillaOutputLinear
 from prime_rl.trainer.models.layers.moe import MoE
@@ -96,6 +97,7 @@ class Qwen3_8FlashNextDecoderLayer(nn.Module):
         ngram_embedding: torch.Tensor | None,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor,
+        chunk_indices: torch.Tensor,
         routed_experts: torch.LongTensor | None = None,
     ) -> torch.Tensor:
         if self.ple is not None:
@@ -103,7 +105,7 @@ class Qwen3_8FlashNextDecoderLayer(nn.Module):
 
         block_input, (hidden_states, injection_weights) = self.attn_hyper_connection.mix(hidden_states)
         if self.layer_type == "linear_attention":
-            block_output = self.linear_attn(block_input, cu_seqlens)
+            block_output = self.linear_attn(block_input, cu_seqlens, chunk_indices)
         else:
             block_output = self.self_attn(block_input, position_embeddings, cu_seqlens)
 
@@ -202,6 +204,7 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
             total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
         torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
+        chunk_indices = prepare_chunk_indices(cu_seqlens)
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
         ngram_ids = self.ngram.hash(input_ids, cu_seqlens)
 
@@ -209,10 +212,11 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
         for layer_index, decoder_layer in enumerate(self.layers):
             layer_routed_experts = routed_experts[:, :, layer_index] if routed_experts is not None else None
             hidden_states = decoder_layer(
-                hidden_states,
-                self.ngram.embed(ngram_ids, layer_index),
-                position_embeddings,
-                cu_seqlens,
+                hidden_states=hidden_states,
+                ngram_embedding=self.ngram.embed(ngram_ids, layer_index),
+                position_embeddings=position_embeddings,
+                cu_seqlens=cu_seqlens,
+                chunk_indices=chunk_indices,
                 routed_experts=layer_routed_experts,
             )
         hidden_states, _ = self.hyper_connection_mixer(hidden_states)

@@ -880,6 +880,19 @@ DYNAMIC_INT_ARGS = (
 DYNAMIC_TENSOR_ARG_DIMS = (
     # DeepSeek V4, GLM5-next: decoder layer input, (batch, seq, hc_mult, hidden). seq follows this rank's row length.
     ("mhc_states", 1),
+    # Qwen3.5, Qwen3.8: decoder layer input, (batch, seq, ...), and its rotary (cos, sin), each (batch, seq, rotary_dim).
+    ("hidden_states", 1),
+    ("position_embeddings", 1),
+    # Qwen3.8: per-layer n-gram embedding, (batch, seq, ngram_dim).
+    ("ngram_embedding", 1),
+    # GLM5-next: PoolLayout tensors, one entry per pool slot or per local query, so they follow the row length too.
+    ("pool_start_tokens", 0),
+    ("query_tokens", 0),
+    ("query_positions", 0),
+    ("first_pool", 0),
+    ("visible_pools", 0),
+    # GLM5-next, Qwen3.5, Qwen3.8: FLA chunk indices, (chunks, 2), one entry per 64-token chunk of each document.
+    ("chunk_indices", 0),
 )
 
 
@@ -892,8 +905,9 @@ def mark_dynamic_args() -> None:
         # or as an attribute of an arg (L['kwargs']['packed'].compression_layouts[4].max_entries_per_doc).
         patterns.append(rf".*(\['{arg}'\]|\.{arg}$)")
     for arg, dim in DYNAMIC_TENSOR_ARG_DIMS:
+        # Matches the arg (L['kwargs']['mhc_states']) or an attribute of an arg (L['kwargs']['pool_layout'].query_tokens).
         # Unanchored, so it also matches the FSDP view's base (L['kwargs']['mhc_states']._base), which is guarded too.
-        patterns.append(rf".*\['{arg}'\]:{dim}")
+        patterns.append(rf".*(\['{arg}'\]|\.{arg}):{dim}")
     for pattern in patterns:
         if pattern not in sources:
             sources.append(pattern)
