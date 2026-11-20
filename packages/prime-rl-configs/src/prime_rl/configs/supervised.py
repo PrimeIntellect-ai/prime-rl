@@ -89,15 +89,15 @@ class SFTColumnsConfig(BaseConfig):
     """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``reasoning_effort = "effort"``. A row's non-null value overrides the ``[renderer]`` setting; rows and datasets without the column use it unchanged."""
 
 
-class BaseValSetConfig(BaseConfig):
+class BaseValSourceConfig(BaseConfig):
     name: str = Field(pattern=r"^[^/]+$")
-    """Names the set's metrics, ``val/<name>/<metric>@<seq_len>``, e.g. ``val/fineweb-edu/bpb@2k``."""
+    """Names the source's metrics, ``val/<name>/<metric>@<seq_len>``, e.g. ``val/fineweb-edu/bpb@2k``."""
 
     seq_len: int | None = Field(None, ge=1)
     """Context length: the most input tokens a scored sequence has. Defaults to the training ``data.seq_len``."""
 
 
-class DocumentsValSetConfig(BaseValSetConfig):
+class DocumentsValSourceConfig(BaseValSourceConfig):
     """Pre-tokenized documents. Every document is scored on its own, from its first token, in non-overlapping windows
     of ``seq_len`` scored tokens: a longer document continues in the next window, which does not see the tokens
     before it."""
@@ -108,7 +108,7 @@ class DocumentsValSetConfig(BaseValSetConfig):
     """Folder of datatrove tokenized shards, as for a pretraining source's ``path``. The tokens are scored as stored."""
 
 
-class ChatValSetConfig(BaseValSetConfig):
+class ChatValSourceConfig(BaseValSourceConfig):
     """Conversations, rendered as SFT renders its training data. The tokens SFT trains on (``loss_mask``) are scored,
     and a conversation is cut after ``seq_len`` input tokens."""
 
@@ -133,7 +133,7 @@ class ChatValSetConfig(BaseValSetConfig):
     """Which message types are scored."""
 
 
-ValSetConfig: TypeAlias = Annotated[DocumentsValSetConfig | ChatValSetConfig, Field(discriminator="type")]
+ValSourceConfig: TypeAlias = Annotated[DocumentsValSourceConfig | ChatValSourceConfig, Field(discriminator="type")]
 
 
 class ValConfig(BaseConfig):
@@ -143,28 +143,28 @@ class ValConfig(BaseConfig):
     eval_on_start: bool = False
     """Run validation before the first training step."""
 
-    set: list[ValSetConfig] = Field(min_length=1)
-    """The validation sets (``[[val.set]]``). Each logs ``val/<name>/loss@<seq_len>``, the mean loss per scored
-    token, and with a byte-level BPE tokenizer ``val/<name>/bpb@<seq_len>``, bits per UTF-8 byte of the scored
+    source: list[ValSourceConfig] = Field(min_length=1)
+    """The validation sources (``[[val.source]]``). Each logs ``val/<name>/loss@<seq_len>``, the mean loss per
+    scored token, and with a byte-level BPE tokenizer ``val/<name>/bpb@<seq_len>``, bits per UTF-8 byte of the scored
     tokens."""
 
     num_samples: int | None = Field(None, ge=1)
-    """Items per set and validation: the first ``num_samples`` documents or rows of each set, the same ones every
-    time. If None, every item."""
+    """Items per source and validation: the first ``num_samples`` documents or rows of each source, the same ones
+    every time. If None, every item."""
 
     micro_batch_tokens: int | None = Field(None, ge=1)
-    """Tokens per packed row of the sets (one forward pass). Defaults to the training micro-batch
-    (``data.seq_len * data.micro_batch_size``) or the longest set ``seq_len``, whichever is larger, rounded up to a
+    """Tokens per packed row of the sources (one forward pass). Defaults to the training micro-batch
+    (``data.seq_len * data.micro_batch_size``) or the longest source ``seq_len``, whichever is larger, rounded up to a
     multiple of ``model.cp``; must be at least that longest ``seq_len``."""
 
     save_arrays: bool = False
-    """Write the per-item arrays (npz) and summary (json) of every set to ``<run_dir>/val/step_N/``."""
+    """Write the per-item arrays (npz) and summary (json) of every source to ``<run_dir>/val/step_N/``."""
 
     @model_validator(mode="after")
     def validate_unique_names(self):
-        names = [val_set.name for val_set in self.set]
+        names = [val_source.name for val_source in self.source]
         if len(set(names)) < len(names):
-            raise ValueError(f"val.set names must be unique: {names}")
+            raise ValueError(f"val.source names must be unique: {names}")
         return self
 
 
@@ -195,8 +195,8 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     auto_weight_decay = 0.01
 
     renderer: RendererConfig = AutoRendererConfig()
-    """Renderer config, for SFT data and ``chat`` validation sets. Defaults to auto-selecting from the tokenizer model
-    name."""
+    """Renderer config, for SFT data and ``chat`` validation sources. Defaults to auto-selecting from the tokenizer
+    model name."""
 
     data: BaseDataConfig
 
@@ -434,15 +434,15 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     def auto_setup_val(self):
         if self.val is None:
             return self
-        for val_set in self.val.set:
-            if val_set.seq_len is None:
-                val_set.seq_len = self.data.seq_len
-        longest = max(val_set.seq_len for val_set in self.val.set)
+        for val_source in self.val.source:
+            if val_source.seq_len is None:
+                val_source.seq_len = self.data.seq_len
+        longest = max(val_source.seq_len for val_source in self.val.source)
         if self.val.micro_batch_tokens is None:
             row_len = max(self.data.seq_len * self.data.micro_batch_size, longest)
             self.val.micro_batch_tokens = -(-row_len // self.model.cp) * self.model.cp
         elif self.val.micro_batch_tokens < longest:
-            raise ValueError(f"val.micro_batch_tokens must be at least the longest set seq_len ({longest})")
+            raise ValueError(f"val.micro_batch_tokens must be at least the longest source seq_len ({longest})")
         return self
 
     @model_validator(mode="after")
@@ -483,9 +483,10 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
 
     @model_validator(mode="after")
     def validate_typed_renderer(self):
-        """Require a typed renderer whenever the trainer renders real samples: SFT data or a ``chat`` validation set."""
-        renders_val_sets = self.val is not None and any(val_set.type == "chat" for val_set in self.val.set)
-        if self.data.type != "sft" and not renders_val_sets:
+        """Require a typed renderer whenever the trainer renders real samples: SFT data or a ``chat`` validation
+        source."""
+        renders_val_sources = self.val is not None and any(val_source.type == "chat" for val_source in self.val.source)
+        if self.data.type != "sft" and not renders_val_sources:
             return self
 
         model_id = self.tokenizer.name or self.model.name
@@ -499,7 +500,7 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
             return self
 
         raise ValueError(
-            f"Rendering SFT data or chat validation sets requires a typed renderer with sampled-token and content "
+            f"Rendering SFT data or chat validation sources requires a typed renderer with sampled-token and content "
             f"attribution, but {reason}. "
             "Implement and register the renderer in the renderers package, or explicitly select an existing "
             "typed renderer only when its template is verified to match."

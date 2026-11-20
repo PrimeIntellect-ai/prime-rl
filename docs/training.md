@@ -316,24 +316,24 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 
 ### Validation
 
-`[val]` scores named validation sets on the training model every `val.interval` steps (also before the first step with `val.eval_on_start`), in SFT and in pretraining. Each `[[val.set]]` table has a `type`, a unique `name`, a `path` and an optional `seq_len` (default: the training `data.seq_len`):
+`[val]` scores named validation sources on the training model every `val.interval` steps (also before the first step with `val.eval_on_start`), in SFT and in pretraining. Each `[[val.source]]` table has a `type`, a unique `name`, a `path` and an optional `seq_len` (default: the training `data.seq_len`):
 
 | `type` | `path` | scored |
 |---|---|---|
 | `documents` | folder of datatrove tokenized shards (see [Pretraining](#pretraining)) | every document on its own, from its first token, with the tokens as stored, in non-overlapping windows of `seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it |
-| `chat` | HF dataset name or local directory, with a `split` (and optionally a `subset` and `revision`) | every row of the split in order, rendered as SFT renders its training data (`[renderer]`, and the set's `columns` and `loss_mask`); the tokens SFT trains on, cut after `seq_len` input tokens |
+| `chat` | HF dataset name or local directory, with a `split` (and optionally a `subset` and `revision`) | every row of the split in order, rendered as SFT renders its training data (`[renderer]`, and the source's `columns` and `loss_mask`); the tokens SFT trains on, cut after `seq_len` input tokens |
 
 ```toml
 [val]
 interval = 100
-num_samples = 512          # optional: the first 512 documents or rows of each set; default: all of them
+num_samples = 512          # optional: the first 512 documents or rows of each source; default: all of them
 
-[[val.set]]
+[[val.source]]
 type = "documents"
 name = "fineweb-edu"
 path = "data/fineweb-edu-val"
 
-[[val.set]]
+[[val.source]]
 type = "chat"
 name = "reverse-text"
 path = "PrimeIntellect/Reverse-Text-SFT"
@@ -341,7 +341,7 @@ split = "train"
 seq_len = 2048             # optional; default: the training data.seq_len
 ```
 
-Every set logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and with a byte-level BPE tokenizer `val/<name>/bpb@<seq_len>`, the bits per UTF-8 byte of the scored tokens (special tokens count 0 bytes), e.g. `val/fineweb-edu/bpb@2k`. With another tokenizer (e.g. SentencePiece), the trainer logs one warning and only the loss. The sets are tokenized once at startup. At every validation, the sequences of all sets are packed longest first into rows of `val.micro_batch_tokens` tokens (default: the training micro-batch, `data.seq_len * data.micro_batch_size`, or the longest set `seq_len` if that is longer, rounded up to a multiple of `model.cp`), with attention and positions restarting at every sequence and the rest of a row padded, and the rows are shared out over the data-parallel ranks. The log-probs are computed in fp32. `val.save_arrays` writes the per-item arrays of every set (summed loss, scored tokens, greedy hits and bytes per document or row) to `<run_dir>/val/step_N/`. A `chat` set needs a typed renderer, also in pretraining. Validation does not support VLM models.
+Every source logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and with a byte-level BPE tokenizer `val/<name>/bpb@<seq_len>`, the bits per UTF-8 byte of the scored tokens (special tokens count 0 bytes), e.g. `val/fineweb-edu/bpb@2k`. With another tokenizer (e.g. SentencePiece), the trainer logs one warning and only the loss. The sources are tokenized once at startup. At every validation, the sequences of all sources are packed longest first into rows of `val.micro_batch_tokens` tokens (default: the training micro-batch, `data.seq_len * data.micro_batch_size`, or the longest source `seq_len` if that is longer, rounded up to a multiple of `model.cp`), with attention and positions restarting at every sequence and the rest of a row padded, and the rows are shared out over the data-parallel ranks. The log-probs are computed in fp32. `val.save_arrays` writes the per-item arrays of every source (summed loss, scored tokens, greedy hits and bytes per document or row) to `<run_dir>/val/step_N/`. A `chat` source needs a typed renderer, also in pretraining. Validation does not support VLM models.
 
 ### SFT-Specific Knobs
 
@@ -351,7 +351,7 @@ Every set logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and 
 | `data.batch_size` | Tokens per trainer step (packed) |
 | `data.seq_len` | Per-sample sequence length |
 | `loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |
-| `val.set` | Validation sets, scored every `val.interval` steps; see [Validation](#validation) |
+| `val.source` | Validation sources, scored every `val.interval` steps; see [Validation](#validation) |
 | `eval.interval` | Run online evals every N steps; see [Online Evals](#online-evals) |
 
 ### Important Metrics
@@ -361,7 +361,7 @@ Pulled from the console log and mirrored to W&B.
 **Progress and loss:**
 
 - `loss/mean`, `loss/perplexity` — main signal. Should decrease through the run.
-- `val/<name>/loss@<seq_len>`, `val/<name>/bpb@<seq_len>` — per validation set when `[val]` is set, logged every `val.interval` steps; see [Validation](#validation).
+- `val/<name>/loss@<seq_len>`, `val/<name>/bpb@<seq_len>` — per validation source when `[val]` is set, logged every `val.interval` steps; see [Validation](#validation).
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
 - `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
@@ -437,9 +437,9 @@ repetitions = 4            # optional: every token seen 4 times, so a subset of 
 
 [val]                      # optional
 interval = 100
-num_samples = 512          # optional: the first 512 documents of each set; default: all of them
+num_samples = 512          # optional: the first 512 documents of each source; default: all of them
 
-[[val.set]]
+[[val.source]]
 type = "documents"
 name = "fineweb-edu"
 path = "data/fineweb-edu-val"
@@ -453,7 +453,7 @@ path = "data/fineweb-edu-val"
 
 **Resume.** A resume is exact, also on another number of GPUs. It stops with an error that names the old and new value of every changed setting: `seq_len`, `batch_size`, `seed`, `num_workers`, a source's name or files (their tokens and documents), the weights or repetitions (or `max_steps`, with repetitions). A source may move to another folder. With `ckpt.skip_dataloader`, the run resumes without the data state: the data starts over from step 0, in the same order as at the run's start (a different `data.seed` gives a different order). `data.batch_size` must be a multiple of dp × `num_workers` × `micro_batch_size`.
 
-**Validation.** The `documents` set scores every document of the held-out folder on its own, from its first token, and logs `val/fineweb-edu/loss@2k` and `val/fineweb-edu/bpb@2k`; see [Validation](#validation) for the other set types and options.
+**Validation.** The `documents` source scores every document of the held-out folder on its own, from its first token, and logs `val/fineweb-edu/loss@2k` and `val/fineweb-edu/bpb@2k`; see [Validation](#validation) for the other source types and options.
 
 **Launch.**
 

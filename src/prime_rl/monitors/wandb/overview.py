@@ -81,7 +81,7 @@ INFERENCE_PANELS = [
 
 # SFT flavor: no rollout-based train sections — the training signal is the loss curve.
 SFT_TRAIN_METRICS = ["loss/mean", "loss/perplexity", "progress/epoch"]
-# Validation logs val/<set>/<metric>@<seq_len>, one series per set and length in each panel.
+# Validation logs val/<source>/<metric>@<seq_len>, one series per source and length in each panel.
 SFT_TRAIN_REGEXES = ["val/[^/]+/loss@[^/]+", "val/[^/]+/bpb@[^/]+"]
 SFT_STABILITY_METRICS = ["optim/grad_norm", "optim/lr", "loss/nan_count"]
 SFT_PERFORMANCE_METRICS = [

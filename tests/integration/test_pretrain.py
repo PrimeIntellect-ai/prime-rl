@@ -47,12 +47,12 @@ def token_dir(output_dir: Path) -> Path:
     return path
 
 
-def val_sets(token_dir: Path) -> list[dict]:
-    """The config's [[val.set]], the documents set scoring the shards the test wrote."""
+def val_sources(token_dir: Path) -> list[dict]:
+    """The config's [[val.source]], the documents source scoring the shards the test wrote."""
     config = tomllib.loads(Path("configs/ci/integration/pretrain/start.toml").read_text())
     return [
-        {**val_set, "path": token_dir.as_posix()} if val_set["type"] == "documents" else val_set
-        for val_set in config["val"]["set"]
+        {**val_source, "path": token_dir.as_posix()} if val_source["type"] == "documents" else val_source
+        for val_source in config["val"]["source"]
     ]
 
 
@@ -66,8 +66,8 @@ def pretrain_command(
         *[arg for config in configs for arg in ("@", f"configs/ci/integration/pretrain/{config}")],
         "--data.source",
         f'[{{"name": "reverse-text", "path": "{token_dir.as_posix()}"}}]',
-        "--val.set",
-        json.dumps(val_sets(token_dir)),
+        "--val.source",
+        json.dumps(val_sources(token_dir)),
         "--deployment.num-train-gpus",
         "2",
         "--monitors.wandb.project",
