@@ -72,9 +72,8 @@ from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.utils import get_dcp_group
 from prime_rl.trainer.vlm import get_language_model, get_vision_encoder
 from prime_rl.trainer.world import get_world, wait_for_master
-from prime_rl.utils.logger import get_logger
+from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import has_step_dir_name, is_checkpoint_step_dir
-from prime_rl.utils.utils import format_time
 from prime_rl.utils.weights import (
     load_state_dict,
     load_state_dict_keys,
