@@ -31,10 +31,11 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import time
 import traceback
 import uuid
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -45,6 +46,7 @@ from aiolimiter import AsyncLimiter
 from verifiers.v1.semantic import routing_session_id
 
 from prime_rl import monitors
+from prime_rl.env.types import RestoreRef
 from prime_rl.orchestrator import live
 from prime_rl.orchestrator.clients import InferenceClient
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -57,6 +59,7 @@ from prime_rl.orchestrator.types import (
     GroupCancellation,
     GroupState,
     InflightEpisode,
+    OpenEpisode,
     Policy,
     Progress,
     WorkKind,
@@ -223,6 +226,12 @@ class Dispatcher:
         self.live_dropped = False
         self.live_task: asyncio.Task | None = None
         self.groups: dict[uuid.UUID, GroupState] = {}
+        self.resumed: deque[OpenEpisode] = deque()
+        """Episodes that were in flight in the checkpoint this run resumed from. They
+        dispatch before any other train work (``resume_open_work``)."""
+        self.emitting: list[DispatchResult] = []
+        """Results on their way into a full ``out_q``: no longer in flight, not yet
+        queued (``queued_results``)."""
         # Policy versions repeat after a resume, with weights that can differ from the
         # previous attempt's, and engines or a KV offload pool may outlive that attempt.
         self.cache_salt_prefix = uuid.uuid4().hex[:8]
@@ -524,6 +533,12 @@ class Dispatcher:
         if envs is None:
             return False
 
+        while kind == "train" and self.resumed:
+            group_id = self.resumed[0].group_id
+            if group_id in self.groups:
+                return await self.schedule_group_episode(group_id, self.groups[group_id], resumed=True)
+            self.resumed.popleft()  # its group was dropped
+
         for gid, group in list(self.groups.items()):
             if group.kind != kind or group.episodes_to_schedule <= 0:
                 continue
@@ -566,8 +581,10 @@ class Dispatcher:
             group_id=uuid.UUID(request.group_id) if request.group_id else None,
         )
 
-    async def schedule_group_episode(self, group_id: uuid.UUID, group: GroupState) -> bool:
-        """Dispatch one ``run`` task for this group.
+    async def schedule_group_episode(self, group_id: uuid.UUID, group: GroupState, resumed: bool = False) -> bool:
+        """Dispatch one ``run`` task for this group. With ``resumed`` it is the group's
+        episode at the head of ``self.resumed``, which continues from its restore point
+        if it has one.
 
         Returns False only if we couldn't even schedule one rollout (no clients
         ready, no permits). Returns True after issuing one task — the caller
@@ -600,6 +617,8 @@ class Dispatcher:
         group.episodes_to_schedule -= 1
         await self.acquire()
         self.admissions_in_window += 1
+        # Taken only now that the permit is held: until then a checkpoint still saves it.
+        restore = self.resumed.popleft().restore if resumed else None
         meta = InflightEpisode(
             kind=group.kind,
             env_name=group.env_name,
@@ -639,6 +658,8 @@ class Dispatcher:
                     cache_salt=cache_salt,
                     task_data=group.task.data.model_dump(mode="json"),
                     on_delta=on_delta,
+                    restore=restore.path if restore is not None else None,
+                    request_id=meta.dispatch_id,
                 )
                 session_ids.update(trace.id for trace in episode.traces)
                 return episode
@@ -657,6 +678,52 @@ class Dispatcher:
         self.inflight[task] = meta
         self.live_events.append(live.pending_event(meta))
         return True
+
+    def open_work(self, restores: dict[str, RestoreRef]) -> tuple[list[GroupState], list[OpenEpisode]]:
+        """The train work still owed, for a rollout checkpoint: copies of the open
+        groups, counting only their never-dispatched episodes, and the episodes in
+        flight. ``restores`` holds the restore points a ``save`` just took, by the
+        ``request_id`` of their run; each one that continues an in-flight episode is
+        taken out and goes with that episode. An episode without one starts over."""
+        groups = {
+            group_id: dataclasses.replace(group, group_id=group_id)
+            for group_id, group in self.groups.items()
+            if group.kind == "train"
+        }
+        episodes: list[OpenEpisode] = []
+        for episode in self.resumed:
+            if episode.group_id in groups:
+                # Counted as still to schedule since ``resume_open_work``.
+                groups[episode.group_id].episodes_to_schedule -= 1
+                episodes.append(episode)
+        for meta in self.inflight.values():
+            if meta.kind == "train" and meta.group_id in groups:
+                episodes.append(OpenEpisode(group_id=meta.group_id, restore=restores.pop(meta.dispatch_id, None)))
+        return list(groups.values()), episodes
+
+    def resume_open_work(self, groups: list[GroupState], episodes: list[OpenEpisode]) -> None:
+        """Take over a checkpoint's ``open_work``, before the dispatch loop starts: its
+        groups stay open, and the episodes that were in flight dispatch first."""
+        for group in groups:
+            assert group.group_id is not None
+            self.groups[group.group_id] = group
+        for episode in episodes:
+            if episode.group_id in self.groups:
+                self.groups[episode.group_id].episodes_to_schedule += 1
+                self.resumed.append(episode)
+
+    async def emit(self, result: DispatchResult) -> None:
+        """Queue ``result`` for the orchestrator; a full ``out_q`` waits."""
+        self.emitting.append(result)
+        try:
+            await self.out_q.put(result)
+        finally:
+            self.emitting.remove(result)
+
+    def queued_results(self) -> list[DispatchResult]:
+        """The results waiting for the orchestrator, oldest first, without taking them:
+        those in ``out_q`` and those on their way in."""
+        return [*self.out_q._queue, *self.emitting]
 
     def _release_episodes(self, episodes: Iterable[vf.WireEpisode]) -> None:
         """Delete the training arrays env workers kept for episodes no sink will see."""
@@ -713,7 +780,7 @@ class Dispatcher:
             get_logger().warning(f"Environment request failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
             self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
             policy_version = self.complete_group_member(meta, group)
-            await self.out_q.put(
+            await self.emit(
                 DispatchFailure(
                     kind=meta.kind,
                     env_name=meta.env_name,
@@ -798,7 +865,7 @@ class Dispatcher:
         if meta.kind == "train":
             self.queued_train_rollouts += len(episode.traces)
             self.finished_train_rollouts += len(episode.traces)
-        await self.out_q.put(episode)
+        await self.emit(episode)
 
     async def get(self) -> DispatchResult:
         """Take the next terminal result off ``out_q``."""
@@ -842,7 +909,7 @@ class Dispatcher:
                 f"Dropped {kind} group | group={str(group_id)[:8]} env={env_name} reason={reason} | "
                 f"cancelled={cancelled} (inflight={inflight_cancelled} unscheduled={unscheduled_cancelled})"
             )
-            await self.out_q.put(
+            await self.emit(
                 GroupCancellation(
                     kind=kind,
                     env_name=env_name,
@@ -943,7 +1010,7 @@ class Dispatcher:
             )
             cancelled += count
             self.metrics.record_cancellation(kind="eval", env_name=request.env_name, n=count)
-            await self.out_q.put(
+            await self.emit(
                 GroupCancellation(
                     kind="eval",
                     env_name=request.env_name,

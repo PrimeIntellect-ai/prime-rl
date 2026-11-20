@@ -17,11 +17,18 @@ directory of one `RolloutStore`, which serves them for the whole pool. The train
 marks a step's blobs as trained instead of deleting them, and the store deletes them once
 a trainer checkpoint covers the step, so a restarted trainer fetches them again.
 
+A rollout checkpoint keeps the blobs of finished but unshipped episodes: the orchestrator
+has each env worker write them to the checkpoint (`persist_payloads`), and a resumed run
+references them by `file://` URL. Those files belong to the checkpoint: a DELETE of a
+`file://` URL does nothing.
+
 Nothing here imports torch: every env worker imports this module.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import queue
 import shutil
 import socket
@@ -29,6 +36,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -50,6 +58,7 @@ from prime_rl.transports.batch.types import (
     TrainingSample,
 )
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.pathing import confined, is_file_name
 
 _encoder = msgspec.msgpack.Encoder()
 _decoder = msgspec.msgpack.Decoder(BranchArrays)
@@ -223,12 +232,31 @@ class _HTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
 
+def link_or_copy(source: Path, target: Path) -> bool:
+    """Make `target` the same file as `source`, without copying where the filesystem can
+    link; False if there is no `source`."""
+    if source == target:
+        return source.exists()
+    try:
+        os.link(source, target)
+    except FileExistsError:
+        pass
+    except FileNotFoundError:
+        return False
+    except OSError:
+        shutil.copyfile(source, target)
+    return True
+
+
 class PayloadServer:
     """One env worker's arrays, served at `GET <url>/<id>` and freed by
-    `DELETE <url>/<id>`."""
+    `DELETE <url>/<id>`. `POST <url>/persist` with `{"dir", "ids"}` writes those blobs
+    to `<dir>/<id>` and answers `{"persisted": [ids]}`."""
 
     def __init__(self, bind_host: str, url_host: str | None = None):
         self.blobs: dict[str, bytes] = {}
+        self.persisted: dict[str, Path] = {}
+        """Where each blob was last persisted, so the next checkpoint links that file."""
         self.lock = threading.Lock()
         server = self
 
@@ -247,9 +275,20 @@ class PayloadServer:
                 self.end_headers()
 
             def do_POST(self) -> None:
-                trained = _trained_decoder.decode(self.rfile.read(int(self.headers["Content-Length"])))
-                self.send_response(204 if server.trained(trained) else 501)
+                data = self.rfile.read(int(self.headers["Content-Length"]))
+                if self.path != "/persist":
+                    self.send_response(204 if server.trained(_trained_decoder.decode(data)) else 501)
+                    self.end_headers()
+                    return
+                try:
+                    request = json.loads(data)
+                    status, body = 200, json.dumps({"persisted": server.persist(request["dir"], request["ids"])})
+                except (KeyError, TypeError, ValueError) as error:
+                    status, body = 400, str(error)
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(body.encode())))
                 self.end_headers()
+                self.wfile.write(body.encode())
 
             def log_message(self, *args: Any) -> None:
                 pass
@@ -265,6 +304,33 @@ class PayloadServer:
     def delete(self, key: str) -> None:
         with self.lock:
             self.blobs.pop(key, None)
+            self.persisted.pop(key, None)
+
+    def persist(self, directory: str, keys: list[str]) -> list[str]:
+        """Write the blobs `keys` name to `<directory>/<key>` and return the keys
+        written. A blob an earlier call persisted is linked from that file while it
+        exists. `directory` lies in the run directory (`confined`) and only plain file
+        names are written, so nothing lands outside it."""
+        target = confined(directory)
+        target.mkdir(parents=True, exist_ok=True)
+        return [
+            key for key in keys if isinstance(key, str) and is_file_name(key) and self.persist_blob(key, target / key)
+        ]
+
+    def persist_blob(self, key: str, path: Path) -> bool:
+        """Make `path` hold the blob `key`; False if this server does not hold it."""
+        with self.lock:
+            blob, previous = self.blobs.get(key), self.persisted.get(key)
+        if blob is None:
+            return False
+        if previous is None or not link_or_copy(previous, path):
+            tmp = path.with_name(f".{key}.{uuid.uuid4().hex}.tmp")
+            tmp.write_bytes(blob)
+            tmp.replace(path)
+        with self.lock:
+            if key in self.blobs:
+                self.persisted[key] = path
+        return True
 
     def get(self, key: str) -> bytes | None:
         with self.lock:
@@ -320,6 +386,9 @@ class RolloutStore(PayloadServer):
         path = self.path(key)
         if path.parent == self.live:
             path.unlink(missing_ok=True)
+
+    def persist_blob(self, key: str, path: Path) -> bool:
+        return link_or_copy(self.path(key), path)
 
     def trained(self, trained: Trained) -> bool:
         if trained.ids:
@@ -439,6 +508,28 @@ class PayloadHook:
                 self.server.delete(reference["id"])
 
 
+def persist_payloads(url: str, directory: Path, keys: list[str]) -> list[str]:
+    """Have the blobs `keys` at `url` written to `directory`, and return the keys
+    written: by the env worker that keeps them, or for a `file://` URL (blobs a
+    checkpoint already holds) by linking its files."""
+    if url.startswith("file://"):
+        source = Path(urllib.request.url2pathname(urlparse(url).path))
+        directory.mkdir(parents=True, exist_ok=True)
+        return [key for key in keys if is_file_name(key) and link_or_copy(source / key, directory / key)]
+    request = urllib.request.Request(
+        f"{url}/persist",
+        data=json.dumps({"dir": str(directory), "ids": keys}).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with _opener.open(request, timeout=600) as response:
+            return json.loads(response.read())["persisted"]
+    except Exception as error:  # noqa: BLE001 - a checkpoint without these arrays still resumes
+        get_logger().warning(f"Env worker {url} did not persist its training arrays: {error!r}")
+        return []
+
+
 def trace_payload_urls(trace: vf.Trace) -> list[str]:
     """URLs of every blob an env worker kept for the trace."""
     payload = trace.info.get(PAYLOAD_INFO_KEY)
@@ -461,6 +552,10 @@ def _fetch(url: str, attempts: int = 3) -> BranchArrays | None:
                 return _decoder.decode(response.read())
         except urllib.error.HTTPError as error:
             if error.code == 404:
+                return None
+        except urllib.error.URLError as error:
+            # A `file://` blob that its checkpoint does not hold.
+            if isinstance(error.reason, FileNotFoundError):
                 return None
         except Exception:
             pass
@@ -504,8 +599,8 @@ _releaser = _Releaser()
 
 def delete_payloads(urls: Iterable[str]) -> None:
     """Free kept arrays on their env workers, without waiting. Call only once nothing will
-    read them again."""
-    _releaser.submit(urllib.request.Request(url, method="DELETE") for url in urls)
+    read them again. Arrays a checkpoint holds (`file://`) stay."""
+    _releaser.submit(urllib.request.Request(url, method="DELETE") for url in urls if not url.startswith("file://"))
 
 
 def mark_trained(stores: Iterable[str], urls: Iterable[str], step: int, committed: int) -> None:

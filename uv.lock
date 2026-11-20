@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = "==3.12.*"
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
@@ -5659,7 +5659,7 @@ train = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.5.11"
+version = "0.5.13"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -5671,9 +5671,9 @@ dependencies = [
     { name = "pyqwest" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/87/a4/863ce60f0c8cf74e7c59a754a53db5f9089c9ca68f976758f11bebb9c4a6/prime_sandboxes-0.5.11.tar.gz", hash = "sha256:c80062d3767ac352bc463ea4442a47eb3066e2c4ddd52ca6f39afafda1abd500", size = 177262, upload-time = "2026-11-11T17:52:49.813Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ff/3c/746728aa531da2f43dbc885516fb0b6946c46d7c4fb06118f0afa6f30f06/prime_sandboxes-0.5.13.tar.gz", hash = "sha256:cf5bf653ed6b52ddf8fb468a1caf5c56920d7b29caa0cd2f433cf834a47ef260", size = 185562, upload-time = "2026-11-19T04:42:22.627Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/61/73/10c87464a895c551409fb0496af01cd02d41d2f15d57ac9581506ad4ca88/prime_sandboxes-0.5.11-py3-none-any.whl", hash = "sha256:0496639fceacfc80a5778e7901b8c95fa2dac2dedda00ff30f58a5185db646e5", size = 96085, upload-time = "2026-11-11T17:52:48.032Z" },
+    { url = "https://files.pythonhosted.org/packages/77/44/4b68135d6672893aa725242faaa8a2cf4c754a4e35dc4131abf8467f4957/prime_sandboxes-0.5.13-py3-none-any.whl", hash = "sha256:1ce8965897f927856acdb20524ecba0a44c564509b07617be0ef84480b21037d", size = 99430, upload-time = "2026-11-19T04:42:20.067Z" },
 ]
 
 [[package]]
@@ -8243,7 +8243,7 @@ requires-dist = [
     { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
     { name = "orjson", specifier = ">=3.10.0" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.3" },
-    { name = "prime-sandboxes", specifier = ">=0.5.9" },
+    { name = "prime-sandboxes", specifier = ">=0.5.13" },
     { name = "prime-tunnel", specifier = ">=0.1.17" },
     { name = "pydantic", specifier = ">=2.12.3" },
     { name = "renderers", extras = ["multimodal"], specifier = ">=0.2.1.dev12" },

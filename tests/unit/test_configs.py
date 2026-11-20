@@ -1666,3 +1666,43 @@ def test_score_centering_replays_top_p_alone():
     assert sampling.top_k == 10000 and sampling.logprobs == 1
     assert sampling.extra_body["extra_args"]["prl_replay"]
     assert config.inference.enable_return_sampling_mask
+
+
+@pytest.mark.parametrize("rollouts", [False, True])
+def test_shared_ckpt_rollouts_reaches_the_orchestrator(rollouts):
+    config = RLConfig.model_validate(
+        {
+            "ckpt": {"interval": 5, "rollouts": rollouts},
+            "trainer": {},
+            "orchestrator": {"renderer": {"name": "default"}},
+        }
+    )
+    assert config.orchestrator.ckpt.rollouts is rollouts
+    assert config.orchestrator.ckpt.interval == config.trainer.ckpt.interval == 5
+    assert RLConfig.model_validate_json(config.model_dump_json()) == config
+
+
+def test_ckpt_rollouts_is_off_by_default():
+    config = RLConfig.model_validate({"ckpt": {}, "trainer": {}, "orchestrator": {"renderer": {"name": "default"}}})
+    assert config.orchestrator.ckpt.rollouts is False
+
+
+def test_shared_ckpt_reaches_trainer_and_orchestrator():
+    config = RLConfig.model_validate(
+        {
+            "ckpt": {"output_dir": "/ckpts", "keep_last": 3, "keep_interval": 100},
+            "trainer": {},
+            "orchestrator": {"renderer": {"name": "default"}},
+        }
+    )
+    for ckpt in (config.trainer.ckpt, config.orchestrator.ckpt):
+        assert (ckpt.output_dir, ckpt.keep_last, ckpt.keep_interval) == (Path("/ckpts"), 3, 100)
+
+
+@pytest.mark.parametrize("leaf", [("output_dir", "/ckpts"), ("keep_last", 3), ("keep_interval", 100)])
+def test_trainer_and_orchestrator_share_one_ckpt_dir_and_policy(leaf):
+    name, value = leaf
+    with pytest.raises(ValueError, match=f"ckpt.{name}"):
+        RLConfig.model_validate(
+            {"ckpt": {}, "trainer": {"ckpt": {name: value}}, "orchestrator": {"renderer": {"name": "default"}}}
+        )

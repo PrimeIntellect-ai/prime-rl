@@ -11,6 +11,7 @@ from prime_rl.transports.batch import TrainingSample
 if TYPE_CHECKING:
     import verifiers.v1 as vf
 
+    from prime_rl.env.types import RestoreRef
     from prime_rl.orchestrator.metrics import EvalEpisodes, TrainEpisodes
 
 
@@ -111,12 +112,26 @@ class InflightEpisode:
     started_at: float = 0.0
     """``time.monotonic()`` at dispatch; feeds episode-duration estimates."""
     dispatch_id: str = field(default_factory=lambda: uuid.uuid4().hex)
-    """Names the episode on the live view from dispatch until its first trace streams."""
+    """Names the episode on the live view from dispatch until its first trace streams,
+    and its run on the env worker pool's wire (the ``request_id``)."""
     live: dict[str, LiveTrace] = field(default_factory=dict)
     """The episode's in-flight traces by id, as far as the env worker pool's stream has
     told: which phase each is in and how many turns it has committed."""
     calls: int = 0
     """Model calls the episode's traces streamed so far."""
+
+
+@dataclass
+class OpenEpisode:
+    """A train episode that was in flight when a checkpoint was written, for a resumed
+    run to dispatch again."""
+
+    group_id: uuid.UUID
+    restore: RestoreRef | None = None
+    """The restore point the episode continues from; None starts it over."""
+    owned: bool = True
+    """Whether this run deletes the restore point's snapshot. False for one taken over
+    from another run's checkpoint (``resume.dir``), which that run still owns."""
 
 
 @dataclass

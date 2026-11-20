@@ -136,7 +136,7 @@ def write_eval_subconfigs(config: SupervisedTrainerConfig, config_dir: Path, str
     # OS-assigned port and publishes it to the source's address file, where the
     # online-eval process picks it up.
     for source in eval_env_worker_pools(config):
-        write_env_worker_pool_config(config_dir, "eval", source, config.log)
+        write_env_worker_pool_config(config_dir, "eval", source, config.log, config.run_dir)
 
 
 def write_slurm_script(
