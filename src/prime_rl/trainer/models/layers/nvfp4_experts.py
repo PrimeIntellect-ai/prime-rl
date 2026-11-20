@@ -3,8 +3,9 @@
 Forward: the GEMM operands are bit-identical to the engines'. Activations go through FlashInfer's per-token NVFP4
 quantizer (the kernel the engines run on the GEMM1 input and, after SwiGLU, on the GEMM2 input), weights through
 vLLM's load-time NVFP4 quantizer (one FP32 scale per expert, E4M3 scales per 16 values). The GEMMs run on the FP4
-tensor cores (cuBLASLt block-scaled NVFP4) with FP32 output, and the per-token and per-expert scales apply to the
-FP32 result, as in the engine's GEMM epilogue before SwiGLU and the GEMM2 quantizer.
+tensor cores (cuBLASLt block-scaled NVFP4) with FP32 output, one expert group at a time; the per-token and per-expert
+scales and, after GEMM1, the activation apply to the FP32 result before the single BF16 rounding, as in the engine's
+GEMM epilogue.
 
 Backward: MXFP8 dgrad and wgrad on the forward's NVFP4 operands, requantized to MXFP8 straight from their packed form
 (straight through the quantizers).
@@ -66,9 +67,10 @@ def _blocked(block_scales: torch.Tensor) -> torch.Tensor:
     return tiles.permute(*range(len(batch)), -5, -2, -3, -4, -1).reshape(*batch, -1, 512).view(torch.float8_e4m3fn)
 
 
-def _nvfp4_grouped_mm(x, weight, bounds: list[int]) -> torch.Tensor:
-    """Per expert group, ``x @ weight[e].T`` on NVFP4 operands with an FP32 result, scaled per token and per expert;
-    rows past the last group are 0."""
+def _nvfp4_grouped_mm(x, weight, bounds: list[int], out: torch.Tensor, epilogue) -> torch.Tensor:
+    """Per expert group, ``x @ weight[e].T`` on NVFP4 operands with an FP32 result, scaled per token and per expert, as
+    the engine's GEMM epilogue does; ``epilogue(result, start)`` turns each group's FP32 result into its rows of
+    ``out``. Rows of ``out`` past the last group are left as they are."""
     x_packed, x_block_scales, token_scales = x
     w_packed, w_block_scales, expert_scales = weight
     device = x_packed.device
@@ -87,73 +89,124 @@ def _nvfp4_grouped_mm(x, weight, bounds: list[int]) -> torch.Tensor:
     w_scales = _blocked(w_block_scales)
     tile_rows = x_block_scales.shape[1] // 4
 
-    out = torch.empty(x_packed.shape[0], w_packed.shape[1], dtype=torch.float32, device=device)
-    out[bounds[-1] :].zero_()
+    # One group's FP32 result at a time
+    buffer = torch.empty(max(counts, default=0), w_packed.shape[1], dtype=torch.float32, device=device)
     for expert, (start, count) in enumerate(zip(bounds[:-1], counts)):
         if count:
             first = tile_starts[expert] * tile_rows
+            result = buffer[:count]
             torch._scaled_mm(
                 x_packed[start : start + count].view(torch.float4_e2m1fn_x2),
                 w_packed[expert].view(torch.float4_e2m1fn_x2).T,
                 x_scales[first : first + tiles[expert] * tile_rows].flatten(),
                 w_scales[expert].flatten(),
                 out_dtype=torch.float32,
-                out=out[start : start + count],
+                out=result,
             )
-    row_expert_scales = torch.repeat_interleave(
-        expert_scales, torch.tensor(counts, device=device), output_size=bounds[-1]
-    )
-    out[: bounds[-1]].mul_((token_scales[: bounds[-1]] * row_expert_scales).unsqueeze(-1))
+            result.mul_((token_scales[start : start + count] * expert_scales[expert]).unsqueeze(-1))
+            out[start : start + count] = epilogue(result, start)
     return out
 
 
+def _mxfp8_backward(grad_output, x, weight, offsets, mx, need_input: bool, need_weight: bool):
+    """MXFP8 dgrad and wgrad of ``x @ weight[e].T`` on the NVFP4 operands, requantized from their packed form."""
+    x_packed, x_block_scales, token_scales = x
+    w_packed, w_block_scales, expert_scales = weight
+    grad_input = grad_weight = None
+    if need_input:
+        grad_data, grad_scales = mx.quantize_rows(grad_output)
+        # The weights as [E, K, N], quantized along N (the dgrad contraction)
+        num_experts, n, _ = w_packed.shape
+        weight_data, weight_scales = nvfp4_to_mxfp8_columns(
+            w_packed, w_block_scales, expert_scales.unsqueeze(-1).expand(num_experts, n)
+        )
+        grad_input = torch._scaled_grouped_mm(
+            grad_data,
+            weight_data.transpose(-2, -1),
+            mx._rearrange_token_scales(grad_scales, offsets),
+            mx.triton_mx_block_rearrange_per_group_3d(weight_scales),
+            offs=offsets,
+            out_dtype=torch.bfloat16,
+        )
+    if need_weight:
+        grad_data, grad_scales = mx._quantize_dim1(grad_output)
+        # The activations as [K, M], quantized along M (the wgrad contraction)
+        input_data, input_scales = nvfp4_to_mxfp8_columns(
+            x_packed.unsqueeze(0), x_block_scales.unsqueeze(0), token_scales.unsqueeze(0)
+        )
+        scale_offsets = mx._pow2_groups(offsets // mx.TOKEN_GROUP_ALIGNMENT)
+        grad_weight = torch._scaled_grouped_mm(
+            grad_data,
+            input_data[0].transpose(-2, -1),
+            mx.triton_mx_block_rearrange_2d_K_groups(grad_scales, scale_offsets),
+            mx.triton_mx_block_rearrange_2d_K_groups(input_scales[0], scale_offsets),
+            offs=offsets,
+            out_dtype=torch.bfloat16,
+        )
+    return grad_input, grad_weight
+
+
 class _NVFP4GroupedLinear(torch.autograd.Function):
+    """``x @ weight[e].T`` per expert group, BF16 out."""
+
     @staticmethod
     def forward(ctx, x, weight, offsets, bounds, four_over_six, mxfp8):
         x_quantized = quantize_activations(x, four_over_six)
         w_quantized = quantize_weights(weight)
-        out = _nvfp4_grouped_mm(x_quantized, w_quantized, bounds)
+        out = x.new_zeros(x.shape[0], weight.shape[1])
+        _nvfp4_grouped_mm(x_quantized, w_quantized, bounds, out, lambda result, start: result)
         ctx.save_for_backward(*x_quantized, *w_quantized, offsets)
         ctx.mxfp8 = mxfp8
         return out
 
     @staticmethod
     def backward(ctx, grad_output):
-        x_packed, x_block_scales, token_scales, w_packed, w_block_scales, expert_scales, offsets = ctx.saved_tensors
-        mx = ctx.mxfp8
-        grad_output = grad_output.bfloat16().contiguous()
-        grad_input = grad_weight = None
-        if ctx.needs_input_grad[0]:
-            grad_data, grad_scales = mx.quantize_rows(grad_output)
-            # The weights as [E, K, N], quantized along N (the dgrad contraction)
-            num_experts, n, _ = w_packed.shape
-            weight_data, weight_scales = nvfp4_to_mxfp8_columns(
-                w_packed, w_block_scales, expert_scales.unsqueeze(-1).expand(num_experts, n)
-            )
-            grad_input = torch._scaled_grouped_mm(
-                grad_data,
-                weight_data.transpose(-2, -1),
-                mx._rearrange_token_scales(grad_scales, offsets),
-                mx.triton_mx_block_rearrange_per_group_3d(weight_scales),
-                offs=offsets,
-                out_dtype=torch.bfloat16,
-            )
-        if ctx.needs_input_grad[1]:
-            grad_data, grad_scales = mx._quantize_dim1(grad_output)
-            # The activations as [K, M], quantized along M (the wgrad contraction)
-            input_data, input_scales = nvfp4_to_mxfp8_columns(
-                x_packed.unsqueeze(0), x_block_scales.unsqueeze(0), token_scales.unsqueeze(0)
-            )
-            scale_offsets = mx._pow2_groups(offsets // mx.TOKEN_GROUP_ALIGNMENT)
-            grad_weight = torch._scaled_grouped_mm(
-                grad_data,
-                input_data[0].transpose(-2, -1),
-                mx.triton_mx_block_rearrange_2d_K_groups(grad_scales, scale_offsets),
-                mx.triton_mx_block_rearrange_2d_K_groups(input_scales[0], scale_offsets),
-                offs=offsets,
-                out_dtype=torch.bfloat16,
-            )
-        return grad_input, grad_weight, None, None, None, None
+        *quantized, offsets = ctx.saved_tensors
+        grads = _mxfp8_backward(
+            grad_output.bfloat16().contiguous(),
+            quantized[:3],
+            quantized[3:],
+            offsets,
+            ctx.mxfp8,
+            *ctx.needs_input_grad[:2],
+        )
+        return *grads, None, None, None, None
+
+
+class _NVFP4GatedLinear(torch.autograd.Function):
+    """``activation(gate, up)`` of ``x @ gate_up[e].T`` per expert group, BF16 out: the activation runs on each group's
+    FP32 GEMM result, as in the engine's GEMM1 epilogue. The backward takes the activation's gradient on the BF16 GEMM
+    result, which only the forward has to see in FP32."""
+
+    @staticmethod
+    def forward(ctx, x, gate_up, offsets, bounds, four_over_six, mxfp8, activation):
+        x_quantized = quantize_activations(x, four_over_six)
+        w_quantized = quantize_weights(gate_up)
+        gate_up_out = x.new_zeros(x.shape[0], gate_up.shape[1])
+        out = x.new_zeros(x.shape[0], gate_up.shape[1] // 2)
+
+        def epilogue(result, start):
+            gate_up_out[start : start + len(result)] = result
+            return activation.apply(*result.chunk(2, dim=-1))
+
+        _nvfp4_grouped_mm(x_quantized, w_quantized, bounds, out, epilogue)
+        ctx.save_for_backward(*x_quantized, *w_quantized, offsets, gate_up_out)
+        ctx.mxfp8, ctx.activation = mxfp8, activation
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_hidden):
+        *quantized, offsets, gate_up_out = ctx.saved_tensors
+        with torch.enable_grad():
+            gate, up = gate_up_out.detach().chunk(2, dim=-1)
+            gate.requires_grad_()
+            up.requires_grad_()
+            grads = torch.autograd.grad(ctx.activation.apply(gate, up), (gate, up), grad_hidden)
+        grad_gate_up = torch.cat(grads, dim=-1)
+        grads = _mxfp8_backward(
+            grad_gate_up, quantized[:3], quantized[3:], offsets, ctx.mxfp8, *ctx.needs_input_grad[:2]
+        )
+        return *grads, None, None, None, None, None
 
 
 class NVFP4ExpertCompute:
@@ -182,9 +235,6 @@ class NVFP4ExpertCompute:
                 f"{dim} and {experts.hidden_dim}."
             )
 
-    def _linear(self, x: torch.Tensor, weight: torch.Tensor, offsets: torch.Tensor, bounds: list[int]) -> torch.Tensor:
-        return _NVFP4GroupedLinear.apply(x, weight, offsets, bounds, self.four_over_six, self.mxfp8)
-
     # Eager kernels with a host-side group loop: nothing for the compiler to fuse.
     @torch.compiler.disable
     def __call__(self, experts: "GroupedExperts", x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
@@ -195,7 +245,8 @@ class NVFP4ExpertCompute:
         else:
             # vLLM quantizes gate and up as one w13 weight with one scale per expert.
             gate_up_proj = torch.cat((to_local(experts.gate_proj), to_local(experts.up_proj)), dim=1)
-        # The engine's GEMM1 epilogue applies the scales and SwiGLU in FP32 and stores BF16 for the GEMM2 quantizer.
-        gate, up = self._linear(x.bfloat16(), gate_up_proj.bfloat16(), offsets, bounds).chunk(2, dim=-1)
-        hidden = experts.activation.apply(gate, up).bfloat16()
-        return self._linear(hidden, to_local(experts.down_proj).bfloat16(), offsets, bounds).type_as(x)
+        hidden = _NVFP4GatedLinear.apply(
+            x.bfloat16(), gate_up_proj.bfloat16(), offsets, bounds, self.four_over_six, self.mxfp8, experts.activation
+        )
+        down_proj = to_local(experts.down_proj).bfloat16()
+        return _NVFP4GroupedLinear.apply(hidden, down_proj, offsets, bounds, self.four_over_six, self.mxfp8).type_as(x)
