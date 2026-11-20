@@ -160,7 +160,7 @@ class FileMonitor(Monitor):
         """A stream and its index, opened on first use and kept open. Writers flush the
         stream before the index: a row a reader sees points at a record it can read."""
         if directory not in self._streams:
-            stream = ChunkedJsonl(directory, self.config.chunk_bytes, self.config.compress)
+            stream = ChunkedJsonl(directory, self.config.chunk_bytes)
             self._streams[directory] = (stream, open(get_index_path(directory), "ab"))
         return self._streams[directory]
 
@@ -168,9 +168,7 @@ class FileMonitor(Monitor):
         """The ``.bin`` chunks holding an annotation stream's float32 values, opened on
         first use and kept open."""
         if directory not in self._value_streams:
-            self._value_streams[directory] = ChunkedJsonl(
-                directory, self.config.chunk_bytes, self.config.compress, suffix=".bin"
-            )
+            self._value_streams[directory] = ChunkedJsonl(directory, self.config.chunk_bytes, suffix=".bin")
         return self._value_streams[directory]
 
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:

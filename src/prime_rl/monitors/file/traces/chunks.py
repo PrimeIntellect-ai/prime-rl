@@ -64,11 +64,10 @@ class ChunkedJsonl:
     """Appends records to the live chunk of a stream and reports where each one landed:
     JSONL lines by default, raw bytes in ``.bin`` chunks."""
 
-    def __init__(self, directory: Path, max_bytes: int, compress: bool, suffix: str = ".jsonl") -> None:
+    def __init__(self, directory: Path, max_bytes: int, suffix: str = ".jsonl") -> None:
         directory.mkdir(parents=True, exist_ok=True)
         self.directory = directory
         self.max_bytes = max_bytes
-        self.compress = compress
         self.suffix = suffix
         self._sealing: list[threading.Thread] = []
         numbers = chunk_numbers(directory, suffix)
@@ -77,7 +76,7 @@ class ChunkedJsonl:
         # last chunk; anything else still plain was left mid-seal by a crash.
         self.number = last if numbers.get(last) else last + 1
         for number, plain in numbers.items():
-            if plain and number != self.number and compress:
+            if plain and number != self.number:
                 self._seal(number)
         self.file = open(chunk_path(directory, self.number, suffix), "ab")
         self.size = self.file.tell()
@@ -102,15 +101,14 @@ class ChunkedJsonl:
         self.file.close()
         if not self.size:
             chunk_path(self.directory, self.number, self.suffix).unlink()
-        elif self.compress:
+        else:
             self._seal(self.number)
         for thread in self._sealing:
             thread.join()
 
     def _roll(self) -> None:
         self.file.close()
-        if self.compress:
-            self._seal(self.number)
+        self._seal(self.number)
         self.number += 1
         self.file = open(chunk_path(self.directory, self.number, self.suffix), "ab")
         self.size = 0

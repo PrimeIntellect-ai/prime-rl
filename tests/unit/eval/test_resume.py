@@ -106,7 +106,7 @@ def test_take_landed_reads_every_attempt_once(tmp_path, skip_checks) -> None:
         resume.stamp_config(tmp_path, config.model_dump(mode="json"))
         if skip_checks:
             (get_file_monitor_dir(tmp_path) / resume.CONFIG_NAME).unlink()
-        stream = ChunkedJsonl(get_trace_stream(tmp_path), max_bytes=1 << 20, compress=False)
+        stream = ChunkedJsonl(get_trace_stream(tmp_path), max_bytes=1 << 20)
         for key in keys:
             stream.append(orjson.dumps({**_record("math", key), "id": key}, option=orjson.OPT_APPEND_NEWLINE))
         stream.close()
@@ -132,7 +132,7 @@ def test_resume_validates_saved_episodes(tmp_path, ok, traces, valid) -> None:
     config = EvalConfig(source=[{"env": {"id": "single_agent"}}])
     resume.stamp_config(tmp_path, config.model_dump(mode="json"))
     record = {**_record("math", "m0", ok=ok), "id": "saved", "traces": traces}
-    stream = ChunkedJsonl(get_trace_stream(tmp_path), max_bytes=1 << 20, compress=False)
+    stream = ChunkedJsonl(get_trace_stream(tmp_path), max_bytes=1 << 20)
     for row in [{key: value for key, value in record.items() if key != "traces"}, record]:
         stream.append(orjson.dumps(row, option=orjson.OPT_APPEND_NEWLINE))
     stream.close()

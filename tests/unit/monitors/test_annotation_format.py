@@ -13,7 +13,7 @@ from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.dashboard.server import trace_updates
 from prime_rl.monitors.file.monitor import FileMonitor
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path
-from prime_rl.monitors.file.traces.chunks import ChunkedJsonl
+from prime_rl.monitors.file.traces.chunks import ChunkedJsonl, chunk_numbers, open_chunk
 from prime_rl.monitors.file.traces.update import make_update, update_index_row
 
 
@@ -25,7 +25,7 @@ def _stream_values(update: dict, field: str) -> np.ndarray:
 
 def _write_records(stream: Path, records: list[dict[str, Any]]) -> None:
     """Append hand-built records and their index rows to a stream the monitor wrote."""
-    jsonl = ChunkedJsonl(stream, 1 << 30, False)
+    jsonl = ChunkedJsonl(stream, 1 << 30)
     with open(get_index_path(stream), "ab") as index:
         for record in records:
             chunk, offset = jsonl.append(orjson.dumps(record, option=orjson.OPT_APPEND_NEWLINE))
@@ -63,7 +63,7 @@ def test_streams_larger_than_a_chunk_never_span_chunks(tmp_path):
     big = np.arange(100, dtype=np.float32)
     medium = np.arange(40, dtype=np.float32)
     small = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
-    monitor = FileMonitor(FileMonitorConfig(chunk_bytes=200, compress=False))
+    monitor = FileMonitor(FileMonitorConfig(chunk_bytes=200))
     asyncio.run(monitor.init(tmp_path))
     asyncio.run(
         monitor.log_annotations(
@@ -76,7 +76,10 @@ def test_streams_larger_than_a_chunk_never_span_chunks(tmp_path):
     )
     stream = get_annotations_dir(tmp_path) / "unknown"
 
-    sizes = {int(path.stem): path.stat().st_size for path in stream.glob("*.bin")}
+    sizes = {}
+    for number in chunk_numbers(stream, ".bin"):
+        with open_chunk(stream, number, ".bin") as chunk:
+            sizes[number] = len(chunk.read())
     assert sizes == {0: 400, 1: 192, 2: 16}
 
     written = {
@@ -113,7 +116,7 @@ def test_relaunch_after_a_crash_or_a_seal_reads_every_run(tmp_path):
 
 
 def test_v1_records_read_alongside_v2_records(tmp_path):
-    monitor = FileMonitor(FileMonitorConfig(compress=False))
+    monitor = FileMonitor(FileMonitorConfig())
     asyncio.run(monitor.init(tmp_path))
     asyncio.run(
         monitor.log_annotations(
@@ -136,7 +139,7 @@ def test_v1_records_read_alongside_v2_records(tmp_path):
 
 
 def test_torn_ref_reads_as_an_absent_stream(tmp_path):
-    monitor = FileMonitor(FileMonitorConfig(compress=False))
+    monitor = FileMonitor(FileMonitorConfig())
     asyncio.run(monitor.init(tmp_path))
     asyncio.run(monitor.log_annotations([make_update("good", branches={0: {"trainer_logprobs": np.float32([1.5])}})]))
     stream = get_annotations_dir(tmp_path) / "unknown"

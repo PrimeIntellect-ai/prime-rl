@@ -79,7 +79,6 @@ name = "your-run-name"
 
 [monitors.file]
 path = "metrics.jsonl"
-compress = true
 float_decimals = 6
 
 [inference.vllm]
