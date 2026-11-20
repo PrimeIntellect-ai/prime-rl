@@ -285,6 +285,20 @@ def test_rl_orchestrator_val_fills_the_trainer_val(tmp_path):
     assert not can_parse(RLConfig, [*base, "@", str(tmp_path / "direct.toml")])
 
 
+def test_chat_val_sources_score_the_training_loss_mask():
+    """A chat validation source scores what SFT trains on: unset, its loss_mask is data.loss_mask; set, its own."""
+    sources = [
+        {"type": "chat", "name": "inherited", "dataset": "x"},
+        {"type": "chat", "name": "own", "dataset": "x", "loss_mask": {"user": True, "assistant": False}},
+    ]
+    config = SFTConfig.model_validate(
+        {"data": {"loss_mask": {"tool": True}}, "orchestrator": {"val": {"source": sources}}}
+    )
+    inherited, own = config.orchestrator.val.source
+    assert (inherited.loss_mask.tool, inherited.loss_mask.assistant) == (True, True)
+    assert (own.loss_mask.user, own.loss_mask.assistant, own.loss_mask.tool) == (True, False, False)
+
+
 @pytest.mark.parametrize("mode", MODES)
 def test_launch_runs_the_entrypoint_of_the_mode(tmp_path, monkeypatch, mode: str):
     """`uv run launch` reads `mode` from the config files and runs that entrypoint with the same arguments."""

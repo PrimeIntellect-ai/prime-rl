@@ -100,8 +100,9 @@ class ChatValSourceConfig(HFDatasetConfig, BaseValSourceConfig):
 
     type: Literal["chat"] = "chat"
 
-    loss_mask: LossMaskConfig = LossMaskConfig()
-    """Which message types are scored."""
+    loss_mask: LossMaskConfig | None = None
+    """Which message types are scored. Defaults to the training ``data.loss_mask`` (the default mask in pretraining
+    and RL)."""
 
 
 ValSourceConfig: TypeAlias = Annotated[DocumentsValSourceConfig | ChatValSourceConfig, Field(discriminator="type")]
@@ -143,14 +144,18 @@ class ValConfig(BaseConfig):
             raise ValueError(f"orchestrator.val.source names must be unique: {names}")
         return self
 
-    def resolve(self, seq_len: int, micro_batch_tokens: int, cp: int, columns: SFTColumnsConfig) -> None:
-        """Fill the defaults from the trainer's sequence length, micro-batch tokens and data columns, and check the
-        row size."""
+    def resolve(
+        self, seq_len: int, micro_batch_tokens: int, cp: int, columns: SFTColumnsConfig, loss_mask: LossMaskConfig
+    ) -> None:
+        """Fill the defaults from the trainer's sequence length, micro-batch tokens, data columns and loss mask, and
+        check the row size."""
         for val_source in self.source:
             if val_source.seq_len is None:
                 val_source.seq_len = seq_len
             if val_source.type == "chat":
                 val_source.resolve_columns(columns)
+                if val_source.loss_mask is None:
+                    val_source.loss_mask = loss_mask
         longest = max(val_source.seq_len for val_source in self.source)
         if self.micro_batch_tokens is None:
             self.micro_batch_tokens = -(-max(micro_batch_tokens, longest) // cp) * cp

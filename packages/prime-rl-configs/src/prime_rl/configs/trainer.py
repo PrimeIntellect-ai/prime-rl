@@ -22,7 +22,7 @@ from prime_rl.configs.shared import (
     WeightBroadcastConfig,
     ZMQTransportConfig,
 )
-from prime_rl.configs.val import SFTColumnsConfig, ValConfig
+from prime_rl.configs.val import LossMaskConfig, SFTColumnsConfig, ValConfig
 from prime_rl.utils.config import BaseConfig, default_output_dir
 
 # -- Shared trainer configs (used by both SFT and RL trainers) --
@@ -909,7 +909,9 @@ class TrainerConfig(BaseTrainerConfig):
     @model_validator(mode="after")
     def auto_setup_val(self):
         if self.val is not None:
-            self.val.resolve(self.model.seq_len, self.model.seq_len, self.model.cp, SFTColumnsConfig())
+            self.val.resolve(
+                self.model.seq_len, self.model.seq_len, self.model.cp, SFTColumnsConfig(), LossMaskConfig()
+            )
         return self
 
     @model_validator(mode="after")

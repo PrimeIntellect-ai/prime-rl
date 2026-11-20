@@ -22,7 +22,7 @@ from prime_rl.configs.shared import (
     WeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import BaseTrainerConfig, mega_moe_max_tokens_per_rank
-from prime_rl.configs.val import SFTColumnsConfig, ValConfig
+from prime_rl.configs.val import LossMaskConfig, SFTColumnsConfig, ValConfig
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 
 
@@ -375,7 +375,9 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
         val = self.orchestrator.val
         if val is not None:
             columns = getattr(self.data, "columns", SFTColumnsConfig())
-            val.resolve(self.data.seq_len, self.data.seq_len * self.data.micro_batch_size, self.model.cp, columns)
+            loss_mask = getattr(self.data, "loss_mask", LossMaskConfig())
+            row_len = self.data.seq_len * self.data.micro_batch_size
+            val.resolve(self.data.seq_len, row_len, self.model.cp, columns, loss_mask)
         return self
 
     @model_validator(mode="after")
