@@ -77,7 +77,10 @@ def shard_for_cp(t: torch.Tensor, cp_rank: int, cp_world_size: int, seq_dim: int
 
     chunked_t = torch.chunk(t, cp_world_size, dim=seq_dim)
 
-    return chunked_t[cp_rank]
+    # Clone: a slice is a view, and torch.compile compiles a layer that receives a view separately from one
+    # that receives a non-view. Later decoder layers receive non-views, so returning a view would compile the
+    # first layer twice.
+    return chunked_t[cp_rank].clone()
 
 
 def shard_position_ids_for_cp(position_ids: torch.Tensor, cp_rank: int, cp_world_size: int) -> torch.Tensor:

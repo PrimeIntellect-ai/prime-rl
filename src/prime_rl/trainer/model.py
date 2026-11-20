@@ -879,7 +879,7 @@ DYNAMIC_INT_ARGS = (
 # layer: FSDP2's pre-forward hook hands the layer a new view of its input, without the mark. A dynamic source names
 # the arg instead, so callers must pass these args by keyword.
 DYNAMIC_TENSOR_ARG_DIMS = (
-    # DeepSeek V4: the decoder layer input, (batch, seq, hc_mult, hidden). seq follows this rank's row length.
+    # DeepSeek V4, GLM5-next: decoder layer input, (batch, seq, hc_mult, hidden). seq follows this rank's row length.
     ("mhc_states", 1),
 )
 

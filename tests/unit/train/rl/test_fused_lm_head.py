@@ -47,6 +47,7 @@ def test_token_support_shift_and_rows():
 
 
 @pytest.mark.gpu
+@pytest.mark.tiny
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 @pytest.mark.parametrize("replay", [False, True])
 @pytest.mark.parametrize("head_only", [False, True])
@@ -79,6 +80,7 @@ def test_fused_head_support_logprobs_gradient(dtype, replay, head_only):
 
 
 @pytest.mark.gpu
+@pytest.mark.tiny
 @pytest.mark.parametrize("replay", [True, False])
 @pytest.mark.parametrize("softcap", [None, 30.0])
 def test_fused_head_sparse_backward_matches_dense(replay, softcap):
@@ -238,6 +240,7 @@ def test_fused_lm_head_softcap_matches_full_logits_cpu():
 
 
 @pytest.mark.gpu
+@pytest.mark.tiny
 @pytest.mark.parametrize("head", ["fused", "vanilla"])
 def test_head_logits_are_fp32_from_bf16_operands(head):
     """Logprobs, cross-entropy and gradients match FP32 logits of the same BF16 operands (BF16 logits are ~1e-2 off)."""
@@ -396,6 +399,7 @@ def test_fused_lm_head_correct_shift():
 
 
 @pytest.mark.gpu
+@pytest.mark.tiny
 def test_inject_prime_lm_head_vanilla():
     """Test that inject_prime_lm_head correctly wraps the model with VanillaOutputLinear."""
     torch.manual_seed(123)
@@ -448,6 +452,7 @@ def test_inject_prime_lm_head_vanilla():
 
 
 @pytest.mark.gpu
+@pytest.mark.tiny
 def test_inject_prime_lm_head_fused():
     """Test that inject_prime_lm_head correctly wraps the model with FusedOutputLinear."""
     torch.manual_seed(123)
