@@ -101,6 +101,10 @@ class SupervisedOrchestratorProcessConfig(SupervisedOrchestratorConfig):
     """Trainer step the run resumed from, the version of the trainer's startup broadcast. When set, the startup
     (base-model) eval is skipped; set ``eval.retrigger_on_resume`` to re-fire interval-aligned evals at this step."""
 
+    max_steps: int | None = None
+    """Trainer step at which the run ends. A run resumed at it re-fires every eval env with
+    ``eval.retrigger_on_resume``, as its final step does."""
+
     weight_broadcast: WeightBroadcastConfig | None = None
     """Weight transport of the online evals."""
 
