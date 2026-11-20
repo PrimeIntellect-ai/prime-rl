@@ -174,11 +174,12 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
 
     @model_validator(mode="after")
     def auto_setup_run_identity(self):
-        """Auto-generate the run name (``<dataset>--<model>--<short-id>``) when unset and
-        default the run directory, W&B run name and platform run name to it when not
-        set explicitly."""
+        """Auto-generate the run name (``<source>--<model>--<short-id>``, with the source only if it is the only
+        one) when unset and default the run directory, W&B run name and platform run name to it when not set
+        explicitly."""
         if self.run.name is None:
-            dataset = str(getattr(self.data, "name", "")).split("/")[-1]
+            sources = getattr(self.data, "source", [])
+            dataset = "fake" if getattr(self.data, "fake", None) else sources[0].name if len(sources) == 1 else ""
             model = self.model.name.split("/")[-1]
             parts = [part for part in (dataset, model) if part]
             self.run.name = "--".join([*parts, uuid.uuid4().hex[:8]]).lower()

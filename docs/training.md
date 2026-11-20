@@ -201,6 +201,38 @@ The trainer warns when batch wait time exceeds active trainer time. Add inferenc
 
 `uv run sft` runs supervised fine-tuning from a HF dataset. It shares model loaders, FSDP setup, checkpointing, and the chat-template plumbing with the RL trainer, so a typical workflow is _SFT → RL → SFT → …_ without any reformatting.
 
+### Sources
+
+The run trains on one or more `[[data.source]]` tables, the same shape as [pretraining](#pretraining) sources. A source is one `(dataset, subset, split)` of a HF dataset or local path, with a unique `name` that keys its metrics:
+
+```toml
+[data]
+seq_len = 4096
+batch_size = 32
+
+[[data.source]]
+name = "chat"
+dataset = "org/sft-release"
+subset = "chat"
+weight = 3                 # relative to the other weights; leave it out on every source for natural shares
+
+[[data.source]]
+name = "reasoning"
+dataset = "org/sft-release"
+subset = "reasoning"
+revision = "abc123"
+weight = 1
+renderer.reasoning_effort = "high"
+columns.messages = "conversation"
+```
+
+- **Weights.** A source's share of the drawn samples is its weight over the sum of the weights. Set `weight` on every source or on none. Without weights, a source's share is its share of all rows: every epoch reads each row once.
+- **Order.** The sources take turns by due time (weighted fair queuing), so every stretch of samples holds the mixture. A source reads its rows in passes, each in its own seeded order (`data.shuffle`, `data.seed`), and repeats when the other sources still draw. `max_steps` sets the length of the run.
+- **Columns and renderer.** `data.columns` applies to every source; a source's `columns` overrides single fields. A source's `renderer` table sets chat-template kwargs for its rows, over `[renderer]` and under a row's `[data.columns.renderer]` values. It needs a typed `[renderer]`.
+- **Fake data.** `[data.fake]` replaces the sources with synthetic token sequences of `seq_len` tokens (`length = "variable"` for random lengths, `input_ids = "random"` for random ids), as `[data.fake]` does for the RL trainer. It needs no renderer and is for throughput and plumbing tests.
+- **Resume.** The data state is the count of draws of every source. A resume continues the draws exactly, also on another number of GPUs.
+- **Validation.** `[val.data]` takes sources in the same shape. Every validation reads one epoch: without weights, every row of every source once.
+
 ### Dataset Format
 
 Two accepted layouts:
@@ -208,7 +240,7 @@ Two accepted layouts:
 - **Prompt-completion**: a HF dataset with `prompt` and `completion` columns ([TRL format](https://huggingface.co/docs/trl/en/dataset_formats#prompt-completion)). The trainer masks out the prompt and computes loss only over the completion.
 - **Messages**: a HF dataset with a single `messages` column containing a list of chat turns. The trainer interprets the whole conversation as one sample, applies role-based loss masking, and trains over all assistant turns.
 
-If both columns are present, `messages` takes precedence. A dataset that stores these under other names maps them in `[data.columns]`; the trainer renames the columns at load time:
+If both columns are present, `messages` takes precedence. A dataset that stores these under other names maps them in `[data.columns]`, or per source in its `columns`:
 
 ```toml
 [data.columns]
@@ -318,7 +350,7 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 
 | Knob | What it controls |
 |---|---|
-| `data.name` | HF dataset name or local path |
+| `data.source` | The sources to draw samples from; see [Sources](#sources) |
 | `data.batch_size` | Tokens per trainer step (packed) |
 | `data.seq_len` | Per-sample sequence length |
 | `loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |
@@ -335,7 +367,7 @@ Pulled from the console log and mirrored to W&B.
 - `val/loss`, `val/perplexity` — SFT validation metrics when `[val]` is set, logged every `val.interval` steps. Pretraining logs `val/<name>/loss@<seq_len>` and `val/<name>/bpb@<seq_len>` per validation set; see [Pretraining](#pretraining).
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
-- `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
+- `progress/<name>/{num_samples,epoch}` — SFT: a source's drawn samples over all ranks and its passes over its rows. With several sources, `progress/<name>/ratio_{samples,tokens}` is the realized mixture of rank 0's samples and tokens.
 - `progress/<name>/{num_tokens,unique_tokens,repetitions,mean_segment_length}` — pretraining: a source's tokens read, the unique ones among them (at most its subset's), their ratio, and the mean length of its document pieces in the step's rows; `progress/{unique_tokens,repetitions,mean_segment_length}` over all sources. In pretraining, `progress/epoch` is the tokens read over all sources' tokens.
 
 **Stability and optimization:**

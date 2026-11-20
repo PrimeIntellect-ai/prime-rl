@@ -29,7 +29,7 @@ from prime_rl.configs.orchestrator import (
 )
 from prime_rl.configs.pretrain import PretrainConfig, PretrainDataConfig
 from prime_rl.configs.rl import RLConfig
-from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.sft import SFTConfig, SFTDataConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.utils.config import MODES, BaseConfig, check_mode, cli, dump_resolved_config
@@ -546,7 +546,7 @@ def test_mega_moe_buffer_defaults_to_a_cp_shard(cp, expected):
     mega_moe = {"type": "mega_moe", "precision": "mxfp8"}
     rl = TrainerConfig.model_validate({"model": {"seq_len": 262144, "cp": cp, "moe": {"dispatch": mega_moe}}})
     sft = SFTConfig.model_validate(
-        {"model": {"cp": cp, "moe": {"dispatch": mega_moe}}, "data": {"type": "fake", "seq_len": 262144}}
+        {"model": {"cp": cp, "moe": {"dispatch": mega_moe}}, "data": {"fake": {}, "seq_len": 262144}}
     )
 
     assert rl.model.moe.dispatch.max_tokens_per_rank == expected
@@ -1337,11 +1337,42 @@ def test_sft_rejects_default_renderer_for_real_data():
 def test_sft_allows_unused_default_renderer_for_fake_data():
     config = SFTConfig.model_validate(
         {
-            "data": {"type": "fake"},
+            "data": {"fake": {}},
             "renderer": {"name": "default"},
         }
     )
     assert config.renderer.name == "default"
+
+
+def test_sft_source_columns_override_data_columns():
+    config = SFTDataConfig.model_validate(
+        {
+            "columns": {"tools": "schemas"},
+            "source": [{"name": "a", "dataset": "x", "columns": {"messages": "chat"}}, {"name": "b", "dataset": "y"}],
+        }
+    )
+    assert [(source.columns.messages, source.columns.tools) for source in config.source] == [
+        ("chat", "schemas"),
+        ("messages", "schemas"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("sources", "message"),
+    [
+        ([{"name": "a", "dataset": "x"}, {"name": "a", "dataset": "y"}], "names must be unique"),
+        ([{"name": "a", "dataset": "x", "weight": 1}, {"name": "b", "dataset": "y"}], "on every source or on none"),
+        ([{"name": "a", "dataset": "x", "weight": 0}], "sum to more than 0"),
+    ],
+)
+def test_sft_sources_reject_invalid_mixtures(sources, message):
+    with pytest.raises(ValidationError, match=message):
+        SFTDataConfig.model_validate({"source": sources})
+
+
+def test_sft_val_rejects_fake_data():
+    with pytest.raises(ValidationError, match="not fake data"):
+        SFTConfig.model_validate({"val": {"data": {"fake": {}}}})
 
 
 def test_orchestrator_explicit_renderer_skips_unmapped_check():
@@ -1470,7 +1501,7 @@ def test_sft_config_accepts_custom_renderer(tmp_path, custom_renderer_import_pat
         tomli_w.dumps(
             {
                 "model": {"name": "PrimeIntellect/Qwen3-0.6B"},
-                "data": {"name": "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"},
+                "data": {"source": [{"name": "reverse", "dataset": "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"}]},
                 "renderer": {"name": "custom", "import_path": custom_renderer_import_path, "instruction": "Be brief."},
             }
         )
