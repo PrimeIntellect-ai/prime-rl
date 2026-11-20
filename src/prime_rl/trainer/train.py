@@ -1,5 +1,6 @@
 import prime_rl._compat  # noqa: F401
 
+import json
 import math
 import time
 import asyncio
@@ -66,7 +67,7 @@ from prime_rl.trainer.vlm import setup_processor
 from prime_rl.trainer.world import get_world
 from prime_rl.control.controller import Controller
 from prime_rl.control.server import ControlServer
-from prime_rl.utils.distributed import broadcast_bytes
+from prime_rl.utils.distributed import all_gather_bytes, broadcast_bytes
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.utils import clean_exit
@@ -213,15 +214,14 @@ def train(config: SFTConfig | PretrainConfig):
 
         # Rank 0 writes the table of long documents to the cache, the other ranks then read it. Rank 0's error reaches
         # every rank, so none waits for it.
-        error = None
+        error, message = None, None
         if world.rank == 0:
             try:
                 dataset = setup_dataset()
+                message = b""
             except Exception as e:
                 error = e
-        message = None
-        if world.rank == 0:
-            message = f"{type(error).__name__}: {error}".encode() if error is not None else b""
+                message = f"{type(error).__name__}: {error}".encode(errors="backslashreplace")
         rank_0_error = broadcast_bytes(message).decode()
         if error is not None:
             raise error
@@ -276,9 +276,8 @@ def train(config: SFTConfig | PretrainConfig):
             scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
         if isinstance(dataset, SFTDataset) and not skip.skip_dataloader:
             path = resume_dir / "trainer" if resume_dir is not None else ckpt_manager.get_ckpt_path(checkpoint_step)
-            views = [None] * world.world_size
             view = dataset.saved_view(dataloader, path / "dataloader", world.rank, world.world_size)
-            dist.all_gather_object(views, view)
+            views = [json.loads(saved) for saved in all_gather_bytes(json.dumps(view).encode())]
             if (start := dataset.start_together(dataloader, views)) is not None:
                 draw, skipped = start
                 logger.info(

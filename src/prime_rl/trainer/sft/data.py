@@ -442,7 +442,7 @@ class SFTDataset(StatefulIterableDataset):
             for name in counts.keys() - set(names):
                 del counts[name]
 
-    def saved_view(self, dataloader: StatefulDataLoader, directory: Path, rank: int, world_size: int) -> tuple:
+    def saved_view(self, dataloader: StatefulDataLoader, directory: Path, rank: int, world_size: int) -> list:
         """What rank ``rank`` of ``world_size`` adds to the decision of a resume (`start_together`), from the saved
         files ``directory / rank_<rank>.pt``, ``rank_<rank + world_size>.pt``, ... (the ranks read every file between
         them, also on fewer ranks than the saved run):
@@ -452,16 +452,18 @@ class SFTDataset(StatefulIterableDataset):
         - the dataset state of the saved worker that got furthest;
         - whether something changed for this rank: the mixture, or its workers loaded states that other data ranks
           saved (another number of GPUs, model-parallel layout or workers, or a state from before the layout was
-          recorded)."""
-        positions, furthest = {}, None
+          recorded).
+
+        The view is plain JSON data, so the ranks can gather it."""
+        positions, furthest = [], None
         for saved_rank in itertools.count(rank, world_size):
             path = directory / f"rank_{saved_rank}.pt"
             if not path.exists():
                 break
             for key, worker in torch.load(path, weights_only=False)["_snapshot"]["_worker_snapshots"].items():
                 state = worker["dataset_state"]
-                layout = tuple(state["dataset"].get("layout", [(saved_rank, key), None]))
-                positions[layout] = (state["dataset"]["step"], "pending_sample" in state)
+                layout = state["dataset"].get("layout", [[saved_rank, key], None])
+                positions.append([layout, state["dataset"]["step"], "pending_sample" in state])
                 if furthest is None or state["dataset"]["step"] > furthest["step"]:
                     furthest = state["dataset"]
         loaded = list(get_dataset_state(dataloader).values())
@@ -469,9 +471,9 @@ class SFTDataset(StatefulIterableDataset):
         layouts = [[self.dp_rank * workers + worker, self.dp_size * workers] for worker in range(workers)]
         moved = [state.get("layout") for state in loaded] != layouts
         changed = moved or mixture_changed(loaded[0].get("sources", self.mixture), self.mixture, log=False)
-        return positions, furthest, changed
+        return [positions, furthest, changed]
 
-    def start_together(self, dataloader: StatefulDataLoader, views: list[tuple]) -> tuple[int, int] | None:
+    def start_together(self, dataloader: StatefulDataLoader, views: list[list]) -> tuple[int, int] | None:
         """Decide a resume the same way on every rank, from what every rank saw (`saved_view`). If anything changed,
         every worker reads on from the dataset state of the saved worker that got furthest: at a draw, the state is
         the same on every data rank. The others' draws up to there and the samples drawn but not packed are not
@@ -479,11 +481,14 @@ class SFTDataset(StatefulIterableDataset):
         as if every worker's last draw was its own), else None."""
         if not any(changed for *_, changed in views):
             return None
-        positions = {layout: position for saved, *_ in views for layout, position in saved.items()}
+        # The model-parallel ranks of a data rank save the same workers: count every layout once.
+        positions = {
+            json.dumps(layout): (layout, step, pending) for saved, *_ in views for layout, step, pending in saved
+        }
         furthest = max((state for _, state, _ in views if state is not None), key=lambda state: state["step"])
         dataloader.load_state_dict(with_workers(dataloader.next_iter_state, dataloader.num_workers, furthest))
         skipped = 0
-        for (data_rank, data_world), (step, pending) in positions.items():
+        for (data_rank, data_world), step, pending in positions.values():
             if data_world is None:
                 data_rank, data_world = (step - 1) % len(positions), len(positions)
             # The draws of data rank d of W before draw n: those with k % W == d.
