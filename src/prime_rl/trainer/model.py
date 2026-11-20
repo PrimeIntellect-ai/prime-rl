@@ -15,7 +15,6 @@ os.environ.setdefault("USE_HUB_KERNELS", "NO")
 import fla.utils
 import torch
 import torch._dynamo
-import torch._inductor.config
 import torch.distributed as dist
 import torch.nn as nn
 from huggingface_hub import snapshot_download
@@ -918,7 +917,6 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
     # Ops whose output shape depends on input data (DeepEP dispatch) would otherwise graph-break. A graph break
     # inside an activation-checkpointed block makes Dynamo run the whole block eagerly.
     torch._dynamo.config.capture_dynamic_output_shape_ops = True
-    torch._inductor.config.triton.mix_order_reduction_non_strict_mode = True
     load_lazy_modules()
     mark_dynamic_args()
     language_model = get_language_model(model)
