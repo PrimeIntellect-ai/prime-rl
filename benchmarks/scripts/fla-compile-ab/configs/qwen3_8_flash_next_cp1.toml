@@ -1,0 +1,25 @@
+max_steps = 20
+
+[model]
+name = "MODELS_DIR/Qwen--Qwen3.8-Flash-Next"
+ep = 8
+cp = 1
+debug.num_layers = 8
+
+[model.vlm]
+
+[renderer]
+name = "qwen3.8"
+
+[data]
+type = "sft"
+name = "DATA_DIR/INTELLECT-3-SFT-10K"
+splits = ["chat", "if"]
+shuffle = true
+seed = 0
+batch_size = 16
+micro_batch_size = 1
+seq_len = 8192
+
+[gc]
+interval = 1

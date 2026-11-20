@@ -1,0 +1,24 @@
+max_steps = 50
+dist_timeout_seconds = 300
+
+[model]
+name = "MODELS_DIR/zai-org--GLM-5.3-Flash-BF16"
+ep = 8
+cp = 2
+debug.num_layers = 8
+
+[renderer]
+name = "glm-5.3-flash"
+
+[data]
+type = "sft"
+name = "DATA_DIR/INTELLECT-3-SFT-10K"
+splits = ["chat", "if"]
+shuffle = true
+seed = 0
+batch_size = 16
+micro_batch_size = 1
+seq_len = 8192
+
+[gc]
+interval = 1
