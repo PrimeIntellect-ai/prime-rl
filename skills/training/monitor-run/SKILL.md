@@ -185,8 +185,7 @@ curl -s http://localhost:8100/metrics | grep -E "num_requests|gpu_cache_usage"  
 Everything the file monitor dumps lives under `monitors/file/`; nothing is written
 there when the monitor is off. The traces and everything written about them sit under
 `traces/`. Each stream is a directory of numbered chunks — the writer rolls to a new
-chunk at `monitors.file.chunk_bytes` (5 GiB) and, with `monitors.file.compress` (on),
-seals the full one with zstd in the background; a finished run seals its live chunk
+chunk at `monitors.file.chunk_bytes` (5 GiB) and seals the full one with zstd in the background; a finished run seals its live chunk
 too. Sealed chunks use seekable frames, so a seek still costs one frame, and
 `zstd -dcf` streams them together with the plain live chunk. Every index is named for
 the stream it indexes and sits beside it. Those indexes are what keep reading a run
