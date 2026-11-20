@@ -308,7 +308,7 @@ class Validation:
         self.parallel_dims = parallel_dims
         self.run_dir = run_dir
         self.sources = [
-            prepare_source(val_source, config.num_samples, tokenizer, renderer) for val_source in config.set
+            prepare_source(val_source, config.num_samples, tokenizer, renderer) for val_source in config.source
         ]
         for val_source in self.sources:
             if not val_source.requests:
