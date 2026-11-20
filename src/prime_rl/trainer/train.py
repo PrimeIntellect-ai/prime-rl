@@ -272,7 +272,7 @@ def train(config: SFTConfig | PretrainConfig):
         if skip.skip_scheduler:
             scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
         if isinstance(dataset, SFTDataset) and not skip.skip_dataloader:
-            # A changed SFT mixture or number of data ranks starts at the same draw everywhere: the furthest one reached.
+            # A changed SFT mixture or data world starts at the same draw everywhere: the furthest one reached.
             path = resume_dir / "trainer" if resume_dir is not None else ckpt_manager.get_ckpt_path(checkpoint_step)
             dataset.resume_step = furthest_step(path / "dataloader", world.rank, world.world_size)
         logger.info(

@@ -469,8 +469,8 @@ class TokenSampler:
 class TokenDataset(StatefulIterableDataset):
     """The rows of the sampler's steps: every rank plans every step, and data rank ``r`` of ``R`` yields rows ``r``,
     ``r + R``, ... of each. The state is the cursor at the start of the current step and the rows of it yielded; at a
-    step boundary it is the same on every rank and worker, so a resumed run reads the same rows on any number of GPUs and
-    dataloader workers.
+    step boundary it is the same on every rank and worker, so a resumed run reads the same rows on any number of GPUs
+    and dataloader workers.
     ``eod_mask_token`` (set by the trainer) has no loss where it is the input."""
 
     def __init__(self, sampler: TokenSampler, document_masking: bool = True, dp_rank: int = 0, dp_size: int = 1):

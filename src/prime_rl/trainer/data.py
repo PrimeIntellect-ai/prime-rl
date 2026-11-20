@@ -310,7 +310,13 @@ def with_workers(state: dict, num_workers: int) -> dict:
             key: dict(by_source) if worker_id == 0 else {} for key, by_source in counts.items()
         }
         workers[f"worker_{worker_id}"] = {**furthest, "worker_id": worker_id, "dataset_state": dataset_state}
-    snapshot = {**snapshot, "_worker_snapshots": workers, "_last_yielded_worker_id": num_workers - 1}
+    main = {**snapshot["_main_snapshot"], "_num_workers": num_workers}
+    snapshot = {
+        **snapshot,
+        "_main_snapshot": main,
+        "_worker_snapshots": workers,
+        "_last_yielded_worker_id": num_workers - 1,
+    }
     return {**state, "_snapshot": snapshot, "_steps_since_snapshot": 0}
 
 

@@ -222,12 +222,15 @@ def test_dataloader_progress_is_monotonic_with_uneven_workers():
 
 
 @pytest.mark.parametrize(
-    ("weights_after", "workers_after"), [({"b": 3, "a": 1, "c": 1}, 2), ({"a": 1, "b": 1, "d": 1}, 3)]
+    ("weights_after", "ranks_after", "workers_after"),
+    [({"b": 3, "a": 1, "c": 1}, 2, 2), ({"a": 1, "b": 1, "d": 1}, 2, 3), ({"a": 1, "b": 1, "d": 1}, 1, 4)],
 )
-def test_resume_with_another_mix_reads_on(dummy_renderer, weights_after: dict[str, float], workers_after: int):
-    """Resumed on 2 ranks with other weights (d removed, c added) or with 3 workers per rank instead of 2: no row is
-    read twice, a removed source no more (but for samples drawn before and packed after), every worker starts at the
-    same draw, and from there the draws hold the shares."""
+def test_resume_with_another_mix_reads_on(
+    dummy_renderer, weights_after: dict[str, float], ranks_after: int, workers_after: int
+):
+    """A run on 2 ranks x 2 workers, resumed with other weights (d removed, c added), with 3 workers per rank, or on 1
+    rank x 4 workers: no row is read twice, a removed source no more (but for samples drawn before and packed after),
+    every worker starts at the same draw, and from there the draws hold the shares."""
     sizes = {"a": 60, "b": 80, "c": 50, "d": 40}
     rows = {
         name: Dataset.from_list(
@@ -236,7 +239,7 @@ def test_resume_with_another_mix_reads_on(dummy_renderer, weights_after: dict[st
         for name, size in sizes.items()
     }
 
-    def loaders(weights: dict[str, float], num_workers: int) -> list:
+    def loaders(weights: dict[str, float], ranks: int, num_workers: int) -> list:
         config = SFTDataConfig(
             source=[{"name": name, "dataset": "unused"} for name in weights],
             batch_size=1,
@@ -245,9 +248,9 @@ def test_resume_with_another_mix_reads_on(dummy_renderer, weights_after: dict[st
             num_workers=num_workers,
         )
         result = []
-        for dp_rank in range(2):
+        for dp_rank in range(ranks):
             sources = [HFSource(rows[name], lambda _: dummy_renderer, name=name, seq_len=16) for name in weights]
-            dataset = SFTDataset(sources, weights=list(weights.values()), dp_rank=dp_rank, dp_size=2)
+            dataset = SFTDataset(sources, weights=list(weights.values()), dp_rank=dp_rank, dp_size=ranks)
             result.append((dataset, setup_dataloader(dataset, config, cp=1)))
         return result
 
@@ -261,13 +264,13 @@ def test_resume_with_another_mix_reads_on(dummy_renderer, weights_after: dict[st
             contents += [text(targets) for targets in batch["target_ids"][0].split(batch["seq_lens"].tolist())]
         return [content for content in contents if content]
 
-    before = loaders({"a": 1, "b": 1, "d": 1}, 2)
+    before = loaders({"a": 1, "b": 1, "d": 1}, 2, 2)
     contents = [content for _, dataloader in before for content in read(dataloader, 8)]
     states = [dataloader.state_dict() for _, dataloader in before]
     saved = [worker["dataset_state"] for state in states for worker in state["_snapshot"]["_worker_snapshots"].values()]
     pending = {text(state["pending_sample"]["target_ids"]) for state in saved if "pending_sample" in state}
-    after = loaders(weights_after, workers_after)
-    # As the trainer does: the states for the new workers, then the furthest draw of any saved worker.
+    after = loaders(weights_after, ranks_after, workers_after)
+    # As the trainer does: every rank its saved rank's state for its workers, and the furthest draw of any saved worker.
     furthest = max(worker["dataset"]["step"] for worker in saved)
     for (dataset, dataloader), state in zip(after, states):
         dataloader.load_state_dict(with_workers(state, workers_after))

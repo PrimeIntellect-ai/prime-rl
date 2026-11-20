@@ -400,7 +400,7 @@ class SFTDataset(StatefulIterableDataset):
             "draws": dict(zip(names, self.draws)),
             "start": dict(zip(names, self.start)),
             "sources": self.mixture,
-            "world": self.data_world_size,
+            "world": [self.dp_size, self.data_world_size],
         }
 
     def load_state_dict(self, state_dict: dict):
@@ -419,9 +419,10 @@ class SFTDataset(StatefulIterableDataset):
         draws, start = state_dict["draws"], state_dict.get("start", {})
         self._setup_world_info()
         changed = mixture_changed(saved, self.mixture, log=self.data_rank == 0)
-        if changed or state_dict.get("world", self.data_world_size) != self.data_world_size:
-            # A new mixture, or draws dealt to another number of data ranks, start at the same draw on every data rank,
-            # the furthest one reached: each walks the old mixture to there, skipping the draws it had not reached.
+        world = [self.dp_size, self.data_world_size]
+        if changed or state_dict.get("world", world) != world:
+            # A new mixture, or draws dealt to other ranks or workers, start at the same draw on every data rank, the
+            # furthest one reached: each walks the old mixture to there, skipping the draws it had not reached.
             weights = np.array([source["weight"] for source in saved.values()])
             old = np.array([draws[name] for name in saved])
             old_start = np.array([start.get(name, 0) for name in saved])
