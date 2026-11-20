@@ -5,7 +5,7 @@ import torch
 from datasets import Dataset
 
 from prime_rl.configs.sft import SFTDataConfig
-from prime_rl.trainer.data import get_dataset_progress, get_dataset_state, setup_dataloader
+from prime_rl.trainer.data import get_dataset_progress, get_dataset_state, setup_dataloader, with_workers
 from prime_rl.trainer.sft.data import FakeSource, HFSource, SFTDataset
 
 
@@ -221,10 +221,13 @@ def test_dataloader_progress_is_monotonic_with_uneven_workers():
     assert positions == sorted(positions)
 
 
-def test_resume_with_another_mix_reads_on(dummy_renderer):
-    """Resumed on 2 ranks x 2 workers with other weights, d removed and c added: no row is read twice, d no more (but
-    for samples drawn before and packed after), every worker starts the new mixture at the same draw, and from there
-    the draws hold the new shares."""
+@pytest.mark.parametrize(
+    ("weights_after", "workers_after"), [({"b": 3, "a": 1, "c": 1}, 2), ({"a": 1, "b": 1, "d": 1}, 3)]
+)
+def test_resume_with_another_mix_reads_on(dummy_renderer, weights_after: dict[str, float], workers_after: int):
+    """Resumed on 2 ranks with other weights (d removed, c added) or with 3 workers per rank instead of 2: no row is
+    read twice, a removed source no more (but for samples drawn before and packed after), every worker starts at the
+    same draw, and from there the draws hold the shares."""
     sizes = {"a": 60, "b": 80, "c": 50, "d": 40}
     rows = {
         name: Dataset.from_list(
@@ -233,13 +236,13 @@ def test_resume_with_another_mix_reads_on(dummy_renderer):
         for name, size in sizes.items()
     }
 
-    def loaders(weights: dict[str, float]) -> list:
+    def loaders(weights: dict[str, float], num_workers: int) -> list:
         config = SFTDataConfig(
             source=[{"name": name, "dataset": "unused"} for name in weights],
             batch_size=1,
             micro_batch_size=1,
             seq_len=16,
-            num_workers=2,
+            num_workers=num_workers,
         )
         result = []
         for dp_rank in range(2):
@@ -258,30 +261,25 @@ def test_resume_with_another_mix_reads_on(dummy_renderer):
             contents += [text(targets) for targets in batch["target_ids"][0].split(batch["seq_lens"].tolist())]
         return [content for content in contents if content]
 
-    before = loaders({"a": 1, "b": 1, "d": 1})
+    before = loaders({"a": 1, "b": 1, "d": 1}, 2)
     contents = [content for _, dataloader in before for content in read(dataloader, 8)]
     states = [dataloader.state_dict() for _, dataloader in before]
-    snapshots = [snapshot for state in states for snapshot in state["_snapshot"]["_worker_snapshots"].values()]
-    pending = {
-        text(s["dataset_state"]["pending_sample"]["target_ids"])
-        for s in snapshots
-        if "pending_sample" in s["dataset_state"]
-    }
-    after = loaders({"b": 3, "a": 1, "c": 1})
-    for (_, dataloader), state in zip(after, states):
-        dataloader.load_state_dict(state)
-    # As the trainer does: the new mixture starts at the furthest draw of any worker.
-    furthest = max(state["step"] for _, dataloader in after for state in get_dataset_state(dataloader).values())
-    since_resume = []
-    for dataset, dataloader in after:
+    saved = [worker["dataset_state"] for state in states for worker in state["_snapshot"]["_worker_snapshots"].values()]
+    pending = {text(state["pending_sample"]["target_ids"]) for state in saved if "pending_sample" in state}
+    after = loaders(weights_after, workers_after)
+    # As the trainer does: the states for the new workers, then the furthest draw of any saved worker.
+    furthest = max(worker["dataset"]["step"] for worker in saved)
+    for (dataset, dataloader), state in zip(after, states):
+        dataloader.load_state_dict(with_workers(state, workers_after))
         dataset.resume_step = furthest
-        since_resume += read(dataloader, 8)
+    since_resume = [content for _, dataloader in after for content in read(dataloader, 8)]
 
     assert len(contents + since_resume) == len(set(contents + since_resume))
-    assert {content for content in since_resume if content.startswith("d")} <= pending
+    removed = {"a", "b", "d"} - weights_after.keys()
+    assert {content for content in since_resume if content[0] in removed} <= pending
     workers = [state for _, dataloader in after for state in get_dataset_state(dataloader).values()]
     assert len({repr(state["start"]) for state in workers}) == 1
-    shares = {"a": 0.2, "b": 0.6, "c": 0.2}
+    shares = {name: weight / sum(weights_after.values()) for name, weight in weights_after.items()}
     for state in workers:
-        drawn = state["step"] - furthest
-        assert all(abs(state["draws"][n] - state["start"][n] - share * drawn) <= 1 for n, share in shares.items())
+        since = {name: state["draws"][name] - state["start"][name] for name in shares}
+        assert all(abs(since[name] - share * sum(since.values())) <= 1 for name, share in shares.items())

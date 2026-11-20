@@ -31,6 +31,7 @@ from transformers import AutoConfig, GenerationConfig, PretrainedConfig, PreTrai
 
 from prime_rl.configs.shared import ResumeConfig
 from prime_rl.configs.trainer import CheckpointConfig, ModelConfig
+from prime_rl.trainer.data import with_workers
 from prime_rl.trainer.lora import has_lora_layers
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.conversion_ops import view_mapping
@@ -581,7 +582,9 @@ class CheckpointManager:
                     raise RuntimeError(
                         f"Couldn't fallback to using the master rank's dataloader checkpoint, because dataloder checkpoint was not found at path {dataloader_path}. Cannot resume training."
                     )
-            dataloader.load_state_dict(torch.load(dataloader_path, weights_only=False))
+            dataloader.load_state_dict(
+                with_workers(torch.load(dataloader_path, weights_only=False), dataloader.num_workers)
+            )
 
         self.logger.debug(f"Loaded training checkpoint in {format_time(time.perf_counter() - start_time)}")
 

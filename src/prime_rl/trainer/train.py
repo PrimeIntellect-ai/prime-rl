@@ -39,7 +39,7 @@ from prime_rl.trainer.model import (
 from prime_rl.trainer.moe_runtime import setup_moe_comm_env
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.data import get_dataset_progress, get_dataset_state, setup_dataloader
+from prime_rl.trainer.data import furthest_step, get_dataset_progress, get_dataset_state, setup_dataloader
 from prime_rl.trainer.pretrain.data import (
     TokenDataset,
     check_ranks_see_same_data,
@@ -272,11 +272,9 @@ def train(config: SFTConfig | PretrainConfig):
         if skip.skip_scheduler:
             scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
         if isinstance(dataset, SFTDataset) and not skip.skip_dataloader:
-            # A changed SFT mixture starts at the same draw on every data rank: the furthest one reached.
-            steps = [state["step"] for state in get_dataset_state(dataloader).values()]
-            furthest = torch.tensor(max(steps), device="cuda")
-            dist.all_reduce(furthest, op=dist.ReduceOp.MAX)
-            dataset.resume_step = int(furthest)
+            # A changed SFT mixture or number of data ranks starts at the same draw everywhere: the furthest one reached.
+            path = resume_dir / "trainer" if resume_dir is not None else ckpt_manager.get_ckpt_path(checkpoint_step)
+            dataset.resume_step = furthest_step(path / "dataloader", world.rank, world.world_size)
         logger.info(
             f"Resuming from step {checkpoint_step} (total_tokens={progress.total_tokens}, "
             f"total_samples={progress.total_samples}, dataset_state={get_dataset_state(dataloader)})"

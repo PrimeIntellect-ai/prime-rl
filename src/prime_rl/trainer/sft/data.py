@@ -400,6 +400,7 @@ class SFTDataset(StatefulIterableDataset):
             "draws": dict(zip(names, self.draws)),
             "start": dict(zip(names, self.start)),
             "sources": self.mixture,
+            "world": self.data_world_size,
         }
 
     def load_state_dict(self, state_dict: dict):
@@ -417,9 +418,10 @@ class SFTDataset(StatefulIterableDataset):
         saved = state_dict.get("sources", self.mixture)
         draws, start = state_dict["draws"], state_dict.get("start", {})
         self._setup_world_info()
-        if mixture_changed(saved, self.mixture, log=self.data_rank == 0):
-            # The new mixture starts at the same draw on every data rank, the furthest one reached: each walks the old
-            # mixture to there, skipping the draws it had not reached.
+        changed = mixture_changed(saved, self.mixture, log=self.data_rank == 0)
+        if changed or state_dict.get("world", self.data_world_size) != self.data_world_size:
+            # A new mixture, or draws dealt to another number of data ranks, start at the same draw on every data rank,
+            # the furthest one reached: each walks the old mixture to there, skipping the draws it had not reached.
             weights = np.array([source["weight"] for source in saved.values()])
             old = np.array([draws[name] for name in saved])
             old_start = np.array([start.get(name, 0) for name in saved])
@@ -427,7 +429,9 @@ class SFTDataset(StatefulIterableDataset):
             for _ in range(self.step, target):
                 old[np.argmin(due(old + 1, old_start, weights))] += 1
             self.step = target
-            draws = start = dict(zip(saved, old.tolist()))
+            draws = dict(zip(saved, old.tolist()))
+            if changed:
+                start = draws
         names = [source.name for source in self.sources]
         self.draws = [draws.get(name, 0) for name in names]
         self.start = [start.get(name, 0) for name in names]
