@@ -1,16 +1,15 @@
 name: GPU Tiny Tests
 
+# Pushes to main run the tiny suite in gpu.yml, ahead of the full suite
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# One run per PR: a new push cancels the superseded run and stops its Modal app. Every push to main runs.
+# One run per PR: a new push cancels the superseded run and stops its Modal app.
 concurrency:
   group: >-
     ${{ github.workflow }}-${{

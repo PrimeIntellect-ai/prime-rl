@@ -934,6 +934,54 @@ def test_single_node_auto_inference_ports_follow_server_port():
     assert config.orchestrator.model.client.admin_base_url == ["http://localhost:8101/v1"]
 
 
+def test_rl_launcher_gives_the_admin_token_to_callers_and_its_digest_to_checkers():
+    from prime_rl.entrypoints.rl import admin_token_uses
+    from prime_rl.utils.admin_token import admin_token_digest
+
+    config = RLConfig.model_validate(
+        {
+            "trainer": {"control": {}},
+            "orchestrator": {"control": {}},
+            "inference": {"vllm": {"tensor_parallel_size": 1}},
+            "deployment": {"type": "single_node", "gpus_per_node": 4, "num_train_gpus": 2, "num_infer_gpus": 2},
+        }
+    )
+    uses = admin_token_uses(config)
+
+    base, envs = uses.split({"HOME": "/home/user", "PRIME_RL_ADMIN_TOKEN_SHA256": "stale"})
+    token = envs["orchestrator"]["PRIME_RL_ADMIN_TOKEN"]
+    digest = admin_token_digest(token)
+    assert len(token) >= 32
+    assert base == {"HOME": "/home/user"}
+    assert envs["inference"] == envs["trainer"] == {"PRIME_RL_ADMIN_TOKEN_SHA256": digest}
+    assert envs["orchestrator"] == {"PRIME_RL_ADMIN_TOKEN": token, "PRIME_RL_ADMIN_TOKEN_SHA256": digest}
+
+    base, envs = uses.split({"HOME": "/home/user", "PRIME_RL_ADMIN_TOKEN": "from-operator"})
+    assert base == {"HOME": "/home/user"}
+    assert envs["orchestrator"]["PRIME_RL_ADMIN_TOKEN"] == "from-operator"
+    assert envs["inference"] == {"PRIME_RL_ADMIN_TOKEN_SHA256": admin_token_digest("from-operator")}
+
+
+def test_sft_launcher_gives_the_admin_token_to_online_evals_and_its_digest_to_checkers():
+    from prime_rl.entrypoints.launcher import admin_token_uses
+    from prime_rl.utils.admin_token import admin_token_digest
+
+    config = SFTConfig.model_validate(
+        {
+            "control": {},
+            "eval": {"source": [{"name": "reverse-text", "env": {"taskset": {"id": "reverse-text"}}}]},
+            "inference": {},
+            "deployment": {"num_train_gpus": 1, "num_infer_gpus": 1},
+        }
+    )
+
+    base, envs = admin_token_uses(config).split({"HOME": "/home/user"})
+    token = envs["online-eval"]["PRIME_RL_ADMIN_TOKEN"]
+    assert base == {"HOME": "/home/user"}
+    assert envs["online-eval"] == {"PRIME_RL_ADMIN_TOKEN": token}
+    assert envs["inference"] == envs["trainer"] == {"PRIME_RL_ADMIN_TOKEN_SHA256": admin_token_digest(token)}
+
+
 def test_single_node_nccl_resolved_json_roundtrips(tmp_path):
     """The resolved rl.json re-parses (as a SLURM launch does) to the same config."""
     import json

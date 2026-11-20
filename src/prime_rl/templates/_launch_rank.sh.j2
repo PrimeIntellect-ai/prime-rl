@@ -31,10 +31,14 @@ launch_inference_rank() {
         printf '%s' "$extra" > "$rpcbase/vllm-overrides.json"
         cmd+=(--vllm @ "$rpcbase/vllm-overrides.json")
     fi
-    if [ -n "$nixl" ]; then
-        CUDA_VISIBLE_DEVICES="$gpus" VLLM_NIXL_SIDE_CHANNEL_PORT="$nixl" VLLM_RPC_BASE_PATH="$rpcbase" "${cmd[@]}" 2>&1 | tee -a "$log" &
-    else
-        CUDA_VISIBLE_DEVICES="$gpus" VLLM_RPC_BASE_PATH="$rpcbase" "${cmd[@]}" 2>&1 | tee -a "$log" &
+    # ADMIN_TOKEN_ENV (NAME=value: the admin token's digest) is set by launchers that
+    # guard the engines' admin routes; the engine then refuses to start without it.
+    local -a rank_env=(CUDA_VISIBLE_DEVICES="$gpus" VLLM_RPC_BASE_PATH="$rpcbase")
+    [ -n "$nixl" ] && rank_env+=(VLLM_NIXL_SIDE_CHANNEL_PORT="$nixl")
+    if [ -n "${ADMIN_TOKEN_ENV:-}" ]; then
+        rank_env+=("$ADMIN_TOKEN_ENV")
+        cmd+=(--server.require-admin-token)
     fi
+    env "${rank_env[@]}" "${cmd[@]}" 2>&1 | tee -a "$log" &
     INFERENCE_PORT_BY_PID[$!]="$port"
 }

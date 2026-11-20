@@ -15,6 +15,7 @@ from prime_rl.configs.rl import RLConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, run_links
 from prime_rl.entrypoints.inference import mooncake_offloads, vllm_overrides_fragment, write_pd_configs
 from prime_rl.entrypoints.slurm import load_slurm_template, submit_sbatch
+from prime_rl.utils.admin_token import AdminTokenUses, TokenUse
 from prime_rl.utils.config import check_mode, cli, dump_resolved_config, dump_rl_components
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
@@ -90,6 +91,21 @@ def rl_config_components(config: RLConfig, config_dir: Path) -> list[tuple[str, 
     return components
 
 
+def admin_token_uses(config: RLConfig) -> AdminTokenUses:
+    """The orchestrator calls the engines' admin routes, so it gets the token; the inference
+    server and the control APIs only check it, so they get its digest."""
+    return AdminTokenUses(
+        {
+            "inference": TokenUse(checks=config.inference.server.admin_token_var if config.inference else None),
+            "orchestrator": TokenUse(
+                sends=config.orchestrator.model.client.admin_token_var,
+                checks=config.orchestrator.control.admin_token_var if config.orchestrator.control else None,
+            ),
+            "trainer": TokenUse(checks=config.trainer.control.admin_token_var if config.trainer.control else None),
+        }
+    )
+
+
 def wait_for_port(host: str, port: int, processes: ProcessGroup, name: str, timeout: float) -> None:
     """Block until ``host:port`` accepts TCP connections; fail if ``name`` exits first."""
     deadline = time.monotonic() + timeout
@@ -106,7 +122,7 @@ def wait_for_port(host: str, port: int, processes: ProcessGroup, name: str, time
         time.sleep(0.5)
 
 
-def start_modelexpress(processes: ProcessGroup, port: int, log_dir: Path) -> None:
+def start_modelexpress(processes: ProcessGroup, port: int, log_dir: Path, base_env: dict[str, str]) -> None:
     """Start a run-scoped ModelExpress server backed by its own Redis."""
     server, redis = MODELEXPRESS_BIN_DIR / "modelexpress-server", MODELEXPRESS_BIN_DIR / "redis-server"
     if not (server.is_file() and redis.is_file()):
@@ -132,7 +148,7 @@ def start_modelexpress(processes: ProcessGroup, port: int, log_dir: Path) -> Non
             "--dir",
             str(state_dir),
         ],
-        env=dict(os.environ),
+        env=base_env,
         log_path=state_dir / "redis.log",
     )
     wait_for_port("127.0.0.1", redis_port, processes, "redis", MODELEXPRESS_READY_TIMEOUT_S)
@@ -149,7 +165,7 @@ def start_modelexpress(processes: ProcessGroup, port: int, log_dir: Path) -> Non
             str(state_dir / "cache"),
         ],
         env={
-            **os.environ,
+            **base_env,
             "MX_METADATA_BACKEND": "redis",
             "REDIS_URL": f"redis://127.0.0.1:{redis_port}",
             "MX_HEARTBEAT_TIMEOUT_SECS": "31536000",
@@ -223,6 +239,7 @@ def rl_local(config: RLConfig):
         "WANDB_RUN_ID": os.environ["PRL_RUN_ID"],
     }
     attempt_env = launcher_attempt_env(config_dir, log_dir)
+    base_env, admin_envs = admin_token_uses(config).split(os.environ)
 
     # Validate client port matches inference server port
     if config.inference is not None:
@@ -239,19 +256,20 @@ def rl_local(config: RLConfig):
     with ProcessGroup() as processes:
         if config.weight_broadcast is not None and config.weight_broadcast.type == "modelexpress":
             logger.info(f"Starting ModelExpress server on port {config.weight_broadcast.port}")
-            start_modelexpress(processes, config.weight_broadcast.port, log_dir)
+            start_modelexpress(processes, config.weight_broadcast.port, log_dir, base_env)
 
         if config.inference:
             logger.info(f"Starting inference on GPU(s) {' '.join(map(str, infer_gpu_ids))}")
             processes.start(
                 "inference",
-                ["inference", "@", (config_dir / INFERENCE_CONFIG).as_posix()],
+                ["inference", "@", (config_dir / INFERENCE_CONFIG).as_posix(), "--server.require-admin-token"],
                 env={
-                    **os.environ,
+                    **base_env,
                     **DEFAULT_COMMON_ENV_VARS,
                     **DEFAULT_INFERENCE_ENV_VARS,
                     **config.env_vars,
                     **config.inference.env_vars,
+                    **admin_envs.get("inference", {}),
                     "CUDA_VISIBLE_DEVICES": ",".join(map(str, infer_gpu_ids)),
                 },
                 log_path=log_dir / "inference.log",
@@ -287,7 +305,7 @@ def rl_local(config: RLConfig):
             processes.start(
                 f"{split} env worker pool {name}",
                 ["env-worker-pool", "@", (config_dir / ENVS_DIR / split / f"{name}.json").as_posix()],
-                env={**os.environ, **DEFAULT_COMMON_ENV_VARS, **config.env_vars, **config.orchestrator.env_vars},
+                env={**base_env, **DEFAULT_COMMON_ENV_VARS, **config.env_vars, **config.orchestrator.env_vars},
                 log_path=log_dir / ENVS_DIR / split / f"{name}.log",
             )
 
@@ -296,13 +314,14 @@ def rl_local(config: RLConfig):
             "orchestrator",
             ["orchestrator", "@", (config_dir / ORCHESTRATOR_CONFIG).as_posix()],
             env={
-                **os.environ,
+                **base_env,
                 **DEFAULT_COMMON_ENV_VARS,
                 "LOGURU_FORCE_COLORS": "1",
                 "WANDB_PROGRAM": "uv run rl",
                 "WANDB_ARGS": json.dumps(start_command),
                 **config.env_vars,
                 **config.orchestrator.env_vars,
+                **admin_envs.get("orchestrator", {}),
                 **wandb_shared_env,
                 **attempt_env,
                 "WANDB_SHARED_LABEL": "orchestrator",
@@ -321,7 +340,7 @@ def rl_local(config: RLConfig):
                 config.trainer.log.ranks_filter,
             ),
             env={
-                **os.environ,
+                **base_env,
                 **DEFAULT_COMMON_ENV_VARS,
                 **DEFAULT_TRAINER_ENV_VARS,
                 "LOGURU_FORCE_COLORS": "1",
@@ -329,6 +348,7 @@ def rl_local(config: RLConfig):
                 "WANDB_ARGS": json.dumps(start_command),
                 **config.env_vars,
                 **config.trainer.env_vars,
+                **admin_envs.get("trainer", {}),
                 **wandb_shared_env,
                 **attempt_env,
                 "WANDB_SHARED_LABEL": "trainer",
@@ -447,6 +467,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
             train_env_names=train_env_names,
             eval_env_names=eval_env_names,
+            admin_token=admin_token_uses(config),
             **modelexpress_vars,
         )
     else:
@@ -489,6 +510,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             inference_env_vars=inference_env_vars,
             train_env_names=train_env_names,
             eval_env_names=eval_env_names,
+            admin_token=admin_token_uses(config),
             **modelexpress_vars,
         )
 

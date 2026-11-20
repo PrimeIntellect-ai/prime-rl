@@ -71,6 +71,10 @@ def test_raise_error_if_no_prompt_and_completion(build_dummy_dataset):
         next(iter(SFTDataset([source])))
 
 
+def position(state: dict) -> dict:
+    return {key: state[key] for key in ("step", "epoch", "draws")}
+
+
 def _content(sample: dict) -> str:
     return "".join(chr(token - 2) for token in sample["target_ids"][:-1].tolist())
 
@@ -90,7 +94,7 @@ def test_natural_shares_read_every_row_once_per_epoch(source, max_epochs: int):
     order = [_content(sample) for sample in dataset]
     # Due times (draws + 1) / rows, ties to the first source
     assert order == ["b0", "a0", "b1", "b2", "a1", "b3"] * max_epochs
-    assert dataset.state_dict() == {
+    assert position(dataset.state_dict()) == {
         "step": 6 * max_epochs,
         "epoch": max_epochs - 1,
         "draws": {"a": 2 * max_epochs, "b": 4 * max_epochs},
@@ -129,12 +133,12 @@ def test_sft_dataset_state(source):
     dataset = SFTDataset([source("", 4)], max_epochs=2)
     dataiter = iter(dataset)
 
-    assert dataset.state_dict() == {"step": 0, "epoch": 0, "draws": {"": 0}}
+    assert position(dataset.state_dict()) == {"step": 0, "epoch": 0, "draws": {"": 0}}
     for epoch in range(2):
         for i in range(4):
             assert _content(next(dataiter)) == str(i)
             step = 4 * epoch + i + 1
-            assert dataset.state_dict() == {"step": step, "epoch": (step - 1) // 4, "draws": {"": step}}
+            assert position(dataset.state_dict()) == {"step": step, "epoch": (step - 1) // 4, "draws": {"": step}}
 
     with pytest.raises(StopIteration):
         next(dataiter)

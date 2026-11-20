@@ -12,6 +12,7 @@ This page covers the inference configuration and the supported features/deployme
 - [P/D Disaggregation](#pd-disaggregation)
 - [Router](#router)
     - [Routing policies](#routing-policies)
+- [Admin Routes](#admin-routes)
 - [Adaptive Concurrency](#adaptive-concurrency)
 - [Advanced Configuration](#advanced-configuration)
     - [KV Cache Offload](#kv-cache-offload)
@@ -198,6 +199,26 @@ The policies you might want to configure are:
 - `consistent_hash` - hashes the `X-Session-ID` request header (sent per rollout by the verifiers clients) to pick a replica, preserving KV cache reuse without considering current load.
 
 - `round_robin` - this policy will round-robin the requests between the available replicas. This is useful if you want to balance the load between the replicas. This might give you better results if you don't have enough rollouts to make `consistent_hash` hashing saturated.
+
+
+## Admin Routes
+
+On top of vLLM's API, each engine serves the routes the orchestrator drives it with: `/pause`, `/resume`, `/update_weights`, `/update_weights_from_modelexpress`, `/update_draft_weights`, `/weight_fingerprint/{target}`, `/load_lora_adapter` and `/init_broadcaster`. They sit at the root of the engine port, outside the paths vLLM's `--api-key` protects, so they have their own token. The same token guards the control APIs of the trainer, orchestrator and eval ([Training](training.md), [Eval](eval.md)).
+
+A request to a guarded route must carry the token in the `X-Prime-Admin-Token` header, or it gets a `401`. A process that sends the token reads it from `PRIME_RL_ADMIN_TOKEN`. A process that only checks it can instead be given its SHA-256 digest in `PRIME_RL_ADMIN_TOKEN_SHA256`, so it cannot make the calls it guards. The orchestrator sends the header on its engine admin clients only — never to the router. `/liveness` and vLLM's own health routes stay open for probes.
+
+The `rl` and `sft` launchers handle the token themselves, locally and on SLURM: they generate a fresh one per run (or reuse `PRIME_RL_ADMIN_TOKEN` when the launching environment or `.env` sets it). The process that calls the engines' admin routes gets the token: the orchestrator, or an `sft` run's online evals. The engines, started with `--server.require-admin-token`, and the control APIs get its digest. The env worker pools and the router get neither, and neither is written to a config or to the SLURM script. To call a run's control API yourself, set `PRIME_RL_ADMIN_TOKEN` before launching and send it in the header.
+
+A standalone `eval` generates no token: set `PRIME_RL_ADMIN_TOKEN` yourself to guard its control API. It starts its env worker pools without it.
+
+When you start the pieces yourself — a standalone `inference` server with a separate `orchestrator` — set `PRIME_RL_ADMIN_TOKEN` to the same value on both sides. Without it (or its digest) a standalone server's admin routes, and a control API, accept every request and log a warning at startup. To make the inference server refuse to start instead:
+
+```toml
+[inference.server]              # or [server] for the standalone inference entrypoint
+require_admin_token = true
+```
+
+The variable name is configurable: `inference.server.admin_token_var`, `orchestrator.model.client.admin_token_var`, and `admin_token_var` in each `[control]` block. Only the name lives in the config; the token itself is never written to it.
 
 
 ## Adaptive Concurrency

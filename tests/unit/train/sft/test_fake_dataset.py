@@ -3,6 +3,10 @@ import pytest
 from prime_rl.trainer.sft.data import FakeSource, SFTDataset
 
 
+def position(state: dict) -> dict:
+    return {key: state[key] for key in ("step", "epoch", "draws")}
+
+
 def fake_dataset(**kwargs) -> SFTDataset:
     return SFTDataset([FakeSource(vocab_size=10000, seq_len=128, **kwargs)])
 
@@ -11,10 +15,10 @@ def test_fake_dataset_state():
     dataset = fake_dataset()
     dataiter = iter(dataset)
 
-    assert dataset.state_dict() == {"step": 0, "epoch": 0, "draws": {"fake": 0}}
+    assert position(dataset.state_dict()) == {"step": 0, "epoch": 0, "draws": {"fake": 0}}
     for step in range(1, 5):
         next(dataiter)
-        assert dataset.state_dict() == {"step": step, "epoch": 0, "draws": {"fake": step}}
+        assert position(dataset.state_dict()) == {"step": step, "epoch": 0, "draws": {"fake": step}}
 
 
 @pytest.mark.parametrize("length", ["fixed", "variable"])
