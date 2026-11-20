@@ -3,12 +3,12 @@ import os
 import resource
 import signal
 import subprocess
-import sys
 from pathlib import Path
 from threading import Event, Thread
 from typing import Any
 
 from prime_rl.configs.inference import InferenceConfig, MooncakeKVCacheOffloadConfig
+from prime_rl.entrypoints.slurm import load_slurm_template, submit_sbatch
 from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
@@ -83,13 +83,8 @@ def mooncake_offloads(config: InferenceConfig | None) -> dict[str, MooncakeKVCac
 
 def write_slurm_script(config: InferenceConfig, config_path: Path, log_dir: Path, script_path: Path) -> None:
     """Write the SLURM script to disk."""
-    from jinja2 import Environment, FileSystemLoader
-
     assert config.slurm is not None
-    assert config.slurm.template_path is not None
-
-    env = Environment(loader=FileSystemLoader(config.slurm.template_path.parent), keep_trailing_newline=True)
-    template = env.get_template(config.slurm.template_path.name)
+    template = load_slurm_template(config.slurm)
 
     is_disaggregated = config.deployment.type == "disaggregated"
     dp_per_node = config.deployment.gpus_per_node // config.vllm.tensor_parallel_size
@@ -171,13 +166,7 @@ def inference_slurm(config: InferenceConfig):
         logger.success(f"Dry run complete. To submit manually:\n\n  sbatch {script_path}\n\n{log_message}")
         return
 
-    logger.info(f"Submitting: sbatch {script_path}")
-    result = subprocess.run(["sbatch", str(script_path)], capture_output=True, text=True)
-    if result.returncode != 0:
-        logger.error(f"sbatch failed: {result.stderr.strip()}")
-        sys.exit(1)
-
-    logger.success(f"{result.stdout.strip()}\n\n{log_message}")
+    submit_sbatch(script_path, log_message)
 
 
 def start_router(config: InferenceConfig) -> subprocess.Popen:

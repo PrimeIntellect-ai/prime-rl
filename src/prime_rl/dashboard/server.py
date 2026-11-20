@@ -25,7 +25,7 @@ from pathlib import Path
 import numpy as np
 import orjson
 
-from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, registry_lock
+from prime_rl.entrypoints.dashboard import DAEMON_FILE, DIRS_FILE, STATE_DIR, register_dirs, registry_lock
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import open_chunk
 from prime_rl.monitors.file.traces.index import summarize_episode
@@ -114,21 +114,6 @@ def registered_dirs() -> list[Path]:
             dirs = []
         _dirs_file_state = (mtime, dirs)
     return _dirs_file_state[1]
-
-
-def register_dirs(dirs: list[Path]) -> None:
-    """Add dirs to the shared registry (idempotent, atomic)."""
-    with registry_lock():
-        try:
-            known = list(orjson.loads(DIRS_FILE.read_bytes()))
-        except (OSError, ValueError):
-            known = []
-        fresh = [str(d.resolve()) for d in dirs if str(d.resolve()) not in known]
-        if not fresh:
-            return
-        tmp = DIRS_FILE.with_suffix(".tmp")
-        tmp.write_bytes(orjson.dumps(known + fresh))
-        tmp.replace(DIRS_FILE)
 
 
 isolated = False

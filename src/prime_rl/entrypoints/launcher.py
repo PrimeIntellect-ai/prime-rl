@@ -1,6 +1,5 @@
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -9,7 +8,8 @@ from prime_rl.configs.orchestrator import OnlineEvalSourceConfig
 from prime_rl.configs.shared import LogConfig
 from prime_rl.configs.supervised import BaseValConfig, SupervisedTrainerConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, run_links
-from prime_rl.utils.config import dump_resolved_config, find_package_resource
+from prime_rl.entrypoints.slurm import load_slurm_template, submit_sbatch
+from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
@@ -151,17 +151,8 @@ def write_slurm_script(
 ) -> None:
     """Write the SLURM script to disk. The trainer runs ``config_path``; a multi-node
     job's run owner registers the Prime run from ``run_config_path``."""
-    from jinja2 import Environment, FileSystemLoader
-
     assert config.slurm is not None
-    assert config.slurm.template_path is not None
-
-    template_dirs = [config.slurm.template_path.parent]
-    bundled_templates = find_package_resource("templates")
-    if bundled_templates is not None:
-        template_dirs.append(bundled_templates)
-    env = Environment(loader=FileSystemLoader(template_dirs), keep_trailing_newline=True)
-    template = env.get_template(config.slurm.template_path.name)
+    template = load_slurm_template(config.slurm)
 
     trainer_env_vars = {
         **DEFAULT_COMMON_ENV_VARS,
@@ -305,13 +296,7 @@ def launch_slurm(config: SupervisedTrainerConfig, entrypoint: str):
 
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
 
-    logger.info(f"Submitting: sbatch {script_path}")
-    result = subprocess.run(["sbatch", str(script_path)], capture_output=True, text=True)
-    if result.returncode != 0:
-        logger.error(f"sbatch failed: {result.stderr.strip()}")
-        sys.exit(1)
-
-    logger.success(f"{result.stdout.strip()}\n\n{log_message}")
+    submit_sbatch(script_path, log_message)
     log_run_links(dashboard_url)
 
 
