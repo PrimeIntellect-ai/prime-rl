@@ -583,9 +583,8 @@ def train(config: SFTConfig | PretrainConfig):
             memory_profiler.step()
 
         # Throughput / MFU per step over the full step wall time, as torchtitan reports them with
-        # log_freq=1 (tokens since last log / elapsed time), instead of a smoothed sliding window.
+        # log_freq=1 (tokens since last log / elapsed time).
         step_time = time.perf_counter() - step_start_time
-        perf_counter.count_tokens(result.num_tokens)
         throughput = perf_counter.get_step_tokens_per_second(result.num_tokens, step_time)
         mfu = perf_counter.get_step_mfu(result.num_flops, step_time)
         mfu_6dn = perf_counter.get_step_mfu(
