@@ -12,19 +12,15 @@ from .rotary_emb import apply_rotary_pos_emb
 
 # flash-attention-2
 try:
-    from flash_attn import flash_attn_varlen_func
     from flash_attn.flash_attn_interface import _flash_attn_varlen_backward, _flash_attn_varlen_forward
 except ImportError:
-    flash_attn_varlen_func = None  # type: ignore
     _flash_attn_varlen_backward = _flash_attn_varlen_forward = None  # type: ignore
 
 # flash-attention-3
 try:
     from flash_attn_interface import _flash_attn_backward as _flash_attn_3_bwd
     from flash_attn_interface import _flash_attn_forward as _flash_attn_3_fwd
-    from flash_attn_interface import flash_attn_varlen_func as flash_attn_3_varlen_func
 except ImportError:
-    flash_attn_3_varlen_func = None  # type: ignore
     _flash_attn_3_bwd = _flash_attn_3_fwd = None  # type: ignore
 
 try:
