@@ -30,12 +30,9 @@ class FileMonitorConfig(BaseConfig):
 
     chunk_bytes: int = 5 * 1024**3
     """Size at which a trace stream (the episodes, each producer's annotations) rolls to
-    a new numbered chunk file. A line never spans chunks."""
-
-    compress: bool = True
-    """Seal full chunks with zstd once the stream rolls past them (the live chunk stays
-    plain text). Sealed chunks use seekable frames: a reader still lands on one line,
-    and ``zstd -dcf stream/*.jsonl* | jq`` reads a whole stream."""
+    a new numbered chunk file. A line never spans chunks. Full chunks are sealed with
+    zstd in seekable frames (the live chunk stays plain text), and
+    ``zstd -dcf stream/*.jsonl* | jq`` reads a whole stream."""
 
     float_decimals: int | None = 4
     """Decimals kept for per-token float streams (logprobs, entropies, advantages) in
