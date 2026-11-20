@@ -16,7 +16,7 @@ class Inkling2TextConfig(PretrainedConfig):
     def __init__(
         self,
         vocab_size: int = 201024,
-        unpadded_vocab_size: int = 200058,
+        unpadded_vocab_size: int | None = None,
         hidden_size: int = 4608,
         num_hidden_layers: int = 48,
         num_attention_heads: int = 48,
@@ -58,7 +58,9 @@ class Inkling2TextConfig(PretrainedConfig):
         **kwargs,
     ):
         self.vocab_size = vocab_size
-        self.unpadded_vocab_size = unpadded_vocab_size
+        self.unpadded_vocab_size = vocab_size if unpadded_vocab_size is None else unpadded_vocab_size
+        if not 0 < self.unpadded_vocab_size <= vocab_size:
+            raise ValueError("unpadded_vocab_size must be between 1 and vocab_size")
         self.hidden_size = hidden_size
         self.num_hidden_layers = num_hidden_layers
         self.num_attention_heads = num_attention_heads

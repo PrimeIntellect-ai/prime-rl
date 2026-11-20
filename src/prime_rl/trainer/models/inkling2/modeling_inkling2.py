@@ -554,6 +554,7 @@ class Inkling2ForCausalLM(Inkling2PreTrainedModel, GenerationMixin):
         self.lm_head = SoftcapLinear(
             text_config.hidden_size, text_config.vocab_size, text_config.final_logit_softcapping
         )
+        self.lm_head.unpadded_vocab_size = text_config.unpadded_vocab_size
         self.router_aux_loss_coef = 0.0
         self.num_experts = text_config.n_routed_experts
         self.num_experts_per_tok = text_config.num_experts_per_tok

@@ -16,10 +16,13 @@ template never emits an assistant header, so the model starts its answer with
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+import re
+from collections.abc import Iterable, Sequence
 
 from vllm.entrypoints.generate.base.protocol import (
+    DeltaFunctionCall,
     DeltaMessage,
+    DeltaToolCall,
     ExtractedToolCallInformation,
     FunctionCall,
     ToolCall,
@@ -50,6 +53,8 @@ _FRAMING = (
     INVOKE_TOOL_JSON,
     INVOKE_TOOL_TEXT,
 )
+
+_FRAMING_PATTERN = re.compile("(" + "|".join(map(re.escape, _FRAMING)) + ")")
 
 
 def _clean(text: str) -> str:
@@ -82,6 +87,23 @@ class Inkling2ReasoningParser(BaseThinkingReasoningParser):
     def end_token(self) -> str:
         return END_MESSAGE
 
+    def is_reasoning_end_streaming(self, input_ids: Sequence[int], delta_ids: Iterable[int]) -> bool:
+        content_markers = (CONTENT_TEXT, CONTENT_TOOL_ERROR, INVOKE_TOOL_JSON, INVOKE_TOOL_TEXT)
+        boundaries = {self.end_token_id, *(self.vocab.get(marker) for marker in content_markers)}
+        return any(token_id in boundaries for token_id in delta_ids)
+
+    def extract_reasoning_streaming(
+        self, previous_text, current_text, delta_text, previous_token_ids, current_token_ids, delta_token_ids
+    ) -> DeltaMessage | None:
+        if current_text.startswith(MODEL_TOKEN) and self.start_token not in current_text:
+            # Keep the model header (including a tool's name) until its block kind is known.
+            if self.is_reasoning_end_streaming(current_token_ids, delta_token_ids):
+                return DeltaMessage(content=current_text)
+            return None
+        return super().extract_reasoning_streaming(
+            previous_text, current_text, delta_text, previous_token_ids, current_token_ids, delta_token_ids
+        )
+
     def extract_reasoning(
         self,
         model_output: str,
@@ -100,7 +122,9 @@ class Inkling2ToolParser(ToolParser):
 
     def __init__(self, tokenizer, *args, **kwargs):
         super().__init__(tokenizer, *args, **kwargs)
-        self._buffer = ""
+        self._block_kind = CONTENT_TEXT
+        self._block_parts: list[str] = []
+        self._call_index = 0
 
     @staticmethod
     def extract_tool_calls(model_output: str, request: ChatCompletionRequest) -> ExtractedToolCallInformation:
@@ -125,11 +149,18 @@ class Inkling2ToolParser(ToolParser):
                 except json.JSONDecodeError:
                     logger.warning("Inkling2: dropping malformed tool-call JSON: %.200s", payload)
                     continue
+                if not isinstance(obj, dict):
+                    logger.warning("Inkling2: tool-call payload must be a JSON object")
+                    continue
+                function_name = obj.get("name") or name
+                if not isinstance(function_name, str) or not function_name:
+                    logger.warning("Inkling2: tool call has no valid name")
+                    continue
                 args = obj.get("args", obj.get("arguments", {}))
                 calls.append(
                     ToolCall(
                         function=FunctionCall(
-                            name=obj.get("name") or name,
+                            name=function_name,
                             arguments=json.dumps(args, separators=(",", ":")),
                         )
                     )
@@ -158,6 +189,42 @@ class Inkling2ToolParser(ToolParser):
         delta_token_ids: Sequence[int],
         request: ChatCompletionRequest,
     ) -> DeltaMessage | None:
-        # Tool calls are only emitted on the final chunk: streaming clients see
-        # the text content as it arrives and get the calls when generation ends.
-        return None
+        texts: list[str] = []
+        calls: list[DeltaToolCall] = []
+        # Each framing marker is a dedicated token. A vLLM delta may contain several blocks.
+        for part in _FRAMING_PATTERN.split(delta_text):
+            if not part:
+                continue
+            if part == MODEL_TOKEN:
+                self._block_kind = MODEL_TOKEN
+                self._block_parts = [part]
+            elif part in (INVOKE_TOOL_JSON, INVOKE_TOOL_TEXT):
+                if self._block_kind != MODEL_TOKEN:
+                    self._block_parts = [MODEL_TOKEN]
+                self._block_kind = part
+                self._block_parts.append(part)
+            elif part in (END_MESSAGE, END_SAMPLING):
+                if self._block_kind in (INVOKE_TOOL_JSON, INVOKE_TOOL_TEXT):
+                    parsed = self.extract_tool_calls("".join(self._block_parts), request)
+                    for call in parsed.tool_calls:
+                        calls.append(
+                            DeltaToolCall(
+                                index=self._call_index,
+                                id=call.id,
+                                type="function",
+                                function=DeltaFunctionCall(name=call.function.name, arguments=call.function.arguments),
+                            )
+                        )
+                        self._call_index += 1
+                self._block_kind = CONTENT_TEXT
+                self._block_parts.clear()
+            elif part in (CONTENT_TEXT, CONTENT_TOOL_ERROR, CONTENT_THINKING):
+                self._block_kind = part
+                self._block_parts.clear()
+            elif self._block_kind in (CONTENT_TEXT, CONTENT_TOOL_ERROR):
+                texts.append(part)
+            elif self._block_kind != CONTENT_THINKING:
+                self._block_parts.append(part)
+        if not texts and not calls:
+            return None
+        return DeltaMessage(content="".join(texts) or None, tool_calls=calls)
