@@ -208,23 +208,6 @@ def check_avg_mismatch_kl_in_range(
         )
 
 
-def check_mismatch_kl_in_range(
-    lines: list[str],
-    step: int = -1,
-    min_threshold: float | None = None,
-    max_threshold: float | None = None,
-):
-    """Helper to assert that mismatch KL in step logs is within a threshold"""
-    check_metric_in_range(
-        lines,
-        metric_name="Mismatch KL",
-        pattern=r"Mismatch KL:?\s+(\d+\.\d{4})",
-        step=step,
-        min_threshold=min_threshold,
-        max_threshold=max_threshold,
-    )
-
-
 def convert_checkpoint(converter: str, *args: Path) -> None:
     """Run ``tools/convert_<converter>.py`` on a checkpoint."""
     import subprocess

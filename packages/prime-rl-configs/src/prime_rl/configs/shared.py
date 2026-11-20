@@ -233,9 +233,6 @@ class SlurmConfig(BaseConfig):
         return self
 
 
-ServerType = Literal["vllm", "openai"]
-
-
 class VLMConfig(BaseConfig):
     freeze_vision_encoder: bool = True
     """Freeze the vision encoder parameters during training."""
