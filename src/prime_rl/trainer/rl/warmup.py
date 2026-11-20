@@ -2,22 +2,15 @@ import time
 from collections.abc import Callable
 
 import torch
-from dion import Muon
 from torch import Tensor, nn
-from torch.optim import AdamW
 
 from prime_rl.configs.trainer import TrainerConfig, rl_micro_batch_multiple
 from prime_rl.trainer.model import iter_moe_blocks
-from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
-from prime_rl.trainer.optim.sign_sgd import SignSGD
+from prime_rl.trainer.optim import OptimizerLike
 from prime_rl.trainer.rl.data import TensorMicroBatch
-from prime_rl.trainer.utils import clip_grad_norm_, get_peak_memory_across_ranks
+from prime_rl.trainer.utils import get_peak_memory_across_ranks
 from prime_rl.trainer.vlm import get_language_model
 from prime_rl.utils.logger import format_time, get_logger
-
-# Their state starts at zero and stays zero under zero gradients, and lr scales both the update and the
-# weight decay, so a step with lr = 0 changes nothing but the step counters.
-DRY_STEP_OPTIMIZERS = (AdamW, Muon, SignSGD)
 
 
 def warmup_doc_lens(total: int, long_doc: int, generator: torch.Generator) -> list[int]:
@@ -105,47 +98,13 @@ def synthetic_micro_batch(
     return micro_batch
 
 
-def dry_optimizer_step(optimizer: OptimizerLike, model: nn.Module, max_norm: float | None) -> bool:
-    """Take an optimizer step that leaves the parameters and the optimizer's state as they were.
-
-    The first step creates the optimizer state (and pins its offload buffers) and compiles the optimizer's
-    kernels. Returns whether it ran: it skips optimizers whose state already exists, such as one loaded from a
-    checkpoint, and optimizers not known to stay unchanged under a zero step.
-    """
-    base_optimizer = optimizer.base_optimizer if isinstance(optimizer, OffloadOptimizer) else optimizer
-    if base_optimizer.state or not isinstance(base_optimizer, DRY_STEP_OPTIMIZERS):
-        optimizer.zero_grad()
-        return False
-
-    for param in model.parameters():
-        if param.grad is not None:
-            param.grad.zero_()
-    if max_norm is not None:
-        clip_grad_norm_(None, model, max_norm)
-
-    saved = [{key: group[key] for key in ("lr", "step") if key in group} for group in optimizer.param_groups]
-    for group in optimizer.param_groups:
-        group["lr"] = 0.0
-    optimizer.step()
-    optimizer.zero_grad()
-    for group, saved_group in zip(optimizer.param_groups, saved):
-        group.update(saved_group)
-    for state in base_optimizer.state.values():
-        step = state.get("step")
-        if isinstance(step, Tensor):
-            step.zero_()
-        elif step is not None:
-            state["step"] = 0
-    return True
-
-
 def warmup(
     model: nn.Module,
     optimizer: OptimizerLike,
     config: TrainerConfig,
     forward_backward: Callable[..., object],
 ) -> float:
-    """Do the trainer's one-time work (compilation, kernel JIT, communicator setup, optimizer state) before the
+    """Do the trainer's one-time forward and backward work (compilation, kernel JIT, communicator setup) before the
     first batch arrives. `forward_backward` is the training step's forward and backward. Returns the time it took."""
     logger = get_logger()
     logger.info("Warming up the trainer")
@@ -156,29 +115,15 @@ def warmup(
         synthetic_micro_batch(doc_lens, model, config, generator)
         for doc_lens in warmup_micro_batches(config.model.seq_len, rl_micro_batch_multiple(config.model))
     ]
-    # Under full offload, the gradients then stay in the offload buffers instead of updating the weights
+    # Without the overlapped optimizer, the gradients stay in their buffers instead of updating the weights
     forward_backward(micro_batches, prepare=lambda micro_batch: micro_batch, overlap_optimizer=False, annotate=False)
     del micro_batches
+    optimizer.zero_grad()
     torch.cuda.synchronize()
-    forward_backward_time = time.perf_counter() - start_time
-
-    optimizer_start_time = time.perf_counter()
-    # The full offload optimizer runs on the CPU and creates its state up front, so it has nothing to warm up
-    if config.model.offload == "full":
-        optimizer.zero_grad()
-        stepped = False
-    else:
-        stepped = dry_optimizer_step(optimizer, model, config.optim.max_norm)
-    torch.cuda.synchronize()
-    optimizer_time = time.perf_counter() - optimizer_start_time
 
     peak_memory, _ = get_peak_memory_across_ranks()
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
     warmup_time = time.perf_counter() - start_time
-    optimizer_message = f"optimizer {format_time(optimizer_time)}" if stepped else "optimizer skipped"
-    logger.info(
-        f"Warmed up the trainer in {format_time(warmup_time)} (forward/backward {format_time(forward_backward_time)}, "
-        f"{optimizer_message}, peak memory {peak_memory:.1f} GiB)"
-    )
+    logger.info(f"Warmed up the trainer in {format_time(warmup_time)} (peak memory {peak_memory:.1f} GiB)")
     return warmup_time
