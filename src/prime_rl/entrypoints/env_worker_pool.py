@@ -9,7 +9,7 @@ from contextlib import ExitStack
 from functools import partial
 from pathlib import Path
 
-from verifiers.v1.runtimes import set_base_sandbox_labels
+from verifiers.v1 import set_base_sandbox_labels
 
 from prime_rl.configs.env_worker_pool import EnvWorkerPoolConfig
 from prime_rl.env import run_env_worker_pool, set_episode_hook

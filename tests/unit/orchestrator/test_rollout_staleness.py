@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import verifiers.v1 as vf
-from verifiers.v1.types import WeightVersionSpan
+from verifiers.v1 import WeightVersionSpan
 
 from prime_rl.orchestrator.utils import Staleness, rollout_staleness
 

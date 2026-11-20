@@ -31,7 +31,7 @@ from collections.abc import Callable
 import msgpack
 import zmq
 import zmq.asyncio
-from verifiers.v1.utils.loaders import resolve_env_config
+from verifiers.v1 import resolve_env_config
 
 from prime_rl.configs.env_worker_pool import ElasticPoolConfig, PoolConfig, StaticPoolConfig
 from prime_rl.env.types import CancelResponse, HealthResponse

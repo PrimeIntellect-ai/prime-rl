@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import verifiers.v1 as vf
-from verifiers.v1.trace import min_new_input_tokens
+from verifiers.v1 import min_new_input_tokens
 
 from prime_rl.configs.algorithm import GRPOAlgoConfig, LinearSubagentLengthPenaltyConfig
 from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces

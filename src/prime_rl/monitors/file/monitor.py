@@ -9,8 +9,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO, TextIO
 
 import numpy as np
 import orjson
-from verifiers.v1.trace import EXCLUDE_FIELDS
-from verifiers.v1.types import decode_ndarray
+from verifiers.v1 import decode_ndarray
 
 from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
@@ -27,7 +26,7 @@ if TYPE_CHECKING:
 
 OPTS = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
 
-LIVE_NODE_EXCLUDE = frozenset(EXCLUDE_FIELDS["nodes"]["__all__"])
+LIVE_NODE_EXCLUDE = frozenset({"routed_experts", "sampler_support"})
 """Node fields that stay on the wire but out of live trace files: expensive per-token information
 only the trainer needs."""
 

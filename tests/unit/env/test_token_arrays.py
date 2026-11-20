@@ -1,7 +1,5 @@
 import numpy as np
-from verifiers.v1.delta import dump
-from verifiers.v1.graph import MessageNode
-from verifiers.v1.types import AssistantMessage
+from verifiers.v1 import AssistantMessage, MessageNode
 
 from prime_rl.env.encoding import pack, unpack
 
@@ -17,7 +15,7 @@ def test_token_arrays_wire_round_trip():
         logprobs=[-0.125, -0.25],
         loss_weights={"rl": [0.0, 1.0, 1.0]},
     )
-    wire = unpack(pack(dump(node, context={"token_arrays": True})))
+    wire = unpack(pack(node.model_dump(mode="python", serialize_as_any=True, context={"token_arrays": True})))
     assert wire["token_ids"]["__nd__"] and wire["loss_weights"]["rl"]["__nd__"]
     back = MessageNode.model_validate(wire)
     assert back.token_ids.tolist() == [1, 2, 130_000]
@@ -25,6 +23,6 @@ def test_token_arrays_wire_round_trip():
     assert back.logprobs.tolist() == [-0.125, -0.25]
     assert back.loss_weights["rl"].tolist() == [0.0, 1.0, 1.0]
     # Without the context the wire keeps lists, which validate the same way.
-    plain = unpack(pack(dump(node)))
+    plain = unpack(pack(node.model_dump(mode="python", serialize_as_any=True)))
     assert plain["token_ids"] == [1, 2, 130_000]
     assert MessageNode.model_validate(plain).token_ids.dtype == np.int32

@@ -10,9 +10,8 @@ import msgspec
 import numpy as np
 import pytest
 import verifiers.v1 as vf
-from verifiers.v1 import graph
-from verifiers.v1.episode import EnvInfo, Episode
-from verifiers.v1.types import SamplerSupport, TurnTokens
+from verifiers.v1 import EnvInfo, Episode, SamplerSupport, TurnTokens
+from verifiers.v1 import _graph as graph
 
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.orchestrator.trajectories import trace_to_samples

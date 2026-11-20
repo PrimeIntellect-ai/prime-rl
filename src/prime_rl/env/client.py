@@ -22,10 +22,7 @@ from typing import TypeVar
 import msgpack
 import zmq
 import zmq.asyncio
-from verifiers.v1.configs.client import ClientConfig
-from verifiers.v1.configs.sampling import SamplingConfig
-from verifiers.v1.delta import EpisodeAssembly
-from verifiers.v1.episode import WireEpisode
+from verifiers.v1 import ClientConfig, EpisodeAssembly, SamplingConfig, WireEpisode
 
 from prime_rl.env.encoding import unpack
 from prime_rl.env.types import (
