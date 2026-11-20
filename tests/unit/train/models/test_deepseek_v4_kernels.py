@@ -41,6 +41,7 @@ from prime_rl.trainer.models.layers.fp8_linear import (
 from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.utils.utils import default_dtype
 from tests.unit.train.models.deepseek_v4_markers import requires_datacenter_gpu
+from tests.utils import assert_relative
 
 try:
     import tilelang
@@ -131,7 +132,7 @@ def _compare_accumulated_grads(module: nn.Module, expected: dict[str, torch.Tens
             assert param.grad is None, f"{name} received a gradient per document but not packed"
             continue
         assert param.grad is not None, f"{name} received no gradient per document"
-        _assert_relative(param.grad, expected[name], rtol, name)
+        assert_relative(param.grad, expected[name], rtol, name)
 
 
 # The real DeepSeek V4-Flash attention shapes, written out as a literal so nothing here depends on a local HF
@@ -208,14 +209,6 @@ MASKED_FRACTION = 0.25
 # Compiled against eager, where the forward and the log-sum-exp are bit-identical. `dKV` is not,
 # because `atomic_addx4` leaves its summation order to the scheduler, on both sides.
 COMPILE_RTOL = 1e-2
-
-
-def _assert_relative(actual: torch.Tensor, reference: torch.Tensor, rtol: float, label: str) -> None:
-    """Bound the largest absolute deviation by `rtol` times the reference's own scale."""
-    actual, reference = actual.float(), reference.float()
-    deviation = (actual - reference).abs().max()
-    scale = reference.abs().max()
-    assert deviation <= rtol * scale, f"{label}: max deviation {deviation} exceeds {rtol} * scale {scale}"
 
 
 def _build_indices(batch: int, seq_len: int, seq_len_kv: int, masked_fraction: float, topk: int = TOPK) -> torch.Tensor:
@@ -370,7 +363,7 @@ def test_kernel_traces_under_torch_compile(backend):
         assert compiled_leaf.grad is not None and compiled_leaf.grad.norm() > 0, (
             f"{label}: the compiled backward left the leaf without a gradient"
         )
-        _assert_relative(compiled_leaf.grad, eager_leaf.grad, COMPILE_RTOL, label)
+        assert_relative(compiled_leaf.grad, eager_leaf.grad, COMPILE_RTOL, label)
 
 
 # Everything below reaches the kernel through the modeling code rather than on hand-built tensors, at the same
@@ -596,12 +589,12 @@ def test_sparse_attention_kernel_packed_matches_unpacked(backend, monkeypatch):
         alone_output, _ = module(
             alone_input[:, span], packed=_packed_context((length,), torch.bfloat16, V4FLASH_CONFIG)
         )
-        _assert_relative(packed_output[:, span], alone_output, KERNEL_RTOL, f"document {index}")
+        assert_relative(packed_output[:, span], alone_output, KERNEL_RTOL, f"document {index}")
         (alone_output * weight[:, span]).sum().backward()
 
     assert calls == [sum(KERNEL_DOC_LENS), *KERNEL_DOC_LENS], f"a forward never reached the kernel, calls={calls}"
     _compare_accumulated_grads(module, packed_grads, rtol=KERNEL_GRAD_RTOL)
-    _assert_relative(alone_input.grad, packed_input.grad, KERNEL_GRAD_RTOL, "hidden states gradient")
+    assert_relative(alone_input.grad, packed_input.grad, KERNEL_GRAD_RTOL, "hidden states gradient")
 
 
 @requires_sparse_attn_kernel
@@ -757,10 +750,10 @@ def test_q_norm_rope_matches_the_composed_norm_and_rotation():
 
     assert fused.dtype == torch.bfloat16
     assert (fused != expected).float().mean() < 1e-5
-    _assert_relative(fused, expected, torch.finfo(torch.bfloat16).eps, "q")
+    assert_relative(fused, expected, torch.finfo(torch.bfloat16).eps, "q")
     assert torch.equal(compiled, fused)
     assert torch.equal(compiled_leaf.grad, fused_leaf.grad)
-    _assert_relative(fused_leaf.grad, composed_leaf.grad, torch.finfo(torch.bfloat16).eps, "q gradient")
+    assert_relative(fused_leaf.grad, composed_leaf.grad, torch.finfo(torch.bfloat16).eps, "q gradient")
 
     reference_leaf = leaf.double().requires_grad_(True)
     reference_out = _q_norm_rope_fp64(reference_leaf, cos_sin, positions, eps)
@@ -1089,7 +1082,7 @@ def test_cudnn_compressor_pool_matches_fp64_reference(compress_rate, n_series, h
     for compiled_leaf, eager_leaf in zip(compiled_inputs[:2], eager_inputs[:2]):
         assert torch.equal(compiled_leaf.grad, eager_leaf.grad)
     bf16_eps = torch.finfo(torch.bfloat16).eps
-    _assert_relative(eager, reference, bf16_eps, "entries")
+    assert_relative(eager, reference, bf16_eps, "entries")
     for name, eager_leaf, reference_leaf in zip(("kv", "gate", "position_bias"), eager_inputs, reference_inputs):
         assert eager_leaf.grad.dtype == torch.bfloat16
-        _assert_relative(eager_leaf.grad, reference_leaf.grad, bf16_eps, f"grad {name}")
+        assert_relative(eager_leaf.grad, reference_leaf.grad, bf16_eps, f"grad {name}")

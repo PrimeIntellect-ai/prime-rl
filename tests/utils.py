@@ -1,6 +1,8 @@
 import re
 from pathlib import Path
 
+import torch
+
 from tests.conftest import ProcessResult
 
 
@@ -243,3 +245,11 @@ def check_hf_load(weights_dir: Path) -> None:
     assert not loading_info["unexpected_keys"], f"unexpected keys: {loading_info['unexpected_keys'][:5]}"
     assert not loading_info["mismatched_keys"], f"mismatched keys: {loading_info['mismatched_keys'][:5]}"
     assert all(torch.isfinite(param).all() for param in model.parameters())
+
+
+def assert_relative(actual: torch.Tensor, reference: torch.Tensor, rtol: float, label: str) -> None:
+    """Bound the largest absolute deviation by `rtol` times the reference's own scale."""
+    actual, reference = actual.float(), reference.float()
+    deviation = (actual - reference).abs().max()
+    scale = reference.abs().max()
+    assert deviation <= rtol * scale, f"{label}: max deviation {deviation} exceeds {rtol} * scale {scale}"
