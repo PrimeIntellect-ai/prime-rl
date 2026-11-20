@@ -139,7 +139,7 @@ algo.type = "echo"
 
 ### The Algorithm Classes
 
-At runtime, each env's `TrainEnv` (`prime_rl.orchestrator.envs`) resolves the algorithm's rollout model (the policy, or `sft`'s `teacher`) into the inference pool used for train episodes, and its resolved config builds one of the named algorithm classes in `prime_rl.orchestrator.train.algo` (one module per algorithm: `algo/grpo.py`, `algo/opd.py`, …) from the algorithm config. Algorithm dispatch is keyed on `algo.type` — it names the algorithm, and each config class's defaults are its vetted parameterization:
+At runtime, each env's `TrainEnv` (`prime_rl.orchestrator.envs`) resolves the algorithm's rollout model (the policy, or `sft`'s `teacher`) into the inference pool used for train episodes, and its resolved config builds one of the named algorithm classes in `prime_rl.orchestrator.algo` (one module per algorithm: `algo/grpo.py`, `algo/opd.py`, …) from the algorithm config. Algorithm dispatch is keyed on `algo.type` — it names the algorithm, and each config class's defaults are its vetted parameterization:
 
 | `algo.type` | Class | hook(s) — stage |
 |---|---|---|
@@ -159,7 +159,7 @@ Algorithms operate on native verifier artifacts and annotate their message graph
 
 The pipeline calls `score_group` directly and `score_episode` through `finalize_episode`, which skips episodes with no trainable sampled tokens. Advantages, reference logprobs, and named loss weights stay on verifier nodes through admission. Only admitted traces are flattened into `TrainingSample`s.
 
-The algorithm config states which loss component its action tokens feed (`action_loss_type`, a class variable on each config class). Every class is constructed with its algorithm config plus the one host-owned resource it can't rebuild — the live policy clients (`self.clients`). Everything else an algorithm needs it builds from its own config in `setup()`: `opd` connects its frozen `teacher`; `opsd` builds the renderer for its demonstration hint from the policy's renderer config and tokenizer. Writing your own algorithm is subclassing `Algorithm` and overriding the hooks its signal needs (see [Authoring an Algorithm](#authoring-an-algorithm)). Shared math (efficiency shaping, prefill alignment) lives as plain functions in `prime_rl.orchestrator.train.algo.advantage`.
+The algorithm config states which loss component its action tokens feed (`action_loss_type`, a class variable on each config class). Every class is constructed with its algorithm config plus the one host-owned resource it can't rebuild — the live policy clients (`self.clients`). Everything else an algorithm needs it builds from its own config in `setup()`: `opd` connects its frozen `teacher`; `opsd` builds the renderer for its demonstration hint from the policy's renderer config and tokenizer. Writing your own algorithm is subclassing `Algorithm` and overriding the hooks its signal needs (see [Authoring an Algorithm](#authoring-an-algorithm)).
 
 ## Async Training & Staleness
 
@@ -484,8 +484,8 @@ There is no config hook that points at user code — a new credit-assignment sch
 # src/prime_rl/orchestrator/algo/my_algo.py
 import torch
 
-from prime_rl.orchestrator.train.algo.base import Algorithm
-from prime_rl.orchestrator.train.algo.routing import assign_advantages
+from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.orchestrator.algo.routing import assign_advantages
 
 
 class MyAlgorithm(Algorithm):
