@@ -85,7 +85,7 @@ Every source's env worker pool is spawned by the eval process unless the source 
 
 ## Live Concurrency
 
-With `--control`, a running eval serves a small API on port 8040 to read and change its episode concurrency, so a shared endpoint's capacity can move between evals without restarting them. `PUT` pins the cap at `target`, outside the configured band too, and `null` hands it back to the adaptive controller. Lowering it cancels nothing: new episodes wait until enough running ones finish.
+With `--control`, a running eval serves a small API on port 8040 to read and change its episode concurrency, so a shared endpoint's capacity can move between evals without restarting them. `PUT` pins the cap at `target`, outside the configured band too, and `null` hands it back to the adaptive controller. Lowering it cancels nothing: new episodes wait until enough running ones finish. When `PRIME_RL_ADMIN_TOKEN` is set, every request must carry it in the `X-Prime-Admin-Token` header ([Admin Routes](inference.md#admin-routes)).
 
 ```bash
 uv run eval @ eval.toml -c 2000 --control

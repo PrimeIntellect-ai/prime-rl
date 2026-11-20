@@ -1,5 +1,5 @@
 import shutil
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,7 +8,7 @@ import pytest
 
 import prime_rl.trainer.pretrain.data as pretrain_data
 from prime_rl.configs.pretrain import PretrainDataConfig
-from prime_rl.trainer.data import setup_dataloader
+from prime_rl.trainer.data import setup_dataloader, with_workers
 from prime_rl.trainer.pretrain.data import (
     TokenShards,
     detect_separator,
@@ -158,40 +158,36 @@ def test_repetitions_read_a_subset_that_many_times(tmp_path):
 
 
 def test_subsets_and_resumes_fail_clearly(tmp_path):
-    """A subset larger than its source fails at startup. A resume fails when the data settings differ, naming the old
-    and new values, except for max_steps when no source has repetitions and for a source moved to another folder."""
+    """A subset larger than its source fails at startup. A resume fails when a source's files differ and on a state from
+    before the sources could change; a source may move to another folder."""
     write_shard(tmp_path / "a" / "00.ds", consecutive_documents([8] * 100))
     with pytest.raises(ValueError, match="needs 1,600 unique tokens but has 800"):
         setup_token_dataset(
             data_config(tmp_path, {"a": {"repetitions": 1.0}}, batch_size=10), max_steps=10, dp_rank=0, dp_size=1
         )
     state = setup_token_dataset(data_config(tmp_path, {"a": {}}), max_steps=10, dp_rank=0, dp_size=1).state_dict()
-    setup_token_dataset(data_config(tmp_path, {"a": {}}), max_steps=20, dp_rank=0, dp_size=1).load_state_dict(state)
     shutil.copytree(tmp_path / "a", tmp_path / "moved" / "a")
     moved = data_config(tmp_path / "moved", {"a": {}})
     setup_token_dataset(moved, max_steps=10, dp_rank=0, dp_size=1).load_state_dict(state)
-    with pytest.raises(ValueError, match="seed 0 -> 1; num_workers 1 -> 2"):
-        setup_token_dataset(
-            data_config(tmp_path, {"a": {}}, seed=1, num_workers=2), max_steps=10, dp_rank=0, dp_size=1
-        ).load_state_dict(state)
-    state = setup_token_dataset(
-        data_config(tmp_path, {"a": {"repetitions": 2.0}}), max_steps=10, dp_rank=0, dp_size=1
-    ).state_dict()
-    with pytest.raises(ValueError, match="max_steps"):
-        setup_token_dataset(
-            data_config(tmp_path, {"a": {"repetitions": 2.0}}), max_steps=11, dp_rank=0, dp_size=1
-        ).load_state_dict(state)
+    old = {**state, "cursor": {key: value for key, value in state["cursor"].items() if key != "mix_start"}}
+    with pytest.raises(ValueError, match="from before the sources could change"):
+        setup_token_dataset(data_config(tmp_path, {"a": {}}), max_steps=10, dp_rank=0, dp_size=1).load_state_dict(old)
+    write_shard(tmp_path / "a" / "01.ds", consecutive_documents([8] * 10, 800))
+    with pytest.raises(ValueError, match="Source a: files"):
+        setup_token_dataset(data_config(tmp_path, {"a": {}}), max_steps=10, dp_rank=0, dp_size=1).load_state_dict(state)
 
 
-def global_rows(config: PretrainDataConfig, gpus: int, steps: int, states=None) -> tuple[list[list], list[dict]]:
-    """Every step's rows over all GPUs (sorted), and every GPU's dataloader state after the last step, with two
-    dataloader workers per GPU."""
+def global_rows(
+    config: PretrainDataConfig, gpus: int, steps: int, states=None, max_steps: int | None = None
+) -> tuple[list[list], list[dict]]:
+    """Every step's rows over all GPUs (sorted), and every GPU's dataloader state after the last step."""
     rows, new_states = [[] for _ in range(steps)], []
     for rank in range(gpus):
-        loader = setup_dataloader(setup_token_dataset(config, dp_rank=rank, dp_size=gpus), config, cp=1)
+        dataset = setup_token_dataset(config, dp_rank=rank, dp_size=gpus, max_steps=max_steps)
+        loader = setup_dataloader(dataset, config, cp=1)
         if states is not None:
             # As the checkpoint manager: a rank the saved run did not have loads rank 0's state.
-            loader.load_state_dict(states[rank] if rank < len(states) else states[0])
+            loader.load_state_dict(with_workers(states[rank] if rank < len(states) else states[0], config.num_workers))
         batches = iter(loader)
         for step in range(steps):
             for _ in range(config.batch_size // (gpus * config.micro_batch_size)):
@@ -201,10 +197,12 @@ def global_rows(config: PretrainDataConfig, gpus: int, steps: int, states=None) 
     return [sorted(step_rows) for step_rows in rows], new_states
 
 
-@pytest.mark.parametrize(("gpus_before", "gpus_after"), [(2, 2), (4, 2), (2, 4)])
-def test_resume_continues_the_stream(tmp_path, gpus_before, gpus_after):
+@pytest.mark.parametrize(
+    ("gpus_before", "gpus_after", "workers_after"), [(2, 2, 2), (4, 2, 2), (2, 4, 2), (2, 2, 1), (2, 2, 4)]
+)
+def test_resume_continues_the_stream(tmp_path, gpus_before, gpus_after, workers_after):
     """A run stopped after step 3 (mid-pass) or after the step where b starts its second pass, and resumed, also on
-    another number of GPUs, reads the rows of an uninterrupted run."""
+    another number of GPUs or dataloader workers, reads the rows of an uninterrupted run."""
     write_source(tmp_path / "a", LENGTHS)
     write_source(tmp_path / "b", [6, 30, 9, 2, 18, 4], 10**6)
     sources = {"a": {"weight": 0.4}, "b": {"weight": 0.6}}
@@ -213,12 +211,124 @@ def test_resume_continues_the_stream(tmp_path, gpus_before, gpus_after):
     cursor, wrap = sampler.start(), None
     while wrap is None:
         cursor = sampler.plan(cursor)[1]
-        wrap = cursor["step"] if cursor["units"][1] >= sampler.num_units[1] else None
+        wrap = cursor["rows"] // config.batch_size if cursor["units"][1] >= sampler.num_units[1] else None
     uninterrupted, _ = global_rows(config, gpus_before, wrap + 3)
     for stop in (3, wrap):
         before, states = global_rows(config, gpus_before, stop)
-        after, _ = global_rows(config, gpus_after, wrap + 3 - stop, states)
+        after, _ = global_rows(
+            config.model_copy(update={"num_workers": workers_after}), gpus_after, wrap + 3 - stop, states
+        )
         assert before + after == uninterrupted
+
+
+def read_by_source(steps: list[list]) -> dict[int, list[int]]:
+    """The tokens in the rows of ``steps`` by source: a's are below 10**6, b's below 2 * 10**6, then c's."""
+    read = defaultdict(list)
+    for token in (token for rows in steps for row in rows for token in row):
+        read[token // 10**6].append(token)
+    return read
+
+
+def first_in_order(sampler, source: int, num_tokens: int, first_pass: int = 0) -> list[int]:
+    """The source's first ``num_tokens`` tokens in the order of its passes from ``first_pass`` on."""
+    set_units = sampler.set_units[source]
+    units = sampler.locate(np.full(set_units, source), first_pass * set_units + np.arange(set_units))
+    tokens = [token for _, file, begin, end, _, _ in units for token in sampler.shards.tokens(file)[begin:end]]
+    return tokens[:num_tokens]
+
+
+@pytest.mark.parametrize(
+    ("weights_after", "gpus_after", "workers_after"), [((0.2, 0.8), 2, 2), ((0.2, 0.8), 4, 1), ((1.0, 0.0), 2, 2)]
+)
+def test_resume_with_another_mix_reads_on(tmp_path, weights_after, gpus_after, workers_after):
+    """Resumed with other weights (b paused by weight 0, or not) and a larger batch, also on other numbers of GPUs and
+    workers, every source reads on in its order: no unit twice, none skipped. From the change on, every step holds the
+    new mixture (the source that is behind does not catch up), and the metrics count every source's tokens since the
+    start."""
+    write_source(tmp_path / "a", LENGTHS * 10)
+    write_source(tmp_path / "b", [6, 30, 9, 2, 18, 4] * 40, 10**6)
+    old = data_config(
+        tmp_path, {"a": {"weight": 0.5}, "b": {"weight": 0.5}}, batch_size=8, micro_batch_size=1, num_workers=2
+    )
+    sources = {name: {"weight": weight} for name, weight in zip("ab", weights_after)}
+    new = data_config(tmp_path, sources, batch_size=16, micro_batch_size=1, num_workers=workers_after)
+    before, states = global_rows(old, 2, 4)
+    after, states = global_rows(new, gpus_after, 4, states)
+    sampler = setup_token_dataset(new, dp_rank=0, dp_size=1).sampler
+    read = read_by_source(before + after)
+    for source in (0, 1):
+        assert sorted(read[source]) == sorted(first_in_order(sampler, source, len(read[source])))
+    for steps in range(1, 5):
+        since = read_by_source(after[:steps])
+        assert all(abs(len(since[s]) - sampler.weights[s] * steps * 16 * 16) <= 16 for s in (0, 1))
+    state = next(iter(states[0]["_snapshot"]["_worker_snapshots"].values()))["dataset_state"]["dataset"]
+    metrics = sampler.progress(state["cursor"])
+    assert [metrics["progress/a/num_tokens"], metrics["progress/b/num_tokens"]] == [len(read[0]), len(read[1])]
+    assert state["step"] == 4 * 8 + 4 * 16
+
+
+def test_resume_adds_and_removes_sources(tmp_path):
+    """Resumed without b (the first source, so a's files move) and with c: a reads on in its order, c from its start,
+    and b no more, whether the unit cut at the step's end was a's or b's."""
+    write_source(tmp_path / "a", LENGTHS * 10)
+    write_source(tmp_path / "b", [6, 30, 9, 2, 18, 4] * 40, 10**6)
+    write_source(tmp_path / "c", [3, 21, 8, 13] * 40, 2 * 10**6)
+    settings = {"micro_batch_size": 1, "num_workers": 2, "batch_size": 8}
+    old = data_config(tmp_path, {"b": {"weight": 0.5}, "a": {"weight": 0.5}}, **settings)
+    new = data_config(tmp_path, {"a": {"weight": 0.5}, "c": {"weight": 0.5}}, **settings)
+    sampler = setup_token_dataset(old, dp_rank=0, dp_size=1).sampler
+    cursor, stops = sampler.start(), {}
+    while len(stops) < 2:
+        cursor = sampler.plan(cursor)[1]
+        if cursor["rest"]:
+            stops.setdefault(cursor["rest"][0], cursor["rows"] // 8)
+    sampler = setup_token_dataset(new, dp_rank=0, dp_size=1).sampler
+    for stop in stops.values():
+        before, states = global_rows(old, 2, stop)
+        after, _ = global_rows(new, 2, 4, states)
+        read = read_by_source(before + after)
+        assert 1 not in read_by_source(after)
+        assert sorted(read[0]) == sorted(first_in_order(sampler, 0, len(read[0])))
+        assert sorted(read[2]) == sorted(first_in_order(sampler, 1, len(read[2])))
+
+
+def cursor_of(states: list[dict]) -> dict:
+    """The cursor in the first GPU's dataloader state (all workers of all GPUs hold the same one)."""
+    return next(iter(states[0]["_snapshot"]["_worker_snapshots"].values()))["dataset_state"]["dataset"]["cursor"]
+
+
+def test_resume_with_another_seq_len_starts_new_passes(tmp_path):
+    """Resumed mid-pass with seq_len 16 -> 32, every source starts a new pass: what it reads from there are the first
+    units of that pass (none twice), and the rows are full."""
+    write_source(tmp_path / "a", LENGTHS * 10)
+    write_source(tmp_path / "b", [6, 30, 9, 2, 18, 4] * 40, 10**6)
+    old = data_config(tmp_path, {"a": {}, "b": {}}, micro_batch_size=1, num_workers=2, batch_size=8)
+    new = old.model_copy(update={"seq_len": 32})
+    _, states = global_rows(old, 2, 3)
+    after, _ = global_rows(new, 2, 3, states)
+    assert {len(row) for rows in after for row in rows} == {32}
+    sampler = setup_token_dataset(new, dp_rank=0, dp_size=1).sampler
+    read = read_by_source(after)
+    for source in (0, 1):
+        new_pass = -(-cursor_of(states)["units"][source] // sampler.set_units[source])
+        assert sorted(read[source]) == sorted(first_in_order(sampler, source, len(read[source]), new_pass))
+
+
+def test_resume_with_another_subset_starts_its_new_pass(tmp_path):
+    """Resumed with more max_steps, the subset of a (2 repetitions) grows, so a starts a new pass over its new subset;
+    b, without repetitions, reads on in its pass."""
+    write_source(tmp_path / "a", LENGTHS * 10)
+    write_source(tmp_path / "b", [6, 30, 9, 2, 18, 4] * 40, 10**6)
+    sources = {"a": {"weight": 0.5, "repetitions": 2.0}, "b": {"weight": 0.5}}
+    config = data_config(tmp_path, sources, micro_batch_size=1, num_workers=2, batch_size=8)
+    before, states = global_rows(config, 2, 3, max_steps=20)
+    after, _ = global_rows(config, 2, 3, states, max_steps=30)
+    sampler = setup_token_dataset(config, dp_rank=0, dp_size=1, max_steps=30).sampler
+    read_before, read_after = read_by_source(before), read_by_source(after)
+    new_pass = -(-cursor_of(states)["units"][0] // sampler.set_units[0])
+    assert sorted(read_after[0]) == sorted(first_in_order(sampler, 0, len(read_after[0]), new_pass))
+    read_b = read_before[1] + read_after[1]
+    assert sorted(read_b) == sorted(first_in_order(sampler, 1, len(read_b)))
 
 
 def test_eod_mask_loss(tmp_path):
