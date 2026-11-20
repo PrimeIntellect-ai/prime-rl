@@ -19,7 +19,7 @@ from prime_rl.trainer.rl.loss import (
     setup_rl_loss_fn,
 )
 
-pytestmark = [pytest.mark.gpu]
+pytestmark = [pytest.mark.gpu, pytest.mark.tiny]
 
 
 @pytest.mark.parametrize("head_size,q_head", [(4, [0.6, 0.1, 0.2, 0.1]), (2, [0.5, 0.3]), (2, [0.1, 0.1])])
