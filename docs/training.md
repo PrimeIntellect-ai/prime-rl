@@ -575,16 +575,18 @@ uv run rl @ rl.toml --model.name outputs/my-sft/checkpoints/step_500 --orchestra
 
 ### Pausing or Checkpointing a Live Run
 
-With `--trainer.control` and `--orchestrator.control` (SFT: `--control`), the trainer serves a small control API on port 8040 and the orchestrator on 8041. Each saves only its own state, so a pause asks the trainer first: it accepts the pause at its next step N, trains N, saves it and stops. The orchestrator is then asked to pause at N and saves its state as of shipping N, which it can always do because a paused trainer never requests N + 1. A pause is `committed` on each once that component saved N, and the run continues with `--resume`:
+With `--trainer.control` and `--orchestrator.control` (SFT: `--control`), the trainer serves a small control API on port 8040 and the orchestrator on 8041. Each saves only its own state, so a pause asks the trainer first: it accepts the pause at its next step N, trains N, saves it and stops. The orchestrator is then asked to pause at N and saves its state as of shipping N, which it can always do because a paused trainer never requests N + 1. A pause is `committed` on each once that component saved N, and the run continues with `--resume`. Every request needs the run's admin token in the `X-Prime-Admin-Token` header ([Admin Routes](inference.md#admin-routes)); the launcher generates one per run unless `PRIME_RL_ADMIN_TOKEN` is set, so set it to call the API yourself:
 
 ```bash
+export PRIME_RL_ADMIN_TOKEN=$(openssl rand -hex 32)
 uv run rl @ rl.toml --ckpt --trainer.control --orchestrator.control --run.name my-run
 
-curl -X POST localhost:8040/v1/actions -H 'content-type: application/json' -d '{"type": "pause"}'
+AUTH="X-Prime-Admin-Token: $PRIME_RL_ADMIN_TOKEN"
+curl -X POST localhost:8040/v1/actions -H "$AUTH" -H 'content-type: application/json' -d '{"type": "pause"}'
 # {"id": "3f2a...", "type": "pause", "state": "pending", "step": null, "changes": null}
-curl localhost:8040/v1/actions/3f2a...
+curl localhost:8040/v1/actions/3f2a... -H "$AUTH"
 # {"id": "3f2a...", "type": "pause", "state": "accepted", "step": 12, "changes": null}
-curl -X POST localhost:8041/v1/actions -H 'content-type: application/json' -d '{"type": "pause", "step": 12}'
+curl -X POST localhost:8041/v1/actions -H "$AUTH" -H 'content-type: application/json' -d '{"type": "pause", "step": 12}'
 # {"id": "9c41...", "type": "pause", "state": "pending", "step": 12, "changes": null}
 ```
 

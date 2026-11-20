@@ -6,6 +6,8 @@ from fastapi.testclient import TestClient
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.control.app import create_app
 from prime_rl.control.controller import Controller, validate_update
+from prime_rl.control.server import require_admin_token
+from prime_rl.utils.admin_token import admin_token_digest
 from prime_rl.utils.config import dump_resolved_config
 
 
@@ -91,3 +93,16 @@ def test_checkpoints(tmp_path):
         "checkpoints": [{"step": 2, "complete": False}, {"step": 10, "complete": True}]
     }
     assert TestClient(create_app(Controller(requires_step=False))).get("/v1/checkpoints").status_code == 404
+
+
+@pytest.mark.parametrize("variable", ["PRIME_RL_ADMIN_TOKEN", "PRIME_RL_ADMIN_TOKEN_SHA256"])
+def test_control_api_requires_the_admin_token(run, monkeypatch, variable):
+    monkeypatch.setenv(variable, "secret" if variable == "PRIME_RL_ADMIN_TOKEN" else admin_token_digest("secret"))
+    app = create_app(run.controller)
+    require_admin_token(app, "PRIME_RL_ADMIN_TOKEN")
+    client = TestClient(app)
+
+    for headers in ({}, {"X-Prime-Admin-Token": "wrong"}, {"Authorization": "Bearer secret"}):
+        assert client.get("/v1/config", headers=headers).status_code == 401
+        assert client.post("/v1/actions", headers=headers, json={"type": "pause"}).status_code == 401
+    assert client.get("/v1/config", headers={"X-Prime-Admin-Token": "secret"}).status_code == 200
