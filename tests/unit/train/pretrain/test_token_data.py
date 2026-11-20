@@ -331,21 +331,24 @@ def test_resume_with_another_seq_len_starts_new_passes(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("change", "factor"), [({}, 1.0), ({"batch_size": 16}, 1.5), ({"weights": (0.25, 0.75)}, 0.75)]
+    ("change", "factor"),
+    [({}, 1.0), ({"batch_size": 16}, 1.5), ({"weights": (0.25, 0.75)}, 0.75), ({"seed": 1}, 1.0)],
 )
 def test_resume_sizes_the_subset_by_the_run(tmp_path, change, factor):
-    """Resumed at mid-run with a doubled batch or a lower weight, the subset of a (2 repetitions) holds a's tokens over
-    the whole run over 2: 1.5 or 0.75 times the first one, not 2 or 0.5 (a has too few tokens for 2). a starts a new
-    pass over it, by the end of the run has read its tokens twice, and b, without repetitions, reads on in its pass.
-    Without a change, the resume reads the rows of an uninterrupted run."""
+    """Resumed at mid-run with a doubled batch, a lower weight or another seed, the subset of a (2 repetitions) holds
+    a's tokens over the whole run over 2: 1.5, 0.75 or 1 times the first one, not 2 or 0.5 (a has too few tokens for 2),
+    and as many tokens as its units hold in the order of the seed. a starts a new pass over it and by the end of the run
+    has read its tokens twice; b, without repetitions, reads on in its pass unless the seed changed. Without a change,
+    the resume reads the rows of an uninterrupted run."""
     write_source(tmp_path / "a", LENGTHS * 5)
     write_source(tmp_path / "b", [6, 30, 9, 2, 18, 4] * 40, 10**6)
 
-    def config(weights: tuple[float, float], batch_size: int) -> PretrainDataConfig:
+    def config(weights: tuple[float, float], batch_size: int, seed: int) -> PretrainDataConfig:
         sources = {"a": {"weight": weights[0], "repetitions": 2.0}, "b": {"weight": weights[1]}}
-        return data_config(tmp_path, sources, micro_batch_size=1, num_workers=2, batch_size=batch_size)
+        return data_config(tmp_path, sources, micro_batch_size=1, num_workers=2, batch_size=batch_size, seed=seed)
 
-    old, new = config((0.5, 0.5), 8), config(change.get("weights", (0.5, 0.5)), change.get("batch_size", 8))
+    old = config((0.5, 0.5), 8, 0)
+    new = config(change.get("weights", (0.5, 0.5)), change.get("batch_size", 8), change.get("seed", 0))
     before, states = global_rows(old, 2, 10, max_steps=20)
     after, end = global_rows(new, 2, 10, states, max_steps=20, steps_done=10)
     first = setup_token_dataset(old, dp_rank=0, dp_size=1, max_steps=20).sampler.set_tokens[0]
@@ -356,12 +359,14 @@ def test_resume_sizes_the_subset_by_the_run(tmp_path, change, factor):
     sampler = setup_token_dataset(new, dp_rank=0, dp_size=1, max_steps=20, resume=resume).sampler
 
     assert abs(sampler.set_tokens[0] - factor * first) <= 2 * 16
+    assert sampler.set_tokens[0] == len(first_in_order(sampler, 0, 10**9))
     assert abs(cursor_of(end)["tokens"][0] / sampler.set_tokens[0] - 2) < 0.1
     read_before, read_after = read_by_source(before), read_by_source(after)
     new_pass = -(-cursor_of(states)["units"][0] // sampler.set_units[0])
     assert set(read_after[0]) <= set(first_in_order(sampler, 0, 10**9, new_pass))
     read_b = read_before[1] + read_after[1]
-    assert sorted(read_b) == sorted(first_in_order(sampler, 1, len(read_b)))
+    if "seed" not in change:
+        assert sorted(read_b) == sorted(first_in_order(sampler, 1, len(read_b)))
     if not change:
         assert before + after == global_rows(old, 2, 20, max_steps=20)[0]
         # The subset stays however far the tokens read are from the plan.

@@ -241,8 +241,9 @@ class TokenSampler:
                 self.subset(source, self.run_tokens[source] / repetitions[source])
 
     def subset_settings(self, source: int) -> list:
-        """What the size of the source's subset depends on."""
-        return [float(self.weights[source]), self.repetitions[source], self.max_steps, self.batch_size, self.seq_len]
+        """What the source's subset depends on: its size, and the order its units are taken in (``seed``)."""
+        weight, repetitions = float(self.weights[source]), self.repetitions[source]
+        return [weight, repetitions, self.max_steps, self.batch_size, self.seq_len, self.seed]
 
     def resize_subsets(self, state: dict, steps: int) -> None:
         """Size the subsets of a run resumed after ``steps`` steps from a checkpoint's data state ``state``. A source
