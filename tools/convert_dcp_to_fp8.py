@@ -31,6 +31,8 @@ def convert(
     if block_size <= 0:
         raise ValueError("block_size must be positive")
     checkpoint = open_checkpoint(ckpt_dir)
+    if getattr(checkpoint.model, "export_files", {}):
+        raise ValueError(f"{type(checkpoint.model).__name__} has export files, which FP8 export does not support")
     output_dir = resolve_output_dir(checkpoint, output_dir, "weights-FP8", overwrite)
     modules_to_not_convert: list[str] = []
 

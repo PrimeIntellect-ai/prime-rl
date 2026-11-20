@@ -96,6 +96,37 @@ _CUSTOM_CAUSAL_LM_BY_MODEL_TYPE = {
     config_cls.model_type: model_cls for config_cls, model_cls in _CUSTOM_CAUSAL_LM_MODELS
 }
 
+# Classes selected, before their family's, by an extra config file next to a stock config.json.
+_SELECTED_BY_EXTRA_CONFIG: tuple[type[PreTrainedModelPrimeRL], ...] = ()
+
+
+def check_selected_by_extra_config(classes: tuple[type[PreTrainedModelPrimeRL], ...]) -> None:
+    """Raise unless each class sets what selects it and names at most one export file, and no two share a name or
+    what selects them."""
+    for cls in classes:
+        attrs = ("extra_config_file", "extra_config_attr", "stock_model_type", "stock_architecture")
+        missing = [attr for attr in attrs if getattr(cls, attr) is None]
+        if missing:
+            raise TypeError(f"{cls.__name__} must set {', '.join(missing)} to be selected by an extra config file")
+        # Loading reads export files by their stored names, which could clash across files
+        if len(cls.export_files) > 1:
+            raise ValueError(f"{cls.__name__}.export_files may name one file")
+    names = {cls.__name__ for cls in classes}
+    if len(names) < len(classes):
+        raise ValueError("Two classes selected by an extra config file have the same name")
+    if names & {cls.stock_architecture for cls in classes}:
+        raise ValueError("A class selected by an extra config file has the name of a stock architecture")
+    if len({(cls.stock_model_type, cls.stock_architecture) for cls in classes}) < len(classes):
+        raise ValueError("Two classes selected by an extra config file extend the same stock config.json")
+
+
+check_selected_by_extra_config(_SELECTED_BY_EXTRA_CONFIG)
+
+
+def get_selected_by_extra_config() -> tuple[type[PreTrainedModelPrimeRL], ...]:
+    """The classes selected by an extra config file."""
+    return _SELECTED_BY_EXTRA_CONFIG
+
 
 class AutoModelForCausalLMPrimeRL(_BaseAutoModelClass):
     _model_mapping = _CUSTOM_CAUSAL_LM_MAPPING
@@ -144,6 +175,7 @@ __all__ = [
     "get_custom_causal_lm_cls",
     "supports_custom_impl",
     "get_custom_vlm_cls",
+    "get_selected_by_extra_config",
     "PrimeLmOutput",
     "cast_float_and_contiguous",
 ]
