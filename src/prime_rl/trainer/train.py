@@ -271,6 +271,17 @@ def train(config: SFTConfig | PretrainConfig):
         # This redundant setup is necessary because loading the optimizer's state has side effects on the scheduler state dict
         if skip.skip_scheduler:
             scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
+        if isinstance(dataset, SFTDataset) and not skip.skip_dataloader:
+            path = resume_dir / "trainer" if resume_dir is not None else ckpt_manager.get_ckpt_path(checkpoint_step)
+            views = [None] * world.world_size
+            view = dataset.saved_view(dataloader, path / "dataloader", world.rank, world.world_size)
+            dist.all_gather_object(views, view)
+            if (start := dataset.start_together(dataloader, views)) is not None:
+                draw, skipped = start
+                logger.info(
+                    f"The SFT data changed: every dataloader worker starts at draw {draw}, the furthest one reached; "
+                    f"{skipped} draws up to there are not trained on"
+                )
         logger.info(
             f"Resuming from step {checkpoint_step} (total_tokens={progress.total_tokens}, "
             f"total_samples={progress.total_samples}, dataset_state={get_dataset_state(dataloader)})"
