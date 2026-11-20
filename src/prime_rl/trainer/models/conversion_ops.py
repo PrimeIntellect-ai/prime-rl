@@ -28,8 +28,7 @@ Design constraints:
   the same per-layer op list can be emitted for every layer and simply skips
   dense / non-matching layers, exactly as the imperative loops did.
 * **"Backward" means "what the imperative ``*_to_hf`` did"**, not necessarily
-  a strict mathematical inverse. Value transforms can provide an explicit
-  backward through :class:`MapValue`.
+  a strict mathematical inverse.
 """
 
 from __future__ import annotations
@@ -237,26 +236,6 @@ class SplitConcat(ConvOp):
             return
         tensors = [sd.pop(key) for key, _ in self.parts]
         sd[self.combined] = torch.cat(tensors, dim=self.dim)
-
-
-@dataclass
-class MapValue(ConvOp):
-    """Apply a value transform to one key. ``forward`` runs HF->prime,
-    ``backward`` runs prime->HF. Use for genuinely non-structural conversions
-    (e.g. a bias shift). ``backward`` may be the identity when the imperative
-    converter does not undo the transform (a deliberately lossy roundtrip)."""
-
-    prime: str  # the PrimeRL-side key the value lives under (after any rename)
-    forward: Callable[[Tensor], Tensor]
-    backward: Callable[[Tensor], Tensor]
-
-    def hf_to_prime(self, sd: StateDict) -> None:
-        if self.prime in sd:
-            sd[self.prime] = self.forward(sd[self.prime])
-
-    def prime_to_hf(self, sd: StateDict) -> None:
-        if self.prime in sd:
-            sd[self.prime] = self.backward(sd[self.prime])
 
 
 @dataclass
