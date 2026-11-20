@@ -106,8 +106,10 @@ class SupervisedOrchestrator:
             # The first trigger fires every env (policy v0) unless ``skip_first_step``.
             await self.run_eval(0)
         elif config.eval.retrigger_on_resume:
-            # Re-fire evals at the resume step (e.g. after a crash that lost in-flight evals).
-            await self.run_eval(config.resume_step)
+            # Re-fire evals at the resume step (e.g. after a crash that lost in-flight evals). The final step
+            # force-fires every env, as a planned final broadcast does.
+            is_final = config.max_steps is not None and config.resume_step >= config.max_steps
+            await self.run_eval(config.resume_step, force=is_final)
 
         while (planned := await self.broadcasts.get()) is not None:
             step, final = planned

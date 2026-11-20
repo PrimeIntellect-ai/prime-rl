@@ -74,6 +74,7 @@ def build_orchestrator_config(config: SupervisedTrainerConfig) -> SupervisedOrch
         eval=config.orchestrator.eval,
         model=config.model.name,
         resume_step=resolve_resume_step(config),
+        max_steps=config.max_steps,
         weight_broadcast=config.weight_broadcast,
         # Same run dir as the trainer: the dashboard reads the eval's
         # file-monitor artifacts from the run directory, so a separate
