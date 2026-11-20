@@ -271,15 +271,19 @@ def broadcast_step_action(controller: Controller, step: int) -> StepActionType |
     return STEP_ACTIONS[code.item()]
 
 
-def get_peak_memory_across_ranks() -> tuple[float, float]:
-    """Peak GPU memory in GiB including memory outside the caching allocator (symmetric memory, NCCL, CUDA context), and that outside share, each maxed over ranks; every rank must call it."""
+def get_peak_memory_across_ranks() -> tuple[float, float, float]:
+    """Peak GPU memory in GiB including memory outside the caching allocator (symmetric memory, NCCL, CUDA context),
+    that outside share, and the peak of live tensors plus the outside share, each maxed over ranks; every rank must
+    call it. The first counts the allocator's cache, so it reads near-full whenever memory is tight; the last shows
+    the real headroom."""
     free_memory, total_memory = torch.cuda.mem_get_info()
     non_torch_memory = (total_memory - free_memory - torch.cuda.memory_reserved()) / 1024**3
     peak_memory = torch.cuda.max_memory_reserved() / 1024**3 + non_torch_memory
-    memory = torch.tensor([peak_memory, non_torch_memory], device="cuda")
+    peak_allocated_memory = torch.cuda.max_memory_allocated() / 1024**3 + non_torch_memory
+    memory = torch.tensor([peak_memory, non_torch_memory, peak_allocated_memory], device="cuda")
     dist.all_reduce(memory, op=dist.ReduceOp.MAX)
-    peak_memory, non_torch_memory = memory.tolist()
-    return peak_memory, non_torch_memory
+    peak_memory, non_torch_memory, peak_allocated_memory = memory.tolist()
+    return peak_memory, non_torch_memory, peak_allocated_memory
 
 
 def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrainedTokenizer):
