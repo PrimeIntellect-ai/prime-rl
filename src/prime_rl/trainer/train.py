@@ -277,9 +277,10 @@ def train(config: SFTConfig | PretrainConfig):
             view = dataset.saved_view(dataloader, path / "dataloader", world.rank, world.world_size)
             dist.all_gather_object(views, view)
             if (start := dataset.start_together(dataloader, views)) is not None:
+                draw, skipped = start
                 logger.info(
-                    f"The SFT data changed: every dataloader worker starts at draw {start[0]}, the furthest one "
-                    f"reached; {start[1]} draws up to there are not trained on"
+                    f"The SFT data changed: every dataloader worker starts at draw {draw}, the furthest one reached; "
+                    f"{skipped} draws up to there are not trained on"
                 )
         logger.info(
             f"Resuming from step {checkpoint_step} (total_tokens={progress.total_tokens}, "
