@@ -1,5 +1,5 @@
-# H200 overlay for rl.toml: 1 trainer node and one-node inference
-# replicas (inference not fitted yet). Trainer fit on fake 256k samples:
+# H200 overlay for rl.toml: 1 trainer node and 1 one-node inference
+# replica (inference not fitted yet). Trainer fit on fake 256k samples:
 # 1 node, cp 8: 8.7k tok/s (1,084 per GPU), 73.2 GiB peak reserved.
 #
 #   uv run rl @ examples/advanced/qwen3.8-27b/rl.toml @ examples/advanced/qwen3.8-27b/gpu/h200.toml @ examples/advanced/fake.toml
@@ -8,6 +8,8 @@
 type = "multi_node"
 num_train_nodes = 1
 num_infer_nodes = 1
+# As many inference nodes as trainer nodes.
+num_infer_replicas = 1
 
 [trainer.model]
 cp = 8
