@@ -1,6 +1,6 @@
 # Eval
 
-This page covers `uv run eval` — evaluating a model in one or more environments. For the online evals of an `sft` or `pretrain` run, see [Training](training.md#online-evals); an `rl` run's `[eval]` uses the same sources, run by the orchestrator.
+This page covers `uv run eval` — evaluating a model in one or more environments. For the online evals of a training run, see [Training](training.md#online-evals).
 
 > **AI agents working in this repo:** the equivalent runbook is at [`skills/eval/SKILL.md`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/skills/eval/SKILL.md).
 
@@ -43,7 +43,7 @@ Against a disaggregated prefill/decode deployment, list the engines in `client.a
 
 ## Configuration
 
-Multi-source runs use a TOML (`EvalConfig` in `packages/prime-rl-configs/src/prime_rl/configs/eval.py`). The eval block is flattened to the top level — `[[source]]`, `[client]`, `[concurrency]`, `[sampling]`, `[select]`, `group_size` — and each source takes the same `env` block as a training run's `[[eval.source]]`:
+Multi-source runs use a TOML (`EvalConfig` in `packages/prime-rl-configs/src/prime_rl/configs/eval.py`). The eval block is flattened to the top level — `[[source]]`, `[client]`, `[concurrency]`, `[sampling]`, `[select]`, `group_size` — and each source takes the same `env` block as `[[orchestrator.eval.source]]`:
 
 ```toml
 model = "Qwen/Qwen3-4B"

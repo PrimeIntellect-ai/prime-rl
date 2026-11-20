@@ -168,18 +168,18 @@ env.taskset.id = "primeintellect/color-codeword@0.1.0"
 env.agent.harness.id = "null"
 env.agent.harness.compaction.summarize_at_tokens = 184320
 
-[eval]
+[orchestrator.eval]
 interval = 10
 group_size = 2
 skip_first_step = false
 retrigger_on_resume = true
 
-[eval.sampling]
+[orchestrator.eval.sampling]
 temperature = 1.0
 top_p = 1.0
 max_tokens = 16384
 
-[[eval.source]]
+[[orchestrator.eval.source]]
 name = "color-codeword-eval"
 select.include.idx = ["1024:1152"]
 env.taskset.id = "primeintellect/color-codeword@0.1.0"

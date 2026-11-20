@@ -57,7 +57,7 @@ env.taskset.id = "reverse-text"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 
-[[eval.source]]
+[[orchestrator.eval.source]]
 name = "reverse-text-eval"
 env.taskset.id = "reverse-text"
 env.taskset.split = "test"
@@ -65,11 +65,11 @@ env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 ```
 
-Each source group (`[orchestrator.train]`, the `[eval]` block of `rl`, `sft` and `pretrain`, the top level of `eval`) holds defaults that its sources inherit: every field that the group and its sources both have (`env`, `sampling`, `select`, `group_size`, plus `algo` on train and `interval` on online eval). Blocks merge key by key, a source's own values win, and a block whose `type` differs is the source's alone.
+Each source group (`[orchestrator.train]`, `[orchestrator.eval]`, the `sft` `[eval]` block, the top level of `eval`) holds defaults that its sources inherit: every field that the group and its sources both have (`env`, `sampling`, `select`, `group_size`, plus `algo` on train and `interval` on online eval). Blocks merge key by key, a source's own values win, and a block whose `type` differs is the source's alone.
 
-Source lists are set in TOML. The CLI has no list-index paths (`--eval.source.0.env.taskset.id` does not parse); a whole list can be passed as JSON (`--eval.source '[{"env": {"taskset": {"id": "reverse-text"}}}]'`), which replaces the list wholesale.
+Source lists are set in TOML. The CLI has no list-index paths (`--orchestrator.eval.source.0.env.taskset.id` does not parse); a whole list can be passed as JSON (`--orchestrator.eval.source '[{"env": {"taskset": {"id": "reverse-text"}}}]'`), which replaces the list wholesale.
 
-Every training entrypoint (`rl`, `sft`, `pretrain`) takes its online evals as a top-level `[eval]` + `[[eval.source]]` (`sft` and `pretrain` with `[inference]` for the server); `rl` fills `orchestrator.eval` from it. The `eval` entrypoint flattens it further: `[[source]]`, `[client]`, `[concurrency]`, `[select]`, `group_size` at the top level, plus the single-source shorthands `uv run eval <taskset-id> --env.<field> <value> -n N -s -r N -c N -m MODEL` (see the `eval` skill).
+The `sft` entrypoint takes the same eval shape at the top level for online evals: `[eval]` + `[[eval.source]]` (with `[inference]` for the server). The `eval` entrypoint flattens it further: `[[source]]`, `[client]`, `[concurrency]`, `[select]`, `group_size` at the top level, plus the single-source shorthands `uv run eval <taskset-id> --env.<field> <value> -n N -s -r N -c N -m MODEL` (see the `eval` skill).
 
 **Dicts** — TOML uses a section; CLI takes a JSON string: `--trainer.env-vars '{"key1": "value1"}'`. This works for plain `dict` fields only — nested pydantic-model fields (e.g. `algo`) reject JSON strings; use dotted keys (`--orchestrator.train.algo.type max_rl`) or a TOML overlay file.
 

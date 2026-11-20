@@ -393,7 +393,7 @@ class EvalSourcesConfig(SourceGroupConfig):
         if not self.source:
             raise ValueError(
                 "At least one eval source is required. Add a source block "
-                "(e.g. [[source]] or [[eval.source]]) or drop the eval block entirely to disable eval."
+                "(e.g. [[source]] or [[orchestrator.eval.source]]) or drop the eval block entirely to disable eval."
             )
         return self
 
@@ -408,9 +408,8 @@ class EvalSourcesConfig(SourceGroupConfig):
         return self
 
 
-class OnlineEvalConfig(EvalSourcesConfig):
-    """Online evals (``[eval]``) of a training run: eval sources evaluated on a step interval, on the weights the
-    trainer broadcasts to inference."""
+class ScheduledEvalConfig(EvalSourcesConfig):
+    """Eval sources evaluated on a step interval next to training."""
 
     source: list[OnlineEvalSourceConfig] = Field(default_factory=list)
     """Evaluation sources, each with its own step interval."""
@@ -431,6 +430,11 @@ class OnlineEvalConfig(EvalSourcesConfig):
     def intervals(self) -> dict[str, int]:
         """Step interval per eval env, by resolved name."""
         return {source.resolved_name: source.interval for source in self.source}
+
+
+class RLOnlineEvalConfig(ScheduledEvalConfig):
+    """The ``[orchestrator.eval]`` block: online evals against the orchestrator's
+    inference pool, on the policy the train rollouts see."""
 
 
 class CheckpointConfig(BaseConfig):
@@ -496,9 +500,8 @@ class OrchestratorConfig(BaseConfig):
     ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. RL/OPD roll out through the renderer
     client; SFT uses it to backfill tokens for its chat-completions teacher."""
 
-    eval: OnlineEvalConfig | None = None
-    """Online evals against the orchestrator's inference pool, on the policy the train rollouts see. The ``rl``
-    entrypoint fills it from the top-level ``[eval]``."""
+    eval: RLOnlineEvalConfig | None = None
+    """Evaluation configuration."""
 
     log: LogConfig = LogConfig()
 

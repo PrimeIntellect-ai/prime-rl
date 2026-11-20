@@ -53,10 +53,10 @@ env.taskset.id = "r2e-gym"
 env.agent.harness.id = "bash"
 env.agent.runtime.labels = ["qwen30b-swe", "swe"]
 
-[eval]
+[orchestrator.eval]
 interval = 25
 
-[[eval.source]]
+[[orchestrator.eval.source]]
 name = "swe-bench-verified"
 env.taskset.id = "swebench-verified"
 env.agent.harness.id = "bash"

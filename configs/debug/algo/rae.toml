@@ -31,16 +31,16 @@ env.player0.runtime.type = "subprocess"
 env.player1.harness.id = "null"
 env.player1.runtime.type = "subprocess"
 
-[eval]
+[orchestrator.eval]
 interval = 1
 
-[eval.select]
+[orchestrator.eval.select]
 limit = 16
 
-[eval.sampling]
+[orchestrator.eval.sampling]
 max_completion_tokens = 512
 
-[[eval.source]]
+[[orchestrator.eval.source]]
 name = "kuhn-poker"
 env.taskset.id = "kuhn-poker"
 env.player0.harness.id = "null"

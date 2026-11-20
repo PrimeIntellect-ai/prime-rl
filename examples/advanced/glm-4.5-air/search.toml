@@ -130,10 +130,10 @@ choices = ["A", "B"]
 
 # --- Eval: BrowseComp held-out test, every 20 steps (incl. step 0) ---
 
-[eval]
+[orchestrator.eval]
 interval = 20
 
-[[eval.source]]
+[[orchestrator.eval.source]]
 name = "browsecomp"
 select.limit = 500 # full set is 1266; cap eval at 500
 env.agent.harness.id = "rlm"
@@ -146,7 +146,7 @@ env.taskset.id = "browsecomp"
 env.taskset.task.judge.model = "Qwen/Qwen3-235B-A22B-Instruct-2507"
 
 # # Metric-only monitor (weight 0): rlm harness-mechanics rubric, judged by GLM-5.2.
-# [[eval.source.env.taskset.task.judges]]
+# [[orchestrator.eval.source.env.taskset.task.judges]]
 # id = "rubric"
 # name = "rlm"
 # path = "deps/prime-envs/rubrics/rlm.toml"

@@ -52,7 +52,7 @@ env.agent.runtime.type = "subprocess"
 
 ## Select tasks
 
-`select` picks which tasks of a source's taskset run. The steps apply in a fixed order: `include` and `exclude` (by `idx` position, `ids`, `keys` or `names`), then `shuffle` (under `seed`, default 0), `skip`, `limit`. Set it once for every source of a group (`[select]` in an eval TOML, `[eval.select]` in a training run, `[orchestrator.train.select]`), or per source (`select.limit = 50` in a `[[source]]`); a source's own fields win.
+`select` picks which tasks of a source's taskset run. The steps apply in a fixed order: `include` and `exclude` (by `idx` position, `ids`, `keys` or `names`), then `shuffle` (under `seed`, default 0), `skip`, `limit`. Set it once for every source of a group (`[select]` in an eval TOML, `[orchestrator.eval.select]`, `[orchestrator.train.select]`), or per source (`select.limit = 50` in a `[[source]]`); a source's own fields win.
 
 ```bash
 uv run eval gsm8k -n 50                                   # the first 50 tasks
@@ -70,7 +70,7 @@ Disjoint train/test splits from one taskset:
 
 ```toml
 # contiguous: eval on the first 100 tasks, train on the rest
-[[eval.source]]
+[[orchestrator.eval.source]]
 env.taskset.id = "gsm8k"
 select.include.idx = [":100"]
 

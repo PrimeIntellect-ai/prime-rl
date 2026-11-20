@@ -122,14 +122,13 @@ def propagate_shared_fields(data: Any) -> Any:
 
     propagate("resume", "trainer.resume", "orchestrator.resume")
 
-    # [val] and [eval] are written once, at the top level, as in SFT and pretraining. A sub-config value is only
-    # accepted when it repeats the shared one, as a written resolved config does.
-    for shared_path, target in (("val", "trainer.val"), ("eval", "orchestrator.eval")):
-        value, sub_value = get(shared_path), get(target)
-        if sub_value is not None and sub_value != value:
-            raise ValueError(f"Set [{shared_path}] instead of [{target}]: the rl entrypoint fills {target} from it")
-        if value is not None:
-            fill(target, copy.deepcopy(value))
+    # [val] is written once, at the top level, as in SFT and pretraining. A trainer.val value is only accepted when it
+    # repeats the shared one, as a written resolved config does.
+    value, sub_value = get("val"), get("trainer.val")
+    if sub_value is not None and sub_value != value:
+        raise ValueError("Set [val] instead of [trainer.val]: the rl entrypoint fills trainer.val from it")
+    if value is not None:
+        fill("trainer.val", copy.deepcopy(value))
 
     # Chat validation sources render like the policy's rollouts.
     orchestrator_renderer = get("orchestrator.renderer")

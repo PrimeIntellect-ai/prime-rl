@@ -115,7 +115,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `[orchestrator.train.algo]` | Training algorithm — its `type` names it (`grpo` default, `max_rl`, `rae`, `hierarchical_grpo`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |
 | `trainer.model.freeze_moe_router` | Freeze MoE router gates (default `true` for RL, `false` for SFT). Router updates in RL shift the trainer's expert choices away from the ones inference sampled, amplifying the train-inference mismatch, so RL keeps the pretrained router. Set `false` to train it. |
 | `[[orchestrator.train.source]]` | Training sources. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Training sources](configuration.md#training-sources-orchestratortrainsource). |
-| `[[eval.source]]` + `eval.interval` | Online eval environments and cadence (default every 100 steps), run by the orchestrator on the policy the train rollouts see; see [Configuration § Environments](configuration.md#environments). |
+| `[[orchestrator.eval.source]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). |
 | `[[val.source]]` + `val.interval` | Validation sources scored on the trainer's weights; see [Validation](#validation). |
 
 **Monitoring:**
@@ -173,7 +173,7 @@ Pulled from the console logs and mirrored to W&B.
 - `is_timeout/{all,env}/mean` — share of rollouts stopped by a stage deadline (`setup`/`agent`/`finalize`/`scoring` `_timeout`). Training counts a timed-out rollout as an error, so it stays out of the batch; eval scores it.
 - `num_turns/{all,env}/mean` — for multi-turn envs.
 - `empty_rollouts/{all,env}`, `errored_rollouts/{all,env}` — non-zero is fine in small numbers; sustained > 5% is a smell.
-- `eval/{env}/{avg@k,pass@k}` — eval scores when `[eval]` is set.
+- `eval/{env}/{avg@k,pass@k}` — eval scores when `[orchestrator.eval]` is set.
 
 **Stability** (trainer):
 
@@ -304,7 +304,7 @@ The run streams to the Prime Intellect platform by default — see [Prime](#prim
 
 ### Online Evals
 
-`uv run sft` and `uv run pretrain` can evaluate the model on rollout-based envs as it trains, reusing the RL orchestrator's eval machinery. Configure an `[eval]` block — the `[eval]` block of an `rl` config (multiple `[[eval.source]]` envs with per-source `interval` / `select` / `group_size` / sampling overrides), plus the online-eval process's own `[eval.client]`, `[eval.concurrency]` and `eval.cancel_on_new_checkpoint` — and an `[inference]` block for the vLLM server:
+`uv run sft` can evaluate the model on rollout-based envs as it trains, reusing the RL orchestrator's eval machinery. Configure an `[eval]` block — the same shape as `[orchestrator.eval]`: multiple `[[eval.source]]` envs with per-source `interval` / `select` / `group_size` / sampling overrides — plus an `[inference]` block for the vLLM server:
 
 ```toml
 [eval]
@@ -373,7 +373,7 @@ dataset = "PrimeIntellect/Reverse-Text-SFT"
 seq_len = 2048             # optional; default: the training sequence length
 ```
 
-Every source logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and with a byte-level BPE tokenizer `val/<name>/bpb@<seq_len>`, the bits per UTF-8 byte of the scored tokens (special tokens count 0 bytes), e.g. `val/fineweb-edu/bpb@2k`. With another tokenizer (e.g. SentencePiece), the trainer logs one warning and only the loss. The sources are tokenized once at startup. At every validation, the sequences of all sources are packed longest first into rows of `val.micro_batch_tokens` tokens (default: the training micro-batch, `data.seq_len * data.micro_batch_size` in SFT and pretraining and `model.seq_len` in RL, or the longest source `seq_len` if that is longer, rounded up to a multiple of `model.cp`), with attention and positions restarting at every sequence and the rest of a row padded, and the rows are shared out over the data-parallel ranks. The log-probs are computed in fp32. `val.save_arrays` writes the per-item arrays of every source (summed loss, scored tokens, greedy hits and bytes per document or row) to `<run_dir>/val/step_N/`. A `chat` source needs a typed renderer, also in pretraining. An `rl` config takes `[val]` at the top level, like `[eval]`; its `chat` sources use `trainer.renderer`, which defaults to `orchestrator.renderer`, so they render like the policy's rollouts. Validation does not support VLM models.
+Every source logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and with a byte-level BPE tokenizer `val/<name>/bpb@<seq_len>`, the bits per UTF-8 byte of the scored tokens (special tokens count 0 bytes), e.g. `val/fineweb-edu/bpb@2k`. With another tokenizer (e.g. SentencePiece), the trainer logs one warning and only the loss. The sources are tokenized once at startup. At every validation, the sequences of all sources are packed longest first into rows of `val.micro_batch_tokens` tokens (default: the training micro-batch, `data.seq_len * data.micro_batch_size` in SFT and pretraining and `model.seq_len` in RL, or the longest source `seq_len` if that is longer, rounded up to a multiple of `model.cp`), with attention and positions restarting at every sequence and the rest of a row padded, and the rows are shared out over the data-parallel ranks. The log-probs are computed in fp32. `val.save_arrays` writes the per-item arrays of every source (summed loss, scored tokens, greedy hits and bytes per document or row) to `<run_dir>/val/step_N/`. A `chat` source needs a typed renderer, also in pretraining. An `rl` config takes `[val]` at the top level; its `chat` sources use `trainer.renderer`, which defaults to `orchestrator.renderer`, so they render like the policy's rollouts. Validation does not support VLM models.
 
 ### SFT-Specific Knobs
 
