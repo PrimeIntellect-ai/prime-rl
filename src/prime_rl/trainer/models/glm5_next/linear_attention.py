@@ -5,6 +5,7 @@ from fla.modules import FusedRMSNormGated
 from torch import nn
 
 from prime_rl.trainer.models.layers import fla_ops
+from prime_rl.utils.cp import CPContext
 
 
 class KimiDeltaAttention(nn.Module):
@@ -49,6 +50,7 @@ class KimiDeltaAttention(nn.Module):
         self.o_norm = FusedRMSNormGated(head_dim, eps=norm_eps, activation="sigmoid")
         self.o_proj = nn.Linear(self.projection_size, hidden_size, bias=False)
 
+        self.cp_context = CPContext()
         self.reset_parameters()
 
     @torch.no_grad()
@@ -76,7 +78,7 @@ class KimiDeltaAttention(nn.Module):
             (self.q_proj(hidden_states), self.k_proj(hidden_states), self.v_proj(hidden_states)), dim=-1
         )
         conv_weight = torch.cat((self.q_conv1d.weight, self.k_conv1d.weight, self.v_conv1d.weight)).squeeze(1)
-        mixed_qkv = fla_ops.causal_conv1d(mixed_qkv, conv_weight, "silu", fla_varlen)
+        mixed_qkv = fla_ops.causal_conv1d(mixed_qkv, conv_weight, "silu", fla_varlen, self.cp_context)
 
         head_shape = (batch_size, sequence_length, self.num_heads, self.head_dim)
         query, key, value = (part.reshape(head_shape) for part in mixed_qkv.chunk(3, dim=-1))
@@ -84,7 +86,16 @@ class KimiDeltaAttention(nn.Module):
         beta = self.b_proj(hidden_states)
 
         core_output = fla_ops.chunk_kda(
-            query, key, value, forget_gate, beta, self.A_log, self.dt_bias, self.gate_lower_bound, fla_varlen
+            query,
+            key,
+            value,
+            forget_gate,
+            beta,
+            self.A_log,
+            self.dt_bias,
+            self.gate_lower_bound,
+            fla_varlen,
+            self.cp_context,
         )
 
         output_gate = self.g_b_proj(self.g_a_proj(hidden_states))

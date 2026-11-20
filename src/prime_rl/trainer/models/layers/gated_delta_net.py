@@ -5,6 +5,7 @@ from torch import nn
 
 from prime_rl.trainer.models.layers import fla_ops
 from prime_rl.trainer.models.layers.attn import delta_rule_flops
+from prime_rl.utils.cp import CPContext
 
 
 class GatedDeltaNet(nn.Module):
@@ -50,6 +51,7 @@ class GatedDeltaNet(nn.Module):
         self.in_proj_z = nn.Linear(hidden_size, self.value_dim, bias=False)
         self.in_proj_b = nn.Linear(hidden_size, num_value_heads, bias=False)
         self.in_proj_a = nn.Linear(hidden_size, num_value_heads, bias=False)
+        self.cp_context = CPContext()
         self.reset_parameters()
 
     @torch.no_grad()
@@ -74,7 +76,9 @@ class GatedDeltaNet(nn.Module):
         )
         beta = self.in_proj_b(hidden_states).sigmoid()
         decay = -self.A_log.float().exp() * F.softplus(self.in_proj_a(hidden_states).float() + self.dt_bias)
-        mixed_qkv = fla_ops.causal_conv1d(mixed_qkv, self.conv1d.weight.squeeze(1), self.activation, fla_varlen)
+        mixed_qkv = fla_ops.causal_conv1d(
+            mixed_qkv, self.conv1d.weight.squeeze(1), self.activation, fla_varlen, self.cp_context
+        )
 
         query, key, value = torch.split(mixed_qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)
         query = query.reshape(batch_size, sequence_length, self.num_key_heads, self.key_head_dim)
@@ -86,7 +90,7 @@ class GatedDeltaNet(nn.Module):
             query = query.repeat_interleave(heads_per_key, dim=2)
             key = key.repeat_interleave(heads_per_key, dim=2)
 
-        core_output = fla_ops.chunk_gated_delta_rule(query, key, value, decay, beta, fla_varlen)
+        core_output = fla_ops.chunk_gated_delta_rule(query, key, value, decay, beta, fla_varlen, self.cp_context)
 
         core_output = fla_ops.rms_norm_gated(
             core_output.reshape(-1, self.value_head_dim),

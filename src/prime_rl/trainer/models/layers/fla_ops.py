@@ -35,7 +35,6 @@ class FlaVarlen:
     cp_boundary: Tensor | None = None
     """CPU int64 `[5]`: FLA's is_first_rank, is_last_rank, pre_num_ranks, post_num_ranks and pre_num_conv_tokens, as a
     tensor so that every CP rank compiles the same graph; None without CP."""
-    cp_group_name: str | None = None
 
 
 def prepare_chunk_indices(cu_seqlens: Tensor) -> Tensor:
@@ -63,7 +62,7 @@ def prepare_fla_varlen(cu_seqlens: Tensor, cp_context: CPContext) -> FlaVarlen:
     chunk_indices = fla_prepare_chunk_indices(
         fla_cp_context.cu_seqlens, FLA_CHUNK_SIZE, cu_seqlens_cpu=fla_cp_context.cu_seqlens_cpu
     )
-    return FlaVarlen(fla_cp_context.cu_seqlens, chunk_indices, cp_boundary, cp_context.cp_group.group_name)
+    return FlaVarlen(fla_cp_context.cu_seqlens, chunk_indices, cp_boundary)
 
 
 def _fla_cp_context(cu_seqlens: Tensor, cp_boundary: Tensor, group_name: str) -> FLACPContext:
@@ -254,11 +253,13 @@ def _causal_conv1d_cp_autograd(ctx, dy: Tensor, _dconv_state: Tensor | None):
 _causal_conv1d_cp.register_autograd(_causal_conv1d_cp_autograd, setup_context=_causal_conv1d_cp_setup_context)
 
 
-def causal_conv1d(x: Tensor, weight: Tensor, activation: str | None, varlen: FlaVarlen) -> Tensor:
+def causal_conv1d(
+    x: Tensor, weight: Tensor, activation: str | None, varlen: FlaVarlen, cp_context: CPContext
+) -> Tensor:
     """FLA's varlen causal depthwise convolution without bias or states: ``x`` is (1, tokens, channels), ``weight`` is
     (channels, width)."""
     x, weight = x.contiguous(), weight.contiguous()
-    if varlen.cp_boundary is None:
+    if not cp_context.cp_enabled:
         return _causal_conv1d(x, weight, None, activation, varlen.local_cu_seqlens, varlen.chunk_indices)
     return _causal_conv1d_cp(
         x,
@@ -267,7 +268,7 @@ def causal_conv1d(x: Tensor, weight: Tensor, activation: str | None, varlen: Fla
         varlen.local_cu_seqlens,
         varlen.chunk_indices,
         varlen.cp_boundary,
-        varlen.cp_group_name,
+        cp_context.cp_group.group_name,
     )[0]
 
 
@@ -501,14 +502,16 @@ _chunk_gated_delta_rule_cp.register_autograd(
 )
 
 
-def chunk_gated_delta_rule(q: Tensor, k: Tensor, v: Tensor, g: Tensor, beta: Tensor, varlen: FlaVarlen) -> Tensor:
+def chunk_gated_delta_rule(
+    q: Tensor, k: Tensor, v: Tensor, g: Tensor, beta: Tensor, varlen: FlaVarlen, cp_context: CPContext
+) -> Tensor:
     """FLA's varlen ``chunk_gated_delta_rule`` with in-kernel q/k l2norm and no states: q, k and v are
     (1, tokens, heads, head_dim), g (log decay) and beta are (1, tokens, heads)."""
     args = (q.contiguous(), k.contiguous(), v.contiguous(), g.contiguous(), beta.contiguous(), k.shape[-1] ** -0.5)
-    if varlen.cp_boundary is None:
+    if not cp_context.cp_enabled:
         return _chunk_gated_delta_rule(*args, varlen.local_cu_seqlens, varlen.chunk_indices)[0]
     return _chunk_gated_delta_rule_cp(
-        *args, varlen.local_cu_seqlens, varlen.chunk_indices, varlen.cp_boundary, varlen.cp_group_name
+        *args, varlen.local_cu_seqlens, varlen.chunk_indices, varlen.cp_boundary, cp_context.cp_group.group_name
     )[0]
 
 
@@ -937,6 +940,7 @@ def chunk_kda(
     dt_bias: Tensor,
     lower_bound: float,
     varlen: FlaVarlen,
+    cp_context: CPContext,
 ) -> Tensor:
     """FLA's varlen ``chunk_kda`` with in-kernel q/k l2norm, safe gate and beta sigmoid, and no states: q, k, v and g
     (raw gate) are (1, tokens, heads, head_dim), beta (logits) is (1, tokens, heads)."""
@@ -951,10 +955,10 @@ def chunk_kda(
         k.shape[-1] ** -0.5,
         lower_bound,
     )
-    if varlen.cp_boundary is None:
+    if not cp_context.cp_enabled:
         return _chunk_kda(*args, varlen.local_cu_seqlens, varlen.chunk_indices)[0]
     return _chunk_kda_cp(
-        *args, varlen.local_cu_seqlens, varlen.chunk_indices, varlen.cp_boundary, varlen.cp_group_name
+        *args, varlen.local_cu_seqlens, varlen.chunk_indices, varlen.cp_boundary, cp_context.cp_group.group_name
     )[0]
 
 
