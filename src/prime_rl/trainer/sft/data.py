@@ -16,8 +16,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTColumnsConfig, SFTDataConfig
 from prime_rl.trainer.data import StatefulIterableDataset
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
-from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import format_time
+from prime_rl.utils.logger import format_time, get_logger
 
 
 class FakeDataset(StatefulIterableDataset):
