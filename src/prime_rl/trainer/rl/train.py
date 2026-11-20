@@ -1,20 +1,16 @@
 import prime_rl._compat  # noqa: F401
 
-from collections.abc import Callable
 from contextlib import nullcontext
 from functools import partial
 import time
 import asyncio
 from datetime import timedelta
 from pathlib import Path
-from typing import NamedTuple
 
 # Import environment before any other imports
 # ruff: noqa: I001
 
 from prime_rl.transports.weights import latest_finished_broadcast, prune_broadcasts_beyond, setup_weight_sender
-from prime_rl.utils.act_offloading import maybe_activation_offloading
-import numpy as np
 import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
@@ -22,41 +18,14 @@ from prime_rl.trainer.ckpt import Progress, ckpt_output_dir, setup_ckpt_manager,
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.trainer.rl.data import (
-    DataLoader,
-    FakeDataLoader,
-    TensorMicroBatch,
-    drop_micro_batches,
-    prepare_micro_batch,
-    raise_score_centering_data_errors,
-    score_centering_data_errors,
-    validate_score_centering_data,
-)
-from prime_rl.utils.cp import (
-    gather_for_cp,
-    gather_ragged_for_cp,
-    gather_for_cp_wo_grad,
-    setup_context_parallel,
-    setup_cp_params,
-    shard_for_cp,
-    validate_cp_seq_lens,
-)
+from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader, drop_micro_batches
+from prime_rl.utils.cp import setup_context_parallel
 from prime_rl.utils.logger import format_time, setup_logger
-from prime_rl.trainer.rl.loss import (
-    compute_entropy,
-    compute_loss,
-    _mismatch_kl_from_log_ratio,
-    selective_log_softmax,
-    selective_log_softmax_with_support,
-    setup_rl_loss_fn,
-    shift_tensor_left,
-    shift_tensor_right,
-)
-from prime_rl.trainer.models.layers.lm_head import TokenSupport, support_replay_mask
+from prime_rl.trainer.rl.loss import setup_rl_loss_fn
 from prime_rl.trainer.rl.annotations import AnnotationWriter
+from prime_rl.trainer.rl.step import ForwardBackward
 from prime_rl.trainer.rl.warmup import warmup
 from prime_rl.trainer.model import (
-    forward,
     get_full_offload_dtype_policy,
     get_expert_load_stats,
     get_global_moe_stats,
@@ -64,7 +33,6 @@ from prime_rl.trainer.model import (
     setup_model,
     check_ckpt_dir,
     setup_tokenizer,
-    take_moe_routing_stats,
     use_resumed_model_files,
 )
 from prime_rl.trainer.moe_runtime import setup_moe_comm_env
@@ -74,17 +42,11 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
-    STALENESS_BIN_EDGES,
-    STALENESS_BINS,
-    TensorStats,
-    begin_backward,
     broadcast_step_action,
     clip_grad_norm_,
     filter_rl_trainer_tensor_stats_for_wandb,
-    finish_backward,
     get_ckpt_disk_metrics,
     get_peak_memory_across_ranks,
-    prepare_gradient_offload,
     scale_gradients_,
     setup_cpu_offload,
     setup_torch_distributed,
@@ -107,33 +69,6 @@ from prime_rl.utils.pathing import (
     write_resolved_config,
 )
 from prime_rl.utils.utils import clean_exit
-
-
-def sparse_head_backward(micro_batch: TensorMicroBatch) -> bool:
-    """Whether the LM head may skip its dense softmax backward: only rl tokens carry gradient (no ce / ref_kl
-    stream), and each is replayed against a support holding its label."""
-    if (
-        micro_batch["support_offsets"] is None
-        or micro_batch["ce_weights"] is not None
-        or micro_batch["ref_kl_weights"] is not None
-    ):
-        return False
-    support = TokenSupport(
-        ids=micro_batch["support_ids"], offsets=micro_batch["support_offsets"], replayed=micro_batch["support_replayed"]
-    )
-    rl_tokens = micro_batch["loss_mask"][0]
-    if micro_batch["rl_weights"] is not None:
-        rl_tokens = rl_tokens & (micro_batch["rl_weights"][0] != 0)
-    replay = support_replay_mask(support, micro_batch["input_ids"][0], support.row_index())
-    return bool(replay[rl_tokens].all())
-
-
-class ForwardBackwardResult(NamedTuple):
-    tensor_stats: TensorStats
-    routing_stats: list[torch.Tensor]
-    num_tokens: int
-    flops: float
-    grad_scale: float
 
 
 @clean_exit
@@ -225,14 +160,6 @@ def train(config: TrainerConfig):
         if not getattr(model, "supports_packed_multimodal_training", False):
             raise ValueError("Packed multimodal training requires model support")
         materialize_images = partial(model.materialize_images, processor=processor)
-    # A custom loss may put gradient on any token, so only the built-in losses take the sparse head backward
-    sparse_backward_allowed = config.loss.type != "custom"
-
-    def prepare(micro_batch: TensorMicroBatch) -> TensorMicroBatch:
-        micro_batch = prepare_micro_batch(micro_batch, materialize_images)
-        micro_batch["sparse_head_backward"] = sparse_backward_allowed and sparse_head_backward(micro_batch)
-        return micro_batch
-
     micro_batch_workers = WorkerPool(config.data.num_workers)
 
     # Set up the loss function for the RL loss type (ce / ref_kl are fixed)
@@ -275,7 +202,6 @@ def train(config: TrainerConfig):
         setup_context_parallel(model, config.model, parallel_dims)
 
     is_moe_model = is_tt_moe_model(model)
-    staleness_bin_edges = torch.tensor(STALENESS_BIN_EDGES, dtype=torch.int16, device="cuda")
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
 
     # Fresh adapter init after FSDP materialization (the pretrained checkpoint
@@ -349,308 +275,17 @@ def train(config: TrainerConfig):
     control_server = ControlServer(controller, config.control if world.is_master else None, ckpt_manager.ckpt_dir)
     control_server.start()
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
-
-    def forward_backward(
-        micro_batches: list[TensorMicroBatch],
-        prepare: Callable[[TensorMicroBatch], TensorMicroBatch] = prepare,
-        overlap_optimizer: bool = True,
-        annotate: bool = True,
-    ) -> ForwardBackwardResult:
-        """Run forward and backward on one step's micro batches. Returns their stats and the factor that scales
-        the accumulated gradients to the per-token mean over the global batch."""
-        perf_counter = get_perf_counter(model)
-        # Each loss component c (rl, ce, ref_kl) is normalized by its global count N_c. A per-rank
-        # count would upweight ranks with fewer tokens after FSDP averaging. rl counts the sum of
-        # its weights (tokens for 0/1 weights, groups under prompt-mean aggregation). ce and
-        # ref_kl count member tokens, so a fractional ce weight scales the loss. One batched
-        # collective keeps every rank issuing the same op. To keep activation gradients
-        # independent of batch size, we defer the division until after backward, once per step:
-        #   max_scale = max_c N_c
-        #   backward on sum_c L_c * max_scale / N_c, with L_c the component's loss sum
-        #   grads *= grad_scale = fsdp_gradient_divide_factor / max_scale (also undoes FSDP's divide)
-        local_rl_scale = 0.0
-        local_ce_scale = 0
-        local_ref_kl_scale = 0
-        for micro_batch in micro_batches:
-            mask = micro_batch["loss_mask"]
-            rl_w = micro_batch["rl_weights"]
-            local_rl_scale += float(rl_w[mask].sum(dtype=torch.float64)) if rl_w is not None else int(mask.sum())
-            if micro_batch["ce_weights"] is not None:
-                local_ce_scale += int((micro_batch["ce_weights"] != 0).sum())
-            if micro_batch["ref_kl_weights"] is not None:
-                local_ref_kl_scale += int((micro_batch["ref_kl_weights"] != 0).sum())
-        global_scales = torch.tensor(
-            [local_rl_scale, local_ce_scale, local_ref_kl_scale], dtype=torch.float64, device="cuda"
-        )
-        dist.all_reduce(global_scales, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        rl_scale, ce_scale, ref_kl_scale = (scale if scale > 0 else 1 for scale in global_scales.tolist())
-        max_scale = max(rl_scale, ce_scale, ref_kl_scale)
-        grad_scale = parallel_dims.fsdp_gradient_divide_factor / max_scale
-        # Backward divides each component by its count relative to the largest count.
-        rl_scale, ce_scale, ref_kl_scale = (scale / max_scale for scale in (rl_scale, ce_scale, ref_kl_scale))
-        prepare_gradient_offload(gradient_manager, grad_scale, overlap_optimizer=overlap_optimizer)
-
-        logger.debug(f"Starting forward and backward pass (batch_size={len(micro_batches)})")
-        tensor_stats = TensorStats()  # Accumulates metrics across micro-batches and ranks for logging
-        cp_enabled = parallel_dims.cp_enabled
-        cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
-        cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
-        cp_size = parallel_dims.cp
-
-        routing_stats = []
-        step_local_num_tokens = 0
-        step_local_flops = 0
-        score_centering = config.loss.type == "icepop" and config.loss.score_centering
-        score_centering_errors = []
-        for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
-            step_local_num_tokens += micro_batch["input_ids"].shape[1]
-            step_local_flops += perf_counter.flop_counter(micro_batch["seq_lens"].tolist())
-            input_ids = micro_batch["input_ids"].to("cuda")
-            position_ids = micro_batch["position_ids"].to("cuda")
-            advantages = micro_batch["advantages"].to("cuda")
-            loss_mask = micro_batch["loss_mask"].to("cuda")
-            # Each token's env: the sequences' env names spread over their lengths
-            env_names = sorted(set(micro_batch["env_names"]))
-            env_ids = torch.from_numpy(
-                np.repeat(
-                    np.array([env_names.index(name) for name in micro_batch["env_names"]], dtype=np.int64),
-                    micro_batch["sequence_lengths"],
-                )
-            ).to("cuda")
-            inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
-            ref_logprobs = micro_batch["ref_logprobs"].to("cuda") if micro_batch["ref_logprobs"] is not None else None
-            rl_weights = micro_batch["rl_weights"].to("cuda") if micro_batch["rl_weights"] is not None else None
-            ce_weights = micro_batch["ce_weights"].to("cuda") if micro_batch["ce_weights"] is not None else None
-            ref_kl_weights = (
-                micro_batch["ref_kl_weights"].to("cuda") if micro_batch["ref_kl_weights"] is not None else None
-            )
-            # Stays on the host in its wire dtype (uint8/uint16) until after the CP shard below
-            routed_experts = micro_batch["routed_experts"]
-
-            if routed_experts is None and config.enable_router_replay:
-                raise ValueError(
-                    "You must set `enable_return_routed_experts=True` in the inference config or pass `--enable-return-routed-experts` to vLLM server to use router replay."
-                )
-
-            if routed_experts is not None and not config.enable_router_replay:
-                # we could've gotten routed experts from the inference server, but we didn't enable router replay
-                routed_experts = None
-
-            support = label_support = None
-            if micro_batch["support_offsets"] is not None and (
-                score_centering or bool(micro_batch["support_replayed"].any())
-            ):
-                support = TokenSupport(
-                    ids=micro_batch["support_ids"],
-                    offsets=micro_batch["support_offsets"],
-                    replayed=micro_batch["support_replayed"],
-                    logprobs=micro_batch["support_logprobs"],
-                    sparse_backward=micro_batch["sparse_head_backward"],
-                ).to("cuda")
-                label_support = support.shift_left()
-            if score_centering:
-                vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
-                if support is None or support.logprobs is None:
-                    # Raises unless the micro batch has no RL tokens
-                    validate_score_centering_data(micro_batch, vocab_size=vocab_size)
-                else:
-                    rl_mask = loss_mask[0] if rl_weights is None else loss_mask[0] & (rl_weights[0] != 0)
-                    # Validated on the GPU and checked once after the last micro batch, so the
-                    # host never waits on it
-                    score_centering_errors.append(
-                        score_centering_data_errors(
-                            input_ids[0],
-                            rl_mask,
-                            support.ids,
-                            support.logprobs,
-                            support.row_index(),
-                            support.replayed,
-                            vocab_size=vocab_size,
-                        )
-                    )
-
-            mm_kwargs = micro_batch.pop("mm_kwargs")
-            if mm_kwargs is not None:
-                mm_kwargs = {key: value.to("cuda") for key, value in mm_kwargs.items()}
-            mm_token_type_ids = (
-                micro_batch["mm_token_type_ids"].to("cuda")
-                if micro_batch.get("mm_token_type_ids") is not None
-                else None
-            )
-
-            seq_lens = micro_batch["seq_lens"].to("cuda")
-
-            labels = shift_tensor_left(input_ids)
-
-            seq_lens_are_pre_shard = False
-
-            if cp_enabled:
-                validate_cp_seq_lens(micro_batch["seq_lens"], input_ids.shape[-1])
-                # The VLM shards image inputs itself, after building their positions.
-                defer_vlm_cp_to_model = mm_kwargs is not None
-                if not defer_vlm_cp_to_model:
-                    input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size)
-                seq_lens_are_pre_shard = True
-                labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
-                if routed_experts is not None and not defer_vlm_cp_to_model:
-                    routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
-                if label_support is not None:
-                    # The LM head consumes the support after any deferred VLM sharding, so
-                    # it must follow the label shard rather than the input shard.
-                    shard_len = label_support.num_rows // cp_size
-                    cp_shard_entries = label_support.offsets[::shard_len].diff().tolist()
-                    label_support = label_support.rows(cp_rank * shard_len, (cp_rank + 1) * shard_len)
-
-            if routed_experts is not None:
-                routed_experts = routed_experts.to("cuda").int()
-
-            temperatures = micro_batch["temperatures"].to("cuda")
-
-            # Shard temperatures for context parallelism if enabled
-            if cp_enabled:
-                temperatures = shard_for_cp(temperatures, cp_rank=cp_rank, cp_world_size=cp_size)
-
-            if label_support is not None:
-                assert label_support.num_rows == labels.numel(), (
-                    f"support rows {label_support.num_rows} are not aligned with labels shape {tuple(labels.shape)}"
-                )
-
-            # Forward pass with per-token temperatures
-            with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading, model):
-                out = forward(
-                    model,
-                    input_ids,
-                    position_ids,
-                    labels=labels,
-                    temperature=temperatures,
-                    mm_kwargs=mm_kwargs,
-                    mm_token_type_ids=mm_token_type_ids,
-                    seq_lens=seq_lens,
-                    seq_lens_are_pre_shard=seq_lens_are_pre_shard,
-                    routed_experts=routed_experts,
-                    support=label_support,
-                )
-
-            if out.get("logprobs") is None:
-                # VanillaOutputLinear was used - need to compute logprobs externally with per-token temps
-                assert out.get("logits") is not None, "Logits must be provided to compute logprobs"
-                logits = out["logits"]
-                # Per-token temperature scaling: temperatures is [batch, seq], logits is [batch, seq, vocab]
-                scaled_logits = logits / temperatures.unsqueeze(-1)
-                if label_support is not None:
-                    out["logprobs"], out["support_logprobs"] = selective_log_softmax_with_support(
-                        scaled_logits, labels, label_support
-                    )
-                else:
-                    out["logprobs"] = selective_log_softmax(scaled_logits, labels)
-                out["entropy"] = compute_entropy(scaled_logits)
-            # else: FusedOutputLinear was used - logprobs already computed with per-token temperatures
-
-            if cp_enabled:
-                out["logprobs"] = gather_for_cp(out["logprobs"], cp_group)
-                out["entropy"] = gather_for_cp_wo_grad(out["entropy"], cp_size, cp_group)
-                if score_centering and label_support is not None:
-                    out["support_logprobs"] = gather_ragged_for_cp(out["support_logprobs"], cp_shard_entries, cp_group)
-
-            vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
-            # This is not really necessary as the first token should be masked out, but we do it anyway to be sure
-            out["logprobs"] = shift_tensor_right(
-                out["logprobs"], pad_value=torch.log(torch.tensor(1.0 / vocab_size)).item()
-            )
-            out["entropy"] = shift_tensor_right(
-                out["entropy"], pad_value=torch.log(torch.tensor(float(vocab_size))).item()
-            )
-
-            trainer_support = None
-            if score_centering and support is not None and support.logprobs is not None:
-                first_row = int(support.offsets[1])
-                trainer_support = torch.cat([out["support_logprobs"].new_zeros(first_row), out["support_logprobs"]])
-
-            # Compute loss
-            sequence_lengths = micro_batch["sequence_lengths"]
-            loss, loss_tensors = compute_loss(
-                trainer_logprobs=out["logprobs"].squeeze().split(sequence_lengths),
-                inference_logprobs=inference_logprobs.squeeze().split(sequence_lengths),
-                ref_logprobs=ref_logprobs.squeeze().split(sequence_lengths) if ref_logprobs is not None else None,
-                advantages=advantages.squeeze().split(sequence_lengths),
-                loss_mask=loss_mask.squeeze().split(sequence_lengths),
-                rl_weights=rl_weights.squeeze().split(sequence_lengths) if rl_weights is not None else None,
-                ce_weights=ce_weights.squeeze().split(sequence_lengths) if ce_weights is not None else None,
-                ref_kl_weights=ref_kl_weights.squeeze().split(sequence_lengths) if ref_kl_weights is not None else None,
-                rl_loss_fn=rl_loss_fn,
-                rl_scale=rl_scale,
-                ce_scale=ce_scale,
-                ref_kl_scale=ref_kl_scale,
-                support=support,
-                trainer_support_logprobs=trainer_support,
-            )
-
-            # Backward pass
-            if parallel_dims.dp_replicate_enabled and gradient_manager is None:
-                # HSDP keeps the reduce-scattered gradients across micro batches and all-reduces them over the
-                # replicas once, after the last backward
-                model.set_requires_all_reduce(micro_step == len(micro_batches) - 1)
-            with maybe_record_function("backward"):
-                begin_backward(gradient_manager, final_backward=micro_step == len(micro_batches) - 1)
-                loss.backward()
-                finish_backward(gradient_manager)
-
-            mm_kwargs = None
-
-            # Every CP rank computes the whole sequence's loss, and the global normalizers count each
-            # sequence once per CP rank (gradients still sum correctly), so undo that for the logged value.
-            # The backward loss is max_scale times the normalized loss.
-            tensor_stats.add("loss", loss / max_scale * cp_size)
-
-            tensor_stats.add("entropy", out["entropy"], loss_mask, env_ids, env_names)
-
-            # Mismatch KL is only meaningful where sampling logprobs exist —
-            # keep rl/ref_kl member tokens (policy-sampled), exclude tokens
-            # whose action component is ce (frozen-model tokens).
-            mismatch_mask = loss_mask
-            if rl_weights is not None or ref_kl_weights is not None:
-                sampled_mask = (rl_weights != 0) if rl_weights is not None else loss_mask
-                if ref_kl_weights is not None:
-                    sampled_mask = sampled_mask | (ref_kl_weights != 0)
-                mismatch_mask = loss_mask & sampled_mask
-            with torch.no_grad():
-                mismatch_kl = _mismatch_kl_from_log_ratio(out["logprobs"] - inference_logprobs)
-            tensor_stats.add("mismatch_kl", mismatch_kl, mismatch_mask, env_ids, env_names)
-            if micro_batch["staleness"] is not None:
-                staleness = micro_batch["staleness"].to("cuda")
-                tensor_stats.add(
-                    "mismatch_kl_by_staleness",
-                    mismatch_kl,
-                    mismatch_mask & (staleness >= 0),
-                    torch.bucketize(staleness, staleness_bin_edges, right=True),
-                    STALENESS_BINS,
-                    fold_all=False,
-                )
-
-            if annotate and annotation_writer is not None:
-                annotation_writer.export(micro_batch, out)
-
-            if is_moe_model:
-                routing_stats.append(take_moe_routing_stats(model))
-
-            for key, loss_tensor in loss_tensors.items():
-                tensor_stats.add(key, loss_tensor)
-
-            # Debug log with *local, micro step* stats, evaluated only when debug logging is on
-            logger.opt(lazy=True).debug(
-                "Micro Step {} | Loss {:.4f} | Entropy {:.4f} | Mismatch KL {:.4f}",
-                lambda: f"{micro_step + 1}/{len(micro_batches)}",
-                lambda: loss.item() / max_scale * cp_size,
-                lambda: out["entropy"][loss_mask].mean().item(),
-                lambda: mismatch_kl[mismatch_mask].mean().item(),
-            )
-
-        if annotate and annotation_writer is not None:
-            annotation_writer.flush()
-        # Invalid sampler evidence fails the step before the optimizer applies its gradients
-        raise_score_centering_data_errors(score_centering_errors)
-
-        return ForwardBackwardResult(tensor_stats, routing_stats, step_local_num_tokens, step_local_flops, grad_scale)
+    forward_backward = ForwardBackward(
+        model,
+        config,
+        parallel_dims,
+        rl_loss_fn,
+        gradient_manager,
+        micro_batch_workers,
+        materialize_images,
+        annotation_writer,
+        maybe_record_function,
+    )
 
     while True:
         # Reset peak memory stats

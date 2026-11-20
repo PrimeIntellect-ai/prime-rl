@@ -1,5 +1,4 @@
 import time
-from collections.abc import Callable
 
 import torch
 from torch import Tensor, nn
@@ -8,6 +7,7 @@ from prime_rl.configs.trainer import TrainerConfig, rl_micro_batch_multiple
 from prime_rl.trainer.model import iter_moe_blocks
 from prime_rl.trainer.optim import OptimizerLike
 from prime_rl.trainer.rl.data import TensorMicroBatch
+from prime_rl.trainer.rl.step import ForwardBackward
 from prime_rl.trainer.utils import get_peak_memory_across_ranks
 from prime_rl.trainer.vlm import get_language_model
 from prime_rl.utils.logger import format_time, get_logger
@@ -78,8 +78,6 @@ def synthetic_micro_batch(
         support_logprobs=None,
         support_offsets=None,
         support_replayed=None,
-        # Score centering supports are heads of the sampler's distribution, which take the dense backward
-        sparse_head_backward=False,
         mm_refs=None,
         mm_kwargs=None,
         mm_token_type_ids=None,
@@ -102,10 +100,10 @@ def warmup(
     model: nn.Module,
     optimizer: OptimizerLike,
     config: TrainerConfig,
-    forward_backward: Callable[..., object],
+    forward_backward: ForwardBackward,
 ) -> float:
     """Do the trainer's one-time forward and backward work (compilation, kernel JIT, communicator setup) before the
-    first batch arrives. `forward_backward` is the training step's forward and backward. Returns the time it took."""
+    first batch arrives. Returns the time it took."""
     logger = get_logger()
     logger.info("Warming up the trainer")
     torch.cuda.reset_peak_memory_stats()
@@ -116,7 +114,7 @@ def warmup(
         for doc_lens in warmup_micro_batches(config.model.seq_len, rl_micro_batch_multiple(config.model))
     ]
     # Without the overlapped optimizer, the gradients stay in their buffers instead of updating the weights
-    forward_backward(micro_batches, prepare=lambda micro_batch: micro_batch, overlap_optimizer=False, annotate=False)
+    forward_backward(micro_batches, overlap_optimizer=False, annotate=False)
     del micro_batches
     optimizer.zero_grad()
     torch.cuda.synchronize()
