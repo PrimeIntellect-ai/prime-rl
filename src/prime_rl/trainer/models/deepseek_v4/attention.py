@@ -142,6 +142,7 @@ from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_compressor_pool import (
 )
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_kv_fake_quant import (
     dsv4_compressed_kv_fake_quant,
+    dsv4_nvfp4_kv_fake_quant,
     dsv4_swa_kv_fake_quant,
 )
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import (
@@ -1027,7 +1028,7 @@ class DeepseekV4Attention(nn.Module):
         kv = self.kv_norm(self.kv_proj(hidden_states))  # (b, t, d)
         kv = kv.view(*kv.shape[:2], 1, self.head_dim)  # (b, t, 1, d)
         kv = dsv4_rope(kv, cos_sin_cache, packed.position_ids)
-        if self.kv_precision == "fp8":
+        if self.kv_precision != "bf16":
             kv = dsv4_swa_kv_fake_quant(kv, self.config.qk_rope_head_dim)
         if packed.cp_halo is not None:
             kv = packed.cp_halo.prepend(kv, self.cp_context.cp_group.group_name)  # (b, halo + t, 1, d)
@@ -1050,7 +1051,10 @@ class DeepseekV4Attention(nn.Module):
             else None
         )
         compressed_kv, top_k_indices = compressed if compressed is not None else (None, None)
-        if self.kv_precision == "fp8" and compressed_kv is not None:
+        if self.kv_precision == "nvfp4" and compressed_kv is not None and self.compressor.compress_rate == 4:
+            # Only the ratio-4 compressor's cache is NVFP4; decode reads it requantized to fp8.
+            compressed_kv = dsv4_nvfp4_kv_fake_quant(compressed_kv, self.config.qk_rope_head_dim)
+        elif self.kv_precision != "bf16" and compressed_kv is not None:
             # Not the sliding-window fake quant: vLLM's compressor store floors the scale, not the amax.
             compressed_kv = dsv4_compressed_kv_fake_quant(compressed_kv, self.config.qk_rope_head_dim)
         kv = kv.transpose(1, 2)  # (b, 1, T, d)
