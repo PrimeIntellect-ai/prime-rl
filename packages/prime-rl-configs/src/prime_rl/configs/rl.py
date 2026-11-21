@@ -497,6 +497,14 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_policy_lag(self):
+        """Engines that get the policy every N steps run up to N shipped batches behind it."""
+        self.orchestrator = self.orchestrator.model_copy(
+            update={"max_policy_lag": self.trainer.weight_broadcast_interval}
+        )
+        return self
+
+    @model_validator(mode="after")
     def validate_enough_devices_for_nccl(self):
         if self.deployment.type == "single_node":
             if self.weight_broadcast.type == "nccl":
