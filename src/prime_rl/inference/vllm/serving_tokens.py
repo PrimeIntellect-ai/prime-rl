@@ -139,6 +139,10 @@ class _PackedOutputs:
                     assert isinstance(output.logprobs, FlatLogprobs), "Did not output flat logprobs"
                     fields["completion_logprobs"] = encode_array(pack_sampled_logprobs(output.logprobs))
                     output.logprobs = None
+                elif isinstance(output.logprobs, FlatLogprobs):
+                    # Per-token entries keep upstream on the response type `post_process` extends; newer vLLM
+                    # renders flat logprobs straight to JSON, without the packed fields.
+                    output.logprobs = list(output.logprobs)
                 mask = output.sampling_mask
                 if mask is not None:
                     fields["sampling_mask"] = {

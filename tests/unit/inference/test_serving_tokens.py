@@ -400,6 +400,34 @@ async def test_flat_sampled_logprobs_are_packed():
     np.testing.assert_array_equal(values, np.array([-0.25, -9999.0], dtype=np.float32))
 
 
+@pytest.mark.asyncio
+async def test_flat_logprobs_that_are_not_packed_reach_upstream_per_token():
+    """Flat logprobs with more than the sampled token are not packed here. Upstream still gets per-token entries:
+    a newer vLLM renders ``FlatLogprobs`` straight to JSON, a response type the packed fields cannot extend."""
+    logprobs = FlatLogprobs()
+    for ids, values in [([2, 3], [-0.25, -1.5]), ([7, 4], [-0.5, -2.0])]:
+        logprobs.append_fast(ids, values, iter(range(2)), [None, None])
+    output = RequestOutput(
+        "test",
+        None,
+        [10, 11],
+        None,
+        [CompletionOutput(0, "", [2, 7], None, logprobs, finish_reason="length")],
+        True,
+    )
+
+    async def generate_outputs():
+        yield output
+
+    params = SamplingParams(logprobs=2, flat_logprobs=True)
+    request = GenerateRequest(model="test", token_ids=[10, 11], sampling_params=params)
+    [request_output] = [item async for item in _PackedOutputs(generate_outputs(), request)]
+
+    [completion] = request_output.outputs
+    assert isinstance(completion.logprobs, list)
+    assert [list(position) for position in completion.logprobs] == [[2, 3], [7, 4]]
+
+
 @pytest.mark.parametrize(
     ("logprobs", "logprob_token_ids", "packed"),
     [(0, None, True), (1, None, True), (1, [4, 5], False), (-1, None, False), (2, None, False)],

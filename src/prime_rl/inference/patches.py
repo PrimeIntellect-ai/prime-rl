@@ -1,9 +1,52 @@
+import functools
+import importlib
+import importlib.util
 import math
 import os
 from dataclasses import dataclass, replace
 
 import numpy as np
 import torch
+
+
+def _missing_in_vllm(name: str) -> bool:
+    """Whether the installed vLLM lacks ``name``: a module (``a.b.c``) or a module attribute (``a.b.c:attr``)."""
+    module_name, _, attribute = name.partition(":")
+    parts = module_name.split(".")
+    for end in range(1, len(parts) + 1):
+        # A module's spec can only be looked up once its parent is known to exist and to be a package.
+        spec = importlib.util.find_spec(".".join(parts[:end]))
+        if spec is None or (end < len(parts) and spec.submodule_search_locations is None):
+            return True
+    return bool(attribute) and not hasattr(importlib.import_module(module_name), attribute)
+
+
+def requires_vllm(*names: str):
+    """Skip a patch, with a warning, on a vLLM build that lacks what it patches.
+
+    Every patch here is written against the vLLM release prime-rl pins. A model that needs a newer vLLM runs its
+    inference server from a second environment, where some of the patched internals have moved. The patches whose
+    targets are missing from such a build carry this check, so the rest of the plugin still loads; on the pinned
+    release they always apply.
+    """
+
+    def decorate(patch):
+        @functools.wraps(patch)
+        def guarded(*args, **kwargs):
+            missing = [name for name in names if _missing_in_vllm(name)]
+            if not missing:
+                return patch(*args, **kwargs)
+            import vllm
+            from vllm.logger import init_logger
+
+            init_logger("vllm.prime_rl.patches").warning(
+                "Skipping prime-rl patch %s: vLLM %s has no %s", patch.__name__, vllm.__version__, ", ".join(missing)
+            )
+
+        guarded.requirements = names
+        return guarded
+
+    return decorate
 
 
 def apply_shared_vllm_patches():
@@ -85,6 +128,9 @@ def monkey_patch_nixl_bidirectional_single_pull():
     cls.get_num_new_matched_tokens = get_num_new_matched_tokens
 
 
+# Tells a sliding-window group by `KVCacheGroupSpec.kv_cache_spec` being a `SlidingWindowSpec`. A vLLM that
+# describes its KV cache groups by their manager has neither name; P/D on it runs without this backport.
+@requires_vllm("vllm.v1.kv_cache_interface:SlidingWindowSpec", "vllm.v1.kv_cache_interface:KVCacheGroupSpec")
 def monkey_patch_nixl_sliding_window_backoff():
     """P/D with sliding-window layers: leave the last prompt token to decode, as for Mamba.
 
@@ -135,6 +181,10 @@ def trim_block_ids_to_tokens(block_ids, kv_cache_groups, num_tokens: int):
     return tuple(trimmed)
 
 
+# `trim_block_ids_to_tokens` reads each group's block size from `KVCacheGroupSpec.kv_cache_spec`. Where vLLM's
+# groups no longer carry it, the wrapper would raise as soon as a drafted turn finishes, so the patch is skipped
+# as a whole: decode then exports vLLM's own token count, as without this patch.
+@requires_vllm("vllm.v1.kv_cache_interface:KVCacheGroupSpec")
 def monkey_patch_nixl_bidirectional_spec_decode_coverage():
     """Bidirectional NIXL with speculative decoding: decode's handle covers only tokens with valid KV.
 
@@ -389,6 +439,10 @@ def has_remote_kv_handle(request) -> bool:
     return bool(params and params.get("remote_block_ids"))
 
 
+@requires_vllm(
+    "vllm.distributed.kv_transfer.kv_connector.v1.mooncake.store.connector",
+    "vllm.distributed.kv_transfer.kv_connector.v1.mooncake.store.scheduler",
+)
 def monkey_patch_skip_store_lookup_after_match():
     """A request whose KV another connector already supplies does not also look it up in the Mooncake store.
 
@@ -438,6 +492,7 @@ def monkey_patch_skip_store_lookup_after_match():
     MooncakeStoreScheduler.start_lookup_prefetch = start_lookup_prefetch
 
 
+@requires_vllm("vllm.v1.core.kv_cache_planning:_get_per_layer_spec")
 def monkey_patch_block_outermost_mla_stride():
     """Align the shared block stride of packed KV caches to DeepSeek V4's MLA pages.
 
@@ -469,6 +524,10 @@ def monkey_patch_block_outermost_mla_stride():
     kv_cache_planning._get_kv_cache_bytes_per_block = _get_kv_cache_bytes_per_block
 
 
+@requires_vllm(
+    "vllm.v1.kv_cache_interface:SlidingWindowSpec",
+    "vllm.v1.kv_cache_interface:UniformTypeKVCacheSpecs",
+)
 def monkey_patch_fit_sliding_window_pages():
     """Keep a sliding-window KV group, such as a draft's, from widening block-outermost KV blocks.
 
@@ -551,8 +610,8 @@ def monkey_patch_dspark_dp_compile_cache():
         return
 
     @wraps(original)
-    def _get_dspark_parallel_config(parallel_config, tensor_parallel_size, draft_model_config):
-        draft = original(parallel_config, tensor_parallel_size, draft_model_config)
+    def _get_dspark_parallel_config(parallel_config, *args, **kwargs):
+        draft = original(parallel_config, *args, **kwargs)
         # Config replacement reconstructs this init=False field from the local rank.
         draft.data_parallel_index = parallel_config.data_parallel_index
         return draft
@@ -915,6 +974,7 @@ def _routed_experts_load_limit(request, num_computed_tokens: int, block_size: in
     return max(0, prompt_start // block_size * block_size - num_computed_tokens)
 
 
+@requires_vllm("vllm.distributed.kv_transfer.kv_connector.v1.mooncake.store.connector")
 def monkey_patch_clamp_kv_offload_loads_for_routed_experts():
     """Clamp native (``OffloadingConnector``) and Mooncake KV offload loads with `_routed_experts_load_limit`.
 
@@ -1015,6 +1075,7 @@ def _first_loaded_block(block_ids: list[int], loaded: set[int], prompt_start: in
     return next((i for i in range(prompt_start // block_size, len(block_ids)) if block_ids[i] in loaded), None)
 
 
+@requires_vllm("vllm.v1.kv_cache_interface:is_full_attention_spec")
 def monkey_patch_routed_experts_cut_loaded_prefix_hits():
     """Cut local prefix-cache hits at externally loaded blocks that a request needs routing rows from.
 
