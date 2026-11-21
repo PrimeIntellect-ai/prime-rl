@@ -92,6 +92,7 @@ class FakeDataLoader:
         self.generate_samples = config.generate_samples
         self.doc_len = config.doc_len
         self.batch_counter = 0
+        self.validate = False
 
     def wait_for_batch(self) -> None:
         return
@@ -271,6 +272,8 @@ class DataLoader:
     def get_batch(self) -> list[TensorMicroBatch]:
         self.step = self.receiver.current_step
         micro_batches = self.receiver.receive()
+        # The orchestrator marks every micro batch of a step at which it plans validation.
+        self.validate = micro_batches[0].validate
         start = time.perf_counter()
         self.failed_micro_batches, self.payload_urls = resolve_payloads(micro_batches, self.payload_pool)
         get_logger().debug(

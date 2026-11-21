@@ -31,6 +31,7 @@ from prime_rl.configs.shared import (
     ZMQTransportConfig,
 )
 from prime_rl.configs.trainer import TokenizerConfig
+from prime_rl.configs.val import ValConfig
 from prime_rl.utils.config import BaseConfig, default_output_dir
 
 
@@ -502,6 +503,11 @@ class OrchestratorConfig(BaseConfig):
 
     eval: RLOnlineEvalConfig | None = None
     """Evaluation configuration."""
+
+    val: ValConfig | None = None
+    """Validation: named sources scored on the trainer's weights, on the trainer's GPUs. The orchestrator marks the
+    steps it plans in their batches, and an ``rl`` config gives the trainer the sources (``trainer.val``). If
+    None, no validation runs."""
 
     log: LogConfig = LogConfig()
 

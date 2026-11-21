@@ -116,6 +116,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `trainer.model.freeze_moe_router` | Freeze MoE router gates (default `true` for RL, `false` for SFT). Router updates in RL shift the trainer's expert choices away from the ones inference sampled, amplifying the train-inference mismatch, so RL keeps the pretrained router. Set `false` to train it. |
 | `[[orchestrator.train.source]]` | Training sources. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Training sources](configuration.md#training-sources-orchestratortrainsource). |
 | `[[orchestrator.eval.source]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). |
+| `[[orchestrator.val.source]]` + `orchestrator.val.interval` | Validation sources scored on the trainer's weights; see [Validation](#validation). |
 
 **Monitoring:**
 
@@ -350,12 +351,12 @@ The shared script passes the trainer rank-0 hostname to the orchestrator for NCC
 
 ### Validation
 
-`[orchestrator.val]` scores named validation sources on the training model every `orchestrator.val.interval` steps (also before the trainer's first step with `orchestrator.val.eval_on_start`), in SFT and in pretraining. The orchestrator schedules it; it runs on the trainer's GPUs after a step's forward and backward passes, before the optimizer step. Each `[[orchestrator.val.source]]` table has a `type`, a unique `name` and an optional `seq_len` (default: the training `data.seq_len`):
+`[orchestrator.val]` scores named validation sources on the training model every `orchestrator.val.interval` steps (also before the trainer's first step with `orchestrator.val.eval_on_start`), in SFT, pretraining and RL. The orchestrator schedules it; it runs on the trainer's GPUs after a step's forward and backward passes, before the optimizer step. In RL, the orchestrator marks the step's batch, so a step validates whether the orchestrator runs ahead or not, and `eval_on_start` validates the first step it ships. Each `[[orchestrator.val.source]]` table has a `type`, a unique `name` and an optional `seq_len` (default: the training sequence length, `data.seq_len` in SFT and pretraining and `model.seq_len` in RL):
 
 | `type` | fields | scored |
 |---|---|---|
 | `documents` | `path`: a folder of datatrove tokenized shards (see [Pretraining](#pretraining)) | every document on its own, from its first token, with the tokens as stored, in non-overlapping windows of `seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it |
-| `chat` | the fields of an SFT source ([Sources](#sources)) but `weight`: `dataset`, `subset`, `split` (default `train`), `revision`, `columns`, `renderer`; plus `loss_mask` | every row of the split in order, rendered as SFT renders its training data; the tokens SFT trains on (`loss_mask`), cut after `seq_len` input tokens. Unset `columns` fields keep `data.columns`, and `loss_mask` defaults to `data.loss_mask` (the defaults in pretraining) |
+| `chat` | the fields of an SFT source ([Sources](#sources)) but `weight`: `dataset`, `subset`, `split` (default `train`), `revision`, `columns`, `renderer`; plus `loss_mask` | every row of the split in order, rendered as SFT renders its training data; the tokens SFT trains on (`loss_mask`), cut after `seq_len` input tokens. Unset `columns` fields keep `data.columns`, and `loss_mask` defaults to `data.loss_mask` (the defaults in pretraining and RL) |
 
 ```toml
 [orchestrator.val]
@@ -371,10 +372,10 @@ path = "data/fineweb-edu-val"
 type = "chat"
 name = "reverse-text"
 dataset = "PrimeIntellect/Reverse-Text-SFT"
-seq_len = 2048             # optional; default: the training data.seq_len
+seq_len = 2048             # optional; default: the training sequence length
 ```
 
-Every source logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and with a byte-level BPE tokenizer `val/<name>/bpb@<seq_len>`, the bits per UTF-8 byte of the scored tokens (special tokens count 0 bytes), e.g. `val/fineweb-edu/bpb@2k`. With another tokenizer (e.g. SentencePiece), the trainer logs one warning and only the loss. The sources are tokenized once at startup. At every validation, the sequences of all sources are packed longest first into rows of `orchestrator.val.micro_batch_tokens` tokens (default: the training micro-batch, `data.seq_len * data.micro_batch_size`, or the longest source `seq_len` if that is longer, rounded up to a multiple of `model.cp`), with attention and positions restarting at every sequence and the rest of a row padded, and the rows are shared out over the data-parallel ranks. The log-probs are computed in fp32. `orchestrator.val.save_arrays` writes the per-item arrays of every source (summed loss, scored tokens, greedy hits and bytes per document or row) to `<run_dir>/val/step_N/`. A `chat` source needs a typed renderer, also in pretraining. Validation does not support VLM models.
+Every source logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and with a byte-level BPE tokenizer `val/<name>/bpb@<seq_len>`, the bits per UTF-8 byte of the scored tokens (special tokens count 0 bytes), e.g. `val/fineweb-edu/bpb@2k`. With another tokenizer (e.g. SentencePiece), the trainer logs one warning and only the loss. The sources are tokenized once at startup. At every validation, the sequences of all sources are packed longest first into rows of `orchestrator.val.micro_batch_tokens` tokens (default: the training micro-batch, `data.seq_len * data.micro_batch_size` in SFT and pretraining and `model.seq_len` in RL, or the longest source `seq_len` if that is longer, rounded up to a multiple of `model.cp`), with attention and positions restarting at every sequence and the rest of a row padded, and the rows are shared out over the data-parallel ranks. The log-probs are computed in fp32. `orchestrator.val.save_arrays` writes the per-item arrays of every source (summed loss, scored tokens, greedy hits and bytes per document or row) to `<run_dir>/val/step_N/`. A `chat` source needs a typed renderer, also in pretraining. In RL, the trainer's renderer defaults to `orchestrator.renderer`, so `chat` sources render like the policy's rollouts. Validation does not support VLM models.
 
 ### SFT-Specific Knobs
 

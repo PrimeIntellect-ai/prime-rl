@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from typing import Callable
 
@@ -120,6 +121,17 @@ def test_mismatch_kl_in_range(rl_process: ProcessResult, test_no_error, run_dir:
     with open(run_dir / "logs" / "latest" / "trainer.log", "r") as f:
         trainer_stdout = strip_escape_codes(f.read()).splitlines()
     check_avg_mismatch_kl_in_range(trainer_stdout, last_n_steps=3, max_threshold=0.01)
+
+
+def test_validation(rl_process: ProcessResult, test_no_error, run_dir: Path):
+    """The trainer scores the chat validation source at the steps the orchestrator plans, rendered with the
+    orchestrator's renderer."""
+    with open(run_dir / "logs" / "latest" / "trainer.log") as f:
+        lines = strip_escape_codes(f.read()).splitlines()
+    steps = {
+        int(match[1]) for line in lines if (match := re.search(r"Validation \| Step (\d+) \| reverse-text@2k", line))
+    }
+    assert steps == {5, 10, 15}
 
 
 @pytest.fixture(scope="module")
