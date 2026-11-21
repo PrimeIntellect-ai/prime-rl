@@ -667,7 +667,7 @@ class RLConfig(BaseConfig):
         if any(source.algo.reference is None for source in rime_sources) and not self.trainer.initial_reference:
             raise ValueError("RIME without a frozen endpoint requires trainer.initial_reference=true")
         if self.trainer.initial_reference:
-            if self.resume is not None:
+            if self.resume is not None and self.trainer.initial_reference_model is None:
                 raise ValueError("Trainer-local initial reference needs an explicit original base path before resume")
             if self.trainer.model.lora is not None or self.trainer.model.cp != 1 or self.trainer.model.ep != 1:
                 raise ValueError("Trainer-local reference currently requires dense full-parameter training, CP=EP=1")

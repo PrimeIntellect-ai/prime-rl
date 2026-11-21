@@ -815,6 +815,15 @@ class TrainerConfig(BaseTrainerConfig):
     initial_reference: bool = False
     """Keep an unoptimized initial-policy copy on the trainer for reference-KL scoring."""
 
+    initial_reference_model: str | None = None
+    """Immutable original pretrained model for the frozen reference, independent of resumed policy checkpoints."""
+
+    @model_validator(mode="after")
+    def validate_initial_reference_resume(self):
+        if self.initial_reference and self.resume is not None and self.initial_reference_model is None:
+            raise ValueError("Resuming an initial-reference trainer requires initial_reference_model")
+        return self
+
     # RL keeps the pretrained router.
     auto_freeze_moe_router = True
     # RL optimizes the reward objective, not a fixed dataset; L2 decay toward zero fights it.

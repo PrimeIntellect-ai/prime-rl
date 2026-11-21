@@ -224,7 +224,14 @@ def train(config: TrainerConfig):
     if config.initial_reference:
         logger.info("Loading frozen initial-policy reference on trainer GPUs")
         reference_config = config.model.model_copy(
-            deep=True, update={"compile": None, "ac": None, "ac_offloading": None, "offload": "none"}
+            deep=True,
+            update={
+                "name": config.initial_reference_model or config.model.name,
+                "compile": None,
+                "ac": None,
+                "ac_offloading": None,
+                "offload": "none",
+            },
         )
         reference_model = setup_model(reference_config, parallel_dims, False)
         reference_model.requires_grad_(False)

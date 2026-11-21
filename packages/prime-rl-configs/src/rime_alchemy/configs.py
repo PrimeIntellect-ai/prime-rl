@@ -34,6 +34,7 @@ class RIMEAlchemyEnvConfig(vf.EnvConfig):
     writer: vf.AgentConfig = vf.AgentConfig()
     exploration_judge: DecisionJudgeConfig = Field(default_factory=memory_judge_config)
     memory_chars: int = Field(4096, ge=1)
+    carry_memory: bool = True
 
     @model_validator(mode="after")
     def require_shared_policy(self):

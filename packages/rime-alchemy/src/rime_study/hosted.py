@@ -53,6 +53,8 @@ class RIMEAlchemyEnv(vf.Env[RIMEAlchemyEnvConfig]):
             return trace, trace.last_reply or ""
 
         for t in range(env.num_trials):
+            if not self.config.carry_memory:
+                memory = ""
             history = []
             initial_observation = env.observation()
             invalid = 0

@@ -1618,6 +1618,22 @@ def test_score_centering_captures_complete_bounded_support(top_k, top_p):
     assert RLConfig.model_validate_json(config.model_dump_json()) == config
 
 
+def test_initial_reference_resume_requires_an_explicit_original_model():
+    raw = {
+        "resume": {},
+        "trainer": {"initial_reference": True, "model": {"ep": 1}},
+        "orchestrator": {"train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]}},
+        "inference": {},
+    }
+    with pytest.raises(ValidationError, match="original base path|initial_reference_model"):
+        RLConfig.model_validate(raw)
+    raw["trainer"]["initial_reference_model"] = "Qwen/Qwen3-4B"
+    config = RLConfig.model_validate(raw)
+    assert config.trainer.initial_reference_model == "Qwen/Qwen3-4B"
+    assert config.resume is not None and config.trainer.resume is not None
+    assert RLConfig.model_validate_json(config.model_dump_json()) == config
+
+
 @pytest.mark.parametrize(
     ("config_cls", "default_type"),
     [(PretrainConfig, "scratch"), (SFTConfig, "pretrained"), (TrainerConfig, "pretrained")],
