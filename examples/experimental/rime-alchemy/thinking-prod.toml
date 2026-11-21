@@ -11,9 +11,9 @@ name = "rime-alchemy-thinking-prod"
 name = "/volume/models/qwen3-4b-1cfa9a720891"
 
 [deployment]
-num_train_gpus = 4
-num_infer_gpus = 4
-# The frozen reference shares the four trainer GPUs; eight GPUs total.
+num_train_gpus = 2
+num_infer_gpus = 6
+# The frozen reference shares the two trainer GPUs; eight GPUs total.
 # Clef-flash exploration uses shared Prime Inference, with no dedicated judge GPU.
 
 [trainer.optim]
@@ -44,9 +44,9 @@ batch_size = 76 # Four complete streams, each with 10 ACT + 9 WRITE traces.
 max_staleness = 1
 
 [orchestrator.concurrency]
-initial_inflight = 8
-min_inflight = 8
-max_inflight = 8
+initial_inflight = 12
+min_inflight = 12
+max_inflight = 12
 
 [orchestrator.train]
 group_size = 4
@@ -82,8 +82,8 @@ env.exploration_judge.base_url = "https://api.pinference.ai/api/v1/evaluations"
 reasoning_parser = "qwen3"
 max_model_len = 40960
 tensor_parallel_size = 1
-data_parallel_size = 4
-api_server_count = 4
+data_parallel_size = 6
+api_server_count = 6
 
 [orchestrator.renderer]
 name = "qwen3"
