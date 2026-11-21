@@ -606,7 +606,7 @@ def rl(config: RLConfig):
         clean_future_steps(config.run_dir, -1)
 
     if not config.dry_run:
-        from prime_rl.trainer.model import pre_download_model
+        from prime_rl.utils.hf import pre_download_model
 
         pre_download_model(config.trainer.model.name, skip_weights=config.trainer.model.init.type == "scratch")
 
