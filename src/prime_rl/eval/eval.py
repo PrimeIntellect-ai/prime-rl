@@ -8,8 +8,6 @@ rollouts still owed run (``prime_rl.eval.resume``)."""
 
 from __future__ import annotations
 
-import verifiers.v1 as vf
-
 from prime_rl import monitors
 from prime_rl.configs.eval import EvalConfig
 from prime_rl.eval import resume
@@ -26,7 +24,7 @@ class Eval:
 
     async def run(self) -> None:
         config = self.config
-        landed: list[vf.WireEpisode] = []
+        landed = {}
         if config.resume:
             # read and set aside before the monitors start: the resumed attempt writes a fresh stream
             landed = resume.take_landed(config.run_dir, config)
@@ -43,7 +41,7 @@ class Eval:
         )
         resume.stamp_config(config.run_dir, dump_resolved_config(config))
         await self.runner.setup()
-        fired, restored = self.runner.eval_source.trigger(0, completed=landed)
+        fired, restored = self.runner.eval_source.trigger(0, completed=(record.header for record in landed.values()))
         if config.resume:
             get_logger().info(
                 f"Resuming from the trace stream: {len(restored)} episodes restored, "
@@ -51,7 +49,7 @@ class Eval:
             )
 
         await self.runner.start()
-        await self.runner.run_epoch(fired, 0, restored=restored)
+        await self.runner.run_epoch(fired, 0, restored=resume.replay(landed, restored))
         await self.runner.drain()
 
 

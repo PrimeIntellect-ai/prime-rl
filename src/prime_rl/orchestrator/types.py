@@ -11,7 +11,7 @@ from prime_rl.transports.batch import TrainingSample
 if TYPE_CHECKING:
     import verifiers.v1 as vf
 
-    from prime_rl.orchestrator.metrics import EvalEpisodes, TrainEpisodes
+    from prime_rl.orchestrator.metrics import TrainEpisodes
 
 
 @dataclass
@@ -141,21 +141,6 @@ class TrainBatch:
 
     cohort: TrainEpisodes
     samples: list[TrainingSample]
-
-
-@dataclass
-class EvalBatch:
-    """One env's eval epoch.
-
-    ``episodes`` is the full returned cohort (errored included), while
-    ``failures`` accounts for requests that returned no verifier artifact.
-    """
-
-    env_name: str
-    step: int
-    episodes: EvalEpisodes
-    failures: list[DispatchFailure]
-    cancelled: int = 0
 
 
 class VersionObserver(Protocol):

@@ -53,7 +53,7 @@ from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
 from prime_rl.orchestrator.draft import DraftLoader
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
-from prime_rl.orchestrator.eval_sink import EvalSink
+from prime_rl.orchestrator.eval_sink import EvalBatch, EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.gc import GarbageCollector
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
@@ -64,14 +64,12 @@ from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.trainer_capacity import TrainerCapacity
 from prime_rl.orchestrator.types import (
     DispatchFailure,
-    EvalBatch,
     GroupCancellation,
     Policy,
     Progress,
     TrainBatch,
 )
 from prime_rl.orchestrator.utils import (
-    eval_work,
     intercept_vf_logging,
     max_rollout_staleness,
     release_and_trim,
@@ -619,7 +617,8 @@ class Orchestrator:
 
             if kind == "eval":
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
-                eval_batch = self.eval_sink.add(episode)
+                eval_batch = await self.eval_sink.add(episode)
+                del episode, item
                 if eval_batch is not None:
                     await self.finalize_eval_batch(eval_batch)
                 continue
@@ -995,27 +994,15 @@ class Orchestrator:
         get_logger().success("\n\t\t ".join(lines))
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
-        """Persist + log one completed eval epoch through the monitors. Aggregating an epoch
-        walks every trace's node graph, which takes seconds for a large epoch, so it runs in
-        worker threads."""
+        """Log the completed epoch from its per-episode metric summaries."""
         if not batch.episodes and not batch.failures:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no attempts returned, skipping log")
             return
 
-        # The non-errored subset is logged on epoch completion (multiple eval envs share the
-        # step's trace file — each epoch appends its cohort once, and every record carries
-        # ``env_name``); the full returned cohort already streamed into ``all`` on arrival.
-        episodes = batch.episodes
-        effective = episodes.effective
-        effective_episodes = await asyncio.to_thread(lambda: effective.vf_episodes)
-        if effective_episodes:
-            await monitors.log(effective_episodes, batch.step, "eval", "effective")
-            annotations = await asyncio.to_thread(stamp_batch, effective_episodes, batch.step)
-            await monitors.log_annotations(annotations)
-        policy_spans = [eval_work(episode).policy for episode in episodes]
-        if any(span is None for span in policy_spans):
+        await batch.log_annotations()
+        policy_versions = {episode.policy_version for episode in batch.episodes}
+        if None in policy_versions:
             raise ValueError(f"Eval {batch.env_name} step {batch.step} is missing policy provenance")
-        policy_versions = {span.start for span in policy_spans if span is not None}
         policy_versions.update(failure.policy_version for failure in batch.failures)
         policy_version = min(policy_versions)
 
@@ -1023,9 +1010,10 @@ class Orchestrator:
             # Episode metrics over {all,effective} (eval batches are per-env, so no `agg` axis).
             # ``effective`` = non-errored; pass@k / pass^k only over the effective set.
             metrics: dict[str, float] = {}
-            for subset, pool in (("all", episodes), ("effective", effective)):
-                metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
-            total_attempts = len(episodes) + len(batch.failures)
+            for subset in ("all", "effective"):
+                pool = batch.metrics(effective=subset == "effective")
+                metrics |= pool.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
+            total_attempts = len(batch.episodes) + len(batch.failures)
             metrics |= dispatch_failure_metrics(
                 batch.failures,
                 prefix=f"eval/{batch.env_name}/all",
@@ -1044,7 +1032,7 @@ class Orchestrator:
     def log_eval_batch(self, batch: EvalBatch, *, policy_version: int, elapsed: float) -> None:
         """Success line — quality metrics over the effective set, error rate over the full returned
         cohort. ``Stat.mean()`` is 0.0 for an empty set."""
-        eff, full = batch.episodes.effective.metrics, batch.episodes.metrics
+        eff, full = batch.metrics(effective=True), batch.metrics()
         get_logger().success(
             f"Evaluated {batch.env_name} | "
             f"Policy v{policy_version} | {format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
@@ -1239,6 +1227,8 @@ class Orchestrator:
             for task in self.component_tasks:
                 await safe_cancel(task)
             self.component_tasks.clear()
+            if self.eval_sink is not None:
+                self.eval_sink.close()
             if self.inference_metrics is not None:
                 get_logger().debug("Stopping inference metrics collector")
                 await self.inference_metrics.stop()

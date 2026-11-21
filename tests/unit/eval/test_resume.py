@@ -97,7 +97,8 @@ def test_trigger_queues_only_owed_rollouts() -> None:
 
 
 @pytest.mark.parametrize("skip_checks", [False, True])
-def test_take_landed_reads_every_attempt_once(tmp_path, skip_checks) -> None:
+@pytest.mark.parametrize("compress", [False, True])
+def test_take_landed_reads_every_attempt_once(tmp_path, skip_checks, compress) -> None:
     config = EvalConfig(
         source=[{"env": {"id": "single_agent"}}], run={"name": "resume-test"}, resume={"skip_checks": skip_checks}
     )
@@ -106,13 +107,15 @@ def test_take_landed_reads_every_attempt_once(tmp_path, skip_checks) -> None:
         resume.stamp_config(tmp_path, config.model_dump(mode="json"))
         if skip_checks:
             (get_file_monitor_dir(tmp_path) / resume.CONFIG_NAME).unlink()
-        stream = ChunkedJsonl(get_trace_stream(tmp_path), max_bytes=1 << 20, compress=False)
+        stream = ChunkedJsonl(get_trace_stream(tmp_path), max_bytes=1, compress=compress)
         for key in keys:
-            stream.append(orjson.dumps({**_record("math", key), "id": key}, option=orjson.OPT_APPEND_NEWLINE))
+            row = {**_record("math", key), "id": key}
+            row["task"]["data"]["prompt"] = f"full transcript for {key}"
+            stream.append(orjson.dumps(row, option=orjson.OPT_APPEND_NEWLINE))
         stream.close()
 
     land("m0", "m1")
-    assert [episode.id for episode in resume.take_landed(tmp_path, config)] == ["m0", "m1"]
+    assert [record.header.id for record in resume.take_landed(tmp_path, config).values()] == ["m0", "m1"]
     assert not get_file_monitor_dir(tmp_path).exists()
     assert [path.name for path in resume.archives(tmp_path)] == ["file.attempt_1"]
 
@@ -120,8 +123,13 @@ def test_take_landed_reads_every_attempt_once(tmp_path, skip_checks) -> None:
     land("m0", "m2")
     landed = resume.take_landed(tmp_path, config)
     source = EvalSource([_env("math", ["m0", "m1", "m2"], group_size=2)])
-    _, kept = source.trigger(0, completed=landed)
-    assert [episode.id for episode in kept] == ["m0", "m1", "m2"]
+    _, kept = source.trigger(0, completed=(r.header for r in landed.values()))
+    replayed = list(resume.replay(landed, kept))
+    assert [e.id for e in replayed] == ["m0", "m1", "m2"]
+    assert [e.group for e in replayed] == [e.group for e in kept]
+    assert [e.task.data.prompt for e in replayed] == [f"full transcript for {e.id}" for e in kept]
+    assert all(e.task.data.idx == 0 for e in replayed)
+    assert all(e.task.data.idx is None for e in kept)
     assert [request.rollouts for request in source.queue] == [1, 1, 1]
     assert [path.name for path in resume.archives(tmp_path)] == ["file.attempt_1", "file.attempt_2"]
 
@@ -146,7 +154,7 @@ def test_resume_validates_saved_episodes(tmp_path, ok, traces, valid) -> None:
 
     landed = resume.take_landed(tmp_path, config)
     source = EvalSource([_env("math", ["m0"], group_size=2)])
-    _, restored = source.trigger(0, completed=landed)
+    _, restored = source.trigger(0, completed=(r.header for r in landed.values()))
 
     assert [episode.id for episode in restored] == (["saved"] if ok else [])
     assert [request.rollouts for request in source.queue] == [1 if ok else 2]
@@ -180,7 +188,7 @@ def test_take_landed_checks_archived_config_before_rotating(tmp_path, updates, s
     # The newest attempt matches; an incompatible older attempt must still fail.
     resume.stamp_config(tmp_path, current.model_dump(mode="json"))
     if not updates or skip_checks:
-        assert resume.take_landed(tmp_path, current) == []
+        assert resume.take_landed(tmp_path, current) == {}
         assert not directory.exists()
     else:
         with pytest.raises(ValueError, match="file.attempt_1/eval.json") as error:
@@ -218,7 +226,7 @@ def test_take_landed_requires_saved_config(tmp_path, missing, skip_checks) -> No
         del parent[missing[-1]]
         resume.stamp_config(tmp_path, saved)
     if skip_checks:
-        assert resume.take_landed(tmp_path, config) == []
+        assert resume.take_landed(tmp_path, config) == {}
         assert not directory.exists()
         assert len(resume.archives(tmp_path)) == 1
     else:
@@ -251,3 +259,40 @@ def test_take_landed_checks_source_order_and_shared_defaults(tmp_path, reorder) 
     resume.stamp_config(tmp_path, saved.model_dump(mode="json"))
     with pytest.raises(ValueError, match=rf"in \[{changed}\].*--resume.skip-checks"):
         resume.take_landed(tmp_path, current)
+
+
+def test_resume_replays_full_episode_and_preserves_metrics_from_a_sealed_chunk(tmp_path):
+    from prime_rl.orchestrator.metrics import EvalEpisodes
+    from tests.unit.orchestrator.test_train_sink import episode, trace
+
+    config = EvalConfig(source=[{"env": {"id": "single_agent"}}])
+    resume.stamp_config(tmp_path, config.model_dump(mode="json"))
+    stream = ChunkedJsonl(get_trace_stream(tmp_path), max_bytes=1 << 20, compress=True)
+    original = episode([trace(), trace(trainable=False)])
+    original.run = vf.TrainRunInfo(id="run", work=vf.EvalWorkInfo(step=0))
+    first = orjson.loads(original.to_json())
+    # Older records may lack a content hash. Keep the first of two copies with the same id.
+    first["task"].pop("hash", None)
+    stream.append(orjson.dumps(_record("other", "other-task")), b"\n")
+    stream.append(orjson.dumps(first), b"\n")
+    stream.append(orjson.dumps({**first, "traces": []}), b"\n")
+    stream.close()
+
+    full = vf.WireEpisode.model_validate(first)
+    key = vf.Task(full.task.data).hash
+    saved = resume.take_landed(tmp_path, config)
+    selected = saved["test", original.id]
+    assert selected.header.traces == [] and selected.offset > 0
+    source = EvalSource([_env("test", [key], group_size=2)])
+    _, planned = source.trigger(0, completed=(r.header for r in saved.values()))
+    (restored,) = resume.replay(saved, planned)
+    assert source.queue[0].rollouts == 1
+    full.group = restored.group
+    assert restored.to_json() == full.to_json()
+    for subset in ("all", "effective"):
+        baseline, replayed = (EvalEpisodes([row], group_size=2) for row in (full, restored))
+        if subset == "effective":
+            baseline, replayed = baseline.effective, replayed.effective
+        assert baseline.metrics.to_wandb(prefix="eval/test", subset=subset) == replayed.metrics.to_wandb(
+            prefix="eval/test", subset=subset
+        )

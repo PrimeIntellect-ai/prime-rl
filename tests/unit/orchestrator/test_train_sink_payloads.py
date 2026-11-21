@@ -96,7 +96,8 @@ def test_eval_sink_deletes_the_arrays_of_eval_episodes():
     evaluated.run = vf.TrainRunInfo(id="run", work=vf.EvalWorkInfo(step=0))
     env = SimpleNamespace(examples=[None, None], config=SimpleNamespace(group_size=1))
     sink = EvalSink(eval_envs=SimpleNamespace(get=lambda name: env))
-    assert sink.add(evaluated) is None
+    assert asyncio.run(sink.add(evaluated)) is None
+    sink.close()
     wait_for_deletes()
     assert not hook.server.blobs
 
