@@ -9,6 +9,7 @@ import time
 import weakref
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from typing import Any
 
 from openai import APIConnectionError, APIStatusError
 from rime_alchemy.configs import MEMORY_LEVELS, memory_judge_config
@@ -78,7 +79,7 @@ class MemoryDecisionJudge(DecisionJudge):
         # receives the original Clef request, which is also what the trace records.
         envelope = {"model": self.transport_model, "judge_request": request}
         async with build_async_openai(self.config) as client:
-            raw = await client.post(self.config.base_url, cast_to=dict, body=envelope)
+            raw = await client.post(self.config.base_url, cast_to=dict[str, Any], body=envelope)
         result = raw.get("result", raw)
         response = JudgeResponse[float](text=json.dumps(raw))
         try:
