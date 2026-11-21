@@ -1,0 +1,141 @@
+# Inkling 2 Mini agentic RL on SWE tasks at a 131,072-token context: train on `r2e-gym` with the bash harness on a
+# prime sandbox runtime, eval on held-out R2E-Gym tasks and SWE-bench Verified. 4 trainer nodes with context
+# parallelism and 13 one-node inference replicas, each node running one vLLM server per GPU.
+#
+# The Slurm job starts the inference servers from the repository environment, whose vLLM has no Inkling 2: launch
+# with the template copy described in the README.
+#
+#   uv run rl @ examples/advanced/inkling2-mini/swe.toml
+
+max_steps = 300
+seq_len = 131072
+
+[slurm]
+job_name = "inkling2-mini-swe"
+partition = "all" # FILL IN: set to your cluster's partition
+# Clean up this run's orphaned prime sandboxes before launch (hardcoded label, matches the harness labels below).
+pre_run_command = 'timeout 120 prime sandbox delete --label "inkling2-mini-swe" -y || true'
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 4
+num_infer_nodes = 1
+num_infer_replicas = 13
+
+[model]
+# FILL IN: the BF16 copy written by tools/convert_inkling2_loop_to_bf16.py. Trainer and inference load the same
+# directory; the packed release is rejected by the server.
+name = "/shared/models/Inkling-2-Mini-bf16"
+
+[monitors.wandb]
+project = "inkling2-mini"
+
+[weight_broadcast]
+type = "nccl"
+
+[ckpt]
+interval = 25
+keep_last = 2
+
+# --- Trainer ---
+
+[trainer]
+enable_router_replay = true
+
+[trainer.model]
+# A row is split 8 ways along the sequence, so each GPU holds 16,384 tokens of it.
+cp = 8
+
+# Keep the attention kernel's outputs for the backward pass instead of running the kernel again.
+[trainer.model.ac]
+mode = "selective"
+targets = ["prime_rl_attn"]
+
+[trainer.optim]
+lr = 1e-6
+
+# Warm up over the first steps, while Adam's second moments are still empty.
+[trainer.scheduler]
+type = "linear"
+warmup_steps = 10
+decay_steps = 0
+
+# --- Orchestrator ---
+
+[orchestrator]
+batch_size = 256
+# One sandbox per episode in flight: pace their creation.
+dispatch_per_minute = 400
+
+[orchestrator.concurrency]
+# 8 episodes per inference GPU.
+initial_inflight = 600
+max_inflight = 832
+
+[orchestrator.renderer]
+# The pinned renderers map has no entry for this model, so the renderer is named.
+name = "inkling-2"
+reasoning_effort = "low"
+
+[orchestrator.train]
+group_size = 8
+
+# Per turn.
+[orchestrator.train.sampling]
+max_completion_tokens = 16384
+
+# The first 128 tasks are the held-out eval below.
+[[orchestrator.train.source]]
+name = "r2e-gym"
+select.skip = 128
+env.taskset.id = "r2e-gym"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["inkling2-mini-swe"]
+env.agent.max_turns = 100
+# Frees the slot of an episode whose sandbox command hangs.
+env.agent.timeout.rollout = 1800
+
+# --- Eval: held-out R2E-Gym every 25 steps, SWE-bench Verified every 50 ---
+
+[orchestrator.eval]
+interval = 25
+retrigger_on_resume = true
+
+# Online evals go through chat completions, which take the reasoning effort from the request.
+[orchestrator.eval.sampling]
+max_completion_tokens = 16384
+reasoning_effort = "low"
+
+[[orchestrator.eval.source]]
+name = "r2e-gym-eval"
+select.limit = 128
+env.taskset.id = "r2e-gym"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["inkling2-mini-swe"]
+env.agent.max_turns = 100
+env.agent.timeout.rollout = 1800
+
+[[orchestrator.eval.source]]
+name = "swebench-verified"
+interval = 50
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["inkling2-mini-swe"]
+env.agent.max_turns = 100
+env.agent.timeout.rollout = 1800
+
+# --- Inference: one server per GPU (tensor parallelism is not supported for this model) ---
+
+[inference.vllm]
+max_model_len = 131072
+# The trainer replays the experts every token was routed to.
+enable_return_routed_experts = true
+# Raises the usable context and the KV capacity for long episodes.
+max_num_batched_tokens = 2048
+# No auto-detection for this model: name the parsers. They are vLLM's own `inkling` pair.
+reasoning_parser = "inkling"
+tool_call_parser = "inkling"
+
+# Text-only RL: skip the image tower.
+[inference.vllm.limit_mm_per_prompt]
+image = 0
