@@ -33,6 +33,8 @@ class Algorithm:
     annotated traces into transport samples only after admission.
     """
 
+    preserve_zero_advantages = False
+
     def __init__(self, config: AlgoConfig, clients: InferenceClient):
         self.action_loss_type = config.action_loss_type
         self.clients = clients

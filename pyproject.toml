@@ -179,6 +179,7 @@ override-dependencies = [
 # `uv sync --all-packages`.
 [tool.uv.workspace]
 members = [
+    "packages/rime-alchemy",
     "deps/prime-envs/environments/*/*",
     "deps/verifiers/environments/alphabet_sort",
     "deps/verifiers/environments/color_codeword",
@@ -268,6 +269,7 @@ prime-kernels = false
 deep-select = false
 
 [tool.uv.sources]
+dm-alchemy = { path = "packages/rime-alchemy/vendor/dm_alchemy-1.0.0-py3-none-any.whl" }
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
 # prime-rl consumes `verifiers.v1` (incl. the built-in harnesses/tasksets); env tasksets
 # live under deps/{verifiers,prime-envs}/environments.

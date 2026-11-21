@@ -663,6 +663,16 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_deployment(self):
+        rime_sources = [source for source in self.orchestrator.train.source if source.algo.type == "rime"]
+        if any(source.algo.reference is None for source in rime_sources) and not self.trainer.initial_reference:
+            raise ValueError("RIME without a frozen endpoint requires trainer.initial_reference=true")
+        if self.trainer.initial_reference:
+            if self.resume is not None:
+                raise ValueError("Trainer-local initial reference needs an explicit original base path before resume")
+            if self.trainer.model.lora is not None or self.trainer.model.cp != 1 or self.trainer.model.ep != 1:
+                raise ValueError("Trainer-local reference currently requires dense full-parameter training, CP=EP=1")
+            if self.trainer.model.init.type != "pretrained":
+                raise ValueError("Trainer-local reference requires an immutable pretrained base model")
         pad_to_multiple_of = rl_micro_batch_multiple(self.trainer.model)
         check_derived(self.orchestrator, "pad_to_multiple_of", pad_to_multiple_of, "orchestrator.pad_to_multiple_of")
         num_train_workers = self.orchestrator.num_train_workers

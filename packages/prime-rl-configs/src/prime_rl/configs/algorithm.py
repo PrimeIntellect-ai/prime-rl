@@ -254,6 +254,17 @@ class RAEAlgoConfig(BaseAlgoConfig):
     memory — a restart re-warms them over ~1/(1 − decay) traces per agent."""
 
 
+class RIMEAlgoConfig(BaseAlgoConfig):
+    type: Literal["rime"] = "rime"
+    action_loss_type: ClassVar[ActionLossType] = "rl"
+
+    horizon: int = Field(2, ge=1)
+    beta: float = Field(0.1, ge=0.0, allow_inf_nan=False)
+    reference: FrozenModelConfig | None = None
+    expected_group_size: int = Field(4, ge=2)
+    max_sequence_tokens: int = Field(16384, ge=1)
+
+
 class HierarchicalGRPOAlgoConfig(BaseAlgoConfig):
     type: Literal["hierarchical_grpo"] = "hierarchical_grpo"
     """GRPO for proposer-solver envs.
@@ -381,6 +392,7 @@ AlgoConfig: TypeAlias = Annotated[
     | MaxRLAlgoConfig
     | RAEAlgoConfig
     | HierarchicalGRPOAlgoConfig
+    | RIMEAlgoConfig
     | OPDAlgoConfig
     | OPSDAlgoConfig
     | SFTAlgoConfig

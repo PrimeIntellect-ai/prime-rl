@@ -52,6 +52,9 @@ def _prune_zero_advantages(sample: TrainingSample) -> bool:
     """Remove zero-advantage tokens from the RL component."""
     if sample.advantages is None:
         return True
+    if sample.ref_logprobs is not None or sample.preserve_zero_advantages:
+        # Reference-scored RL can still carry KL loss at zero PG advantage.
+        return True
 
     mask = np.asarray(sample.mask, dtype=bool)
     advantages = np.asarray(sample.advantages)
@@ -383,6 +386,8 @@ class TrainSink(Reconfigurable):
                         f"env {env_name!r} requested sampler logprobs but returned none. {_KEEP_ARRAYS_HINT}"
                     )
                 stamp_loss_routing(sample, env.algorithm.action_loss_type)
+                if env.algorithm.preserve_zero_advantages:
+                    sample.preserve_zero_advantages = True
             if self.config.constant_trainer_batch_size:
                 samples = [sample for sample in samples if _prune_zero_advantages(sample)]
             if samples:

@@ -220,6 +220,16 @@ def train(config: TrainerConfig):
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
     logger.debug(f"Initialized model in {format_time(time.perf_counter() - t0)}")
 
+    reference_model = None
+    if config.initial_reference:
+        logger.info("Loading frozen initial-policy reference on trainer GPUs")
+        reference_config = config.model.model_copy(
+            deep=True, update={"compile": None, "ac": None, "ac_offloading": None, "offload": "none"}
+        )
+        reference_model = setup_model(reference_config, parallel_dims, False)
+        reference_model.requires_grad_(False)
+        reference_model.eval()
+
     materialize_images = None
     if config.model.vlm is not None:
         if not getattr(model, "supports_packed_multimodal_training", False):
@@ -516,6 +526,12 @@ def train(config: TrainerConfig):
                 )
 
             # Forward pass with per-token temperatures
+            if reference_model is not None:
+                from prime_rl.trainer.rl.reference import reference_logprobs
+
+                ref_logprobs = reference_logprobs(
+                    reference_model, input_ids, position_ids, labels, temperatures, seq_lens
+                )
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading, model):
                 out = forward(
                     model,

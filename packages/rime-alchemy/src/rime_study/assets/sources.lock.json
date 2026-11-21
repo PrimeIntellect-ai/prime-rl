@@ -1,0 +1,59 @@
+{
+  "dataset_repo": "Racktic/memory-writing-train-tasks",
+  "dataset_revision": "f0a010540455eaf8dc0855704cc53a62316d1ba0",
+  "environment_repo": "https://github.com/google-deepmind/dm_alchemy",
+  "environment_commit": "68a26254b5c0f15e84fa0c15d66bf0c626ede8e0",
+  "files": {
+    "data/dataset_README.md": {
+      "sha256": "5065bc36e9d1f1e9d48c5940470ccb2f8e74c94f8278e50d20a31dff227b87b5",
+      "bytes": 3899,
+      "upstream_path": "README.md"
+    },
+    "data/alchemy_train_streams.jsonl": {
+      "sha256": "9e558e474cfb76b3d4e64a0e743c40e32452b5996fc8e165b436fa1207bd1793",
+      "bytes": 197440,
+      "upstream_path": "symbolic_alchemy/train_streams.jsonl"
+    },
+    "vendor/dm_alchemy/dm_alchemy/chemistries/perceptual_mapping_randomized_with_random_bottleneck/chemistries": {
+      "sha256": "7a9e4fbfb2328810e557a7f00bac757664b0e8ae0d9cb7e0a44d2c42547500c9",
+      "bytes": 251738
+    }
+  },
+  "environment_python_sha256": {
+    "__init__.py": "2619406c71ac06c48d2185b802ba1ddfd7bed7a600eb7aee8deba90279dc1d33",
+    "_load_environment.py": "6642323ba38554ba9829bf627087964746a780a809c4bed8bbe5ab503b49c058",
+    "_version.py": "438f1b0236e3d83b269f1aac761d79e59281ad3ce70dbeca3884c794194b93ba",
+    "bot_running_tracker.py": "3c74140573aec9950eb64da8010be6251ab76d26ab0de4d095efd66460329241",
+    "encode/chemistries_proto_conversion.py": "e418607664f77d1dc05d478a4f1d1ca8fe6cc6077c70656747798f4f8326a290",
+    "encode/precomputed_maps_proto_conversion.py": "af9ca4d11788a3957a3e4df8cdf7997022720e61e5cd273bbe3c99d2556eafa0",
+    "encode/symbolic_actions_proto_conversion.py": "20752afd29330fa2ba19dcef3253dbe9cd27818f773566377c6da3b2eb881e12",
+    "event_tracker.py": "b87c884dd9177751af22252ef6a71a96d0e8e3860b690cf0f150fe26ba9a9578",
+    "get_meta_data.py": "a9330a77af88490de823548259166643d695715f87037806596b6139de43128e",
+    "ideal_observer/helpers.py": "ce7a7a3a9a74ec1e4a529f74d36926dbe70e7d8a0a51bdca2bb6de81d3b09179",
+    "ideal_observer/ideal_observer.py": "6746aaceae9c6fdc5dce045ad187e6c68b4591c70a29e7cdb47a0af1f332cc39",
+    "ideal_observer/ideal_observer_test.py": "bb8edb22dce15c68a95d50d551cc9da8968e542f440d37fcadade35ba30c1c98",
+    "ideal_observer/precomputed_maps.py": "aad5a2f265b0877065de8a6dabd0c88eeb24655d1e244bfeff9fe09d3efb94b5",
+    "ideal_observer/precomputed_maps_test.py": "99765914614e3ababa9d64a09a40a7149d451a509b5576a7eeaaedb25db9d313",
+    "io.py": "e534a264decaa1c874209531138263643747b6566d4ce28ddc085cdf6cb0425b",
+    "load_from_disk_test.py": "b29829558e97ddd6b1fe04b599356708f7061d4932d4f7b2209d6bad7f858246",
+    "load_from_docker_test.py": "c65136aab256aeccc9cb809896f8bf18546db62aaf1b4b3f58c49c735a506f37",
+    "partial_array_specs.py": "4448d9046acb0a508640739eb697d9f94b5a633bd13a88f7dcf97fd7f574fb16",
+    "partial_array_specs_test.py": "82675573561896a51b1a13cd8cc0dca12729d9001ed1622f740e12b9156437c8",
+    "symbolic_alchemy.py": "78cd928332b063185a3ae918009988ac332fb6483442b31c8e509c993045c188",
+    "symbolic_alchemy_bots.py": "de7baa84bf3c3b025a3efcdc65690597e031fb7c42bcc6c4f8c15556b6150fc2",
+    "symbolic_alchemy_test.py": "af20bfcd4eaba79310a7e954f59888d78466579d2673492508f73f2ece63056f",
+    "symbolic_alchemy_trackers.py": "638ce9ed921b71c7f2f01c3b1aec467be494e030da051d8e1ca0f814fc5c1927",
+    "symbolic_alchemy_wrapper.py": "37bb522d8d13a76c38ebc539290f4c6ed2cea23d1885bf9f698cb741c675a365",
+    "symbolic_alchemy_wrapper_test.py": "5524976ea98f9150a7c6ba0368f06a93b0653efb7ebd0de56916c1a80a4c8add",
+    "types/event_unpacking.py": "2e28198e8bb9888d5740bbe6e6b1e0f7bf7737046ee7046bfe9b4718e45a52a7",
+    "types/graph_from_unity_type.py": "bc5840aa6a6385696102dc3fa7276320d6e793076e5aee1aad00ac83be9e06ad",
+    "types/graphs.py": "30bbd4521415960076b51ed943ba21d46ca08161c7eb6ce6793ab4c875223524",
+    "types/graphs_test.py": "8cedbd10bdaff1a0361b8431efec9cf65d3407a979db37ea6bed3bba57184a93",
+    "types/helpers.py": "2e4d053d78b3fcc7422e82cd21da7bae6b5167b449553db2eead8065e7222d61",
+    "types/stones_and_potions.py": "63a34c9a30019051c6b0f50402852a176c71b65e5583c7f05eb3a1564862cfcd",
+    "types/stones_and_potions_test.py": "6be64cbc25b716da6f8c5ed2baeda72db425e580c0a4de78b1bf761157632be0",
+    "types/unity_python_conversion.py": "e4ab39d13564f7c0ac34f89a1e452a260cad6c9f1575105aa8233c3a58c6959f",
+    "types/unity_python_conversion_test.py": "3d44d927dcfc5fe52d7279455fd417427fb338e33507395fb6cc4ac21222b689",
+    "types/utils.py": "7e0d7973858601cb7655588f560fac23ed9dff280991fe6d452fcec6a4bf761b"
+  }
+}

@@ -75,6 +75,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     temperatures: np.ndarray
     env_name: str
     ref_logprobs: np.ndarray | None = None  # reference-model logprobs (ref_kl component)
+    preserve_zero_advantages: bool = False
 
     mm_refs: MMRefs | None = None
 

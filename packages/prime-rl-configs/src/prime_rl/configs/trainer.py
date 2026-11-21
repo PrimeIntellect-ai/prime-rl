@@ -809,6 +809,9 @@ class BaseTrainerConfig(BaseConfig):
 
 
 class TrainerConfig(BaseTrainerConfig):
+    initial_reference: bool = False
+    """Keep an unoptimized initial-policy copy on the trainer for reference-KL scoring."""
+
     # RL keeps the pretrained router.
     auto_freeze_moe_router = True
     # RL optimizes the reward objective, not a fixed dataset; L2 decay toward zero fights it.
