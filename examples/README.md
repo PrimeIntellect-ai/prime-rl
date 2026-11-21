@@ -16,7 +16,7 @@ Larger runs on frontier models, one folder per model, each with a launch README 
 - `intellect-3.1/` — reproduce the `INTELLECT-3.1` run: 4 train + 12 infer nodes on SWE.
 - [`qwen3-235b-a22b/`](advanced/qwen3-235b-a22b/README.md) — SFT max trainer perf: `Qwen3-235B-A22B` on 4 trainer nodes at 16k context, a throughput reference using the max trainer throughput recipe.
 
-Per-model RL configs at 256k context in three layers (`<model>/rl.toml` + `<model>/gpu/h200.toml` + one of `data/swe.toml`, `data/swe-short.toml`, `data/math.toml`) for Muse Glimmer 30B, Qwen3.8 27B, Qwen3.8 Flash Next, GLM-5.3 Flash and Nemotron 3 Super. See [`advanced/README.md`](advanced/README.md) for the trainer fits.
+Per-model RL configs at 256k context in three layers (`<model>/rl.toml` + `<model>/gpu/h200.toml` + one of `data/scaleswe.toml`, `data/scaleswe-short.toml`, `data/math.toml`) for Muse Glimmer 30B, Qwen3.8 27B, Qwen3.8 Flash Next, GLM-5.3 Flash and Nemotron 3 Super. See [`advanced/README.md`](advanced/README.md) for the trainer fits.
 
 All advanced configs submit through SLURM (the `rl` entrypoint writes the sbatch job when the config has a `[slurm]` table) and are monitored with `uv run dashboard`. See the per-model README for the full walkthrough.
 

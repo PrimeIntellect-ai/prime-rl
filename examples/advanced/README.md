@@ -1,21 +1,22 @@
 # Advanced model configs
 
-RL configs per model at 256k context, in three layers, as in [`deepseek-v4-flash/`](deepseek-v4-flash/):
-the model definition, a hardware overlay, and a data config.
+RL configs per model at 256k context, layered as in [`deepseek-v4-flash/`](deepseek-v4-flash/):
+
+1. `<model>/rl.toml`: the model definition: the model, its optimizer, and its inference engine
+   settings that do not depend on hardware (context length, parsers, prefix caching, router replay).
+2. `<model>/gpu/h200.toml`: the compute overlay: trainer nodes and parallelism, fit to one
+   262144-token sample per micro batch, and one inference node per trainer node. The trainer keeps
+   the defaults: optimizer offload, full activation checkpointing and activation offloading.
+3. `data/`: the data overlay: `scaleswe.toml` (ScaleSWE with the bash harness, bash + edit tools,
+   eval on SWE-bench Verified), `scaleswe-short.toml` (the same, 20-turn cap), `math.toml`
+   (INTELLECT-3 math, eval on AIME 2025).
 
 ```bash
-uv run rl @ examples/advanced/<model>/rl.toml @ examples/advanced/<model>/gpu/h200.toml @ examples/advanced/data/<data>.toml \
+uv run rl @ examples/advanced/<model>/rl.toml @ examples/advanced/<model>/gpu/h200.toml @ examples/advanced/data/scaleswe.toml \
     --slurm.partition <partition> --output-dir <shared-dir>
 ```
 
-- `<model>/rl.toml`: the model, its optimizer, and its inference engine settings that do not depend
-  on hardware (context length, parsers, prefix caching, router replay).
-- `<model>/gpu/h200.toml`: trainer nodes and parallelism, fit to one 262144-token sample per micro
-  batch, and the inference replica shape. The trainer keeps the defaults: optimizer offload, full
-  activation checkpointing and activation offloading.
-- `data/`: `swe.toml` (ScaleSWE with the bash harness, bash + edit tools, eval on SWE-bench
-  Verified), `swe-short.toml` (the same, 20-turn cap), `math.toml` (INTELLECT-3 math, eval on
-  AIME 2025).
+For a trainer-only run, replace the data overlay with `fake.toml` (see [Fit a trainer](#fit-a-trainer)).
 
 Trainer fits: trainer only, fake 256k samples, random weights, balanced MoE routing, 8x H200 nodes.
 Every fit uses Muon, ep 8 (MoE models), cp 8, and the default optimizer offload, full activation

@@ -2,8 +2,8 @@
 # Model settings only: compose it with a hardware overlay from `gpu/` and a data config from
 # `examples/advanced/data/`:
 #
-#   uv run rl @ examples/advanced/nemotron-3-super/rl.toml @ examples/advanced/nemotron-3-super/gpu/h200.toml @ examples/advanced/data/swe.toml
-#   uv run rl @ examples/advanced/nemotron-3-super/rl.toml @ examples/advanced/nemotron-3-super/gpu/h200.toml @ examples/advanced/data/swe-short.toml
+#   uv run rl @ examples/advanced/nemotron-3-super/rl.toml @ examples/advanced/nemotron-3-super/gpu/h200.toml @ examples/advanced/data/scaleswe.toml
+#   uv run rl @ examples/advanced/nemotron-3-super/rl.toml @ examples/advanced/nemotron-3-super/gpu/h200.toml @ examples/advanced/data/scaleswe-short.toml
 #   uv run rl @ examples/advanced/nemotron-3-super/rl.toml @ examples/advanced/nemotron-3-super/gpu/h200.toml @ examples/advanced/data/math.toml
 
 seq_len = 262144
