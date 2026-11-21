@@ -11,6 +11,7 @@ dependencies = [
     "numpy>=1.26.4,<3",
     "scipy>=1.11.4,<2",
     "protobuf>=4.25.3",
+    "accelerate>=1.15.0",
 ]
 
 [build-system]
