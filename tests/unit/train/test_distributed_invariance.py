@@ -31,6 +31,7 @@ from pathlib import Path
 
 import pytest
 import torch
+import torch._inductor.config
 import torch.distributed as dist
 from tiny_models import TOKENIZER, Case, compute_loss, load_rows, model_config, save_tiny_model
 from torch.distributed.tensor import DTensor
@@ -60,6 +61,8 @@ CASES = [
     Case("qwen3_moe-ep2", "qwen3_moe", ep=2),
     Case("qwen3_moe-cp2_ep2", "qwen3_moe", cp=2, ep=2),
     Case("glm4_moe-cp2_ep2", "glm4_moe", cp=2, ep=2),
+    Case("inkling2_loop-dp2", "inkling2_loop"),
+    Case("inkling2_loop-ep2", "inkling2_loop", ep=2),
 ]
 # GatedDeltaNet passes its recurrent state across the CP cut. The document that straddles the cut then differs by up
 # to ~3e-3 per token on the second rank (bf16, measured on the layer alone; the other documents match exactly), which
@@ -78,6 +81,7 @@ FULL_SUITE_CASES = [
     Case("deepseek_v4-cp2_ep2", "deepseek_v4", cp=2, ep=2),
     Case("glm_moe_dsa-ep2", "glm_moe_dsa", ep=2),
     Case("glm_moe_dsa-cp2_ep2", "glm_moe_dsa", cp=2, ep=2),
+    Case("inkling2_loop-ep2-compile", "inkling2_loop_generic", ep=2, compile=True),
 ]
 SUITES = {"tiny": CASES, "full": FULL_SUITE_CASES}
 TIMEOUTS = {"tiny": 5 * 60, "full": 20 * 60}
@@ -86,25 +90,42 @@ TIMEOUTS = {"tiny": 5 * 60, "full": 20 * 60}
 TOLERANCES = {"loss": 1e-5, "grad_norm": 1e-3, "grad": 2e-2}
 # torch.compile fuses the bf16 ops differently than the eager reference
 COMPILE_TOLERANCES = {"loss": 1e-4, "grad_norm": 3e-3, "grad": 1e-1}
+# Inkling 2 Mini has less headroom than 5x on the weights of `init_inkling2_loop_weights` (H100, nine draws of them
+# measured; the suites run the first).
+# - dp2 and ep2: the worst gradient differs by 1.05e-2, and by 0.8e-2 to 1.4e-2 over the draws. Every later layer
+#   visit reads a block state, and FSDP's hook on a layer's inputs regroups the BF16 sums of those gradients. Both
+#   cases rely on a forward that equals the reference's bit for bit: one FP32 result moved by one ULP moves the worst
+#   gradient by 4e-2 to 1.1e-1.
+# - A compiled layer does not equal eager bit for bit: Inductor skips the BF16 rounding between the FP32 operations
+#   it fuses. On those weights the compiled case then passes or fails by the draw (worst gradient 5e-2 to 4.9e-1),
+#   so it runs on the generic seeding, where attention and the depth mixes are near uniform and it measures
+#   3.5e-6 / 1.4e-4 / 1.1e-2 for loss / grad norm / worst gradient. The attention-path gradients stay with dp2 and ep2.
 
 
 def record_routing(model: torch.nn.Module) -> Callable[[], torch.Tensor | None]:
     """Hooks every MoE router of `model`. The returned function gives the experts the routers picked in the last
-    forward, as the `[1, seq, layers, top_k]` tensor that `routed_experts` takes, or None for a dense model."""
-    picked: dict[int, torch.Tensor] = {}
+    forward, as the `[1, seq, layers, top_k]` tensor that `routed_experts` takes, or None for a dense model. A looped
+    decoder runs some layers several times per forward and takes one row per visit."""
+    picked: dict[int, list[torch.Tensor]] = {}
     for name, module in model.named_modules():
         if isinstance(module, TokenChoiceTopKRouter):
             layer = int(re.search(r"layers\.(\d+)\.", name).group(1))
-            module.register_forward_hook(lambda module, args, output, layer=layer: picked.__setitem__(layer, output[1]))
-    num_layers = len(get_language_model(model).layers)
+            module.register_forward_hook(
+                lambda module, args, output, layer=layer: picked.setdefault(layer, []).append(output[1])
+            )
+    language_model = get_language_model(model)
+    layer_visit_ids = getattr(language_model, "layer_visit_ids", lambda layer: [layer])
+    num_visits = getattr(language_model, "num_layer_visits", len(language_model.layers))
 
     def routing() -> torch.Tensor | None:
         if not picked:
             return None
-        num_tokens, top_k = next(iter(picked.values())).shape
-        routed_experts = torch.zeros(1, num_tokens, num_layers, top_k, dtype=torch.long)
-        for layer, experts in picked.items():
-            routed_experts[0, :, layer] = experts.cpu()
+        num_tokens, top_k = next(iter(picked.values()))[0].shape
+        routed_experts = torch.zeros(1, num_tokens, num_visits, top_k, dtype=torch.long)
+        for layer, visits in picked.items():
+            for visit, experts in zip(layer_visit_ids(layer), visits, strict=True):
+                routed_experts[0, :, visit] = experts.cpu()
+        picked.clear()
         return routed_experts
 
     return routing
@@ -238,10 +259,13 @@ def main(output_dir: Path, cases: list[Case]) -> None:
             )
 
     results, layouts = {}, {}
+    compiler_settings = (torch.compiler.config.dynamic_sources, torch._inductor.config.triton.mix_order_reduction)
     for case in sorted(cases, key=lambda case: case.cp):
         start = time.perf_counter()
-        # Compiled graphs of the previous case's model must not leak into this one, as in a fresh trainer process
+        # Compiled graphs of the previous case's model must not leak into this one, as in a fresh trainer process.
+        # Neither must its compiler settings: a model that names dynamic layer args changes them for the process.
         torch._dynamo.reset()
+        torch.compiler.config.dynamic_sources, torch._inductor.config.triton.mix_order_reduction = compiler_settings
         config = configs[case.name]
         if (case.cp, case.ep) not in layouts:
             layouts[case.cp, case.ep] = get_parallel_dims(config)
