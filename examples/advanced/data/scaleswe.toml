@@ -1,7 +1,7 @@
 # SWE agent RL on ScaleSWE with the bash harness (bash + edit tools) in prime sandboxes,
 # evaluated on SWE-bench Verified. Compose it after a model's rl.toml and hardware overlay:
 #
-#   uv run rl @ examples/advanced/qwen3.8-flash-next/rl.toml @ examples/advanced/qwen3.8-flash-next/gpu/h200.toml @ examples/advanced/data/swe.toml
+#   uv run rl @ examples/advanced/qwen3.8-flash-next/rl.toml @ examples/advanced/qwen3.8-flash-next/gpu/h200.toml @ examples/advanced/data/scaleswe.toml
 
 [orchestrator]
 batch_size = 256

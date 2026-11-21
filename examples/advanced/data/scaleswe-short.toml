@@ -1,6 +1,6 @@
-# swe.toml with episodes capped at 20 turns: shorter rollouts, faster steps.
+# scaleswe.toml with episodes capped at 20 turns: shorter rollouts, faster steps.
 #
-#   uv run rl @ examples/advanced/qwen3.8-flash-next/rl.toml @ examples/advanced/qwen3.8-flash-next/gpu/h200.toml @ examples/advanced/data/swe-short.toml
+#   uv run rl @ examples/advanced/qwen3.8-flash-next/rl.toml @ examples/advanced/qwen3.8-flash-next/gpu/h200.toml @ examples/advanced/data/scaleswe-short.toml
 
 [orchestrator]
 batch_size = 256
