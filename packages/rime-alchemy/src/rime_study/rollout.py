@@ -13,6 +13,9 @@ ACT = """You are ACT in Symbolic Alchemy. Maximize total cauldron reward. Stone
 properties and potion colors are visible; hidden chemistry stays fixed for ten
 trials. A potion may change a stone. Cauldron consumes a stone and awards its
 value (a value-3 stone earns 15). Carry only the supplied memory between trials.
+Each potion is consumed after one use. Never reuse a consumed potion or stone.
+Use the IDs in the latest observation's stones and potions lists, not their colors
+or positions in those lists. You may end the trial when no useful actions remain.
 Return exactly one JSON action: {\"op\":\"potion\",\"stone\":ID,\"potion\":ID},
 {\"op\":\"cauldron\",\"stone\":ID}, or {\"op\":\"end_trial\"}."""
 WRITE = """You are WRITE for Symbolic Alchemy. Replace the previous memory using

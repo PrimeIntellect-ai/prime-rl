@@ -76,7 +76,7 @@ class RIMEAlchemyEnv(vf.Env[RIMEAlchemyEnvConfig]):
                         invalid += 1
                         if invalid > 1:
                             raise ProtocolError("Actor exhausted action repair budget") from exc
-                        result = {"error": "Invalid action. Use only allowed operations and visible slot IDs."}
+                        result = {"error": str(exc), "observation": env.observation()}
                     history.append({"actor": reply, "result": result})
                     if result.get("trial_done"):
                         rewards.append(result["trial_reward"])

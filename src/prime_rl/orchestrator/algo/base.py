@@ -54,6 +54,10 @@ class Algorithm:
     async def score_group(self, episodes: list[vf.Episode]) -> None:
         """Assign group-relative annotations to a finalized cohort."""
 
+    def accepts_group(self, episodes: list[vf.Episode]) -> bool:
+        """Whether this cohort can supply the algorithm's training signal."""
+        return True
+
     def reconfigure(self, config: AlgoConfig) -> None:
         """Adopt a live config update, in which only fields marked LIVE can differ."""
 

@@ -49,12 +49,15 @@ class RIMEAlgorithm(Algorithm):
         for branch, logprobs in zip(branches, scores, strict=True):
             assign_reference_logprobs(branch, logprobs)
 
+    def accepts_group(self, episodes: list[vf.Episode]) -> bool:
+        return (
+            len(episodes) == self.expected_group_size
+            and len({episode.id for episode in episodes}) == len(episodes)
+            and all(episode.ok for episode in episodes)
+        )
+
     async def score_group(self, episodes: list[vf.Episode]) -> None:
-        if (
-            len(episodes) != self.expected_group_size
-            or len({episode.id for episode in episodes}) != len(episodes)
-            or any(not episode.ok for episode in episodes)
-        ):
+        if not self.accepts_group(episodes):
             raise ValueError("RIME requires a complete, clean sibling cohort")
         rows = []
         indexed = []

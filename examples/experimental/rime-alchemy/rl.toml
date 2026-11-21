@@ -2,7 +2,7 @@
 # must be resolved before dispatch. Values here are pilot choices, not author settings.
 mode = "rl"
 max_steps = 2
-seq_len = 16384
+seq_len = 32768
 
 [run]
 name = "rime-alchemy-joint-smoke"
@@ -54,11 +54,12 @@ type = "rime"
 horizon = 2
 beta = 0.1
 expected_group_size = 4
+max_sequence_tokens = 32768
 
 [orchestrator.train.sampling]
 temperature = 1.0
 top_p = 1.0
-max_completion_tokens = 2048
+max_completion_tokens = 4096
 
 [[orchestrator.train.source]]
 name = "rime-alchemy-train"
@@ -76,7 +77,8 @@ env.exploration_judge.base_url = "https://api.pinference.ai/api/v1/evaluations"
 [inference]
 
 [orchestrator.renderer]
-name = "prime-qwen3"
+name = "qwen3"
+enable_thinking = false
 
 [ckpt]
 interval = 1

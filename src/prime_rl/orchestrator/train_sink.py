@@ -52,8 +52,8 @@ def _prune_zero_advantages(sample: TrainingSample) -> bool:
     """Remove zero-advantage tokens from the RL component."""
     if sample.advantages is None:
         return True
-    if sample.ref_logprobs is not None or sample.preserve_zero_advantages:
-        # Reference-scored RL can still carry KL loss at zero PG advantage.
+    if sample.preserve_zero_advantages:
+        # Algorithms with an RL-local KL term still train at zero PG advantage.
         return True
 
     mask = np.asarray(sample.mask, dtype=bool)
@@ -351,6 +351,15 @@ class TrainSink(Reconfigurable):
             return
 
         survivors = [trace for _, trace in iter_trainable_traces(group)]
+        if not env.algorithm.accepts_group(group):
+            self._close([group_id])
+            self._record_group(group, failures, cancellation, env_name, admitted=False)
+            self._record_zero_output(group, survivors, n_owed, reason="incomplete algorithm cohort")
+            get_logger().warning(
+                f"Dropped incomplete algorithm cohort | env={env_name} task_idx={task_idx} | "
+                f"episodes={len(group)}/{n_owed} (errored={num_errored})"
+            )
+            return
         if survivors:
             await env.algorithm.score_group(group)
         admitted = self._admit(group) if group else False

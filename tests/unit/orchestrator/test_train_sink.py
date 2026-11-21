@@ -11,10 +11,11 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import ModelCall
 from verifiers.v1.types import AssistantMessage, Tool, ToolMessage, Usage, UserMessage, WeightVersionSpan
 
-from prime_rl.configs.algorithm import GRPOAlgoConfig
+from prime_rl.configs.algorithm import GRPOAlgoConfig, RIMEAlgoConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.control.types import ConfigUpdate
 from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.orchestrator.algo.rime import RIMEAlgorithm
 from prime_rl.orchestrator.train_sink import TrainSink, mask_stale_tokens
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress
@@ -316,6 +317,21 @@ def test_groups_close_when_they_finalize_without_shipping():
         pruned = sink(constant=False, batch_size=1, closed=closed)
         batch = await pruned.add(episode([trace(advantage=0)], group="pruned"))
         assert not batch.samples and closed == ["pruned"]
+
+        closed.clear()
+        partial = sink(closed=closed)
+        algorithm = RIMEAlgorithm(RIMEAlgoConfig(), None)
+        partial.train_envs.get("test").algorithm = algorithm
+        siblings = [episode([trace()], group="incomplete") for _ in range(4)]
+        assert algorithm.accepts_group(siblings)
+        assert not algorithm.accepts_group(siblings[:3])
+        siblings[-1].ok = False
+        assert not algorithm.accepts_group(siblings)
+        partial.pending_groups["incomplete"] = siblings
+        await partial.process_group("incomplete")
+        assert closed == ["incomplete"] and not partial.pending_batch
+        assert not partial.pending_groups
+        assert partial.zero_output_units["incomplete algorithm cohort"] == 3
 
     asyncio.run(run())
 
