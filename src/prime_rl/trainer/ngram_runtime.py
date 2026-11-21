@@ -19,6 +19,6 @@ def configure_ngram_runtime(model: nn.Module, parallel_dims: ParallelDims) -> No
 
     for table in tables:
         parallelize_module(table, device_mesh=head_mesh, parallelize_plan=NGramRowParallel())
-        table.set_lookup(RowShardedLookup(head_mesh))
+        table.set_lookup(RowShardedLookup(head_mesh, deduplicate=table.deduplicate_lookup))
 
     get_logger().info(f"Row-sharded {len(tables)} n-gram tables over the head mesh ({num_ranks} ranks)")

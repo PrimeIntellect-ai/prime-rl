@@ -18,13 +18,26 @@ def consecutive_primes_from(minimum: int, skip: int, count: int) -> list[int]:
 
 
 class NGramTable(nn.Module):
-    """One hashed n-gram embedding table and its hash layout, looked up through a swappable strategy."""
+    """One hashed n-gram embedding table and its hash layout, looked up through a swappable strategy.
 
-    def __init__(self, num_rows: int, head_dim: int, max_ngram_size: int, num_heads: int) -> None:
+    `persistent_layout` saves the layout buffers with the weights. `deduplicate_lookup` asks a
+    row-sharded lookup to fetch repeated ids once.
+    """
+
+    def __init__(
+        self,
+        num_rows: int,
+        head_dim: int,
+        max_ngram_size: int,
+        num_heads: int,
+        persistent_layout: bool = True,
+        deduplicate_lookup: bool = False,
+    ) -> None:
         super().__init__()
         self.weight = nn.Parameter(torch.empty(num_rows, head_dim))
+        self.deduplicate_lookup = deduplicate_lookup
         for name, length in zip(LAYOUT_BUFFERS, (max_ngram_size, num_heads, num_heads), strict=True):
-            self.register_buffer(name, torch.zeros(length, dtype=torch.long))
+            self.register_buffer(name, torch.zeros(length, dtype=torch.long), persistent=persistent_layout)
         self.lookup: NGramLookup = LocalLookup()
 
     def set_lookup(self, lookup: NGramLookup) -> None:
@@ -146,6 +159,8 @@ class NGramEmbeddings(nn.Module):
         hasher: NGramHasher,
         table_indices: Mapping[int, int],
         head_dim: int,
+        persistent_layout: bool = True,
+        deduplicate_lookup: bool = False,
     ) -> None:
         super().__init__()
         self.hasher = hasher
@@ -154,7 +169,12 @@ class NGramEmbeddings(nn.Module):
         self.tables = nn.ModuleDict(
             {
                 str(layer_index): NGramTable(
-                    hasher.num_table_rows(table_index), head_dim, hasher.max_ngram_size, hasher.num_heads
+                    hasher.num_table_rows(table_index),
+                    head_dim,
+                    hasher.max_ngram_size,
+                    hasher.num_heads,
+                    persistent_layout=persistent_layout,
+                    deduplicate_lookup=deduplicate_lookup,
                 )
                 for layer_index, table_index in self.table_indices.items()
             }
