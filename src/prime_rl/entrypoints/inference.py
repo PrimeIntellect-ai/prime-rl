@@ -9,6 +9,7 @@ from typing import Any
 
 from prime_rl.configs.inference import InferenceConfig, MooncakeKVCacheOffloadConfig
 from prime_rl.entrypoints.slurm import load_slurm_template, submit_sbatch
+from prime_rl.utils.admin_token import digest_var
 from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
@@ -195,7 +196,10 @@ def start_router(config: InferenceConfig) -> subprocess.Popen:
         "--prometheus-port",
         str(config.server.port + 21000),
     ]
-    return subprocess.Popen(cmd)
+    # The router never calls the engine's admin routes.
+    token_vars = (config.server.admin_token_var, digest_var(config.server.admin_token_var))
+    env = {key: value for key, value in os.environ.items() if key not in token_vars}
+    return subprocess.Popen(cmd, env=env)
 
 
 def inference_local(config: InferenceConfig):

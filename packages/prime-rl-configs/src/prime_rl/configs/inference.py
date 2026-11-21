@@ -25,6 +25,12 @@ class ServerConfig(BaseConfig):
     liveness_timeout_seconds: float = Field(30.0, gt=0)
     """Timeout in seconds for the ``/liveness`` endpoint's internal vLLM worker RPC. Health checks polling this endpoint should use a timeout at least this high."""
 
+    admin_token_var: str = "PRIME_RL_ADMIN_TOKEN"
+    """Name of the environment variable holding the admin token. When it, or ``<name>_SHA256`` holding the token's SHA-256 digest, is set, the admin routes (weight updates, pause/resume, broadcaster setup, LoRA loading) reject requests whose ``X-Prime-Admin-Token`` header does not match it."""
+
+    require_admin_token: bool = False
+    """Refuse to start when neither ``admin_token_var`` nor its ``_SHA256`` digest variable is set, instead of serving the admin routes without authentication."""
+
 
 # Valid vLLM max_lora_rank values (`vllm.config.lora.MaxLoRARanks`), excluding 1 so
 # tiny adapters round up to 8. Hardcoded rather than imported: prime-rl-configs does
@@ -671,6 +677,7 @@ class InferenceConfig(BaseConfig):
             host=self.server.host,
             port=self.server.port,
             liveness_timeout_seconds=self.server.liveness_timeout_seconds,
+            admin_token_var=self.server.admin_token_var,
         )
 
         extra_fields = self.vllm.model_extra or {}

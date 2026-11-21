@@ -227,12 +227,10 @@ def test_full_offload_model_only_resume_preserves_weights(
     before = _model_state(run_dir / "checkpoints" / "step_5", tmp_path / "step_5.pt")
     after = _model_state(run_dir / "checkpoints" / "step_6", tmp_path / "step_6.pt")
     assert before.keys() == after.keys()
-    # The runs train in different compute dtypes (fp32 vs bf16 under full offload),
-    # so compare in the dtype the resumed model actually loaded.
+    # Full offload loads the model weights into its FP32 masters and saves the masters as the model weights, so a
+    # step at lr 0 keeps them exactly
     for key in before:
-        assert torch.equal(before[key].to(torch.bfloat16), after[key].to(torch.bfloat16)), (
-            f"Weight mismatch after model-only resume: {key}"
-        )
+        assert torch.equal(before[key], after[key]), f"Weight mismatch after model-only resume: {key}"
 
 
 def test_convert_final_checkpoint(sft_resume_process: ProcessResult, run_dir: Path, tmp_path: Path):
