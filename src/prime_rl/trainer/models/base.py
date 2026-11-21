@@ -148,6 +148,25 @@ class PreTrainedModelPrimeRL(nn.Module):
         return None
 
     @classmethod
+    def lora_blocker(cls, config) -> str | None:
+        """Why this architecture cannot train with LoRA, or ``None`` if it can."""
+        return None
+
+    @classmethod
+    def cuda_graph_blocker(cls, config) -> str | None:
+        """Why this architecture's compiled layers cannot be recorded as CUDA graphs, or ``None`` if they can."""
+        return None
+
+    @classmethod
+    def dynamic_layer_arg_dims(cls) -> tuple[tuple[str, int], ...]:
+        """The decoder layer's tensor args, as ``(name, dim)``, whose dim is the row length. ``apply_compile`` then
+        compiles the layers for any row length at once. Without them a layer compiles for its first row's length
+        and each rank recompiles it at the first row of another length, while the other ranks wait. The marks match
+        the argument names, so the model must pass these args to its layers by keyword. Naming any arg also turns
+        off Inductor's fusion of mixed-order reductions for the process."""
+        return ()
+
+    @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
         """Whether a tensor is stored in FP32 in the source checkpoint.
 

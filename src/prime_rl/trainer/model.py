@@ -16,6 +16,7 @@ os.environ.setdefault("USE_HUB_KERNELS", "NO")
 import fla.utils
 import torch
 import torch._dynamo
+import torch._inductor.config
 import torch.distributed as dist
 import torch.nn as nn
 from huggingface_hub import snapshot_download
@@ -864,15 +865,16 @@ DYNAMIC_TENSOR_ARG_DIMS = (
 )
 
 
-def mark_dynamic_args() -> None:
-    """Add DYNAMIC_INT_ARGS and DYNAMIC_TENSOR_ARG_DIMS to torch.compiler.config.dynamic_sources, keeping its entries."""
+def mark_dynamic_args(layer_arg_dims: tuple[tuple[str, int], ...] = ()) -> None:
+    """Add DYNAMIC_INT_ARGS, DYNAMIC_TENSOR_ARG_DIMS and the model's own ``layer_arg_dims`` to
+    torch.compiler.config.dynamic_sources, keeping its entries."""
     sources = [source for source in torch.compiler.config.dynamic_sources.split(",") if source]
     patterns = []
     for arg in DYNAMIC_INT_ARGS:
         # Matches the arg passed directly (L['max_seqlen']), through a wrapper's kwargs (L['kwargs']['max_seqlen']),
         # or as an attribute of an arg (L['kwargs']['packed'].compression_layouts[4].max_entries_per_doc).
         patterns.append(rf".*(\['{arg}'\]|\.{arg}$)")
-    for arg, dim in DYNAMIC_TENSOR_ARG_DIMS:
+    for arg, dim in (*DYNAMIC_TENSOR_ARG_DIMS, *layer_arg_dims):
         # Matches the arg (L['kwargs']['mhc_states']) or an attribute of an arg (L['kwargs']['pool_layout'].query_tokens).
         # Unanchored, so it also matches the FSDP view's base (L['kwargs']['mhc_states']._base), which is guarded too.
         patterns.append(rf".*(\['{arg}'\]|\.{arg}):{dim}")
@@ -898,13 +900,31 @@ def load_lazy_modules() -> None:
             getattr(module, "__name__", None)
 
 
+# torch.compile modes that record the compiled layers as CUDA graphs.
+CUDA_GRAPH_COMPILE_MODES = ("reduce-overhead", "max-autotune")
+
+
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
+    if compile_config.mode in CUDA_GRAPH_COMPILE_MODES:
+        cuda_graph_blocker = type(model).cuda_graph_blocker(model.config)
+        if cuda_graph_blocker is not None:
+            raise ValueError(
+                f"{model.config.model_type!r} cannot train with model.compile.mode={compile_config.mode!r}, which "
+                f"records CUDA graphs: {cuda_graph_blocker}"
+            )
     torch._dynamo.config.capture_scalar_outputs = True
     # Ops whose output shape depends on input data (DeepEP dispatch) would otherwise graph-break. A graph break
     # inside an activation-checkpointed block makes Dynamo run the whole block eagerly.
     torch._dynamo.config.capture_dynamic_output_shape_ops = True
     load_lazy_modules()
-    mark_dynamic_args()
+    layer_arg_dims = type(model).dynamic_layer_arg_dims()
+    if layer_arg_dims:
+        # Inductor fuses reductions of mixed order only above size thresholds. On a dynamic row length each threshold
+        # is a guard, and the first row on its other side recompiles the layer. Without the fusion there is no guard.
+        # Its non-strict mode drops the guards too, but the fused kernel also sums the rows past the end of the row
+        # (torch 2.14), which for the MoE router adds top_k * sigmoid(0) / 1e-20 to the routing confidence.
+        torch._inductor.config.triton.mix_order_reduction = False
+    mark_dynamic_args(layer_arg_dims)
     language_model = get_language_model(model)
     for layer in language_model.layers:
         if isinstance(layer, TokenChunkedCheckpointWrapper):
