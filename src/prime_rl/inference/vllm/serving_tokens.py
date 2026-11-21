@@ -25,6 +25,7 @@ Everything else delegates to upstream so we track future vLLM changes for free.
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncGenerator, AsyncIterator
 from copy import copy
 from typing import Any
@@ -161,6 +162,13 @@ class _PackedOutputs:
 
 class PrimeRlServingTokens(ServingTokens):
     """ServingTokens with packed per-token payloads."""
+
+    def _get_data_parallel_rank(self, raw_request: Request | None) -> int | None:
+        if os.environ.get("PRIME_RL_CLEF_URL"):
+            # Managed routers count the reserved judge GPU as a policy worker.
+            # The local DP pool owns routing across the actual policy workers.
+            return None
+        return super()._get_data_parallel_rank(raw_request)
 
     async def serve_tokens(
         self,

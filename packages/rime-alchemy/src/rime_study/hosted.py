@@ -55,6 +55,7 @@ class RIMEAlchemyEnv(vf.Env[RIMEAlchemyEnvConfig]):
             max_concurrent=self.config.judge_max_concurrent,
             max_retries=self.config.judge_max_retries,
             retry_timeout=self.config.judge_retry_timeout,
+            transport_model=agents.actor.config.model if self.config.judge_local else None,
         )
 
     async def run(self, task: StreamTask, agents: vf.Agents):

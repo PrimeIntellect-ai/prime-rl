@@ -46,10 +46,16 @@ async def local_clef_judge(request: Request):
     url = os.environ.get("PRIME_RL_CLEF_URL")
     if url is None:
         raise HTTPException(503, "Local Clef judge is not configured")
+    envelope = await request.json()
+    if not isinstance(envelope, dict) or set(envelope) != {"model", "judge_request"}:
+        raise HTTPException(400, "Expected a local judge transport envelope")
+    body = envelope["judge_request"]
+    if not isinstance(body, dict) or body.get("model", "").lower() != "cloudflare/clef-flash":
+        raise HTTPException(400, "Expected a Clef-Flash judge request")
     # No inbound credentials are forwarded to the loopback-only judge.
     try:
         async with httpx.AsyncClient(timeout=180) as client:
-            response = await client.post(url, json=await request.json())
+            response = await client.post(url, json=body)
     except httpx.RequestError as exc:
         raise HTTPException(503, "Local Clef judge is unavailable") from exc
     return JSONResponse(response.json(), status_code=response.status_code)
