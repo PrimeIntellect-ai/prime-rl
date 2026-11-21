@@ -1,5 +1,6 @@
 import copy
 import inspect
+import threading
 
 import pytest
 import torch
@@ -8,6 +9,7 @@ from safetensors.torch import load_file
 from prime_rl.trainer.models import get_custom_causal_lm_cls, get_custom_vlm_cls, supports_custom_impl
 from prime_rl.trainer.models.inkling2_loop import Inkling2LoopConfig, Inkling2LoopForCausalLM, Inkling2LoopTextConfig
 from prime_rl.trainer.models.inkling2_loop import attention as inkling2_attention
+from prime_rl.trainer.models.inkling2_loop import layers as inkling2_layers
 from prime_rl.trainer.models.inkling2_loop.attention import rel_attention
 from prime_rl.trainer.models.inkling2_loop.dequantize import (
     E2M1_VALUES,
@@ -407,6 +409,111 @@ def test_packed_documents_do_not_see_each_other():
     torch.testing.assert_close(changed[: SEQ_LENS[0]], packed[: SEQ_LENS[0]], rtol=1e-3, atol=1e-3)
     later = slice(SEQ_LENS[0] + 1, None)
     assert (changed[later] - packed[later]).abs().amax(dim=-1).min() > 1e-2
+
+
+class _ThreadCPContext:
+    """The context of a context-parallel group whose ranks are threads of this process."""
+
+    cp_enabled = True
+    cp_group = None
+
+    def __init__(self, cp: int, rank: threading.local) -> None:
+        self.cp_world_size = cp
+        self._rank = rank
+
+    @property
+    def cp_rank(self) -> int:
+        return self._rank.value
+
+
+@pytest.mark.parametrize("cp", [2, 4])
+def test_context_parallel_shards_match_the_row(monkeypatch, cp):
+    """The ranks of a context-parallel group give the row's logits and gradients. They run as threads, and every
+    collective hands the ranks' tensors over directly, so autograd sees one graph and nothing is rounded to BF16:
+    a wrong shard boundary, head slice or position would show at full size. The documents start at a shard cut,
+    straddle cuts and end at one, and the routing is replayed."""
+    config = _text_config(
+        num_attention_heads=8, num_key_value_heads=4, swa_num_attention_heads=8, swa_num_key_value_heads=4
+    )
+    model = _randomized_model(config).double()
+    torch.manual_seed(0)
+    seq_lens = torch.tensor([24, 39, 1, 8, 24])
+    num_tokens = int(seq_lens.sum())
+    input_ids = torch.randint(2, 300, (1, num_tokens))
+    scores = torch.rand(1, num_tokens, model.model.num_layer_visits, config.n_routed_experts)
+    routed_experts = scores.argsort(-1)[..., : config.num_experts_per_tok]
+    weights = torch.randn(num_tokens, config.unpadded_vocab_size, dtype=torch.float64)
+
+    def gradients(logits: torch.Tensor) -> dict[str, torch.Tensor]:
+        model.zero_grad()
+        (logits * weights).sum().backward()
+        return {name: param.grad.clone() for name, param in model.named_parameters()}
+
+    row = model(input_ids=input_ids, seq_lens=seq_lens, routed_experts=routed_experts)["logits"][0]
+    row_gradients = gradients(row)
+
+    rank = threading.local()
+    slots: list = [None] * cp
+    posted, taken = threading.Barrier(cp, timeout=60), threading.Barrier(cp, timeout=60)
+
+    def exchange(tensor: torch.Tensor) -> list[torch.Tensor]:
+        slots[rank.value] = tensor
+        posted.wait()
+        tensors = list(slots)
+        taken.wait()
+        return tensors
+
+    def seq_to_head(states: torch.Tensor, cp_size: int, group) -> torch.Tensor:
+        heads = states.shape[1] // cp_size
+        mine = slice(rank.value * heads, (rank.value + 1) * heads)
+        return torch.cat([shard[:, mine] for shard in exchange(states)], dim=0)
+
+    def head_to_seq(states: torch.Tensor, cp_size: int, group) -> torch.Tensor:
+        tokens = states.shape[0] // cp_size
+        mine = slice(rank.value * tokens, (rank.value + 1) * tokens)
+        return torch.cat([heads[mine] for heads in exchange(states)], dim=1)
+
+    monkeypatch.setattr(inkling2_layers, "gather_for_cp", lambda end, group: torch.cat(exchange(end), dim=1))
+    monkeypatch.setattr(inkling2_attention, "_all_to_all_seq_to_head", seq_to_head)
+    monkeypatch.setattr(inkling2_attention, "_all_to_all_head_to_seq", head_to_seq)
+    context = _ThreadCPContext(cp, rank)
+    for module in model.modules():
+        if hasattr(module, "cp_context"):
+            module.cp_context = context
+
+    shard_tokens = num_tokens // cp
+    shards: list = [None] * cp
+    errors = []
+
+    def run(index: int) -> None:
+        rank.value = index
+        mine = slice(index * shard_tokens, (index + 1) * shard_tokens)
+        try:
+            shards[index] = model(
+                input_ids=input_ids[:, mine],
+                seq_lens=seq_lens,
+                seq_lens_are_pre_shard=True,
+                routed_experts=routed_experts[:, mine],
+            )["logits"][0]
+        except BaseException as error:
+            errors.append(error)
+            posted.abort()
+            taken.abort()
+
+    threads = [threading.Thread(target=run, args=(index,)) for index in range(cp)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors, errors
+
+    # Equal in exact arithmetic. The model's norms and convolutions compute in FP32, which carries the rounding of
+    # a sum taken in another order or of one differently threaded kernel call into the logits (2e-4 seen). A wrong
+    # boundary, head slice or position moves them by more than 1.
+    split = torch.cat(shards)
+    torch.testing.assert_close(split, row, rtol=0, atol=1e-2)
+    for name, gradient in gradients(split).items():
+        torch.testing.assert_close(gradient, row_gradients[name], rtol=0, atol=1e-2 * row_gradients[name].abs().max())
 
 
 def test_loop_passes_and_messages_change_the_output():

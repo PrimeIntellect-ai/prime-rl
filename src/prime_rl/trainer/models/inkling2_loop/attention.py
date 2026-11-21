@@ -4,6 +4,9 @@ The score of query ``i`` on key ``j`` is ``scale * q_i . k_j + rel[i, h, i - j]`
 back ``rel_extent`` tokens and is zero beyond. No flash-attention kernel carries that bias and its gradient, so
 the core is computed densely in FP32, in query chunks, with a backward that recomputes each chunk instead of
 keeping the score matrices.
+
+Under context parallelism the kernel runs head-sharded (Ulysses): an all-to-all gives each rank the whole row for
+its share of the heads, and a second one returns the outputs to the sequence shards. The kernel itself is unchanged.
 """
 
 import bisect
@@ -24,6 +27,8 @@ from prime_rl.trainer.models.inkling2_loop.layers import (
     unweighted_rms_norm,
 )
 from prime_rl.trainer.models.layers.attn import quadratic_attention_flops
+from prime_rl.trainer.models.layers.ulysses_attn import _all_to_all_head_to_seq, _all_to_all_seq_to_head
+from prime_rl.utils.cp import CPContext
 
 # Scores (heads x queries x keys) held at once. Forward and backward keep a handful of tensors of this size.
 SCORE_ELEMENTS_PER_CHUNK = 1 << 26
@@ -36,7 +41,7 @@ def _query_chunks(first_key: torch.Tensor, num_heads: int) -> list[tuple[int, in
     and every query of the chunk is scored against all of them. A chunk therefore ends at the first query that
     sees none of the keys before the chunk: the next document's first token, or on a sliding layer the query one
     window after the chunk's first. From that query on, every score against the keys before the chunk would be
-    masked.
+    masked; with the few heads of a context-parallel rank a chunk would otherwise span about five times the window.
 
     The plan follows the row's document layout, read from ``first_key`` on the host: a plan from the shapes alone
     would score the earlier documents of a packed row too. A CUDA graph cannot record that read
@@ -219,6 +224,8 @@ class Inkling2Attention(nn.Module):
     layers see their whole document, scale queries and relative states with the log of the position, and run K/V
     convolutions whose taps depend on the token."""
 
+    cp_context: CPContext = CPContext()
+
     def __init__(self, config: Inkling2LoopTextConfig, layer_idx: int, num_visits: int) -> None:
         super().__init__()
         self.is_sliding = config.layer_types[layer_idx] == SLIDING_ATTENTION
@@ -272,7 +279,8 @@ class Inkling2Attention(nn.Module):
         first_key: torch.Tensor,
     ) -> torch.Tensor:
         """``*_states [1, T, hidden]`` are the normed inputs of the query, key and value projections (one tensor
-        outside the loop's later passes). ``positions [T]`` counts tokens inside each document."""
+        outside the loop's later passes). ``positions [T]`` counts tokens inside each document. ``first_key`` covers
+        the whole row, which under context parallelism is longer than this rank's ``T`` tokens."""
         num_tokens = query_states.shape[1]
         dtype = query_states.dtype
 
@@ -295,9 +303,19 @@ class Inkling2Attention(nn.Module):
         if length_scale is not None:
             q = (q.float() * length_scale).to(dtype)
             rel_states = (rel_states.float() * length_scale).to(dtype)
-        rel = torch.matmul(rel_states, self.rel_table.to(dtype))
 
+        cp = self.cp_context
+        if cp.cp_enabled:
+            # Query head `h` reads KV head `h // (Hq // Hkv)`, so a rank's query heads read its own KV heads.
+            q, k, v, rel_states = (
+                _all_to_all_seq_to_head(states, cp.cp_world_size, cp.cp_group) for states in (q, k, v, rel_states)
+            )
+        rel = torch.matmul(rel_states, self.rel_table.to(dtype))
         out, lse = rel_attention(q, k, v, rel, first_key, self.scaling)
+        if cp.cp_enabled:
+            out = _all_to_all_head_to_seq(out, cp.cp_world_size, cp.cp_group)
+            lse = _all_to_all_head_to_seq(lse.unsqueeze(-1), cp.cp_world_size, cp.cp_group).squeeze(-1)
+
         # The sink is one more logit per query with a zero value: it scales the output by the mass the keys keep.
         out = out * torch.sigmoid(gate.float().view(num_tokens, self.num_heads, self.head_dim))
         out = out * torch.sigmoid(lse - sink.float().view(num_tokens, self.num_heads)).unsqueeze(-1)

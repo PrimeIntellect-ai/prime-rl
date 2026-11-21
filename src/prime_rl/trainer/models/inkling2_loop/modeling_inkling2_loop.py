@@ -16,6 +16,10 @@ Two things set the decoder apart from a plain residual stack:
 
 The model takes one packed row of documents. Documents are isolated in attention and in every convolution, and
 positions restart at each document.
+
+Context parallelism splits the row into equal shards along the sequence, one per rank. Everything is per token
+except attention, which the ranks compute head-sharded over the whole row, and the convolutions, which read the few
+tokens before a shard from the rank that holds them.
 """
 
 from functools import cache
@@ -146,7 +150,8 @@ class Inkling2DecoderLayer(nn.Module):
             block_states: ``[1, T, slots, H]``, one slot per block of the model.
             block_mask: ``[slots]``, the slots that hold a finished block.
             positions: ``[T]``, token index inside its document.
-            first_key: ``[T]``, the first key each token attends (see ``rel_attention``).
+            first_key: ``[row]``, the first key each token of the row attends (see ``rel_attention``). The row is
+                this rank's ``T`` tokens, or under context parallelism every rank's.
             message_bank: ``[1, T, m, H]``, the previous pass's block outputs. Only in a later pass of the loop.
             message_queries: ``[4, H]``, this layer's message queries for its query, key, value and MLP inputs.
             routed_experts: ``[1, T, top_k]``, the experts to route this visit to instead of the router's picks.
@@ -197,7 +202,21 @@ class Inkling2LoopPreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:
-        return "the relative-bias attention and the short convolutions have no context-parallel path yet"
+        # Attention is head-sharded without KV-head replication, on the full and the sliding layers.
+        text_config = getattr(config, "text_config", config)
+        head_counts = {
+            name: getattr(text_config, name)
+            for name in (
+                "num_attention_heads",
+                "num_key_value_heads",
+                "swa_num_attention_heads",
+                "swa_num_key_value_heads",
+            )
+        }
+        indivisible = [f"{name}={count}" for name, count in head_counts.items() if count % cp != 0]
+        if indivisible:
+            return f"cp={cp} must divide every attention head count, which it does not for {', '.join(indivisible)}"
+        return None
 
     @classmethod
     def lora_blocker(cls, config) -> str | None:
@@ -335,11 +354,17 @@ class Inkling2LoopModel(Inkling2LoopPreTrainedModel):
             Routed experts of every layer visit (see ``layer_visit_ids``). Only used for router replay.
         seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
             Per-document lengths of the packed row.
+        seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
+            Whether the other inputs are this rank's context-parallel shard of the row that `seq_lens` describes.
         """
         if (input_ids is None) == (inputs_embeds is None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
-        if seq_lens_are_pre_shard:
-            raise NotImplementedError("Inkling 2 has no context-parallel path")
+        cp = self.cp_context
+        if seq_lens_are_pre_shard != cp.cp_enabled:
+            raise ValueError(
+                f"seq_lens_are_pre_shard={seq_lens_are_pre_shard} does not match context parallelism "
+                f"(cp={cp.cp_world_size}): the inputs are a shard of the row exactly when it is on"
+            )
         if routed_experts is not None and routed_experts.shape[2] != self.num_layer_visits:
             raise ValueError(
                 f"routed_experts holds {routed_experts.shape[2]} layers, but the decoder visits "
@@ -353,13 +378,22 @@ class Inkling2LoopModel(Inkling2LoopPreTrainedModel):
             raise ValueError(f"Inkling 2 takes one packed row, got batch size {inputs_embeds.shape[0]}")
 
         num_tokens = inputs_embeds.shape[1]
+        if cp.cp_enabled and num_tokens < self.config.sconv_kernel_size - 1:
+            raise ValueError(
+                f"A context-parallel shard of {num_tokens} tokens is shorter than the "
+                f"{self.config.sconv_kernel_size - 1} tokens the convolutions of the next shard read"
+            )
+        row_tokens = num_tokens * cp.cp_world_size
         device = inputs_embeds.device
-        cu_seqlens, _ = get_cu_seqlens_from_seq_lens(seq_lens.to(device=device), total_tokens=num_tokens)
-        token = torch.arange(num_tokens, device=device)
+        cu_seqlens, _ = get_cu_seqlens_from_seq_lens(seq_lens.to(device=device), total_tokens=row_tokens)
+        token = torch.arange(row_tokens, device=device)
         document_start = torch.repeat_interleave(
-            cu_seqlens[:-1].long(), seq_lens.to(device=device, dtype=torch.long), output_size=num_tokens
+            cu_seqlens[:-1].long(), seq_lens.to(device=device, dtype=torch.long), output_size=row_tokens
         )
-        positions = token - document_start
+        # Attention sees the whole row. Everything else sees this rank's tokens, as a copy: a compiled layer's
+        # input must not be a view of a larger tensor.
+        shard = slice(cp.cp_rank * num_tokens, (cp.cp_rank + 1) * num_tokens)
+        positions = (token - document_start)[shard].clone()
         first_key_full = document_start
         first_key_sliding = torch.maximum(document_start, token - (self.sliding_window - 1))
 

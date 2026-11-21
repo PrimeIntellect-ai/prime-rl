@@ -90,6 +90,7 @@ CP_MODELS = [
     "gpt_oss",
     "nemotron_h",
     "afmoe",
+    "inkling2_loop",
 ]
 CASES = [
     *(CompileCase(f"{model}-dp2", model) for model in TINY_CONFIGS),
