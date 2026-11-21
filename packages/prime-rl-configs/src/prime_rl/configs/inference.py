@@ -21,6 +21,7 @@ class ClefJudgeConfig(BaseConfig):
     port: int = Field(9020, ge=1024, le=65535)
     max_length: int = Field(24576, ge=1024)
     startup_timeout: float = Field(1800, gt=0)
+    actor_gpus: int = Field(5, ge=1)
 
 
 class ServerConfig(BaseConfig):
@@ -534,6 +535,14 @@ class InferenceConfig(BaseConfig):
             if self.router is not None and "router" in self.model_fields_set:
                 raise ValueError("Clef judge proxy requires a bare inference server, without a router")
             self.router = None
+            tp = self.vllm.tensor_parallel_size
+            if self.clef_judge.actor_gpus % tp:
+                raise ValueError("Clef actor GPU reservation must be divisible by tensor parallel size")
+            # Hosted launchers also pass DP on the command line, after the config file.
+            self.vllm.data_parallel_size = self.clef_judge.actor_gpus // tp
+            self.vllm.api_server_count = self.vllm.data_parallel_size
+            if self.vllm.data_parallel_size_local is not None:
+                self.vllm.data_parallel_size_local = self.vllm.data_parallel_size
         return self
 
     @model_validator(mode="after")

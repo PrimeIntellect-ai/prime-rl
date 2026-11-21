@@ -228,7 +228,9 @@ def inference_local(config: InferenceConfig):
         from prime_rl.inference.clef import start_judge
 
         actor_gpus = config.vllm.data_parallel_size * config.vllm.tensor_parallel_size
-        judge_process, judge_stopping = start_judge(config.clef_judge, actor_gpus)
+        judge_process, judge_stopping = start_judge(
+            config.clef_judge, actor_gpus, config.server.port, config.backend_port,
+        )
 
     setup_vllm_env(config)
 

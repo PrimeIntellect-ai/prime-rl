@@ -59,6 +59,15 @@ class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
     inference_world_size: int = Field(1, ge=1)
     """Total inference workers across all servers. Set automatically by ``rl`` and ``sft``."""
 
+    inference_world_size_override: int | None = Field(None, ge=1)
+    """Policy-worker count when a managed GPU allocation also contains non-policy services."""
+
+    @model_validator(mode="after")
+    def apply_world_size_override(self):
+        if self.inference_world_size_override is not None:
+            self.inference_world_size = self.inference_world_size_override
+        return self
+
 
 class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     type: Literal["nccl"] = "nccl"

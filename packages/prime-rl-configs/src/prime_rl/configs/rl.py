@@ -691,6 +691,8 @@ class RLConfig(BaseConfig):
                 num_infer_gpus = self.deployment.num_infer_gpus - int(self.inference.clef_judge is not None)
                 if num_infer_gpus < 1:
                     raise ValueError("Clef judge needs one GPU in addition to actor inference GPUs")
+                if self.inference.clef_judge is not None and self.inference.clef_judge.actor_gpus != num_infer_gpus:
+                    raise ValueError("Clef actor reservation differs from the inference-pod GPU allocation")
                 if num_infer_gpus != self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size:
                     assert num_infer_gpus % self.inference.vllm.tensor_parallel_size == 0, (
                         "Number of inference GPUs must be divisible by the tensor parallel size"

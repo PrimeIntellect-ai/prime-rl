@@ -15,6 +15,10 @@ num_train_gpus = 2
 num_infer_gpus = 6
 # Six inference-pod GPUs: five actor/writer replicas plus one frozen Clef judge.
 
+[weight_broadcast]
+type = "nccl"
+inference_world_size_override = 5
+
 [trainer.optim]
 lr = 1e-6
 
@@ -79,6 +83,7 @@ env.exploration_judge.base_url = "https://api.pinference.ai/api/v1/evaluations"
 [inference]
 
 [inference.clef_judge]
+actor_gpus = 5
 revision = "22b75507981345858dd152fbd9a6f8c0c4068b0a"
 max_length = 24576
 
