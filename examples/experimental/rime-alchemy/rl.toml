@@ -22,6 +22,10 @@ lr = 1e-6
 [trainer]
 initial_reference = true
 
+[trainer.env_vars]
+# Avoid the runtime's closed Inductor subprocess pool during warmup.
+TORCHINDUCTOR_COMPILE_THREADS = "1"
+
 [trainer.model]
 ep = 1
 
