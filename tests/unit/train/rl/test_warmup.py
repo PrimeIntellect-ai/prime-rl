@@ -3,7 +3,12 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from prime_rl.trainer.models import _CUSTOM_CAUSAL_LM_MODELS, custom_causal_lm_from_config
+from prime_rl.trainer.models.inkling2 import Inkling2TextConfig
+from prime_rl.trainer.models.inkling2_loop import Inkling2LoopTextConfig
+from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.rl.warmup import synthetic_micro_batch, warmup_micro_batches
+from tests.unit.train.models.test_scratch_init import tiny_config
 
 
 @pytest.mark.parametrize("seq_len,multiple", [(131072, 4), (4096, 1), (65536, 256), (100, 32)])
@@ -18,7 +23,7 @@ def test_warmup_micro_batches(seq_len: int, multiple: int) -> None:
 
 @pytest.mark.parametrize("score_centering", [False, True])
 def test_synthetic_micro_batch(score_centering: bool) -> None:
-    model = SimpleNamespace(config=SimpleNamespace(vocab_size=1000))
+    model = SimpleNamespace(lm_head=SimpleNamespace(num_logits=1000))
     loss = SimpleNamespace(type="icepop", score_centering=score_centering, score_centering_topk=4)
     config = SimpleNamespace(enable_router_replay=False, loss=loss)
     doc_lens = [5, 3, 8]
@@ -39,3 +44,40 @@ def test_synthetic_micro_batch(score_centering: bool) -> None:
     assert int(rows.max()) < 1000
     assert (micro_batch["support_logprobs"] <= 0).all()
     assert not micro_batch["support_replayed"].any()
+
+
+def tiny_trainer_model(config_cls, **text_config):
+    """A tiny model of the family on the meta device, with the trainer's LM head."""
+    config = tiny_config(config_cls)
+    for name, value in text_config.items():
+        setattr(config.get_text_config(), name, value)
+    with torch.device("meta"):
+        model = custom_causal_lm_from_config(config, attn_implementation="flash_attention_3")
+    inject_prime_lm_head(model)
+    return model
+
+
+@pytest.mark.parametrize(
+    "config_cls", [config_cls for config_cls, _ in _CUSTOM_CAUSAL_LM_MODELS], ids=lambda cls: cls.model_type
+)
+def test_lm_head_counts_the_vocabulary_without_padding(config_cls):
+    model = tiny_trainer_model(config_cls)
+    assert model.lm_head.num_logits == model.config.get_text_config().vocab_size
+
+
+@pytest.mark.parametrize("config_cls", [Inkling2TextConfig, Inkling2LoopTextConfig], ids=lambda cls: cls.model_type)
+def test_synthetic_ids_stay_among_the_logits_of_a_padded_unembedding(config_cls):
+    """Inkling 2 checkpoints pad the unembedding to the embedding's rows. Inkling 2 Small's head keeps the padding
+    rows and leaves them out of its projection; the Mini's head holds the logit rows alone. Either way the head
+    gives `unpadded_vocab_size` logits, and a token or support id past them has no logit."""
+    model = tiny_trainer_model(config_cls, unpadded_vocab_size=100)
+    assert model.config.vocab_size == model.get_input_embeddings().num_embeddings == 128
+    assert model.lm_head.num_logits == 100
+    head = model.lm_head.to_empty(device="cpu")
+    assert head(torch.zeros(1, 2, head.in_features))["logits"].shape == (1, 2, 100)
+
+    loss = SimpleNamespace(type="icepop", score_centering=True, score_centering_topk=4)
+    config = SimpleNamespace(enable_router_replay=False, loss=loss)
+    micro_batch = synthetic_micro_batch([200, 56], model, config, torch.Generator().manual_seed(0))
+    assert 90 <= int(micro_batch["input_ids"].max()) < 100
+    assert 90 <= int(micro_batch["support_ids"].max()) < 100
