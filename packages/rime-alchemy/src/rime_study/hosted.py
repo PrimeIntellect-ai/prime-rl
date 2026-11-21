@@ -127,6 +127,11 @@ class RIMEAlchemyEnv(vf.Env[RIMEAlchemyEnvConfig]):
                 env.advance_after_write()
             else:
                 writer_trace.drop("Terminal memory has no future-task credit")
+        midpoint = len(rewards) // 2
+        early = sum(rewards[:midpoint]) / midpoint
+        late = sum(rewards[midpoint:]) / (len(rewards) - midpoint)
+        actor_trace.record_metric("rime/late_minus_early_raw_reward", late - early)
+        actor_trace.record_metric("rime/stream_raw_reward", sum(rewards))
         for trace, role, position in training:
             trace.info["rime"] = {
                 "episode_index": task.data.episode_index,
