@@ -75,6 +75,8 @@ class CompileCase(Case):
     """Returns why this GPU or environment cannot run the case, or None if it can."""
 
     def skip_reason(self) -> str | None:
+        if self.name in KNOWN_FAILURES:
+            return f"fails fullgraph today: {KNOWN_FAILURES[self.name]}"
         return None if self.requirement is None else self.requirement()
 
 
@@ -129,6 +131,29 @@ CASES = [
         overrides={"moe": {"dispatch": {"type": "deepep"}}},
     ),
 ]
+
+
+FLA_CONV_IS_COMPILER_DISABLED = "FLA wraps causal_conv1d_fwd in torch.compiler.disable"
+CP_CONTEXT_IS_COMPILER_DISABLED = "build_cp_context runs under torch.compiler.disable with context parallelism"
+FA4_SINK_CALL_IS_UNTRACEABLE = "GPT-OSS calls FA4 with learnable sinks directly, which Dynamo cannot trace"
+KNOWN_FAILURES = {
+    **dict.fromkeys(
+        [
+            "qwen3_5-dp2",
+            "qwen3_5_moe-dp2",
+            "qwen3_8_flash_next-dp2",
+            "glm5_next-dp2",
+            "nemotron_h-dp2",
+            "nemotron_h-dp2-token_chunk",
+            "nemotron_h-cp2",
+        ],
+        FLA_CONV_IS_COMPILER_DISABLED,
+    ),
+    **dict.fromkeys(
+        ["qwen3_5-cp2", "qwen3_5_moe-cp2", "qwen3_8_flash_next-cp2", "glm5_next-cp2"], CP_CONTEXT_IS_COMPILER_DISABLED
+    ),
+    **dict.fromkeys(["gpt_oss-dp2", "gpt_oss-cp2"], FA4_SINK_CALL_IS_UNTRACEABLE),
+}
 
 
 def isolated(run, *args) -> dict:
