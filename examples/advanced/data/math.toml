@@ -29,5 +29,5 @@ interval = 25
 name = "aime2025"
 env.taskset.id = "aime25"
 env.agent.harness.id = "null"
-env.agent.runtime.type = "subprocess"
+# The AIME tasksets require a network policy, which only the sandboxed runtimes enforce.
 group_size = 8
