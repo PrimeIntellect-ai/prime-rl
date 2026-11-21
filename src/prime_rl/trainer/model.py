@@ -917,6 +917,9 @@ def load_lazy_modules() -> None:
 
 
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
+    if compile_config.threads is not None:
+        torch._inductor.config.compile_threads = compile_config.threads
+        get_logger().info(f"Inductor compilation threads: {compile_config.threads}")
     torch._dynamo.config.capture_scalar_outputs = True
     # Ops whose output shape depends on input data (DeepEP dispatch) would otherwise graph-break. A graph break
     # inside an activation-checkpointed block makes Dynamo run the whole block eagerly.

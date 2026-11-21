@@ -67,6 +67,9 @@ OffloadMode: TypeAlias = Literal["none", "optimizer", "full"]
 
 
 class CompileConfig(BaseConfig):
+    threads: int | None = Field(None, ge=1)
+    """Inductor compilation concurrency. Set to 1 to compile synchronously without a subprocess pool."""
+
     fullgraph: bool = False
     """Compile transformer blocks with ``fullgraph=True``."""
 
