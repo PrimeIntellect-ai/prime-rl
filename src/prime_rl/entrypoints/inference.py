@@ -220,6 +220,16 @@ def inference_local(config: InferenceConfig):
     # server subprocess. config.env_vars wins over the defaults; existing os.environ loses.
     os.environ.update({**DEFAULT_COMMON_ENV_VARS, **DEFAULT_INFERENCE_ENV_VARS, **config.env_vars})
 
+    judge_process = None
+    judge_stopping = Event()
+    if config.clef_judge is not None:
+        if config.router is not None or config.deployment.type != "single_node":
+            raise ValueError("Local Clef currently requires single-node inference without a router")
+        from prime_rl.inference.clef import start_judge
+
+        actor_gpus = config.vllm.data_parallel_size * config.vllm.tensor_parallel_size
+        judge_process, judge_stopping = start_judge(config.clef_judge, actor_gpus)
+
     setup_vllm_env(config)
 
     # The router holds a socket per in-flight request on each side; a 1024 soft limit runs out at ~500.
@@ -249,6 +259,9 @@ def inference_local(config: InferenceConfig):
     try:
         server(config)
     finally:
+        if judge_process is not None:
+            judge_stopping.set()
+            cleanup_processes([judge_process])
         if router_process is not None:
             router_stopping.set()
             cleanup_processes([router_process])

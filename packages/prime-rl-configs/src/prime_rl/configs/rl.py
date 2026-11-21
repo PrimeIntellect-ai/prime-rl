@@ -688,7 +688,9 @@ class RLConfig(BaseConfig):
 
             # fill up inference capacity with dp ranks
             if self.inference is not None:
-                num_infer_gpus = self.deployment.num_infer_gpus
+                num_infer_gpus = self.deployment.num_infer_gpus - int(self.inference.clef_judge is not None)
+                if num_infer_gpus < 1:
+                    raise ValueError("Clef judge needs one GPU in addition to actor inference GPUs")
                 if num_infer_gpus != self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size:
                     assert num_infer_gpus % self.inference.vllm.tensor_parallel_size == 0, (
                         "Number of inference GPUs must be divisible by the tensor parallel size"
@@ -707,6 +709,8 @@ class RLConfig(BaseConfig):
                     self.orchestrator.weight_broadcast.inference_world_size = world_size
 
         elif self.deployment.type == "multi_node":  # multi-node
+            if self.inference is not None and self.inference.clef_judge is not None:
+                raise ValueError("Clef judge GPU reservation currently requires single-node deployment")
             num_train_workers = self.deployment.num_train_nodes * self.deployment.gpus_per_node // self.trainer.model.cp
             check_derived(self.orchestrator, "num_train_workers", num_train_workers, "orchestrator.num_train_workers")
             if self.deployment.total_infer_nodes > 0:

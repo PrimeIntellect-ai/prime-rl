@@ -35,6 +35,10 @@ class RIMEAlchemyEnvConfig(vf.EnvConfig):
     exploration_judge: DecisionJudgeConfig = Field(default_factory=memory_judge_config)
     memory_chars: int = Field(4096, ge=1)
     carry_memory: bool = True
+    judge_max_concurrent: int = Field(1, ge=1)
+    judge_max_retries: int = Field(5, ge=0)
+    judge_retry_timeout: float = Field(180.0, gt=0)
+    judge_local: bool = False
 
     @model_validator(mode="after")
     def require_shared_policy(self):

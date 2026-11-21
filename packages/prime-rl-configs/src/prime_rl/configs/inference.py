@@ -15,6 +15,14 @@ from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_p
 # TODO: Set thinking/ solution budget
 
 
+class ClefJudgeConfig(BaseConfig):
+    model: Literal["Cloudflare/clef-flash"] = "Cloudflare/clef-flash"
+    revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    port: int = Field(9020, ge=1024, le=65535)
+    max_length: int = Field(24576, ge=1024)
+    startup_timeout: float = Field(1800, gt=0)
+
+
 class ServerConfig(BaseConfig):
     host: str | None = None
     """Host to bind to."""
@@ -502,6 +510,9 @@ class InferenceConfig(BaseConfig):
     enable_fp32_router_logits: bool = True
     """Request FP32 MoE router logits via ``hf_overrides = {"moe_router_dtype": "float32"}``. Operand and weight precision depend on the serving model implementation; FP32 logits do not imply FP32 gate weights. Trainer routers use BF16 operands with FP32 logits; configure serving gate precision explicitly to match."""
 
+    clef_judge: ClefJudgeConfig | None = None
+    """Reserve one inference-pod GPU for a frozen Clef decision service (single node only)."""
+
     # Launcher-only fields
 
     deployment: InferenceDeploymentConfig = SingleNodeInferenceDeploymentConfig()
@@ -514,6 +525,16 @@ class InferenceConfig(BaseConfig):
 
     dry_run: bool = False
     """Only validate and dump resolved configs, then exit early."""
+
+    @model_validator(mode="after")
+    def validate_clef_judge(self):
+        if self.clef_judge is not None:
+            if self.deployment.type != "single_node" or self.slurm is not None:
+                raise ValueError("Clef judge currently requires single-node inference without SLURM")
+            if self.router is not None and "router" in self.model_fields_set:
+                raise ValueError("Clef judge proxy requires a bare inference server, without a router")
+            self.router = None
+        return self
 
     @model_validator(mode="after")
     def validate_multi_node_requires_slurm(self):

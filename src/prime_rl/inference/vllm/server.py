@@ -4,6 +4,7 @@ import os
 from argparse import Namespace
 from typing import Literal
 
+import httpx
 import uvloop
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -38,6 +39,20 @@ def require_admin_token(request: Request) -> None:
 # Routes that change engine state require the admin token; probes stay on the open router.
 router = APIRouter()
 admin_router = APIRouter(dependencies=[Depends(require_admin_token)])
+
+
+@router.post("/v1/rime/judge")
+async def local_clef_judge(request: Request):
+    url = os.environ.get("PRIME_RL_CLEF_URL")
+    if url is None:
+        raise HTTPException(503, "Local Clef judge is not configured")
+    # No inbound credentials are forwarded to the loopback-only judge.
+    try:
+        async with httpx.AsyncClient(timeout=180) as client:
+            response = await client.post(url, json=await request.json())
+    except httpx.RequestError as exc:
+        raise HTTPException(503, "Local Clef judge is unavailable") from exc
+    return JSONResponse(response.json(), status_code=response.status_code)
 
 
 def engine_client(request: Request) -> EngineClient:

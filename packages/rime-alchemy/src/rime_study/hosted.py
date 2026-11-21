@@ -39,7 +39,23 @@ class RIMEAlchemyEnv(vf.Env[RIMEAlchemyEnvConfig]):
     async def setup(self, agents: vf.Agents):
         agents.actor.trainable = True
         agents.writer.trainable = True
-        self.memory_judge = MemoryDecisionJudge(self.config.exploration_judge)
+        judge_config = self.config.exploration_judge
+        if self.config.judge_local:
+            client = agents.actor.config.client
+            if client is None:
+                raise ValueError("Local Clef needs the resolved actor inference client")
+            judge_config = judge_config.model_copy(update={
+                "base_url": client.base_url.rstrip("/") + "/rime/judge",
+                "api_key_var": client.api_key_var,
+                "headers": client.headers,
+                "headers_from_env": client.headers_from_env,
+            })
+        self.memory_judge = MemoryDecisionJudge(
+            judge_config,
+            max_concurrent=self.config.judge_max_concurrent,
+            max_retries=self.config.judge_max_retries,
+            retry_timeout=self.config.judge_retry_timeout,
+        )
 
     async def run(self, task: StreamTask, agents: vf.Agents):
         env = AlchemyStream(task.data.episode_index)
