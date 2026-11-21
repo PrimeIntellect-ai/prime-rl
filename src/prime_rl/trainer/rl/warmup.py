@@ -42,12 +42,14 @@ def warmup_micro_batches(seq_len: int, multiple: int) -> list[list[int]]:
 
 
 def warmup_routed_experts(model: nn.Module, num_tokens: int, generator: torch.Generator) -> Tensor | None:
-    """Distinct random experts per token and layer, in the layout inference returns for router replay."""
+    """Distinct random experts per token and layer visit, in the layout inference returns for router replay."""
     routers = [moe.router for moe in iter_moe_blocks(model)]
     if not routers:
         return None
     num_experts = min(router.num_experts for router in routers)
-    num_layers = len(get_language_model(model).layers)
+    language_model = get_language_model(model)
+    # A looped decoder runs some layers several times per forward and takes one row per visit.
+    num_layers = getattr(language_model, "num_layer_visits", len(language_model.layers))
     first = torch.randint(0, num_experts, (1, num_tokens, num_layers, 1), generator=generator, dtype=torch.int32)
     return (first + torch.arange(routers[0].top_k, dtype=torch.int32)) % num_experts
 

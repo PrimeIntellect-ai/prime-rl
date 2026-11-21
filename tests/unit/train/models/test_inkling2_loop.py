@@ -26,6 +26,7 @@ from prime_rl.trainer.models.inkling2_loop.layers import (
 from prime_rl.trainer.models.inkling2_loop.modeling_inkling2_loop import Inkling2DecoderLayer, softcapped_swiglu
 from prime_rl.trainer.models.layers.activations import SoftcappedSwiglu
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE
+from prime_rl.trainer.rl.warmup import warmup_routed_experts
 from prime_rl.trainer.vlm import get_language_model, get_layer_prefix
 from tests.unit.train.models.fixtures.make_inkling2_loop_golden import (
     GOLDEN,
@@ -469,6 +470,10 @@ def test_router_replay_takes_one_row_per_layer_visit():
     torch.manual_seed(4)
     input_ids = torch.randint(2, 300, (SEQ_LENS[0],))
     routed_experts = torch.rand(1, SEQ_LENS[0], 16, 8).argsort(dim=-1)[..., :2]
+    # The trainer's warmup replays a synthetic routing, which has to come in the same layout.
+    warmup_rows = warmup_routed_experts(model, SEQ_LENS[0], torch.Generator().manual_seed(0))
+    assert warmup_rows.shape == routed_experts.shape
+    assert _logits(model, input_ids, [SEQ_LENS[0]], warmup_rows).isfinite().all()
 
     used = []
     for layer in decoder.layers:

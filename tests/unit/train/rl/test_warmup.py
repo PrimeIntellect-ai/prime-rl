@@ -7,7 +7,8 @@ from prime_rl.trainer.models import _CUSTOM_CAUSAL_LM_MODELS, custom_causal_lm_f
 from prime_rl.trainer.models.inkling2 import Inkling2TextConfig
 from prime_rl.trainer.models.inkling2_loop import Inkling2LoopTextConfig
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.rl.warmup import synthetic_micro_batch, warmup_micro_batches
+from prime_rl.trainer.rl.warmup import synthetic_micro_batch, warmup_micro_batches, warmup_routed_experts
+from prime_rl.trainer.vlm import get_language_model
 from tests.unit.train.models.test_scratch_init import tiny_config
 
 
@@ -81,3 +82,16 @@ def test_synthetic_ids_stay_among_the_logits_of_a_padded_unembedding(config_cls)
     micro_batch = synthetic_micro_batch([200, 56], model, config, torch.Generator().manual_seed(0))
     assert 90 <= int(micro_batch["input_ids"].max()) < 100
     assert 90 <= int(micro_batch["support_ids"].max()) < 100
+
+
+@pytest.mark.parametrize(
+    "config_cls,num_layers,num_layer_visits",
+    [(Inkling2TextConfig, 48, 48), (Inkling2LoopTextConfig, 24, 48)],
+    ids=lambda value: getattr(value, "model_type", value),
+)
+def test_warmup_routing_has_one_row_per_layer_visit(config_cls, num_layers: int, num_layer_visits: int):
+    """Inkling 2 Small runs each layer once. The Mini runs layers 6 to 17 three times and replays a row per visit."""
+    model = tiny_trainer_model(config_cls)
+    assert len(get_language_model(model).layers) == num_layers
+    routed_experts = warmup_routed_experts(model, 5, torch.Generator().manual_seed(0))
+    assert routed_experts.shape == (1, 5, num_layer_visits, 2)
