@@ -8,6 +8,7 @@ prime-rl, so any difference becomes trainer/inference mismatch.
 - Metrics, over the same two conversations on both sides: the largest |logprob difference| and the mean mismatch KL.
 - MoE cases first require that at least 85% of (token, MoE layer) pairs pick the same top-k experts, then compare
   logprobs with the trainer replaying vLLM's routing.
+- DSA cases require that some query has more candidate keys than its indexer keeps, so the ranking reaches the logprobs.
 - Tolerances are 2.4-3.5x the clean value measured on Hopper and SM120 (Hopper only where SM120 lacks the kernels),
   and at least 0.02 and 1e-5.
 - Adding an arch is one `Case`: a tiny config with every layer kind of the arch and the architecture vLLM serves it as.
@@ -41,6 +42,7 @@ from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.glm5_next import Glm5NextTextConfig
 from prime_rl.trainer.models.glm_moe_dsa import GlmMoeDsaConfig
 from prime_rl.trainer.models.gpt_oss import GptOssConfig
+from prime_rl.trainer.models.kernels import fp8_indexer
 from prime_rl.trainer.models.laguna import LagunaConfig
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import TokenChoiceTopKRouter
@@ -417,7 +419,8 @@ CASES = [
         "glm5_next",
         # GLM-5.3 Flash: layer 0 is Kimi Delta Attention with a dense MLP, layer 1 sparse MLA with the k-pool indexer and
         # MoE, both inside hyper-connections. Kernels fix the KDA head_dim 128, 64 MLA heads with kv_lora_rank 512 and
-        # no RoPE, and the indexer's 32 heads of 128. swiglu_limit is low enough for the clamp to act. mhc, mla_use_nope,
+        # no RoPE, and the indexer's 32 heads of 128. index_topk keeps 32 pools of 4 tokens, fewer than the rows have,
+        # so the indexer selects for later tokens. swiglu_limit is low enough for the clamp to act. mhc, mla_use_nope,
         # topk_method, moe_router_dtype and indexer_rope_interleave come from the real config.json, for vLLM.
         Glm5NextTextConfig(
             vocab_size=151936,
@@ -437,7 +440,7 @@ CASES = [
             v_head_dim=256,
             index_n_heads=32,
             index_head_dim=128,
-            index_topk=2048,
+            index_topk=128,
             index_kpool=4,
             n_routed_experts=8,
             num_experts_per_tok=2,
@@ -455,10 +458,10 @@ CASES = [
             indexer_rope_interleave=True,
             architectures=["Glm5NextForCausalLM"],
         ),
-        max_abs=0.03,
-        mismatch_kl=1e-5,
-        # Prompts shorter than index_topk otherwise take a dense prefill on Hopper, away from the sparse MLA kernel
-        engine=dict(attention_config={"sparse_mla_force_mqa": True}),
+        # The trainer's and vLLM's indexer scores differ slightly, so about a fifth of the selecting queries swap one
+        # pool at the cut, which moves their logprobs by up to 0.15
+        max_abs=0.35,
+        mismatch_kl=3.5e-4,
     ),
     Case(
         "qwen3_8_flash_next",
@@ -700,6 +703,21 @@ def rows() -> list[list[int]]:
     return [conversations[i] + conversations[i + 1] for i in range(0, len(conversations), 2)]
 
 
+@pytest.fixture
+def indexer_topks(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
+    """Every top-k of the trainer's DSA indexers: the most candidates (keys, k-pools or compressed entries) any query
+    has, and how many each query keeps."""
+    topks = []
+    select_topk = fp8_indexer.select_topk
+
+    def record_topk(logits: torch.Tensor, candidates: torch.Tensor, topk: int, sentinel: int) -> torch.Tensor:
+        topks.append((int(candidates.max()), topk))
+        return select_topk(logits, candidates, topk, sentinel)
+
+    monkeypatch.setattr(fp8_indexer, "select_topk", record_topk)
+    return topks
+
+
 def case_param(case: Case):
     marks = [pytest.mark.tiny] if case.tiny else []
     if case.known_bug is not None:
@@ -708,7 +726,13 @@ def case_param(case: Case):
 
 
 @pytest.mark.parametrize("case", [case_param(case) for case in CASES])
-def test_matches_vllm(case: Case, rows: list[list[int]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_matches_vllm(
+    case: Case,
+    rows: list[list[int]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    indexer_topks: list[tuple[int, int]],
+):
     # Keep the engine in this process, so the trainer's weights reach it through a function call
     monkeypatch.setenv("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
     monkeypatch.setenv("VLLM_NO_USAGE_STATS", "1")
@@ -725,6 +749,10 @@ def test_matches_vllm(case: Case, rows: list[list[int]], tmp_path: Path, monkeyp
         agreement = route_agreement(trainer_routing(model, rows), vllm_routes)
         assert agreement >= MIN_ROUTE_AGREEMENT, f"top-k experts agree on {agreement:.0%} of tokens"
     trainer = trainer_logprobs(model, rows, vllm_routes.unsqueeze(0).cuda() if moe else None)
+    if hasattr(case.config, "index_topk"):
+        assert any(candidates > topk for candidates, topk in indexer_topks), (
+            f"the indexer keeps every candidate (candidates, kept): {indexer_topks}"
+        )
 
     log_ratio = torch.cat(trainer) - torch.cat(vllm)
     max_abs = log_ratio.abs().max().item()
