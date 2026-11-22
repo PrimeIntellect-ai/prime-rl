@@ -467,9 +467,11 @@ def _setup_session_client(client_config: ClientConfig) -> AsyncClient:
     return setup_admin_clients(client_config, limits=limits)[0]
 
 
-# vLLM's API server closes a connection that has been idle for VLLM_HTTP_TIMEOUT_KEEP_ALIVE seconds (5 by
-# default), which is also httpx's default expiry. A request sent as the server closes its end fails with a
-# read error although no engine saw it, so the admin clients drop an idle connection well before that.
+# A request sent on an idle connection as the server closes its end fails with a read error although no
+# engine saw it, and a request that is sent once cannot be retried on that error. vLLM's API server closes a
+# connection that has been idle for VLLM_HTTP_TIMEOUT_KEEP_ALIVE seconds: 3600 on the servers prime-rl's
+# entrypoints start, 5 by default, which is also httpx's default expiry. The admin clients drop an idle
+# connection before either.
 ADMIN_KEEPALIVE_EXPIRY_S = 2.0
 
 
