@@ -2,6 +2,9 @@
 
 from transformers.configuration_utils import PretrainedConfig
 
+LOOP_CONFIG_KEYS = {"core_start", "core_end", "num_passes", "gate_rank", "is_varloop"}
+LOOP_FIELDS = ("loop_layer_index_start", "loop_layer_index_end", "loop_num_passes", "loop_gate_rank")
+
 
 class Inkling2TextConfig(PretrainedConfig):
     """Text configuration for Inkling 2.
@@ -12,6 +15,7 @@ class Inkling2TextConfig(PretrainedConfig):
     """
 
     model_type = "inkling2_text"
+    is_looped = False
 
     def __init__(
         self,
@@ -57,6 +61,11 @@ class Inkling2TextConfig(PretrainedConfig):
         eos_token_id: int | None = 200006,
         **kwargs,
     ):
+        if not self.is_looped and any(kwargs.get(key) is not None for key in ("loop_config", *LOOP_FIELDS)):
+            raise ValueError(
+                f"{type(self).__name__} (model_type {self.model_type!r}) has no layer loop; "
+                "a config with a loop_config is model_type 'inkling2_loop'"
+            )
         self.vocab_size = vocab_size
         self.unpadded_vocab_size = vocab_size if unpadded_vocab_size is None else unpadded_vocab_size
         if not 0 < self.unpadded_vocab_size <= vocab_size:
@@ -110,6 +119,90 @@ class Inkling2TextConfig(PretrainedConfig):
             **kwargs,
         )
 
+    @property
+    def loop_core_layers(self) -> range:
+        """Layers that run once per loop pass (none without a loop)."""
+        return range(0)
+
+    @property
+    def num_layer_visits(self) -> int:
+        return self.num_hidden_layers
+
+
+class Inkling2LoopTextConfig(Inkling2TextConfig):
+    """Text configuration for looped Inkling 2 (Inkling 2 Mini).
+
+    Layers ``[loop_layer_index_start, loop_layer_index_end)`` run ``loop_num_passes`` times with
+    shared weights. The release stores the loop as a ``loop_config`` dict; it is kept here as flat
+    fields named like transformers' ``Inkling2LoopTextConfig``.
+    """
+
+    model_type = "inkling2_loop_text"
+    is_looped = True
+
+    def __init__(
+        self,
+        loop_config: dict | None = None,
+        loop_layer_index_start: int = 6,
+        loop_layer_index_end: int = 18,
+        loop_num_passes: int = 3,
+        loop_gate_rank: int = 64,
+        hidden_size: int = 2304,
+        num_hidden_layers: int = 24,
+        num_attention_heads: int = 24,
+        swa_num_attention_heads: int = 24,
+        n_routed_experts: int = 128,
+        moe_intermediate_size: int = 1152,
+        log_scaling_n_floor: int = 8192,
+        **kwargs,
+    ):
+        if loop_config is not None:
+            if unknown := set(loop_config) - LOOP_CONFIG_KEYS:
+                raise ValueError(f"Unsupported Inkling 2 loop_config keys {sorted(unknown)}")
+            if loop_config.get("is_varloop", False):
+                raise ValueError("Inkling 2 checkpoints with a variable number of loop passes are not supported")
+            loop_layer_index_start = loop_config.get("core_start", loop_layer_index_start)
+            loop_layer_index_end = loop_config.get("core_end", loop_layer_index_end)
+            loop_num_passes = loop_config.get("num_passes", loop_num_passes)
+            loop_gate_rank = loop_config.get("gate_rank", loop_gate_rank)
+        self.loop_layer_index_start = loop_layer_index_start
+        self.loop_layer_index_end = loop_layer_index_end
+        self.loop_num_passes = loop_num_passes
+        self.loop_gate_rank = loop_gate_rank
+        super().__init__(
+            hidden_size=hidden_size,
+            num_hidden_layers=num_hidden_layers,
+            num_attention_heads=num_attention_heads,
+            swa_num_attention_heads=swa_num_attention_heads,
+            n_routed_experts=n_routed_experts,
+            moe_intermediate_size=moe_intermediate_size,
+            log_scaling_n_floor=log_scaling_n_floor,
+            **kwargs,
+        )
+        self.validate_loop()
+
+    @property
+    def loop_core_layers(self) -> range:
+        return range(self.loop_layer_index_start, self.loop_layer_index_end)
+
+    @property
+    def num_layer_visits(self) -> int:
+        return self.num_hidden_layers + (self.loop_num_passes - 1) * len(self.loop_core_layers)
+
+    def validate_loop(self) -> None:
+        start, end, block = self.loop_layer_index_start, self.loop_layer_index_end, self.n_layers_per_attn_res_block
+        if not 0 < start < end <= self.num_hidden_layers:
+            raise ValueError(
+                f"The loop core [{start}, {end}) must start after layer 0 and end within the "
+                f"{self.num_hidden_layers} layers of the model"
+            )
+        if start % block or end % block:
+            raise ValueError(f"The loop core [{start}, {end}) must cover whole blocks of {block} layers")
+        if self.loop_num_passes < 1 or self.loop_gate_rank < 1:
+            raise ValueError("loop_num_passes and loop_gate_rank must be at least 1")
+        if not self.attn_res_normalize_values:
+            raise ValueError("Loop messages need attn_res_normalize_values=True")
+
 
 class Inkling2Config(Inkling2TextConfig):
     """Flat view of the release's multimodal config (``model_type="inkling2"``).
@@ -134,4 +227,16 @@ class Inkling2Config(Inkling2TextConfig):
         super().__init__(**merged)
 
 
-__all__ = ["Inkling2Config", "Inkling2TextConfig"]
+class Inkling2LoopConfig(Inkling2Config, Inkling2LoopTextConfig):
+    """Flat view of the release's looped multimodal config (``model_type="inkling2_loop"``).
+
+    ``Inkling2Config`` flattens ``text_config`` and hands the result to ``Inkling2LoopTextConfig``.
+    """
+
+    model_type = "inkling2_loop"
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+
+__all__ = ["Inkling2Config", "Inkling2LoopConfig", "Inkling2LoopTextConfig", "Inkling2TextConfig"]
