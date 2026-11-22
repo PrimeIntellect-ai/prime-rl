@@ -34,6 +34,21 @@ checkpointing and activation offloading.
 live tensors (`perf/peak_allocated_memory`). Both include memory outside the allocator (NCCL, CUDA
 context). The inference configs are not fitted yet, and no recipe has run on real weights and data yet.
 
+## Inference layout
+
+Muse Glimmer 30B on math (real weights, ~170 prompt and ~14k output tokens per sample), one 8x H200
+inference node, decode throughput in the first minutes of decode, no preemptions:
+
+| Layout | Requests in flight | Decode per node | Decode per GPU | Peak KV cache use |
+|---|---|---|---|---|
+| TP8 | ~270 (adaptive) | 12.6k tok/s | 1,580 tok/s | 56% |
+| TP8 | 512 | 16.0k tok/s | 2,000 tok/s | 49% |
+| TP2 × DP4 | 2,048 | 44.7k tok/s | 5,590 tok/s | 49% |
+
+Decode reads every sequence's KV cache each step, and Muse has 2 KV heads: TP above 2 makes several
+GPUs read the same heads, and TP8 adds two 8-way all-reduces per layer. More, smaller engines with
+many requests in flight decode much faster per GPU.
+
 ## Fit a trainer
 
 `fake.toml` runs the trainer alone on fake 256k samples with random weights and balanced routing:
