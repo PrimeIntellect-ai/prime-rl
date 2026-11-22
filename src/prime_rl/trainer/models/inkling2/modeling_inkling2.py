@@ -311,11 +311,6 @@ class Inkling2AttnRes(nn.Module):
             nn.Parameter(torch.zeros(config.hidden_size), requires_grad=True) for _ in range(config.num_hidden_layers)
         )
         self.output_query = nn.Parameter(torch.zeros(config.hidden_size), requires_grad=True)
-        if core := config.loop_core_layers:
-            # Queries of the loop messages: rows 2j and 2j+1 belong to core layer j, as its
-            # Q and MoE queries in the first table and its K and V queries in the second.
-            self.middle_cycle_cross_pass_queries = nn.Parameter(torch.zeros(2 * len(core), config.hidden_size))
-            self.middle_cycle_cross_pass_kv_queries = nn.Parameter(torch.zeros(2 * len(core), config.hidden_size))
 
 
 class Inkling2LoopController(nn.Module):
@@ -506,6 +501,9 @@ class Inkling2PreTrainedModel(PreTrainedModelPrimeRL):
         elif isinstance(module, Inkling2AttnRes):
             for param in module.parameters():
                 nn.init.zeros_(param)
+        elif isinstance(module, Inkling2LoopModel):
+            nn.init.zeros_(module.middle_cycle_cross_pass_queries)
+            nn.init.zeros_(module.middle_cycle_cross_pass_kv_queries)
         elif isinstance(module, Inkling2LoopController):
             for param in module.parameters():
                 nn.init.trunc_normal_(param, mean=0.0, std=std)
@@ -536,7 +534,7 @@ class Inkling2PreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
-        return "attn_res." in name or name.endswith("mlp.router.selection_bias")
+        return "attn_res." in name or "middle_cycle_cross_pass_" in name or name.endswith("mlp.router.selection_bias")
 
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:
@@ -622,7 +620,8 @@ class Inkling2Model(Inkling2PreTrainedModel):
             self.attn_res.attn_queries[layer_idx - 1] if layer_idx > 0 else None,
             self.attn_res.mlp_queries[layer_idx],
             *layer_args,
-            routed_experts[:, :, visit] if routed_experts is not None else None,
+            # A compiled layer takes the routes of its visit as a tensor of their own, not a strided view.
+            routed_experts[:, :, visit].contiguous() if routed_experts is not None else None,
             bank,
             message_queries,
         )
@@ -642,6 +641,13 @@ class Inkling2LoopModel(Inkling2Model):
         # The trainer can truncate the layers after the config is built (`debug.num_layers`).
         config.validate_loop()
         super().__init__(config)
+        # Queries of the loop messages, named as in the checkpoint: non-layer weights are broadcast to
+        # inference under the trainer's names. Rows 2j and 2j+1 belong to core layer j, as its Q and MoE
+        # queries in the first table and its K and V queries in the second. Like the other block-residual
+        # queries, the release stores them in FP32 and training keeps them in the model dtype.
+        num_queries = 2 * len(config.loop_core_layers)
+        self.middle_cycle_cross_pass_queries = nn.Parameter(torch.zeros(num_queries, config.hidden_size))
+        self.middle_cycle_cross_pass_kv_queries = nn.Parameter(torch.zeros(num_queries, config.hidden_size))
 
     def _run_layers(
         self, hidden_states: Tensor, block_states: Tensor, routed_experts: Tensor | None, layer_args: tuple
@@ -654,8 +660,7 @@ class Inkling2LoopModel(Inkling2Model):
 
         restart_hidden_states, restart_block_states = hidden_states, block_states
         num_restart_blocks = restart_block_states.shape[-2]
-        queries = self.attn_res.middle_cycle_cross_pass_queries
-        kv_queries = self.attn_res.middle_cycle_cross_pass_kv_queries
+        queries, kv_queries = self.middle_cycle_cross_pass_queries, self.middle_cycle_cross_pass_kv_queries
         # Q, K, V and MoE queries of each core layer, stacked into new tensors: a compiled layer must
         # not receive views of the two tables.
         message_queries = [

@@ -181,6 +181,7 @@ TINY_PRIME_RL_MODELS: dict[str, PretrainedConfig] = {
         num_key_value_heads=2,
         head_dim=64,
         swa_num_attention_heads=4,
+        swa_num_key_value_heads=2,
         swa_head_dim=64,
         d_rel=16,
         rel_extent=128,
@@ -238,8 +239,9 @@ FULL_SUITE_CASES = [
     Case("deepseek_v4-cp2_ep2", "deepseek_v4", cp=2, ep=2),
     Case("glm_moe_dsa-ep2", "glm_moe_dsa", ep=2),
     Case("glm_moe_dsa-cp2_ep2", "glm_moe_dsa", cp=2, ep=2),
-    Case("inkling2_loop-ep2", "inkling2_loop", ep=2),
-    Case("inkling2_loop-ep2-compile", "inkling2_loop", ep=2, compile=True),
+    # Inkling 2's compiled flex attention does not run under activation offloading
+    Case("inkling2_loop-ep2", "inkling2_loop", ep=2, overrides={"ac_offloading": None}),
+    Case("inkling2_loop-ep2-compile", "inkling2_loop", ep=2, compile=True, overrides={"ac_offloading": None}),
 ]
 SUITES = {"tiny": CASES, "full": FULL_SUITE_CASES}
 TIMEOUTS = {"tiny": 5 * 60, "full": 20 * 60}

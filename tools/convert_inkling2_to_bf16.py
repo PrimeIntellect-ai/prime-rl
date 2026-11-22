@@ -18,8 +18,8 @@ share an E4M3 scale (``<name>_scale``) and every expert a factor
 computed in fp32 like the serving engines.
 
 The scale tensors are dropped and every other tensor is copied byte-for-byte.
-``hf_quant_config.json`` (the release's per-tensor precision metadata) is rewritten to list the
-experts as bf16.
+``hf_quant_config.json`` (the release's per-tensor precision metadata) is checked against the
+tensor dtypes and left out of the output: vLLM reads a quantization method from it.
 
 Usage (from the prime-rl repo):
     uv run python tools/convert_inkling2_to_bf16.py <release_dir> [<output_dir>]
@@ -298,30 +298,15 @@ class Release:
         return header
 
 
-def list_experts_as_bf16(precision_metadata: dict, formats: dict[str, str]) -> dict:
-    """``hf_quant_config.json`` with the tensors of its NVFP4 / MXFP8 groups moved to one bf16 group."""
-    groups, experts = [], []
+def check_precision_metadata(precision_metadata: dict, formats: dict[str, str]) -> None:
+    """Raises unless ``hf_quant_config.json`` lists the same NVFP4 / MXFP8 expert weights as the tensor dtypes."""
     listed = {fmt: set() for fmt in BLOCK}
     for group in precision_metadata["model"]["parameter_groups"]:
         if group["compute_dtype"] in BLOCK:
             listed[group["compute_dtype"]].update(group["tensors"])
-            experts.extend(group["tensors"])
-        else:
-            groups.append(group)
     for fmt, names in listed.items():
         if names != {name for name, tensor_fmt in formats.items() if tensor_fmt == fmt}:
             raise ValueError(f"{PRECISION_METADATA} and the tensor dtypes disagree on the {fmt} expert weights")
-    groups.append(
-        {
-            "compute_dtype": "bfloat16",
-            "output_dtype": "bfloat16",
-            "required_activation_quantization": None,
-            "tensors": sorted(experts),
-            "weight_block_shape": [],
-            "weight_transform": "cast",
-        }
-    )
-    return {**precision_metadata, "model": {**precision_metadata["model"], "parameter_groups": groups}}
 
 
 def finalize(release: Release, output_dir: Path) -> None:
@@ -348,12 +333,8 @@ def finalize(release: Release, output_dir: Path) -> None:
     config["torch_dtype"] = "bfloat16"
     (output_dir / "config.json").write_text(json.dumps(config, indent=2) + "\n")
 
-    converted = {"model.safetensors.index.json", "config.json", *release.shards}
-    if (input_dir / PRECISION_METADATA).exists():
-        precision_metadata = json.loads((input_dir / PRECISION_METADATA).read_text())
-        precision_metadata = list_experts_as_bf16(precision_metadata, release.expert_formats())
-        (output_dir / PRECISION_METADATA).write_text(json.dumps(precision_metadata, indent=2) + "\n")
-        converted.add(PRECISION_METADATA)
+    # A bf16 export has no quantization: the precision metadata stays behind.
+    converted = {"model.safetensors.index.json", "config.json", PRECISION_METADATA, *release.shards}
     # Side files, such as the tokenizer and the DSpark drafter (mtp.safetensors), are copied unchanged.
     for path in input_dir.iterdir():
         if path.name in converted or path.name.startswith("."):
@@ -379,7 +360,9 @@ def main() -> None:
         parser.error("input and output directories must be different")
     output_dir.mkdir(parents=True, exist_ok=True)
     release = Release(input_dir)
-    release.expert_formats()
+    formats = release.expert_formats()
+    if (input_dir / PRECISION_METADATA).exists():
+        check_precision_metadata(json.loads((input_dir / PRECISION_METADATA).read_text()), formats)
     if not args.finalize:
         for shard in [args.shard] if args.shard else release.shards:
             if (output_dir / shard).exists():
