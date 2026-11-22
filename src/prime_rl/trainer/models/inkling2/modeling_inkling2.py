@@ -70,22 +70,23 @@ def rms_norm(x: Tensor, weight: Tensor | None, eps: float, dtype: torch.dtype) -
 
 
 def attn_res_mix(
-    sources: Sequence[Tensor], queries: Tensor, normalize_values: bool, addend: Tensor | None = None
+    blocks: Sequence[Tensor], num_blocks: Tensor, tail: Sequence[Tensor], queries: Tensor, normalize_values: bool
 ) -> list[Tensor]:
     """Softmax over depth: source `n` scores `query . source_n / (rms(source_n) * sqrt(hidden))`.
 
-    `sources` are `[tokens, hidden]`; the last one is the running partial block, to which `addend` is added in
-    fp32. Returns one fp32 `[tokens, hidden]` mixture per row of `queries`.
+    The sources, all `[tokens, hidden]`, are the first `num_blocks` (a scalar tensor) of `blocks` and then
+    `tail`. Returns one fp32 `[tokens, hidden]` mixture per row of `queries`.
     """
     queries = queries.float().reshape(-1, queries.shape[-1])
     scaled_queries = queries * queries.shape[-1] ** -0.5
     values, logits = [], []
-    for index, source in enumerate(sources):
+    for index, source in enumerate((*blocks, *tail)):
         value = source.float()
-        if addend is not None and index == len(sources) - 1:
-            value = value + addend.float()
         inv_rms = torch.rsqrt(value.square().mean(-1, keepdim=True) + ATTN_RES_EPS)
-        logits.append((value @ scaled_queries.t()) * inv_rms)
+        logit = (value @ scaled_queries.t()) * inv_rms
+        if index < len(blocks):
+            logit = logit.masked_fill(num_blocks <= index, float("-inf"))
+        logits.append(logit)
         values.append(value * inv_rms if normalize_values else value)
     weights = torch.softmax(torch.stack(logits, dim=-1), dim=-1)
 
@@ -400,18 +401,19 @@ class Inkling2DecoderLayer(GradientCheckpointingLayer):
     def forward(
         self,
         blocks: tuple[Tensor, ...],
+        num_blocks: Tensor,
         partial: Tensor,
         positions: Tensor,
         doc_ids: Tensor,
         routed_experts: Tensor | None = None,
         block_mask: BlockMask | None = None,
     ) -> Tensor:
-        """Returns the partial block after this layer. `blocks` are the completed blocks, the normalized
-        embeddings first; all states are `[tokens, hidden]`."""
+        """Returns the partial block after this layer. The first `num_blocks` (a scalar tensor) of `blocks` are
+        the completed blocks, the normalized embeddings first; all states are `[tokens, hidden]`."""
         if self.attn_query is None:
             streams = [partial] * (1 if self.is_local else 3)
         else:
-            streams = attn_res_mix([*blocks, partial], self.attn_query, self.normalize_values)
+            streams = attn_res_mix(blocks, num_blocks, [partial], self.attn_query, self.normalize_values)
         if self.is_local:
             query_input = key_input = value_input = self.attn_norm(streams[0])
         else:
@@ -423,10 +425,8 @@ class Inkling2DecoderLayer(GradientCheckpointingLayer):
 
         # A layer that starts a block closes the previous one: `partial` becomes a completed block and the
         # new partial block so far is the attention output.
-        if self.starts_block:
-            (mlp_input,) = attn_res_mix([*blocks, partial, attn_output], self.mlp_query, self.normalize_values)
-        else:
-            (mlp_input,) = attn_res_mix([*blocks, partial], self.mlp_query, self.normalize_values, addend=attn_output)
+        tail = [partial, attn_output] if self.starts_block else [partial.float() + attn_output.float()]
+        (mlp_input,) = attn_res_mix(blocks, num_blocks, tail, self.mlp_query, self.normalize_values)
         mlp_output = self.mlp(self.mlp_norm(mlp_input).unsqueeze(0), routed_experts=routed_experts).squeeze(0)
         mlp_output = self.mlp_sconv(mlp_output, positions)
 
@@ -460,14 +460,14 @@ class Inkling2PreTrainedModel(PreTrainedModelPrimeRL):
         return conversion_chain(config)
 
     def _init_weights(self, module: nn.Module) -> None:
+        """As in the transformers reference: the mix queries and the dynamic convolutions' static taps start at
+        zero, the clip scales at one."""
         super()._init_weights(module)
-        init_std = getattr(self.config, "text_config", self.config).initializer_range
-        if isinstance(module, MoE):
-            module.init_weights(init_std, module.tokens_per_expert.device)
-        elif isinstance(module, Inkling2ShortConv):
+        init_std = self.config.get_text_config().initializer_range
+        if isinstance(module, Inkling2ShortConv):
             nn.init.normal_(module.weight, std=init_std)
         elif isinstance(module, Inkling2DynamicShortConv):
-            nn.init.normal_(module.static_w, std=init_std)
+            nn.init.zeros_(module.static_w)
             nn.init.normal_(module.weight_proj, std=init_std)
         elif isinstance(module, Inkling2Attention):
             nn.init.ones_(module.q_scale)
@@ -475,10 +475,10 @@ class Inkling2PreTrainedModel(PreTrainedModelPrimeRL):
             nn.init.normal_(module.rel_logits_proj, std=init_std)
         elif isinstance(module, Inkling2DecoderLayer):
             if module.attn_query is not None:
-                nn.init.normal_(module.attn_query, std=init_std)
-            nn.init.normal_(module.mlp_query, std=init_std)
+                nn.init.zeros_(module.attn_query)
+            nn.init.zeros_(module.mlp_query)
         elif isinstance(module, Inkling2TextModel):
-            nn.init.normal_(module.output_query, std=init_std)
+            nn.init.zeros_(module.output_query)
 
 
 class Inkling2TextModel(Inkling2PreTrainedModel):
@@ -542,14 +542,20 @@ class Inkling2TextModel(Inkling2PreTrainedModel):
             local_mask = relative_block_mask(padded_doc_ids, self.config.sliding_window_size)
             global_mask = relative_block_mask(padded_doc_ids, None)
 
-        blocks: list[Tensor] = []
-        for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
+        layers = self.layers[: self.config.num_hidden_layers]
+        # One slot per block. A block that is not complete yet is a tensor of zeros of its own, which
+        # `num_blocks` keeps out of the mixes: a compiled layer then gets the same inputs at every depth, and
+        # each layer type compiles once.
+        blocks = [partial * 0 for decoder_layer in layers if decoder_layer.starts_block]
+        num_blocks = 0
+        for layer_idx, decoder_layer in enumerate(layers):
             # .contiguous(): the per-layer slice is a strided view, and the compiled MoE asserts a contiguous input.
             routed_experts_layer = (
                 routed_experts[:, :, layer_idx, :].contiguous() if routed_experts is not None else None
             )
             next_partial = decoder_layer(
                 tuple(blocks),
+                torch.tensor(num_blocks, device=partial.device),
                 partial,
                 positions,
                 doc_ids,
@@ -557,10 +563,17 @@ class Inkling2TextModel(Inkling2PreTrainedModel):
                 block_mask=local_mask if decoder_layer.is_local else global_mask,
             )
             if decoder_layer.starts_block:
-                blocks.append(partial)
+                blocks[num_blocks] = partial
+                num_blocks += 1
             partial = next_partial
 
-        (hidden_states,) = attn_res_mix([*blocks, partial], self.output_query, self.config.attn_res_normalize_values)
+        (hidden_states,) = attn_res_mix(
+            blocks,
+            torch.tensor(num_blocks, device=partial.device),
+            [partial],
+            self.output_query,
+            self.config.attn_res_normalize_values,
+        )
         return BaseModelOutputWithPast(last_hidden_state=self.norm(hidden_states).unsqueeze(0))
 
 

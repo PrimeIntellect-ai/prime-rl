@@ -316,6 +316,29 @@ def test_compiled_flex_attention_matches_dense(model):
     assert_flex_matches_dense(model, "cuda")
 
 
+def test_layer_compiles_do_not_depend_on_depth():
+    # The trainer compiles every layer, and each layer type should compile once. A sixth layer sits behind one
+    # more completed block than the other full-attention layer; five layers stay under Dynamo's cache limit.
+    torch._dynamo.reset()
+    graphs = []
+
+    def count_graphs(graph_module, example_inputs):
+        graphs.append(graph_module)
+        return graph_module.forward
+
+    counts = []
+    for num_layers in (5, 6):
+        config = Inkling2Config(text_config=TEXT_CONFIG | {"num_hidden_layers": num_layers})
+        model = AutoModelForCausalLMPrimeRL.from_config(config)
+        model.init_buffers_post_meta()
+        for layer in get_language_model(model).layers:
+            layer.compile(backend=count_graphs)
+        model.model(input_ids=torch.zeros(1, 24, dtype=torch.long), seq_lens=torch.tensor([24]))
+        counts.append(len(graphs))
+    torch._dynamo.reset()
+    assert 0 < counts[0] == counts[1]
+
+
 def test_softcap_of_zero_is_no_cap():
     # The serving kernels read a cap of 0 as "no cap"; dividing by it would give zeros and NaN.
     gate = torch.tensor([-2.0, 0.0, 0.5, 3.0])
