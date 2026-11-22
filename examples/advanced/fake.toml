@@ -22,6 +22,10 @@ prime = "None"
 [orchestrator.monitors]
 prime = "None"
 
+# Without inference there is nothing to broadcast to; NCCL needs an inference world.
+[weight_broadcast]
+type = "filesystem"
+
 [trainer.model.init]
 type = "scratch"
 
