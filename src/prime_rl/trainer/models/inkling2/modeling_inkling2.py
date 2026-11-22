@@ -186,7 +186,9 @@ def flex_relative_attention(
     def score_mod(score: Tensor, batch: Tensor, head: Tensor, q_idx: Tensor, kv_idx: Tensor) -> Tensor:
         distance = q_idx - kv_idx
         bias = rel[batch, head, q_idx, distance.clamp(0, extent - 1)]
-        return score + torch.where((distance >= 0) & (distance < extent), bias, torch.zeros_like(bias))
+        bias = torch.where((distance >= 0) & (distance < extent), bias, torch.zeros_like(bias))
+        # The kernel accumulates in the score's dtype; a wider bias would change it.
+        return score + bias.to(score.dtype)
 
     out, aux = compiled_flex_attention()(
         q.float(),
@@ -543,9 +545,11 @@ class Inkling2TextModel(Inkling2PreTrainedModel):
             global_mask = relative_block_mask(padded_doc_ids, None)
 
         layers = self.layers[: self.config.num_hidden_layers]
-        # One slot per block. A block that is not complete yet is a tensor of zeros of its own, which
-        # `num_blocks` keeps out of the mixes: a compiled layer then gets the same inputs at every depth, and
-        # each layer type compiles once.
+        # One slot per block. A block that is not complete yet is a tensor of zeros, which `num_blocks` keeps out
+        # of the mixes: a compiled layer then gets the same inputs at every depth, and each layer type compiles
+        # once. The compiler's guards tell the slots apart by identity and by `requires_grad`, so every
+        # placeholder is a tensor of its own, and a product with `partial` to require grad as a completed block
+        # does. With frozen embeddings (LoRA) it does not, and the layers compile once per number of blocks.
         blocks = [partial * 0 for decoder_layer in layers if decoder_layer.starts_block]
         num_blocks = 0
         for layer_idx, decoder_layer in enumerate(layers):
@@ -555,7 +559,8 @@ class Inkling2TextModel(Inkling2PreTrainedModel):
             )
             next_partial = decoder_layer(
                 tuple(blocks),
-                torch.tensor(num_blocks, device=partial.device),
+                # Filled on the device: a host tensor would cost a blocking copy per layer.
+                torch.full((), num_blocks, device=partial.device),
                 partial,
                 positions,
                 doc_ids,
@@ -569,7 +574,7 @@ class Inkling2TextModel(Inkling2PreTrainedModel):
 
         (hidden_states,) = attn_res_mix(
             blocks,
-            torch.tensor(num_blocks, device=partial.device),
+            torch.full((), num_blocks, device=partial.device),
             [partial],
             self.output_query,
             self.config.attn_res_normalize_values,

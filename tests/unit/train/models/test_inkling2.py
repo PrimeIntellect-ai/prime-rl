@@ -2,6 +2,7 @@ import math
 
 import pytest
 import torch
+import torch.nn.functional as F
 from torch.nn.attention.flex_attention import flex_attention
 
 from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL, supports_custom_impl
@@ -38,8 +39,9 @@ TEXT_CONFIG = dict(
 
 
 class ExactExpertCompute:
-    """Per-expert matmuls in the parameter dtype. The shared expert kernel rounds to BF16, which a float64
-    comparison cannot see through."""
+    """Expert matmuls in the parameter dtype. The shared expert kernel rounds to BF16, which a float64
+    comparison cannot see through. Every expert runs on every row and each row keeps its own, so the shapes
+    do not depend on the routing and a compiled layer traces it without a break."""
 
     token_group_alignment = 8
 
@@ -47,19 +49,17 @@ class ExactExpertCompute:
         pass
 
     def __call__(self, experts, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
-        outputs, start = [], 0
-        for expert, count in enumerate(num_tokens_per_expert.tolist()):
-            rows = x[start : start + count]
-            hidden = experts.activation.apply(rows @ experts.gate_proj[expert].T, rows @ experts.up_proj[expert].T)
-            outputs.append(hidden @ experts.down_proj[expert].T)
-            start += count
-        outputs.append(x.new_zeros(x.shape[0] - start, experts.down_proj.shape[1]))
-        return torch.cat(outputs)
+        rows = torch.arange(x.shape[0], device=x.device)
+        # Rows are grouped by expert; the rows after the last group are padding.
+        expert = torch.searchsorted(num_tokens_per_expert.cumsum(0), rows, right=True)
+        hidden = experts.activation.apply(x @ experts.gate_proj.mT, x @ experts.up_proj.mT)
+        outputs = (hidden @ experts.down_proj.mT)[expert.clamp(max=experts.num_experts - 1), rows]
+        return outputs * (expert < experts.num_experts).unsqueeze(-1)
 
 
-def build_model(**text_overrides):
+def build_model(dtype: torch.dtype = torch.float64, **text_overrides):
     config = Inkling2Config(text_config=TEXT_CONFIG | text_overrides)
-    model = AutoModelForCausalLMPrimeRL.from_config(config, dtype=torch.float64)
+    model = AutoModelForCausalLMPrimeRL.from_config(config, dtype=dtype)
     generator = torch.Generator().manual_seed(0)
     with torch.no_grad():
         for name, tensor in model.state_dict().items():
@@ -291,52 +291,130 @@ def test_forward_matches_reference(seq_lens, clip_thresholds):
     torch.testing.assert_close(logits, cap * torch.tanh(hidden_states @ unembed.T / cap))
 
 
-def assert_flex_matches_dense(model, device: str) -> None:
-    text_model = get_language_model(model.to(device))
+def packed_row(device: str) -> tuple[torch.Tensor, torch.Tensor]:
+    """Two documents, each longer than the sliding window and the relative extent."""
     input_ids = torch.randint(0, 150, (1, 150), generator=torch.Generator().manual_seed(2)).to(device)
-    seq_lens = torch.tensor([70, 80])
-    hidden_states = {}
-    for backend in ("dense", "flex"):
-        text_model.attention_backend = backend
-        with torch.no_grad():
-            hidden_states[backend] = text_model(input_ids=input_ids, seq_lens=seq_lens).last_hidden_state
-    # The dense path computes its scores in fp32; a wrong mask or bias would be off by O(1).
-    torch.testing.assert_close(hidden_states["flex"], hidden_states["dense"], rtol=1e-3, atol=1e-4)
+    return input_ids, torch.tensor([70, 80])
+
+
+def dense_routing(text_model, input_ids: torch.Tensor, seq_lens: torch.Tensor) -> torch.Tensor:
+    """The experts the dense path routes every token to, as `routed_experts [1, tokens, layers, top_k]`. Both
+    paths replay them: a near-tie that fell the other way would stand in for an attention difference."""
+    routes = []
+    hooks = [
+        layer.mlp.router.register_forward_hook(lambda module, args, output: routes.append(output[1]))
+        for layer in text_model.layers
+    ]
+    text_model.attention_backend = "dense"
+    with torch.no_grad():
+        text_model(input_ids=input_ids, seq_lens=seq_lens)
+    for hook in hooks:
+        hook.remove()
+    return torch.stack(routes, dim=1).unsqueeze(0)
+
+
+def assert_attention_paths_match(dtype: torch.dtype, device: str) -> None:
+    """`flex_relative_attention` against `dense_relative_attention` on a packed row, over a window and over
+    whole documents. Both compute in fp32 whatever the inputs' dtype."""
+    generator = torch.Generator().manual_seed(3)
+
+    def draw(*shape: int) -> torch.Tensor:
+        return torch.randn(shape, generator=generator).to(device, dtype)
+
+    _, doc_ids = modeling_inkling2.document_layout(torch.tensor([0, 70, 150], device=device))
+    padded_doc_ids = F.pad(doc_ids, (0, modeling_inkling2.flex_length(150) - 150), value=-1)
+    q, k, v = draw(150, 6, 16), draw(150, 2, 16), draw(150, 2, 16)
+    for window, extent in ((8, 8), (None, 12)):
+        rel = draw(150, 6, extent)
+        block_mask = modeling_inkling2.relative_block_mask(padded_doc_ids, window)
+        flex = modeling_inkling2.flex_relative_attention(q, k, v, rel, block_mask)
+        dense = modeling_inkling2.dense_relative_attention(q, k, v, rel, doc_ids, window)
+        for flex_part, dense_part in zip(flex, dense):
+            torch.testing.assert_close(flex_part, dense_part, rtol=1e-4, atol=1e-4)
 
 
 def test_flex_attention_matches_dense(model, monkeypatch):
     # Uncompiled, so this checks the score and mask logic, not the fused kernel.
     monkeypatch.setattr(modeling_inkling2, "compiled_flex_attention", lambda: flex_attention)
-    assert_flex_matches_dense(model, "cpu")
+    for dtype in (torch.bfloat16, torch.float32):
+        assert_attention_paths_match(dtype, "cpu")
+
+    text_model = get_language_model(model)
+    input_ids, seq_lens = packed_row("cpu")
+    routed_experts = dense_routing(text_model, input_ids, seq_lens)
+    hidden_states = {}
+    for backend in ("dense", "flex"):
+        text_model.attention_backend = backend
+        with torch.no_grad():
+            hidden_states[backend] = text_model(
+                input_ids=input_ids, seq_lens=seq_lens, routed_experts=routed_experts
+            ).last_hidden_state
+    # Both paths compute their scores in fp32; a wrong mask or bias would be off by O(1).
+    torch.testing.assert_close(hidden_states["flex"], hidden_states["dense"], rtol=3e-4, atol=3e-4)
+
+
+@pytest.fixture
+def trainer_kernels(monkeypatch):
+    """Kernels built as in a training run, but with IEEE fp32 products so that tight tolerances hold: the
+    trainer's entrypoints pick this assembler (`prime_rl._compat`), and its default matmul precision builds
+    the attention kernel with TF32, which these tests do not cover."""
+    import triton.knobs
+
+    monkeypatch.setenv("TRITON_PTXAS_PATH", triton.knobs.nvidia.ptxas_blackwell.path)
+    precision = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("highest")
+    yield
+    torch.set_float32_matmul_precision(precision)
 
 
 @pytest.mark.gpu
-def test_compiled_flex_attention_matches_dense(model):
-    # The fused kernel, which packed rows take on CUDA.
-    assert_flex_matches_dense(model, "cuda")
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+def test_compiled_flex_attention_matches_dense(dtype, trainer_kernels):
+    # The fused kernel, which packed rows take on CUDA, on inputs of the dtypes training computes in.
+    assert_attention_paths_match(dtype, "cuda")
 
 
-def test_layer_compiles_do_not_depend_on_depth():
-    # The trainer compiles every layer, and each layer type should compile once. A sixth layer sits behind one
-    # more completed block than the other full-attention layer; five layers stay under Dynamo's cache limit.
+@pytest.mark.gpu
+def test_compiled_layers_backward_through_flex_attention(trainer_kernels):
+    # The kernel's forward and backward inside compiled layers, as the trainer runs them, against the dense
+    # path's gradients without compilation.
+    model = build_model(torch.float32).to("cuda").train()
+    text_model = get_language_model(model)
+    input_ids, seq_lens = packed_row("cuda")
+    routed_experts = dense_routing(text_model, input_ids, seq_lens)
+    gradients = {}
+    for backend in ("dense", "flex"):
+        text_model.attention_backend = backend
+        if backend == "flex":
+            for layer in text_model.layers:
+                layer.compile()
+        model.zero_grad()
+        logits = model(input_ids=input_ids, seq_lens=seq_lens, routed_experts=routed_experts)["logits"][0]
+        F.cross_entropy(logits[:-1], input_ids[0, 1:]).backward()
+        gradients[backend] = {name: param.grad.clone() for name, param in model.named_parameters()}
+
+    for name, dense in gradients["dense"].items():
+        difference = (gradients["flex"][name] - dense).abs().max()
+        assert difference <= 1e-3 * dense.abs().max(), name
+
+
+def test_each_layer_type_compiles_once():
+    # The trainer compiles every layer. The eight layers are of four types (the first, one that starts a
+    # block, a local and a full-attention one), and all but the first come behind one, two or three completed
+    # blocks. Three slots also tell a placeholder shared between slots from one per slot.
     torch._dynamo.reset()
-    graphs = []
+    model = AutoModelForCausalLMPrimeRL.from_config(Inkling2Config(text_config=TEXT_CONFIG))
+    model.init_buffers_post_meta()
 
-    def count_graphs(graph_module, example_inputs):
-        graphs.append(graph_module)
+    def run_uncompiled(graph_module, example_inputs):
         return graph_module.forward
 
-    counts = []
-    for num_layers in (5, 6):
-        config = Inkling2Config(text_config=TEXT_CONFIG | {"num_hidden_layers": num_layers})
-        model = AutoModelForCausalLMPrimeRL.from_config(config)
-        model.init_buffers_post_meta()
-        for layer in get_language_model(model).layers:
-            layer.compile(backend=count_graphs)
-        model.model(input_ids=torch.zeros(1, 24, dtype=torch.long), seq_lens=torch.tensor([24]))
-        counts.append(len(graphs))
+    for layer in get_language_model(model).layers:
+        layer.compile(backend=run_uncompiled)
+    model.model(input_ids=torch.zeros(1, 24, dtype=torch.long), seq_lens=torch.tensor([24]))
+    compiled = torch._dynamo.eval_frame._debug_get_cache_entry_list(modeling_inkling2.Inkling2DecoderLayer.forward)
     torch._dynamo.reset()
-    assert 0 < counts[0] == counts[1]
+    assert len(compiled) == 4
 
 
 def test_softcap_of_zero_is_no_cap():
