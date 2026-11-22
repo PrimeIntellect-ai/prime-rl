@@ -154,7 +154,7 @@ class GptOssModel(GptOssPreTrainedModel):
                 hidden_states,
                 position_embeddings,
                 cu_seqlens,
-                max_seqlen,
+                max_seqlen=max_seqlen,
                 routed_experts=layer_routed_experts,
             )
         return BaseModelOutput(last_hidden_state=self.norm(hidden_states))
