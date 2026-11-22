@@ -1,0 +1,12 @@
+# Eight tasks for end-to-end integration checks across all six standard suites,
+# including two Craftax tasks. Tasks are issued in this order; asynchronous
+# completion can change which ready groups enter an update.
+
+glyphbench/classics-snake-easy-v0
+glyphbench/classics-snake-medium-v0
+glyphbench/craftax-fightzombie-v0
+glyphbench/craftax-potion-id-stakes-v0
+glyphbench/miniatari-surround-v0
+glyphbench/minigrid-dynamic-obstacles-6x6-v0
+glyphbench/minihack-quaff-v0
+glyphbench/procgen-jumper-v0

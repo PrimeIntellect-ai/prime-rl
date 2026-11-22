@@ -1,0 +1,55 @@
+# Fixed 50-task evaluation panel for the default Craftax-weighted mixture:
+# 30 Craftax tasks and four tasks from each of the other five standard suites.
+# The default recipe evaluates four held-out seeds per task every 50 updates.
+# The paper's balanced 100-task experiment instead evaluates hero100_tasks.txt.
+
+glyphbench/craftax-potion-id-stakes-v0
+glyphbench/craftax-fightzombie-v0
+glyphbench/craftax-find-water-v0
+glyphbench/craftax-fight-zombies-v0
+glyphbench/craftax-survivehorde-v0
+glyphbench/craftax-potion-triage-v0
+glyphbench/craftax-learn-spell-v0
+glyphbench/craftax-bow-kite-v0
+glyphbench/craftax-survive-thirst-v0
+glyphbench/craftax-minestone-v0
+glyphbench/craftax-kiteskeletons-v0
+glyphbench/craftax-wave-defense-v0
+glyphbench/craftax-build-shelter-v0
+glyphbench/craftax-fight-skeletons-v0
+glyphbench/craftax-mine-iron-v0
+glyphbench/craftax-plant-farm-v0
+glyphbench/craftax-spell-only-kill-v0
+glyphbench/craftax-fight-spiders-v0
+glyphbench/craftax-dungeonclear-v0
+glyphbench/craftax-enchant-weapon-v0
+glyphbench/craftax-dungeonexplore-v0
+glyphbench/craftax-reach-dungeon-v0
+glyphbench/craftax-gatherresources-v0
+glyphbench/craftax-fight-bats-v0
+glyphbench/craftax-survive-hunger-v0
+glyphbench/craftax-enchant-choice-v0
+glyphbench/craftax-survive-wild-v0
+glyphbench/craftax-firstday-v0
+glyphbench/craftax-craftpickaxe-v0
+glyphbench/craftax-bow-kite-hard-v0
+glyphbench/classics-icesliding-medium-v0
+glyphbench/classics-maze-easy-v0
+glyphbench/classics-icesliding-hard-v0
+glyphbench/classics-icesliding-easy-v0
+glyphbench/miniatari-surround-v0
+glyphbench/miniatari-wizardofwor-v0
+glyphbench/miniatari-asterix-v0
+glyphbench/miniatari-bankheist-v0
+glyphbench/minigrid-dynamic-obstacles-6x6-v0
+glyphbench/minigrid-memory-s11-v0
+glyphbench/minigrid-memory-s7-v0
+glyphbench/minigrid-dynamic-obstacles-16x16-v0
+glyphbench/minihack-room-monster-15x15-v0
+glyphbench/minihack-river-lava-v0
+glyphbench/minihack-quaff-v0
+glyphbench/minihack-river-narrow-v0
+glyphbench/procgen-jumper-v0
+glyphbench/procgen-starpilot-v0
+glyphbench/procgen-dodgeball-v0
+glyphbench/procgen-miner-v0

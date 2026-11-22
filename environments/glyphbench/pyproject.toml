@@ -1,0 +1,276 @@
+[project]
+name = "glyphbench"
+version = "0.1.1"
+description = "GlyphBench: A unified benchmark of public text-rendered RL environments for evaluating LLM agents on sequential decision-making"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12,<3.13"
+authors = [
+    { name = "Roger Creus Castanyer" },
+]
+keywords = ["reinforcement-learning", "llm", "benchmark", "unicode", "evaluation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    # Match the Verifiers v1 revision exercised by the pinned Prime-RL build.
+    "verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git@b2e4e81",
+    "prime-pydantic-config @ git+https://github.com/PrimeIntellect-ai/pydantic-config.git@65b15df",
+    "datasets>=5.0.1,<6",
+    "httpx>=0.27",
+    "openai>=1.50",
+    "numpy>=2.0",
+    "pydantic>=2.9",
+    "pyyaml>=6.0",
+    "jinja2>=3.1",
+    "rich>=13.9",
+]
+
+[project.scripts]
+glyphbench = "glyphbench.cli:main"
+gb = "glyphbench.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/VmaxAI/glyphbench"
+Repository = "https://github.com/VmaxAI/glyphbench"
+Issues = "https://github.com/VmaxAI/glyphbench/issues"
+
+[project.optional-dependencies]
+# LLM provider clients (pick what you need)
+providers = [
+    "httpx>=0.27",
+    "openai>=1.50",
+    "anthropic>=0.40",
+    "google-genai>=0.3",
+]
+# Evaluation CLI for an existing OpenAI-compatible server.
+eval-client = [
+    "prime>=0.5.77",
+]
+# Local model inference also needs the GPU runtime.
+eval = [
+    "glyphbench[eval-client]",
+    "vllm>=0.8",
+    "torch>=2.4",
+]
+# Evaluation result/media tracking (kept optional for lightweight env users).
+tracking = [
+    "wandb>=0.26.1,<0.27",
+    "imageio>=2.37",
+    "imageio-ffmpeg>=0.6",
+]
+# RL training. Pin Prime-RL rather than tracking a moving main branch so
+# experiment resumes and cluster requeues use the same runtime.
+rl = [
+    "prime-rl[gpu,flash-attn,flash-attn-3] @ https://github.com/PrimeIntellect-ai/prime-rl/archive/refs/tags/v0.9.0.tar.gz",
+    "prime-rl-configs @ https://github.com/PrimeIntellect-ai/prime-rl/archive/refs/tags/v0.9.0.tar.gz#subdirectory=packages/prime-rl-configs",
+    # Prime-RL develops against this renderer revision. Pinning it here avoids
+    # silently changing multi-turn tokenization between job attempts.
+    "renderers @ git+https://github.com/PrimeIntellect-ai/renderers.git@cb82439",
+    # Keep exact source/wheel pins for Prime-RL's GPU dependencies. The GPU
+    # extra is required because some transport modules are imported eagerly
+    # even when this topology selects NCCL rather than NIXL.
+    "torch==2.11.0",
+    "torchvision==0.26.0",
+    "torchaudio==2.11.0",
+    "torchdata>=0.11.0",
+    "vllm==0.26.0",
+    "vllm-router==0.2.0",
+    "ring-flash-attn>=0.1.8",
+    "torchtitan @ git+https://github.com/pytorch/torchtitan@23e4dfc",
+    "dion @ git+https://github.com/samsja/dion.git@d891eeb",
+    "tilelang>=0.1.8",
+    "flash-linear-attention @ git+https://github.com/fla-org/flash-linear-attention@71ebc49",
+    # Prime-RL selects FA3 automatically on Hopper. Dependency source maps do
+    # not propagate out of upstream packages, so reproduce its CUDA test-index
+    # pin explicitly in this root project.
+    "flash-attn-3==3.0.0",
+    "nvidia-ml-py>=12.575.51",
+    "torchao @ https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.6.0/torchao-0.17.0+git02105d46c-cp312-cp312-linux_x86_64.whl ; platform_machine == 'x86_64'",
+]
+# Analysis and plotting
+analysis = [
+    "pandas>=2.2",
+    "matplotlib>=3.9",
+    "seaborn>=0.13",
+    "ipykernel>=7.2",
+]
+# Development
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "hypothesis>=6.112",
+    "ruff>=0.7",
+    "mypy>=1.12",
+]
+# Generated README/asset GIFs
+assets = [
+    "huggingface-hub>=0.25",
+    "Pillow>=12.3.0",
+]
+# Non-GPU convenience extras
+all = [
+    "glyphbench[providers,analysis,dev,assets]",
+]
+# Full Craftax eval wrapper. Uses the checked-out submodule under
+# third_party/Craftax and the default PyPI JAX build, which is sufficient for
+# CPU env stepping when model inference is the bottleneck.
+craftax = [
+    "craftax @ git+https://github.com/roger-creus/Craftax.git@ef0cd470f64605832089c921ec7a737dd38a23b8",
+]
+# Full NetHack held-out eval. Uses the checked-out NLE fork under third_party/nle.
+nethack = [
+    "nle @ git+https://github.com/roger-creus/nle.git@f360e73b8b22147027c7bf22fa5b32c265bf4583",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/glyphbench"]
+
+[tool.hatch.build.targets.sdist]
+# Ship project sources, not optional submodule checkouts or local run artifacts.
+include = [
+    "/src", "/tests", "/docs", "/examples", "/configs", "/eval", "/scripts",
+    "/notebooks/return_violins.ipynb", "/README.md", "/CONTRIBUTING.md",
+    "/LICENSE", "/pyproject.toml", "/uv.lock", "/pricing.yaml",
+    "/.python-version", "/.env.example", "/Dockerfile", "/.dockerignore",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.uv]
+managed = true
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+]
+# Minimum patched versions for the locked evaluation and training environment.
+constraint-dependencies = [
+    "cryptography>=50.0.0",
+    "gitpython>=3.1.59",
+    "idna>=3.15",
+    "mcp>=1.28.1",
+    "msgpack>=1.2.1",
+    "pillow>=12.3.0",
+    "pyasn1>=0.6.4",
+    "pyjwt>=2.13.0",
+    "python-multipart>=0.0.31",
+    "tornado>=6.5.8",
+    "urllib3>=2.7.0",
+]
+# Mirror the pinned Prime-RL runtime. These versions are a coupled GPU stack;
+# update them together with the Prime-RL revision.
+override-dependencies = [
+    # Override Prime-RL's 5.6.2 pin to fix tokenizer save path traversal
+    # (CVE-2026-9856); retain the rest of its GPU runtime pins.
+    "transformers==5.10.4",
+    "nvidia-cudnn-cu12>=9.15",
+    # Prime-RL v0.9's tested lock. flashinfer 0.6.14 fails at import with
+    # 4.4.x, while letting this float can pull a newer untested CUTLASS API.
+    "nvidia-cutlass-dsl==4.5.2",
+    "torch==2.11.0",
+    "torchvision==0.26.0",
+    "torchaudio==2.11.0",
+    "vllm==0.26.0",
+]
+
+# Keep the PyTorch family on one CUDA-12.8 wheel index. The vLLM wheel carries
+# a cu129 tag but is ABI-compatible with this tested CUDA 12 runtime stack.
+[tool.uv.sources]
+craftax = { path = "third_party/Craftax", editable = true }
+nle = { path = "third_party/nle", editable = true }
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
+vllm = { url = "https://github.com/vllm-project/vllm/releases/download/v0.26.0/vllm-0.26.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" }
+vllm-router = [
+    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.0/vllm_router-0.2.0-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+]
+torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "23e4dfc" }
+dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
+torchao = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.6.0/torchao-0.17.0+git02105d46c-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" }
+flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention", rev = "71ebc49" }
+flash_attn_3 = { index = "pytorch-cu128-test" }
+nixl-cu12 = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" }
+
+# ModelExpress publishes protobuf<6 metadata, while its generated bindings are
+# compatible with protobuf 6. Prime-RL 0.9.0 carries the same corrected metadata
+# because Verifiers' sandbox stack requires protobuf>=6.31.1.
+[[tool.uv.dependency-metadata]]
+name = "modelexpress"
+version = "0.3.0"
+requires-dist = [
+    "grpcio>=1.66.2",
+    "huggingface_hub>=0.20.0",
+    "nixl[cu12]",
+    "numpy>=1.24.0",
+    "protobuf>=5.27.0,<7.0.0",
+    "pydantic>=2.0.0",
+    "torch>=2.6.0",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128-test"
+url = "https://download.pytorch.org/whl/test/cu128"
+explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+extend-exclude = ["third_party"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+files = [
+    "src/glyphbench/core",
+    "src/glyphbench/protocol.py",
+    "src/glyphbench/termination.py",
+]
+
+[[tool.mypy.overrides]]
+module = [
+    "yaml",
+    "pandas",
+    "google",
+    "google.genai",
+    "google.genai.*",
+    "vllm",
+    "vllm.*",
+    "verifiers",
+    "verifiers.*",
+    "datasets",
+]
+ignore_missing_imports = true
+
+[dependency-groups]
+dev = [
+    "huggingface-hub>=1.11.0",
+]

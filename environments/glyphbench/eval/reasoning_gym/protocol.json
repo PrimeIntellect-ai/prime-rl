@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "name": "glyphbench-reasoning-gym-games-transfer-v1",
+  "source": {
+    "repo": "https://github.com/open-thought/reasoning-gym.git",
+    "revision": "85f3c6dd020a94e2aaa1160a1edff83136f4120d",
+    "paper": "https://arxiv.org/abs/2505.24760",
+    "public_results": "https://github.com/open-thought/reasoning-gym-eval/tree/main/reasoninggym-paper-experiments/inter-generalisation",
+    "public_results_revision": "5f09fecc342a25d693895b7304a9dec43b47f436",
+    "protocol_config_root": "training/evaluations/inter_generalisation"
+  },
+  "models": {
+    "baseline": {
+      "label": "qwen35-4b-baseline",
+      "model": "Qwen/Qwen3.5-4B",
+      "revision": "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
+    },
+    "checkpoint": {
+      "label": "glyphbench-checkpoint-step-450",
+      "model": "checkpoints/glyphbench-qwen35-4b-step-450",
+      "checkpoint_step": 450
+    }
+  },
+  "serving": {
+    "served_name": "glyphbench-reasoning-gym-target",
+    "vllm_version": "0.26.0",
+    "tensor_parallel_size": 1,
+    "data_parallel_size": 8,
+    "max_model_len": 32768,
+    "dtype": "bfloat16",
+    "gpu_memory_utilization": 0.92,
+    "max_num_seqs": 64,
+    "engine_seed": 0,
+    "prefix_caching": true,
+    "gdn_prefill_backend": "triton"
+  },
+  "evaluation": {
+    "size_per_dataset": 100,
+    "dataset_seed": 42,
+    "python_hash_seed": 0,
+    "completions_per_prompt": 3,
+    "temperature": 0.6,
+    "top_p": 0.9,
+    "max_tokens": 2048,
+    "max_concurrent": 128,
+    "request_timeout_seconds": 900,
+    "request_attempts": 8,
+    "system_prompt_id": "DeepSeekZero",
+    "answer_tag": "answer",
+    "exact_success_threshold": 1.0,
+    "published_metric": "exact accuracy over parseable completions",
+    "strict_metric": "exact accuracy over all attempted completions"
+  },
+  "categories": {
+    "algebra": [
+      "complex_arithmetic",
+      "intermediate_integration",
+      "polynomial_equations",
+      "polynomial_multiplication",
+      "simple_equations",
+      "simple_integration"
+    ],
+    "arc": [
+      "arc_1d",
+      "arc_agi",
+      "rearc"
+    ],
+    "cognition": [
+      "color_cube_rotation",
+      "figlet_font",
+      "modulo_grid",
+      "needle_haystack",
+      "number_sequence",
+      "rectangle_count",
+      "rubiks_cube"
+    ],
+    "geometry": [
+      "advanced_geometry",
+      "simple_geometry"
+    ],
+    "graphs": [
+      "course_schedule",
+      "family_relationships",
+      "largest_island",
+      "quantum_lock",
+      "shortest_path"
+    ],
+    "games": [
+      "knight_swap",
+      "mahjong_puzzle",
+      "maze",
+      "mini_sudoku",
+      "n_queens",
+      "rush_hour",
+      "sokoban",
+      "tsumego"
+    ]
+  },
+  "groups": {
+    "cross_domain": [
+      "algebra",
+      "arc",
+      "cognition",
+      "geometry",
+      "graphs"
+    ],
+    "near_domain_games": [
+      "games"
+    ],
+    "near_domain_distinct_families": [
+      "games/knight_swap",
+      "games/mahjong_puzzle",
+      "games/mini_sudoku",
+      "games/n_queens",
+      "games/rush_hour",
+      "games/tsumego"
+    ],
+    "near_domain_overlapping_families": [
+      "games/maze",
+      "games/sokoban"
+    ]
+  },
+  "reporting": {
+    "wandb_project": "glyphbench-transfer-evals",
+    "wandb_group": "glyphbench-step450-reasoning-gym",
+    "bootstrap_samples": 10000,
+    "bootstrap_seed": 42
+  }
+}

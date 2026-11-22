@@ -1,0 +1,733 @@
+{
+  "glyphbench/miniatari-alien-v0": {
+    "env_id": "glyphbench/miniatari-alien-v0",
+    "n_episodes": 5,
+    "mean_return": -0.95,
+    "std_return": 0.09999999999999999,
+    "min_return": -1.0,
+    "max_return": -0.75,
+    "median_return": -1.0,
+    "mean_length": 11.8,
+    "per_episode_returns": [
+      -0.75,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/miniatari-amidar-v0": {
+    "env_id": "glyphbench/miniatari-amidar-v0",
+    "n_episodes": 5,
+    "mean_return": 0.039999999999999945,
+    "std_return": 0.33823069050575527,
+    "min_return": -0.20000000000000007,
+    "max_return": 0.7,
+    "median_return": -0.10000000000000009,
+    "mean_length": 256.0,
+    "per_episode_returns": [
+      -0.20000000000000007,
+      -0.10000000000000009,
+      -0.20000000000000007,
+      0.0,
+      0.7
+    ]
+  },
+  "glyphbench/miniatari-assault-v0": {
+    "env_id": "glyphbench/miniatari-assault-v0",
+    "n_episodes": 5,
+    "mean_return": 0.4800000000000001,
+    "std_return": 0.16000000000000003,
+    "min_return": 0.2,
+    "max_return": 0.6000000000000001,
+    "median_return": 0.6000000000000001,
+    "mean_length": 32.8,
+    "per_episode_returns": [
+      0.4,
+      0.6000000000000001,
+      0.6000000000000001,
+      0.2,
+      0.6000000000000001
+    ]
+  },
+  "glyphbench/miniatari-asterix-v0": {
+    "env_id": "glyphbench/miniatari-asterix-v0",
+    "n_episodes": 5,
+    "mean_return": -0.8799999999999999,
+    "std_return": 0.0979795897113271,
+    "min_return": -1.0,
+    "max_return": -0.8,
+    "median_return": -0.8,
+    "mean_length": 14.6,
+    "per_episode_returns": [
+      -0.8,
+      -1.0,
+      -1.0,
+      -0.8,
+      -0.8
+    ]
+  },
+  "glyphbench/miniatari-asteroids-v0": {
+    "env_id": "glyphbench/miniatari-asteroids-v0",
+    "n_episodes": 5,
+    "mean_return": 0.16,
+    "std_return": 0.19595917942265426,
+    "min_return": 0.0,
+    "max_return": 0.4,
+    "median_return": 0.0,
+    "mean_length": 40.4,
+    "per_episode_returns": [
+      0.0,
+      0.4,
+      0.0,
+      0.4,
+      0.0
+    ]
+  },
+  "glyphbench/miniatari-atlantis-v0": {
+    "env_id": "glyphbench/miniatari-atlantis-v0",
+    "n_episodes": 5,
+    "mean_return": -0.9333333333333333,
+    "std_return": 0.13333333333333333,
+    "min_return": -1.0,
+    "max_return": -0.6666666666666667,
+    "median_return": -1.0,
+    "mean_length": 17.6,
+    "per_episode_returns": [
+      -1.0,
+      -0.6666666666666667,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/miniatari-bankheist-v0": {
+    "env_id": "glyphbench/miniatari-bankheist-v0",
+    "n_episodes": 5,
+    "mean_return": -0.8666666666666668,
+    "std_return": 0.16329931618554516,
+    "min_return": -1.0,
+    "max_return": -0.6666666666666667,
+    "median_return": -1.0,
+    "mean_length": 20.2,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -0.6666666666666667,
+      -1.0,
+      -0.6666666666666667
+    ]
+  },
+  "glyphbench/miniatari-battlezone-v0": {
+    "env_id": "glyphbench/miniatari-battlezone-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 21.6,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/miniatari-beamrider-v0": {
+    "env_id": "glyphbench/miniatari-beamrider-v0",
+    "n_episodes": 5,
+    "mean_return": -0.76,
+    "std_return": 0.10198039027185572,
+    "min_return": -0.9,
+    "max_return": -0.6,
+    "median_return": -0.8,
+    "mean_length": 29.6,
+    "per_episode_returns": [
+      -0.9,
+      -0.7,
+      -0.6,
+      -0.8,
+      -0.8
+    ]
+  },
+  "glyphbench/miniatari-berzerk-v0": {
+    "env_id": "glyphbench/miniatari-berzerk-v0",
+    "n_episodes": 5,
+    "mean_return": -0.9199999999999999,
+    "std_return": 0.09797958971132709,
+    "min_return": -1.0,
+    "max_return": -0.8,
+    "median_return": -1.0,
+    "mean_length": 9.2,
+    "per_episode_returns": [
+      -1.0,
+      -0.8,
+      -0.8,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/miniatari-bowling-v0": {
+    "env_id": "glyphbench/miniatari-bowling-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 30.6,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/miniatari-boxing-v0": {
+    "env_id": "glyphbench/miniatari-boxing-v0",
+    "n_episodes": 5,
+    "mean_return": -0.24000000000000005,
+    "std_return": 0.38781438859330636,
+    "min_return": -0.8,
+    "max_return": 0.2,
+    "median_return": -0.4000000000000001,
+    "mean_length": 32.2,
+    "per_episode_returns": [
+      0.2,
+      0.2,
+      -0.4000000000000001,
+      -0.4000000000000001,
+      -0.8
+    ]
+  },
+  "glyphbench/miniatari-breakout-v0": {
+    "env_id": "glyphbench/miniatari-breakout-v0",
+    "n_episodes": 5,
+    "mean_return": 0.09090909090909091,
+    "std_return": 0.0,
+    "min_return": 0.09090909090909091,
+    "max_return": 0.09090909090909091,
+    "median_return": 0.09090909090909091,
+    "mean_length": 11.0,
+    "per_episode_returns": [
+      0.09090909090909091,
+      0.09090909090909091,
+      0.09090909090909091,
+      0.09090909090909091,
+      0.09090909090909091
+    ]
+  },
+  "glyphbench/miniatari-centipede-v0": {
+    "env_id": "glyphbench/miniatari-centipede-v0",
+    "n_episodes": 5,
+    "mean_return": 0.325,
+    "std_return": 0.15000000000000002,
+    "min_return": 0.125,
+    "max_return": 0.5,
+    "median_return": 0.25,
+    "mean_length": 137.2,
+    "per_episode_returns": [
+      0.125,
+      0.5,
+      0.25,
+      0.25,
+      0.5
+    ]
+  },
+  "glyphbench/miniatari-choppercommand-v0": {
+    "env_id": "glyphbench/miniatari-choppercommand-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.4560701700396552,
+    "min_return": -0.8,
+    "max_return": 0.6000000000000001,
+    "median_return": 0.0,
+    "mean_length": 59.8,
+    "per_episode_returns": [
+      0.0,
+      0.6000000000000001,
+      0.0,
+      0.2,
+      -0.8
+    ]
+  },
+  "glyphbench/miniatari-defender-v0": {
+    "env_id": "glyphbench/miniatari-defender-v0",
+    "n_episodes": 5,
+    "mean_return": 0.06666666666666667,
+    "std_return": 0.13333333333333333,
+    "min_return": 0.0,
+    "max_return": 0.3333333333333333,
+    "median_return": 0.0,
+    "mean_length": 76.8,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.3333333333333333
+    ]
+  },
+  "glyphbench/miniatari-demonattack-v0": {
+    "env_id": "glyphbench/miniatari-demonattack-v0",
+    "n_episodes": 5,
+    "mean_return": -0.6799999999999999,
+    "std_return": 0.16000000000000006,
+    "min_return": -0.8,
+    "max_return": -0.3999999999999999,
+    "median_return": -0.8,
+    "mean_length": 26.4,
+    "per_episode_returns": [
+      -0.6,
+      -0.8,
+      -0.3999999999999999,
+      -0.8,
+      -0.8
+    ]
+  },
+  "glyphbench/miniatari-doubledunk-v0": {
+    "env_id": "glyphbench/miniatari-doubledunk-v0",
+    "n_episodes": 5,
+    "mean_return": -0.8,
+    "std_return": 0.18708286933869706,
+    "min_return": -1.0,
+    "max_return": -0.5,
+    "median_return": -0.75,
+    "mean_length": 57.2,
+    "per_episode_returns": [
+      -1.0,
+      -0.5,
+      -0.75,
+      -1.0,
+      -0.75
+    ]
+  },
+  "glyphbench/miniatari-enduro-v0": {
+    "env_id": "glyphbench/miniatari-enduro-v0",
+    "n_episodes": 5,
+    "mean_return": 0.128,
+    "std_return": 0.11973303637676612,
+    "min_return": 0.0,
+    "max_return": 0.32,
+    "median_return": 0.16,
+    "mean_length": 12.8,
+    "per_episode_returns": [
+      0.32,
+      0.16,
+      0.16,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/miniatari-fishingderby-v0": {
+    "env_id": "glyphbench/miniatari-fishingderby-v0",
+    "n_episodes": 5,
+    "mean_return": -0.7333333333333333,
+    "std_return": 0.24944382578492943,
+    "min_return": -1.0,
+    "max_return": -0.3333333333333333,
+    "median_return": -0.6666666666666666,
+    "mean_length": 33.6,
+    "per_episode_returns": [
+      -0.6666666666666666,
+      -1.0,
+      -0.3333333333333333,
+      -1.0,
+      -0.6666666666666666
+    ]
+  },
+  "glyphbench/miniatari-freeway-v0": {
+    "env_id": "glyphbench/miniatari-freeway-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 200.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/miniatari-frostbite-v0": {
+    "env_id": "glyphbench/miniatari-frostbite-v0",
+    "n_episodes": 5,
+    "mean_return": 0.1,
+    "std_return": 0.12247448713915891,
+    "min_return": 0.0,
+    "max_return": 0.25,
+    "median_return": 0.0,
+    "mean_length": 21.8,
+    "per_episode_returns": [
+      0.0,
+      0.25,
+      0.25,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/miniatari-gopher-v0": {
+    "env_id": "glyphbench/miniatari-gopher-v0",
+    "n_episodes": 5,
+    "mean_return": 0.2,
+    "std_return": 0.6204836822995429,
+    "min_return": -1.0,
+    "max_return": 0.75,
+    "median_return": 0.5,
+    "mean_length": 60.0,
+    "per_episode_returns": [
+      -1.0,
+      0.25,
+      0.75,
+      0.5,
+      0.5
+    ]
+  },
+  "glyphbench/miniatari-icehockey-v0": {
+    "env_id": "glyphbench/miniatari-icehockey-v0",
+    "n_episodes": 5,
+    "mean_return": -0.2,
+    "std_return": 0.7774602526460401,
+    "min_return": -1.0,
+    "max_return": 1.0,
+    "median_return": -0.3333333333333333,
+    "mean_length": 76.4,
+    "per_episode_returns": [
+      -1.0,
+      1.0,
+      0.3333333333333333,
+      -0.3333333333333333,
+      -1.0
+    ]
+  },
+  "glyphbench/miniatari-kangaroo-v0": {
+    "env_id": "glyphbench/miniatari-kangaroo-v0",
+    "n_episodes": 5,
+    "mean_return": -0.8666666666666668,
+    "std_return": 0.16329931618554516,
+    "min_return": -1.0,
+    "max_return": -0.6666666666666667,
+    "median_return": -1.0,
+    "mean_length": 59.0,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -0.6666666666666667,
+      -1.0,
+      -0.6666666666666667
+    ]
+  },
+  "glyphbench/miniatari-kungfumaster-v0": {
+    "env_id": "glyphbench/miniatari-kungfumaster-v0",
+    "n_episodes": 5,
+    "mean_return": -0.9,
+    "std_return": 0.09354143466934853,
+    "min_return": -1.0,
+    "max_return": -0.75,
+    "median_return": -0.875,
+    "mean_length": 21.8,
+    "per_episode_returns": [
+      -0.875,
+      -1.0,
+      -0.75,
+      -1.0,
+      -0.875
+    ]
+  },
+  "glyphbench/miniatari-mspacman-v0": {
+    "env_id": "glyphbench/miniatari-mspacman-v0",
+    "n_episodes": 5,
+    "mean_return": -0.8417910447761194,
+    "std_return": 0.1320199664925132,
+    "min_return": -0.9402985074626866,
+    "max_return": -0.5820895522388062,
+    "median_return": -0.9104477611940298,
+    "mean_length": 66.0,
+    "per_episode_returns": [
+      -0.9104477611940298,
+      -0.5820895522388062,
+      -0.8656716417910448,
+      -0.9402985074626866,
+      -0.9104477611940298
+    ]
+  },
+  "glyphbench/miniatari-phoenix-v0": {
+    "env_id": "glyphbench/miniatari-phoenix-v0",
+    "n_episodes": 5,
+    "mean_return": 0.4,
+    "std_return": 0.2,
+    "min_return": 0.16666666666666666,
+    "max_return": 0.6666666666666666,
+    "median_return": 0.5,
+    "mean_length": 11.0,
+    "per_episode_returns": [
+      0.6666666666666666,
+      0.16666666666666666,
+      0.5,
+      0.5,
+      0.16666666666666666
+    ]
+  },
+  "glyphbench/miniatari-pong-v0": {
+    "env_id": "glyphbench/miniatari-pong-v0",
+    "n_episodes": 5,
+    "mean_return": -0.7333333333333333,
+    "std_return": 0.3265986323710904,
+    "min_return": -1.0,
+    "max_return": -0.3333333333333333,
+    "median_return": -1.0,
+    "mean_length": 71.4,
+    "per_episode_returns": [
+      -0.3333333333333333,
+      -1.0,
+      -1.0,
+      -1.0,
+      -0.3333333333333333
+    ]
+  },
+  "glyphbench/miniatari-qbert-v0": {
+    "env_id": "glyphbench/miniatari-qbert-v0",
+    "n_episodes": 5,
+    "mean_return": 0.34,
+    "std_return": 0.22449944320643647,
+    "min_return": 0.1,
+    "max_return": 0.6,
+    "median_return": 0.30000000000000004,
+    "mean_length": 9.4,
+    "per_episode_returns": [
+      0.1,
+      0.30000000000000004,
+      0.6,
+      0.6,
+      0.1
+    ]
+  },
+  "glyphbench/miniatari-riverraid-v0": {
+    "env_id": "glyphbench/miniatari-riverraid-v0",
+    "n_episodes": 5,
+    "mean_return": -0.06666666666666664,
+    "std_return": 0.42513614377131087,
+    "min_return": -0.8888888888888888,
+    "max_return": 0.3333333333333333,
+    "median_return": 0.1111111111111111,
+    "mean_length": 40.8,
+    "per_episode_returns": [
+      -0.8888888888888888,
+      0.1111111111111111,
+      0.0,
+      0.1111111111111111,
+      0.3333333333333333
+    ]
+  },
+  "glyphbench/miniatari-robotank-v0": {
+    "env_id": "glyphbench/miniatari-robotank-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 10.8,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/miniatari-seaquest-v0": {
+    "env_id": "glyphbench/miniatari-seaquest-v0",
+    "n_episodes": 5,
+    "mean_return": -0.6,
+    "std_return": 0.43588989435406733,
+    "min_return": -1.0,
+    "max_return": 0.25,
+    "median_return": -0.75,
+    "mean_length": 186.8,
+    "per_episode_returns": [
+      0.25,
+      -0.75,
+      -0.75,
+      -1.0,
+      -0.75
+    ]
+  },
+  "glyphbench/miniatari-skiing-v0": {
+    "env_id": "glyphbench/miniatari-skiing-v0",
+    "n_episodes": 5,
+    "mean_return": 0.12,
+    "std_return": 0.11661903789690603,
+    "min_return": 0.0,
+    "max_return": 0.30000000000000004,
+    "median_return": 0.1,
+    "mean_length": 55.0,
+    "per_episode_returns": [
+      0.2,
+      0.30000000000000004,
+      0.0,
+      0.1,
+      0.0
+    ]
+  },
+  "glyphbench/miniatari-spaceinvaders-v0": {
+    "env_id": "glyphbench/miniatari-spaceinvaders-v0",
+    "n_episodes": 5,
+    "mean_return": -0.175,
+    "std_return": 0.594768862668516,
+    "min_return": -0.625,
+    "max_return": 1.0,
+    "median_return": -0.375,
+    "mean_length": 149.4,
+    "per_episode_returns": [
+      -0.625,
+      -0.375,
+      -0.5,
+      1.0,
+      -0.375
+    ]
+  },
+  "glyphbench/miniatari-stargunner-v0": {
+    "env_id": "glyphbench/miniatari-stargunner-v0",
+    "n_episodes": 5,
+    "mean_return": 0.2,
+    "std_return": 0.1264911064067352,
+    "min_return": 0.0,
+    "max_return": 0.4,
+    "median_return": 0.2,
+    "mean_length": 16.4,
+    "per_episode_returns": [
+      0.0,
+      0.4,
+      0.2,
+      0.2,
+      0.2
+    ]
+  },
+  "glyphbench/miniatari-surround-v0": {
+    "env_id": "glyphbench/miniatari-surround-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 7.4,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/miniatari-tennis-v0": {
+    "env_id": "glyphbench/miniatari-tennis-v0",
+    "n_episodes": 5,
+    "mean_return": -0.4,
+    "std_return": 0.6110100926607788,
+    "min_return": -1.0,
+    "max_return": 0.3333333333333333,
+    "median_return": -0.6666666666666666,
+    "mean_length": 136.0,
+    "per_episode_returns": [
+      -1.0,
+      0.3333333333333333,
+      -1.0,
+      -0.6666666666666666,
+      0.3333333333333333
+    ]
+  },
+  "glyphbench/miniatari-timepilot-v0": {
+    "env_id": "glyphbench/miniatari-timepilot-v0",
+    "n_episodes": 5,
+    "mean_return": 0.04,
+    "std_return": 0.08,
+    "min_return": 0.0,
+    "max_return": 0.2,
+    "median_return": 0.0,
+    "mean_length": 13.2,
+    "per_episode_returns": [
+      0.2,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/miniatari-upndown-v0": {
+    "env_id": "glyphbench/miniatari-upndown-v0",
+    "n_episodes": 5,
+    "mean_return": 0.16,
+    "std_return": 0.14966629547095767,
+    "min_return": 0.0,
+    "max_return": 0.4,
+    "median_return": 0.2,
+    "mean_length": 58.4,
+    "per_episode_returns": [
+      0.2,
+      0.2,
+      0.4,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/miniatari-wizardofwor-v0": {
+    "env_id": "glyphbench/miniatari-wizardofwor-v0",
+    "n_episodes": 5,
+    "mean_return": -0.9199999999999999,
+    "std_return": 0.09797958971132709,
+    "min_return": -1.0,
+    "max_return": -0.8,
+    "median_return": -1.0,
+    "mean_length": 12.6,
+    "per_episode_returns": [
+      -1.0,
+      -0.8,
+      -1.0,
+      -1.0,
+      -0.8
+    ]
+  },
+  "glyphbench/miniatari-yarsrevenge-v0": {
+    "env_id": "glyphbench/miniatari-yarsrevenge-v0",
+    "n_episodes": 5,
+    "mean_return": -0.42000000000000004,
+    "std_return": 0.4707440918375928,
+    "min_return": -0.9,
+    "max_return": 0.2,
+    "median_return": -0.7,
+    "mean_length": 189.6,
+    "per_episode_returns": [
+      -0.8,
+      -0.9,
+      -0.7,
+      0.1,
+      0.2
+    ]
+  },
+  "glyphbench/miniatari-zaxxon-v0": {
+    "env_id": "glyphbench/miniatari-zaxxon-v0",
+    "n_episodes": 5,
+    "mean_return": -0.7,
+    "std_return": 0.12472191289246472,
+    "min_return": -0.8333333333333334,
+    "max_return": -0.5,
+    "median_return": -0.6666666666666667,
+    "mean_length": 30.2,
+    "per_episode_returns": [
+      -0.8333333333333334,
+      -0.5,
+      -0.6666666666666667,
+      -0.8333333333333334,
+      -0.6666666666666667
+    ]
+  }
+}

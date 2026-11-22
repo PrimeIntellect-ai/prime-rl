@@ -1,0 +1,193 @@
+# Prime-RL v0.9 / Verifiers v1 production multitask recipe.
+# One balanced GlyphBench taskset source avoids spawning 100 env servers while
+# still yielding task-homogeneous GRPO groups. Each step is 16 groups x 64
+# mixed-seed trajectories. The manifest contains all 60 Craftax minigames plus
+# 40 tasks from the other active suites.
+
+max_steps = 1000
+# PrimeRL trainer capacity. Token limits do not belong to the GlyphBench env.
+seq_len = 65536
+output_dir = "runs/rl/qwen35-4b-glyphbench"
+
+[run]
+name = "multitask-craftax100-16x64-3i1t-linear-64k-fullac-v2"
+
+[env_vars]
+TRITON_CACHE_DIR = "/tmp/glyphbench-triton-cache"
+TORCHINDUCTOR_CACHE_DIR = "/tmp/glyphbench-torchinductor-cache"
+# The shared cache contains the complete pinned Qwen snapshot. Avoid a burst of
+# unauthenticated Hub metadata requests when 24 vLLM workers start together.
+HF_HUB_OFFLINE = "1"
+TRANSFORMERS_OFFLINE = "1"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 3
+num_infer_replicas = 1
+gpus_per_node = 8
+orchestrator_on_inference = true
+
+[slurm]
+job_name = "gb-multi-v1"
+project_dir = "."
+partition = "gpu"
+time = "7-00:00:00"
+cleanup_grace_period = 120
+
+[model]
+name = "Qwen/Qwen3.5-4B"
+
+[weight_broadcast]
+type = "nccl"
+port = 29601
+timeout = 1800
+
+[rollout_transport]
+type = "zmq"
+port = 29610
+
+[ckpt]
+interval = 25
+keep_last = 2
+keep_interval = 250
+
+[monitors.wandb]
+project = "glyphbench-rl"
+group = "qwen35-4b-multitask-linear-64k-v1"
+tags = ["glyphbench", "multitask", "craftax100", "16x64", "3i1t", "linear-history", "64k-context", "full-activation-checkpointing", "1000-step", "prime-rl-v0.9", "verifiers-v1", "ipo"]
+offline = false
+
+[trainer]
+dist_timeout_seconds = 3600
+
+[trainer.monitors]
+file = "None"
+
+[trainer.model]
+attn = "auto"
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+offload = "none"
+fused_lm_head_token_chunk_size = 8192
+ac_offloading = "None"
+compile = "None"
+
+[trainer.model.ac]
+# A 65,536-token selective-AC backward peaked at 78.75 GiB per H100 before
+# completing the first optimizer step. Recompute complete decoder blocks so
+# the 64K production path fits without changing batch, context, or topology.
+mode = "full"
+freq = 1
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+betas1 = 0.9
+betas2 = 0.95
+weight_decay = 0.0
+max_norm = 1.0
+
+[trainer.scheduler]
+type = "constant"
+
+[trainer.loss]
+type = "ipo"
+eps = 0.1
+adv_tau = 1.0
+
+[orchestrator]
+batch_size = 1024
+max_staleness = 3
+# Filter zero-advantage samples without collecting replacements.
+constant_trainer_batch_size = false
+# Keep vLLM telemetry available to adaptive scheduling without exporting every
+# per-replica Prometheus counter and histogram to W&B/file monitors.
+collect_inference_metrics = false
+
+[orchestrator.monitors]
+file = "None"
+
+[orchestrator.renderer]
+name = "qwen3.5"
+enable_thinking = true
+thinking_retention = "all"
+
+[orchestrator.train]
+group_size = 64
+
+[orchestrator.train.algo]
+type = "grpo"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 4096
+temperature = 1.0
+
+[[orchestrator.train.source]]
+name = "train-craftax100"
+env.taskset.id = "glyphbench"
+env.taskset.task_file = "configs/rl/qwen35-4b-glyphbench/multitask_craftax100_tasks.txt"
+env.taskset.seed = 42
+env.taskset.num_seeds = 512
+env.taskset.mixed_seeds = true
+env.taskset.max_output_tokens = 4096
+env.taskset.forfeit_mode = "noop"
+env.taskset.use_memory = false
+env.player.harness.id = "glyphbench"
+env.player.max_total_tokens = 65535
+env.player.runtime.type = "subprocess"
+serve.pool.type = "elastic"
+serve.pool.max_workers = 8
+serve.pool.multiplex = 128
+
+[orchestrator.eval]
+interval = 50
+# Fifty tasks x four exact held-out seeds. This is only 200 eval episodes per
+# 51,200 training episodes between evaluations (0.39% by episode count). A
+# single source avoids duplicating Prime-RL's generic per-source metric surface;
+# tasks/<task>/episodic_return still provides one curve per task.
+group_size = 1
+skip_first_step = false
+
+[orchestrator.eval.select]
+limit = 200
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 4096
+temperature = 1.0
+top_p = 1.0
+
+[[orchestrator.eval.source]]
+name = "eval-fixed-panel"
+env.taskset.id = "glyphbench"
+env.taskset.task_file = "configs/rl/qwen35-4b-glyphbench/multitask_fixed_eval_tasks.txt"
+env.taskset.seed = 1000000
+env.taskset.num_seeds = 4
+env.taskset.mixed_seeds = false
+env.taskset.max_output_tokens = 4096
+env.taskset.forfeit_mode = "noop"
+env.taskset.use_memory = false
+env.player.harness.id = "glyphbench"
+env.player.max_total_tokens = 65535
+env.player.runtime.type = "subprocess"
+
+[inference]
+
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/glyphbench-vllm-cache"
+FLASHINFER_WORKSPACE_BASE = "/tmp/glyphbench-flashinfer-cache"
+
+[inference.vllm]
+max_model_len = 65536
+# Scoped mitigation for the pinned vLLM activation kernel; see docs/DEPENDENCIES.md.
+max_num_batched_tokens = 8192
+enable_chunked_prefill = true
+compilation_config = { custom_ops = ["-silu_and_mul"] }
+tensor_parallel_size = 1
+data_parallel_size = 8
+data_parallel_size_local = 8
+api_server_count = 8
+gpu_memory_utilization = 0.92
+enable_prefix_caching = true
+enforce_eager = false
+gdn_prefill_backend = "triton"

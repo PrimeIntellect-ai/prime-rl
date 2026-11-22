@@ -1,0 +1,101 @@
+# Python and test artifacts
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Environments and local credentials
+.venv/
+venv/
+env/
+.uv/
+.env
+.env.*
+!.env.example
+
+# Editors and operating systems
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Runtime outputs and downloaded models
+runs/
+results/
+outputs/
+logs/
+wandb/
+gifs/
+*.parquet
+*.jsonl
+*.safetensors
+*.distcp
+glyphbench.sif
+*.sif
+
+# Local scheduler and machine-specific configuration
+*.sbatch
+*.pbs
+slurm-*.out
+configs/rl/**/*.local.toml
+*.local.toml
+
+# Notebook and tool caches
+.ipynb_checkpoints/
+eval/*.ipynb
+notebooks/*
+!notebooks/return_violins.ipynb
+paper_search_cache/
+torchinductor_*/
+/tmp*/
+
+# Local planning and agent state
+specs/
+plans/
+.worktrees/
+worktrees/
+reviews/
+.claude/
+.claude*
+.cursor/
+.windsurf/
+.aider*
+.codeium/
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+HANDOVER*.md
+DECISIONS*.md
+TODO*.md
+NOTES*.md
+*.handover.md
+transcripts/
+chat_logs/
+
+# Local reference clones and generated figures
+prime-rl/
+Craftax-main/
+cluster_manager/
+docs/superpowers/
+eval/figures/
+*.zip
+
+# Root-level model directories created by local evaluations
+/Qwen_*/
+/Qwen2_*/
+/google_*/
+/deepseek-ai_*/
+/meta-llama_*/
+/mistralai_*/

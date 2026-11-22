@@ -1,0 +1,4898 @@
+{
+  "glyphbench/classics-2048-v0": {
+    "env_id": "glyphbench/classics-2048-v0",
+    "n_episodes": 5,
+    "mean_return": 0.17,
+    "std_return": 0.17492855684535902,
+    "min_return": 0.05,
+    "max_return": 0.49999999999999994,
+    "median_return": 0.05,
+    "mean_length": 67.8,
+    "per_episode_returns": [
+      0.05,
+      0.05,
+      0.49999999999999994,
+      0.05,
+      0.2
+    ]
+  },
+  "glyphbench/classics-artillery-v0": {
+    "env_id": "glyphbench/classics-artillery-v0",
+    "n_episodes": 5,
+    "mean_return": 0.3333333333333333,
+    "std_return": 0.21081851067789195,
+    "min_return": 0.0,
+    "max_return": 0.6666666666666666,
+    "median_return": 0.3333333333333333,
+    "mean_length": 146.4,
+    "per_episode_returns": [
+      0.3333333333333333,
+      0.3333333333333333,
+      0.6666666666666666,
+      0.3333333333333333,
+      0.0
+    ]
+  },
+  "glyphbench/classics-battleship-v0": {
+    "env_id": "glyphbench/classics-battleship-v0",
+    "n_episodes": 5,
+    "mean_return": 0.10735294117647057,
+    "std_return": 0.06859943405700351,
+    "min_return": 0.001470588235294135,
+    "max_return": 0.1779411764705882,
+    "median_return": 0.11911764705882347,
+    "mean_length": 35.0,
+    "per_episode_returns": [
+      0.1779411764705882,
+      0.11911764705882347,
+      0.001470588235294135,
+      0.06029411764705884,
+      0.1779411764705882
+    ]
+  },
+  "glyphbench/classics-bomberman-v0": {
+    "env_id": "glyphbench/classics-bomberman-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 13.8,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/classics-connectfour-v0": {
+    "env_id": "glyphbench/classics-connectfour-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 12.2,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/classics-farm-v0": {
+    "env_id": "glyphbench/classics-farm-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 200.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/classics-flappy-v0": {
+    "env_id": "glyphbench/classics-flappy-v0",
+    "n_episodes": 5,
+    "mean_return": 0.004,
+    "std_return": 0.008,
+    "min_return": 0.0,
+    "max_return": 0.02,
+    "median_return": 0.0,
+    "mean_length": 18.2,
+    "per_episode_returns": [
+      0.0,
+      0.02,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/classics-floodfill-easy-v0": {
+    "env_id": "glyphbench/classics-floodfill-easy-v0",
+    "n_episodes": 5,
+    "mean_return": -0.12500000000000003,
+    "std_return": 0.0,
+    "min_return": -0.12500000000000003,
+    "max_return": -0.12500000000000003,
+    "median_return": -0.12500000000000003,
+    "mean_length": 25.0,
+    "per_episode_returns": [
+      -0.12500000000000003,
+      -0.12500000000000003,
+      -0.12500000000000003,
+      -0.12500000000000003,
+      -0.12500000000000003
+    ]
+  },
+  "glyphbench/classics-floodfill-hard-v0": {
+    "env_id": "glyphbench/classics-floodfill-hard-v0",
+    "n_episodes": 5,
+    "mean_return": 0.02699999999999995,
+    "std_return": 0.4040000000000001,
+    "min_return": -0.17500000000000007,
+    "max_return": 0.835,
+    "median_return": -0.17500000000000007,
+    "mean_length": 34.6,
+    "per_episode_returns": [
+      -0.17500000000000007,
+      0.835,
+      -0.17500000000000007,
+      -0.17500000000000007,
+      -0.17500000000000007
+    ]
+  },
+  "glyphbench/classics-frogger-v0": {
+    "env_id": "glyphbench/classics-frogger-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 12.0,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/classics-gravitymaze-v0": {
+    "env_id": "glyphbench/classics-gravitymaze-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 9.6,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/classics-guardevasion-easy-v0": {
+    "env_id": "glyphbench/classics-guardevasion-easy-v0",
+    "n_episodes": 5,
+    "mean_return": -0.6,
+    "std_return": 0.48989794855663565,
+    "min_return": -1.0,
+    "max_return": 0.0,
+    "median_return": -1.0,
+    "mean_length": 91.0,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      0.0,
+      -1.0,
+      0.0
+    ]
+  },
+  "glyphbench/classics-guardevasion-hard-v0": {
+    "env_id": "glyphbench/classics-guardevasion-hard-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 43.6,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/classics-guardevasion-medium-v0": {
+    "env_id": "glyphbench/classics-guardevasion-medium-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 27.8,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/classics-icesliding-easy-v0": {
+    "env_id": "glyphbench/classics-icesliding-easy-v0",
+    "n_episodes": 5,
+    "mean_return": 0.33599999999999974,
+    "std_return": 0.7346454927378241,
+    "min_return": -1.0000000000000007,
+    "max_return": 0.98,
+    "median_return": 0.6799999999999999,
+    "mean_length": 47.2,
+    "per_episode_returns": [
+      0.98,
+      0.10999999999999943,
+      0.6799999999999999,
+      -1.0000000000000007,
+      0.91
+    ]
+  },
+  "glyphbench/classics-icesliding-hard-v0": {
+    "env_id": "glyphbench/classics-icesliding-hard-v0",
+    "n_episodes": 5,
+    "mean_return": 0.6000000000000002,
+    "std_return": 0.29822390916893265,
+    "min_return": 0.1250000000000011,
+    "max_return": 1.0,
+    "median_return": 0.6374999999999998,
+    "mean_length": 33.0,
+    "per_episode_returns": [
+      0.6374999999999998,
+      0.44999999999999996,
+      1.0,
+      0.7875,
+      0.1250000000000011
+    ]
+  },
+  "glyphbench/classics-icesliding-medium-v0": {
+    "env_id": "glyphbench/classics-icesliding-medium-v0",
+    "n_episodes": 5,
+    "mean_return": 0.06133333333333248,
+    "std_return": 0.8684842479221435,
+    "min_return": -1.0000000000000024,
+    "max_return": 0.8666666666666667,
+    "median_return": 0.686666666666667,
+    "mean_length": 81.4,
+    "per_episode_returns": [
+      0.7533333333333335,
+      -1.0000000000000024,
+      0.686666666666667,
+      0.8666666666666667,
+      -1.0000000000000024
+    ]
+  },
+  "glyphbench/classics-lightsout-easy-v0": {
+    "env_id": "glyphbench/classics-lightsout-easy-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0000000000000007,
+    "std_return": 0.0,
+    "min_return": -1.0000000000000007,
+    "max_return": -1.0000000000000007,
+    "median_return": -1.0000000000000007,
+    "mean_length": 100.0,
+    "per_episode_returns": [
+      -1.0000000000000007,
+      -1.0000000000000007,
+      -1.0000000000000007,
+      -1.0000000000000007,
+      -1.0000000000000007
+    ]
+  },
+  "glyphbench/classics-lightsout-hard-v0": {
+    "env_id": "glyphbench/classics-lightsout-hard-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0000000000000007,
+    "std_return": 0.0,
+    "min_return": -1.0000000000000007,
+    "max_return": -1.0000000000000007,
+    "median_return": -1.0000000000000007,
+    "mean_length": 200.0,
+    "per_episode_returns": [
+      -1.0000000000000007,
+      -1.0000000000000007,
+      -1.0000000000000007,
+      -1.0000000000000007,
+      -1.0000000000000007
+    ]
+  },
+  "glyphbench/classics-lunarlander-v0": {
+    "env_id": "glyphbench/classics-lunarlander-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 8.0,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/classics-match3-v0": {
+    "env_id": "glyphbench/classics-match3-v0",
+    "n_episodes": 5,
+    "mean_return": 0.23999999999999994,
+    "std_return": 0.07999999999999997,
+    "min_return": 0.19999999999999996,
+    "max_return": 0.3999999999999999,
+    "median_return": 0.19999999999999996,
+    "mean_length": 60.0,
+    "per_episode_returns": [
+      0.19999999999999996,
+      0.3999999999999999,
+      0.19999999999999996,
+      0.19999999999999996,
+      0.19999999999999996
+    ]
+  },
+  "glyphbench/classics-maze-easy-v0": {
+    "env_id": "glyphbench/classics-maze-easy-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0000000000000007,
+    "std_return": 0.0,
+    "min_return": -1.0000000000000007,
+    "max_return": -1.0000000000000007,
+    "median_return": -1.0000000000000007,
+    "mean_length": 100.0,
+    "per_episode_returns": [
+      -1.0000000000000007,
+      -1.0000000000000007,
+      -1.0000000000000007,
+      -1.0000000000000007,
+      -1.0000000000000007
+    ]
+  },
+  "glyphbench/classics-maze-hard-v0": {
+    "env_id": "glyphbench/classics-maze-hard-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0000000000000007,
+    "std_return": 0.0,
+    "min_return": -1.0000000000000007,
+    "max_return": -1.0000000000000007,
+    "median_return": -1.0000000000000007,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      -1.0000000000000007,
+      -1.0000000000000007,
+      -1.0000000000000007,
+      -1.0000000000000007,
+      -1.0000000000000007
+    ]
+  },
+  "glyphbench/classics-maze-medium-v0": {
+    "env_id": "glyphbench/classics-maze-medium-v0",
+    "n_episodes": 5,
+    "mean_return": -0.9999999999999961,
+    "std_return": 0.0,
+    "min_return": -0.9999999999999961,
+    "max_return": -0.9999999999999961,
+    "median_return": -0.9999999999999961,
+    "mean_length": 300.0,
+    "per_episode_returns": [
+      -0.9999999999999961,
+      -0.9999999999999961,
+      -0.9999999999999961,
+      -0.9999999999999961,
+      -0.9999999999999961
+    ]
+  },
+  "glyphbench/classics-memorymatch-easy-v0": {
+    "env_id": "glyphbench/classics-memorymatch-easy-v0",
+    "n_episodes": 5,
+    "mean_return": 0.12000000000000002,
+    "std_return": 0.1469693845669907,
+    "min_return": 0.0,
+    "max_return": 0.30000000000000004,
+    "median_return": 0.0,
+    "mean_length": 32.0,
+    "per_episode_returns": [
+      0.30000000000000004,
+      0.30000000000000004,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/classics-memorymatch-hard-v0": {
+    "env_id": "glyphbench/classics-memorymatch-hard-v0",
+    "n_episodes": 5,
+    "mean_return": 0.04444444444444444,
+    "std_return": 0.05443310539518174,
+    "min_return": 0.0,
+    "max_return": 0.1111111111111111,
+    "median_return": 0.0,
+    "mean_length": 60.0,
+    "per_episode_returns": [
+      0.1111111111111111,
+      0.0,
+      0.0,
+      0.1111111111111111,
+      0.0
+    ]
+  },
+  "glyphbench/classics-minesweeper-v0": {
+    "env_id": "glyphbench/classics-minesweeper-v0",
+    "n_episodes": 5,
+    "mean_return": -0.5851851851851853,
+    "std_return": 0.34952446629345263,
+    "min_return": -1.0,
+    "max_return": -0.20370370370370372,
+    "median_return": -0.5185185185185186,
+    "mean_length": 6.2,
+    "per_episode_returns": [
+      -0.9814814814814815,
+      -1.0,
+      -0.5185185185185186,
+      -0.20370370370370372,
+      -0.2222222222222222
+    ]
+  },
+  "glyphbench/classics-mirrorlaser-v0": {
+    "env_id": "glyphbench/classics-mirrorlaser-v0",
+    "n_episodes": 5,
+    "mean_return": 0.2,
+    "std_return": 0.4,
+    "min_return": 0.0,
+    "max_return": 1.0,
+    "median_return": 0.0,
+    "mean_length": 10.6,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0
+    ]
+  },
+  "glyphbench/classics-nim-easy-v0": {
+    "env_id": "glyphbench/classics-nim-easy-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 17.4,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/classics-nim-hard-v0": {
+    "env_id": "glyphbench/classics-nim-hard-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 16.2,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/classics-nonogram-easy-v0": {
+    "env_id": "glyphbench/classics-nonogram-easy-v0",
+    "n_episodes": 5,
+    "mean_return": 0.07200000000000002,
+    "std_return": 0.19166637681137505,
+    "min_return": -0.2,
+    "max_return": 0.24000000000000005,
+    "median_return": 0.2,
+    "mean_length": 100.0,
+    "per_episode_returns": [
+      -0.2,
+      -0.12,
+      0.24000000000000005,
+      0.24000000000000005,
+      0.2
+    ]
+  },
+  "glyphbench/classics-nonogram-hard-v0": {
+    "env_id": "glyphbench/classics-nonogram-hard-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0125,
+    "std_return": 0.09999999999999999,
+    "min_return": -0.09375,
+    "max_return": 0.15625,
+    "median_return": 0.0,
+    "mean_length": 300.0,
+    "per_episode_returns": [
+      -0.09375,
+      -0.09375,
+      0.15625,
+      0.09375,
+      0.0
+    ]
+  },
+  "glyphbench/classics-pipeconnect-easy-v0": {
+    "env_id": "glyphbench/classics-pipeconnect-easy-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 100.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/classics-pipeconnect-hard-v0": {
+    "env_id": "glyphbench/classics-pipeconnect-hard-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 300.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/classics-pipeconnect-medium-v0": {
+    "env_id": "glyphbench/classics-pipeconnect-medium-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 200.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/classics-platformer-v0": {
+    "env_id": "glyphbench/classics-platformer-v0",
+    "n_episodes": 5,
+    "mean_return": -0.947420962485013,
+    "std_return": 0.019351863322712177,
+    "min_return": -0.9710144927536232,
+    "max_return": -0.9224137931034483,
+    "median_return": -0.9577464788732395,
+    "mean_length": 252.8,
+    "per_episode_returns": [
+      -0.9710144927536232,
+      -0.9264705882352942,
+      -0.9224137931034483,
+      -0.9594594594594594,
+      -0.9577464788732395
+    ]
+  },
+  "glyphbench/classics-rushhour-easy-v0": {
+    "env_id": "glyphbench/classics-rushhour-easy-v0",
+    "n_episodes": 5,
+    "mean_return": -0.3540000000000004,
+    "std_return": 0.7926058288960538,
+    "min_return": -1.0000000000000007,
+    "max_return": 0.69,
+    "median_return": -1.0000000000000007,
+    "mean_length": 75.8,
+    "per_episode_returns": [
+      0.5399999999999998,
+      0.69,
+      -1.0000000000000007,
+      -1.0000000000000007,
+      -1.0000000000000007
+    ]
+  },
+  "glyphbench/classics-rushhour-hard-v0": {
+    "env_id": "glyphbench/classics-rushhour-hard-v0",
+    "n_episodes": 5,
+    "mean_return": -0.3480000000000005,
+    "std_return": 0.8159325952552701,
+    "min_return": -1.0000000000000007,
+    "max_return": 0.895,
+    "median_return": -1.0000000000000007,
+    "mean_length": 150.0,
+    "per_episode_returns": [
+      0.36499999999999955,
+      -1.0000000000000007,
+      0.895,
+      -1.0000000000000007,
+      -1.0000000000000007
+    ]
+  },
+  "glyphbench/classics-ski-v0": {
+    "env_id": "glyphbench/classics-ski-v0",
+    "n_episodes": 5,
+    "mean_return": -0.9800000000000001,
+    "std_return": 0.039999999999999994,
+    "min_return": -1.0,
+    "max_return": -0.9,
+    "median_return": -1.0,
+    "mean_length": 6.6,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -0.9,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/classics-snake-easy-v0": {
+    "env_id": "glyphbench/classics-snake-easy-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 7.4,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/classics-snake-hard-v0": {
+    "env_id": "glyphbench/classics-snake-hard-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 27.6,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/classics-snake-medium-v0": {
+    "env_id": "glyphbench/classics-snake-medium-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 10.8,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/classics-sokoban-easy-v0": {
+    "env_id": "glyphbench/classics-sokoban-easy-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 200.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/classics-sokoban-hard-v0": {
+    "env_id": "glyphbench/classics-sokoban-hard-v0",
+    "n_episodes": 5,
+    "mean_return": 0.04,
+    "std_return": 0.08,
+    "min_return": 0.0,
+    "max_return": 0.2,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.2,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/classics-sokoban-medium-v0": {
+    "env_id": "glyphbench/classics-sokoban-medium-v0",
+    "n_episodes": 5,
+    "mean_return": 0.06666666666666667,
+    "std_return": 0.13333333333333333,
+    "min_return": 0.0,
+    "max_return": 0.3333333333333333,
+    "median_return": 0.0,
+    "mean_length": 300.0,
+    "per_episode_returns": [
+      0.0,
+      0.3333333333333333,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/classics-tetris-v0": {
+    "env_id": "glyphbench/classics-tetris-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 23.6,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/classics-towerdefense-v0": {
+    "env_id": "glyphbench/classics-towerdefense-v0",
+    "n_episodes": 5,
+    "mean_return": -0.76,
+    "std_return": 0.48000000000000004,
+    "min_return": -1.0,
+    "max_return": 0.2,
+    "median_return": -1.0,
+    "mean_length": 128.6,
+    "per_episode_returns": [
+      0.2,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/classics-tron-v0": {
+    "env_id": "glyphbench/classics-tron-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 8.6,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/classics-warehouse-v0": {
+    "env_id": "glyphbench/classics-warehouse-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 200.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/classics-wavedefense-v0": {
+    "env_id": "glyphbench/classics-wavedefense-v0",
+    "n_episodes": 5,
+    "mean_return": -0.9949999999999999,
+    "std_return": 0.010000000000000009,
+    "min_return": -1.0,
+    "max_return": -0.975,
+    "median_return": -1.0,
+    "mean_length": 6.6,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -0.975
+    ]
+  },
+  "glyphbench/craftax-bossfight-v0": {
+    "env_id": "glyphbench/craftax-bossfight-v0",
+    "n_episodes": 5,
+    "mean_return": -0.8,
+    "std_return": 0.4,
+    "min_return": -1.0,
+    "max_return": 0.0,
+    "median_return": -1.0,
+    "mean_length": 76.2,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      0.0
+    ]
+  },
+  "glyphbench/craftax-bow-kite-v0": {
+    "env_id": "glyphbench/craftax-bow-kite-v0",
+    "n_episodes": 5,
+    "mean_return": -0.4,
+    "std_return": 0.48989794855663565,
+    "min_return": -1.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 99.2,
+    "per_episode_returns": [
+      0.0,
+      -1.0,
+      0.0,
+      -1.0,
+      0.0
+    ]
+  },
+  "glyphbench/craftax-build-shelter-v0": {
+    "env_id": "glyphbench/craftax-build-shelter-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 67.8,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/craftax-choptrees-v0": {
+    "env_id": "glyphbench/craftax-choptrees-v0",
+    "n_episodes": 5,
+    "mean_return": 0.06000000000000001,
+    "std_return": 0.08,
+    "min_return": 0.0,
+    "max_return": 0.2,
+    "median_return": 0.0,
+    "mean_length": 108.8,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.2,
+      0.0,
+      0.1
+    ]
+  },
+  "glyphbench/craftax-craft-ironset-v0": {
+    "env_id": "glyphbench/craftax-craft-ironset-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 68.8,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/craftax-craftchain-v0": {
+    "env_id": "glyphbench/craftax-craftchain-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 151.6,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/craftax-craftpickaxe-v0": {
+    "env_id": "glyphbench/craftax-craftpickaxe-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 121.2,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/craftax-craftsword-v0": {
+    "env_id": "glyphbench/craftax-craftsword-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 166.8,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/craftax-diamond-bootstrap-v0": {
+    "env_id": "glyphbench/craftax-diamond-bootstrap-v0",
+    "n_episodes": 5,
+    "mean_return": -0.9555555555555555,
+    "std_return": 0.08888888888888889,
+    "min_return": -1.0,
+    "max_return": -0.7777777777777778,
+    "median_return": -1.0,
+    "mean_length": 69.8,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -0.7777777777777778,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/craftax-dungeon-v0": {
+    "env_id": "glyphbench/craftax-dungeon-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 192.6,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/craftax-dungeonclear-v0": {
+    "env_id": "glyphbench/craftax-dungeonclear-v0",
+    "n_episodes": 5,
+    "mean_return": -0.6,
+    "std_return": 0.48989794855663565,
+    "min_return": -1.0,
+    "max_return": 0.0,
+    "median_return": -1.0,
+    "mean_length": 168.0,
+    "per_episode_returns": [
+      0.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      0.0
+    ]
+  },
+  "glyphbench/craftax-dungeonexplore-v0": {
+    "env_id": "glyphbench/craftax-dungeonexplore-v0",
+    "n_episodes": 5,
+    "mean_return": 0.045454545454545456,
+    "std_return": 0.0,
+    "min_return": 0.045454545454545456,
+    "max_return": 0.045454545454545456,
+    "median_return": 0.045454545454545456,
+    "mean_length": 130.2,
+    "per_episode_returns": [
+      0.045454545454545456,
+      0.045454545454545456,
+      0.045454545454545456,
+      0.045454545454545456,
+      0.045454545454545456
+    ]
+  },
+  "glyphbench/craftax-enchant-weapon-v0": {
+    "env_id": "glyphbench/craftax-enchant-weapon-v0",
+    "n_episodes": 5,
+    "mean_return": -0.7,
+    "std_return": 0.4,
+    "min_return": -1.0,
+    "max_return": 0.0,
+    "median_return": -1.0,
+    "mean_length": 78.8,
+    "per_episode_returns": [
+      -0.5,
+      -1.0,
+      -1.0,
+      -1.0,
+      0.0
+    ]
+  },
+  "glyphbench/craftax-fight-archers-v0": {
+    "env_id": "glyphbench/craftax-fight-archers-v0",
+    "n_episodes": 5,
+    "mean_return": -0.33333333333333337,
+    "std_return": 0.42163702135578396,
+    "min_return": -1.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 105.0,
+    "per_episode_returns": [
+      -1.0,
+      0.0,
+      -0.6666666666666667,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/craftax-fight-bats-v0": {
+    "env_id": "glyphbench/craftax-fight-bats-v0",
+    "n_episodes": 5,
+    "mean_return": 0.040000000000000015,
+    "std_return": 0.8708616422830896,
+    "min_return": -1.0,
+    "max_return": 1.0,
+    "median_return": 0.4,
+    "mean_length": 77.0,
+    "per_episode_returns": [
+      -1.0,
+      0.8,
+      1.0,
+      -1.0,
+      0.4
+    ]
+  },
+  "glyphbench/craftax-fight-cow-v0": {
+    "env_id": "glyphbench/craftax-fight-cow-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 44.6,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/craftax-fight-skeletons-v0": {
+    "env_id": "glyphbench/craftax-fight-skeletons-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 7.8,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/craftax-fight-spiders-v0": {
+    "env_id": "glyphbench/craftax-fight-spiders-v0",
+    "n_episodes": 5,
+    "mean_return": -0.2,
+    "std_return": 0.4000000000000001,
+    "min_return": -1.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 105.2,
+    "per_episode_returns": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/craftax-fight-zombies-v0": {
+    "env_id": "glyphbench/craftax-fight-zombies-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 10.2,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/craftax-fightzombie-v0": {
+    "env_id": "glyphbench/craftax-fightzombie-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 12.4,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/craftax-find-diamond-v0": {
+    "env_id": "glyphbench/craftax-find-diamond-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 68.6,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/craftax-find-water-v0": {
+    "env_id": "glyphbench/craftax-find-water-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 55.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/craftax-fire-realm-v0": {
+    "env_id": "glyphbench/craftax-fire-realm-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 141.2,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/craftax-firstday-v0": {
+    "env_id": "glyphbench/craftax-firstday-v0",
+    "n_episodes": 5,
+    "mean_return": 0.06363636363636363,
+    "std_return": 0.022268088570756166,
+    "min_return": 0.045454545454545456,
+    "max_return": 0.09090909090909091,
+    "median_return": 0.045454545454545456,
+    "mean_length": 72.8,
+    "per_episode_returns": [
+      0.09090909090909091,
+      0.045454545454545456,
+      0.09090909090909091,
+      0.045454545454545456,
+      0.045454545454545456
+    ]
+  },
+  "glyphbench/craftax-gatherresources-v0": {
+    "env_id": "glyphbench/craftax-gatherresources-v0",
+    "n_episodes": 5,
+    "mean_return": 0.04,
+    "std_return": 0.048989794855663564,
+    "min_return": 0.0,
+    "max_return": 0.1,
+    "median_return": 0.0,
+    "mean_length": 149.2,
+    "per_episode_returns": [
+      0.1,
+      0.0,
+      0.0,
+      0.0,
+      0.1
+    ]
+  },
+  "glyphbench/craftax-gnomish-mines-v0": {
+    "env_id": "glyphbench/craftax-gnomish-mines-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 122.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/craftax-ice-realm-v0": {
+    "env_id": "glyphbench/craftax-ice-realm-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 128.8,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/craftax-iron-bootstrap-v0": {
+    "env_id": "glyphbench/craftax-iron-bootstrap-v0",
+    "n_episodes": 5,
+    "mean_return": -0.9428571428571428,
+    "std_return": 0.11428571428571428,
+    "min_return": -1.0,
+    "max_return": -0.7142857142857143,
+    "median_return": -1.0,
+    "mean_length": 69.8,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -0.7142857142857143,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/craftax-learn-spell-v0": {
+    "env_id": "glyphbench/craftax-learn-spell-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 116.6,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/craftax-mine-iron-v0": {
+    "env_id": "glyphbench/craftax-mine-iron-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 73.4,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/craftax-minestone-v0": {
+    "env_id": "glyphbench/craftax-minestone-v0",
+    "n_episodes": 5,
+    "mean_return": 0.14,
+    "std_return": 0.17435595774162696,
+    "min_return": 0.0,
+    "max_return": 0.4,
+    "median_return": 0.0,
+    "mean_length": 108.8,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.4,
+      0.0,
+      0.30000000000000004
+    ]
+  },
+  "glyphbench/craftax-necromancer-v0": {
+    "env_id": "glyphbench/craftax-necromancer-v0",
+    "n_episodes": 5,
+    "mean_return": -0.6,
+    "std_return": 0.48989794855663565,
+    "min_return": -1.0,
+    "max_return": 0.0,
+    "median_return": -1.0,
+    "mean_length": 199.2,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      0.0,
+      0.0,
+      -1.0
+    ]
+  },
+  "glyphbench/craftax-plant-farm-v0": {
+    "env_id": "glyphbench/craftax-plant-farm-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 67.8,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/craftax-potion-triage-v0": {
+    "env_id": "glyphbench/craftax-potion-triage-v0",
+    "n_episodes": 5,
+    "mean_return": -0.9,
+    "std_return": 0.20000000000000004,
+    "min_return": -1.0,
+    "max_return": -0.5,
+    "median_return": -1.0,
+    "mean_length": 11.6,
+    "per_episode_returns": [
+      -0.5,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/craftax-reach-dungeon-v0": {
+    "env_id": "glyphbench/craftax-reach-dungeon-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 160.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/craftax-sewers-v0": {
+    "env_id": "glyphbench/craftax-sewers-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 169.2,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/craftax-speedrun-v0": {
+    "env_id": "glyphbench/craftax-speedrun-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 299.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/craftax-survive-hunger-v0": {
+    "env_id": "glyphbench/craftax-survive-hunger-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 27.6,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/craftax-survive-night-v0": {
+    "env_id": "glyphbench/craftax-survive-night-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 9.4,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/craftax-survive-thirst-v0": {
+    "env_id": "glyphbench/craftax-survive-thirst-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 33.8,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/craftax-survive-wild-v0": {
+    "env_id": "glyphbench/craftax-survive-wild-v0",
+    "n_episodes": 5,
+    "mean_return": -0.867,
+    "std_return": 0.056089214649520686,
+    "min_return": -0.935,
+    "max_return": -0.7849999999999999,
+    "median_return": -0.885,
+    "mean_length": 27.6,
+    "per_episode_returns": [
+      -0.82,
+      -0.935,
+      -0.7849999999999999,
+      -0.885,
+      -0.91
+    ]
+  },
+  "glyphbench/craftax-survivehorde-v0": {
+    "env_id": "glyphbench/craftax-survivehorde-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 4.8,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/craftax-troll-mines-v0": {
+    "env_id": "glyphbench/craftax-troll-mines-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 26.4,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/craftax-vaults-v0": {
+    "env_id": "glyphbench/craftax-vaults-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 126.4,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/craftax-wave-defense-v0": {
+    "env_id": "glyphbench/craftax-wave-defense-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 5.6,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/miniatari-alien-v0": {
+    "env_id": "glyphbench/miniatari-alien-v0",
+    "n_episodes": 5,
+    "mean_return": -0.95,
+    "std_return": 0.09999999999999999,
+    "min_return": -1.0,
+    "max_return": -0.75,
+    "median_return": -1.0,
+    "mean_length": 11.8,
+    "per_episode_returns": [
+      -0.75,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/miniatari-amidar-v0": {
+    "env_id": "glyphbench/miniatari-amidar-v0",
+    "n_episodes": 5,
+    "mean_return": 0.039999999999999945,
+    "std_return": 0.33823069050575527,
+    "min_return": -0.20000000000000007,
+    "max_return": 0.7,
+    "median_return": -0.10000000000000009,
+    "mean_length": 256.0,
+    "per_episode_returns": [
+      -0.20000000000000007,
+      -0.10000000000000009,
+      -0.20000000000000007,
+      0.0,
+      0.7
+    ]
+  },
+  "glyphbench/miniatari-assault-v0": {
+    "env_id": "glyphbench/miniatari-assault-v0",
+    "n_episodes": 5,
+    "mean_return": 0.4800000000000001,
+    "std_return": 0.16000000000000003,
+    "min_return": 0.2,
+    "max_return": 0.6000000000000001,
+    "median_return": 0.6000000000000001,
+    "mean_length": 32.8,
+    "per_episode_returns": [
+      0.4,
+      0.6000000000000001,
+      0.6000000000000001,
+      0.2,
+      0.6000000000000001
+    ]
+  },
+  "glyphbench/miniatari-asterix-v0": {
+    "env_id": "glyphbench/miniatari-asterix-v0",
+    "n_episodes": 5,
+    "mean_return": -0.8799999999999999,
+    "std_return": 0.0979795897113271,
+    "min_return": -1.0,
+    "max_return": -0.8,
+    "median_return": -0.8,
+    "mean_length": 14.6,
+    "per_episode_returns": [
+      -0.8,
+      -1.0,
+      -1.0,
+      -0.8,
+      -0.8
+    ]
+  },
+  "glyphbench/miniatari-asteroids-v0": {
+    "env_id": "glyphbench/miniatari-asteroids-v0",
+    "n_episodes": 5,
+    "mean_return": 0.16,
+    "std_return": 0.19595917942265426,
+    "min_return": 0.0,
+    "max_return": 0.4,
+    "median_return": 0.0,
+    "mean_length": 40.4,
+    "per_episode_returns": [
+      0.0,
+      0.4,
+      0.0,
+      0.4,
+      0.0
+    ]
+  },
+  "glyphbench/miniatari-atlantis-v0": {
+    "env_id": "glyphbench/miniatari-atlantis-v0",
+    "n_episodes": 5,
+    "mean_return": -0.9333333333333333,
+    "std_return": 0.13333333333333333,
+    "min_return": -1.0,
+    "max_return": -0.6666666666666667,
+    "median_return": -1.0,
+    "mean_length": 17.6,
+    "per_episode_returns": [
+      -1.0,
+      -0.6666666666666667,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/miniatari-bankheist-v0": {
+    "env_id": "glyphbench/miniatari-bankheist-v0",
+    "n_episodes": 5,
+    "mean_return": -0.8666666666666668,
+    "std_return": 0.16329931618554516,
+    "min_return": -1.0,
+    "max_return": -0.6666666666666667,
+    "median_return": -1.0,
+    "mean_length": 20.2,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -0.6666666666666667,
+      -1.0,
+      -0.6666666666666667
+    ]
+  },
+  "glyphbench/miniatari-battlezone-v0": {
+    "env_id": "glyphbench/miniatari-battlezone-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 21.6,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/miniatari-beamrider-v0": {
+    "env_id": "glyphbench/miniatari-beamrider-v0",
+    "n_episodes": 5,
+    "mean_return": -0.76,
+    "std_return": 0.10198039027185572,
+    "min_return": -0.9,
+    "max_return": -0.6,
+    "median_return": -0.8,
+    "mean_length": 29.6,
+    "per_episode_returns": [
+      -0.9,
+      -0.7,
+      -0.6,
+      -0.8,
+      -0.8
+    ]
+  },
+  "glyphbench/miniatari-berzerk-v0": {
+    "env_id": "glyphbench/miniatari-berzerk-v0",
+    "n_episodes": 5,
+    "mean_return": -0.9199999999999999,
+    "std_return": 0.09797958971132709,
+    "min_return": -1.0,
+    "max_return": -0.8,
+    "median_return": -1.0,
+    "mean_length": 9.2,
+    "per_episode_returns": [
+      -1.0,
+      -0.8,
+      -0.8,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/miniatari-bowling-v0": {
+    "env_id": "glyphbench/miniatari-bowling-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 30.6,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/miniatari-boxing-v0": {
+    "env_id": "glyphbench/miniatari-boxing-v0",
+    "n_episodes": 5,
+    "mean_return": -0.24000000000000005,
+    "std_return": 0.38781438859330636,
+    "min_return": -0.8,
+    "max_return": 0.2,
+    "median_return": -0.4000000000000001,
+    "mean_length": 32.2,
+    "per_episode_returns": [
+      0.2,
+      0.2,
+      -0.4000000000000001,
+      -0.4000000000000001,
+      -0.8
+    ]
+  },
+  "glyphbench/miniatari-breakout-v0": {
+    "env_id": "glyphbench/miniatari-breakout-v0",
+    "n_episodes": 5,
+    "mean_return": 0.09090909090909091,
+    "std_return": 0.0,
+    "min_return": 0.09090909090909091,
+    "max_return": 0.09090909090909091,
+    "median_return": 0.09090909090909091,
+    "mean_length": 11.0,
+    "per_episode_returns": [
+      0.09090909090909091,
+      0.09090909090909091,
+      0.09090909090909091,
+      0.09090909090909091,
+      0.09090909090909091
+    ]
+  },
+  "glyphbench/miniatari-centipede-v0": {
+    "env_id": "glyphbench/miniatari-centipede-v0",
+    "n_episodes": 5,
+    "mean_return": 0.325,
+    "std_return": 0.15000000000000002,
+    "min_return": 0.125,
+    "max_return": 0.5,
+    "median_return": 0.25,
+    "mean_length": 137.2,
+    "per_episode_returns": [
+      0.125,
+      0.5,
+      0.25,
+      0.25,
+      0.5
+    ]
+  },
+  "glyphbench/miniatari-choppercommand-v0": {
+    "env_id": "glyphbench/miniatari-choppercommand-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.4560701700396552,
+    "min_return": -0.8,
+    "max_return": 0.6000000000000001,
+    "median_return": 0.0,
+    "mean_length": 59.8,
+    "per_episode_returns": [
+      0.0,
+      0.6000000000000001,
+      0.0,
+      0.2,
+      -0.8
+    ]
+  },
+  "glyphbench/miniatari-defender-v0": {
+    "env_id": "glyphbench/miniatari-defender-v0",
+    "n_episodes": 5,
+    "mean_return": 0.06666666666666667,
+    "std_return": 0.13333333333333333,
+    "min_return": 0.0,
+    "max_return": 0.3333333333333333,
+    "median_return": 0.0,
+    "mean_length": 76.8,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.3333333333333333
+    ]
+  },
+  "glyphbench/miniatari-demonattack-v0": {
+    "env_id": "glyphbench/miniatari-demonattack-v0",
+    "n_episodes": 5,
+    "mean_return": -0.6799999999999999,
+    "std_return": 0.16000000000000006,
+    "min_return": -0.8,
+    "max_return": -0.3999999999999999,
+    "median_return": -0.8,
+    "mean_length": 26.4,
+    "per_episode_returns": [
+      -0.6,
+      -0.8,
+      -0.3999999999999999,
+      -0.8,
+      -0.8
+    ]
+  },
+  "glyphbench/miniatari-doubledunk-v0": {
+    "env_id": "glyphbench/miniatari-doubledunk-v0",
+    "n_episodes": 5,
+    "mean_return": -0.8,
+    "std_return": 0.18708286933869706,
+    "min_return": -1.0,
+    "max_return": -0.5,
+    "median_return": -0.75,
+    "mean_length": 57.2,
+    "per_episode_returns": [
+      -1.0,
+      -0.5,
+      -0.75,
+      -1.0,
+      -0.75
+    ]
+  },
+  "glyphbench/miniatari-enduro-v0": {
+    "env_id": "glyphbench/miniatari-enduro-v0",
+    "n_episodes": 5,
+    "mean_return": 0.128,
+    "std_return": 0.11973303637676612,
+    "min_return": 0.0,
+    "max_return": 0.32,
+    "median_return": 0.16,
+    "mean_length": 12.8,
+    "per_episode_returns": [
+      0.32,
+      0.16,
+      0.16,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/miniatari-fishingderby-v0": {
+    "env_id": "glyphbench/miniatari-fishingderby-v0",
+    "n_episodes": 5,
+    "mean_return": -0.7333333333333333,
+    "std_return": 0.24944382578492943,
+    "min_return": -1.0,
+    "max_return": -0.3333333333333333,
+    "median_return": -0.6666666666666666,
+    "mean_length": 33.6,
+    "per_episode_returns": [
+      -0.6666666666666666,
+      -1.0,
+      -0.3333333333333333,
+      -1.0,
+      -0.6666666666666666
+    ]
+  },
+  "glyphbench/miniatari-freeway-v0": {
+    "env_id": "glyphbench/miniatari-freeway-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 200.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/miniatari-frostbite-v0": {
+    "env_id": "glyphbench/miniatari-frostbite-v0",
+    "n_episodes": 5,
+    "mean_return": 0.1,
+    "std_return": 0.12247448713915891,
+    "min_return": 0.0,
+    "max_return": 0.25,
+    "median_return": 0.0,
+    "mean_length": 21.8,
+    "per_episode_returns": [
+      0.0,
+      0.25,
+      0.25,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/miniatari-gopher-v0": {
+    "env_id": "glyphbench/miniatari-gopher-v0",
+    "n_episodes": 5,
+    "mean_return": 0.2,
+    "std_return": 0.6204836822995429,
+    "min_return": -1.0,
+    "max_return": 0.75,
+    "median_return": 0.5,
+    "mean_length": 60.0,
+    "per_episode_returns": [
+      -1.0,
+      0.25,
+      0.75,
+      0.5,
+      0.5
+    ]
+  },
+  "glyphbench/miniatari-icehockey-v0": {
+    "env_id": "glyphbench/miniatari-icehockey-v0",
+    "n_episodes": 5,
+    "mean_return": -0.2,
+    "std_return": 0.7774602526460401,
+    "min_return": -1.0,
+    "max_return": 1.0,
+    "median_return": -0.3333333333333333,
+    "mean_length": 76.4,
+    "per_episode_returns": [
+      -1.0,
+      1.0,
+      0.3333333333333333,
+      -0.3333333333333333,
+      -1.0
+    ]
+  },
+  "glyphbench/miniatari-kangaroo-v0": {
+    "env_id": "glyphbench/miniatari-kangaroo-v0",
+    "n_episodes": 5,
+    "mean_return": -0.8666666666666668,
+    "std_return": 0.16329931618554516,
+    "min_return": -1.0,
+    "max_return": -0.6666666666666667,
+    "median_return": -1.0,
+    "mean_length": 59.0,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -0.6666666666666667,
+      -1.0,
+      -0.6666666666666667
+    ]
+  },
+  "glyphbench/miniatari-kungfumaster-v0": {
+    "env_id": "glyphbench/miniatari-kungfumaster-v0",
+    "n_episodes": 5,
+    "mean_return": -0.9,
+    "std_return": 0.09354143466934853,
+    "min_return": -1.0,
+    "max_return": -0.75,
+    "median_return": -0.875,
+    "mean_length": 21.8,
+    "per_episode_returns": [
+      -0.875,
+      -1.0,
+      -0.75,
+      -1.0,
+      -0.875
+    ]
+  },
+  "glyphbench/miniatari-mspacman-v0": {
+    "env_id": "glyphbench/miniatari-mspacman-v0",
+    "n_episodes": 5,
+    "mean_return": -0.8417910447761194,
+    "std_return": 0.1320199664925132,
+    "min_return": -0.9402985074626866,
+    "max_return": -0.5820895522388062,
+    "median_return": -0.9104477611940298,
+    "mean_length": 66.0,
+    "per_episode_returns": [
+      -0.9104477611940298,
+      -0.5820895522388062,
+      -0.8656716417910448,
+      -0.9402985074626866,
+      -0.9104477611940298
+    ]
+  },
+  "glyphbench/miniatari-phoenix-v0": {
+    "env_id": "glyphbench/miniatari-phoenix-v0",
+    "n_episodes": 5,
+    "mean_return": 0.4,
+    "std_return": 0.2,
+    "min_return": 0.16666666666666666,
+    "max_return": 0.6666666666666666,
+    "median_return": 0.5,
+    "mean_length": 11.0,
+    "per_episode_returns": [
+      0.6666666666666666,
+      0.16666666666666666,
+      0.5,
+      0.5,
+      0.16666666666666666
+    ]
+  },
+  "glyphbench/miniatari-pong-v0": {
+    "env_id": "glyphbench/miniatari-pong-v0",
+    "n_episodes": 5,
+    "mean_return": -0.7333333333333333,
+    "std_return": 0.3265986323710904,
+    "min_return": -1.0,
+    "max_return": -0.3333333333333333,
+    "median_return": -1.0,
+    "mean_length": 71.4,
+    "per_episode_returns": [
+      -0.3333333333333333,
+      -1.0,
+      -1.0,
+      -1.0,
+      -0.3333333333333333
+    ]
+  },
+  "glyphbench/miniatari-qbert-v0": {
+    "env_id": "glyphbench/miniatari-qbert-v0",
+    "n_episodes": 5,
+    "mean_return": 0.34,
+    "std_return": 0.22449944320643647,
+    "min_return": 0.1,
+    "max_return": 0.6,
+    "median_return": 0.30000000000000004,
+    "mean_length": 9.4,
+    "per_episode_returns": [
+      0.1,
+      0.30000000000000004,
+      0.6,
+      0.6,
+      0.1
+    ]
+  },
+  "glyphbench/miniatari-riverraid-v0": {
+    "env_id": "glyphbench/miniatari-riverraid-v0",
+    "n_episodes": 5,
+    "mean_return": -0.06666666666666664,
+    "std_return": 0.42513614377131087,
+    "min_return": -0.8888888888888888,
+    "max_return": 0.3333333333333333,
+    "median_return": 0.1111111111111111,
+    "mean_length": 40.8,
+    "per_episode_returns": [
+      -0.8888888888888888,
+      0.1111111111111111,
+      0.0,
+      0.1111111111111111,
+      0.3333333333333333
+    ]
+  },
+  "glyphbench/miniatari-robotank-v0": {
+    "env_id": "glyphbench/miniatari-robotank-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 10.8,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/miniatari-seaquest-v0": {
+    "env_id": "glyphbench/miniatari-seaquest-v0",
+    "n_episodes": 5,
+    "mean_return": -0.6,
+    "std_return": 0.43588989435406733,
+    "min_return": -1.0,
+    "max_return": 0.25,
+    "median_return": -0.75,
+    "mean_length": 186.8,
+    "per_episode_returns": [
+      0.25,
+      -0.75,
+      -0.75,
+      -1.0,
+      -0.75
+    ]
+  },
+  "glyphbench/miniatari-skiing-v0": {
+    "env_id": "glyphbench/miniatari-skiing-v0",
+    "n_episodes": 5,
+    "mean_return": 0.12,
+    "std_return": 0.11661903789690603,
+    "min_return": 0.0,
+    "max_return": 0.30000000000000004,
+    "median_return": 0.1,
+    "mean_length": 55.0,
+    "per_episode_returns": [
+      0.2,
+      0.30000000000000004,
+      0.0,
+      0.1,
+      0.0
+    ]
+  },
+  "glyphbench/miniatari-spaceinvaders-v0": {
+    "env_id": "glyphbench/miniatari-spaceinvaders-v0",
+    "n_episodes": 5,
+    "mean_return": -0.175,
+    "std_return": 0.594768862668516,
+    "min_return": -0.625,
+    "max_return": 1.0,
+    "median_return": -0.375,
+    "mean_length": 149.4,
+    "per_episode_returns": [
+      -0.625,
+      -0.375,
+      -0.5,
+      1.0,
+      -0.375
+    ]
+  },
+  "glyphbench/miniatari-stargunner-v0": {
+    "env_id": "glyphbench/miniatari-stargunner-v0",
+    "n_episodes": 5,
+    "mean_return": 0.2,
+    "std_return": 0.1264911064067352,
+    "min_return": 0.0,
+    "max_return": 0.4,
+    "median_return": 0.2,
+    "mean_length": 16.4,
+    "per_episode_returns": [
+      0.0,
+      0.4,
+      0.2,
+      0.2,
+      0.2
+    ]
+  },
+  "glyphbench/miniatari-surround-v0": {
+    "env_id": "glyphbench/miniatari-surround-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 7.4,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/miniatari-tennis-v0": {
+    "env_id": "glyphbench/miniatari-tennis-v0",
+    "n_episodes": 5,
+    "mean_return": -0.4,
+    "std_return": 0.6110100926607788,
+    "min_return": -1.0,
+    "max_return": 0.3333333333333333,
+    "median_return": -0.6666666666666666,
+    "mean_length": 136.0,
+    "per_episode_returns": [
+      -1.0,
+      0.3333333333333333,
+      -1.0,
+      -0.6666666666666666,
+      0.3333333333333333
+    ]
+  },
+  "glyphbench/miniatari-timepilot-v0": {
+    "env_id": "glyphbench/miniatari-timepilot-v0",
+    "n_episodes": 5,
+    "mean_return": 0.04,
+    "std_return": 0.08,
+    "min_return": 0.0,
+    "max_return": 0.2,
+    "median_return": 0.0,
+    "mean_length": 13.2,
+    "per_episode_returns": [
+      0.2,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/miniatari-upndown-v0": {
+    "env_id": "glyphbench/miniatari-upndown-v0",
+    "n_episodes": 5,
+    "mean_return": 0.16,
+    "std_return": 0.14966629547095767,
+    "min_return": 0.0,
+    "max_return": 0.4,
+    "median_return": 0.2,
+    "mean_length": 58.4,
+    "per_episode_returns": [
+      0.2,
+      0.2,
+      0.4,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/miniatari-wizardofwor-v0": {
+    "env_id": "glyphbench/miniatari-wizardofwor-v0",
+    "n_episodes": 5,
+    "mean_return": -0.9199999999999999,
+    "std_return": 0.09797958971132709,
+    "min_return": -1.0,
+    "max_return": -0.8,
+    "median_return": -1.0,
+    "mean_length": 12.6,
+    "per_episode_returns": [
+      -1.0,
+      -0.8,
+      -1.0,
+      -1.0,
+      -0.8
+    ]
+  },
+  "glyphbench/miniatari-yarsrevenge-v0": {
+    "env_id": "glyphbench/miniatari-yarsrevenge-v0",
+    "n_episodes": 5,
+    "mean_return": -0.42000000000000004,
+    "std_return": 0.4707440918375928,
+    "min_return": -0.9,
+    "max_return": 0.2,
+    "median_return": -0.7,
+    "mean_length": 189.6,
+    "per_episode_returns": [
+      -0.8,
+      -0.9,
+      -0.7,
+      0.1,
+      0.2
+    ]
+  },
+  "glyphbench/miniatari-zaxxon-v0": {
+    "env_id": "glyphbench/miniatari-zaxxon-v0",
+    "n_episodes": 5,
+    "mean_return": -0.7,
+    "std_return": 0.12472191289246472,
+    "min_return": -0.8333333333333334,
+    "max_return": -0.5,
+    "median_return": -0.6666666666666667,
+    "mean_length": 30.2,
+    "per_episode_returns": [
+      -0.8333333333333334,
+      -0.5,
+      -0.6666666666666667,
+      -0.8333333333333334,
+      -0.6666666666666667
+    ]
+  },
+  "glyphbench/minigrid-blockedunlockpickup-v0": {
+    "env_id": "glyphbench/minigrid-blockedunlockpickup-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-crossing-n1-safe-v0": {
+    "env_id": "glyphbench/minigrid-crossing-n1-safe-v0",
+    "n_episodes": 5,
+    "mean_return": 0.13936,
+    "std_return": 0.1913570233882206,
+    "min_return": 0.0,
+    "max_return": 0.4852000000000001,
+    "median_return": 0.0,
+    "mean_length": 444.8,
+    "per_episode_returns": [
+      0.0,
+      0.4852000000000001,
+      0.0,
+      0.0,
+      0.2116
+    ]
+  },
+  "glyphbench/minigrid-crossing-n1-v0": {
+    "env_id": "glyphbench/minigrid-crossing-n1-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 271.4,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-crossing-n2-safe-v0": {
+    "env_id": "glyphbench/minigrid-crossing-n2-safe-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-crossing-n2-v0": {
+    "env_id": "glyphbench/minigrid-crossing-n2-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 97.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-crossing-n3-safe-v0": {
+    "env_id": "glyphbench/minigrid-crossing-n3-safe-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-crossing-n3-v0": {
+    "env_id": "glyphbench/minigrid-crossing-n3-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 112.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-distshift1-v0": {
+    "env_id": "glyphbench/minigrid-distshift1-v0",
+    "n_episodes": 5,
+    "mean_return": -0.1,
+    "std_return": 0.2,
+    "min_return": -0.5,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 194.6,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      -0.5,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-distshift2-v0": {
+    "env_id": "glyphbench/minigrid-distshift2-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 364.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-doorkey-16x16-v0": {
+    "env_id": "glyphbench/minigrid-doorkey-16x16-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-doorkey-5x5-v0": {
+    "env_id": "glyphbench/minigrid-doorkey-5x5-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-doorkey-6x6-v0": {
+    "env_id": "glyphbench/minigrid-doorkey-6x6-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-doorkey-8x8-v0": {
+    "env_id": "glyphbench/minigrid-doorkey-8x8-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-dynamic-obstacles-16x16-v0": {
+    "env_id": "glyphbench/minigrid-dynamic-obstacles-16x16-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 39.2,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minigrid-dynamic-obstacles-5x5-v0": {
+    "env_id": "glyphbench/minigrid-dynamic-obstacles-5x5-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 102.6,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minigrid-dynamic-obstacles-6x6-v0": {
+    "env_id": "glyphbench/minigrid-dynamic-obstacles-6x6-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 77.8,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minigrid-dynamic-obstacles-8x8-v0": {
+    "env_id": "glyphbench/minigrid-dynamic-obstacles-8x8-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 83.4,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minigrid-empty-16x16-v0": {
+    "env_id": "glyphbench/minigrid-empty-16x16-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 300.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-empty-5x5-v0": {
+    "env_id": "glyphbench/minigrid-empty-5x5-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 100.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-empty-6x6-v0": {
+    "env_id": "glyphbench/minigrid-empty-6x6-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 100.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-empty-8x8-v0": {
+    "env_id": "glyphbench/minigrid-empty-8x8-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 200.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-empty-random-5x5-v0": {
+    "env_id": "glyphbench/minigrid-empty-random-5x5-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 100.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-empty-random-6x6-v0": {
+    "env_id": "glyphbench/minigrid-empty-random-6x6-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 100.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-fetch-5x5-n2-v0": {
+    "env_id": "glyphbench/minigrid-fetch-5x5-n2-v0",
+    "n_episodes": 5,
+    "mean_return": 0.31072,
+    "std_return": 0.6682366119871015,
+    "min_return": -0.5,
+    "max_return": 0.9586,
+    "median_return": 0.6868000000000001,
+    "mean_length": 96.4,
+    "per_episode_returns": [
+      -0.5,
+      0.6868000000000001,
+      -0.5,
+      0.9586,
+      0.9082
+    ]
+  },
+  "glyphbench/minigrid-fetch-6x6-n2-v0": {
+    "env_id": "glyphbench/minigrid-fetch-6x6-n2-v0",
+    "n_episodes": 5,
+    "mean_return": 0.27508,
+    "std_return": 0.6367418013606457,
+    "min_return": -0.5,
+    "max_return": 0.9082,
+    "median_return": 0.6868000000000001,
+    "mean_length": 208.0,
+    "per_episode_returns": [
+      -0.5,
+      0.6868000000000001,
+      -0.5,
+      0.7804,
+      0.9082
+    ]
+  },
+  "glyphbench/minigrid-fetch-8x8-n3-v0": {
+    "env_id": "glyphbench/minigrid-fetch-8x8-n3-v0",
+    "n_episodes": 5,
+    "mean_return": -0.08424000000000001,
+    "std_return": 0.3998818705567933,
+    "min_return": -0.5,
+    "max_return": 0.5788,
+    "median_return": 0.0,
+    "mean_length": 262.6,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.5788,
+      -0.5,
+      -0.5
+    ]
+  },
+  "glyphbench/minigrid-fourrooms-v0": {
+    "env_id": "glyphbench/minigrid-fourrooms-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-gotodoor-5x5-v0": {
+    "env_id": "glyphbench/minigrid-gotodoor-5x5-v0",
+    "n_episodes": 5,
+    "mean_return": 0.4346,
+    "std_return": 0.3401000088209349,
+    "min_return": 0.0,
+    "max_return": 0.9478,
+    "median_return": 0.44020000000000004,
+    "mean_length": 303.0,
+    "per_episode_returns": [
+      0.0,
+      0.44020000000000004,
+      0.14500000000000002,
+      0.6399999999999999,
+      0.9478
+    ]
+  },
+  "glyphbench/minigrid-gotodoor-6x6-v0": {
+    "env_id": "glyphbench/minigrid-gotodoor-6x6-v0",
+    "n_episodes": 5,
+    "mean_return": 0.38456,
+    "std_return": 0.3493094078320823,
+    "min_return": 0.0,
+    "max_return": 0.9406,
+    "median_return": 0.2026,
+    "mean_length": 330.8,
+    "per_episode_returns": [
+      0.0,
+      0.2026,
+      0.14500000000000002,
+      0.6345999999999999,
+      0.9406
+    ]
+  },
+  "glyphbench/minigrid-gotodoor-8x8-v0": {
+    "env_id": "glyphbench/minigrid-gotodoor-8x8-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-gotoobject-6x6-n2-v0": {
+    "env_id": "glyphbench/minigrid-gotoobject-6x6-n2-v0",
+    "n_episodes": 5,
+    "mean_return": 0.26715999999999995,
+    "std_return": 0.36829528153371716,
+    "min_return": 0.0,
+    "max_return": 0.9352,
+    "median_return": 0.0,
+    "mean_length": 195.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.40059999999999996,
+      0.0,
+      0.9352
+    ]
+  },
+  "glyphbench/minigrid-keycorridor-s3r1-v0": {
+    "env_id": "glyphbench/minigrid-keycorridor-s3r1-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-keycorridor-s3r2-v0": {
+    "env_id": "glyphbench/minigrid-keycorridor-s3r2-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-keycorridor-s3r3-v0": {
+    "env_id": "glyphbench/minigrid-keycorridor-s3r3-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-keycorridor-s4r3-v0": {
+    "env_id": "glyphbench/minigrid-keycorridor-s4r3-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-keycorridor-s5r3-v0": {
+    "env_id": "glyphbench/minigrid-keycorridor-s5r3-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-keycorridor-s6r3-v0": {
+    "env_id": "glyphbench/minigrid-keycorridor-s6r3-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-lavagap-s5-v0": {
+    "env_id": "glyphbench/minigrid-lavagap-s5-v0",
+    "n_episodes": 5,
+    "mean_return": 0.18919999999999998,
+    "std_return": 0.37839999999999996,
+    "min_return": 0.0,
+    "max_return": 0.946,
+    "median_return": 0.0,
+    "mean_length": 152.4,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.946
+    ]
+  },
+  "glyphbench/minigrid-lavagap-s6-v0": {
+    "env_id": "glyphbench/minigrid-lavagap-s6-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 189.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-lavagap-s7-v0": {
+    "env_id": "glyphbench/minigrid-lavagap-s7-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 194.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-lockedroom-v0": {
+    "env_id": "glyphbench/minigrid-lockedroom-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-memory-s11-v0": {
+    "env_id": "glyphbench/minigrid-memory-s11-v0",
+    "n_episodes": 5,
+    "mean_return": -0.2,
+    "std_return": 0.4000000000000001,
+    "min_return": -1.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 480.6,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      -1.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-memory-s13-v0": {
+    "env_id": "glyphbench/minigrid-memory-s13-v0",
+    "n_episodes": 5,
+    "mean_return": 0.054559999999999984,
+    "std_return": 0.10911999999999998,
+    "min_return": 0.0,
+    "max_return": 0.27279999999999993,
+    "median_return": 0.0,
+    "mean_length": 480.8,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.27279999999999993,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-memory-s17-v0": {
+    "env_id": "glyphbench/minigrid-memory-s17-v0",
+    "n_episodes": 5,
+    "mean_return": 0.054559999999999984,
+    "std_return": 0.10911999999999998,
+    "min_return": 0.0,
+    "max_return": 0.27279999999999993,
+    "median_return": 0.0,
+    "mean_length": 480.8,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.27279999999999993,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-memory-s7-v0": {
+    "env_id": "glyphbench/minigrid-memory-s7-v0",
+    "n_episodes": 5,
+    "mean_return": -0.07432000000000001,
+    "std_return": 0.7680671283162689,
+    "min_return": -1.0,
+    "max_return": 0.7696,
+    "median_return": 0.33940000000000003,
+    "mean_length": 196.6,
+    "per_episode_returns": [
+      0.7696,
+      -1.0,
+      0.5194,
+      -1.0,
+      0.33940000000000003
+    ]
+  },
+  "glyphbench/minigrid-memory-s9-v0": {
+    "env_id": "glyphbench/minigrid-memory-s9-v0",
+    "n_episodes": 5,
+    "mean_return": -0.25616,
+    "std_return": 0.6616885841542077,
+    "min_return": -1.0,
+    "max_return": 0.7192000000000001,
+    "median_return": 0.0,
+    "mean_length": 362.8,
+    "per_episode_returns": [
+      0.0,
+      -1.0,
+      -1.0,
+      0.7192000000000001,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-multiroom-n2-s4-v0": {
+    "env_id": "glyphbench/minigrid-multiroom-n2-s4-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-multiroom-n4-s5-v0": {
+    "env_id": "glyphbench/minigrid-multiroom-n4-s5-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-multiroom-n6-v0": {
+    "env_id": "glyphbench/minigrid-multiroom-n6-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-obstructedmaze-1dl-v0": {
+    "env_id": "glyphbench/minigrid-obstructedmaze-1dl-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-obstructedmaze-1dlh-v0": {
+    "env_id": "glyphbench/minigrid-obstructedmaze-1dlh-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-obstructedmaze-1dlhb-v0": {
+    "env_id": "glyphbench/minigrid-obstructedmaze-1dlhb-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-obstructedmaze-1q-v0": {
+    "env_id": "glyphbench/minigrid-obstructedmaze-1q-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-obstructedmaze-2dl-v0": {
+    "env_id": "glyphbench/minigrid-obstructedmaze-2dl-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-obstructedmaze-2dlh-v0": {
+    "env_id": "glyphbench/minigrid-obstructedmaze-2dlh-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-obstructedmaze-2dlhb-v0": {
+    "env_id": "glyphbench/minigrid-obstructedmaze-2dlhb-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-obstructedmaze-2q-v0": {
+    "env_id": "glyphbench/minigrid-obstructedmaze-2q-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-obstructedmaze-full-v0": {
+    "env_id": "glyphbench/minigrid-obstructedmaze-full-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-playground-v0": {
+    "env_id": "glyphbench/minigrid-playground-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-putnear-6x6-n2-v0": {
+    "env_id": "glyphbench/minigrid-putnear-6x6-n2-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-putnear-8x8-n3-v0": {
+    "env_id": "glyphbench/minigrid-putnear-8x8-n3-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-redbluedoors-6x6-v0": {
+    "env_id": "glyphbench/minigrid-redbluedoors-6x6-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-redbluedoors-8x8-v0": {
+    "env_id": "glyphbench/minigrid-redbluedoors-8x8-v0",
+    "n_episodes": 5,
+    "mean_return": -0.06,
+    "std_return": 0.12000000000000001,
+    "min_return": -0.3,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      -0.3,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-simplecrossing-easy-n1-v0": {
+    "env_id": "glyphbench/minigrid-simplecrossing-easy-n1-v0",
+    "n_episodes": 5,
+    "mean_return": 0.24808,
+    "std_return": 0.32406423067040274,
+    "min_return": 0.0,
+    "max_return": 0.7984,
+    "median_return": 0.0,
+    "mean_length": 384.4,
+    "per_episode_returns": [
+      0.7984,
+      0.44199999999999995,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-simplecrossing-easy-n2-v0": {
+    "env_id": "glyphbench/minigrid-simplecrossing-easy-n2-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-simplecrossing-easy-n3-v0": {
+    "env_id": "glyphbench/minigrid-simplecrossing-easy-n3-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-simplecrossing-n1-v0": {
+    "env_id": "glyphbench/minigrid-simplecrossing-n1-v0",
+    "n_episodes": 5,
+    "mean_return": 0.13936,
+    "std_return": 0.1913570233882206,
+    "min_return": 0.0,
+    "max_return": 0.4852000000000001,
+    "median_return": 0.0,
+    "mean_length": 444.8,
+    "per_episode_returns": [
+      0.0,
+      0.4852000000000001,
+      0.0,
+      0.0,
+      0.2116
+    ]
+  },
+  "glyphbench/minigrid-simplecrossing-n2-v0": {
+    "env_id": "glyphbench/minigrid-simplecrossing-n2-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-simplecrossing-n3-v0": {
+    "env_id": "glyphbench/minigrid-simplecrossing-n3-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-unlock-v0": {
+    "env_id": "glyphbench/minigrid-unlock-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minigrid-unlockpickup-v0": {
+    "env_id": "glyphbench/minigrid-unlockpickup-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-boxoban-hard-v0": {
+    "env_id": "glyphbench/minihack-boxoban-hard-v0",
+    "n_episodes": 5,
+    "mean_return": -0.8,
+    "std_return": 0.4000000000000001,
+    "min_return": -1.0,
+    "max_return": 0.0,
+    "median_return": -1.0,
+    "mean_length": 84.8,
+    "per_episode_returns": [
+      0.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-boxoban-medium-v0": {
+    "env_id": "glyphbench/minihack-boxoban-medium-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 200.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-boxoban-unfiltered-v0": {
+    "env_id": "glyphbench/minihack-boxoban-unfiltered-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 200.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-corridor-r2-v0": {
+    "env_id": "glyphbench/minihack-corridor-r2-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 200.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-corridor-r3-v0": {
+    "env_id": "glyphbench/minihack-corridor-r3-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 200.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-corridor-r5-v0": {
+    "env_id": "glyphbench/minihack-corridor-r5-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 200.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-corridorbattle-dark-v0": {
+    "env_id": "glyphbench/minihack-corridorbattle-dark-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 9.8,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-corridorbattle-v0": {
+    "env_id": "glyphbench/minihack-corridorbattle-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 9.8,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-eat-distract-v0": {
+    "env_id": "glyphbench/minihack-eat-distract-v0",
+    "n_episodes": 5,
+    "mean_return": 1.0,
+    "std_return": 0.0,
+    "min_return": 1.0,
+    "max_return": 1.0,
+    "median_return": 1.0,
+    "mean_length": 94.2,
+    "per_episode_returns": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  "glyphbench/minihack-eat-v0": {
+    "env_id": "glyphbench/minihack-eat-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 20.0,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-hidenseek-big-v0": {
+    "env_id": "glyphbench/minihack-hidenseek-big-v0",
+    "n_episodes": 5,
+    "mean_return": -0.6,
+    "std_return": 0.48989794855663565,
+    "min_return": -1.0,
+    "max_return": 0.0,
+    "median_return": -1.0,
+    "mean_length": 101.0,
+    "per_episode_returns": [
+      0.0,
+      -1.0,
+      -1.0,
+      0.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-hidenseek-lava-v0": {
+    "env_id": "glyphbench/minihack-hidenseek-lava-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 51.4,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-hidenseek-mapped-v0": {
+    "env_id": "glyphbench/minihack-hidenseek-mapped-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 34.2,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-hidenseek-v0": {
+    "env_id": "glyphbench/minihack-hidenseek-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 25.4,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-keyroom-dark-s15-v0": {
+    "env_id": "glyphbench/minihack-keyroom-dark-s15-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 200.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-keyroom-dark-s5-v0": {
+    "env_id": "glyphbench/minihack-keyroom-dark-s5-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.6324555320336759,
+    "min_return": -1.0,
+    "max_return": 1.0,
+    "median_return": 0.0,
+    "mean_length": 176.6,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      -1.0,
+      1.0
+    ]
+  },
+  "glyphbench/minihack-keyroom-s15-v0": {
+    "env_id": "glyphbench/minihack-keyroom-s15-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 200.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-keyroom-s5-v0": {
+    "env_id": "glyphbench/minihack-keyroom-s5-v0",
+    "n_episodes": 5,
+    "mean_return": 0.2,
+    "std_return": 0.4,
+    "min_return": 0.0,
+    "max_return": 1.0,
+    "median_return": 0.0,
+    "mean_length": 192.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  },
+  "glyphbench/minihack-lavacross-full-v0": {
+    "env_id": "glyphbench/minihack-lavacross-full-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 50.8,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-lavacross-levitate-potion-inv-v0": {
+    "env_id": "glyphbench/minihack-lavacross-levitate-potion-inv-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 58.2,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-lavacross-levitate-ring-inv-v0": {
+    "env_id": "glyphbench/minihack-lavacross-levitate-ring-inv-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 60.0,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-lavacross-levitate-v0": {
+    "env_id": "glyphbench/minihack-lavacross-levitate-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 50.8,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-mazewalk-15x15-v0": {
+    "env_id": "glyphbench/minihack-mazewalk-15x15-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 200.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-mazewalk-45x19-v0": {
+    "env_id": "glyphbench/minihack-mazewalk-45x19-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 200.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-mazewalk-9x9-v0": {
+    "env_id": "glyphbench/minihack-mazewalk-9x9-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 200.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-mazewalk-mapped-15x15-v0": {
+    "env_id": "glyphbench/minihack-mazewalk-mapped-15x15-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 200.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-mazewalk-mapped-45x19-v0": {
+    "env_id": "glyphbench/minihack-mazewalk-mapped-45x19-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 200.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-mazewalk-mapped-9x9-v0": {
+    "env_id": "glyphbench/minihack-mazewalk-mapped-9x9-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 200.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-memento-f2-v0": {
+    "env_id": "glyphbench/minihack-memento-f2-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 200.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-memento-f4-v0": {
+    "env_id": "glyphbench/minihack-memento-f4-v0",
+    "n_episodes": 5,
+    "mean_return": -0.8,
+    "std_return": 0.4,
+    "min_return": -1.0,
+    "max_return": 0.0,
+    "median_return": -1.0,
+    "mean_length": 97.6,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      0.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-memento-hard-v0": {
+    "env_id": "glyphbench/minihack-memento-hard-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 300.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-memento-short-v0": {
+    "env_id": "glyphbench/minihack-memento-short-v0",
+    "n_episodes": 5,
+    "mean_return": -0.2,
+    "std_return": 0.4,
+    "min_return": -1.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 191.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-pray-distract-v0": {
+    "env_id": "glyphbench/minihack-pray-distract-v0",
+    "n_episodes": 5,
+    "mean_return": -0.4,
+    "std_return": 0.48989794855663565,
+    "min_return": -1.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 166.6,
+    "per_episode_returns": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-pray-v0": {
+    "env_id": "glyphbench/minihack-pray-v0",
+    "n_episodes": 5,
+    "mean_return": 0.4,
+    "std_return": 0.48989794855663565,
+    "min_return": 0.0,
+    "max_return": 1.0,
+    "median_return": 0.0,
+    "mean_length": 164.6,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      1.0
+    ]
+  },
+  "glyphbench/minihack-quaff-distract-v0": {
+    "env_id": "glyphbench/minihack-quaff-distract-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 3.4,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-quaff-v0": {
+    "env_id": "glyphbench/minihack-quaff-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 3.4,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-read-distract-v0": {
+    "env_id": "glyphbench/minihack-read-distract-v0",
+    "n_episodes": 5,
+    "mean_return": -0.2,
+    "std_return": 0.7483314773547883,
+    "min_return": -1.0,
+    "max_return": 1.0,
+    "median_return": 0.0,
+    "mean_length": 110.6,
+    "per_episode_returns": [
+      -1.0,
+      0.0,
+      0.0,
+      1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-read-v0": {
+    "env_id": "glyphbench/minihack-read-v0",
+    "n_episodes": 5,
+    "mean_return": 0.2,
+    "std_return": 0.4,
+    "min_return": 0.0,
+    "max_return": 1.0,
+    "median_return": 0.0,
+    "mean_length": 180.6,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  },
+  "glyphbench/minihack-river-lava-v0": {
+    "env_id": "glyphbench/minihack-river-lava-v0",
+    "n_episodes": 5,
+    "mean_return": -0.6,
+    "std_return": 0.8,
+    "min_return": -1.0,
+    "max_return": 1.0,
+    "median_return": -1.0,
+    "mean_length": 43.8,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      1.0
+    ]
+  },
+  "glyphbench/minihack-river-monster-v0": {
+    "env_id": "glyphbench/minihack-river-monster-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 5.2,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-river-monsterlava-v0": {
+    "env_id": "glyphbench/minihack-river-monsterlava-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 5.2,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-river-narrow-v0": {
+    "env_id": "glyphbench/minihack-river-narrow-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 36.2,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-river-v0": {
+    "env_id": "glyphbench/minihack-river-v0",
+    "n_episodes": 5,
+    "mean_return": -0.6,
+    "std_return": 0.8,
+    "min_return": -1.0,
+    "max_return": 1.0,
+    "median_return": -1.0,
+    "mean_length": 43.8,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      1.0
+    ]
+  },
+  "glyphbench/minihack-room-15x15-v0": {
+    "env_id": "glyphbench/minihack-room-15x15-v0",
+    "n_episodes": 5,
+    "mean_return": 0.2,
+    "std_return": 0.4000000000000001,
+    "min_return": 0.0,
+    "max_return": 1.0,
+    "median_return": 0.0,
+    "mean_length": 169.4,
+    "per_episode_returns": [
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-room-5x5-v0": {
+    "env_id": "glyphbench/minihack-room-5x5-v0",
+    "n_episodes": 5,
+    "mean_return": 0.4,
+    "std_return": 0.48989794855663565,
+    "min_return": 0.0,
+    "max_return": 1.0,
+    "median_return": 0.0,
+    "mean_length": 144.4,
+    "per_episode_returns": [
+      1.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-room-dark-15x15-v0": {
+    "env_id": "glyphbench/minihack-room-dark-15x15-v0",
+    "n_episodes": 5,
+    "mean_return": 0.2,
+    "std_return": 0.4000000000000001,
+    "min_return": 0.0,
+    "max_return": 1.0,
+    "median_return": 0.0,
+    "mean_length": 169.4,
+    "per_episode_returns": [
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-room-dark-5x5-v0": {
+    "env_id": "glyphbench/minihack-room-dark-5x5-v0",
+    "n_episodes": 5,
+    "mean_return": 0.4,
+    "std_return": 0.48989794855663565,
+    "min_return": 0.0,
+    "max_return": 1.0,
+    "median_return": 0.0,
+    "mean_length": 144.4,
+    "per_episode_returns": [
+      1.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-room-monster-15x15-v0": {
+    "env_id": "glyphbench/minihack-room-monster-15x15-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 8.6,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-room-monster-5x5-v0": {
+    "env_id": "glyphbench/minihack-room-monster-5x5-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 11.0,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-room-random-15x15-v0": {
+    "env_id": "glyphbench/minihack-room-random-15x15-v0",
+    "n_episodes": 5,
+    "mean_return": 0.2,
+    "std_return": 0.4000000000000001,
+    "min_return": 0.0,
+    "max_return": 1.0,
+    "median_return": 0.0,
+    "mean_length": 169.4,
+    "per_episode_returns": [
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-room-random-5x5-v0": {
+    "env_id": "glyphbench/minihack-room-random-5x5-v0",
+    "n_episodes": 5,
+    "mean_return": 0.4,
+    "std_return": 0.48989794855663565,
+    "min_return": 0.0,
+    "max_return": 1.0,
+    "median_return": 0.0,
+    "mean_length": 144.4,
+    "per_episode_returns": [
+      1.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-room-trap-15x15-v0": {
+    "env_id": "glyphbench/minihack-room-trap-15x15-v0",
+    "n_episodes": 5,
+    "mean_return": -0.2,
+    "std_return": 0.4,
+    "min_return": -1.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 178.8,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      -1.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-room-trap-5x5-v0": {
+    "env_id": "glyphbench/minihack-room-trap-5x5-v0",
+    "n_episodes": 5,
+    "mean_return": 0.4,
+    "std_return": 0.48989794855663565,
+    "min_return": 0.0,
+    "max_return": 1.0,
+    "median_return": 0.0,
+    "mean_length": 145.8,
+    "per_episode_returns": [
+      1.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0
+    ]
+  },
+  "glyphbench/minihack-room-ultimate-15x15-v0": {
+    "env_id": "glyphbench/minihack-room-ultimate-15x15-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 6.0,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-room-ultimate-5x5-v0": {
+    "env_id": "glyphbench/minihack-room-ultimate-5x5-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.8944271909999159,
+    "min_return": -1.0,
+    "max_return": 1.0,
+    "median_return": 0.0,
+    "mean_length": 71.0,
+    "per_episode_returns": [
+      1.0,
+      -1.0,
+      0.0,
+      1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-sink-distract-v0": {
+    "env_id": "glyphbench/minihack-sink-distract-v0",
+    "n_episodes": 5,
+    "mean_return": 0.4,
+    "std_return": 0.48989794855663565,
+    "min_return": 0.0,
+    "max_return": 1.0,
+    "median_return": 0.0,
+    "mean_length": 180.8,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      1.0
+    ]
+  },
+  "glyphbench/minihack-sink-v0": {
+    "env_id": "glyphbench/minihack-sink-v0",
+    "n_episodes": 5,
+    "mean_return": 0.6,
+    "std_return": 0.48989794855663565,
+    "min_return": 0.0,
+    "max_return": 1.0,
+    "median_return": 1.0,
+    "mean_length": 176.6,
+    "per_episode_returns": [
+      1.0,
+      0.0,
+      1.0,
+      0.0,
+      1.0
+    ]
+  },
+  "glyphbench/minihack-wield-distract-v0": {
+    "env_id": "glyphbench/minihack-wield-distract-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 5.4,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-wield-v0": {
+    "env_id": "glyphbench/minihack-wield-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 4.6,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-wod-easy-v0": {
+    "env_id": "glyphbench/minihack-wod-easy-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 5.4,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-wod-hard-v0": {
+    "env_id": "glyphbench/minihack-wod-hard-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 6.0,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-wod-medium-v0": {
+    "env_id": "glyphbench/minihack-wod-medium-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 5.6,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/minihack-wod-pro-v0": {
+    "env_id": "glyphbench/minihack-wod-pro-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 5.0,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/procgen-bigfish-v0": {
+    "env_id": "glyphbench/procgen-bigfish-v0",
+    "n_episodes": 5,
+    "mean_return": -0.9933333333333334,
+    "std_return": 0.01333333333333333,
+    "min_return": -1.0,
+    "max_return": -0.9666666666666667,
+    "median_return": -1.0,
+    "mean_length": 44.8,
+    "per_episode_returns": [
+      -0.9666666666666667,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/procgen-bossfight-v0": {
+    "env_id": "glyphbench/procgen-bossfight-v0",
+    "n_episodes": 5,
+    "mean_return": -0.97,
+    "std_return": 0.039999999999999994,
+    "min_return": -1.0,
+    "max_return": -0.9,
+    "median_return": -1.0,
+    "mean_length": 55.6,
+    "per_episode_returns": [
+      -1.0,
+      -0.95,
+      -0.9,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/procgen-caveflyer-v0": {
+    "env_id": "glyphbench/procgen-caveflyer-v0",
+    "n_episodes": 5,
+    "mean_return": -0.3657142857142857,
+    "std_return": 0.5861392186788642,
+    "min_return": -0.9,
+    "max_return": 0.4000000000000001,
+    "median_return": -0.8,
+    "mean_length": 268.4,
+    "per_episode_returns": [
+      0.4000000000000001,
+      -0.8,
+      -0.9,
+      0.30000000000000004,
+      -0.8285714285714285
+    ]
+  },
+  "glyphbench/procgen-chaser-v0": {
+    "env_id": "glyphbench/procgen-chaser-v0",
+    "n_episodes": 5,
+    "mean_return": 0.03098030336450306,
+    "std_return": 0.014145321073770601,
+    "min_return": 0.0125,
+    "max_return": 0.052238805970149266,
+    "median_return": 0.02955665024630542,
+    "mean_length": 250.4,
+    "per_episode_returns": [
+      0.04040404040404041,
+      0.052238805970149266,
+      0.0125,
+      0.020202020202020204,
+      0.02955665024630542
+    ]
+  },
+  "glyphbench/procgen-climber-v0": {
+    "env_id": "glyphbench/procgen-climber-v0",
+    "n_episodes": 5,
+    "mean_return": 0.05978021978021979,
+    "std_return": 0.036204413682591655,
+    "min_return": 0.0,
+    "max_return": 0.1142857142857143,
+    "median_return": 0.06153846153846154,
+    "mean_length": 333.2,
+    "per_episode_returns": [
+      0.1142857142857143,
+      0.06153846153846154,
+      0.06153846153846154,
+      0.06153846153846154,
+      0.0
+    ]
+  },
+  "glyphbench/procgen-coinrun-v0": {
+    "env_id": "glyphbench/procgen-coinrun-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 61.6,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/procgen-dodgeball-v0": {
+    "env_id": "glyphbench/procgen-dodgeball-v0",
+    "n_episodes": 5,
+    "mean_return": -0.93,
+    "std_return": 0.03999999999999998,
+    "min_return": -1.0,
+    "max_return": -0.9,
+    "median_return": -0.9,
+    "mean_length": 67.8,
+    "per_episode_returns": [
+      -0.9,
+      -0.9,
+      -1.0,
+      -0.95,
+      -0.9
+    ]
+  },
+  "glyphbench/procgen-fruitbot-v0": {
+    "env_id": "glyphbench/procgen-fruitbot-v0",
+    "n_episodes": 5,
+    "mean_return": 0.24060451057893512,
+    "std_return": 0.21283093466886835,
+    "min_return": -0.1823529411764706,
+    "max_return": 0.36363636363636365,
+    "median_return": 0.3608695652173913,
+    "mean_length": 35.6,
+    "per_episode_returns": [
+      0.3,
+      -0.1823529411764706,
+      0.3608695652173913,
+      0.36363636363636365,
+      0.3608695652173913
+    ]
+  },
+  "glyphbench/procgen-heist-v0": {
+    "env_id": "glyphbench/procgen-heist-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/procgen-jumper-v0": {
+    "env_id": "glyphbench/procgen-jumper-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 227.4,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/procgen-leaper-v0": {
+    "env_id": "glyphbench/procgen-leaper-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 6.6,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/procgen-maze-v0": {
+    "env_id": "glyphbench/procgen-maze-v0",
+    "n_episodes": 5,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "min_return": 0.0,
+    "max_return": 0.0,
+    "median_return": 0.0,
+    "mean_length": 500.0,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "glyphbench/procgen-miner-v0": {
+    "env_id": "glyphbench/procgen-miner-v0",
+    "n_episodes": 5,
+    "mean_return": -0.8797809002143367,
+    "std_return": 0.12351369879780444,
+    "min_return": -1.0,
+    "max_return": -0.6631578947368421,
+    "median_return": -0.8769230769230769,
+    "mean_length": 155.2,
+    "per_episode_returns": [
+      -0.8769230769230769,
+      -0.8588235294117648,
+      -0.6631578947368421,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/procgen-ninja-v0": {
+    "env_id": "glyphbench/procgen-ninja-v0",
+    "n_episodes": 5,
+    "mean_return": 0.1,
+    "std_return": 0.1264911064067352,
+    "min_return": 0.0,
+    "max_return": 0.30000000000000004,
+    "median_return": 0.0,
+    "mean_length": 75.6,
+    "per_episode_returns": [
+      0.0,
+      0.0,
+      0.0,
+      0.2,
+      0.30000000000000004
+    ]
+  },
+  "glyphbench/procgen-plunder-v0": {
+    "env_id": "glyphbench/procgen-plunder-v0",
+    "n_episodes": 5,
+    "mean_return": -1.0,
+    "std_return": 0.0,
+    "min_return": -1.0,
+    "max_return": -1.0,
+    "median_return": -1.0,
+    "mean_length": 59.8,
+    "per_episode_returns": [
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0,
+      -1.0
+    ]
+  },
+  "glyphbench/procgen-starpilot-v0": {
+    "env_id": "glyphbench/procgen-starpilot-v0",
+    "n_episodes": 5,
+    "mean_return": -0.8640000000000001,
+    "std_return": 0.15094369811290567,
+    "min_return": -1.0,
+    "max_return": -0.6799999999999999,
+    "median_return": -0.96,
+    "mean_length": 98.4,
+    "per_episode_returns": [
+      -0.6799999999999999,
+      -0.6799999999999999,
+      -0.96,
+      -1.0,
+      -1.0
+    ]
+  }
+}

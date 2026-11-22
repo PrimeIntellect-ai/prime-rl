@@ -1,0 +1,57 @@
+# pricing.yaml
+# LLM provider pricing, manually maintained. Update when providers change pricing
+# and bump the `version` field so runs can pin the version they used.
+#
+# Rates are USD per 1 million tokens. `reasoning_per_1m_tokens: null` means the
+# model has no separate reasoning channel; reasoning tokens count as regular
+# output tokens (usually) or are free (rare).
+
+version: "2026-04-12-placeholder"
+
+providers:
+  openai:
+    gpt-4o-2024-08-06:
+      input_per_1m_tokens: 2.50
+      output_per_1m_tokens: 10.00
+      reasoning_per_1m_tokens: null
+    gpt-4o-mini-2024-07-18:
+      input_per_1m_tokens: 0.15
+      output_per_1m_tokens: 0.60
+      reasoning_per_1m_tokens: null
+
+  anthropic:
+    claude-opus-4-6:
+      input_per_1m_tokens: 15.00
+      output_per_1m_tokens: 75.00
+      reasoning_per_1m_tokens: 75.00
+    claude-sonnet-4-6:
+      input_per_1m_tokens: 3.00
+      output_per_1m_tokens: 15.00
+      reasoning_per_1m_tokens: 15.00
+    claude-haiku-4-5-20251001:
+      input_per_1m_tokens: 1.00
+      output_per_1m_tokens: 5.00
+      reasoning_per_1m_tokens: 5.00
+
+  google:
+    gemini-2.0-pro:
+      input_per_1m_tokens: 1.25
+      output_per_1m_tokens: 5.00
+      reasoning_per_1m_tokens: null
+    gemini-2.0-flash:
+      input_per_1m_tokens: 0.075
+      output_per_1m_tokens: 0.30
+      reasoning_per_1m_tokens: null
+
+  vllm:
+    # Wildcard: all local vLLM models are free
+    "*":
+      input_per_1m_tokens: 0.0
+      output_per_1m_tokens: 0.0
+      reasoning_per_1m_tokens: 0.0
+
+  mock:
+    "*":
+      input_per_1m_tokens: 0.0
+      output_per_1m_tokens: 0.0
+      reasoning_per_1m_tokens: 0.0
