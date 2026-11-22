@@ -6,6 +6,7 @@ from prime_rl.trainer.models import _CUSTOM_CAUSAL_LM_MODELS, AutoModelForCausal
 # Narrow widths and few experts; the layer count stays the default so every layer type is built.
 TINY = dict(
     vocab_size=128,
+    unpadded_vocab_size=120,
     hidden_size=64,
     intermediate_size=64,
     moe_intermediate_size=32,
