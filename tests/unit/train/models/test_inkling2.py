@@ -103,7 +103,7 @@ def build_model(loop_config: dict | None = LOOP_CONFIG):
             noise = torch.randn(tensor.shape, generator=generator, dtype=tensor.dtype)
             if "norm.weight" in name or name.endswith("l2_clip.scale"):
                 tensor.copy_(1 + 0.3 * noise.abs())
-            elif "attn_res." in name or name.endswith("embed_tokens.weight"):
+            elif "attn_res." in name or "middle_cycle" in name or name.endswith("embed_tokens.weight"):
                 tensor.copy_(noise)
             else:
                 tensor.copy_(0.3 * noise)
@@ -341,8 +341,7 @@ def test_loop_wiring():
             model_forward(model, input_ids, seq_lens, routed_experts=routes[:, :, :8])
 
         # Each of the four messages of a core layer has its own query row.
-        attn_res = model.model.attn_res
-        for table in (attn_res.middle_cycle_cross_pass_queries, attn_res.middle_cycle_cross_pass_kv_queries):
+        for table in (model.model.middle_cycle_cross_pass_queries, model.model.middle_cycle_cross_pass_kv_queries):
             original = table.clone()
             table[[0, 1]] = original[[1, 0]]
             assert not torch.allclose(model_forward(model, input_ids, seq_lens)[0], hidden_states)
@@ -554,9 +553,8 @@ def test_convert_release_to_bf16(tmp_path, monkeypatch):
 
     config = json.loads((output / "config.json").read_text())
     assert "quantization_config" not in config and config["text_config"]["loop_config"] == LOOP_CONFIG
-    groups = json.loads((output / "hf_quant_config.json").read_text())["model"]["parameter_groups"]
-    assert [group["compute_dtype"] for group in groups] == ["float32", "bfloat16", "bfloat16"]
-    assert groups[-1]["tensors"] == sorted(name for name in expected if ".mlp.experts." in name)
+    # vLLM would read a quantization method from the release's precision metadata.
+    assert not (output / "hf_quant_config.json").exists()
     for side_file in ("mtp.safetensors", "tokenizer.json"):
         assert (output / side_file).read_bytes() == (release / side_file).read_bytes()
 

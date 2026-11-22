@@ -12,9 +12,8 @@ them separately; everything else keeps the checkpoint's names modulo the
 ``model.llm.`` -> ``model.`` prefix swap. The vision tower and the DSpark/MTP
 head are dropped (text-only training).
 
-Looped checkpoints add the per-layer ``controllers.*`` weights, which keep their
-names, and two tables of message queries that move next to the other
-``attn_res`` queries.
+Looped checkpoints add the per-layer ``controllers.*`` weights and two tables of
+message queries, which all keep their names.
 """
 
 from __future__ import annotations
@@ -137,13 +136,12 @@ def conversion_chain(config) -> list[ConvOp]:
     # dtype) and the export upcasts them back.
     loop_queries = ()
     if config.loop_core_layers:
-        loop_queries = ("middle_cycle_cross_pass_queries", "middle_cycle_cross_pass_kv_queries")
-        ops += [Rename(f"model.{name}", f"model.attn_res.{name}") for name in loop_queries]
+        loop_queries = ("model.middle_cycle_cross_pass_queries", "model.middle_cycle_cross_pass_kv_queries")
     for name in (
         *(f"model.attn_res.attn_queries.{i}" for i in range(config.num_hidden_layers - 1)),
         *(f"model.attn_res.mlp_queries.{i}" for i in range(config.num_hidden_layers)),
         "model.attn_res.output_query",
-        *(f"model.attn_res.{name}" for name in loop_queries),
+        *loop_queries,
     ):
         ops.append(
             MapValue(

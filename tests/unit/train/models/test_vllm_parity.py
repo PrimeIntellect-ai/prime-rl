@@ -162,7 +162,7 @@ def shape_inkling2(model: torch.nn.Module) -> None:
             param.normal_(0.0, 0.25)
         elif name.endswith(("conv1d.weight", "static_weight")):
             param.normal_(0.0, 0.5)
-        elif name.startswith("model.attn_res.") and param.ndim == 2:
+        elif name.startswith(("model.attn_res.", "model.middle_cycle_cross_pass_")) and param.ndim == 2:
             param.normal_(0.0, 1.0)
 
 
