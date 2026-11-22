@@ -58,7 +58,9 @@ uv run rl @ examples/advanced/<model>/rl.toml @ examples/advanced/<model>/gpu/h2
     --slurm.partition <partition> --output-dir <shared-dir>
 ```
 
-MoE models add `--trainer.model.debug.force-balanced-routing`. Read tok/s and `perf/peak_allocated_memory` of steps 2+ in the trainer's `metrics.jsonl`; step 1
+MoE models add `--trainer.model.debug.force-balanced-routing`. Multi-node overlays add
+`--trainer.data.fake.batch-size <N>` (one micro batch per data-parallel rank); each overlay's header
+has the full command. Read tok/s and `perf/peak_allocated_memory` of steps 2+ in the trainer's `metrics.jsonl`; step 1
 includes `torch.compile`. `perf/peak_memory` counts the allocator's cache and reads near-full whenever
 memory is tight. Keep about 10% of GPU memory free: real routing is uneven and peaks higher than
 balanced routing.
