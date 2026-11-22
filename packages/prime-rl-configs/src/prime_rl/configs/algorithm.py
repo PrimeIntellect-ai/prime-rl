@@ -34,6 +34,7 @@ count; per-token component weights ship on the wire and the trainer just
 executes them.
 """
 
+import math
 from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
 import verifiers.v1 as vf
@@ -72,10 +73,54 @@ ActionLossType: TypeAlias = Literal["rl", "ce", "ref_kl"]
 # ---------------------------------------------------------------------------
 
 
+class CosineLengthPenaltyScheduleConfig(BaseConfig):
+    """Cyclic schedule on the length penalty's strength: alternating compression (strong penalty) and expansion
+    (weak or no penalty) phases, as in interleaved-compression RL. The whole penalty is multiplied by
+    ``scale(step) = min_scale + (max_scale - min_scale) * (1 - cos(2*pi*((step - warmup_steps) / period + phase))) / 2``,
+    and by 0 before ``warmup_steps``. With the defaults each period starts at no penalty, peaks at the full
+    configured weights halfway through, and returns to none. ``step`` is the step that dispatched the group's
+    rollouts, so a group is scored at the strength of the policy that generated it."""
+
+    type: Literal["cosine"] = "cosine"
+
+    period: int = Field(..., ge=2)
+    """Steps per full compression-expansion cycle."""
+
+    warmup_steps: int = Field(0, ge=0)
+    """Steps before the first cycle, with no penalty."""
+
+    min_scale: float = Field(0.0, ge=0, allow_inf_nan=False)
+    """Scale at the bottom of a cycle (expansion). 0 turns the penalty fully off there."""
+
+    max_scale: float = Field(1.0, ge=0, allow_inf_nan=False)
+    """Scale at the top of a cycle (compression), applied to the configured term weights."""
+
+    phase: float = Field(0.0, ge=0, lt=1, allow_inf_nan=False)
+    """Where in the cycle step ``warmup_steps`` falls, as a fraction of a period: 0 starts at ``min_scale``,
+    0.5 at ``max_scale``."""
+
+    @model_validator(mode="after")
+    def check_scales(self):
+        if self.min_scale > self.max_scale:
+            raise ValueError("length_penalty.schedule: min_scale must not exceed max_scale")
+        return self
+
+    def scale(self, step: int) -> float:
+        """The multiplier on the penalty for rollouts dispatched at ``step``."""
+        if step < self.warmup_steps:
+            return 0.0
+        cycle = (step - self.warmup_steps) / self.period + self.phase
+        return self.min_scale + (self.max_scale - self.min_scale) * (1 - math.cos(2 * math.pi * cycle)) / 2
+
+
 class LinearLengthPenaltyConfig(BaseConfig):
     """Linear ``pass_rate``-scaled penalty subtracted from each reward before the GRPO baseline — the sum of three terms (completion tokens, input tokens, turns), each normalized by the group's own max for that quantity and disabled by setting its coefficient to 0."""
 
     type: Literal["linear"] = "linear"
+
+    schedule: CosineLengthPenaltyScheduleConfig | None = None
+    """Optional schedule on the penalty's strength over training, e.g. ``{type = "cosine", period = 20}`` for
+    alternating compression and expansion phases. None applies the configured weights at every step."""
 
     num_output_tokens_weight: float = Field(0.25, ge=0, allow_inf_nan=False)
     """Scale on the output-token term. Each reward is reduced by ``num_output_tokens_weight * pass_rate * (rollout num_output_tokens / group's max num_output_tokens)`` — where ``pass_rate`` is the group's mean reward — before the GRPO baseline subtraction. Finite and non-negative; 0 disables the term."""

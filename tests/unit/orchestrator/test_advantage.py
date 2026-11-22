@@ -4,6 +4,7 @@ import pytest
 import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import (
+    CosineLengthPenaltyScheduleConfig,
     GRPOAlgoConfig,
     LinearLengthPenaltyConfig,
     LinearSubagentLengthPenaltyConfig,
@@ -240,6 +241,43 @@ def test_linear_equal_lengths_reduce_to_plain_grpo():
     )
     plain = _grpo(_make_group(rewards=[1.0, 0.0, 1.0], completion_lengths=[10, 10, 10], num_turns=[2, 2, 2]))
     assert penalized == pytest.approx(plain, abs=1e-6)
+
+
+def test_cosine_schedule_scale():
+    """No penalty during warmup, then a cosine cycle from min_scale up to max_scale and back each period."""
+    schedule = CosineLengthPenaltyScheduleConfig(period=20, warmup_steps=5)
+    assert schedule.scale(0) == 0.0 and schedule.scale(4) == 0.0
+    assert schedule.scale(5) == pytest.approx(0.0, abs=1e-9)
+    assert schedule.scale(10) == pytest.approx(0.5)
+    assert schedule.scale(15) == pytest.approx(1.0)
+    assert schedule.scale(25) == pytest.approx(0.0, abs=1e-9)
+    shifted = CosineLengthPenaltyScheduleConfig(period=20, phase=0.5, min_scale=0.2, max_scale=0.8)
+    assert shifted.scale(0) == pytest.approx(0.8)
+    assert shifted.scale(10) == pytest.approx(0.2)
+    with pytest.raises(ValueError):
+        CosineLengthPenaltyScheduleConfig(period=20, min_scale=0.9, max_scale=0.1)
+
+
+def test_scheduled_penalty_scales_with_dispatch_step():
+    """A scheduled penalty is the unscheduled one times the schedule at the group's dispatch step: none at the
+    bottom of a cycle, the full penalty at the top."""
+    weights = dict(num_output_tokens_weight=0.25, num_input_tokens_weight=0.0, num_turns_weight=0.0)
+    schedule = CosineLengthPenaltyScheduleConfig(period=20)
+
+    def scored(step: int | None, cfg) -> list[float]:
+        group = _make_group(rewards=[1.0, 1.0, 1.0], completion_lengths=[10, 20, 30])
+        if step is not None:
+            for episode in group:
+                episode.run = vf.TrainRunInfo(id="run", name="run", work=vf.TrainWorkInfo(step=step))
+        return _grpo(group, length_penalty=cfg)
+
+    scheduled = LinearLengthPenaltyConfig(**weights, schedule=schedule)
+    full = LinearLengthPenaltyConfig(**weights)
+    assert scored(0, scheduled) == pytest.approx(scored(0, None), abs=1e-6)
+    assert scored(10, scheduled) == pytest.approx(scored(10, full), abs=1e-6)
+    assert scored(None, scheduled) == pytest.approx(scored(None, full), abs=1e-6)
+    half = scored(5, scheduled)
+    assert half == pytest.approx([0.5 * a for a in scored(5, full)], abs=1e-6)
 
 
 def test_grpo_reconfigure_applies_new_length_penalty():
