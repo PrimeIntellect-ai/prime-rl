@@ -26,6 +26,8 @@ prime = "None"
 type = "scratch"
 
 [trainer.data.fake]
-batch_size = 8
+# One micro batch per data-parallel rank: set it to the number of DP ranks (trainer GPUs / cp),
+# which is the trainer node count at cp 8.
+batch_size = 1
 generate_samples = true
 doc_len = 262144
