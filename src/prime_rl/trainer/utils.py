@@ -159,8 +159,13 @@ def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:
     monitors.log(...) call (once per step).
     """
     ckpt_dir = get_ckpt_dir(output_dir)
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
-    usage = shutil.disk_usage(str(ckpt_dir))
+    try:
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        usage = shutil.disk_usage(str(ckpt_dir))
+    except OSError as e:
+        # Monitoring only: a transient filesystem error (e.g. a network filesystem timing out) must not stop training
+        get_logger().warning(f"Skipping checkpoint disk metrics: {e}")
+        return {}
     total = float(usage.total) if usage.total else 0.0
     return {
         "system/ckpt_disk_free_gib": usage.free / 1024**3,
