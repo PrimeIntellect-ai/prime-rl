@@ -37,13 +37,8 @@ def output_worker(monkeypatch):
         aux_output_config=SimpleNamespace(max_bytes=None),
         max_concurrent_batches=2,
     )
-    kv_cache_config = SimpleNamespace(num_blocks=12)
-    # vLLM 0.33 builds the storage in the constructor, later versions once the KV cache layout is known.
-    if hasattr(aux_worker.AuxOutputWorkerConnector, "initialize_output_storage"):
-        worker = aux_worker.get_aux_output_connector(None, vllm_config)
-        worker.initialize_output_storage(kv_cache_config)
-    else:
-        worker = aux_worker.get_aux_output_connector(None, vllm_config, kv_cache_config)
+    worker = aux_worker.get_aux_output_connector(None, vllm_config)
+    worker.initialize_output_storage(SimpleNamespace(num_blocks=12))
     yield worker
     worker.close()
 
