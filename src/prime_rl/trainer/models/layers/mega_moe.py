@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from prime_rl.trainer.models.layers.moe import GroupedExperts
 
 
-MegaMoePrecision = Literal["bf16", "mxfp8", "mxfp8_qat", "fp8", "fp8_bwd"]
+MegaMoePrecision = Literal["bf16", "mxfp8", "mxfp8_qat", "fp8", "fp8_bwd", "nvfp4"]
 # `deep_gemm` symbols each precision needs, named `<precision>_mega_moe[_backward]`; only the prime-mega-moe
 # build has the training kernels
 _REQUIRED_KERNELS: dict[str, tuple[str, ...]] = {
@@ -36,6 +36,13 @@ _REQUIRED_KERNELS: dict[str, tuple[str, ...]] = {
         "quantize_l1_weight_for_fp8_mega_moe",
     ),
     "fp8_bwd": ("bf16_mega_moe", "fp8_mega_moe_backward", "quantize_weight_blockwise_fp8"),
+    "nvfp4": (
+        "nvfp4_mega_moe",
+        "nvfp4_mega_moe_backward",
+        "nvfp4_quantize_tokens",
+        "quantize_weights_for_nvfp4_mega_moe",
+        "nvfp4_weights_to_mxfp8_rows",
+    ),
 }
 _MIN_CAPABILITY: dict[str, tuple[int, int]] = {
     "bf16": (9, 0),
@@ -43,6 +50,7 @@ _MIN_CAPABILITY: dict[str, tuple[int, int]] = {
     "mxfp8_qat": (10, 0),
     "fp8": (9, 0),
     "fp8_bwd": (9, 0),
+    "nvfp4": (10, 0),
 }
 
 
@@ -61,11 +69,12 @@ def mega_moe_available(precision: MegaMoePrecision = "bf16") -> bool:
     return precision != "mxfp8_qat" or hasattr(deep_gemm.SymmBuffer, "num_bytes")
 
 
-def check_mega_moe_dims(hidden: int, intermediate_hidden: int) -> None:
-    if hidden % 256 or intermediate_hidden % 128:
+def check_mega_moe_dims(hidden: int, intermediate_hidden: int, precision: MegaMoePrecision = "bf16") -> None:
+    multiple = 256 if precision == "nvfp4" else 128
+    if hidden % 256 or intermediate_hidden % multiple:
         raise ValueError(
-            f"Mega MoE requires hidden ({hidden}) to be a multiple of 256 and intermediate_hidden "
-            f"({intermediate_hidden}) a multiple of 128."
+            f"Mega MoE `{precision}` requires hidden ({hidden}) to be a multiple of 256 and intermediate_hidden "
+            f"({intermediate_hidden}) a multiple of {multiple}."
         )
 
 
@@ -129,6 +138,7 @@ _STAGING_MMA_TYPES: dict[str, tuple[str, str]] = {  # (forward, backward)
     "mxfp8_qat": ("fp8xfp8", "bf16xbf16"),
     "fp8": ("fp8xfp8", "bf16xbf16"),
     "fp8_bwd": ("bf16xbf16", "bf16xbf16"),
+    "nvfp4": ("nvfp4", "nvfp4"),
 }
 
 
@@ -143,7 +153,7 @@ def build_mega_moe_buffers(
 ) -> MegaMoeBuffers:
     import deep_gemm
 
-    check_mega_moe_dims(hidden, intermediate_hidden)
+    check_mega_moe_dims(hidden, intermediate_hidden, precision)
     args = (group, num_experts, num_max_tokens_per_rank, top_k, hidden, intermediate_hidden)
     forward_mma_type, backward_mma_type = _STAGING_MMA_TYPES[precision]
     if forward_mma_type == backward_mma_type:
@@ -164,12 +174,13 @@ def build_mega_moe_buffers(
 
 
 # Custom ops take an int key: the buffers are not tensors
-_BUFFER_REGISTRY: dict[int, tuple[MegaMoePrecision, MegaMoeBuffers, int]] = {}
+_BUFFER_REGISTRY: dict[int, tuple[MegaMoePrecision, MegaMoeBuffers, int, dict]] = {}
 
 
-def register_mega_moe_buffers(buffers: MegaMoeBuffers, precision: MegaMoePrecision, num_sms: int) -> int:
+def register_mega_moe_buffers(buffers: MegaMoeBuffers, precision: MegaMoePrecision, num_sms: int, **options) -> int:
+    """``options``: keyword arguments of the precision's forward and backward (``four_over_six`` for NVFP4)."""
     key = id(buffers)
-    _BUFFER_REGISTRY[key] = (precision, buffers, num_sms)
+    _BUFFER_REGISTRY[key] = (precision, buffers, num_sms, options)
     return key
 
 
@@ -408,12 +419,95 @@ def mega_moe_backward_fp8(dy, x, topk_idx, topk_weights, gate_up_proj, down_proj
     return dx, dw1, dw2, dtopk
 
 
+# NVFP4 (SM100): vLLM's online `nvfp4_per_token` MoE numerics forward, MXFP8 backward on the forward's NVFP4 operands
+
+
+@dataclass
+class _NVFP4Stash:
+    """The forward call whose stash a buffer holds (`nvfp4_mega_moe(stash_tag=...)`), named by its inputs: the backward
+    of that call reads the stash, any other backward first runs its forward again (bitwise the same)."""
+
+    tag: int = 0
+    inputs: tuple = ()
+
+
+_NVFP4_STASHES: dict[int, _NVFP4Stash] = {}
+
+
+def _nvfp4_call(*tensors: torch.Tensor) -> tuple:
+    # Autograd keeps the inputs alive and unmodified until the backward, so their storage and version name the call
+    return tuple((t.data_ptr(), t._version) for t in tensors)
+
+
+def _nvfp4_weights(gate_up_proj: torch.Tensor, down_proj: torch.Tensor):
+    import deep_gemm
+
+    return deep_gemm.quantize_weights_for_nvfp4_mega_moe(
+        gate_up_proj.to(torch.bfloat16).contiguous(), down_proj.to(torch.bfloat16).contiguous()
+    )
+
+
+def mega_moe_forward_nvfp4(x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, activation_clamp, four_over_six):
+    import deep_gemm
+
+    l1, l2, weight_scales = _nvfp4_weights(gate_up_proj, down_proj)
+    deep_gemm.nvfp4_quantize_tokens(x, buffer, four_over_six)
+    _stage_routing(buffer, x.shape[0], topk_idx, topk_weights)
+    stash = _NVFP4_STASHES.setdefault(id(buffer), _NVFP4Stash())
+    stash.tag += 1
+    stash.inputs = _nvfp4_call(x, topk_idx, topk_weights, gate_up_proj, down_proj)
+    y = torch.empty_like(x)
+    deep_gemm.nvfp4_mega_moe(
+        y,
+        l1,
+        l2,
+        weight_scales,
+        buffer,
+        activation_clamp=activation_clamp,
+        four_over_six=four_over_six,
+        stash_tag=stash.tag,
+    )
+    return y
+
+
+def mega_moe_backward_nvfp4(
+    dy, x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, dw_dtype, activation_clamp, four_over_six
+):
+    import deep_gemm
+
+    stash = _NVFP4_STASHES.get(id(buffer))
+    if stash is None or stash.inputs != _nvfp4_call(x, topk_idx, topk_weights, gate_up_proj, down_proj):
+        mega_moe_forward_nvfp4(
+            x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, activation_clamp, four_over_six
+        )
+        stash = _NVFP4_STASHES[id(buffer)]
+    l1_t, l2_t = deep_gemm.nvfp4_weights_to_mxfp8_rows(*_nvfp4_weights(gate_up_proj, down_proj))
+    # The kernel writes dW1 in the natural [gate | up] row order
+    dx, dw1, dw2, dtopk = _grad_buffers(x, buffer, gate_up_proj.shape, down_proj.shape, dw_dtype)
+    deep_gemm.nvfp4_mega_moe_backward(
+        dx,
+        dw1,
+        dw2,
+        dtopk,
+        dy,
+        x,
+        l1_t,
+        l2_t,
+        buffer,
+        stash.tag,
+        activation_clamp=activation_clamp,
+        four_over_six=four_over_six,
+    )
+    return dx, dw1, dw2, dtopk
+
+
 MEGA_MOE_IMPLS: dict[str, tuple[Callable, Callable]] = {
     "bf16": (mega_moe_forward_bf16, mega_moe_backward_bf16),
     "mxfp8": (mega_moe_forward_mxfp8, mega_moe_backward_mxfp8),
     "mxfp8_qat": (mega_moe_forward_mxfp8, mega_moe_backward_mxfp8_qat),
     "fp8": (mega_moe_forward_fp8, mega_moe_backward_fp8),
     "fp8_bwd": (mega_moe_forward_bf16, mega_moe_backward_fp8),
+    "nvfp4": (mega_moe_forward_nvfp4, mega_moe_backward_nvfp4),
 }
 
 
@@ -431,7 +525,7 @@ def mega_moe_forward_op(
     buffer_key: int,
     activation_clamp: float | None = None,
 ) -> torch.Tensor:
-    precision, buffers, num_sms = _BUFFER_REGISTRY[buffer_key]
+    precision, buffers, num_sms, options = _BUFFER_REGISTRY[buffer_key]
     forward, _ = MEGA_MOE_IMPLS[precision]
     with _deep_gemm_num_sms(num_sms):
         y = forward(
@@ -442,6 +536,7 @@ def mega_moe_forward_op(
             down_proj,
             buffers.forward,
             activation_clamp,
+            **options,
         )
     return y.to(x.dtype)
 
@@ -470,7 +565,7 @@ def mega_moe_backward_op(
     buffer_key: int,
     activation_clamp: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    precision, buffers, num_sms = _BUFFER_REGISTRY[buffer_key]
+    precision, buffers, num_sms, options = _BUFFER_REGISTRY[buffer_key]
     _, backward = MEGA_MOE_IMPLS[precision]
     with _deep_gemm_num_sms(num_sms):
         dx, dw1, dw2, dtopk = backward(
@@ -483,6 +578,7 @@ def mega_moe_backward_op(
             buffers.backward,
             _dw_dtype(gate_up_proj),
             activation_clamp,
+            **options,
         )
     return dx.to(x.dtype), dw1.to(gate_up_proj.dtype), dw2.to(down_proj.dtype), dtopk
 
@@ -547,6 +643,7 @@ class MegaMoEExpertCompute:
         max_tokens_per_rank: int,
         num_sms: int,
         precision: MegaMoePrecision = "bf16",
+        four_over_six: bool = False,
     ) -> None:
         if not mega_moe_available(precision):
             names = [*_REQUIRED_KERNELS[precision], *(["SymmBuffer.num_bytes"] if precision == "mxfp8_qat" else [])]
@@ -565,7 +662,8 @@ class MegaMoEExpertCompute:
             group, num_experts, max_tokens_per_rank, top_k, hidden, intermediate_hidden, precision
         )
         # Registered once here: a registry write inside the compiled, checkpointed block is a side effect dynamo rejects.
-        self.buffer_key = register_mega_moe_buffers(buffers, precision, num_sms)
+        options = {"four_over_six": four_over_six} if precision == "nvfp4" else {}
+        self.buffer_key = register_mega_moe_buffers(buffers, precision, num_sms, **options)
 
     def validate(self, experts: "GroupedExperts") -> None:
         if experts.gate_proj is None and experts.gate_up_proj is None:
@@ -582,7 +680,7 @@ class MegaMoEExpertCompute:
             )
 
     def destroy(self) -> None:
-        _, buffers, _ = _BUFFER_REGISTRY.pop(self.buffer_key)
+        _, buffers, _, _ = _BUFFER_REGISTRY.pop(self.buffer_key)
         if buffers.forward is not buffers.backward:
             buffers.forward.destroy()
         buffers.backward.destroy()
