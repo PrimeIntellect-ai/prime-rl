@@ -408,3 +408,480 @@ def test_only_sampled_token_logprobs_are_packed_flat(logprobs, logprob_token_ids
     params = SamplingParams(logprobs=logprobs, logprob_token_ids=logprob_token_ids, flat_logprobs=True)
     request = GenerateRequest(model="test", token_ids=[10, 11], sampling_params=params)
     assert _PackedOutputs(_empty_request_outputs(), request).strips_logprobs is packed
+
+
+def _make_serving(*, routed: bool = False) -> PrimeRlServingTokens:
+    serving = object.__new__(PrimeRlServingTokens)
+    serving.engine_client = SimpleNamespace(
+        vllm_config=SimpleNamespace(aux_output_config=SimpleNamespace(enable_return_routed_experts=routed))
+    )
+    serving.enable_prompt_tokens_details = False
+    serving.enable_log_outputs = False
+    serving.return_tokens_as_token_ids = False
+    return serving
+
+
+def _cpu_paired_mask(rows_ids: list[list[int]], rows_logprobs: list[list[float]]) -> PackedSamplingMask:
+    flat_ids = np.asarray([i for row in rows_ids for i in row], dtype=np.int64)
+    flat_vals = np.asarray([p for row in rows_logprobs for p in row], dtype=np.float32)
+    packed = ((flat_vals.view(np.int32).astype(np.int64) ^ NEG_INF_BITS) << 32) | flat_ids
+    counts = np.asarray([len(row) for row in rows_ids], dtype=np.int32)
+    return PackedSamplingMask(ids=packed, counts=counts)
+
+
+@pytest.mark.asyncio
+async def test_unified_sampled_only_format_and_legacy_renderer_compat():
+    from prime_rl.inference.vllm.logprobs import (
+        SAMPLED_LOGPROBS_FORMAT,
+        parse_completion_logprobs,
+        parse_generate_response_packed,
+    )
+
+    serving = _make_serving()
+    logprobs = FlatLogprobs()
+    for sampled, value in [(2, -0.25), (7, -1.5)]:
+        logprobs.append_fast([sampled], [value], iter(range(1)), [None])
+    output = RequestOutput(
+        "test",
+        None,
+        [10, 11],
+        None,
+        [CompletionOutput(0, "", [2, 7], None, logprobs, finish_reason="length")],
+        True,
+    )
+
+    async def generate_outputs():
+        yield output
+
+    params = SamplingParams(logprobs=1, flat_logprobs=True)
+    request = GenerateRequest(model="test", token_ids=[10, 11], sampling_params=params, return_token_ids=True)
+    response = await serving.serve_tokens_full_generator(
+        request, generate_outputs(), "test", "test", RequestResponseMetadata(request_id="test")
+    )
+    assert isinstance(response, GenerateTokensResponse)
+    raw = JSONResponse(content=response.model_dump()).body
+    payload = parse_generate_response_packed(raw)
+    [choice] = payload["choices"]
+    assert choice["logprobs"] is None
+    assert choice.get("compact_logprobs") is None
+    packed = choice["completion_logprobs"]
+    assert list(packed)[0] == "data"
+    assert isinstance(packed["data"], memoryview)
+    assert packed["format"] == SAMPLED_LOGPROBS_FORMAT
+    assert packed["shape"] == [2]
+    assert packed["dtype"] == "float32"
+    assert len(pybase64.b64decode(packed["data"], validate=True)) == 2 * 4
+
+    # Both the unified parser and existing unmigrated renderers parse the same payload.
+    unified_sampled, support = parse_completion_logprobs(choice, [2, 7])
+    legacy_sampled = _parse_completion_logprobs(choice, [2, 7])
+    assert support is None
+    np.testing.assert_array_equal(unified_sampled, np.array([-0.25, -1.5], dtype=np.float32))
+    np.testing.assert_array_equal(legacy_sampled, unified_sampled)
+
+    # Unified parser also reads legacy sampled-only payloads that omit the format field.
+    legacy_only_choice = {"completion_logprobs": {k: v for k, v in packed.items() if k != "format"}}
+    legacy_only_sampled, legacy_only_support = parse_completion_logprobs(legacy_only_choice, [2, 7])
+    assert legacy_only_support is None
+    np.testing.assert_array_equal(legacy_only_sampled, unified_sampled)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replay", [False, True])
+@pytest.mark.parametrize("mode", ["unified", "dual_compat", "legacy"])
+async def test_packed_logprobs_unifies_sampler_rows_and_replayed_support(replay, mode):
+    from prime_rl.inference.vllm.logprobs import (
+        PACKED_LOGPROBS_FORMAT,
+        parse_completion_logprobs,
+        parse_generate_response_packed,
+    )
+
+    serving = _make_serving()
+    # For replay=False, token 7 is outside the top-4 head [1, 2, 3, 4].
+    sampled_ids = [2, 3] if replay else [2, 7]
+    probs = {1: 0.6, 2: 0.2, 3: 0.2, 4: 0.0} if replay else {1: 0.6, 2: 0.25, 3: 0.1, 4: 0.04, 7: 0.01}
+    with np.errstate(divide="ignore"):
+        logq = {i: float(np.float32(np.log(q))) for i, q in probs.items()}
+
+    if replay:
+        rows_ids = [[1, 2, 3], [1, 2, 3]]
+        rows_vals = [[logq[i] for i in row] for row in rows_ids]
+        native_support = PackedSamplingMask(
+            ids=np.array([1, 2, 3, 1, 2, 3], dtype=np.int32), counts=np.array([3, 3], dtype=np.int32)
+        )
+    else:
+        rows_ids = [[sampled, 1, 2, 3, 4] for sampled in sampled_ids]
+        rows_vals = [[logq[i] for i in row] for row in rows_ids]
+        native_support = None
+
+    # Reference native vLLM response.
+    native_logprobs = FlatLogprobs()
+    for sampled in sampled_ids:
+        ids = [sampled, 1, 2, 3, 4]
+        native_logprobs.append_fast(ids, [logq[i] for i in ids], iter(range(len(ids))), [None] * len(ids))
+    native_out = RequestOutput(
+        "test",
+        None,
+        [10, 11],
+        None,
+        [
+            CompletionOutput(
+                0, "", sampled_ids, None, native_logprobs, sampling_mask=native_support, finish_reason="length"
+            )
+        ],
+        True,
+    )
+
+    async def native_gen():
+        yield deepcopy(native_out)
+
+    native_req = GenerateRequest(
+        model="test", token_ids=[10, 11], sampling_params=SamplingParams(logprobs=4), return_token_ids=True
+    )
+    native_resp = await serving.serve_tokens_full_generator(
+        native_req, native_gen(), "test", "test", RequestResponseMetadata(request_id="test")
+    )
+    native_choice = parse_generate_response(JSONResponse(content=native_resp.model_dump()).body)["choices"][0]
+    ref_sampled = _parse_completion_logprobs(native_choice, sampled_ids)
+    ref_top_ids, ref_top_lps = _parse_completion_top_logprobs(native_choice, sampled_ids, 2)
+
+    # Captured response in unified, dual_compat, or legacy mode.
+    extra_args: dict[str, object] = {"prl_paired_capture": True} if replay else {"prl_sampler_rows": 4}
+    if mode == "unified":
+        extra_args["prl_packed_logprobs"] = True
+    elif mode == "dual_compat":
+        extra_args["prl_packed_logprobs"] = True
+        extra_args["prl_compact_logprobs"] = True
+    else:
+        extra_args["prl_compact_logprobs"] = True
+
+    captured_out = RequestOutput(
+        "test",
+        None,
+        [10, 11],
+        None,
+        [
+            CompletionOutput(
+                0,
+                "",
+                sampled_ids,
+                None,
+                None,
+                sampling_mask=_cpu_paired_mask(rows_ids, rows_vals),
+                finish_reason="length",
+            )
+        ],
+        True,
+    )
+
+    async def captured_gen():
+        yield deepcopy(captured_out)
+
+    captured_req = GenerateRequest(
+        model="test",
+        token_ids=[10, 11],
+        sampling_params=SamplingParams(logprobs=None, extra_args=extra_args),
+        return_token_ids=True,
+    )
+    captured_resp = await serving.serve_tokens_full_generator(
+        captured_req, captured_gen(), "test", "test", RequestResponseMetadata(request_id="test")
+    )
+    raw = JSONResponse(content=captured_resp.model_dump()).body
+
+    if mode in ("unified", "dual_compat"):
+        choice = parse_generate_response_packed(raw)["choices"][0]
+        assert choice["logprobs"] is None
+        assert choice.get("compact_logprobs") is None
+        packed = choice["completion_logprobs"]
+        assert list(packed)[0] == "data"
+        assert isinstance(packed["data"], memoryview)
+        assert packed["format"] == PACKED_LOGPROBS_FORMAT
+        raw_bytes = pybase64.b64decode(packed["data"], validate=True)
+        if not replay:
+            # Leading sampled slot stripped into leading f32[T]: 4 bytes/token smaller than legacy u32-f32-le-v1.
+            assert packed["offsets"] == [0, 4, 8]
+            assert len(raw_bytes) == 2 * 4 + 8 * 8
+        else:
+            assert packed["offsets"] == [0, 3, 6]
+            assert len(raw_bytes) == 2 * 4 + 6 * 8
+
+        got_sampled, support = parse_completion_logprobs(
+            choice, sampled_ids, head_size=None if replay else 2, replayed=replay
+        )
+        assert support is not None
+        assert support["replayed"] is replay
+        cuts = np.cumsum(support["counts"])[:-1]
+        got_ids = [row.tolist() for row in np.split(support["ids"], cuts)]
+        got_lps = [row.tolist() for row in np.split(support["logprobs"], cuts)]
+    else:
+        choice = parse_generate_response(raw)["choices"][0]
+        assert choice["logprobs"] is None
+        assert choice.get("completion_logprobs") is None
+        assert isinstance(choice["compact_logprobs"]["data"], memoryview)
+        if replay:
+            got_sampled, support = _parse_replayed_support(choice, sampled_ids)
+            cuts = np.cumsum(support["counts"])[:-1]
+            got_ids = [row.tolist() for row in np.split(support["ids"], cuts)]
+            got_lps = [row.tolist() for row in np.split(support["logprobs"], cuts)]
+        else:
+            got_sampled, got_ids, got_lps = _parse_compact_logprobs(choice, sampled_ids, 2)
+        # Unified parser also handles legacy compact_logprobs payloads during migration.
+        compat_sampled, compat_support = parse_completion_logprobs(
+            choice, sampled_ids, head_size=None if replay else 2, replayed=replay
+        )
+        np.testing.assert_allclose(compat_sampled, got_sampled, atol=1e-6)
+        assert compat_support is not None and compat_support["replayed"] is replay
+
+    np.testing.assert_allclose(got_sampled, ref_sampled, atol=1e-6)
+    got_sorted_ids, got_sorted_lps = _rows_by_id(got_ids, got_lps)
+    ref_sorted_ids, ref_sorted_lps = _rows_by_id(ref_top_ids, ref_top_lps)
+    assert got_sorted_ids == ref_sorted_ids
+    np.testing.assert_allclose(np.array(got_sorted_lps), np.array(ref_sorted_lps), atol=1e-6)
+
+
+@pytest.mark.parametrize("use_flat", [True, False])
+def test_unified_serialize_sample_logprobs_ragged_duplicates_and_ties(use_flat):
+    from prime_rl.inference.vllm.logprobs import (
+        PACKED_LOGPROBS_FORMAT,
+        SAMPLED_LOGPROBS_FORMAT,
+        parse_completion_logprobs,
+        serialize_sample_logprobs,
+    )
+
+    # Row 0: sampled (2) duplicated inside top-4; row 1: sampled (7) outside top-4 with filtered -inf candidate;
+    # row 2: ragged row of 5 unique candidates with a tie at boundary k=2 (tokens 2 and 3 tied at -1.2).
+    token_ids = [2, 7, 1]
+
+    def _lp(prob: float) -> float:
+        return float(np.float32(np.log(prob)))
+
+    row_defs = [
+        [(2, _lp(0.25)), (1, _lp(0.55)), (2, _lp(0.25)), (3, _lp(0.12)), (4, _lp(0.05))],
+        [(7, _lp(0.01)), (1, _lp(0.60)), (2, _lp(0.25)), (3, _lp(0.10)), (4, float("-inf"))],
+        [(1, _lp(0.50)), (2, _lp(0.20)), (3, _lp(0.20)), (4, _lp(0.06)), (5, _lp(0.03))],
+    ]
+    if use_flat:
+        lp = FlatLogprobs()
+        # Insert a skipped gap entry between row 0 and row 1 to exercise disjoint FlatLogprobs slices.
+        lp.append_fast([i for i, _ in row_defs[0]], [p for _, p in row_defs[0]], iter(range(5)), [None] * 5)
+        lp.token_ids.append(999)
+        lp.logprobs.append(-0.01)
+        lp.ranks.append(0)
+        lp.decoded_tokens.append(None)
+        for row in row_defs[1:]:
+            lp.append_fast([i for i, _ in row], [p for _, p in row], iter(range(len(row))), [None] * len(row))
+    else:
+        lp = [{i: Logprob(p) for i, p in row} for row in row_defs]
+
+    packed = serialize_sample_logprobs(lp, token_ids, num_top_logprobs=4)
+    assert packed["format"] == PACKED_LOGPROBS_FORMAT
+    sampled, support = parse_completion_logprobs(
+        {"completion_logprobs": packed}, token_ids, head_size=2, replayed=False
+    )
+    expected_sampled = [_lp(0.25), _lp(0.01), _lp(0.50)]
+    np.testing.assert_allclose(sampled, expected_sampled, atol=1e-6)
+    assert support is not None
+    cuts = np.cumsum(support["counts"])[:-1]
+    ids_rows = [row.tolist() for row in np.split(support["ids"], cuts)]
+    lps_rows = [row.tolist() for row in np.split(support["logprobs"], cuts)]
+    assert ids_rows == [[1, 2], [1, 2], [1]]  # row 2 excludes boundary tie at k=2
+    np.testing.assert_allclose(lps_rows[0], [_lp(0.55), _lp(0.25)], atol=1e-6)
+    np.testing.assert_allclose(lps_rows[1], [_lp(0.60), _lp(0.25)], atol=1e-6)
+    np.testing.assert_allclose(lps_rows[2], [_lp(0.50)], atol=1e-6)
+
+    # Sampled-only mode and empty completion round-trip.
+    sampled_only = serialize_sample_logprobs(lp, token_ids, num_top_logprobs=0)
+    assert sampled_only["format"] == SAMPLED_LOGPROBS_FORMAT
+    s_only, sup_only = parse_completion_logprobs({"completion_logprobs": sampled_only}, token_ids)
+    assert sup_only is None
+    np.testing.assert_allclose(s_only, expected_sampled, atol=1e-6)
+
+    empty_lp = FlatLogprobs() if use_flat else []
+    empty_sampled = serialize_sample_logprobs(empty_lp, [], num_top_logprobs=0)
+    empty_vals, empty_sup = parse_completion_logprobs({"completion_logprobs": empty_sampled}, [])
+    assert len(empty_vals) == 0 and empty_sup is None
+
+
+@pytest.mark.asyncio
+async def test_serve_tokens_negotiation_for_packed_logprobs(monkeypatch):
+    from vllm.entrypoints.scale_out.token_in_token_out.serving import ServingTokens
+
+    captured_requests: list[GenerateRequest] = []
+
+    async def fake_super_serve_tokens(self, request, raw_request=None):
+        captured_requests.append(request)
+        return "ok"
+
+    monkeypatch.setattr(ServingTokens, "serve_tokens", fake_super_serve_tokens)
+    serving = _make_serving()
+    serving.create_error_response = lambda msg: SimpleNamespace(error=msg)
+
+    # Rejects streaming, non-tokens output_mode, or logprobs=None.
+    for bad_req in [
+        GenerateRequest(
+            model="m",
+            token_ids=[1],
+            stream=True,
+            sampling_params=SamplingParams(logprobs=4, extra_args={"prl_packed_logprobs": True}),
+        ),
+        GenerateRequest(
+            model="m",
+            token_ids=[1],
+            output_mode="text",
+            sampling_params=SamplingParams(logprobs=4, extra_args={"prl_packed_logprobs": True}),
+        ),
+        GenerateRequest(
+            model="m",
+            token_ids=[1],
+            sampling_params=SamplingParams(logprobs=None, extra_args={"prl_packed_logprobs": True}),
+        ),
+    ]:
+        err = await serving.serve_tokens(bad_req)
+        assert hasattr(err, "error")
+
+    # Top-k packed -> prl_sampler_rows=4, logprobs=None.
+    req_topk = GenerateRequest(
+        model="m", token_ids=[1], sampling_params=SamplingParams(logprobs=4, extra_args={"prl_packed_logprobs": True})
+    )
+    assert await serving.serve_tokens(req_topk) == "ok"
+    assert req_topk.sampling_params.extra_args["prl_sampler_rows"] == 4
+    assert req_topk.sampling_params.logprobs is None
+
+    # Replay + packed -> prl_paired_capture=True, logprobs=None.
+    req_replay = GenerateRequest(
+        model="m",
+        token_ids=[1],
+        sampling_params=SamplingParams(logprobs=1, extra_args={"prl_packed_logprobs": True, "prl_replay": True}),
+    )
+    assert await serving.serve_tokens(req_replay) == "ok"
+    assert req_replay.sampling_params.extra_args["prl_paired_capture"] is True
+    assert req_replay.sampling_params.logprobs is None
+
+    # Sampled-only (logprobs=0) + packed -> keeps flat_logprobs, no GPU sampler rows.
+    req_sampled = GenerateRequest(
+        model="m", token_ids=[1], sampling_params=SamplingParams(logprobs=0, extra_args={"prl_packed_logprobs": True})
+    )
+    assert await serving.serve_tokens(req_sampled) == "ok"
+    assert req_sampled.sampling_params.logprobs == 0
+    assert req_sampled.sampling_params.flat_logprobs is True
+    assert "prl_sampler_rows" not in req_sampled.sampling_params.extra_args
+
+
+def test_unified_logprobs_reject_malformed_and_missing_evidence():
+    from prime_rl.inference.vllm.logprobs import (
+        PackedLogprobsError,
+        encode_packed_logprobs,
+        encode_sampled_logprobs,
+        parse_completion_logprobs,
+    )
+
+    valid_sampled = encode_sampled_logprobs(np.array([-0.2], dtype=np.float32))
+    valid_packed = encode_packed_logprobs(
+        np.array([-0.2], dtype=np.float32),
+        np.array([7, 1, 2, 3], dtype="<u4"),
+        np.array([-0.2, -1.0, -2.0, -3.0], dtype="<f4"),
+        [0, 4],
+        4,
+    )
+
+    # Sampled-only rejections.
+    for bad in [
+        {**valid_sampled, "format": "unknown-v99"},
+        {**valid_sampled, "dtype": "float16"},
+        {**valid_sampled, "shape": [2]},
+        {**valid_sampled, "data": "not!base64"},
+        {**valid_sampled, "data": pybase64.b64encode(b"123").decode("ascii")},
+        encode_sampled_logprobs(np.array([-9999.0], dtype=np.float32)),
+        encode_sampled_logprobs(np.array([float("nan")], dtype=np.float32)),
+        encode_sampled_logprobs(np.array([0.5], dtype=np.float32)),
+    ]:
+        with pytest.raises(PackedLogprobsError):
+            parse_completion_logprobs({"completion_logprobs": bad}, [7])
+
+    # Requesting top-k head from sampled-only payload must fail.
+    with pytest.raises(PackedLogprobsError):
+        parse_completion_logprobs({"completion_logprobs": valid_sampled}, [7], head_size=2)
+
+    # Candidate-row rejections.
+    for bad in [
+        {**valid_packed, "offsets": [1, 4]},
+        {**valid_packed, "offsets": [0]},
+        {**valid_packed, "offsets": [0, 2, 1]},
+        {**valid_packed, "offsets": [0, True]},
+        {**valid_packed, "num_top_logprobs": -2},
+        {**valid_packed, "num_top_logprobs": True},
+        {**valid_packed, "data": "bad!b64"},
+        {**valid_packed, "data": pybase64.b64encode(b"\x00" * 4).decode("ascii")},
+        # Sampled logprob disagrees with candidate row entry for token 7.
+        encode_packed_logprobs(
+            np.array([-0.9], dtype=np.float32),
+            np.array([7, 1, 2, 3], dtype="<u4"),
+            np.array([-0.2, -1.0, -2.0, -3.0], dtype="<f4"),
+            [0, 4],
+            4,
+        ),
+        # Repeated candidate IDs with disagreeing logprobs.
+        encode_packed_logprobs(
+            np.array([-0.2], dtype=np.float32),
+            np.array([7, 1, 1, 2], dtype="<u4"),
+            np.array([-0.2, -1.0, -1.5, -2.0], dtype="<f4"),
+            [0, 4],
+            4,
+        ),
+        # Positive candidate logprob.
+        encode_packed_logprobs(
+            np.array([-0.2], dtype=np.float32),
+            np.array([7, 1, 2, 3], dtype="<u4"),
+            np.array([-0.2, 0.25, -2.0, -3.0], dtype="<f4"),
+            [0, 4],
+            4,
+        ),
+        # Head probability mass > 1.0001.
+        encode_packed_logprobs(
+            np.array([-0.1], dtype=np.float32),
+            np.array([7, 1, 2, 3], dtype="<u4"),
+            np.array([-0.1, -0.1, -2.0, -3.0], dtype="<f4"),
+            [0, 4],
+            4,
+        ),
+    ]:
+        with pytest.raises(PackedLogprobsError):
+            parse_completion_logprobs({"completion_logprobs": bad}, [7], head_size=2)
+
+    # Fewer than k + 2 candidates in top-k mode.
+    too_few = encode_packed_logprobs(
+        np.array([-0.2], dtype=np.float32),
+        np.array([7, 1, 2], dtype="<u4"),
+        np.array([-0.2, -1.0, -2.0], dtype="<f4"),
+        [0, 3],
+        3,
+    )
+    with pytest.raises(PackedLogprobsError):
+        parse_completion_logprobs({"completion_logprobs": too_few}, [7], head_size=2)
+
+    # Replayed support rejections: unnormalized mass, missing sampled token, mismatched sampling_mask.
+    unnormalized = encode_packed_logprobs(
+        np.array([-0.5], dtype=np.float32),
+        np.array([1, 7], dtype="<u4"),
+        np.array([-0.5, -0.5], dtype="<f4"),
+        [0, 2],
+        2,
+    )
+    with pytest.raises(PackedLogprobsError):
+        parse_completion_logprobs({"completion_logprobs": unnormalized}, [7], replayed=True)
+
+    normalized = encode_packed_logprobs(
+        np.array([float(np.log(0.4))], dtype=np.float32),
+        np.array([1, 7], dtype="<u4"),
+        np.array([float(np.log(0.6)), float(np.log(0.4))], dtype="<f4"),
+        [0, 2],
+        2,
+    )
+    with pytest.raises(PackedLogprobsError):
+        parse_completion_logprobs({"completion_logprobs": normalized}, [9], replayed=True)
+    wrong_mask = {
+        "ids": encode_array(np.array([1, 8], dtype=np.int32)),
+        "counts": encode_array(np.array([2], dtype=np.int32)),
+    }
+    with pytest.raises(PackedLogprobsError):
+        parse_completion_logprobs({"completion_logprobs": normalized, "sampling_mask": wrong_mask}, [7], replayed=True)

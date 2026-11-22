@@ -8,10 +8,12 @@ prompt logprobs, priority, ``data_parallel_rank`` header routing, server-side
 We subclass it to return the per-token payloads as packed arrays instead of
 per-token JSON: ``routed_experts`` as ``{data, shape, start, dtype}`` base64
 raw bytes (the form the PD router can merge and the renderers parse),
-``completion_logprobs`` as a ``{data, shape, dtype}`` float32 array instead of
-``logprobs.content``, opt-in ``compact_logprobs`` for sampled and top-k evidence,
-and ``sampling_mask`` as CSR ``{ids, counts}`` int32 arrays
-instead of one list per token.
+``completion_logprobs`` under the unified packed logprob contract in
+``prime_rl.inference.vllm.logprobs`` (``f32-le-v1`` for sampled-only rollouts and
+opt-in ``f32-u32-f32-le-v1`` via ``prl_packed_logprobs`` for sampled plus
+candidate rows), legacy opt-in ``compact_logprobs`` (``prl_compact_logprobs``)
+for unmigrated ``renderers`` clients, and ``sampling_mask`` as CSR
+``{ids, counts}`` int32 arrays instead of one list per token.
 
 Per-token Python objects are what makes the API server slow under RL load:
 ~100+ concurrent 16k-token requests keep tens of millions of them alive, and
@@ -45,15 +47,30 @@ from vllm.entrypoints.serve.engine.protocol import ErrorResponse
 from vllm.logprobs import FlatLogprobs
 from vllm.outputs import RequestOutput
 
+from prime_rl.inference.vllm.logprobs import (
+    LEGACY_COMPACT_LOGPROBS_ARG,
+    LOGPROB_SENTINEL,
+    PACKED_LOGPROBS_ARG,
+    encode_sampled_logprobs,
+    pack_sampled_logprobs,
+    serialize_paired_support_logprobs,
+)
 from prime_rl.inference.vllm.paired_capture import serialize_paired_support
 
-# vLLM's clamp for missing or -inf logprobs; renderers treat it as "no sampling evidence".
-LOGPROB_SENTINEL = -9999.0
+__all__ = [
+    "LOGPROB_SENTINEL",
+    "PrimeRlGenerateResponse",
+    "PrimeRlGenerateResponseChoice",
+    "PrimeRlServingTokens",
+    "encode_array",
+    "pack_sampled_logprobs",
+]
 
 
 class PrimeRlGenerateResponseChoice(GenerateTokensChoice):
     routed_experts: dict[str, Any] | None = None  # type: ignore[assignment]
     completion_logprobs: dict[str, Any] | None = None
+    # Legacy field kept until external renderers migrate to unified completion_logprobs.
     compact_logprobs: dict[str, Any] | None = None
     sampling_mask: dict[str, Any] | None = None  # type: ignore[assignment]
 
@@ -71,16 +88,6 @@ def encode_array(array: np.ndarray) -> dict[str, Any]:
     }
 
 
-def pack_sampled_logprobs(logprobs: FlatLogprobs) -> np.ndarray:
-    """The sampled token's logprob per position (vLLM stores it first), clamped like upstream."""
-    flat = np.asarray(logprobs.logprobs, dtype=np.float32)
-    starts = np.asarray(logprobs.start_indices, dtype=np.int64)
-    has_entry = starts < np.asarray(logprobs.end_indices, dtype=np.int64)
-    values = np.full(len(starts), LOGPROB_SENTINEL, dtype=np.float32)
-    values[has_entry] = flat[starts[has_entry]]
-    return np.maximum(values, LOGPROB_SENTINEL)
-
-
 class _PackedOutputs:
     """Wraps the result generator: takes the per-token payloads off each final
     output (so upstream builds no per-token objects) and keeps them packed.
@@ -95,6 +102,7 @@ class _PackedOutputs:
         self._generator = generator
         self._paired = extra_args.get("prl_paired_capture", False)
         self._sampler_rows = extra_args.get("prl_sampler_rows", 0)
+        self._unified_packed = bool(extra_args.get(PACKED_LOGPROBS_ARG, False))
         # ``serve_tokens`` asks for flat logprobs, so the engine returns FlatLogprobs here.
         self._flat = (
             sampling_params.flat_logprobs
@@ -128,16 +136,24 @@ class _PackedOutputs:
                 if self._paired or self._sampler_rows:
                     if mask is None or mask.ids.dtype != np.int64:
                         raise ValueError("Missing paired sampling-support evidence (needs enable_return_sampling_mask)")
-                    ids, fields["compact_logprobs"] = serialize_paired_support(mask.ids, mask.counts)
+                    if self._unified_packed:
+                        ids, fields["completion_logprobs"] = serialize_paired_support_logprobs(
+                            mask.ids,
+                            mask.counts,
+                            output.token_ids,
+                            strip_leading_sampled=not self._paired,
+                        )
+                    else:
+                        ids, fields["compact_logprobs"] = serialize_paired_support(mask.ids, mask.counts)
                     if self._paired:
                         mask.ids = ids
                     else:
-                        # Sampler rows are compact logprobs, not a support to replay.
+                        # Sampler rows are candidate logprobs, not a support to replay.
                         output.sampling_mask = None
                     output.logprobs = None
                 elif self._flat:
                     assert isinstance(output.logprobs, FlatLogprobs), "Did not output flat logprobs"
-                    fields["completion_logprobs"] = encode_array(pack_sampled_logprobs(output.logprobs))
+                    fields["completion_logprobs"] = encode_sampled_logprobs(pack_sampled_logprobs(output.logprobs))
                     output.logprobs = None
                 mask = output.sampling_mask
                 if mask is not None:
@@ -172,10 +188,10 @@ class PrimeRlServingTokens(ServingTokens):
         captures = extra_args.get("prl_replay", False) or extra_args.get("prl_sampler_rows", 0)
         if captures and (request.stream or request.output_mode != "tokens"):
             return self.create_error_response("Sampling-support capture requires a non-streaming tokens request")
-        if extra_args.get("prl_compact_logprobs", False):
+        if extra_args.get(PACKED_LOGPROBS_ARG, False) or extra_args.get(LEGACY_COMPACT_LOGPROBS_ARG, False):
             if request.stream or request.output_mode != "tokens" or sampling_params.logprobs is None:
                 return self.create_error_response(
-                    "Compact logprobs require a non-streaming tokens request with logprobs enabled"
+                    "Packed logprobs require a non-streaming tokens request with logprobs enabled"
                 )
             # Captured on the GPU: the replayed support, or the sampled token plus the top ids.
             # logprobs = 0 (sampled token only) keeps vLLM's flat logprobs.

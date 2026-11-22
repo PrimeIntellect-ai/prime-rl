@@ -9,7 +9,12 @@ from vllm.logger import init_logger
 from vllm.triton_utils import tl, triton
 from vllm.v1.outputs import SamplingMaskLists
 
-NEG_INF_BITS = -8388608  # IEEE float32 -inf; plain IDs decode to missing evidence.
+from prime_rl.inference.vllm.logprobs import (
+    LEGACY_COMPACT_LOGPROBS_FORMAT,
+    NEG_INF_BITS,
+    unpack_paired_support,
+)
+
 LOG_INTERVAL_S = 60.0
 
 logger = init_logger("vllm.prime_rl.sampling_support")
@@ -223,16 +228,11 @@ def pack_sampler_rows(logits, cu_num_logits, num_sampled, sampled, num_rows):
 
 
 def serialize_paired_support(packed, counts):
-    """Return aligned mask IDs and existing compact-logprob wire data."""
-    bits = np.asarray(packed, dtype=np.uint64)
-    ids = (bits & np.uint64(0xFFFFFFFF)).astype("<u4")
-    values = ((bits >> np.uint64(32)).astype(np.uint32).view(np.int32) ^ NEG_INF_BITS).view("<f4")
-    counts = np.asarray(counts, dtype=np.int32)
-    if int(counts.sum()) != len(ids) or not np.isfinite(values).all():
-        raise ValueError("Incomplete paired sampling-support evidence")
+    """Return aligned mask IDs and legacy ``compact_logprobs`` (``u32-f32-le-v1``) wire data."""
+    ids, values, counts = unpack_paired_support(packed, counts)
     return ids.astype(np.int32, copy=False), {
         "data": pybase64.b64encode(ids.tobytes() + values.tobytes()).decode("ascii"),
-        "format": "u32-f32-le-v1",
+        "format": LEGACY_COMPACT_LOGPROBS_FORMAT,
         "offsets": [0, *np.cumsum(counts).tolist()],
         "num_top_logprobs": int(counts.max(initial=0)),
     }
