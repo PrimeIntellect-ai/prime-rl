@@ -5,6 +5,7 @@ import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import (
     CosineLengthPenaltyScheduleConfig,
+    FallbackRewardConfig,
     GRPOAlgoConfig,
     LinearLengthPenaltyConfig,
     LinearSubagentLengthPenaltyConfig,
@@ -154,10 +155,20 @@ def _scalar(episode: vf.Episode) -> float:
     raise AssertionError("episode has no trainable token")
 
 
-def _grpo(group: list[vf.Episode], length_penalty=None, length_weighted_baseline=False) -> list[float]:
+def _grpo(
+    group: list[vf.Episode],
+    length_penalty=None,
+    fallback_reward=None,
+    length_weighted_baseline=False,
+) -> list[float]:
     """Drive ``GRPOAlgorithm.score_group`` and read back each per-rollout scalar."""
     algo = GRPOAlgorithm(
-        GRPOAlgoConfig(length_penalty=length_penalty, length_weighted_baseline=length_weighted_baseline), clients=None
+        GRPOAlgoConfig(
+            length_penalty=length_penalty,
+            fallback_reward=fallback_reward,
+            length_weighted_baseline=length_weighted_baseline,
+        ),
+        clients=None,
     )
     asyncio.run(algo.score_group(group))
     return [_scalar(episode) for episode in group]
@@ -504,3 +515,85 @@ def test_assign_advantages_rejects_misaligned():
     # full length is 3 (prompt + 2 sampled); a 1-element list must be rejected
     with pytest.raises(ValueError, match="align"):
         assign_advantages(episode.traces[0], [0.5])
+
+
+# --------------------------------------------------------------------------
+# GRPO fallback_reward: per-group fallback when no rollout reaches threshold.
+# --------------------------------------------------------------------------
+
+
+def test_grpo_fallback_used_when_no_solve():
+    """All-fail groups score on weight * fallback metric and mark fallback_reward_active=1."""
+    group = [
+        _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 0.2}),
+        _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 0.8}),
+        _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": None}),
+        _build_episode(0.0, sampled_lengths=[2], metrics={}),
+    ]
+    # Scaled rewards: [0.1, 0.4, 0.0, 0.0], mean = 0.125
+    fb = FallbackRewardConfig(metric="criteria_score", weight=0.5)
+    assert _grpo(group, fallback_reward=fb) == pytest.approx([-0.025, 0.275, -0.125, -0.125])
+    assert [ep.traces[0].reward for ep in group] == pytest.approx([0.1, 0.4, 0.0, 0.0])
+    assert [ep.traces[0].metrics["binary_reward"] for ep in group] == [0.0, 0.0, 0.0, 0.0]
+    assert [ep.traces[0].metrics["fallback_reward_active"] for ep in group] == [1.0, 1.0, 1.0, 1.0]
+
+
+def test_grpo_fallback_skipped_when_group_has_solve():
+    """Any rollout reaching threshold keeps the group on pure primary reward."""
+    group = [
+        _build_episode(1.0, sampled_lengths=[2], metrics={"criteria_score": 1.0}),
+        _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 0.9}),
+        _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 0.1}),
+        _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 0.0}),
+    ]
+    fb = FallbackRewardConfig(metric="criteria_score", weight=0.5)
+    assert _grpo(group, fallback_reward=fb) == pytest.approx([0.75, -0.25, -0.25, -0.25])
+    assert [ep.traces[0].reward for ep in group] == [1.0, 0.0, 0.0, 0.0]
+    assert [ep.traces[0].metrics["binary_reward"] for ep in group] == [1.0, 0.0, 0.0, 0.0]
+    assert [ep.traces[0].metrics["fallback_reward_active"] for ep in group] == [0.0, 0.0, 0.0, 0.0]
+
+
+def test_grpo_fallback_all_pass_stays_zero():
+    """All-pass groups do not trigger fallback and produce zero advantage."""
+    group = [
+        _build_episode(1.0, sampled_lengths=[2], metrics={"criteria_score": 0.8}),
+        _build_episode(1.0, sampled_lengths=[2], metrics={"criteria_score": 1.0}),
+    ]
+    fb = FallbackRewardConfig(metric="criteria_score", weight=0.5)
+    assert _grpo(group, fallback_reward=fb) == pytest.approx([0.0, 0.0])
+    assert [ep.traces[0].metrics["fallback_reward_active"] for ep in group] == [0.0, 0.0]
+
+
+def test_grpo_fallback_reconfigure_live():
+    """reconfigure updates fallback_reward live."""
+    algo = GRPOAlgorithm(GRPOAlgoConfig(), clients=None)
+    g1 = [
+        _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 0.0}),
+        _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 1.0}),
+    ]
+    asyncio.run(algo.score_group(g1))
+    assert [_scalar(ep) for ep in g1] == pytest.approx([0.0, 0.0])
+
+    algo.reconfigure(GRPOAlgoConfig(fallback_reward=FallbackRewardConfig(metric="criteria_score", weight=0.5)))
+    g2 = [
+        _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 0.0}),
+        _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 1.0}),
+    ]
+    asyncio.run(algo.score_group(g2))
+    assert [_scalar(ep) for ep in g2] == pytest.approx([-0.25, 0.25])
+
+
+def test_grpo_length_penalty_records_metrics():
+    """Length penalty logs both its schedule scale and per-trace penalty in trace.metrics."""
+    group = _make_group(rewards=[1.0, 1.0], completion_lengths=[4, 8])
+    for ep in group:
+        ep.run = vf.TrainRunInfo(id="run", name="run", work=vf.TrainWorkInfo(step=100))
+    lp = LinearLengthPenaltyConfig(
+        num_output_tokens_weight=0.5,
+        num_input_tokens_weight=0.0,
+        num_turns_weight=0.0,
+        schedule=CosineLengthPenaltyScheduleConfig(period=100, warmup_steps=50),
+    )
+    _grpo(group, length_penalty=lp)
+    assert [ep.traces[0].metrics["length_penalty_scale"] for ep in group] == pytest.approx([1.0, 1.0])
+    assert [ep.traces[0].metrics["length_penalty"] for ep in group] == pytest.approx([0.25, 0.5])
