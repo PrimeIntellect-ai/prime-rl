@@ -11,6 +11,10 @@ PrimeRL stores the experts de-interleaved as ``experts.gate_proj`` /
 them separately; everything else keeps the checkpoint's names modulo the
 ``model.llm.`` -> ``model.`` prefix swap. The vision tower and the DSpark/MTP
 head are dropped (text-only training).
+
+Looped checkpoints add the per-layer ``controllers.*`` weights, which keep their
+names, and two tables of message queries that move next to the other
+``attn_res`` queries.
 """
 
 from __future__ import annotations
@@ -46,6 +50,10 @@ class InterleavedGateUp(ConvOp):
         if self.hf not in sd:
             return
         w13 = sd.pop(self.hf)
+        if w13.dtype in (torch.uint8, torch.float8_e4m3fn):
+            raise ValueError(
+                f"{self.hf} is quantized ({w13.dtype}); convert the release with tools/convert_inkling2_to_bf16.py first"
+            )
         gate = w13[self._sl(0)].contiguous()
         up = w13[self._sl(1)].contiguous()
         sd[self.gate] = gate
@@ -127,10 +135,15 @@ def conversion_chain(config) -> list[ConvOp]:
     # `model.attn_res.*` keeps its checkpoint name via the prefix rename. The release stores
     # these tensors in FP32; training keeps them in the model dtype (FSDP requires one storage
     # dtype) and the export upcasts them back.
+    loop_queries = ()
+    if config.loop_core_layers:
+        loop_queries = ("middle_cycle_cross_pass_queries", "middle_cycle_cross_pass_kv_queries")
+        ops += [Rename(f"model.{name}", f"model.attn_res.{name}") for name in loop_queries]
     for name in (
         *(f"model.attn_res.attn_queries.{i}" for i in range(config.num_hidden_layers - 1)),
         *(f"model.attn_res.mlp_queries.{i}" for i in range(config.num_hidden_layers)),
         "model.attn_res.output_query",
+        *(f"model.attn_res.{name}" for name in loop_queries),
     ):
         ops.append(
             MapValue(
