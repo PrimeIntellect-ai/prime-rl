@@ -1,10 +1,10 @@
-# Single-turn math RL on INTELLECT-3 math, evaluated on AIME 2025. Compose it after a model's
+# Single-turn math RL on INTELLECT-3 math, for functional tests (most groups get equal rewards), evaluated on AIME 2025. Compose it after a model's
 # rl.toml and hardware overlay:
 #
 #   uv run rl @ examples/advanced/qwen3.8-flash-next/rl.toml @ examples/advanced/qwen3.8-flash-next/gpu/h200.toml @ examples/advanced/data/math.toml
 
 [orchestrator]
-batch_size = 512
+batch_size = 128
 max_staleness = 8
 
 [orchestrator.train]
