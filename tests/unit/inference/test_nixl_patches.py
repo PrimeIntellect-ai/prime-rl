@@ -200,6 +200,7 @@ def test_keep_pause_freezes_the_nixl_leases_of_the_engines_workers(monkeypatch, 
     import time
 
     import vllm.distributed.kv_transfer as kv_transfer
+    from vllm.distributed.kv_transfer.kv_connector.v1.multi_connector import MultiConnector
     from vllm.distributed.kv_transfer.kv_connector.v1.nixl.base_worker import NixlBaseConnectorWorker
     from vllm.v1.engine import core
 
@@ -210,7 +211,9 @@ def test_keep_pause_freezes_the_nixl_leases_of_the_engines_workers(monkeypatch, 
     monkeypatch.setattr(time, "perf_counter", lambda: clock[0])
     nixl_worker = object.__new__(NixlBaseConnectorWorker)
     nixl_worker._reqs_to_send = {"held": 1004.0}
-    group = SimpleNamespace(sub_connectors=[SimpleNamespace(), SimpleNamespace(connector_worker=nixl_worker)])
+    # vLLM's own MultiConnector, so the test follows how it exposes its children.
+    group = object.__new__(MultiConnector)
+    group._connectors = [SimpleNamespace(), SimpleNamespace(connector_worker=nixl_worker)]
     monkeypatch.setattr(kv_transfer, "has_kv_transfer_group", lambda: True)
     monkeypatch.setattr(kv_transfer, "get_kv_transfer_group", lambda: group)
 
