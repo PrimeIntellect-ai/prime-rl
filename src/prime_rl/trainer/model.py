@@ -31,6 +31,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
 from prime_rl.configs.trainer import (
+    MODULE_TARGET_SEPARATOR,
     ActivationCheckpointConfig,
     CompileConfig,
     FP8Config,
@@ -41,6 +42,7 @@ from prime_rl.configs.trainer import (
 from prime_rl.trainer.activation_checkpointing import (
     TokenChunkedCheckpointWrapper,
     get_activation_checkpoint_wrapper,
+    unmatched_module_patterns,
 )
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
@@ -70,36 +72,13 @@ from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.utils import get_dcp_group
 from prime_rl.trainer.vlm import get_language_model, get_vision_encoder
 from prime_rl.trainer.world import get_world, wait_for_master
-from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import format_time
+from prime_rl.utils.logger import format_time, get_logger
+from prime_rl.utils.pathing import has_step_dir_name, is_checkpoint_step_dir
 from prime_rl.utils.weights import (
     load_state_dict,
     load_state_dict_keys,
     save_state_dict,
 )
-
-
-def pre_download_model(model_name: str, *, skip_weights: bool = False) -> None:
-    """Pre-download model from HuggingFace Hub so all nodes have cached weights before training.
-
-    With ``skip_weights`` (random-init debug runs), only config and tokenizer files are fetched.
-    """
-    if Path(model_name).exists():
-        get_logger().info(f"Model {model_name} found at local path, skipping download")
-        return
-    t0 = time.perf_counter()
-    if skip_weights:
-        get_logger().info(f"Pre-downloading config and tokenizer for {model_name} (random init, skipping weights)")
-        path = snapshot_download(
-            repo_id=model_name, repo_type="model", allow_patterns=["*.json", "*.txt", "tokenizer*", "*.jinja"]
-        )
-    else:
-        get_logger().info(f"Pre-downloading model {model_name}")
-        path = snapshot_download(repo_id=model_name, repo_type="model")
-    get_logger().debug(
-        f"Finished pre-downloading model {model_name} to {path} in {format_time(time.perf_counter() - t0)}"
-    )
-
 
 # Add filter to the standard logging module for transformers.modeling_utils to supress the
 # flash attention dtype warnings since FSDP is used to handle mixed precision.
@@ -206,6 +185,18 @@ def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(config, "num_experts") or hasattr(config, "n_routed_experts")
 
 
+def compute_max_vio_and_routing_confidence(
+    tokens_per_expert: Tensor, routing_confidence_sum: Tensor, top_k: int
+) -> tuple[Tensor, Tensor]:
+    """Max violation and routing confidence of one MoE layer's expert counts (last dimension) and confidence sum.
+    Leading dimensions are batch dimensions."""
+    num_routed_tokens = tokens_per_expert.sum(dim=-1) / top_k
+    loads = tokens_per_expert.sort(dim=-1, descending=True).values[..., top_k:]
+    balanced_load = loads.mean(dim=-1)
+    max_vio = (loads.amax(dim=-1) - balanced_load) / balanced_load
+    return max_vio, routing_confidence_sum / num_routed_tokens
+
+
 def take_moe_routing_stats(model: nn.Module) -> Tensor:
     """This rank's routing counts since the last call, as `[num_moe_layers, num_experts + 1]` (tokens per expert,
     then the routing confidence sum), and reset them."""
@@ -222,6 +213,34 @@ def take_moe_routing_stats(model: nn.Module) -> Tensor:
         block_mlp.tokens_per_expert.zero_()
         block_mlp.routing_confidence_sum.zero_()
     return stats
+
+
+def add_routing_stats(
+    sums: dict[str, Tensor],
+    maxes: dict[str, Tensor],
+    routing_stats: list[Tensor],
+    top_ks: list[int],
+    ep_group: dist.ProcessGroup | None,
+) -> None:
+    """Add the step's expert counts, and the max violation and routing confidence of every micro-batch's
+    `take_moe_routing_stats` snapshot over the EP group's tokens, to the statistics to reduce; with EP, also every
+    micro-batch's EP imbalance per layer."""
+    routing = torch.stack(routing_stats)
+    sums["expert_counts"] = routing[..., :-1].sum(dim=0)
+    if ep_group is not None:
+        dist.all_reduce(routing, group=ep_group)
+    per_layer = [
+        compute_max_vio_and_routing_confidence(layer[..., :-1], layer[..., -1], top_k)
+        for layer, top_k in zip(routing.unbind(dim=1), top_ks, strict=True)
+    ]
+    max_vio, routing_confidence = (torch.stack(stats, dim=1) for stats in zip(*per_layer))
+    maxes["max_vio"] = max_vio.amax(dim=-1)
+    sums["routing_confidence"] = routing_confidence.mean(dim=-1)
+    if ep_group is not None:
+        # Every rank of an EP group holds the same imbalances. A layer waits for the busiest rank of its EP group and,
+        # through its FSDP collectives, for the slowest group: the max over DP groups, with the DP mean beside it.
+        rank_imbalance = compute_ep_imbalance(routing[..., :-1], dist.get_world_size(ep_group))
+        maxes["ep_imbalance/rank"] = sums["ep_imbalance/rank_dp_mean"] = rank_imbalance
 
 
 def get_global_moe_stats(
@@ -245,13 +264,11 @@ def get_global_moe_stats(
     per_layer_max_vio = []
     per_layer_routing_confidence = []
     for layer_stats, block_mlp in zip(stats.unbind(dim=1), iter_moe_blocks(model)):
-        top_k = block_mlp.router.top_k
-        layer_tokens_per_expert, routing_confidence_sum = layer_stats[:, :-1], layer_stats[:, -1]
-        num_routed_tokens = layer_tokens_per_expert.sum(dim=1) / top_k
-        layer_tokens_per_expert = layer_tokens_per_expert.sort(dim=1, descending=True).values[:, top_k:]
-        balanced_load = layer_tokens_per_expert.mean(dim=1)
-        per_layer_max_vio.append((layer_tokens_per_expert.amax(dim=1) - balanced_load) / balanced_load)
-        per_layer_routing_confidence.append(routing_confidence_sum / num_routed_tokens)
+        max_vio, routing_confidence = compute_max_vio_and_routing_confidence(
+            layer_stats[:, :-1], layer_stats[:, -1], block_mlp.router.top_k
+        )
+        per_layer_max_vio.append(max_vio)
+        per_layer_routing_confidence.append(routing_confidence)
 
     max_stats = [torch.stack(per_layer_max_vio, dim=1).amax(dim=1, keepdim=True)]
     mean_stats = [torch.stack(per_layer_routing_confidence, dim=1).mean(dim=1, keepdim=True)]
@@ -337,6 +354,7 @@ def get_model(
     model_config.dsa_backend = config.dsa_backend
     if model_config.model_type == "deepseek_v4":
         model_config.kv_precision = config.dsv4_kv_precision
+        model_config.compressor_backend = config.dsv4_compressor_backend
     # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
     # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
     indexer_types = getattr(model_config, "indexer_types", None)
@@ -386,6 +404,8 @@ def get_model(
             f"Setting the number of layers to {config.debug.num_layers} in the model config. This means {target_config.num_hidden_layers - num_hidden_layers} layers will not be loaded."
         )
         target_config.num_hidden_layers = num_hidden_layers
+        if getattr(target_config, "layer_types", None) is not None:
+            target_config.layer_types = target_config.layer_types[:num_hidden_layers]
 
     custom_vlm_cls = get_custom_vlm_cls(model_config)
     if custom_vlm_cls is None and not supports_custom_impl(model_config):
@@ -429,8 +449,34 @@ def get_model(
     return model
 
 
-def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
+def use_resumed_model_files(model: ModelConfig, tokenizer: TokenizerConfig, step_dir: Path) -> None:
+    """A run started from a checkpoint step directory resumes with the config.json and tokenizer of the step directory
+    it resumes, which holds copies (``ModelFiles``), so the source may be gone by then. The source is recognized by its
+    name, since it may no longer exist."""
+    if not has_step_dir_name(model.name) or not (step_dir / "config.json").exists():
+        return
+    if tokenizer.name == model.name:
+        tokenizer.name = str(step_dir)
+    model.name = str(step_dir)
+
+
+def check_ckpt_dir(config: ModelConfig) -> None:
+    """A checkpoint step directory supplies the architecture with its config.json."""
+    if is_checkpoint_step_dir(config.name) and not (Path(config.name) / "config.json").exists():
+        raise FileNotFoundError(
+            f"Checkpoint step directory {config.name} has no config.json, so the architecture is unknown; copy the "
+            "model's config.json and tokenizer files into it"
+        )
+
+
+def setup_tokenizer(config: TokenizerConfig, model_name: str) -> PreTrainedTokenizer:
     logger = get_logger()
+    # The tokenizer name defaults to the model name, a folder of which may hold only a config.json (transformers then
+    # loads an empty tokenizer).
+    model_dir = Path(model_name)
+    tokenizer_files = ("tokenizer_config.json", "tokenizer.json", "tokenizer.model")
+    if config.name == model_name and model_dir.is_dir() and not any((model_dir / f).exists() for f in tokenizer_files):
+        raise FileNotFoundError(f"No tokenizer at model.name {model_name}; set tokenizer.name")
     tokenizer = AutoTokenizer.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
     if config.chat_template is not None:
         path = Path(config.chat_template)
@@ -631,22 +677,34 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
 
 @torch.no_grad()
-def initialize_from_scratch(model: nn.Module) -> None:
+def initialize_from_scratch(model: nn.Module, seed: int) -> None:
     """Initialize the weights with the model's own init (``initialize_weights``, which applies its
-    ``_init_weights``). The parameters are NaN before, so one the init does not reach fails here."""
-    get_logger().info("Initializing the weights from scratch")
+    ``_init_weights``), seeded with ``seed``. Floating parameters and buffers are NaN-filled first, so any the init misses
+    raises."""
+    get_logger().info(f"Initializing the weights from scratch (seed {seed})")
     model.to_empty(device="cuda")
     torch.distributed.barrier()
+
+    def floating_tensors() -> dict[str, Tensor]:
+        tensors = {**dict(model.named_parameters()), **dict(model.named_buffers())}
+        return {
+            name: tensor.to_local() if isinstance(tensor, DTensor) else tensor
+            for name, tensor in tensors.items()
+            if tensor.is_floating_point()
+        }
+
+    for tensor in floating_tensors().values():
+        tensor.fill_(float("nan"))
     model.init_buffers_post_meta()
-    local_params = {
-        name: param.to_local() if isinstance(param, DTensor) else param for name, param in model.named_parameters()
-    }
-    for param in local_params.values():
-        param.fill_(float("nan"))
+    torch.manual_seed(seed)
     model.initialize_weights()
-    uninitialized = [name for name, param in local_params.items() if param.isnan().any()]
+    uninitialized = [name for name, tensor in floating_tensors().items() if tensor.isnan().any()]
     if uninitialized:
-        raise RuntimeError(f"The init of {type(model).__name__} does not initialize {uninitialized}")
+        more = f", +{len(uninitialized) - 3} more" if len(uninitialized) > 3 else ""
+        raise RuntimeError(
+            f'{model.config.model_type!r} does not support model.init.type = "scratch": its init does not reach '
+            f"{', '.join(uninitialized[:3])}{more}"
+        )
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
@@ -658,10 +716,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     model.init_buffers_post_meta()
 
     logger = get_logger()
-    if config.debug.random_init:
-        logger.warning("Randomly initializing model. Skipping loading weights from HF.")
-        return
-
     if not Path(config.name).exists():
         snapshot_path = Path(snapshot_download(repo_id=config.name, repo_type="model"))
     else:
@@ -752,18 +806,37 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
     # FLA's metadata cache must not skip operations during checkpoint replay.
     fla.utils.FLA_DISABLE_TENSOR_CACHE = True
     language_model = get_language_model(model)
-    wrap_block = get_activation_checkpoint_wrapper(ac_config)
-    checkpointed_layers = 0
+    matched_module_targets: set[str] = set()
+    wrap_block = get_activation_checkpoint_wrapper(ac_config, matched_module_targets)
+    checkpointed_blocks = []
 
     for layer_id, (layer_name, transformer_block) in enumerate(language_model.layers.named_children()):
         if layer_id % ac_config.freq != 0:
             continue
 
         language_model.layers.register_module(layer_name, wrap_block(transformer_block))
-        checkpointed_layers += 1
+        checkpointed_blocks.append(transformer_block)
+
+    if ac_config.mode == "selective" and ac_config.targets is not None:
+        unmatched = unmatched_module_patterns(ac_config.targets, checkpointed_blocks)
+        if unmatched:
+            raise ValueError(f"Activation checkpointing module patterns match no checkpointed submodule: {unmatched}")
+
+        module_targets = [target for target in ac_config.targets if MODULE_TARGET_SEPARATOR in target]
+        if module_targets:
+
+            def check_module_targets_after_first_training_forward(_module, _args, _output) -> None:
+                if not torch.is_grad_enabled():
+                    return
+                check_once.remove()
+                untraced = [target for target in module_targets if target not in matched_module_targets]
+                if untraced:
+                    raise ValueError(f"Activation checkpointing targets matched no traced operation: {untraced}")
+
+            check_once = language_model.register_forward_hook(check_module_targets_after_first_training_forward)
 
     get_logger().info(
-        f"Applied {ac_config.mode} activation checkpointing to {checkpointed_layers} layers (freq={ac_config.freq})"
+        f"Applied {ac_config.mode} activation checkpointing to {len(checkpointed_blocks)} layers (freq={ac_config.freq})"
     )
 
 
@@ -781,7 +854,7 @@ DYNAMIC_INT_ARGS = (
 # layer: FSDP2's pre-forward hook hands the layer a new view of its input, without the mark. A dynamic source names
 # the arg instead, so callers must pass these args by keyword.
 DYNAMIC_TENSOR_ARG_DIMS = (
-    # DeepSeek V4: the decoder layer input, (batch, seq, hc_mult, hidden). seq follows this rank's row length.
+    # DeepSeek V4, GLM5-next: decoder layer input, (batch, seq, hc_mult, hidden). seq follows this rank's row length.
     ("mhc_states", 1),
 )
 
@@ -931,7 +1004,6 @@ def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
-    init_from_scratch: bool = False,
 ) -> nn.Module:
     resolve_auto_attn(config)
 
@@ -1008,8 +1080,8 @@ def setup_model(
         model.to_empty(device=device)
         torch.distributed.barrier()
         model.init_buffers_post_meta()
-    elif init_from_scratch:
-        initialize_from_scratch(model)
+    elif config.init.type == "scratch":
+        initialize_from_scratch(model, config.init.seed)
     else:
         load_dcp_from_hf(model, config)
 

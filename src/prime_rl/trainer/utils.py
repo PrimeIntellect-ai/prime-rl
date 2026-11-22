@@ -20,6 +20,7 @@ from torch import Tensor, nn
 from torch.distributed.tensor import DTensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
+from prime_rl.configs.trainer import ModelConfig
 from prime_rl.control.controller import Controller
 from prime_rl.control.types import StepActionType
 from prime_rl.trainer.world import get_world
@@ -84,13 +85,13 @@ def finish_backward(manager: "GradientOffloadManager | None", *, wait_for_copies
 
 
 @torch.no_grad()
-def scale_gradients_(manager: "GradientOffloadManager | None", model: nn.Module, factor: float) -> None:
+def scale_gradients_(manager: "GradientOffloadManager | None", model: nn.Module, factor: float | Tensor) -> None:
+    """Multiply every gradient by ``factor``, a number or a 0-dim tensor on the gradients' device (no host sync)."""
     if manager is not None:
         manager.scale_(factor)
         return
-    for param in model.parameters():
-        if param.grad is not None:
-            param.grad.mul_(factor)
+    grads = [param.grad for param in model.parameters() if param.grad is not None]
+    torch._foreach_mul_([grad.to_local() if isinstance(grad, DTensor) else grad for grad in grads], factor)
 
 
 def clip_grad_norm_(
@@ -172,19 +173,21 @@ def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:
 def bind_process_to_gpu_numa_node() -> None:
     """Pin this rank's CPUs to its GPU's NUMA node.
 
-    Offloaded optimizer state is pageable host memory placed by first-touch, and the
-    CPU optimizer pipeline is DRAM-bandwidth-bound; binding before the state is
-    allocated keeps slabs, OMP threads, and pinned rings local to the socket the
-    GPU hangs off. Must run before CPU optimizer state allocation and before the
-    OMP thread pool spins up.
+    Host memory is placed by first-touch, so an unbound rank's offloaded state and pinned copy
+    buffers land on whichever socket its thread ran on, and its GPU copies then cross the socket
+    interconnect. Binding before they are allocated keeps them, and the full-offload CPU
+    optimizer's OMP threads, local to the socket the GPU hangs off. Must run before any
+    offload buffer is allocated and before the OMP thread pool spins up.
     """
     import pynvml
 
     logger = get_logger()
     device_id = torch.cuda.current_device()
+    # NVML indexes every GPU on the node and CUDA only the visible ones (CUDA_VISIBLE_DEVICES): match by UUID
+    uuid = f"GPU-{torch.cuda.get_device_properties(device_id).uuid}"
     pynvml.nvmlInit()
     try:
-        bus_id = pynvml.nvmlDeviceGetPciInfo(pynvml.nvmlDeviceGetHandleByIndex(device_id)).busId
+        bus_id = pynvml.nvmlDeviceGetPciInfo(pynvml.nvmlDeviceGetHandleByUUID(uuid)).busId
     finally:
         pynvml.nvmlShutdown()
     if isinstance(bus_id, bytes):
@@ -204,7 +207,7 @@ def bind_process_to_gpu_numa_node() -> None:
         else:
             cpus.add(int(part))
     os.sched_setaffinity(0, cpus)
-    logger.info(f"Bound rank with GPU {device_id} to NUMA node {numa_node} ({len(cpus)} CPUs)")
+    logger.info(f"Bound rank with GPU {device_id} ({sysfs_bus_id}) to NUMA node {numa_node} ({len(cpus)} CPUs)")
 
 
 def configure_cpu_optimizer_threads() -> None:
@@ -218,9 +221,12 @@ def configure_cpu_optimizer_threads() -> None:
     )
 
 
-def setup_full_cpu_optimizer_offload() -> None:
-    bind_process_to_gpu_numa_node()
-    configure_cpu_optimizer_threads()
+def setup_cpu_offload(config: ModelConfig) -> None:
+    """NUMA-bind ranks that copy optimizer state, gradients or activations to host memory."""
+    if config.offload != "none" or config.ac_offloading is not None:
+        bind_process_to_gpu_numa_node()
+    if config.offload == "full":
+        configure_cpu_optimizer_threads()
 
 
 def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: bool = False):
@@ -239,8 +245,11 @@ def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: b
     # sub-groups (dp/cp/ep) are created via new_group without a timeout and fall
     # back to torch's 10-minute module default — dist_timeout_seconds silently
     # never reached the PGs doing the real work (watchdogs at 600s). Patch the
-    # module default so every subsequently created PG inherits it.
+    # module defaults so every subsequently created PG inherits it. NCCL groups
+    # read `default_pg_nccl_timeout`, not `default_pg_timeout` (which only
+    # covers the other backends), so both must be set.
     dist.distributed_c10d.default_pg_timeout = timeout
+    dist.distributed_c10d.default_pg_nccl_timeout = timeout
 
     dist.init_process_group(backend=backend, timeout=timeout, device_id=device_id)
     get_logger().debug(f"Initialized torch distributed in {format_time(time.perf_counter() - t0)}")

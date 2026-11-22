@@ -24,9 +24,6 @@ def apply_shared_vllm_patches():
     monkey_patch_clamp_kv_offload_loads_for_routed_experts()
     monkey_patch_routed_experts_cut_loaded_prefix_hits()
     monkey_patch_kv_xfer_finished_tolerate_freed()
-    monkey_patch_online_fp8_parameter_cast()
-    monkey_patch_glm5_next_kda_conv_weights()
-    monkey_patch_online_mxfp8_moe_keep_kernel_on_reload()
     monkey_patch_strip_routed_experts_from_chat()
     monkey_patch_skip_prompt_routing_for_chat()
     monkey_patch_dp_coordinator_startup_timeout()
@@ -290,101 +287,6 @@ def monkey_patch_aux_output_store():
     aux_worker.BlockObjectStore = _RoomyBlockObjectStore
 
 
-def monkey_patch_online_mxfp8_moe_keep_kernel_on_reload():
-    """Keep the boot-time online-MXFP8 MoE kernel across weight reloads.
-
-    ``Mxfp8OnlineMoEMethod._setup_kernel`` rebuilds ``moe_quant_config`` and ``moe_kernel`` on every
-    reload. Decode replays CUDA graphs captured against the boot-time kernel, so once the old
-    kernel is dropped the graphs read freed memory for tensors only it referenced, and decode
-    samples sporadic garbage tokens that eager prefill (and the trainer) do not reproduce. The
-    boot-time kernel references the layer's original parameters, which layerwise reload refills
-    in place, so on reload we only install the new weights and keep the kernel.
-
-    Upstream fix: https://github.com/vllm-project/vllm/pull/62406; remove this patch when our
-    minimum vLLM version includes it.
-    """
-    from vllm.model_executor.layers.fused_moe.oracle.fp8 import convert_to_fp8_moe_kernel_format
-    from vllm.model_executor.layers.quantization.online.mxfp8 import Mxfp8OnlineMoEMethod
-    from vllm.model_executor.utils import replace_parameter
-
-    original_setup_kernel = Mxfp8OnlineMoEMethod._setup_kernel
-    if getattr(original_setup_kernel, "_prime_rl_keeps_kernel", False):
-        return
-
-    def _setup_kernel(self, layer, w13, w2, w13_scale, w2_scale, w13_input_scale, w2_input_scale):
-        if getattr(self, "moe_kernel", None) is None:
-            return original_setup_kernel(self, layer, w13, w2, w13_scale, w2_scale, w13_input_scale, w2_input_scale)
-        w13, w2, w13_scale, w2_scale = convert_to_fp8_moe_kernel_format(
-            fp8_backend=self.fp8_backend,
-            layer=layer,
-            w13=w13,
-            w2=w2,
-            w13_scale=w13_scale,
-            w2_scale=w2_scale,
-            w13_input_scale=w13_input_scale,
-            w2_input_scale=w2_input_scale,
-        )
-        replace_parameter(layer, "w13_weight", w13)
-        replace_parameter(layer, "w2_weight", w2)
-        replace_parameter(layer, f"w13_{self.weight_scale_name}", w13_scale)
-        replace_parameter(layer, f"w2_{self.weight_scale_name}", w2_scale)
-
-    _setup_kernel._prime_rl_keeps_kernel = True
-    Mxfp8OnlineMoEMethod._setup_kernel = _setup_kernel
-
-
-def monkey_patch_glm5_next_kda_conv_weights():
-    """Make GLM-5.3 Flash's merged KDA conv weight a view of the q/k/v conv weights.
-
-    vLLM builds `_merged_conv_weight` once as a `torch.cat` copy, so weight updates never reach it.
-    After loading, store the three weights as slices of one buffer and point the cache at it;
-    reloads copy into parameter storage in place, so updates land in the buffer.
-
-    Remove when vLLM keeps the q/k/v conv weights in one merged parameter
-    (https://github.com/vllm-project/vllm/pull/60991).
-    """
-    from vllm.models.glm5next.common.kda import Glm5NextLinearAttention
-    from vllm.models.glm5next.common.model import Glm5NextForCausalLM, Glm5NextForConditionalGeneration
-
-    @torch.no_grad()
-    def process_weights_after_loading(self) -> None:
-        for module in self.modules():
-            if isinstance(module, Glm5NextLinearAttention):
-                convs = (module.q_conv1d, module.k_conv1d, module.v_conv1d)
-                merged = torch.cat([conv.weight.data for conv in convs])
-                for conv, part in zip(convs, merged.chunk(3)):
-                    conv.weight.data = part
-                # merged shape needs to be [3C, K] instead of [3C, 1, K]
-                module._merged_conv_weight = merged.flatten(1)
-
-    Glm5NextForCausalLM.process_weights_after_loading = process_weights_after_loading
-    Glm5NextForConditionalGeneration.process_weights_after_loading = process_weights_after_loading
-
-
-def monkey_patch_online_fp8_parameter_cast():
-    """Pass plain tensors to vLLM's compiled block-FP8 caster.
-
-    Layerwise reload restores ``ModelWeightParameter`` objects before online
-    quantization. TorchDynamo recursively dispatches that tensor subclass while
-    tracing ``per_block_cast_to_fp8``. ``Parameter.data`` shares storage but is
-    a plain tensor, matching the input accepted during the initial model load.
-    """
-    from torch.nn import Parameter
-    from vllm.model_executor.layers.quantization.online import fp8
-
-    original_cast = fp8.per_block_cast_to_fp8
-    if getattr(original_cast, "_prime_rl_unwraps_parameters", False):
-        return
-
-    def _per_block_cast_to_fp8(x, *args, **kwargs):
-        if isinstance(x, Parameter):
-            x = x.data
-        return original_cast(x, *args, **kwargs)
-
-    _per_block_cast_to_fp8._prime_rl_unwraps_parameters = True
-    fp8.per_block_cast_to_fp8 = _per_block_cast_to_fp8
-
-
 def monkey_patch_kv_xfer_finished_tolerate_freed():
     """Tolerate KV-transfer finish notifications for already-freed requests.
 
@@ -425,8 +327,9 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
         for req_id in kv_connector_output.finished_recving or ():
             logger.debug("Finished recving KV transfer for request %s", req_id)
             # Stale notification for a request freed earlier this step (e.g. an
-            # aborted request whose send completion freed it). Nothing to do.
+            # aborted request whose send completion freed it): only its load slot is left.
             if req_id not in self.requests:
+                self._aborted_kv_loads.discard(req_id)
                 continue
             req = self.requests[req_id]
             if req.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
@@ -434,6 +337,7 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
                 self._set_kv_fetch_stage(req, KV_FETCH_COMPLETED_WAITING)
             else:
                 assert RequestStatus.is_finished(req.status)
+                self._aborted_kv_loads.discard(req_id)
                 self._free_blocks(self.requests[req_id])
         for req_id in kv_connector_output.finished_sending or ():
             logger.debug("Finished sending KV transfer for request %s", req_id)
@@ -485,7 +389,7 @@ def monkey_patch_minimax_m2_think_end_passthrough():
 def monkey_patch_routed_experts_with_pd_connectors():
     """Let vLLM's routed-experts capture (AuxOutput connector) run on NIXL P/D instances.
 
-    vLLM (0.33 included) rejects routed-experts capture with P/D connectors, because a decode instance never
+    vLLM (0.34 included) rejects routed-experts capture with P/D connectors, because a decode instance never
     computes a remotely prefilled prompt, so it has no rows for it. This carries our upstream fix
     (AuxOutput patch 02): a request on a decode instance emits rows only from its first forward on
     this instance, and the worker does not buffer the
@@ -553,10 +457,11 @@ def monkey_patch_routed_experts_with_pd_connectors():
             return num_external
         return original_cap_external_hit(self, request, num_local, num_external)
 
-    original_worker_init = AuxOutputWorkerConnector.__init__
+    original_initialize_output_storage = AuxOutputWorkerConnector.initialize_output_storage
 
-    def worker_init(self, *args, **kwargs):
-        original_worker_init(self, *args, **kwargs)
+    def initialize_output_storage(self, kv_cache_config):
+        # vLLM builds the buffer here once the KV cache layout is resolved, on the output rank only
+        original_initialize_output_storage(self, kv_cache_config)
         if self._buffer is not None:
             skip_remote_prefill_partial_block(self)
 
@@ -566,7 +471,7 @@ def monkey_patch_routed_experts_with_pd_connectors():
     AuxOutputSchedulerConnector.request_finished = request_finished
     AuxOutputSchedulerConnector.max_cache_hit = max_cache_hit
     AuxOutputSchedulerConnector.cap_external_hit = cap_external_hit
-    AuxOutputWorkerConnector.__init__ = worker_init
+    AuxOutputWorkerConnector.initialize_output_storage = initialize_output_storage
 
 
 def skip_remote_prefill_partial_block(worker) -> None:
@@ -865,7 +770,7 @@ def _patch_qwen35_moe_lora_format():
 def _patch_lora_key_prefix():
     """Accept both bare-suffix and fully-qualified expert module names in LoRA adapters.
 
-    Copy of vLLM 0.33.0's ``LoRAModel.from_local_checkpoint`` with one change: the
+    Copy of vLLM 0.34.0's ``LoRAModel.from_local_checkpoint`` with one change: the
     ``.experts`` branch of ``check_unexpected_modules`` accepts either the bare suffix
     (``down_proj``) or the qualified per-expert name (``experts.N.down_proj``), where
     upstream only accepts the qualified form. Our trainer's 2D per-expert adapters
@@ -899,6 +804,7 @@ def _patch_lora_key_prefix():
         weights_mapper: WeightsMapper | None = None,
         skip_prefixes: list[str] | None = None,
         moe_ep_spec: MoEEPLoadSpec | None = None,
+        unsupported_lora_modules: set[str] | None = None,
     ) -> "LoRAModel":
         """Create a LoRAModel from a local checkpoint.
 
@@ -919,6 +825,9 @@ def _patch_lora_key_prefix():
                 slicing metadata shared across all MoE layers. Non-local
                 expert weights are skipped at read time instead of being
                 loaded and discarded later.
+            unsupported_lora_modules: Full names of model layers that match
+                expected_lora_modules but are not wrapped by LoRA, such as
+                BERT's pooler.dense. LoRA weights on them are unexpected.
 
         Returns:
             Loaded LoRA Model.
@@ -954,6 +863,9 @@ def _patch_lora_key_prefix():
 
                 elif base_name not in expected_lora_modules and base_name not in (peft_helper.modules_to_save or ()):
                     unexpected_modules.append(module_name)
+
+                elif module_name in (unsupported_lora_modules or ()):
+                    unexpected_modules.append(f"{module_name} (not a LoRA layer)")
 
             if unexpected_modules:
                 raise ValueError(

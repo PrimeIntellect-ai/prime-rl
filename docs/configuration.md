@@ -42,6 +42,14 @@ uv run rl @ base.toml --trainer @ trainer.toml                 # mixed
 
 > Mind the space: `@ path/to/x.toml`, not `@path/to/x.toml`.
 
+A checked-in TOML that only parses on top of a base is an overlay. Document how to compose it with a launch command in its header comment, using repo-relative paths:
+
+```toml
+#   uv run rl @ examples/advanced/glm-4.5-air/swe-budget.toml @ examples/advanced/glm-4.5-air/swe-2-node.toml
+```
+
+CI parses every such command with its entrypoint's config class, and fails on an overlay that no command covers.
+
 ## CLI Overrides
 
 CLI flags mirror the TOML tree using dots:
@@ -100,14 +108,12 @@ Overlay TOMLs **replace** lists wholesale — an overlay that wants to add one i
 CLI takes a JSON literal. TOML uses a table. CLI dicts deep-merge with TOML dicts — CLI keys win on conflict but don't wipe the file's keys:
 
 ```bash
-uv run rl @ rl.toml --orchestrator.train.source.0.args \
-  '{"dataset_name": "openai/gsm8k", "dataset_subset": "main"}'
+uv run rl @ rl.toml --trainer.env_vars '{"NCCL_DEBUG": "INFO"}'
 ```
 
 ```toml
-[[orchestrator.train.source]]
-args.dataset_name = "openai/gsm8k"
-args.dataset_subset = "main"
+[trainer.env_vars]
+NCCL_DEBUG = "INFO"
 ```
 
 ### Optional Sub-Configs
@@ -117,7 +123,7 @@ Many sub-configs are typed `SomeConfig | None`. Two patterns enable them:
 - **Bare flag with defaults**: `--model.compile` or, in TOML, an empty section `[model.compile]`. The sub-config materializes with all-default values.
 - **Enable and set fields together**: `--model.compile.fullgraph` (CLI) or any populated `[model.compile]` table (TOML).
 
-To **disable** a sub-config that's on by default, use `--no-<name>` on the CLI or assign the string `"None"` in TOML (see [None](#none)). This is how `[ckpt]`, `[model.lora]`, `[model.compile]`, `[trainer.wandb]`, etc. are turned on and off.
+To **disable** a sub-config that's on by default, use `--no-<name>` on the CLI or assign the string `"None"` in TOML (see [None](#none)). This is how `[ckpt]`, `[model.lora]`, `[model.compile]`, `[monitors.wandb]`, etc. are turned on and off.
 
 ### None
 
