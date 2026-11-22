@@ -6,7 +6,11 @@ import numpy as np
 import verifiers.v1 as vf
 from verifiers.v1.trace import min_new_input_tokens
 
-from prime_rl.configs.algorithm import GRPOAlgoConfig, LinearSubagentLengthPenaltyConfig
+from prime_rl.configs.algorithm import (
+    CosineLengthPenaltyScheduleConfig,
+    GRPOAlgoConfig,
+    LinearSubagentLengthPenaltyConfig,
+)
 from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import assign_advantages, trainable_nodes
 
@@ -47,6 +51,16 @@ def _length_penalty_tokens(trace: vf.Trace, subagent_token_weight: float) -> tup
             output_tokens += weight * call.usage.completion_tokens
             input_tokens += weight * increment
     return output_tokens, input_tokens
+
+
+def schedule_scale(schedule: CosineLengthPenaltyScheduleConfig | None, episodes: list[vf.Episode]) -> float:
+    """The length penalty's multiplier for a group: 1 without a schedule, else the schedule at the step that
+    dispatched the group's rollouts (the earliest, should they differ). A group with no dispatch step on record
+    gets the full penalty."""
+    if schedule is None:
+        return 1.0
+    steps = [work.step for episode in episodes if (work := getattr(episode.run, "work", None)) is not None]
+    return schedule.scale(min(steps)) if steps else schedule.max_scale
 
 
 class GRPOAlgorithm(Algorithm):
@@ -100,8 +114,11 @@ class GRPOAlgorithm(Algorithm):
                 + length_penalty.num_input_tokens_weight * (input / input.max().clamp(min=1))
                 + length_penalty.num_turns_weight * (turns / turns.max().clamp(min=1))
             )
-            penalty = rewards.mean() * penalty_frac
+            scale = schedule_scale(length_penalty.schedule, episodes)
+            penalty = scale * rewards.mean() * penalty_frac
             shaped_rewards = rewards - penalty
+            for trace in traces:
+                trace.info["length_penalty_scale"] = scale
         baseline = shaped_rewards.mean()
         if self.length_weighted_baseline:
             lengths = torch.tensor(
