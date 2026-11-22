@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import torch
 import torch.distributed.checkpoint as dcp
-from safetensors.torch import load_file
+from safetensors.torch import load_file, save_file
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from torch.distributed.checkpoint import FileSystemReader
@@ -17,8 +17,10 @@ from transformers import PretrainedConfig, PreTrainedTokenizerFast
 
 from prime_rl.configs.trainer import ModelConfig, TokenizerConfig
 from prime_rl.trainer.model import get_model
+from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
 from prime_rl.trainer.models.layers.ngram import LAYOUT_BUFFERS
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig
+from prime_rl.trainer.models.qwen3_5 import Qwen3_5MoeTextConfig
 from prime_rl.trainer.models.qwen3_8_flash_next import Qwen3_8FlashNextForCausalLM, Qwen3_8FlashNextTextConfig
 from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalLM
 
@@ -27,6 +29,12 @@ from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalL
 def exporter(monkeypatch):
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3] / "tools"))
     return importlib.import_module("convert_dcp_to_bf16")
+
+
+@pytest.fixture
+def fp8_tool(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3] / "tools"))
+    return importlib.import_module("convert_bf16_to_fp8")
 
 
 def save_checkpoint(path: Path, state: dict[str, torch.Tensor], row_chunks: int) -> int:
@@ -391,3 +399,137 @@ def test_convert_exports_a_run_checkpoint_end_to_end(tmp_path, exporter, monkeyp
     assert all(quantized[f"{name}.weight"].dtype == torch.float8_e4m3fn for name in scaled)
     assert all(quantized[f"{name}.weight"].dtype == torch.bfloat16 for name in quantization["modules_to_not_convert"])
     assert quantized.keys() - {f"{name}.weight_scale_inv" for name in scaled} == tensors.keys()
+
+
+def fused_experts(num_experts=3, hidden=6, intermediate=2):
+    """HF fused expert tensors: gate_up_proj [E, 2I, H] (gate rows first) and down_proj [E, H, I]."""
+    gate_up = torch.randn(num_experts, 2 * intermediate, hidden).bfloat16()
+    down = torch.randn(num_experts, hidden, intermediate).bfloat16()
+    return gate_up, down
+
+
+def block_error(restored, original, block_size):
+    """Largest error per block, relative to the largest magnitude in that block."""
+
+    def block_max(tensor):
+        return tensor.unfold(0, block_size, block_size).unfold(1, block_size, block_size).amax(dim=(2, 3))
+
+    return block_max((restored.float() - original.float()).abs()) / block_max(original.float().abs())
+
+
+def test_fp8_unfuses_fused_experts(fp8_tool):
+    gate_up, down = fused_experts()
+    prefix = "model.layers.0.mlp.experts"
+    tensors = {f"{prefix}.gate_up_proj": gate_up.clone(), f"{prefix}.down_proj": down.clone()}
+    out, modules_to_not_convert = fp8_tool.quantize_state_dict(tensors, 2, "cpu")
+
+    assert out.keys() == {
+        f"{prefix}.{expert}.{proj}.weight{suffix}"
+        for expert in range(3)
+        for proj in ("gate_proj", "up_proj", "down_proj")
+        for suffix in ("", "_scale_inv")
+    }
+    assert modules_to_not_convert == []
+    for expert in range(3):
+        # gate_up_proj holds the gate rows first and the up rows after them.
+        for proj, original in (
+            ("gate_proj", gate_up[expert, :2]),
+            ("up_proj", gate_up[expert, 2:]),
+            ("down_proj", down[expert]),
+        ):
+            weight = out[f"{prefix}.{expert}.{proj}.weight"]
+            scales = out[f"{prefix}.{expert}.{proj}.weight_scale_inv"]
+            expected_weight, expected_scales = fp8_tool.quantize_to_fp8_blockwise(original, 2)
+            assert weight.dtype == torch.float8_e4m3fn
+            assert torch.equal(weight.view(torch.uint8), expected_weight.view(torch.uint8))
+            assert torch.equal(scales, expected_scales)
+
+
+def test_fp8_fused_experts_roundtrip(fp8_tool):
+    dequantize_blockwise = importlib.import_module("convert_fp8_to_bf16").dequantize_blockwise
+    gate_up, down = fused_experts(num_experts=2, hidden=8, intermediate=4)
+    prefix = "layers.0.mlp.experts"
+    out, _ = fp8_tool.quantize_state_dict({f"{prefix}.gate_up_proj": gate_up, f"{prefix}.down_proj": down}, 2, "cpu")
+    for expert in range(2):
+        for proj, original in (
+            ("gate_proj", gate_up[expert, :4]),
+            ("up_proj", gate_up[expert, 4:]),
+            ("down_proj", down[expert]),
+        ):
+            name = f"{prefix}.{expert}.{proj}.weight"
+            restored = dequantize_blockwise(out[name], out[name + "_scale_inv"], (2, 2))
+            # e4m3 rounds to within 2**-4 of a value, so a block stays well under 5% of its largest magnitude.
+            assert block_error(restored, original, 2).max() < 0.05
+
+
+def test_fp8_keeps_unrecognised_fused_experts_in_bf16(fp8_tool, capsys):
+    tensors = {
+        # gpt-oss layout: gate_up_proj [E, H, 2I] with interleaved gate and up, down_proj [E, I, H].
+        "layers.0.mlp.experts.gate_up_proj": torch.randn(2, 6, 8).bfloat16(),
+        "layers.0.mlp.experts.down_proj": torch.randn(2, 4, 6).bfloat16(),
+        # A shard that holds only one tensor of the pair.
+        "layers.1.mlp.experts.gate_up_proj": torch.randn(2, 4, 6).bfloat16(),
+    }
+    original = {name: tensor.clone() for name, tensor in tensors.items()}
+    out, modules_to_not_convert = fp8_tool.quantize_state_dict(tensors, 2, "cpu")
+
+    assert out.keys() == original.keys()
+    for name, tensor in original.items():
+        assert out[name].dtype == torch.bfloat16 and torch.equal(out[name], tensor)
+    assert capsys.readouterr().out.count("Warning:") == 3
+    # vLLM matches the ignore list against the MoE layer, which holds both fused tensors.
+    quantization = fp8_tool.quantization_config(modules_to_not_convert, 2)
+    assert quantization["modules_to_not_convert"] == ["layers.0.mlp.experts", "layers.1.mlp.experts"]
+
+
+def test_fp8_exports_a_qwen3_5_moe_with_per_expert_weights(tmp_path, fp8_tool):
+    config = Qwen3_5MoeTextConfig(
+        vocab_size=32,
+        hidden_size=32,
+        intermediate_size=32,
+        num_hidden_layers=2,
+        layer_types=["linear_attention", "full_attention"],
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=16,
+        max_position_embeddings=64,
+        linear_key_head_dim=16,
+        linear_value_head_dim=16,
+        linear_num_key_heads=2,
+        linear_num_value_heads=2,
+        linear_conv_kernel_dim=4,
+        moe_intermediate_size=16,
+        shared_expert_intermediate_size=16,
+        num_experts=4,
+        num_experts_per_tok=2,
+    )
+    with torch.device("cpu"):
+        model = AutoModelForCausalLMPrimeRL.from_config(
+            config, attn_implementation="flash_attention_2", dtype=torch.bfloat16
+        )
+    hf_state = model.convert_to_hf({name: tensor.detach().clone() for name, tensor in model.state_dict().items()})
+    assert any(name.endswith("mlp.experts.gate_up_proj") for name in hf_state)
+    source = tmp_path / "model"
+    source.mkdir()
+    # Like the official Qwen3.5 releases, store each layer's down_proj in another shard than its gate_up_proj.
+    weight_map = {name: f"model-0000{2 if name.endswith('down_proj') else 1}.safetensors" for name in hf_state}
+    for shard in set(weight_map.values()):
+        tensors = {name: tensor.contiguous() for name, tensor in hf_state.items() if weight_map[name] == shard}
+        save_file(tensors, source / shard)
+    (source / "model.safetensors.index.json").write_text(json.dumps({"weight_map": weight_map}))
+    (source / "config.json").write_text("{}")
+
+    output = fp8_tool.convert(source, block_size=2)
+
+    exported = {
+        name: tensor for shard in set(weight_map.values()) for name, tensor in load_file(output / shard).items()
+    }
+    quantization = json.loads((output / "config.json").read_text())["quantization_config"]
+    assert not any(name.endswith(("experts.gate_up_proj", "experts.down_proj")) for name in exported)
+    assert not any(".experts." in name for name in quantization["modules_to_not_convert"])
+    for layer in range(2):
+        for expert in range(4):
+            for proj in ("gate_proj", "up_proj", "down_proj"):
+                name = f"model.layers.{layer}.mlp.experts.{expert}.{proj}.weight"
+                assert exported[name].dtype == torch.float8_e4m3fn
+                assert name + "_scale_inv" in exported
