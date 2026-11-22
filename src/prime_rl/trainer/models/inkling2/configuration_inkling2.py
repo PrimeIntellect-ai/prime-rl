@@ -128,6 +128,11 @@ class Inkling2TextConfig(PretrainedConfig):
     def num_layer_visits(self) -> int:
         return self.num_hidden_layers
 
+    def layer_visit_ids(self, layer_idx: int) -> tuple[int, ...]:
+        """The visits of a layer, in forward order. Visits count the layer calls of a forward; router replay
+        holds one slot per visit."""
+        return (layer_idx,)
+
 
 class Inkling2LoopTextConfig(Inkling2TextConfig):
     """Text configuration for looped Inkling 2 (Inkling 2 Mini).
@@ -188,6 +193,14 @@ class Inkling2LoopTextConfig(Inkling2TextConfig):
     @property
     def num_layer_visits(self) -> int:
         return self.num_hidden_layers + (self.loop_num_passes - 1) * len(self.loop_core_layers)
+
+    def layer_visit_ids(self, layer_idx: int) -> tuple[int, ...]:
+        core = self.loop_core_layers
+        if layer_idx in core:
+            return tuple(layer_idx + pass_idx * len(core) for pass_idx in range(self.loop_num_passes))
+        if layer_idx < core.start:
+            return (layer_idx,)
+        return (layer_idx + (self.loop_num_passes - 1) * len(core),)
 
     def validate_loop(self) -> None:
         start, end, block = self.loop_layer_index_start, self.loop_layer_index_end, self.n_layers_per_attn_res_block

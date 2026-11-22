@@ -356,7 +356,11 @@ def finalize(release: Release, output_dir: Path) -> None:
         converted.add(PRECISION_METADATA)
     # Side files, such as the tokenizer and the DSpark drafter (mtp.safetensors), are copied unchanged.
     for path in input_dir.iterdir():
-        if path.is_file() and path.name not in converted:
+        if path.name in converted or path.name.startswith("."):
+            continue
+        if path.is_dir():
+            shutil.copytree(path, output_dir / path.name, dirs_exist_ok=True)
+        else:
             shutil.copyfile(path, output_dir / path.name)
     print(f"[finalize] {len(weight_map)} tensors, total_size {total_size / 1e9:.1f} GB -> {output_dir}")
 
