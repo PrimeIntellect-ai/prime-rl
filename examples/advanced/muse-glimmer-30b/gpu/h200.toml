@@ -14,5 +14,8 @@ num_infer_replicas = 1
 [trainer.model]
 cp = 8
 
+# 2 KV heads: TP above 2 makes several GPUs read the same heads. TP2 x DP4 decoded 2.8x faster per
+# node than TP8 on math (see ../../README.md).
 [inference.vllm]
-tensor_parallel_size = 8
+tensor_parallel_size = 2
+data_parallel_size = 4

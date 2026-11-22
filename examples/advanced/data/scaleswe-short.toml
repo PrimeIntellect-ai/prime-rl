@@ -3,7 +3,7 @@
 #   uv run rl @ examples/advanced/qwen3.8-flash-next/rl.toml @ examples/advanced/qwen3.8-flash-next/gpu/h200.toml @ examples/advanced/data/scaleswe-short.toml
 
 [orchestrator]
-batch_size = 256
+batch_size = 128
 # Episodes span many trainer steps.
 max_staleness = 16
 
