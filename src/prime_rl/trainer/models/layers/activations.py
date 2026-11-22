@@ -26,6 +26,10 @@ class ClampedSilu(Activation):
 
     def apply(self, gate: torch.Tensor | None, up: torch.Tensor) -> torch.Tensor:
         assert gate is not None
+        if gate.is_cuda:
+            from prime_rl.trainer.models.kernels.hopper_moe_ops import fused_clamped_silu_pair
+
+            return fused_clamped_silu_pair(gate, up, self.limit)
         gate = gate.clamp(max=self.limit)
         up = up.clamp(min=-self.limit, max=self.limit)
         return F.silu(gate) * up

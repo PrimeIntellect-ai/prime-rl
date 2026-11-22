@@ -263,7 +263,19 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
 
     def combine(self, routed_output: torch.Tensor, state: DeepEPDispatchState) -> torch.Tensor:
         output_dtype = routed_output.dtype
-        routed_output = unpermute_from_grouped_gemm(routed_output, state.permutation).float()
+        routed_output = unpermute_from_grouped_gemm(routed_output, state.permutation)
+        if routed_output.is_cuda:
+            from prime_rl.trainer.models.kernels.hopper_moe_ops import fused_deepep_weighted_sum_routes
+
+            token_output = fused_deepep_weighted_sum_routes(
+                routed_output,
+                state.route_rows,
+                state.token_indices_experts_sorted,
+                state.scores_after_experts,
+            )
+            return torch.ops.deepep.combine(token_output, state.handle_id, state.num_input_tokens)
+
+        routed_output = routed_output.float()
         if state.scores_after_experts is not None:
             routed_output = routed_output * state.scores_after_experts.reshape(-1, 1)
         # Each rank sums, per received token, the outputs of the experts it holds (fp32, rounded once); DeepEP's

@@ -1,10 +1,11 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 
 from prime_rl.configs.trainer import DSABackend
+from prime_rl.trainer.models.fusions import fuse_mla_a_projections
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
 from prime_rl.trainer.models.layers.norms import LayerNorm, RMSNorm, RMSNormConfig
 from prime_rl.utils.cp import CPContext, gather_for_cp
@@ -48,6 +49,8 @@ class PoolLayout:
     """`[local_tokens]` slot of the first pool of each query's document."""
     visible_pools: torch.Tensor
     """`[local_tokens]` complete pools that end at or before each query."""
+    cached_indices: dict[int, torch.Tensor] = field(default_factory=dict, compare=False, repr=False)
+    """Per-forward frozen-indexer cache keyed by `id(indexer)` so AC recompute reuses indices safely."""
 
     @classmethod
     def build(cls, cu_seqlens: torch.Tensor, local_tokens: int, cp_rank: int, cp_world_size: int, pool_size: int):
@@ -120,6 +123,12 @@ class KPoolIndexer(nn.Module):
         return (width + INDEX_BLOCK - 1) // INDEX_BLOCK * INDEX_BLOCK
 
     def _pool_keys(self, key: torch.Tensor, gate: torch.Tensor, pool_start_tokens: torch.Tensor) -> torch.Tensor:
+        if key.is_cuda:
+            from prime_rl.trainer.models.kernels.glm5_kpool import triton_kpool_compress_fwht128
+
+            return triton_kpool_compress_fwht128(
+                key, gate, self.index_kpool_compress_ape, pool_start_tokens, self.pool_size
+            )
         # Same accumulation order as vLLM's kpool kernel: max, exp, running sums, then one divide.
         logits = gate[pool_start_tokens[:, None] + torch.arange(self.pool_size, device=key.device)].float()
         logits = logits + self.index_kpool_compress_ape.float()
@@ -140,12 +149,23 @@ class KPoolIndexer(nn.Module):
         layout: PoolLayout,
     ) -> torch.Tensor:
         """Returns `[1, local_tokens, 1, output_width]` key indices; the sentinel is `total_tokens`."""
+        use_cache = not torch.compiler.is_compiling()
+        if use_cache:
+            cached = layout.cached_indices.get(id(self))
+            if cached is not None:
+                return cached
+
         local_tokens = hidden_states.shape[1]
         device = hidden_states.device
         hidden_states = hidden_states[0]
 
         query = self.wq_b(q_latent[0]).view(local_tokens, self.num_heads, self.head_dim)
-        query = hadamard_128(query).to(q_latent.dtype)
+        if query.is_cuda:
+            from prime_rl.trainer.models.kernels.glm5_kpool import triton_fwht128
+
+            query = triton_fwht128(query).to(q_latent.dtype)
+        else:
+            query = hadamard_128(query).to(q_latent.dtype)
         head_weights = F.linear(hidden_states.float(), self.weights_proj.weight.float())
         key_and_gate = torch.cat(
             (self.k_norm(self.wk(hidden_states)), F.linear(hidden_states, self.index_kpool_compress_gate)), dim=-1
@@ -179,7 +199,10 @@ class KPoolIndexer(nn.Module):
         tail_tokens = (layout.query_tokens - tail_length + 1)[:, None] + tail_offsets
         tail_tokens = tail_tokens.masked_fill(tail_offsets >= tail_length[:, None], sentinel)
         indices[:, self.token_budget : self.token_budget + self.pool_size - 1] = tail_tokens.to(torch.int32)
-        return indices.view(1, local_tokens, 1, self.output_width)
+        out = indices.view(1, local_tokens, 1, self.output_width)
+        if use_cache:
+            layout.cached_indices[id(self)] = out
+        return out
 
 
 class SparseMlaAttention(nn.Module):
@@ -188,6 +211,8 @@ class SparseMlaAttention(nn.Module):
     Runs in the absorbed form: queries are projected into the 512-dim KV latent, attention reads
     the latent directly as both key and value, and the output is projected back per head.
     """
+
+    supported_fusions = {"qkv": fuse_mla_a_projections}
 
     def __init__(
         self,
@@ -213,10 +238,12 @@ class SparseMlaAttention(nn.Module):
         self.scaling = qk_head_dim**-0.5
         self.dsa_backend = dsa_backend
 
+        self.q_lora_rank = q_lora_rank
         self.q_a_proj = nn.Linear(hidden_size, q_lora_rank, bias=False)
         self.q_a_layernorm = RMSNorm(RMSNormConfig(hidden_size=q_lora_rank, eps=norm_eps))
         self.q_b_proj = nn.Linear(q_lora_rank, num_heads * qk_head_dim, bias=False)
         self.kv_a_proj_with_mqa = nn.Linear(hidden_size, kv_lora_rank, bias=False)
+        self.qkv_a_proj: nn.Linear | None = None
         self.kv_a_layernorm = RMSNorm(RMSNormConfig(hidden_size=kv_lora_rank, eps=norm_eps))
         self.kv_b_proj = nn.Linear(kv_lora_rank, num_heads * (qk_head_dim + v_head_dim), bias=False)
         self.o_proj = nn.Linear(num_heads * v_head_dim, hidden_size, bias=False)
@@ -233,8 +260,13 @@ class SparseMlaAttention(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor, layout: PoolLayout) -> torch.Tensor:
         batch_size, local_tokens, _ = hidden_states.shape
-        q_latent = self.q_a_layernorm(self.q_a_proj(hidden_states))
-        kv_latent = self.kv_a_layernorm(self.kv_a_proj_with_mqa(hidden_states))
+        if self.qkv_a_proj is not None:
+            q_a, kv_a = self.qkv_a_proj(hidden_states).split((self.q_lora_rank, self.kv_lora_rank), dim=-1)
+            q_latent = self.q_a_layernorm(q_a.contiguous())
+            kv_latent = self.kv_a_layernorm(kv_a.contiguous())
+        else:
+            q_latent = self.q_a_layernorm(self.q_a_proj(hidden_states))
+            kv_latent = self.kv_a_layernorm(self.kv_a_proj_with_mqa(hidden_states))
         if self.cp_context.cp_enabled:
             kv_latent = gather_for_cp(kv_latent, self.cp_context.cp_group)
 

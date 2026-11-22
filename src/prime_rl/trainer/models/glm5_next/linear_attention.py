@@ -7,6 +7,7 @@ from fla.ops.cp import build_cp_context
 from fla.ops.kda import chunk_kda
 from torch import nn
 
+from prime_rl.trainer.models.fusions import fuse_kda_projections
 from prime_rl.utils.cp import CPContext
 
 # Dynamo lowers all-gather to concatenation, then fails to copy the result into
@@ -23,6 +24,8 @@ class KimiDeltaAttention(nn.Module):
     The checkpoint keeps one depthwise convolution per projection; they run as a single
     convolution over the concatenated q/k/v channels, which is the same computation.
     """
+
+    supported_fusions = {"qkv": fuse_kda_projections}
 
     def __init__(
         self,
@@ -44,6 +47,7 @@ class KimiDeltaAttention(nn.Module):
         self.q_proj = nn.Linear(hidden_size, self.projection_size, bias=False)
         self.k_proj = nn.Linear(hidden_size, self.projection_size, bias=False)
         self.v_proj = nn.Linear(hidden_size, self.projection_size, bias=False)
+        self.qkv_proj: nn.Linear | None = None
         self.q_conv1d = self._depthwise_conv()
         self.k_conv1d = self._depthwise_conv()
         self.v_conv1d = self._depthwise_conv()
@@ -56,6 +60,7 @@ class KimiDeltaAttention(nn.Module):
 
         self.g_a_proj = nn.Linear(hidden_size, head_dim, bias=False)
         self.g_b_proj = nn.Linear(head_dim, self.projection_size, bias=False)
+        self.fgb_proj: nn.Linear | None = None
         self.o_norm = FusedRMSNormGated(head_dim, eps=norm_eps, activation="sigmoid")
         self.o_proj = nn.Linear(self.projection_size, hidden_size, bias=False)
 
@@ -96,9 +101,12 @@ class KimiDeltaAttention(nn.Module):
                 conv1d_kernel_size=self.conv_kernel_size,
             )
 
-        mixed_qkv = torch.cat(
-            (self.q_proj(hidden_states), self.k_proj(hidden_states), self.v_proj(hidden_states)), dim=-1
-        )
+        if self.qkv_proj is not None:
+            mixed_qkv = self.qkv_proj(hidden_states)
+        else:
+            mixed_qkv = torch.cat(
+                (self.q_proj(hidden_states), self.k_proj(hidden_states), self.v_proj(hidden_states)), dim=-1
+            )
         conv_weight = torch.cat((self.q_conv1d.weight, self.k_conv1d.weight, self.v_conv1d.weight)).squeeze(1)
         convolution = {"x": mixed_qkv, "weight": conv_weight, "bias": None, "activation": "silu"}
         if context is None:
@@ -108,14 +116,23 @@ class KimiDeltaAttention(nn.Module):
 
         head_shape = (batch_size, sequence_length, self.num_heads, self.head_dim)
         query, key, value = (part.reshape(head_shape) for part in mixed_qkv.chunk(3, dim=-1))
-        forget_gate = self.f_b_proj(self.f_a_proj(hidden_states)).reshape(head_shape)
+
+        if self.fgb_proj is not None:
+            f_a, g_a, beta = self.fgb_proj(hidden_states).split((self.head_dim, self.head_dim, self.num_heads), dim=-1)
+            beta = beta.contiguous()
+        else:
+            f_a = self.f_a_proj(hidden_states)
+            g_a = self.g_a_proj(hidden_states)
+            beta = self.b_proj(hidden_states)
+
+        forget_gate = self.f_b_proj(f_a).reshape(head_shape)
 
         delta_rule = {
             "q": query,
             "k": key,
             "v": value,
             "g": forget_gate,
-            "beta": self.b_proj(hidden_states),
+            "beta": beta,
             "A_log": self.A_log,
             "dt_bias": self.dt_bias,
             "use_qk_l2norm_in_kernel": True,
@@ -130,7 +147,7 @@ class KimiDeltaAttention(nn.Module):
         else:
             core_output, _ = chunk_kda(**delta_rule, cp_context=context)
 
-        output_gate = self.g_b_proj(self.g_a_proj(hidden_states))
+        output_gate = self.g_b_proj(g_a)
         core_output = self.o_norm(
             core_output.reshape(-1, self.head_dim),
             output_gate.reshape(-1, self.head_dim),

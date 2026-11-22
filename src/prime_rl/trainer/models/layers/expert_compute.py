@@ -93,6 +93,25 @@ class GroupedGemmExpertCompute:
         else:
             gate_up_proj = to_local(experts.gate_up_proj).transpose(-2, -1)
             gate_up = self.gemm(x_bf16, gate_up_proj.bfloat16(), offsets)
+            if (
+                gate_up.is_cuda
+                and experts.up_proj_bias is None
+                and experts.gate_proj_bias is None
+                and hasattr(experts.activation, "limit")
+                and type(experts.activation).__name__ == "ClampedSilu"
+            ):
+                from prime_rl.trainer.models.kernels.hopper_moe_ops import fused_clamped_silu
+
+                hidden = fused_clamped_silu(gate_up, experts.activation.limit)
+                down_proj = to_local(experts.down_proj).transpose(-2, -1)
+                output = self.gemm(hidden, down_proj.bfloat16(), offsets)
+                if experts.down_proj_bias is not None:
+                    down_proj_bias = to_local(experts.down_proj_bias)
+                    output = (
+                        output
+                        + broadcast_expert_bias(down_proj_bias, num_tokens_per_expert, output.shape[0]).bfloat16()
+                    )
+                return output.type_as(x)
             gate, up = gate_up.chunk(2, dim=-1)
 
         if experts.up_proj_bias is not None:

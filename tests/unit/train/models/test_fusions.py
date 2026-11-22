@@ -100,3 +100,53 @@ def test_qkv_projections_match_the_unpacked_ones():
 def test_unsupported_fusions_are_skipped():
     assert apply_model_fusions(build_experts(), ["qkv"]) == {}
     assert apply_model_fusions(build_experts(expert_type="non_gated"), ["gate_up"]) == {}
+
+
+def test_kda_qkv_packs_qkv_and_fgb_canonically():
+    from prime_rl.trainer.models.glm5_next.linear_attention import KimiDeltaAttention
+
+    kda = KimiDeltaAttention(
+        hidden_size=DIM,
+        num_heads=NUM_HEADS,
+        head_dim=HEAD_DIM,
+        conv_kernel_size=4,
+        gate_lower_bound=-5.0,
+        norm_eps=1e-6,
+    )
+    for parameter in kda.parameters():
+        nn.init.normal_(parameter)
+
+    fused = assert_state_dict_stays_canonical(kda, "qkv")
+    packed = {info.fqn: info for info in get_model_packed_parameters(fused)}
+    assert set(packed) == {"qkv_proj.weight", "fgb_proj.weight"}
+    assert packed["qkv_proj.weight"].logical_fqns == ("q_proj.weight", "k_proj.weight", "v_proj.weight")
+    assert packed["fgb_proj.weight"].logical_fqns == ("f_a_proj.weight", "g_a_proj.weight", "b_proj.weight")
+    assert fused.q_proj.weight is None and fused.f_a_proj.weight is None and fused.b_proj.weight is None
+
+
+def test_sparse_mla_qkv_packs_q_a_and_kv_a_canonically():
+    from prime_rl.configs.trainer import DSABackend
+    from prime_rl.trainer.models.glm5_next.sparse_attention import SparseMlaAttention
+
+    mla = SparseMlaAttention(
+        hidden_size=DIM,
+        num_heads=NUM_HEADS,
+        q_lora_rank=16,
+        kv_lora_rank=8,
+        qk_head_dim=HEAD_DIM,
+        v_head_dim=HEAD_DIM,
+        norm_eps=1e-6,
+        index_num_heads=2,
+        index_head_dim=128,
+        index_token_budget=16,
+        index_pool_size=4,
+        dsa_backend=DSABackend.TILELANG,
+    )
+    for parameter in mla.parameters():
+        nn.init.normal_(parameter)
+
+    fused = assert_state_dict_stays_canonical(mla, "qkv")
+    (packed_info,) = get_model_packed_parameters(fused)
+    assert packed_info.fqn == "qkv_a_proj.weight"
+    assert packed_info.logical_fqns == ("q_a_proj.weight", "kv_a_proj_with_mqa.weight")
+    assert fused.q_a_proj.weight is None and fused.kv_a_proj_with_mqa.weight is None

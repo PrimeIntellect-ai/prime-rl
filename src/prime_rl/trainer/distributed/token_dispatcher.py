@@ -134,6 +134,12 @@ def permute_for_grouped_gemm(
             use_cpu=x.device.type == "cpu",
         )
 
+    if x.is_cuda:
+        from prime_rl.trainer.models.kernels.hopper_moe_ops import zero_pad_permute
+
+        state = PermutationState(input_shape=x.shape, permuted_indices=permuted_indices)
+        return zero_pad_permute(x, permuted_indices), num_tokens_per_expert, state
+
     x = torch.vstack((x, x.new_zeros((1, x.shape[-1]))))
     state = PermutationState(input_shape=x.shape, permuted_indices=permuted_indices)
     return _GatherPermutedRows.apply(x, permuted_indices), num_tokens_per_expert, state
@@ -166,6 +172,10 @@ class _GatherPermutedRows(torch.autograd.Function):
 
 
 def unpermute_from_grouped_gemm(x: torch.Tensor, state: PermutationState) -> torch.Tensor:
+    if x.is_cuda:
+        from prime_rl.trainer.models.kernels.hopper_moe_ops import zero_pad_unpermute
+
+        return zero_pad_unpermute(x, state.permuted_indices, state.input_shape[0])
     output = x.new_empty(state.input_shape)
     output[state.permuted_indices] = x
     return output[:-1]
@@ -221,6 +231,16 @@ def _combine_routed_output(
     route_indices_experts_sorted: torch.Tensor,
     scores_after_experts: torch.Tensor | None,
 ) -> torch.Tensor:
+    if routed_output.is_cuda and num_tokens > 0:
+        from prime_rl.trainer.models.kernels.hopper_moe_ops import fused_weighted_combine
+
+        return fused_weighted_combine(
+            routed_output,
+            num_tokens=num_tokens,
+            route_indices_experts_sorted=route_indices_experts_sorted,
+            scores_after_experts=scores_after_experts,
+        )
+
     output_dtype = routed_output.dtype
     if scores_after_experts is not None:
         routed_output = routed_output * scores_after_experts.float().reshape(-1, 1)

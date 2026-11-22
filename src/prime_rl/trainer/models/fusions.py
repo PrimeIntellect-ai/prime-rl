@@ -83,39 +83,60 @@ def fuse_gate_up_projections(module: nn.Module) -> None:
     register_packed_parameter_state_dict_hooks(module, spec)
 
 
-def fuse_qkv_projections(module: nn.Module) -> None:
-    """Pack an attention module's query, key and value projections into one linear layer.
-
-    The packed weight is ``[q_size + k_size + v_size, hidden_size]``, so the projections
-    become a single GEMM whose output is split along the last dimension.
-    """
-    projections = {"q_proj": module.q_proj, "k_proj": module.k_proj, "v_proj": module.v_proj}
+def fuse_linear_projections(
+    module: nn.Module,
+    packed_name: str,
+    projection_names: Sequence[str],
+) -> None:
+    """Pack several parallel linear projections sharing the same input into one linear layer."""
+    projections = {name: getattr(module, name) for name in projection_names}
     sizes = tuple(projection.out_features for projection in projections.values())
-    has_bias = module.q_proj.bias is not None
+    first = next(iter(projections.values()))
+    has_bias = first.bias is not None
 
-    # Built on meta so the packed parameters assigned below are the only allocation
-    qkv_proj = nn.Linear(module.q_proj.in_features, sum(sizes), bias=has_bias, device="meta")
+    # Built on meta so the packed parameters assigned below are the only allocation.
+    packed_proj = nn.Linear(first.in_features, sum(sizes), bias=has_bias, device="meta")
     for parameter_name in ("weight", "bias") if has_bias else ("weight",):
         spec = PackedParameterSpec(
-            f"qkv_proj.{parameter_name}",
+            f"{packed_name}.{parameter_name}",
             [f"{name}.{parameter_name}" for name in projections],
             sizes,
             dim=0,
         )
         tensors = [getattr(projection, parameter_name) for projection in projections.values()]
         setattr(
-            qkv_proj,
+            packed_proj,
             parameter_name,
             nn.Parameter(spec.pack_logical_tensors(tensors), requires_grad=tensors[0].requires_grad),
         )
         register_packed_parameter_state_dict_hooks(module, spec)
 
-    module.qkv_proj = qkv_proj
+    setattr(module, packed_name, packed_proj)
     # The projections stay in place, emptied. DCP resolves every checkpoint key by
-    # attribute traversal, so the canonical q/k/v names still need a module to land on.
+    # attribute traversal, so the canonical names still need a module to land on.
     for projection in projections.values():
         projection.weight = None
         projection.bias = None
+
+
+def fuse_qkv_projections(module: nn.Module) -> None:
+    """Pack an attention module's query, key and value projections into one linear layer.
+
+    The packed weight is ``[q_size + k_size + v_size, hidden_size]``, so the projections
+    become a single GEMM whose output is split along the last dimension.
+    """
+    fuse_linear_projections(module, "qkv_proj", ("q_proj", "k_proj", "v_proj"))
+
+
+def fuse_kda_projections(module: nn.Module) -> None:
+    """Pack KDA's input projections into two fused GEMMs: ``qkv_proj`` and ``fgb_proj``."""
+    fuse_qkv_projections(module)
+    fuse_linear_projections(module, "fgb_proj", ("f_a_proj", "g_a_proj", "b_proj"))
+
+
+def fuse_mla_a_projections(module: nn.Module) -> None:
+    """Pack MLA's ``q_a_proj`` and ``kv_a_proj_with_mqa`` into one ``qkv_a_proj`` GEMM."""
+    fuse_linear_projections(module, "qkv_a_proj", ("q_a_proj", "kv_a_proj_with_mqa"))
 
 
 def apply_model_fusions(model: nn.Module, requested_fusions: Sequence[str]) -> dict[str, int]:
