@@ -6,6 +6,7 @@ from torch.multiprocessing.reductions import StorageWeakRef
 from vllm.model_executor.model_loader.reload import record_metadata_for_reloading
 from vllm.model_executor.model_loader.reload.layerwise import LAYERWISE_INFO
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
+from vllm.model_executor.models.utils import AutoWeightsLoader
 
 from prime_rl.inference.vllm.worker.nccl import receive_state_dict
 from prime_rl.inference.vllm.worker.weight_transfer import load_weights_checkpoint_layerwise
@@ -79,6 +80,14 @@ def checkpoint(seed: int) -> dict[str, torch.Tensor]:
     }
 
 
+def breaks_off_before(update: dict[str, torch.Tensor], key: str):
+    """The stream of ``update``, which fails when it reaches ``key``."""
+    for name, weight in update.items():
+        if name == key:
+            raise ConnectionError("the trainer went away")
+        yield name, weight
+
+
 def test_failed_layerwise_reload_leaves_no_open_layer():
     model = TinyModel()
     record_metadata_for_reloading(model)
@@ -88,15 +97,9 @@ def test_failed_layerwise_reload_leaves_no_open_layer():
 
     update = checkpoint(1)
 
-    def breaks_off_before(key: str):
-        for name, weight in update.items():
-            if name == key:
-                raise ConnectionError("the trainer went away")
-            yield name, weight
-
     # ``embed`` completes, ``pair`` has one of its two tensors buffered when the stream breaks off.
     with pytest.raises(ConnectionError):
-        load_weights_checkpoint_layerwise(model, breaks_off_before("pair.second"), None, None)
+        load_weights_checkpoint_layerwise(model, breaks_off_before(update, "pair.second"), None, None)
 
     assert all(parameter is serving_parameters[name] for name, parameter in model.named_parameters())
     assert not any(parameter.is_meta for parameter in model.parameters())
@@ -111,3 +114,39 @@ def test_failed_layerwise_reload_leaves_no_open_layer():
 
     assert all(parameter is serving_parameters[name] for name, parameter in model.named_parameters())
     assert all(torch.equal(parameter, complete[name]) for name, parameter in model.named_parameters())
+
+
+class Triple(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.up = torch.nn.Parameter(torch.zeros(6, 4))
+        self.down = torch.nn.Parameter(torch.zeros(4, 6))
+        self.gate = torch.nn.Parameter(torch.zeros(6, 4))
+
+
+class AutoLoadedModel(torch.nn.Module):
+    """Resolves each module's parameters once per load, as the vLLM models that use ``AutoWeightsLoader`` do."""
+
+    def __init__(self):
+        super().__init__()
+        self.triple = Triple()
+
+    def load_weights(self, weights):
+        return AutoWeightsLoader(self).load_weights(weights)
+
+
+def test_update_sent_again_after_a_failed_reload_applies_every_tensor():
+    model = AutoLoadedModel()
+    record_metadata_for_reloading(model)
+    generator = torch.Generator().manual_seed(0)
+    update = {name: torch.rand(parameter.shape, generator=generator) for name, parameter in model.named_parameters()}
+
+    # ``triple`` has one of its three tensors buffered when the stream breaks off.
+    with pytest.raises(ConnectionError):
+        load_weights_checkpoint_layerwise(model, breaks_off_before(update, "triple.down"), None, None)
+
+    # A layer left open with that tensor would count it again: the layer would complete one tensor early,
+    # and the tensor that arrives after it would be dropped and stay at zero, without an error.
+    load_weights_checkpoint_layerwise(model, update.items(), None, None)
+
+    assert all(torch.equal(parameter, update[name]) for name, parameter in model.named_parameters())

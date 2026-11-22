@@ -297,7 +297,7 @@ class AdminPlane:
                     )
                 raise RuntimeError(
                     f"The NCCL weight update to policy v{step} {outcome}. It cannot be retried and the "
-                    "inference engines stay paused: restart the inference servers."
+                    "inference engines stay paused: restart the inference servers and the trainer."
                 ) from failure
             if self.after_transfer is not None:
                 await self.after_transfer()
