@@ -125,7 +125,6 @@ def test_kda_qkv_packs_qkv_and_fgb_canonically():
 
 
 def test_sparse_mla_qkv_packs_q_a_and_kv_a_canonically():
-    from prime_rl.configs.trainer import DSABackend
     from prime_rl.trainer.models.glm5_next.sparse_attention import SparseMlaAttention
 
     mla = SparseMlaAttention(
@@ -140,7 +139,7 @@ def test_sparse_mla_qkv_packs_q_a_and_kv_a_canonically():
         index_head_dim=128,
         index_token_budget=16,
         index_pool_size=4,
-        dsa_backend=DSABackend.TILELANG,
+        dsa_backend="tilelang",
     )
     for parameter in mla.parameters():
         nn.init.normal_(parameter)
