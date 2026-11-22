@@ -545,6 +545,10 @@ class OrchestratorConfig(BaseConfig):
     batch_size: Annotated[int, Live()] = Field(128, ge=1)
     """Samples to train on per step."""
 
+    prune_zero_advantages: bool = True
+    """Remove zero-advantage RL tokens before packing. Disable for advantage-independent
+    RL penalties such as sampler KL; the rl entrypoint does this automatically."""
+
     constant_trainer_batch_size: bool = True
     """Require each batch to reach its effective sample target."""
 
