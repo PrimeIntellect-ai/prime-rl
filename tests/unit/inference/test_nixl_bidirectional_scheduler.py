@@ -128,7 +128,7 @@ def test_prefill_role_recomputes_failed_loads():
     decode = config.for_pd_role("decode").build_kv_transfer_config()
     assert prefill["kv_load_failure_policy"] == "recompute"
     assert "kv_load_failure_policy" not in decode
-    # With the Mooncake store the policy sits on the top-level MultiConnector, where the scheduler reads it.
+    # With a second connector the policy sits on the top-level MultiConnector, where the scheduler reads it.
     mooncake = {"type": "mooncake", "cpu": {"num_bytes": 1000}}
     config = InferenceConfig(
         deployment={"type": "disaggregated", "bidirectional_kv_transfer": {}}, slurm={}, kv_cache_offload=mooncake

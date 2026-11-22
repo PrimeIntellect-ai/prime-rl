@@ -1519,28 +1519,18 @@ def test_pd_role_connectors():
 
 
 def test_pd_bidirectional_kv_transfer():
-    mooncake = {"type": "mooncake", "cpu": {"num_bytes": 1000}}
-    deployment = {
-        "type": "disaggregated",
-        "decode_kv_cache_offload": {**mooncake, "pool_only": True},
-        "bidirectional_kv_transfer": {"decode_blocks_ttl_s": 600},
-    }
-    config = InferenceConfig(deployment=deployment, slurm={}, kv_cache_offload=mooncake)
+    deployment = {"type": "disaggregated", "bidirectional_kv_transfer": {"decode_blocks_ttl_s": 600}}
+    config = InferenceConfig(deployment=deployment, slurm={})
     assert config.deployment.bidirectional_kv_transfer.effective_router_ttl_s == 570
 
-    prefill = config.for_pd_role("prefill").build_kv_transfer_config()["kv_connector_extra_config"]["connectors"]
-    assert [c["kv_connector"] for c in prefill] == ["NixlConnector", "MooncakeStoreConnector"]
-    assert prefill[0]["kv_connector_extra_config"] == {
-        "num_threads": 1,
-        "bidirectional_kv_xfer": True,
-        "decoder_kv_blocks_ttl": 600,
-    }
-    # Decode's KV goes back over NIXL, so prefill's store connector does not ask decode to save it.
-    assert "save_decode_cache" not in prefill[1]["kv_connector_extra_config"]
-    # A pool-only decode contributes DRAM to the store but runs no store connector.
-    decode = config.for_pd_role("decode").build_kv_transfer_config()
-    assert decode["kv_connector"] == "NixlConnector"
-    assert decode["kv_connector_extra_config"]["bidirectional_kv_xfer"]
+    for role in ("prefill", "decode"):
+        connector = config.for_pd_role(role).build_kv_transfer_config()
+        assert connector["kv_connector"] == "NixlConnector"
+        assert connector["kv_connector_extra_config"] == {
+            "num_threads": 1,
+            "bidirectional_kv_xfer": True,
+            "decoder_kv_blocks_ttl": 600,
+        }
 
     # The per-role engine configs drop `deployment`; bidirectional transfer survives through the persisted TTL.
     role = InferenceConfig(**dump_resolved_config(config.for_pd_role("decode"), exclude={"deployment", "slurm"}))
@@ -1554,15 +1544,12 @@ def test_pd_bidirectional_kv_transfer():
     with pytest.raises(ValidationError, match="requires the vllm-router"):
         InferenceConfig(deployment=deployment, slurm={}, router={"type": "llm-d"})
     with pytest.raises(ValidationError, match="HiSparse"):
-        InferenceConfig(
-            deployment={**deployment, "decode_kv_cache_offload": None}, slurm={}, hisparse={"host_pool_gib": 160}
-        )
+        InferenceConfig(deployment=deployment, slurm={}, hisparse={"host_pool_gib": 160})
 
-    # One-way P/D is unchanged: no bidirectional flags, and decode saves its KV to the store.
-    config = InferenceConfig(deployment={"type": "disaggregated"}, slurm={}, kv_cache_offload=mooncake)
-    decode = config.for_pd_role("decode").build_kv_transfer_config()["kv_connector_extra_config"]["connectors"]
-    assert decode[0]["kv_connector_extra_config"] == {"num_threads": 1}
-    assert decode[1]["kv_connector_extra_config"]["save_decode_cache"]
+    # One-way P/D is unchanged: no bidirectional flags.
+    config = InferenceConfig(deployment={"type": "disaggregated"}, slurm={})
+    decode = config.for_pd_role("decode").build_kv_transfer_config()
+    assert decode["kv_connector_extra_config"] == {"num_threads": 1}
 
 
 CUSTOM_RENDERER_SOURCE = """

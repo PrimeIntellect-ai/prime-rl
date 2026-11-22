@@ -297,18 +297,6 @@ type = "mooncake"
 num_bytes = 0
 ```
 
-With `pool_only = true`, a role's nodes contribute their DRAM (and disk) to the pool, but its engines neither load from nor save to the store. Under [bidirectional KV transfer](#bidirectional-kv-transfer), decode needs no store connector, and pool-only decode nodes still grow the pool that prefill uses:
-
-```toml
-[inference.deployment.decode_kv_cache_offload]
-type = "mooncake"
-pool_only = true
-[inference.deployment.decode_kv_cache_offload.cpu]
-num_bytes = 1_000_000_000_000
-```
-
-On nodes without the `nvidia_peermem` kernel module, the launcher has Mooncake register GPU memory through DMA-BUF (`WITH_NVIDIA_PEERMEM=0`); otherwise every store put fails.
-
 Mooncake keys a block by model, parallel rank and content hash only. Roles that share the store must therefore use the same KV layout (tensor parallel size, `kv_cache_dtype`, block size): do not change these in only one role's `*_vllm_overrides`.
 
 ### HiSparse
@@ -352,7 +340,7 @@ Each single-GPU engine (DP + EP, `tensor_parallel_size = 1`) sends its NIXL traf
 
 #### Bidirectional KV transfer
 
-In multi-turn rollouts each turn's prompt is the previous turn's prompt and completion plus new messages. With one-way transfer, prefill recomputes all of it (minus its own prefix-cache or Mooncake hits), although decode still holds the KV. Bidirectional transfer (vLLM's `bidirectional_kv_xfer`) reads it back instead:
+In multi-turn rollouts each turn's prompt is the previous turn's prompt and completion plus new messages. With one-way transfer, prefill recomputes all of it (minus its prefix-cache hits), although decode still holds the KV. Bidirectional transfer (vLLM's `bidirectional_kv_xfer`) reads it back instead:
 
 1. Decode keeps a finished turn's KV blocks for `decode_blocks_ttl_s` and returns their handle with the response.
 2. The router stores the handle per session (`x-session-id`) and sends it with the session's next turn to prefill, which reads those blocks from decode over NIXL and computes only the new tokens.

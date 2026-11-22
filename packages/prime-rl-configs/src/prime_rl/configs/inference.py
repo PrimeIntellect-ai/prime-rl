@@ -277,12 +277,6 @@ class MooncakeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
     own ``kv_lease_duration``, not this lease. Under P/D the larger of the two roles' values applies, since one
     master serves both."""
 
-    pool_only: bool = False
-    """Only contribute this node's DRAM (and disk) segment to the shared pool: the engine neither loads from nor saves
-    to the store. Under bidirectional P/D (``deployment.bidirectional_kv_transfer``) decode needs no store connector,
-    since the next turn's prefill reads the previous turn's KV straight from decode, but decode nodes can still grow
-    the pool that prefill uses."""
-
     def to_connector_dict(self) -> dict[str, Any]:
         # Addresses/sizes/tiers are realized by the per-node store launch in the sbatch
         # template (MOONCAKE_CONFIG_PATH JSON); blocks are keyed by model + parallel rank +
@@ -710,12 +704,10 @@ class InferenceConfig(BaseConfig):
             connectors.append(
                 {"kv_connector": "NixlConnector", "kv_role": "kv_both", "kv_connector_extra_config": nixl_extra}
             )
-        offload = self.kv_cache_offload
-        if offload is not None and not (offload.type == "mooncake" and offload.pool_only):
-            connector = offload.to_connector_dict()
-            if self.use_pd_kv_transfer and not bidirectional and connector["kv_connector"] == "MooncakeStoreConnector":
-                # Decode instances also store the KV they generate, so the next turn's prefill can load it. With
-                # bidirectional transfer the next turn reads that KV from decode directly instead.
+        if self.kv_cache_offload is not None:
+            connector = self.kv_cache_offload.to_connector_dict()
+            if self.use_pd_kv_transfer and connector["kv_connector"] == "MooncakeStoreConnector":
+                # Decode instances also store the KV they generate, so the next turn's prefill can load it.
                 connector["kv_connector_extra_config"]["save_decode_cache"] = True
             connectors.append(connector)
         if self.hisparse is not None:
