@@ -9,8 +9,10 @@ import torch
 from torch.distributed.checkpoint import FileSystemWriter
 from torch.distributed.checkpoint import load as dcp_load
 from torch.distributed.checkpoint import save as dcp_save
+from torch.distributed.checkpoint.metadata import ChunkStorageMetadata, MetadataIndex, TensorProperties
+from torch.distributed.checkpoint.planner import TensorWriteData, WriteItem, WriteItemType
 
-from prime_rl.trainer.ckpt import CheckpointWriter
+from prime_rl.trainer.ckpt import CheckpointWriter, _write_item_bytes
 
 NUM_VIEWS = 6
 VIEW_NUMEL = 1024
@@ -53,3 +55,14 @@ def test_bounded_files_hold_the_copies_of_at_most_two_files(tmp_path):
     dcp_load(loaded, checkpoint_id=tmp_path, no_dist=True)
     for name, view in views.items():
         assert torch.equal(loaded[name], view), name
+
+
+def test_files_are_sized_by_the_shard_a_rank_writes():
+    # A rank of an 8-way FSDP save writes 1/8 of a (1024, 1024) bf16 weight.
+    shard = TensorWriteData(
+        chunk=ChunkStorageMetadata(offsets=torch.Size([128, 0]), sizes=torch.Size([128, 1024])),
+        properties=TensorProperties(dtype=torch.bfloat16),
+        size=torch.Size([1024, 1024]),
+    )
+    item = WriteItem(index=MetadataIndex("w"), type=WriteItemType.SHARD, tensor_data=shard)
+    assert _write_item_bytes(item) == 128 * 1024 * 2

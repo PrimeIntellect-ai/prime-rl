@@ -2,6 +2,7 @@ import bisect
 import copy
 import gc
 import json
+import math
 import queue
 import shutil
 import time
@@ -113,9 +114,10 @@ class CheckpointWriter(FileSystemWriter):
 
 
 def _write_item_bytes(item: WriteItem) -> int:
+    """The bytes this rank writes for `item`: its shard (`chunk`), not the global tensor (`size`)."""
     if item.tensor_data is None:
         return 0
-    return item.tensor_data.size.numel() * item.tensor_data.properties.dtype.itemsize
+    return math.prod(item.tensor_data.chunk.sizes) * item.tensor_data.properties.dtype.itemsize
 
 
 def load_generation_config(model_name: str) -> GenerationConfig | None:
