@@ -194,6 +194,12 @@ export UV_NO_SYNC=1
 # Pre-run command
 {{ pre_run_command }}
 {% endif %}
+{% if admin_token.guards %}
+# The run's admin token, which guards the engines' admin routes and the control APIs.
+# Generated here unless the submitting environment or .env provides one, so it is
+# never written to this script.
+export PRL_ADMIN_TOKEN=${{ '{' }}{{ admin_token.names[0] }}:-$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")}
+{% endif %}
 
 # Cleanup stale node-local state from prior jobs. Orphan python/torchrun/vllm
 # processes and vLLM/torch IPC files under /dev/shm and /tmp can survive SLURM
@@ -258,6 +264,16 @@ python -m prime_rl.entrypoints.run_owner rl $CONFIG_DIR/rl.json srun --kill-on-b
     [ -f .env ] && source .env
     source .venv/bin/activate
     # Do not sync to avoid conflicts with lockfile
+{% if admin_token.guards %}
+    # Keep the admin token out of the environment: only the orchestrator, which calls
+    # the engines' admin routes, is started with it. The engines and the trainer's
+    # control API only check it, so they get its SHA-256 digest; the env worker pools
+    # and the router get neither.
+    ADMIN_TOKEN=$PRL_ADMIN_TOKEN
+    ADMIN_TOKEN_DIGEST=$(printf '%s' "$ADMIN_TOKEN" | sha256sum | cut -d' ' -f1)
+    unset PRL_ADMIN_TOKEN{% for name in admin_token.names %} {{ name }} {{ name }}_SHA256{% endfor %}
+
+{% endif %}
 
     # Higher ulimit
     ulimit -n 65536
@@ -389,6 +405,9 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         | tee $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
 
     CONFIG_PATH="$CONFIG_DIR/inference.json"
+{%- if admin_token.guards and admin_token.by_process.inference.checks %}
+    ADMIN_TOKEN_ENV="{{ admin_token.by_process.inference.checks }}_SHA256=$ADMIN_TOKEN_DIGEST"
+{%- endif %}
 {% include '_launch_rank.sh.j2' %}
 {% include '_launch_router.sh.j2' %}
 
@@ -421,8 +440,8 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     export VLLM_NIXL_SIDE_CHANNEL_PORT=5600
     export NIXL_NIC_AFFINITY={{ 1 if nixl_nic_affinity else 0 }}
 
-    # The kv_transfer_config (NIXL transfer + any KV offload connector) is built in
-    # InferenceConfig.to_namespace() from the per-node config, so it is no longer assembled here.
+    # InferenceConfig.to_namespace() builds the kv_transfer_config (NIXL transfer + any KV
+    # offload connector) from the per-node config.
 
     DECODE_COMPILE_CFG='{"cudagraph_mode":"FULL_DECODE_ONLY"}'
 
@@ -545,7 +564,7 @@ else
     echo $HOSTNAMES_STR | tee $LOG_DIR/trainer/node_${TRAIN_NODE_RANK}.log
 
     (
-        WANDB_SHARED_LABEL=trainer uv run torchrun \
+        {% if admin_token.guards and admin_token.by_process.trainer.checks %}{{ admin_token.by_process.trainer.checks }}_SHA256="$ADMIN_TOKEN_DIGEST" {% endif %}WANDB_SHARED_LABEL=trainer uv run torchrun \
             --role=trainer \
             --nnodes=$NUM_TRAIN_NODES \
             --nproc-per-node=$GPUS_PER_NODE \
@@ -587,7 +606,7 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
         {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
         {% elif uses_modelexpress_server %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $WEIGHT_BROADCAST_HOST"
         {% endif %}{% if use_zmq_transport %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --rollout_transport.host $ORCH_ADDR"
-        {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
+        {% endif %}{% if admin_token.guards and admin_token.by_process.orchestrator.sends %}{{ admin_token.by_process.orchestrator.sends }}="$ADMIN_TOKEN" {% endif %}{% if admin_token.guards and admin_token.by_process.orchestrator.checks %}{{ admin_token.by_process.orchestrator.checks }}_SHA256="$ADMIN_TOKEN_DIGEST" {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
             2>&1 | tee $LOG_DIR/orchestrator.log
         COMPONENT_CODE=$?
         if [ "$COMPONENT_CODE" -eq 0 ]; then

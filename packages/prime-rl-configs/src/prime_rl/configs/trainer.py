@@ -281,13 +281,15 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     ``llep``, whose weight copies run next to the grid."""
 
     llep: LLEPConfig | None = None
-    """Balance imbalanced routing with least-loaded expert parallelism. Requires ``precision = "bf16"`` (SM90) or
-    ``"mxfp8_qat"`` (SM100)."""
+    """Balance imbalanced routing with least-loaded expert parallelism. Requires ``precision = "bf16"`` (SM90),
+    ``"mxfp8"`` or ``"mxfp8_qat"`` (SM100)."""
 
     @model_validator(mode="after")
     def validate_llep_precision(self):
-        if self.llep is not None and self.precision not in ("bf16", "mxfp8_qat"):
-            raise ValueError("model.moe.dispatch.llep requires model.moe.dispatch.precision 'bf16' or 'mxfp8_qat'.")
+        if self.llep is not None and self.precision not in ("bf16", "mxfp8", "mxfp8_qat"):
+            raise ValueError(
+                "model.moe.dispatch.llep requires model.moe.dispatch.precision 'bf16', 'mxfp8' or 'mxfp8_qat'."
+            )
         return self
 
     @model_validator(mode="after")
@@ -837,6 +839,11 @@ class TrainerConfig(BaseTrainerConfig):
     so a trace can show trainer against sampler token by token. Needs ``monitors.file``.
     Each step gathers every trained token to the master rank before the optimizer step;
     disable with ``--no-annotations`` to skip that work."""
+
+    warmup: bool = True
+    """Before waiting for the first batch, run the training step's forward and backward on synthetic micro batches
+    that train nothing, so compilation, kernel JIT and communicator setup happen while the trainer would idle. The
+    warmup leaves the weights and the optimizer state unchanged."""
 
     enable_router_replay: bool = False
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""

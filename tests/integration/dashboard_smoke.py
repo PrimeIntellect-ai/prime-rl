@@ -11,14 +11,10 @@ import sys
 import time
 from pathlib import Path
 
+from prime_rl.utils.utils import get_free_port
+
 DASHBOARD_STARTUP_TIMEOUT_S = 30
 PAGE_SETTLE_MS = 4000
-
-
-def _free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
 
 
 def _check_model_call_errors(page) -> None:
@@ -84,7 +80,7 @@ def check_dashboard_smoke(output_dir: Path, run_name: str) -> None:
     """Serve ``output_dir`` and assert the dashboard renders the run end to end."""
     from playwright.sync_api import sync_playwright
 
-    port = _free_port()
+    port = get_free_port()
     server = subprocess.Popen(
         ["uv", "run", "dashboard", output_dir.as_posix(), "--isolated", "--port", str(port)],
         stdout=subprocess.DEVNULL,

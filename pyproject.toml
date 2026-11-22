@@ -60,7 +60,7 @@ gpu = [
     "torchaudio ; sys_platform == 'linux'",
     "torchdata>=0.11.0 ; sys_platform == 'linux'",
     "vllm>=0.34.0 ; sys_platform == 'linux'",
-    "mooncake-transfer-engine-cuda13>=0.3.14 ; sys_platform == 'linux'",
+    "mooncake-transfer-engine>=0.3.10.post2 ; sys_platform == 'linux'",
     "torchtitan ; sys_platform == 'linux'",
     "dion ; sys_platform == 'linux'",
     "tilelang>=0.1.8 ; sys_platform == 'linux'",
@@ -383,6 +383,7 @@ addopts = "--strict-markers"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "gpu: marks tests as gpu (deselect with '-m \"not gpu\"')",
+    "tiny: fast GPU subset for the tiny CI job (select with '-m tiny')",
 ]
 
 [build-system]

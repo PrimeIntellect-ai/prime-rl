@@ -245,8 +245,8 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     export VLLM_NIXL_SIDE_CHANNEL_PORT=5600
     export NIXL_NIC_AFFINITY={{ 1 if nixl_nic_affinity else 0 }}
 
-    # The kv_transfer_config (NIXL transfer + any KV offload connector) is built in
-    # InferenceConfig.to_namespace() from the per-node config, so it is no longer assembled here.
+    # InferenceConfig.to_namespace() builds the kv_transfer_config (NIXL transfer + any KV
+    # offload connector) from the per-node config.
 
     DECODE_COMPILE_CFG='{"cudagraph_mode":"FULL_DECODE_ONLY"}'
 

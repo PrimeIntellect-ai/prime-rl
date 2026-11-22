@@ -24,8 +24,7 @@ SLURM launches write generated scripts and coordination files under `<run_dir>/l
 - Bool toggles: bare `--flag` enables, `--no-flag` disables (nested too).
 - Lists: space-separated or JSON literal. Dicts: JSON literal, deep-merged with file values.
 - Optional sub-configs (`WandbMonitorConfig | None`): bare `--monitors.wandb` enables defaults; `--monitors.wandb @ wandb.toml` enables from a file; `--no-monitors.wandb` disables.
-- Discriminated unions are switched by the `type` tag (e.g. `--optimizer.type muon`).
-- Validation aliases let renamed fields keep working; legacy keys can be remapped in a `model_validator(mode="before")`.
+- Discriminated unions are switched by the `type` tag (e.g. `--optim.type muon`).
 - Auto-generated `--help` panels from `Field(description=...)` or PEP 224 docstrings.
 - Friendly errors: required-field boxes, validator errors point at the offending flag, unknown flags get a "did you mean" hint.
 - State-only optimizer offload is enabled by default (`model.offload = "optimizer"`).
@@ -74,8 +73,6 @@ uv run sft @ examples/basic/reverse-text/sft.toml --dry-run
 - Multi-node online evals use one SLURM job with `num_train_nodes + num_infer_nodes` nodes. The generated `launcher/sft.sbatch` assigns inference nodes first, then trainer nodes.
 
 ## `inference` — vLLM server
-
-Router session cleanup runs on successful, failed, and cancelled episodes, including discarded retry traces. Cleanup failures are logged per session and do not disable subsequent releases.
 
 OpenAI-compatible API plus prime-rl custom endpoints (`/update_weights`, `/load_lora_adapter`, `/init_broadcaster`). Always use this entrypoint — never `vllm serve` directly. It starts a `vllm-router` on `server.port` (default 8000, the client-facing URL) fronting the engine on `backend_port` (default 8100); admin endpoints must target the engine port directly. The default `sticky_least_loaded` policy keeps each rollout on one replica while assigning new sessions to the least-loaded replica; RL and SFT online eval automatically release completed sessions.
 
