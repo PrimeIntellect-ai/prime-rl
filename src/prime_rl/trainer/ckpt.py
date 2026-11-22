@@ -89,7 +89,7 @@ class CheckpointWriter(FileSystemWriter):
     is done. A CPU tensor that is a view into a larger storage is copied before it is written: full offload's masters
     are views into one slab per rank, and fused parameters (``gate_up_proj``) split into strided views. One file per
     rank therefore holds a second copy of the rank's shard in host memory until the save ends, about 400 GiB more on a
-    node training GLM-4.5-Air with full offload. With bounded files that copy is at most one file per writer thread."""
+    node training GLM-4.5-Air with full offload. With bounded files that copy is at most about two files per writer thread."""
 
     def __init__(self, path: Path, max_file_bytes: int = MAX_CHECKPOINT_FILE_BYTES, **kwargs: Any):
         super().__init__(path, **kwargs)

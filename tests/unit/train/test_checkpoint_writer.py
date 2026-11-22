@@ -43,10 +43,11 @@ def test_default_writer_holds_a_copy_of_every_view(tmp_path):
     assert max_live_copies(slab_views(), FileSystemWriter(tmp_path)) == NUM_VIEWS
 
 
-def test_bounded_files_hold_at_most_one_file_of_copies(tmp_path):
+def test_bounded_files_hold_the_copies_of_at_most_two_files(tmp_path):
+    # One view per file. The writer's copy-ahead loader starts the next file while the last one's copies are still
+    # referenced, so up to two files' worth are live at once.
     views = slab_views()
-    two_views = 2 * VIEW_NUMEL * 4
-    assert max_live_copies(views, CheckpointWriter(tmp_path, max_file_bytes=two_views)) <= 2
+    assert max_live_copies(views, CheckpointWriter(tmp_path, max_file_bytes=VIEW_NUMEL * 4)) <= 2
 
     loaded = {name: torch.zeros_like(view) for name, view in views.items()}
     dcp_load(loaded, checkpoint_id=tmp_path, no_dist=True)
