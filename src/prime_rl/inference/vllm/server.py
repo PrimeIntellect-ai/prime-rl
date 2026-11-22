@@ -9,6 +9,7 @@ import uvloop
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from starlette.datastructures import State
+from starlette.responses import StreamingResponse
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.common.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.entrypoints.launchers.api_server.app_state import init_app_state
@@ -39,6 +40,36 @@ def require_admin_token(request: Request) -> None:
 # Routes that change engine state require the admin token; probes stay on the open router.
 router = APIRouter()
 admin_router = APIRouter(dependencies=[Depends(require_admin_token)])
+
+
+@router.post("/v1/rime/writer/chat/completions")
+async def frozen_writer(request: Request):
+    url = os.environ.get("PRIME_RL_FROZEN_WRITER_URL")
+    if url is None:
+        raise HTTPException(503, "Frozen writer is not configured")
+    body = await request.json()
+    # The outer model alias authenticates at the managed router; the loopback
+    # server serves the immutable snapshot path instead of that run alias.
+    body["model"] = os.environ["PRIME_RL_FROZEN_WRITER_MODEL"]
+    client = httpx.AsyncClient(timeout=httpx.Timeout(None, connect=30))
+    try:
+        response = await client.send(client.build_request("POST", url, json=body), stream=True)
+    except httpx.RequestError as exc:
+        await client.aclose()
+        raise HTTPException(503, "Frozen writer is unavailable") from exc
+
+    async def chunks():
+        try:
+            async for chunk in response.aiter_bytes():
+                yield chunk
+        finally:
+            await response.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        chunks(), status_code=response.status_code,
+        media_type=response.headers.get("content-type", "application/json"),
+    )
 
 
 @router.post("/v1/rime/judge")
@@ -262,6 +293,10 @@ def custom_build_app(args: Namespace, supported_tasks: tuple, model_config=None)
     Wrap build_app to include our custom router and drop the vLLM routes prime-rl does not use.
     """
     app = _original_build_app(args, supported_tasks, model_config)
+    if os.environ.get("PRIME_RL_CLEF_URL") or os.environ.get("PRIME_RL_FROZEN_WRITER_URL"):
+        from prime_rl.inference.vllm.rime_routing import InternalDPRouting
+
+        app.add_middleware(InternalDPRouting)
     drop_unused_routes(app)
     app.include_router(router)
     app.include_router(admin_router)

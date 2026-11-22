@@ -231,6 +231,13 @@ def inference_local(config: InferenceConfig):
         judge_process, judge_stopping = start_judge(
             config.clef_judge, actor_gpus, config.server.port, config.backend_port,
         )
+    elif config.frozen_writer is not None:
+        from prime_rl.inference.frozen_writer import start_writer
+
+        actor_gpus = config.vllm.data_parallel_size * config.vllm.tensor_parallel_size
+        judge_process, judge_stopping = start_writer(
+            config.frozen_writer, actor_gpus, config.server.port, config.backend_port,
+        )
 
     setup_vllm_env(config)
 

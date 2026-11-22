@@ -24,6 +24,7 @@ class RIMEAlgorithm(Algorithm):
         self.reference_clients = None
         self.expected_group_size = config.expected_group_size
         self.max_sequence_tokens = config.max_sequence_tokens
+        self.train_writer = config.train_writer
 
     async def setup(self) -> None:
         if self.reference is not None:
@@ -100,7 +101,7 @@ class RIMEAlgorithm(Algorithm):
                 if sum(role == "actor" and position == t for _, role, position in members) != 1:
                     raise ValueError("Need one complete actor trajectory per trial")
                 writers = sum(role == "writer" and position == t for _, role, position in members)
-                if writers != int(t < tasks - 1):
+                if writers != int(self.train_writer and t < tasks - 1):
                     raise ValueError("Need one writer per nonterminal trial and no terminal writer")
             rows.append(row)
             indexed.append(members)

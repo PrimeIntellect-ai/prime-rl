@@ -1,0 +1,189 @@
+# Production RIME joint ACT/WRITE run on Model Factory Denvr.
+# Thinking on; original-model reference remains fixed across checkpoint recovery.
+mode = "rl"
+max_steps = 200
+seq_len = 40960
+
+[run]
+name = "rime-baseline-joint-noexplore"
+
+[model]
+name = "/volume/models/qwen3-4b-1cfa9a720891"
+
+[deployment]
+num_train_gpus = 2
+num_infer_gpus = 6
+# Six inference-pod GPUs: five actor/writer replicas plus one frozen Clef judge.
+
+[weight_broadcast]
+type = "nccl"
+inference_world_size_override = 5
+
+[trainer.optim]
+lr = 1e-6
+
+[trainer]
+initial_reference = true
+initial_reference_model = "/volume/models/qwen3-4b-1cfa9a720891"
+
+[trainer.model]
+ep = 1
+conversion_dir = "/tmp/rime-model-conversion"
+
+[trainer.model.compile]
+threads = 1
+
+[trainer.loss]
+type = "custom"
+import_path = "prime_rl.trainer.rl.rime_loss.rime_loss"
+
+[trainer.loss.kwargs]
+clip_low = 0.2
+clip_high = 0.28
+kl_coef = 0.01
+
+[orchestrator]
+batch_size = 76 # Four complete streams, each with 10 ACT + 9 WRITE traces.
+max_staleness = 1
+
+[orchestrator.concurrency]
+initial_inflight = 12
+min_inflight = 12
+max_inflight = 12
+
+[orchestrator.train]
+group_size = 4
+
+[orchestrator.train.algo]
+type = "rime"
+horizon = 2
+beta = 0.0
+expected_group_size = 4
+max_sequence_tokens = 40960
+
+[orchestrator.train.sampling]
+temperature = 1.0
+top_p = 1.0
+max_completion_tokens = 32768
+
+[[orchestrator.train.source]]
+name = "rime-alchemy-train"
+env.id = "rime-alchemy"
+env.taskset.id = "rime-alchemy"
+env.taskset.split = "train"
+env.memory_chars = 4096
+env.judge_local = true
+env.score_exploration = false
+env.actor.harness.id = "null"
+env.actor.runtime.type = "subprocess"
+env.writer.harness.id = "null"
+env.writer.runtime.type = "subprocess"
+env.exploration_judge.model = "cloudflare/clef-flash"
+env.exploration_judge.base_url = "https://api.pinference.ai/api/v1/evaluations"
+
+[inference]
+
+[inference.clef_judge]
+actor_gpus = 5
+revision = "22b75507981345858dd152fbd9a6f8c0c4068b0a"
+max_length = 24576
+
+[inference.vllm]
+reasoning_parser = "qwen3"
+max_model_len = 40960
+tensor_parallel_size = 1
+data_parallel_size = 5
+api_server_count = 5
+
+[orchestrator.renderer]
+name = "qwen3"
+enable_thinking = true
+
+[ckpt]
+interval = 10
+keep_last = 2
+keep_interval = 20
+
+# Fixed development streams; report raw actor reward and memory-minus-stateless gain.
+[orchestrator.eval]
+interval = 20
+skip_first_step = false
+group_size = 1
+
+[orchestrator.eval.select]
+shuffle = true
+seed = 1729
+limit = 16
+
+[orchestrator.eval.sampling]
+temperature = 1.0
+top_p = 1.0
+max_tokens = 32768
+
+[[orchestrator.eval.source]]
+name = "validation-memory"
+env.id = "rime-alchemy"
+env.taskset.id = "rime-alchemy"
+env.taskset.split = "validation"
+env.carry_memory = true
+env.memory_chars = 4096
+env.judge_local = true
+env.score_exploration = false
+env.actor.harness.id = "null"
+env.actor.runtime.type = "subprocess"
+env.writer.harness.id = "null"
+env.writer.runtime.type = "subprocess"
+env.exploration_judge.model = "cloudflare/clef-flash"
+env.exploration_judge.base_url = "https://api.pinference.ai/api/v1/evaluations"
+
+[[orchestrator.eval.source]]
+name = "validation-stateless"
+env.id = "rime-alchemy"
+env.taskset.id = "rime-alchemy"
+env.taskset.split = "validation"
+env.carry_memory = false
+env.memory_chars = 4096
+env.judge_local = true
+env.score_exploration = false
+env.actor.harness.id = "null"
+env.actor.runtime.type = "subprocess"
+env.writer.harness.id = "null"
+env.writer.runtime.type = "subprocess"
+env.exploration_judge.model = "cloudflare/clef-flash"
+env.exploration_judge.base_url = "https://api.pinference.ai/api/v1/evaluations"
+
+[[orchestrator.eval.source]]
+name = "validation-history"
+env.id = "rime-alchemy"
+env.taskset.id = "rime-alchemy"
+env.taskset.split = "validation"
+env.carry_memory = true
+env.memory_mode = "history"
+env.memory_chars = 4096
+env.judge_local = true
+env.score_exploration = false
+env.actor.harness.id = "null"
+env.actor.runtime.type = "subprocess"
+env.writer.harness.id = "null"
+env.writer.runtime.type = "subprocess"
+env.exploration_judge.model = "cloudflare/clef-flash"
+env.exploration_judge.base_url = "https://api.pinference.ai/api/v1/evaluations"
+
+
+[[orchestrator.eval.source]]
+name = "validation-shuffled"
+env.id = "rime-alchemy"
+env.taskset.id = "rime-alchemy"
+env.taskset.split = "validation"
+env.carry_memory = true
+env.memory_mode = "shuffled"
+env.memory_chars = 4096
+env.judge_local = true
+env.score_exploration = false
+env.actor.harness.id = "null"
+env.actor.runtime.type = "subprocess"
+env.writer.harness.id = "null"
+env.writer.runtime.type = "subprocess"
+env.exploration_judge.model = "cloudflare/clef-flash"
+env.exploration_judge.base_url = "https://api.pinference.ai/api/v1/evaluations"
+

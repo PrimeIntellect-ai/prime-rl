@@ -5,12 +5,14 @@ for the same source task, then RIMEAlgorithm assigns cross-sibling advantages.
 """
 
 import json
+from dataclasses import replace
 
 import verifiers.v1 as vf
 from rime_alchemy.configs import RIMEAlchemyEnvConfig, RIMEAlchemyTasksetConfig, StreamData, StreamTask
+from verifiers.v1.configs.client import EvalClientConfig
 
 from rime_study.alchemy import AlchemyStream
-from rime_study.data import ROOT, training_streams, verify_sources
+from rime_study.data import ROOT, chemistry_fingerprint, prebuilt_episodes, training_streams, verify_sources
 from rime_study.decision_judge import MemoryDecisionJudge
 from rime_study.rollout import ACT, WRITE, ProtocolError
 
@@ -38,18 +40,37 @@ class RIMEAlchemyTaskset(vf.Taskset[StreamTask, RIMEAlchemyTasksetConfig]):
 class RIMEAlchemyEnv(vf.Env[RIMEAlchemyEnvConfig]):
     async def setup(self, agents: vf.Agents):
         agents.actor.trainable = True
-        agents.writer.trainable = True
+        agents.writer.trainable = not self.config.writer_frozen and self.config.memory_mode == "written"
+        if self.config.writer_frozen:
+            client = agents.actor.config.client
+            if client is None:
+                raise ValueError("Frozen writer needs the resolved policy client")
+            writer_client = EvalClientConfig(
+                base_url=client.base_url.rstrip("/") + "/rime/writer",
+                api_key_var=client.api_key_var,
+                headers=client.headers,
+                headers_from_env=client.headers_from_env,
+            )
+            sampling = agents.writer.config.sampling.model_copy(
+                update={"chat_template_kwargs": {"enable_thinking": True}},
+            )
+            agents.writer.config = agents.writer.config.model_copy(
+                update={"client": writer_client, "sampling": sampling}
+            )
+            agents.writer.ctx = replace(agents.writer.ctx, client=writer_client, sampling=sampling)
         judge_config = self.config.exploration_judge
-        if self.config.judge_local:
+        if self.config.judge_local and self.config.score_exploration:
             client = agents.actor.config.client
             if client is None:
                 raise ValueError("Local Clef needs the resolved actor inference client")
-            judge_config = judge_config.model_copy(update={
-                "base_url": client.base_url.rstrip("/") + "/rime/judge",
-                "api_key_var": client.api_key_var,
-                "headers": client.headers,
-                "headers_from_env": client.headers_from_env,
-            })
+            judge_config = judge_config.model_copy(
+                update={
+                    "base_url": client.base_url.rstrip("/") + "/rime/judge",
+                    "api_key_var": client.api_key_var,
+                    "headers": client.headers,
+                    "headers_from_env": client.headers_from_env,
+                }
+            )
         self.memory_judge = MemoryDecisionJudge(
             judge_config,
             max_concurrent=self.config.judge_max_concurrent,
@@ -58,10 +79,31 @@ class RIMEAlchemyEnv(vf.Env[RIMEAlchemyEnvConfig]):
             transport_model=agents.actor.config.model if self.config.judge_local else None,
         )
 
-    async def run(self, task: StreamTask, agents: vf.Agents):
+    async def run(self, task: StreamTask, agents: vf.Agents, *, _donor=False):
         env = AlchemyStream(task.data.episode_index)
         memory = ""
         rewards, scores, gates, training = [], [], [], []
+        memories = []
+        donor_memories = None
+        if self.config.memory_mode == "shuffled":
+            episodes = prebuilt_episodes()
+            fingerprint = chemistry_fingerprint(episodes[task.data.episode_index][0])
+            pool = json.loads((ROOT / "data/development_splits.json").read_text())["validation_episode_indices"]
+            candidates = [index for index in pool if chemistry_fingerprint(episodes[index][0]) != fingerprint]
+            if not candidates:
+                raise ValueError("Shuffled memory needs another held-out chemistry")
+            donor_index = candidates[task.data.episode_index % len(candidates)]
+            donor = RIMEAlchemyEnv(
+                self.config.model_copy(
+                    update={
+                        "memory_mode": "written",
+                        "score_exploration": False,
+                        "carry_memory": True,
+                    }
+                )
+            )
+            donor_task = StreamTask(task.data.model_copy(update={"episode_index": donor_index}), task.config)
+            donor_memories = await donor.run(donor_task, agents, _donor=True)
 
         async def turn(agent, instruction, payload):
             trace = await agent.run(TurnTask(vf.TaskData(prompt=json.dumps(payload), system_prompt=instruction)))
@@ -72,6 +114,8 @@ class RIMEAlchemyEnv(vf.Env[RIMEAlchemyEnvConfig]):
         for t in range(env.num_trials):
             if not self.config.carry_memory:
                 memory = ""
+            elif donor_memories is not None:
+                memory = donor_memories[t - 1] if t else ""
             history = []
             initial_observation = env.observation()
             invalid = 0
@@ -106,6 +150,25 @@ class RIMEAlchemyEnv(vf.Env[RIMEAlchemyEnvConfig]):
             actor_trace = interaction.trace
             if actor_trace.has_error or actor_trace.is_format_violation or actor_trace.is_truncated:
                 raise ProtocolError("Incomplete actor trajectory")
+            actor_trace.record_metric("rime/trial_position", t + 1)
+            actor_trace.record_metric("rime/is_target_trial", int(not _donor))
+            if self.config.memory_mode in {"history", "shuffled"}:
+                if self.config.memory_mode == "history":
+                    memory = (
+                        memory
+                        + "\n"
+                        + json.dumps(
+                            {
+                                "initial_observation": initial_observation,
+                                "turns": history,
+                            }
+                        )
+                    )[-self.config.memory_chars :]
+                actor_trace.record_reward("task", rewards[-1])
+                actor_trace.record_metric("rime/task_raw_reward", rewards[-1])
+                if t < env.num_trials - 1:
+                    env.advance_after_write()
+                continue
             # Character cap is explicit for this adapter; no tokenizer/model
             # download is needed in the environment server.
             writer_trace, reply = await turn(
@@ -129,8 +192,10 @@ class RIMEAlchemyEnv(vf.Env[RIMEAlchemyEnvConfig]):
                 valid = False
             score = 0.0
             if valid:
-                score = await self.memory_judge.score_memories(memory, proposed, trace=writer_trace)
+                if self.config.score_exploration:
+                    score = await self.memory_judge.score_memories(memory, proposed, trace=writer_trace)
                 memory = proposed
+            memories.append(memory)
             gates.append(int(valid))
             scores.append(float(score))
             training.append((actor_trace, "actor", t))
@@ -144,6 +209,9 @@ class RIMEAlchemyEnv(vf.Env[RIMEAlchemyEnvConfig]):
                 env.advance_after_write()
             else:
                 writer_trace.drop("Terminal memory has no future-task credit")
+            if _donor:
+                actor_trace.drop("Unrelated-chemistry memory donor; excluded from target scores")
+                writer_trace.drop("Unrelated-chemistry memory donor; excluded from target scores")
         midpoint = len(rewards) // 2
         early = sum(rewards[:midpoint]) / midpoint
         late = sum(rewards[midpoint:]) / (len(rewards) - midpoint)
@@ -158,3 +226,4 @@ class RIMEAlchemyEnv(vf.Env[RIMEAlchemyEnvConfig]):
                 "exploration_rewards": scores,
                 "format_gates": gates,
             }
+        return memories

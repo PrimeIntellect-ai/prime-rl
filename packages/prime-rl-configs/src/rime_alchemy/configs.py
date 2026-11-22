@@ -1,5 +1,7 @@
 """Lightweight schema and task identity; no Alchemy runtime imports."""
 
+from typing import Literal
+
 import verifiers.v1 as vf
 from pydantic import Field, model_validator
 from verifiers.v1.judges.decision import DecisionJudgeConfig
@@ -35,6 +37,9 @@ class RIMEAlchemyEnvConfig(vf.EnvConfig):
     exploration_judge: DecisionJudgeConfig = Field(default_factory=memory_judge_config)
     memory_chars: int = Field(4096, ge=1)
     carry_memory: bool = True
+    writer_frozen: bool = False
+    score_exploration: bool = True
+    memory_mode: Literal["written", "history", "shuffled"] = "written"
     judge_max_concurrent: int = Field(1, ge=1)
     judge_max_retries: int = Field(5, ge=0)
     judge_retry_timeout: float = Field(180.0, gt=0)

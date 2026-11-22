@@ -24,6 +24,14 @@ class ClefJudgeConfig(BaseConfig):
     actor_gpus: int = Field(5, ge=1)
 
 
+class FrozenWriterConfig(BaseConfig):
+    model: str
+    actor_gpus: int = Field(5, ge=1)
+    port: int = Field(9021, ge=1024, le=65535)
+    max_length: int = Field(40960, ge=1024)
+    startup_timeout: float = Field(1800, gt=0)
+
+
 class ServerConfig(BaseConfig):
     host: str | None = None
     """Host to bind to."""
@@ -514,6 +522,9 @@ class InferenceConfig(BaseConfig):
     clef_judge: ClefJudgeConfig | None = None
     """Reserve one inference-pod GPU for a frozen Clef decision service (single node only)."""
 
+    frozen_writer: FrozenWriterConfig | None = None
+    """Reserve one inference-pod GPU for an immutable base-model writer."""
+
     # Launcher-only fields
 
     deployment: InferenceDeploymentConfig = SingleNodeInferenceDeploymentConfig()
@@ -529,17 +540,20 @@ class InferenceConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_clef_judge(self):
-        if self.clef_judge is not None:
+        if self.clef_judge is not None and self.frozen_writer is not None:
+            raise ValueError("Reserve a single sidecar GPU: choose Clef or a frozen writer")
+        sidecar = self.clef_judge or self.frozen_writer
+        if sidecar is not None:
             if self.deployment.type != "single_node" or self.slurm is not None:
                 raise ValueError("Clef judge currently requires single-node inference without SLURM")
             if self.router is not None and "router" in self.model_fields_set:
                 raise ValueError("Clef judge proxy requires a bare inference server, without a router")
             self.router = None
             tp = self.vllm.tensor_parallel_size
-            if self.clef_judge.actor_gpus % tp:
+            if sidecar.actor_gpus % tp:
                 raise ValueError("Clef actor GPU reservation must be divisible by tensor parallel size")
             # Hosted launchers also pass DP on the command line, after the config file.
-            self.vllm.data_parallel_size = self.clef_judge.actor_gpus // tp
+            self.vllm.data_parallel_size = sidecar.actor_gpus // tp
             self.vllm.api_server_count = self.vllm.data_parallel_size
             if self.vllm.data_parallel_size_local is not None:
                 self.vllm.data_parallel_size_local = self.vllm.data_parallel_size

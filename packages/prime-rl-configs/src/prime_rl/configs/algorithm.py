@@ -263,6 +263,7 @@ class RIMEAlgoConfig(BaseAlgoConfig):
     reference: FrozenModelConfig | None = None
     expected_group_size: int = Field(4, ge=2)
     max_sequence_tokens: int = Field(16384, ge=1)
+    train_writer: bool = True
 
 
 class HierarchicalGRPOAlgoConfig(BaseAlgoConfig):
