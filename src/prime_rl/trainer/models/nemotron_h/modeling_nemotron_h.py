@@ -201,8 +201,8 @@ class NemotronHModel(NemotronHPreTrainedModel):
         for layer_idx, decoder_layer in enumerate(self.layers):
             layer_routed_experts = routed_experts[:, :, layer_idx].contiguous() if routed_experts is not None else None
             hidden_states = decoder_layer(
-                hidden_states,
-                cu_seqlens,
+                hidden_states=hidden_states,
+                cu_seqlens=cu_seqlens,
                 chunk_indices=chunk_indices,
                 max_seqlen=max_seqlen,
                 routed_experts=layer_routed_experts,
