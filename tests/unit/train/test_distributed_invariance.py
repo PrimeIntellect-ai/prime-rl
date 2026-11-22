@@ -26,6 +26,7 @@ import re
 import sys
 import time
 import traceback
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from itertools import islice
@@ -53,6 +54,7 @@ from prime_rl.trainer.models import get_custom_causal_lm_cls
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.fusions import apply_model_fusions
 from prime_rl.trainer.models.glm_moe_dsa import GlmMoeDsaConfig
+from prime_rl.trainer.models.inkling2 import Inkling2LoopTextConfig
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX, inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import TokenChoiceTopKRouter
 from prime_rl.trainer.models.qwen3_5 import Qwen3_5MoeTextConfig
@@ -169,6 +171,28 @@ TINY_PRIME_RL_MODELS: dict[str, PretrainedConfig] = {
         max_position_embeddings=4096,
         dsa_backend="tilelang",
     ),
+    # Layers 2 to 5 run three times and read the previous pass from its two blocks. The core holds sliding-window
+    # layers that start a block (2, 4) and one that does not (5), and a global layer (3).
+    "inkling2_loop": Inkling2LoopTextConfig(
+        vocab_size=151936,
+        hidden_size=256,
+        num_hidden_layers=8,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=64,
+        swa_num_attention_heads=4,
+        swa_head_dim=64,
+        d_rel=16,
+        rel_extent=128,
+        sliding_window_size=128,
+        local_layer_ids=[0, 1, 2, 4, 5, 6],
+        n_layers_per_attn_res_block=2,
+        log_scaling_n_floor=64,
+        n_routed_experts=8,
+        num_experts_per_tok=2,
+        moe_intermediate_size=128,
+        loop_config=dict(core_start=2, core_end=6, num_passes=3, gate_rank=16),
+    ),
 }
 
 
@@ -214,6 +238,8 @@ FULL_SUITE_CASES = [
     Case("deepseek_v4-cp2_ep2", "deepseek_v4", cp=2, ep=2),
     Case("glm_moe_dsa-ep2", "glm_moe_dsa", ep=2),
     Case("glm_moe_dsa-cp2_ep2", "glm_moe_dsa", cp=2, ep=2),
+    Case("inkling2_loop-ep2", "inkling2_loop", ep=2),
+    Case("inkling2_loop-ep2-compile", "inkling2_loop", ep=2, compile=True),
 ]
 SUITES = {"tiny": CASES, "full": FULL_SUITE_CASES}
 TIMEOUTS = {"tiny": 5 * 60, "full": 20 * 60}
@@ -315,21 +341,33 @@ def compute_loss(
 
 def record_routing(model: torch.nn.Module) -> Callable[[], torch.Tensor | None]:
     """Hooks every MoE router of `model`. The returned function gives the experts the routers picked in the last
-    forward, as the `[1, seq, layers, top_k]` tensor that `routed_experts` takes, or None for a dense model."""
+    forward, as the `[1, seq, layer visits, top_k]` tensor that `routed_experts` takes, or None for a dense model.
+    A looped model runs some layers several times and routes anew each time."""
+    language_model = get_language_model(model)
+    visits_of_layer = getattr(language_model.config, "layer_visit_ids", lambda layer: (layer,))
+    num_visits = getattr(language_model.config, "num_layer_visits", len(language_model.layers))
     picked: dict[int, torch.Tensor] = {}
+    calls: dict[int, int] = defaultdict(int)
+
+    def record(layer: int):
+        def hook(module, args, output):
+            picked[visits_of_layer(layer)[calls[layer]]] = output[1]
+            calls[layer] += 1
+
+        return hook
+
     for name, module in model.named_modules():
         if isinstance(module, TokenChoiceTopKRouter):
-            layer = int(re.search(r"layers\.(\d+)\.", name).group(1))
-            module.register_forward_hook(lambda module, args, output, layer=layer: picked.__setitem__(layer, output[1]))
-    num_layers = len(get_language_model(model).layers)
+            module.register_forward_hook(record(int(re.search(r"layers\.(\d+)\.", name).group(1))))
 
     def routing() -> torch.Tensor | None:
+        calls.clear()
         if not picked:
             return None
         num_tokens, top_k = next(iter(picked.values())).shape
-        routed_experts = torch.zeros(1, num_tokens, num_layers, top_k, dtype=torch.long)
-        for layer, experts in picked.items():
-            routed_experts[0, :, layer] = experts.cpu()
+        routed_experts = torch.zeros(1, num_tokens, num_visits, top_k, dtype=torch.long)
+        for visit, experts in picked.items():
+            routed_experts[0, :, visit] = experts.cpu()
         return routed_experts
 
     return routing
