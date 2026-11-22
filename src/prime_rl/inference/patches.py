@@ -379,39 +379,58 @@ def monkey_patch_fit_sliding_window_pages():
     window's blocks. Halving the group's block size until it fits under the widest other group
     restores the target's capacity at the cost of more window blocks per request.
     """
+    from vllm.v1 import kv_cache_interface
     from vllm.v1.core import kv_cache_planning
-    from vllm.v1.kv_cache_interface import SlidingWindowSpec, UniformTypeKVCacheSpecs
 
     original = kv_cache_planning._get_packed_kv_cache_groups
     if getattr(original, "_prime_rl_fits_sliding_window_pages", False):
         return
 
+    # Since vllm-project/vllm#61452 a group holds its layers' specs and its block size itself, and a sliding-window
+    # layer is a plain AttentionSpec that a sliding-window manager allocates. Such a group has `manager_cls`.
+
     def layer_specs(group):
+        if hasattr(group, "manager_cls"):
+            return dict(group.kv_cache_specs)
         spec = group.kv_cache_spec
-        if isinstance(spec, UniformTypeKVCacheSpecs):
+        if isinstance(spec, kv_cache_interface.UniformTypeKVCacheSpecs):
             return dict(spec.kv_cache_specs)
         return {name: spec for name in group.layer_names}
 
     def group_bytes(group):
         return sum(spec.page_size_bytes for spec in layer_specs(group).values())
 
-    def _get_packed_kv_cache_groups(vllm_config, kv_cache_spec):
-        groups = original(vllm_config, kv_cache_spec)
+    def is_plain_sliding_window(group, specs):
+        if not hasattr(group, "manager_cls"):
+            plain_spec = kv_cache_interface.SlidingWindowSpec
+        elif _is_sliding_window_group(group):
+            plain_spec = kv_cache_interface.AttentionSpec
+        else:
+            return False
+        return all(type(s) is plain_spec and s.page_size_padded is None for s in specs.values())
+
+    def with_block_size(group, specs, block_size):
+        specs = {name: replace(s, block_size=block_size) for name, s in specs.items()}
+        if hasattr(group, "manager_cls"):
+            return replace(group, kv_cache_specs=specs, block_size=block_size)
+        return replace(group, kv_cache_spec=kv_cache_interface.UniformTypeKVCacheSpecs.from_specs(specs))
+
+    def _get_packed_kv_cache_groups(vllm_config, layers):
+        groups = original(vllm_config, layers)
         if not groups or len(groups) == 1:
             return groups
         fitted = []
         for i, group in enumerate(groups):
             specs = layer_specs(group)
             widest_other = max(group_bytes(other) for j, other in enumerate(groups) if j != i)
-            plain_swa = all(type(s) is SlidingWindowSpec and s.page_size_padded is None for s in specs.values())
+            plain_swa = is_plain_sliding_window(group, specs)
             block_size = next(iter(specs.values())).block_size
             if plain_swa and group_bytes(group) > widest_other:
                 # An unpadded sliding-window page is linear in the block size.
                 bytes_per_token = group_bytes(group) // block_size
                 while block_size > 16 and bytes_per_token * block_size > widest_other:
                     block_size //= 2
-                specs = {name: replace(s, block_size=block_size) for name, s in specs.items()}
-                group = replace(group, kv_cache_spec=UniformTypeKVCacheSpecs.from_specs(specs))
+                group = with_block_size(group, specs, block_size)
             fitted.append(group)
         return fitted
 
