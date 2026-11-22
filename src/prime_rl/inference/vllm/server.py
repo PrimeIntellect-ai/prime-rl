@@ -294,9 +294,9 @@ def custom_build_app(args: Namespace, supported_tasks: tuple, model_config=None)
     """
     app = _original_build_app(args, supported_tasks, model_config)
     if os.environ.get("PRIME_RL_CLEF_URL") or os.environ.get("PRIME_RL_FROZEN_WRITER_URL"):
-        from prime_rl.inference.vllm.rime_routing import InternalDPRouting
+        from prime_rl.inference.vllm.rime_routing import install_internal_dp_routing
 
-        app.add_middleware(InternalDPRouting)
+        install_internal_dp_routing(app)
     drop_unused_routes(app)
     app.include_router(router)
     app.include_router(admin_router)
