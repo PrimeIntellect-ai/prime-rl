@@ -68,6 +68,7 @@ def propagate_shared_fields(data: Any) -> Any:
         "orchestrator.model.name",
     )
     propagate("model.vlm", "trainer.model.vlm")
+    propagate("model.init", "trainer.model.init")
 
     # [log]
     propagate("log.level", "trainer.log.level", "orchestrator.log.level", "inference.log.level")
@@ -87,9 +88,8 @@ def propagate_shared_fields(data: Any) -> Any:
     propagate("ckpt.async_save", "trainer.ckpt.async_save")
 
     # [monitors.wandb] leaves. (Bare empty ``[monitors.wandb]`` block enablement is at the end.)
-    # ``monitors.wandb.name`` flows verbatim to both sub-configs — shared W&B mode is
-    # always on for the rl entrypoint, so the legacy ``-trainer`` /
-    # ``-orchestrator`` suffix split is gone.
+    # ``monitors.wandb.name`` flows verbatim to both sub-configs: the rl entrypoint
+    # always runs W&B in shared mode, so both log to one run.
     for leaf in ("project", "entity", "name", "group", "tags", "offline"):
         propagate(
             f"monitors.wandb.{leaf}",
@@ -103,11 +103,10 @@ def propagate_shared_fields(data: Any) -> Any:
     # [monitors.prime] leaf.
     propagate("monitors.prime.name", "trainer.monitors.prime.name", "orchestrator.monitors.prime.name")
 
-    # [tokenizer]. ``chat_template`` also flows to ``inference.vllm`` (vLLM's
-    # ``--chat-template``); ``name`` and ``trust_remote_code`` can legitimately
-    # differ between sub-configs (auto-derived from model names, which may
-    # differ for FP8-quantized inference variants).
-    propagate("tokenizer.name", "trainer.tokenizer.name", "orchestrator.tokenizer.name")
+    # [tokenizer]. ``name`` also flows to ``inference.vllm`` (vLLM's ``--tokenizer``, which also picks its "auto"
+    # parsers) and ``chat_template`` too (vLLM's ``--chat-template``); ``trust_remote_code`` can legitimately differ
+    # between sub-configs (auto-derived from model names, which may differ for FP8-quantized inference variants).
+    propagate("tokenizer.name", "trainer.tokenizer.name", "orchestrator.tokenizer.name", "inference.vllm.tokenizer")
     propagate(
         "tokenizer.trust_remote_code",
         "trainer.tokenizer.trust_remote_code",

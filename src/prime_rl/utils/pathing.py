@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import shlex
 import shutil
 import sys
@@ -78,21 +79,6 @@ def prepare_attempt_dirs(run_dir: Path) -> tuple[Path, Path]:
 def launcher_attempt_env(config_dir: Path, log_dir: Path) -> dict[str, str]:
     """Env that pins a launcher's child processes to its attempt (see ``prepare_attempt_dirs``)."""
     return {"PRL_ATTEMPT_CONFIG_DIR": str(config_dir), "PRL_ATTEMPT_LOG_DIR": str(log_dir)}
-
-
-def create_attempt_log_dir(run_dir: Path) -> Path:
-    """Create a log-only attempt for standalone processes without config dumps."""
-    logs_dir = get_log_dir(run_dir)
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    attempt_dir = logs_dir / f"attempt_{1 + max(_attempt_numbers(logs_dir), default=0)}"
-    attempt_dir.mkdir()
-    _point_latest(logs_dir, attempt_dir)
-    return attempt_dir
-
-
-def latest_log_dir(run_dir: Path) -> Path:
-    """The current attempt's log directory, via the ``logs/latest`` symlink."""
-    return get_log_dir(run_dir) / "latest"
 
 
 def shorten(name: str, max_len: int) -> str:
@@ -312,10 +298,6 @@ def get_file_monitor_dir(output_dir: Path) -> Path:
     return output_dir / "monitors" / "file"
 
 
-def get_eval_dir(output_dir: Path) -> Path:
-    return output_dir / "eval"
-
-
 def get_broadcast_dir(output_dir: Path) -> Path:
     return output_dir / "broadcasts"
 
@@ -328,6 +310,16 @@ def get_all_ckpt_steps(ckpt_dir: Path) -> list[int]:
     """Gets all checkpoint steps from the checkpoint directory, sorted in ascending order."""
     step_dirs = list(ckpt_dir.glob("step_*"))
     return sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
+
+
+def is_checkpoint_step_dir(path: str | Path) -> bool:
+    """Whether ``path`` is a local trainer checkpoint step directory, whose ``trainer/`` holds the weights."""
+    return (Path(path) / "trainer").is_dir()
+
+
+def has_step_dir_name(path: str | Path) -> bool:
+    """Whether ``path`` is named like a checkpoint step directory (``.../step_<N>``), which it may no longer be."""
+    return re.fullmatch(r"step_\d+", Path(path).name) is not None
 
 
 def is_ckpt_step_complete(step_dir: Path) -> bool:

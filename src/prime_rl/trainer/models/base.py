@@ -156,10 +156,6 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         """Convert one layer from PrimeRL to HuggingFace format in-place."""
         return self.convert_to_hf(state_dict)
 
-    def convert_layer_to_prime(self, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        """Convert one layer from HuggingFace to PrimeRL format in-place."""
-        return self.convert_to_prime(state_dict)
-
     @classmethod
     def convert_adapter_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         """
@@ -174,6 +170,11 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         use the returned value. Default implementation is a no-op.
         """
         return state_dict
+
+    def _init_weights(self, module: nn.Module) -> None:
+        super()._init_weights(module)
+        if isinstance(module, MoE):
+            module.init_weights(self.config.get_text_config().initializer_range, module.tokens_per_expert.device)
 
     def init_buffers_post_meta(self) -> None:
         """

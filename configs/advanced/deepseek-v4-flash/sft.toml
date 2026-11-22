@@ -2,7 +2,7 @@
 # `debug.num_layers` truncation) on 4 train nodes. Trainer only: no online eval, no inference
 # node, and so no weight broadcast. Tested on 8xH200. 
 #
-#   uv run sft @ examples/advanced/deepseek-v4-flash/sft.toml --run.name ds-v4-sft-torch-4node
+#   uv run sft @ configs/advanced/deepseek-v4-flash/sft.toml --run.name ds-v4-sft-torch-4node
 #
 # Note: on 4 8xH200 nodes, this config is near the memory limit, using ~94%+ GPU memory. 
 #
@@ -27,9 +27,12 @@ freq = 1
 max_inflight_activations = 5
 
 [data]
-name = "PrimeIntellect/Reverse-Text-SFT"
 seq_len = 2048
 batch_size = 32
+
+[[data.source]]
+name = "reverse-text"
+dataset = "PrimeIntellect/Reverse-Text-SFT"
 
 [optim]
 lr = 1e-5

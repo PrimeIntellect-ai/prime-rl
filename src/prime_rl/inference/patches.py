@@ -24,9 +24,6 @@ def apply_shared_vllm_patches():
     monkey_patch_clamp_kv_offload_loads_for_routed_experts()
     monkey_patch_routed_experts_cut_loaded_prefix_hits()
     monkey_patch_kv_xfer_finished_tolerate_freed()
-    monkey_patch_online_fp8_parameter_cast()
-    monkey_patch_glm5_next_kda_conv_weights()
-    monkey_patch_online_mxfp8_moe_keep_kernel_on_reload()
     monkey_patch_strip_routed_experts_from_chat()
     monkey_patch_skip_prompt_routing_for_chat()
     monkey_patch_dp_coordinator_startup_timeout()
@@ -42,9 +39,264 @@ def apply_shared_vllm_patches():
     monkey_patch_fit_sliding_window_pages()
     monkey_patch_flashinfer_fp8_ds_mla_draft()
     monkey_patch_dspark_dp_compile_cache()
+    monkey_patch_nixl_bidirectional_single_pull()
+    monkey_patch_nixl_sliding_window_backoff()
+    monkey_patch_nixl_bidirectional_spec_decode_coverage()
+    monkey_patch_keep_pause_ignores_held_kv()
+    monkey_patch_freeze_nixl_leases_during_keep_pause()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
+
+
+def monkey_patch_nixl_bidirectional_single_pull():
+    """Bidirectional NIXL: a prefill request that comes back through the connector lookup after its D->P pull
+    prefills locally instead of waiting for a second read.
+
+    With ``bidirectional_kv_xfer``, the next turn's prefill request carries decode's block ids, and the first lookup
+    registers the D->P read and marks them ``_remote_blocks_processed``. If the read fails under the ``recompute``
+    load-failure policy (e.g. prefill declines it because decode's blocks are close to their TTL), or the request is
+    preempted after the pull and its blocks are evicted, the request goes through the lookup again. That lookup
+    still offered decode's tokens, so the request waited in ``WAITING_FOR_REMOTE_KVS`` for a read that is never
+    issued, holding its blocks: under load the prefill instance stalls. Backport of vllm-project/vllm#64860.
+    """
+    from vllm.distributed.kv_transfer.kv_connector.v1.nixl import pull_scheduler
+
+    cls = pull_scheduler.NixlPullConnectorScheduler
+    original = cls.get_num_new_matched_tokens
+    if getattr(original, "_prime_rl_single_pull", False):
+        return
+
+    def get_num_new_matched_tokens(self, request, num_computed_tokens):
+        params = request.kv_transfer_params
+        if (
+            params is not None
+            and params.get("do_remote_decode")
+            and params.get("_remote_blocks_processed")
+            and not params.get("do_remote_prefill")
+        ):
+            return 0, False
+        return original(self, request, num_computed_tokens)
+
+    get_num_new_matched_tokens._prime_rl_single_pull = True
+    cls.get_num_new_matched_tokens = get_num_new_matched_tokens
+
+
+def monkey_patch_nixl_sliding_window_backoff():
+    """P/D with sliding-window layers: leave the last prompt token to decode, as for Mamba.
+
+    Decode recomputes the last prompt token to sample the first output token. If prefill transfers the whole prompt,
+    the sliding-window group is laid out for the next position, which drops the oldest block of the window whenever
+    ``N - W + 1`` is a multiple of the block size: the recomputed token then attends to the null block. Prefill
+    therefore stops one token short and decode recomputes it with its window intact (DeepSeek V4's compressor
+    caches are sliding-window specs). Backport of vllm-project/vllm#65584 (NIXL side).
+    """
+    from vllm.distributed.kv_transfer.kv_connector.v1.nixl import base_scheduler
+    from vllm.v1.kv_cache_interface import SlidingWindowSpec
+
+    cls = base_scheduler.NixlBaseConnectorScheduler
+    original = cls._prefill_backoff
+    if getattr(original, "_prime_rl_sliding_window", False):
+        return
+
+    def _prefill_backoff(self) -> int:
+        has_sliding_window = getattr(self, "_prime_rl_has_sliding_window", None)
+        if has_sliding_window is None:
+            has_sliding_window = any(
+                isinstance(group.kv_cache_spec, SlidingWindowSpec) for group in self.kv_cache_config.kv_cache_groups
+            )
+            self._prime_rl_has_sliding_window = has_sliding_window
+        return max(original(self), 1 if has_sliding_window else 0)
+
+    _prefill_backoff._prime_rl_sliding_window = True
+    cls._prefill_backoff = _prefill_backoff
+
+
+def trim_block_ids_to_tokens(block_ids, kv_cache_groups, num_tokens: int):
+    """Keep, per KV cache group, only the blocks that hold positions ``[0, num_tokens)``.
+
+    Block lists are positional from token 0 for every attention group (sliding-window groups pad out-of-window
+    positions with null blocks), so the blocks to keep are the first ``cdiv(num_tokens, block_size)``. SSM groups hold
+    one running state, not positions, and stay as they are.
+    """
+    from vllm.v1.kv_cache_interface import MambaSpec
+
+    trimmed = []
+    for group, blocks in zip(kv_cache_groups, block_ids, strict=True):
+        spec = group.kv_cache_spec
+        if isinstance(spec, MambaSpec):
+            trimmed.append(blocks)
+            continue
+        keep = -(-num_tokens // spec.block_size)
+        trimmed.append(list(blocks)[:keep])
+    return tuple(trimmed)
+
+
+def monkey_patch_nixl_bidirectional_spec_decode_coverage():
+    """Bidirectional NIXL with speculative decoding: decode's handle covers only tokens with valid KV.
+
+    When a request finishes, decode exports its retained blocks for the next turn's prefill with
+    ``remote_num_tokens = request.num_computed_tokens``. With speculative decoding, the last step also computed the
+    drafted positions after the final token; the request ends before a rejection rolls them back, so the count
+    includes positions holding rejected drafts' KV (e.g. 42 for 23 prompt + 16 output tokens with 3 drafts). Only
+    ``num_tokens - 1`` positions hold KV of the actual sequence: every token but the last was an input. Prefill would
+    load the stale draft KV, and a router that checks coverage against the tokens it has seen drops every such
+    handle, so the readback never happens. The extra positions can also add a trailing block, and prefill pairs block
+    lists from their ends, which would shift every block.
+
+    Report ``num_tokens - 1`` and drop the blocks past it, per KV cache group, before vLLM clips sliding-window
+    groups to their in-window tail (clipping a list with an extra trailing block would cut a block the window needs).
+    Without speculative decoding, ``num_computed_tokens`` is already ``num_tokens - 1`` and nothing changes.
+    """
+    from vllm.distributed.kv_transfer.kv_connector.v1.nixl import pull_scheduler
+    from vllm.v1.request import RequestStatus
+
+    cls = pull_scheduler.NixlPullConnectorScheduler
+    original = cls.request_finished
+    if getattr(original, "_prime_rl_spec_decode_coverage", False):
+        return
+
+    def request_finished(self, request, block_ids):
+        params = request.kv_transfer_params
+        valid = request.num_tokens - 1
+        if (
+            getattr(self, "is_bidirectional_kv_xfer_enabled", False)
+            and params
+            and not params.get("do_remote_decode")
+            and request.status in (RequestStatus.FINISHED_LENGTH_CAPPED, RequestStatus.FINISHED_STOPPED)
+            and 0 < valid < request.num_computed_tokens
+        ):
+            block_ids = trim_block_ids_to_tokens(block_ids, self.kv_cache_config.kv_cache_groups, valid)
+            computed = request.num_computed_tokens
+            request.num_computed_tokens = valid
+            try:
+                return original(self, request, block_ids)
+            finally:
+                request.num_computed_tokens = computed
+        return original(self, request, block_ids)
+
+    request_finished._prime_rl_spec_decode_coverage = True
+    cls.request_finished = request_finished
+
+
+def monkey_patch_keep_pause_ignores_held_kv():
+    """A ``keep`` pause completes without waiting for KV blocks held for another instance.
+
+    A paused engine reports itself idle, which completes a ``keep`` pause, once the scheduler has no requests. Under
+    P/D, the scheduler also counts finished requests whose blocks it holds for a remote reader: prefill holds each
+    finished prefill until decode pulls it, and decode's lease heartbeats keep that hold alive while the request waits
+    in decode's queue; with bidirectional transfer, decode holds each finished turn for up to its TTL so the next
+    turn's prefill can read it. Pausing for a weight update therefore waits for decode to admit its whole queue and
+    for every held turn to be read or expire, which takes many minutes under load.
+
+    While the scheduler is paused with ``PAUSED_ALL``, count only requests the next step must still report as
+    finished. The held blocks stay allocated, a weight update does not touch them, remote reads of them proceed without
+    this engine stepping, and the engine processes their completion or expiry once it resumes. The paused peer sends no
+    lease heartbeats, so ``monkey_patch_freeze_nixl_leases_during_keep_pause`` keeps those leases from expiring meanwhile.
+    """
+    from vllm.v1.core.sched.interface import PauseState
+    from vllm.v1.core.sched.scheduler import Scheduler
+
+    original = Scheduler.has_finished_requests
+    if getattr(original, "_prime_rl_keep_pause", False):
+        return
+
+    def has_finished_requests(self) -> bool:
+        if self.pause_state == PauseState.PAUSED_ALL:
+            return bool(self.finished_req_ids)
+        return original(self)
+
+    has_finished_requests._prime_rl_keep_pause = True
+    Scheduler.has_finished_requests = has_finished_requests
+
+
+def freeze_send_leases(nixl_worker) -> None:
+    """Record the time each unexpired NIXL send lease has left; expired leases are not recorded, so not revived."""
+    import time
+
+    now = time.perf_counter()
+    nixl_worker._prime_rl_frozen_leases = {
+        req_id: expires - now for req_id, expires in nixl_worker._reqs_to_send.items() if expires > now
+    }
+
+
+def thaw_send_leases(nixl_worker) -> None:
+    """Give each lease recorded by ``freeze_send_leases`` that is still outstanding its recorded remaining time from
+    now, keeping a later deadline set by a heartbeat. Leases granted since the freeze stay as they are."""
+    import time
+
+    now = time.perf_counter()
+    frozen = getattr(nixl_worker, "_prime_rl_frozen_leases", None) or {}
+    for req_id, remaining in frozen.items():
+        if req_id in nixl_worker._reqs_to_send:
+            nixl_worker._reqs_to_send[req_id] = max(nixl_worker._reqs_to_send[req_id], now + remaining)
+    nixl_worker._prime_rl_frozen_leases = None
+
+
+def _nixl_workers() -> list:
+    """The NIXL connector workers in this worker process, also inside a MultiConnector."""
+    from vllm.distributed.kv_transfer import get_kv_transfer_group, has_kv_transfer_group
+    from vllm.distributed.kv_transfer.kv_connector.v1.nixl.base_worker import NixlBaseConnectorWorker
+
+    if not has_kv_transfer_group():
+        return []
+    group = get_kv_transfer_group()
+    connectors = getattr(group, "sub_connectors", None) or [group]
+    workers = [getattr(connector, "connector_worker", None) for connector in connectors]
+    return [worker for worker in workers if isinstance(worker, NixlBaseConnectorWorker)]
+
+
+def _freeze_nixl_send_leases(_worker) -> None:
+    for nixl_worker in _nixl_workers():
+        freeze_send_leases(nixl_worker)
+
+
+def _thaw_nixl_send_leases(_worker) -> None:
+    for nixl_worker in _nixl_workers():
+        thaw_send_leases(nixl_worker)
+
+
+def monkey_patch_freeze_nixl_leases_during_keep_pause():
+    """NIXL send leases keep their remaining time across a ``keep`` pause.
+
+    A worker holds a finished request's blocks for a remote reader until the reader reports the read or the lease
+    expires; the reader extends the lease with heartbeats it sends as it steps. While both engines are paused for a
+    weight update, no heartbeats are sent or processed, and a lease that runs on wall-clock time would expire: on
+    resume the holder would release and reuse blocks the reader still reads.
+
+    A ``keep`` pause records each unexpired lease's remaining time in the engine's workers, and resume restores it from
+    the resume time before the next step reaps expired leases. Outside of a ``keep`` pause, vLLM's wall-clock lease
+    reaper is unchanged, so leases run down during slow steps as they do without this patch.
+    """
+    from vllm.v1.engine.core import EngineCore, EngineCoreProc
+
+    for cls in (EngineCore, EngineCoreProc):
+        original_pause = cls.__dict__["pause_scheduler"]
+        if getattr(original_pause, "_prime_rl_freeze_leases", False):
+            continue
+
+        def pause_scheduler(self, mode="abort", clear_cache=True, *args, _original=original_pause, **kwargs):
+            result = _original(self, mode, clear_cache, *args, **kwargs)
+            if mode == "keep" and self.vllm_config.kv_transfer_config is not None:
+                self.collective_rpc(_freeze_nixl_send_leases)
+                self._prime_rl_leases_frozen = True
+            return result
+
+        pause_scheduler._prime_rl_freeze_leases = True
+        cls.pause_scheduler = pause_scheduler
+
+    original_resume = EngineCore.resume_scheduler
+    if getattr(original_resume, "_prime_rl_freeze_leases", False):
+        return
+
+    def resume_scheduler(self) -> None:
+        original_resume(self)
+        if getattr(self, "_prime_rl_leases_frozen", False):
+            self.collective_rpc(_thaw_nixl_send_leases)
+            self._prime_rl_leases_frozen = False
+
+    resume_scheduler._prime_rl_freeze_leases = True
+    EngineCore.resume_scheduler = resume_scheduler
 
 
 def monkey_patch_block_outermost_mla_stride():
@@ -290,106 +542,6 @@ def monkey_patch_aux_output_store():
     aux_worker.BlockObjectStore = _RoomyBlockObjectStore
 
 
-def monkey_patch_online_mxfp8_moe_keep_kernel_on_reload():
-    """Keep the boot-time online-MXFP8 MoE kernel across weight reloads.
-
-    ``Mxfp8OnlineMoEMethod._setup_kernel`` rebuilds ``moe_quant_config`` and ``moe_kernel`` on every
-    reload. Decode replays CUDA graphs captured against the boot-time kernel, so once the old
-    kernel is dropped the graphs read freed memory for tensors only it referenced, and decode
-    samples sporadic garbage tokens that eager prefill (and the trainer) do not reproduce. The
-    boot-time kernel references the layer's original parameters, which layerwise reload refills
-    in place, so on reload we only install the new weights and keep the kernel.
-
-    Upstream fix: https://github.com/vllm-project/vllm/pull/62406; remove this patch when our
-    minimum vLLM version includes it.
-    """
-    from vllm.model_executor.layers.fused_moe.oracle.fp8 import convert_to_fp8_moe_kernel_format
-    from vllm.model_executor.layers.quantization.online.mxfp8 import Mxfp8OnlineMoEMethod
-    from vllm.model_executor.utils import replace_parameter
-
-    original_setup_kernel = Mxfp8OnlineMoEMethod._setup_kernel
-    if getattr(original_setup_kernel, "_prime_rl_keeps_kernel", False):
-        return
-
-    def _setup_kernel(self, layer, w13, w2, w13_scale, w2_scale, w13_input_scale, w2_input_scale):
-        if getattr(self, "moe_kernel", None) is None:
-            return original_setup_kernel(self, layer, w13, w2, w13_scale, w2_scale, w13_input_scale, w2_input_scale)
-        w13, w2, w13_scale, w2_scale = convert_to_fp8_moe_kernel_format(
-            fp8_backend=self.fp8_backend,
-            layer=layer,
-            w13=w13,
-            w2=w2,
-            w13_scale=w13_scale,
-            w2_scale=w2_scale,
-            w13_input_scale=w13_input_scale,
-            w2_input_scale=w2_input_scale,
-        )
-        replace_parameter(layer, "w13_weight", w13)
-        replace_parameter(layer, "w2_weight", w2)
-        replace_parameter(layer, f"w13_{self.weight_scale_name}", w13_scale)
-        replace_parameter(layer, f"w2_{self.weight_scale_name}", w2_scale)
-
-    _setup_kernel._prime_rl_keeps_kernel = True
-    Mxfp8OnlineMoEMethod._setup_kernel = _setup_kernel
-
-
-def monkey_patch_glm5_next_kda_conv_weights():
-    """Make GLM-5.3 Flash's merged KDA conv weight a view of the q/k/v conv weights.
-
-    vLLM builds `_merged_conv_weight` once as a `torch.cat` copy, so weight updates never reach it.
-    After loading, store the three weights as slices of one buffer and point the cache at it;
-    reloads copy into parameter storage in place, so updates land in the buffer.
-
-    vLLM with https://github.com/vllm-project/vllm/pull/60991 keeps the q/k/v conv weights in one
-    parameter that the conv kernels read directly, so there this patch does nothing: its hook reads
-    attributes that no longer exist and would replace vLLM's own ``process_weights_after_loading``
-    where a model class defines one. Remove it when our minimum vLLM version includes that change.
-    """
-    from vllm.models.glm5next.common import kda
-    from vllm.models.glm5next.common.model import Glm5NextForCausalLM, Glm5NextForConditionalGeneration
-
-    if hasattr(kda, "_fused_qkv_conv1d"):
-        return
-
-    @torch.no_grad()
-    def process_weights_after_loading(self) -> None:
-        for module in self.modules():
-            if isinstance(module, kda.Glm5NextLinearAttention):
-                convs = (module.q_conv1d, module.k_conv1d, module.v_conv1d)
-                merged = torch.cat([conv.weight.data for conv in convs])
-                for conv, part in zip(convs, merged.chunk(3)):
-                    conv.weight.data = part
-                # merged shape needs to be [3C, K] instead of [3C, 1, K]
-                module._merged_conv_weight = merged.flatten(1)
-
-    Glm5NextForCausalLM.process_weights_after_loading = process_weights_after_loading
-    Glm5NextForConditionalGeneration.process_weights_after_loading = process_weights_after_loading
-
-
-def monkey_patch_online_fp8_parameter_cast():
-    """Pass plain tensors to vLLM's compiled block-FP8 caster.
-
-    Layerwise reload restores ``ModelWeightParameter`` objects before online
-    quantization. TorchDynamo recursively dispatches that tensor subclass while
-    tracing ``per_block_cast_to_fp8``. ``Parameter.data`` shares storage but is
-    a plain tensor, matching the input accepted during the initial model load.
-    """
-    from torch.nn import Parameter
-    from vllm.model_executor.layers.quantization.online import fp8
-
-    original_cast = fp8.per_block_cast_to_fp8
-    if getattr(original_cast, "_prime_rl_unwraps_parameters", False):
-        return
-
-    def _per_block_cast_to_fp8(x, *args, **kwargs):
-        if isinstance(x, Parameter):
-            x = x.data
-        return original_cast(x, *args, **kwargs)
-
-    _per_block_cast_to_fp8._prime_rl_unwraps_parameters = True
-    fp8.per_block_cast_to_fp8 = _per_block_cast_to_fp8
-
-
 def monkey_patch_kv_xfer_finished_tolerate_freed():
     """Tolerate KV-transfer finish notifications for already-freed requests.
 
@@ -427,17 +579,12 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
         if self.connector is not None:
             self.connector.update_connector_output(kv_connector_output)
 
-        # Since vllm-project/vllm#65319 an aborted request's unfinished async load counts against
-        # `max_num_inflight_kv_loads` until it reports done.
-        aborted_kv_loads = getattr(self, "_aborted_kv_loads", None)
         for req_id in kv_connector_output.finished_recving or ():
             logger.debug("Finished recving KV transfer for request %s", req_id)
-            # Before the skip below: the load is done even when the request is already freed.
-            if aborted_kv_loads is not None:
-                aborted_kv_loads.discard(req_id)
             # Stale notification for a request freed earlier this step (e.g. an
-            # aborted request whose send completion freed it). Nothing to do.
+            # aborted request whose send completion freed it): only its load slot is left.
             if req_id not in self.requests:
+                self._aborted_kv_loads.discard(req_id)
                 continue
             req = self.requests[req_id]
             if req.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
@@ -445,6 +592,7 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
                 self._set_kv_fetch_stage(req, KV_FETCH_COMPLETED_WAITING)
             else:
                 assert RequestStatus.is_finished(req.status)
+                self._aborted_kv_loads.discard(req_id)
                 self._free_blocks(self.requests[req_id])
         for req_id in kv_connector_output.finished_sending or ():
             logger.debug("Finished sending KV transfer for request %s", req_id)
@@ -496,7 +644,7 @@ def monkey_patch_minimax_m2_think_end_passthrough():
 def monkey_patch_routed_experts_with_pd_connectors():
     """Let vLLM's routed-experts capture (AuxOutput connector) run on NIXL P/D instances.
 
-    vLLM (0.33 included) rejects routed-experts capture with P/D connectors, because a decode instance never
+    vLLM (0.34 included) rejects routed-experts capture with P/D connectors, because a decode instance never
     computes a remotely prefilled prompt, so it has no rows for it. This carries our upstream fix
     (AuxOutput patch 02): a request on a decode instance emits rows only from its first forward on
     this instance, and the worker does not buffer the
@@ -564,14 +712,11 @@ def monkey_patch_routed_experts_with_pd_connectors():
             return num_external
         return original_cap_external_hit(self, request, num_local, num_external)
 
-    # The worker builds its buffer in `initialize_output_storage` since vllm-project/vllm#63237, in `__init__` before.
-    builds_buffer = (
-        "initialize_output_storage" if hasattr(AuxOutputWorkerConnector, "initialize_output_storage") else "__init__"
-    )
-    original_build_buffer = getattr(AuxOutputWorkerConnector, builds_buffer)
+    original_initialize_output_storage = AuxOutputWorkerConnector.initialize_output_storage
 
-    def build_buffer(self, *args, **kwargs):
-        original_build_buffer(self, *args, **kwargs)
+    def initialize_output_storage(self, kv_cache_config):
+        # vLLM builds the buffer here once the KV cache layout is resolved, on the output rank only
+        original_initialize_output_storage(self, kv_cache_config)
         if self._buffer is not None:
             skip_remote_prefill_partial_block(self)
 
@@ -581,7 +726,7 @@ def monkey_patch_routed_experts_with_pd_connectors():
     AuxOutputSchedulerConnector.request_finished = request_finished
     AuxOutputSchedulerConnector.max_cache_hit = max_cache_hit
     AuxOutputSchedulerConnector.cap_external_hit = cap_external_hit
-    setattr(AuxOutputWorkerConnector, builds_buffer, build_buffer)
+    AuxOutputWorkerConnector.initialize_output_storage = initialize_output_storage
 
 
 def skip_remote_prefill_partial_block(worker) -> None:
@@ -883,7 +1028,7 @@ def _patch_qwen35_moe_lora_format():
 def _patch_lora_key_prefix():
     """Accept both bare-suffix and fully-qualified expert module names in LoRA adapters.
 
-    Copy of vLLM 0.33.0's ``LoRAModel.from_local_checkpoint`` with one change: the
+    Copy of vLLM 0.34.0's ``LoRAModel.from_local_checkpoint`` with one change: the
     ``.experts`` branch of ``check_unexpected_modules`` accepts either the bare suffix
     (``down_proj``) or the qualified per-expert name (``experts.N.down_proj``), where
     upstream only accepts the qualified form. Our trainer's 2D per-expert adapters
@@ -917,6 +1062,7 @@ def _patch_lora_key_prefix():
         weights_mapper: WeightsMapper | None = None,
         skip_prefixes: list[str] | None = None,
         moe_ep_spec: MoEEPLoadSpec | None = None,
+        unsupported_lora_modules: set[str] | None = None,
     ) -> "LoRAModel":
         """Create a LoRAModel from a local checkpoint.
 
@@ -937,6 +1083,9 @@ def _patch_lora_key_prefix():
                 slicing metadata shared across all MoE layers. Non-local
                 expert weights are skipped at read time instead of being
                 loaded and discarded later.
+            unsupported_lora_modules: Full names of model layers that match
+                expected_lora_modules but are not wrapped by LoRA, such as
+                BERT's pooler.dense. LoRA weights on them are unexpected.
 
         Returns:
             Loaded LoRA Model.
@@ -972,6 +1121,9 @@ def _patch_lora_key_prefix():
 
                 elif base_name not in expected_lora_modules and base_name not in (peft_helper.modules_to_save or ()):
                     unexpected_modules.append(module_name)
+
+                elif module_name in (unsupported_lora_modules or ()):
+                    unexpected_modules.append(f"{module_name} (not a LoRA layer)")
 
             if unexpected_modules:
                 raise ValueError(

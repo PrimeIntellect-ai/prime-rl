@@ -1,6 +1,6 @@
 import importlib
 import json
-import os
+import re
 import sys
 from pathlib import Path
 from typing import Annotated, Literal, get_args
@@ -27,9 +27,9 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.configs.orchestrator import (
     ModelConfig as OrchestratorModelConfig,
 )
-from prime_rl.configs.pretrain import PretrainConfig
+from prime_rl.configs.pretrain import PretrainConfig, PretrainDataConfig
 from prime_rl.configs.rl import RLConfig
-from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.sft import SFTConfig, SFTDataConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.utils.config import MODES, BaseConfig, check_mode, cli, dump_resolved_config
@@ -53,6 +53,36 @@ def get_config_files() -> list[Path]:
     return [path for root in roots for path in root.rglob("*.toml")]
 
 
+ENTRYPOINT_CONFIGS = {
+    "rl": RLConfig,
+    "trainer": TrainerConfig,
+    "sft": SFTConfig,
+    "pretrain": PretrainConfig,
+    "orchestrator": OrchestratorConfig,
+    "inference": InferenceConfig,
+    "env-worker-pool": EnvWorkerPoolConfig,
+    "eval": EvalConfig,
+}
+
+# A launch command in a config's comments, e.g. `#   uv run rl @ base.toml @ overlay.toml --max-steps 5`.
+# Only the `@` file stack counts; lines with placeholders instead of TOML paths don't match.
+LAUNCH_COMMAND = re.compile(r"^#\s*uv run ([\w-]+)((?:\s+@\s+\S+\.toml)+)")
+
+
+def get_launch_commands() -> list[tuple[str, str, list[Path]]]:
+    """(location, entrypoint, config stack) for each launch command documented in a config file."""
+    commands = []
+    for config_file in get_config_files():
+        for number, line in enumerate(config_file.read_text().splitlines(), start=1):
+            if match := LAUNCH_COMMAND.match(line):
+                stack = [Path(path) for path in match[2].split()[1::2]]
+                commands.append((f"{config_file.as_posix()}:{number}", match[1], stack))
+    return commands
+
+
+LAUNCH_COMMANDS = get_launch_commands()
+
+
 def can_parse(config_cls: type, args: list[str]) -> bool:
     """Whether `cli` parses the given `@` config file args into `config_cls`."""
     try:
@@ -64,23 +94,32 @@ def can_parse(config_cls: type, args: list[str]) -> bool:
 
 @pytest.mark.parametrize("config_file", get_config_files(), ids=lambda x: x.as_posix())
 def test_load_configs(config_file: Path):
-    """Tests that all config files can be loaded by at least one config class.
+    """Tests that every config file parses on its own into at least one config class, or is an overlay.
 
-    A file that no class parses standalone is an overlay — a checked-in config that only carries
-    the deltas over a shared base (e.g. the glm-4.5-air budget variants over
-    `swe-budget.toml`). Retry those composed with each sibling TOML as the base: the
-    documented `@ base.toml @ overlay.toml` left-to-right merge (docs/configuration.md,
-    "TOML Composition").
+    An overlay only carries the deltas over a base (e.g. the glm-4.5-air budget variants over
+    `swe-budget.toml`). It must be part of a launch command documented in a config's comments,
+    which `test_launch_commands` parses.
     """
-    could_parse = [can_parse(config_cls, ["@", config_file.as_posix()]) for config_cls in CONFIG_CLASSES]
-    if not any(could_parse):
-        sibling_bases = sorted(p for p in config_file.parent.glob("*.toml") if p != config_file)
-        could_parse = [
-            can_parse(config_cls, ["@", base.as_posix(), "@", config_file.as_posix()])
-            for base in sibling_bases
-            for config_cls in CONFIG_CLASSES
-        ]
-    assert any(could_parse), f"No config class could be parsed from {config_file}"
+    if any(config_file in stack for _, _, stack in LAUNCH_COMMANDS):
+        return
+    assert any(can_parse(config_cls, ["@", config_file.as_posix()]) for config_cls in CONFIG_CLASSES), (
+        f"{config_file} parses into no config class on its own. If it is an overlay, document how to "
+        f"compose it in a header comment, e.g. `#   uv run rl @ base.toml @ {config_file.as_posix()}`."
+    )
+
+
+@pytest.mark.parametrize(
+    ("entrypoint", "stack"),
+    [(entrypoint, stack) for _, entrypoint, stack in LAUNCH_COMMANDS],
+    ids=[location for location, _, _ in LAUNCH_COMMANDS],
+)
+def test_launch_commands(entrypoint: str, stack: list[Path]):
+    """Tests that each launch command documented in a config file parses with its entrypoint's config class."""
+    assert entrypoint in ENTRYPOINT_CONFIGS, f"Unknown entrypoint `{entrypoint}`"
+    missing = [path for path in stack if not path.is_file()]
+    assert not missing, f"Launch command references missing files: {missing}"
+    args = [arg for path in stack for arg in ("@", path.as_posix())]
+    cli(ENTRYPOINT_CONFIGS[entrypoint], args=args)
 
 
 class NestedConfig(BaseConfig):
@@ -161,7 +200,7 @@ def test_pretrain_config_roundtrip(tmp_path):
     `uv run sft` rejects."""
     from prime_rl.entrypoints.launcher import write_config
 
-    write_toml(tmp_path / "pretrain.toml", {"data": {"paths": [str(tmp_path / "tokens")]}})
+    write_toml(tmp_path / "pretrain.toml", {"data": {"source": [{"name": "web", "path": str(tmp_path / "tokens")}]}})
     config = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--output-dir", str(tmp_path)])
     assert config.data.type == "datatrove"
     assert (config.optim.type, config.optim.lr, config.optim.weight_decay) == ("adamw", 1e-3, 0.01)
@@ -175,6 +214,57 @@ def test_pretrain_config_roundtrip(tmp_path):
     assert muon.optim.lr == 1e-3
     warmup = cli(PretrainConfig, args=["@", str(tmp_path / "pretrain.toml"), "--scheduler.warmup-steps", "100"])
     assert (warmup.scheduler.warmup_steps, warmup.scheduler.decay_steps) == (100, 0)
+
+
+@pytest.mark.parametrize(
+    ("data", "error"),
+    [
+        ({"source": [{"name": "a", "path": "a"}, {"name": "a", "path": "b"}]}, "names must be unique"),
+        (
+            {"source": [{"name": "a", "path": "a", "weight": 1.0}, {"name": "b", "path": "b"}]},
+            "on every source or on none",
+        ),
+        (
+            {"source": [{"name": "a", "path": "a", "weight": 0.0}, {"name": "b", "path": "b", "weight": 0.0}]},
+            "more than 0",
+        ),
+    ],
+)
+def test_pretrain_data_rejects_invalid_sources(data: dict, error: str):
+    with pytest.raises(ValidationError, match=error):
+        PretrainDataConfig(**data)
+
+
+def test_repetitions_need_max_steps():
+    sources = {"source": [{"name": "a", "path": "a", "repetitions": 2.0}]}
+    with pytest.raises(ValidationError, match="needs max_steps"):
+        PretrainConfig.model_validate({"data": sources})
+
+
+def test_val_set_defaults(tmp_path):
+    """[[val.set]] are scored at the training seq_len unless they set their own, in rows of val.micro_batch_tokens:
+    the training micro-batch or the longest set seq_len, whichever is larger, rounded up to a multiple of the CP
+    degree."""
+    path = str(tmp_path / "tokens")
+    val_sets = [
+        {"type": "documents", "name": "short", "path": path},
+        {"type": "documents", "name": "long", "path": path, "seq_len": 4096},
+    ]
+    write_toml(
+        tmp_path / "pretrain.toml",
+        {
+            "data": {"source": [{"name": "web", "path": path}], "seq_len": 1024, "micro_batch_size": 2},
+            "val": {"set": val_sets},
+        },
+    )
+    args = ["@", str(tmp_path / "pretrain.toml"), "--output-dir", str(tmp_path)]
+    config = cli(PretrainConfig, args=args)
+    assert [val_set.seq_len for val_set in config.val.set] == [1024, 4096]
+    assert config.val.micro_batch_tokens == 4096
+    assert not can_parse(PretrainConfig, [*args, "--val.micro-batch-tokens", "2048"])
+    odd_set = json.dumps([{**val_sets[1], "seq_len": 4097}])
+    cp_args = [*args, "--model.cp", "2", "--data.micro-batch-size", "1", "--val.set", odd_set]
+    assert cli(PretrainConfig, args=cp_args).val.micro_batch_tokens == 4098
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -427,7 +517,7 @@ def test_moe_compute_apply_to_cli(selection, selected):
             "MXFP8 transport requires",
         ),
         (
-            {"ep": 8, "moe": {"dispatch": {"type": "mega_moe", "precision": "mxfp8", "llep": {}}}},
+            {"ep": 8, "moe": {"dispatch": {"type": "mega_moe", "precision": "fp8", "llep": {}}}},
             "llep requires",
         ),
     ],
@@ -437,12 +527,26 @@ def test_invalid_moe_runtime_configs_fail(model, message):
         TrainerModelConfig.model_validate(model)
 
 
+@pytest.mark.parametrize(
+    ("model", "message"),
+    [
+        ({"ac": {"mode": "selective", "targets": ["@self_attn"]}}, "Invalid activation checkpointing target"),
+        ({"ac": {"mode": "selective", "targets": ["aten::mm@"]}}, "Invalid activation checkpointing target"),
+        ({"ac": {"mode": "selective", "targets": ["aten::mm@a@b"]}}, "Invalid activation checkpointing target"),
+        ({"ac": {"mode": "selective", "targets": ["aten::mm@self_attn"]}, "compile": None}, "require model.compile"),
+    ],
+)
+def test_invalid_ac_targets_fail(model, message):
+    with pytest.raises(ValidationError, match=message):
+        TrainerModelConfig.model_validate(model)
+
+
 @pytest.mark.parametrize(("cp", "expected"), [(1, 262144), (8, 32768)])
 def test_mega_moe_buffer_defaults_to_a_cp_shard(cp, expected):
     mega_moe = {"type": "mega_moe", "precision": "mxfp8"}
     rl = TrainerConfig.model_validate({"model": {"seq_len": 262144, "cp": cp, "moe": {"dispatch": mega_moe}}})
     sft = SFTConfig.model_validate(
-        {"model": {"cp": cp, "moe": {"dispatch": mega_moe}}, "data": {"type": "fake", "seq_len": 262144}}
+        {"model": {"cp": cp, "moe": {"dispatch": mega_moe}}, "data": {"fake": {}, "seq_len": 262144}}
     )
 
     assert rl.model.moe.dispatch.max_tokens_per_rank == expected
@@ -816,6 +920,54 @@ def test_single_node_auto_inference_ports_follow_server_port():
     assert config.orchestrator.weight_broadcast.inference_world_size == 2
     assert config.inference.backend_port == 8101
     assert config.orchestrator.model.client.admin_base_url == ["http://localhost:8101/v1"]
+
+
+def test_rl_launcher_gives_the_admin_token_to_callers_and_its_digest_to_checkers():
+    from prime_rl.entrypoints.rl import admin_token_uses
+    from prime_rl.utils.admin_token import admin_token_digest
+
+    config = RLConfig.model_validate(
+        {
+            "trainer": {"control": {}},
+            "orchestrator": {"control": {}},
+            "inference": {"vllm": {"tensor_parallel_size": 1}},
+            "deployment": {"type": "single_node", "gpus_per_node": 4, "num_train_gpus": 2, "num_infer_gpus": 2},
+        }
+    )
+    uses = admin_token_uses(config)
+
+    base, envs = uses.split({"HOME": "/home/user", "PRIME_RL_ADMIN_TOKEN_SHA256": "stale"})
+    token = envs["orchestrator"]["PRIME_RL_ADMIN_TOKEN"]
+    digest = admin_token_digest(token)
+    assert len(token) >= 32
+    assert base == {"HOME": "/home/user"}
+    assert envs["inference"] == envs["trainer"] == {"PRIME_RL_ADMIN_TOKEN_SHA256": digest}
+    assert envs["orchestrator"] == {"PRIME_RL_ADMIN_TOKEN": token, "PRIME_RL_ADMIN_TOKEN_SHA256": digest}
+
+    base, envs = uses.split({"HOME": "/home/user", "PRIME_RL_ADMIN_TOKEN": "from-operator"})
+    assert base == {"HOME": "/home/user"}
+    assert envs["orchestrator"]["PRIME_RL_ADMIN_TOKEN"] == "from-operator"
+    assert envs["inference"] == {"PRIME_RL_ADMIN_TOKEN_SHA256": admin_token_digest("from-operator")}
+
+
+def test_sft_launcher_gives_the_admin_token_to_online_evals_and_its_digest_to_checkers():
+    from prime_rl.entrypoints.launcher import admin_token_uses
+    from prime_rl.utils.admin_token import admin_token_digest
+
+    config = SFTConfig.model_validate(
+        {
+            "control": {},
+            "eval": {"source": [{"name": "reverse-text", "env": {"taskset": {"id": "reverse-text"}}}]},
+            "inference": {},
+            "deployment": {"num_train_gpus": 1, "num_infer_gpus": 1},
+        }
+    )
+
+    base, envs = admin_token_uses(config).split({"HOME": "/home/user"})
+    token = envs["online-eval"]["PRIME_RL_ADMIN_TOKEN"]
+    assert base == {"HOME": "/home/user"}
+    assert envs["online-eval"] == {"PRIME_RL_ADMIN_TOKEN": token}
+    assert envs["inference"] == envs["trainer"] == {"PRIME_RL_ADMIN_TOKEN_SHA256": admin_token_digest(token)}
 
 
 def test_single_node_nccl_resolved_json_roundtrips(tmp_path):
@@ -1233,11 +1385,42 @@ def test_sft_rejects_default_renderer_for_real_data():
 def test_sft_allows_unused_default_renderer_for_fake_data():
     config = SFTConfig.model_validate(
         {
-            "data": {"type": "fake"},
+            "data": {"fake": {}},
             "renderer": {"name": "default"},
         }
     )
     assert config.renderer.name == "default"
+
+
+def test_sft_source_columns_override_data_columns():
+    config = SFTDataConfig.model_validate(
+        {
+            "columns": {"tools": "schemas"},
+            "source": [{"name": "a", "dataset": "x", "columns": {"messages": "chat"}}, {"name": "b", "dataset": "y"}],
+        }
+    )
+    assert [(source.columns.messages, source.columns.tools) for source in config.source] == [
+        ("chat", "schemas"),
+        ("messages", "schemas"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("sources", "message"),
+    [
+        ([{"name": "a", "dataset": "x"}, {"name": "a", "dataset": "y"}], "names must be unique"),
+        ([{"name": "a", "dataset": "x", "weight": 1}, {"name": "b", "dataset": "y"}], "on every source or on none"),
+        ([{"name": "a", "dataset": "x", "weight": 0}], "sum to more than 0"),
+    ],
+)
+def test_sft_sources_reject_invalid_mixtures(sources, message):
+    with pytest.raises(ValidationError, match=message):
+        SFTDataConfig.model_validate({"source": sources})
+
+
+def test_sft_val_rejects_fake_data():
+    with pytest.raises(ValidationError, match="not fake data"):
+        SFTConfig.model_validate({"val": {"data": {"fake": {}}}})
 
 
 def test_orchestrator_explicit_renderer_skips_unmapped_check():
@@ -1309,25 +1492,6 @@ def test_explicit_inference_parser_wins_over_auto():
     assert config.inference.vllm.tool_call_parser == "hermes"
 
 
-@pytest.mark.parametrize("deployment", [{"type": "single_node"}, {"type": "disaggregated"}])
-def test_combined_replay_uses_v2_runner(monkeypatch, deployment):
-    from prime_rl.inference.server import setup_vllm_env
-
-    monkeypatch.delenv("VLLM_USE_V2_MODEL_RUNNER", raising=False)
-    config = InferenceConfig(
-        deployment=deployment,
-        slurm={} if deployment["type"] == "disaggregated" else None,
-        enable_return_sampling_mask=True,
-        vllm={"enable_return_routed_experts": True},
-    )
-
-    setup_vllm_env(config)
-
-    assert config.enable_return_sampling_mask is True
-    assert config.vllm.enable_return_routed_experts is True
-    assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
-
-
 def test_pd_role_connectors():
     mooncake = {"type": "mooncake", "cpu": {"num_bytes": 1000}}
     deployment = {"type": "disaggregated", "decode_kv_cache_offload": {**mooncake, "cpu": {"num_bytes": 0}}}
@@ -1385,7 +1549,7 @@ def test_sft_config_accepts_custom_renderer(tmp_path, custom_renderer_import_pat
         tomli_w.dumps(
             {
                 "model": {"name": "PrimeIntellect/Qwen3-0.6B"},
-                "data": {"name": "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"},
+                "data": {"source": [{"name": "reverse", "dataset": "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"}]},
                 "renderer": {"name": "custom", "import_path": custom_renderer_import_path, "instruction": "Be brief."},
             }
         )
@@ -1454,16 +1618,117 @@ def test_score_centering_captures_complete_bounded_support(top_k, top_p):
     assert RLConfig.model_validate_json(config.model_dump_json()) == config
 
 
-def test_init_from_accepts_a_checkpoint_step_dir():
-    config = TrainerModelConfig(init_from="runs/sft/checkpoints/step_500")
+@pytest.mark.parametrize(
+    ("config_cls", "default_type"),
+    [(PretrainConfig, "scratch"), (SFTConfig, "pretrained"), (TrainerConfig, "pretrained")],
+)
+def test_model_init_type_defaults_per_entrypoint(tmp_path, config_cls, default_type: str):
+    data = {"data": {"source": [{"name": "tokens", "path": str(tmp_path)}]}} if config_cls is PretrainConfig else {}
+    assert config_cls.model_validate(data).model.init.type == default_type
+    # A [model.init] table without a type keeps the entrypoint's default.
+    assert config_cls.model_validate({**data, "model": {"init": {}}}).model.init.type == default_type
 
-    assert config.init_from == Path("runs/sft/checkpoints/step_500")
+
+def test_model_init_seed_belongs_to_scratch():
+    assert SFTConfig.model_validate({"model": {"init": {"type": "scratch", "seed": 1}}}).model.init.seed == 1
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        SFTConfig.model_validate({"model": {"init": {"seed": 1}}})
 
 
-@pytest.mark.parametrize("init_from", ["runs/sft/checkpoints", "runs/sft/checkpoints/step_500/trainer"])
-def test_init_from_rejects_a_path_that_is_not_a_step_dir(init_from: str):
-    with pytest.raises(ValidationError, match="model.init_from must point at a checkpoint step directory"):
-        TrainerModelConfig(init_from=init_from)
+@pytest.mark.parametrize("init_type", ["hf", "ckpt"])
+def test_model_init_types_of_earlier_versions_fail(init_type: str):
+    with pytest.raises(ValidationError, match="does not match any of the expected tags: 'scratch', 'pretrained'"):
+        SFTConfig.model_validate({"model": {"init": {"type": init_type}}})
+
+
+def test_model_init_scratch_rejects_lora():
+    with pytest.raises(ValidationError, match='model.init.type = "scratch" does not load'):
+        SFTConfig.model_validate({"model": {"init": {"type": "scratch"}, "lora": {}}})
+
+
+@pytest.mark.parametrize("tokenizer", [None, "Qwen/Qwen3-0.6B"])
+def test_inference_parsers_resolve_from_the_tokenizer_name(tokenizer: str | None):
+    data = {
+        "model": {"name": "runs/sft/checkpoints/step_500"},
+        "trainer": {},
+        "orchestrator": {
+            "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
+            "renderer": {"name": "qwen3"},
+        },
+        "inference": {},
+    }
+    if tokenizer is None:
+        with pytest.warns(UserWarning, match="set tokenizer.name"):
+            config = RLConfig.model_validate(data)
+        assert config.inference.vllm.tool_call_parser is None
+    else:
+        config = RLConfig.model_validate({**data, "tokenizer": {"name": tokenizer}})
+        assert config.inference.vllm.tool_call_parser == "hermes"
+
+
+def test_rl_shared_model_init_reaches_the_trainer():
+    config = RLConfig.model_validate(
+        {
+            "model": {"init": {"type": "scratch", "seed": 3}},
+            "trainer": {},
+            "orchestrator": {
+                "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
+                "renderer": {"name": "qwen3"},
+            },
+        }
+    )
+    assert config.trainer.model.init.type == "scratch" and config.trainer.model.init.seed == 3
+
+
+@pytest.mark.parametrize(
+    ("init_type", "explicit", "load_format"),
+    [("pretrained", None, None), ("scratch", None, "dummy"), ("scratch", "auto", "auto")],
+)
+def test_inference_loads_dummy_weights_for_a_scratch_init(
+    init_type: str, explicit: str | None, load_format: str | None
+):
+    vllm = {"speculative_config": {"method": "eagle3", "model": "drafts/eagle3"}}
+    if explicit is not None:
+        vllm["load_format"] = explicit
+    config = RLConfig.model_validate(
+        {
+            "model": {"init": {"type": init_type}},
+            "trainer": {},
+            "orchestrator": {
+                "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
+                "renderer": {"name": "qwen3"},
+            },
+            "inference": {"vllm": vllm},
+        }
+    )
+    namespace = config.inference.to_namespace()
+    assert getattr(namespace, "load_format", None) == load_format
+    draft_load_config = {"load_format": "auto"} if load_format == "dummy" else None
+    assert namespace.speculative_config.get("draft_load_config") == draft_load_config
+    assert RLConfig.model_validate_json(config.model_dump_json()) == config
+
+
+@pytest.mark.parametrize(
+    ("init_type", "vllm", "match"),
+    [
+        ("scratch", {"speculative_config": {"method": "mtp"}}, "reads its draft weights from model.name"),
+        ("scratch", {"speculative_config": {"model": "drafts/qwen3-0.6b"}}, "with the target's load format"),
+        ("pretrained", {"load_format": "dummy", "speculative_config": {"method": "mtp"}}, "reads its draft weights"),
+    ],
+)
+def test_a_draft_without_its_own_weights_fails_under_a_dummy_target(init_type: str, vllm: dict, match: str):
+    with pytest.raises(ValidationError, match=match):
+        RLConfig.model_validate(
+            {
+                "model": {"init": {"type": init_type}},
+                "trainer": {},
+                "orchestrator": {
+                    "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
+                    "renderer": {"name": "qwen3"},
+                },
+                "inference": {"vllm": vllm},
+            }
+        )
 
 
 def test_score_centering_replays_top_p_alone():

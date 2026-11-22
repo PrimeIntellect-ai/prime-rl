@@ -78,34 +78,6 @@ def clean_exit(func: Callable) -> Callable:
         return sync_wrapper
 
 
-def format_time(time_s: float) -> str:
-    """
-    Format a time in seconds to a human-readable format:
-    - >1d -> Xd Yh
-    - >1h -> Xh Ym
-    - >1m -> Xm Ys
-    - <1s -> Xms
-    - Else: Xs
-    """
-    if time_s >= 86400:
-        d = time_s // 86400
-        h = (time_s % 86400) // 3600
-        return f"{d:.0f}d" + (f" {h:.0f}h" if h > 0 else "")
-    elif time_s >= 3600:
-        h = time_s // 3600
-        m = (time_s % 3600) // 60
-        return f"{h:.0f}h" + (f" {m:.0f}m" if m > 0 else "")
-    elif time_s >= 60:
-        m = time_s // 60
-        s = (time_s % 60) // 1
-        return f"{m:.0f}m" + (f" {s:.0f}s" if s > 0 else "")
-    elif time_s < 1:
-        ms = time_s * 1e3
-        return f"{ms:.0f}ms"
-    else:
-        return f"{time_s:.0f}s"
-
-
 def format_num(num: float | int, precision: int = 2) -> str:
     """
     Format a number in human-readable format with abbreviations.

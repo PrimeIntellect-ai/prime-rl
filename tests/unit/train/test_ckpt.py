@@ -1,5 +1,7 @@
+from unittest.mock import Mock
+
 from prime_rl.configs.trainer import CheckpointConfig
-from prime_rl.trainer.ckpt import CheckpointManager
+from prime_rl.trainer.ckpt import CheckpointManager, ModelFiles
 from prime_rl.utils.pathing import get_ckpt_dir, get_step_path
 
 
@@ -11,7 +13,7 @@ def test_keep_last_ignores_a_step_cut_off_mid_write(tmp_path):
     for step in (1, 2):
         (get_step_path(ckpt_dir, step) / "trainer" / ".metadata").touch()
 
-    manager = CheckpointManager(tmp_path, CheckpointConfig(keep_last=1))
+    manager = CheckpointManager(tmp_path, CheckpointConfig(keep_last=1), Mock(spec=ModelFiles))
     manager.maybe_clean()
 
     assert manager.ckpt_steps == [2]
