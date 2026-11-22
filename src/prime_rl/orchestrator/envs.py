@@ -36,7 +36,7 @@ from prime_rl.utils.pathing import env_address_file
 
 # Pool replicas start concurrently with the orchestrator. Health checks reach the
 # broker; a reply does not establish worker readiness.
-ENV_WORKER_POOL_STARTUP_TIMEOUT = 600.0
+ENV_WORKER_POOL_STARTUP_TIMEOUT = 1800.0
 
 
 async def wait_for_address(path: Path, timeout: float) -> str:
