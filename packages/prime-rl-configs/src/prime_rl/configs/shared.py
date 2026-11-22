@@ -80,11 +80,55 @@ class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     """Allocate two transfer arenas so inference can replay one weight group while receiving the next."""
 
 
+class ModelExpressWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
+    type: Literal["modelexpress"] = "modelexpress"
+
+    port: int = 8001
+    """ModelExpress gRPC port."""
+
+    metadata_port: int = 5655
+    """Base port of the trainer's NIXL metadata listener. Each local rank listens on this plus its device id."""
+
+    staging_mode: Literal["COPY_TO_HOST", "COPY_TO_DEVICE", "IN_PLACE"] = "COPY_TO_HOST"
+    """Trainer storage policy passed to ModelExpress."""
+
+    staging_buffer_bytes: int | None = Field(None, gt=0)
+    """Receiver staging capacity per buffer. None stages a complete update."""
+
+    staging_buffers_count: int = Field(1, ge=1)
+    """Number of receiver buffers. Two overlap the next read with installation."""
+
+
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
+    FileSystemWeightBroadcastConfig
+    | NCCLWeightBroadcastConfig
+    | NIXLWeightBroadcastConfig
+    | ModelExpressWeightBroadcastConfig,
     Field(discriminator="type"),
 ]
 """Weight transfer from trainer to inference. ``rl`` copies its ``[weight_broadcast]`` to the trainer and orchestrator."""
+
+
+class BaseDeploymentConfig(BaseConfig):
+    gpus_per_node: int = 8
+    """GPUs per node."""
+
+
+class BaseSingleNodeDeploymentConfig(BaseDeploymentConfig):
+    type: Literal["single_node"] = "single_node"
+
+    num_train_gpus: int = 1
+    """GPUs allocated to the trainer."""
+
+    num_infer_gpus: int = 1
+    """GPUs allocated to inference. ``sft`` uses them only for online evals with an ``[inference]`` block."""
+
+
+class BaseMultiNodeDeploymentConfig(BaseDeploymentConfig):
+    type: Literal["multi_node"] = "multi_node"
+
+    num_train_nodes: int = Field(ge=1)
+    """Training nodes."""
 
 
 class RunConfig(BaseConfig):
@@ -101,6 +145,9 @@ class ControlConfig(BaseConfig):
 
     port: int = Field(8040, ge=1, le=65535)
     """Port the control API listens on."""
+
+    admin_token_var: str = "PRIME_RL_ADMIN_TOKEN"
+    """Name of the environment variable holding the run's admin token. When it, or ``<name>_SHA256`` holding the token's SHA-256 digest, is set, every control request must carry the token in the ``X-Prime-Admin-Token`` header."""
 
 
 class ResumeConfig(BaseConfig):
@@ -119,8 +166,8 @@ class ResumeConfig(BaseConfig):
             raise ValueError(
                 "resume.step and resume.dir are mutually exclusive — the step is taken from the directory name"
             )
-        if self.dir is not None and not re.fullmatch(r"step_\d+", self.dir.name):
-            raise ValueError(f"resume.dir must point at a checkpoint step directory (`.../step_<N>`), got '{self.dir}'")
+        if self.dir is not None:
+            validate_step_dir(self.dir, field="resume.dir")
         return self
 
     @property
@@ -159,7 +206,7 @@ class SlurmConfig(BaseConfig):
     """Shell command to run on the head node after cd, .env sourcing, and venv activation. Useful for cleanup like ``sudo pkill -f vllm``; wrap with ``srun bash -c '...'`` to fan out to all nodes."""
 
     launch_modelexpress: bool = True
-    """Start a job-scoped ModelExpress service for NIXL weight transfer."""
+    """Start a job-scoped ModelExpress server for NIXL and ModelExpress weight broadcasts on multi-node jobs."""
 
     cleanup_grace_period: int = Field(3600, ge=0)
     """Maximum seconds a multi-node RL job that hit a non-zero exit waits for an in-flight trainer checkpoint to finish before tearing down. Without an in-flight checkpoint (or without ``[ckpt]``) it tears down immediately. Set to 0 to never wait."""
@@ -189,16 +236,7 @@ class SlurmConfig(BaseConfig):
         return self
 
 
-ServerType = Literal["vllm", "openai"]
-
-
 class VLMConfig(BaseConfig):
-    vision_encoder_attr: str
-    """Dotted attribute path to the vision encoder module (e.g. ``model.visual``)."""
-
-    language_model_attr: str
-    """Dotted attribute path to the language model module (e.g. ``model.language_model``)."""
-
     freeze_vision_encoder: bool = True
     """Freeze the vision encoder parameters during training."""
 
@@ -210,9 +248,6 @@ class BaseModelConfig(BaseConfig):
     trust_remote_code: bool = False
     """Trust remote code when initializing the tokenizer."""
 
-    vlm: "VLMConfig | None" = None
-    """VLM configuration. Setting this enables vision-language model support."""
-
 
 class DynamoConfig(BaseConfig):
     enabled: bool = True
@@ -220,6 +255,9 @@ class DynamoConfig(BaseConfig):
 
     discovery_url: str | None = Field(default=None, min_length=1, max_length=2048)
     """Dynamo frontend URL used to discover inference workers for RL control."""
+
+
+ADMIN_TOKEN_HEADER = "X-Prime-Admin-Token"
 
 
 class ClientConfig(BaseClientConfig):
@@ -232,12 +270,16 @@ class ClientConfig(BaseClientConfig):
     admin_base_url: list[str] | None = None
     """Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in multi-replica or disaggregated P/D deployments where the router must not handle admin traffic."""
 
+    admin_token_var: str | None = None
+    """Name of the environment variable holding the admin token of the inference servers. When it is set and non-empty, engine admin requests carry it in the ``X-Prime-Admin-Token`` header."""
+
 
 class VLLMClientConfig(ClientConfig):
     """Client defaults for the live inference deployment managed by training."""
 
     base_url: str = "http://localhost:8000/v1"
     api_key_var: str = "VLLM_API_KEY"
+    admin_token_var: str | None = "PRIME_RL_ADMIN_TOKEN"
 
 
 class PolicyClientConfig(VLLMClientConfig):
@@ -249,10 +291,8 @@ class PolicyClientConfig(VLLMClientConfig):
 
 class LogConfig(BaseConfig):
     level: str = Field(default_factory=lambda: os.environ.get("PRIME_LOG_LEVEL", "info"))
-    """Log level for the process. Defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``."""
-
-    vf_level: str = Field(default_factory=lambda: os.environ.get("PRIME_VF_LOG_LEVEL", "info"))
-    """Log level for the verifiers package. Defaults to ``$PRIME_VF_LOG_LEVEL`` if set, else ``info``."""
+    """Log level for the process and the verifiers library it runs, env worker pools included.
+    Defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``."""
 
     json_logging: bool = False
     """Emit newline-delimited JSON logs for aggregation (Loki, Grafana, etc.)."""
@@ -285,7 +325,13 @@ class HeartbeatConfig(BaseConfig):
 
 
 class BaseTransportConfig(BaseConfig):
-    pass
+    retain: bool = False
+    """Keep every shipped step, and the training arrays the env worker pools hold for it,
+    until a trainer checkpoint covers it, so a restarted trainer resumes from its newest
+    checkpoint and trains the steps since again. Needs a checkpoint interval, the filesystem
+    weight broadcast, a run directory the orchestrator and trainer share, and a rollout store
+    in every train env worker pool: the ``rl`` launcher sets ``store_dir`` for the pools it
+    starts, a pool started separately needs it in its own config."""
 
 
 class FileSystemTransportConfig(BaseTransportConfig):
@@ -303,3 +349,9 @@ class ZMQTransportConfig(BaseTransportConfig):
 
 
 TransportConfig: TypeAlias = Annotated[FileSystemTransportConfig | ZMQTransportConfig, Field(discriminator="type")]
+
+
+def validate_step_dir(path: Path, *, field: str) -> None:
+    """Raise unless ``path`` names a checkpoint step directory (``.../step_<N>``)."""
+    if not re.fullmatch(r"step_\d+", path.name):
+        raise ValueError(f"{field} must point at a checkpoint step directory (`.../step_<N>`), got '{path}'")

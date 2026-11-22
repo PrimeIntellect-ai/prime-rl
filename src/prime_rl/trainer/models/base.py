@@ -5,6 +5,7 @@ from torch import Tensor, nn
 from transformers.modeling_utils import PreTrainedModel
 
 from prime_rl.trainer.models.layers.moe import MoE
+from prime_rl.trainer.models.layers.ngram import NGramTable
 from prime_rl.utils.cp import CPContext
 
 
@@ -21,14 +22,14 @@ def count_active_params(model: nn.Module, params: Iterable[nn.Parameter] | None 
     """Elements of `params` (default: all of the model's) that a token multiplies through.
 
     Every parameter counts (attention and MLP projections, norms, routers, the lm_head) except the
-    routed experts a token skips (`1 - top_k / num_experts` of them) and embedding tables, which
-    count only when tied to the lm_head.
+    routed experts a token skips (`1 - top_k / num_experts` of them) and embedding tables (n-gram
+    tables included), which count only when tied to the lm_head.
     """
     params = {id(param): param for param in (model.parameters() if params is None else params)}
     lm_head_params = {id(param) for param in model.lm_head.parameters()}
     inactive = 0
     for module in model.modules():
-        if isinstance(module, nn.Embedding):
+        if isinstance(module, (nn.Embedding, NGramTable)):
             inactive += sum(
                 param.numel()
                 for param in module.parameters(recurse=False)
@@ -155,10 +156,6 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         """Convert one layer from PrimeRL to HuggingFace format in-place."""
         return self.convert_to_hf(state_dict)
 
-    def convert_layer_to_prime(self, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        """Convert one layer from HuggingFace to PrimeRL format in-place."""
-        return self.convert_to_prime(state_dict)
-
     @classmethod
     def convert_adapter_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         """
@@ -173,6 +170,11 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         use the returned value. Default implementation is a no-op.
         """
         return state_dict
+
+    def _init_weights(self, module: nn.Module) -> None:
+        super()._init_weights(module)
+        if isinstance(module, MoE):
+            module.init_weights(self.config.get_text_config().initializer_range, module.tokens_per_expert.device)
 
     def init_buffers_post_meta(self) -> None:
         """

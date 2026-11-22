@@ -5,6 +5,7 @@ from torch.distributed.tensor import DTensor
 from torch.optim import Optimizer
 
 from prime_rl.trainer.optim.base import OffloadOptimizer
+from prime_rl.trainer.utils import empty_pinned
 
 
 class CPUOffloadOptimizer(OffloadOptimizer):
@@ -26,17 +27,24 @@ class CPUOffloadOptimizer(OffloadOptimizer):
             return src.to("cpu", non_blocking=True)
         buffer = self._cpu_buffers.get((param, key))
         if buffer is None or buffer.shape != src.shape or buffer.dtype != src.dtype:
-            buffer = torch.empty(src.shape, dtype=src.dtype, device="cpu", pin_memory=True)
+            buffer = empty_pinned(src.shape, src.dtype)
             self._cpu_buffers[(param, key)] = buffer
         if buffer is not src:
             buffer.copy_(src, non_blocking=True)
         return buffer
 
-    def _move_states(self, device: str):
-        """Move optimizer states to CPU or back to GPU (matching each parameter's device)."""
-        for param in self.optimizer.state:
+    def _move_states(self, device: str, params=None):
+        """Move optimizer states (of ``params``, default all) to CPU or back to GPU.
+
+        `step` stays on the CPU, where non-fused AdamW reads it on the host per parameter.
+        """
+        for param in self.optimizer.state if params is None else params:
+            if param not in self.optimizer.state:
+                continue
             state = self.optimizer.state[param]
             for key, value in state.items():
+                if key == "step":
+                    continue
                 if isinstance(value, DTensor):
                     local_tensor = value._local_tensor
                     if device == "cpu":
@@ -55,22 +63,24 @@ class CPUOffloadOptimizer(OffloadOptimizer):
             torch.cuda.synchronize()
 
     def step(self, closure=None):
-        # First step initializes states on GPU - offload after
-        if not self._initialized:
-            result = self.optimizer.step(closure)
-            self._move_states("cpu")
-            self._initialized = True
-            return result
+        """Step one param group at a time, freeing its gradients once applied.
 
-        # Move states to GPU
-        self._move_states("cuda")
-
-        # Run optimizer step
-        result = self.optimizer.step(closure)
-
-        # Move states back to CPU
-        self._move_states("cpu")
-
+        The peak is one group's states plus the pending gradients, not all states plus all
+        gradients. Gradients are consumed: callers must not read them after ``step``.
+        """
+        param_groups = self.optimizer.param_groups
+        result = None
+        try:
+            for group in param_groups:
+                self._move_states("cuda", group["params"])
+                self.optimizer.param_groups = [group]
+                result = self.optimizer.step(closure)
+                self._move_states("cpu", group["params"])
+                for param in group["params"]:
+                    param.grad = None
+        finally:
+            self.optimizer.param_groups = param_groups
+        self._initialized = True
         return result
 
     def zero_grad(self, set_to_none: bool = True):

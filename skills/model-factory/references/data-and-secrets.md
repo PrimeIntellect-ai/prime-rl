@@ -31,7 +31,7 @@ state is not automatically copied to the remote job.
 
 The [Model Factory RL docs](https://docs.primeintellect.ai/hosted-training/hosted-rl#launching-a-run)
 describe arbitrary secrets reaching trainer, inference, orchestrator, and
-env-server processes. However, the CLI 0.14.0 implementation and public CLI source
+env-worker-pool processes. However, the CLI 0.14.0 implementation and public CLI source
 checked on 2026-10-23 still restrict dedicated runs to `WANDB_API_KEY` and
 `HF_TOKEN`. Check the installed version and
 [secret collection code](https://github.com/PrimeIntellect-ai/prime/blob/main/packages/prime/src/prime_cli/commands/rl.py)
@@ -41,7 +41,7 @@ rename it as an unrelated credential, or put it in the config to bypass rejectio
 
 `PRIME_API_KEY` is reserved by the service. The run's token is supplied by the
 platform, including for Prime services such as sandbox creation. Secrets projected
-into a training/env-server process do not automatically enter a child sandbox:
+into a training/env-worker-pool process do not automatically enter a child sandbox:
 if sandbox code itself needs a key, configure that runtime's supported secret
 injection. See [sandbox secrets](https://docs.primeintellect.ai/sandboxes/secrets).
 
@@ -54,7 +54,7 @@ selector. Inspect the taskset config and loader if the mapping is unclear.
 
 Verify access with the same token before reserving GPUs, without displaying
 private samples. Pass `-e HF_TOKEN` to the Model Factory launch and ensure the loader uses
-it. If the taskset downloads in a sandbox rather than the env server, deliver the
+it. If the taskset downloads in a sandbox rather than the env worker pool, deliver the
 credential there explicitly. Custom loaders/scorers must be installed remotely;
 see [custom code](custom-code.md).
 
@@ -66,7 +66,7 @@ the mount; a training volume is not automatically mounted in rollout sandboxes.
 
 Start from [examples/basic/reverse-text/sft.toml](../../../examples/basic/reverse-text/sft.toml)
 in the selected revision. Model Factory SFT requires real datasets on a named volume;
-`HF_TOKEN` alone does not turn a Hub ID in `[data].name` into a volume dataset.
+`HF_TOKEN` alone does not turn a Hub ID in a source's `dataset` into a volume dataset.
 Use HF `load_dataset`-readable Parquet/JSON with `messages` or
 `prompt`/`completion` columns, not a `save_to_disk` directory.
 
@@ -86,11 +86,12 @@ upload dataset files, not the HF credential. Check the staging directory contain
 only the intended files. For HF authentication and download options, see the
 [HF CLI guide](https://huggingface.co/docs/huggingface_hub/guides/cli).
 
-In the copied SFT config, set `[data].name = "datasets/training-data"` (or
-`"/volume/datasets/training-data"`), `type = "sft"`, and the appropriate splits /
-subsets / column mapping. Verify loading in a fresh process with the same dataset
-library and options, without logging private rows. Pin and record the download
-revision; a local dataset path does not fetch `[data].revision` from the Hub.
+In the copied SFT config, set the `[[data.source]]` table's `dataset =
+"datasets/training-data"` (or `"/volume/datasets/training-data"`) and the
+appropriate `subset` / `split` / `columns`. Verify loading in a fresh process with
+the same dataset library and options, without logging private rows. Pin and record
+the download revision; a local dataset path does not fetch the source's `revision`
+from the Hub.
 
 The repository's basic SFT example includes `[eval]` and `[inference]`. The
 [Model Factory SFT docs](https://docs.primeintellect.ai/hosted-training/hosted-sft#online-evals)

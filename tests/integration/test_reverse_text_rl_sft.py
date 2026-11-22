@@ -1,14 +1,8 @@
-import os
-import signal
-import subprocess
-import time
 from pathlib import Path
-from typing import Callable, Generator
+from typing import Callable
 
-import httpx
 import pytest
 
-from prime_rl.utils.process import cleanup_process
 from tests.conftest import ProcessResult
 from tests.integration.dashboard_smoke import make_dashboard_test
 from tests.utils import check_final_eval_reward_above, check_no_error, strip_escape_codes
@@ -24,59 +18,6 @@ def run_dir(output_dir: Path) -> Path:
 
 
 TIMEOUT = 900  # 15 minutes (was 600s — same overhead as reverse_text)
-REF_PORT = 8001
-REF_READY_TIMEOUT_S = 300
-
-
-def _wait_for_ref_server(port: int, timeout_s: int) -> None:
-    """Block until the frozen reference server's /v1/models endpoint is reachable."""
-    url = f"http://localhost:{port}/v1/models"
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        try:
-            r = httpx.get(url, timeout=2.0)
-            if r.status_code == 200:
-                return
-        except (httpx.ConnectError, httpx.ReadTimeout):
-            pass
-        time.sleep(1.0)
-    raise TimeoutError(f"Teacher inference server at {url} did not become ready within {timeout_s}s")
-
-
-@pytest.fixture(scope="module")
-def ref_inference(output_dir: Path) -> Generator[subprocess.Popen, None, None]:
-    """Spawn a `uv run inference` frozen reference server on GPU 0 (shared with the rl-launched
-    policy) at 40% gpu_memory_utilization. Tears down at module scope.
-    """
-    # The rl entrypoint's --clean wipes the rl output_dir on start,
-    # so park the reference-server log next to it instead of inside it.
-    ref_log_dir = output_dir.parent / f"{output_dir.name}_ref"
-    ref_log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = ref_log_dir / "ref_inference.log"
-    cmd = [
-        "uv",
-        "run",
-        "inference",
-        "--vllm.model",
-        "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL",
-        "--server.port",
-        str(REF_PORT),
-        "--vllm.gpu-memory-utilization",
-        "0.4",
-    ]
-    env = {**os.environ, "CUDA_VISIBLE_DEVICES": "0"}
-    with open(log_path, "w") as log_file:
-        proc = subprocess.Popen(cmd, env=env, stdout=log_file, stderr=log_file)
-    try:
-        _wait_for_ref_server(REF_PORT, REF_READY_TIMEOUT_S)
-        yield proc
-    finally:
-        cleanup_process(proc.pid, signal.SIGTERM)
-        try:
-            proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            cleanup_process(proc.pid, signal.SIGKILL)
-            proc.wait()
 
 
 @pytest.fixture(scope="module")

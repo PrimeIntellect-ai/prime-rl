@@ -20,6 +20,7 @@ from prime_rl.trainer.optim.cpu_adam import copy_or_add_bfloat16_multi_ as nativ
 from prime_rl.trainer.optim.cpu_adam import load_cpu_adamw_kernel
 from prime_rl.trainer.optim.cpu_adam import sign_sgd_step as native_cpu_sign_sgd_step
 from prime_rl.trainer.optim.sign_sgd import SignSGD
+from prime_rl.trainer.utils import empty_pinned
 from prime_rl.utils.logger import get_logger
 
 
@@ -226,7 +227,7 @@ class GradientOffloadManager:
         slots = [
             _PinnedTransferSlot(
                 index=index,
-                tensor=torch.empty(normal_numel, dtype=dtype, device="cpu", pin_memory=True),
+                tensor=empty_pinned((normal_numel,), dtype),
                 event=torch.cuda.Event(),
             )
             for index in range(count)
@@ -235,7 +236,7 @@ class GradientOffloadManager:
             slots.append(
                 _PinnedTransferSlot(
                     index=count,
-                    tensor=torch.empty(max_numel, dtype=dtype, device="cpu", pin_memory=True),
+                    tensor=empty_pinned((max_numel,), dtype),
                     event=torch.cuda.Event(),
                 )
             )
@@ -709,6 +710,7 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
     _MAX_INFLIGHT_BACKWARDS = 16
     _TIMEOUT_SECONDS = 120.0
     _MASTER_WEIGHT_STATE = "prime_rl_master_weight"
+    checkpoint_weights_key = _MASTER_WEIGHT_STATE
 
     def __init__(
         self,
@@ -1026,16 +1028,9 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
             self._gradient_manager.wait_for_output_slots()
         self._initialized = True
 
-    @torch.no_grad()
     def finish_model_only_checkpoint_load(self) -> None:
-        if self._master_weights is None:
-            raise RuntimeError("Full optimizer offload has no master weights")
-        for master in self._master_weights.values():
-            if not isinstance(master.model_param, DTensor):
-                raise TypeError(f"Expected FSDP2 DTensor parameter, got {type(master.model_param)}")
-            master.cpu_tensor.copy_(master.model_param.to_local(), non_blocking=True)
-        torch.cuda.synchronize()
-        self._initialized = True
+        # The checkpoint's model weights load into the masters
+        self.finish_checkpoint_load()
 
 
 @torch.no_grad()

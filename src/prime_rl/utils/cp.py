@@ -29,6 +29,9 @@ class CPContext:
 
 
 def setup_context_parallel(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:
+    # The trainer leaves multimodal inputs unsharded; the VLM shards them after building their positions.
+    if config.vlm is not None and not hasattr(model.model, "cp_context"):
+        raise ValueError(f"{type(model).__name__} does not shard multimodal inputs for context parallelism; set cp=1")
     cp_group = parallel_dims.world_mesh["cp"].get_group()
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
 
@@ -74,7 +77,10 @@ def shard_for_cp(t: torch.Tensor, cp_rank: int, cp_world_size: int, seq_dim: int
 
     chunked_t = torch.chunk(t, cp_world_size, dim=seq_dim)
 
-    return chunked_t[cp_rank]
+    # Clone: a slice is a view, and torch.compile compiles a layer that receives a view separately from one
+    # that receives a non-view. Later decoder layers receive non-views, so returning a view would compile the
+    # first layer twice.
+    return chunked_t[cp_rank].clone()
 
 
 def shard_position_ids_for_cp(position_ids: torch.Tensor, cp_rank: int, cp_world_size: int) -> torch.Tensor:
@@ -85,6 +91,13 @@ def shard_position_ids_for_cp(position_ids: torch.Tensor, cp_rank: int, cp_world
 
 def gather_for_cp(t: torch.Tensor, cp_group: dist.ProcessGroup) -> torch.Tensor:
     return all_gather(t, 1, cp_group)
+
+
+def gather_ragged_for_cp(t: torch.Tensor, sizes: list[int], cp_group: dist.ProcessGroup) -> torch.Tensor:
+    """All-gather (with grad) a flat tensor whose length differs per CP rank, ``sizes`` holding every rank's."""
+    padded = torch.nn.functional.pad(t, (0, max(sizes) - t.shape[0]))
+    gathered = all_gather(padded, 0, cp_group).view(len(sizes), -1)
+    return torch.cat([row[:size] for row, size in zip(gathered, sizes, strict=True)])
 
 
 def gather_for_cp_wo_grad(t: torch.Tensor, cp_world_size: int, cp_group: dist.ProcessGroup) -> torch.Tensor:

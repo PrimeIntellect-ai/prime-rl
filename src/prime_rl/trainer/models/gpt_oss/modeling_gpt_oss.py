@@ -85,12 +85,6 @@ class GptOssDecoderLayer(nn.Module):
 class GptOssPreTrainedModel(PreTrainedModelPrimeRL):
     config: GptOssConfig
     base_model_prefix = "model"
-    supports_gradient_checkpointing = True
-    _no_split_modules = ["GptOssDecoderLayer"]
-    _supports_flash_attn = True
-    _supports_sdpa = False
-    _can_compile_fullgraph = False
-    _supports_attention_backend = True
     _keep_in_fp32_modules = ["post_attention_layernorm", "input_layernorm", "norm"]
 
     @classmethod
@@ -105,13 +99,20 @@ class GptOssPreTrainedModel(PreTrainedModelPrimeRL):
     def conversion_chain(cls, config: GptOssConfig):
         return conversion_chain(config)
 
+    def _init_weights(self, module: nn.Module) -> None:
+        super()._init_weights(module)
+        std = self.config.initializer_range
+        if isinstance(module, GptOssAttention):
+            nn.init.normal_(module.sinks, mean=0.0, std=std)
+        elif isinstance(module, MoE):
+            nn.init.normal_(module.router.gate.bias, mean=0.0, std=std)
+
 
 class GptOssModel(GptOssPreTrainedModel):
     def __init__(self, config: GptOssConfig) -> None:
         super().__init__(config)
-        self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList(
             GptOssDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)
         )
@@ -161,8 +162,6 @@ class GptOssModel(GptOssPreTrainedModel):
 
 class GptOssForCausalLM(GptOssPreTrainedModel):
     _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
-    _tp_plan = {"lm_head": "colwise_gather_output"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config: GptOssConfig) -> None:
         super().__init__(config)

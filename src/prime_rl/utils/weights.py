@@ -1,6 +1,7 @@
 import json
 import re
 import warnings
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, cast
 
@@ -19,6 +20,7 @@ from transformers.utils import (
 )
 
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.distributed import all_gather_bytes
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -131,6 +133,15 @@ def resolve_fqn(model: nn.Module, key: str) -> str:
 _LAYER_RE = re.compile(r"^(.*?\blayers\.\d+)\.")
 
 
+def group_by_layer(keys: Iterable[str]) -> dict[str, list[str]]:
+    """Group complete decoder layers for conversion, with non-layer keys together."""
+    layer_to_keys: dict[str, list[str]] = {}
+    for key in keys:
+        match = _LAYER_RE.match(key)
+        layer_to_keys.setdefault(match.group(1) if match else "", []).append(key)
+    return layer_to_keys
+
+
 def partition_weights(state_dict: dict[str, Tensor], world_size: int, dtype: torch.dtype) -> dict[str, int]:
     """Assign each state-dict key an owner rank, balanced by byte size.
 
@@ -155,24 +166,32 @@ def partition_weights(state_dict: dict[str, Tensor], world_size: int, dtype: tor
 
 
 def resolve_wire_dtype(keep_in_fp32: Callable[[str], bool] | None, key: str, default: torch.dtype) -> torch.dtype:
-    """The dtype a tensor must travel to the inference engine in.
-
-    TODO: NIXL keeps its own inline copy of this rule; unify the handling.
-    """
+    """The dtype a tensor must travel to the inference engine in."""
     return torch.float32 if keep_in_fp32 is not None and keep_in_fp32(key) else default
 
 
 def get_chunked_conversion_ops(model: nn.Module, state_dict: dict[str, Tensor]) -> dict[str, "ChunkedConvOp"]:
-    """Match independent chunked conversions to weights actually present, including wrapper prefixes."""
+    """Match chunked conversions to the weights present, including wrapper prefixes, and raise for an unmatched n-gram table."""
     from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
     from prime_rl.trainer.models.conversion_ops import ChunkedConvOp
+    from prime_rl.trainer.models.layers.ngram import NGramTable
 
     if not isinstance(model, PreTrainedModelPrimeRL):
         return {}
     operations = {op.runtime_weight: op for op in model.conversion_chain(model.config) if isinstance(op, ChunkedConvOp)}
-    if not operations:
+    table_weights = {
+        resolve_fqn(model, f"{name}.weight") for name, module in model.named_modules() if isinstance(module, NGramTable)
+    }
+    if not operations and not table_weights:
         return {}
-    return {key: operations[fqn] for key in state_dict if (fqn := resolve_fqn(model, key)) in operations}
+    fqns = {key: resolve_fqn(model, key) for key in state_dict}
+    unchunked_table_weights = [key for key, fqn in fqns.items() if fqn in table_weights and fqn not in operations]
+    if unchunked_table_weights:
+        raise ValueError(
+            f"NGramTable weights {unchunked_table_weights} match no ChunkedConvOp in the conversion chain. "
+            "Without one, a weight transfer would send each table as a single tensor."
+        )
+    return {key: operations[fqn] for key, fqn in fqns.items() if fqn in operations}
 
 
 def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat16) -> dict[str, Tensor]:
@@ -243,8 +262,8 @@ def save_state_dict_parallel(state_dict: dict[str, Tensor], save_dir: Path) -> N
         save_file(shard, save_dir / tmp_name, metadata={"format": "pt"})
         local_shards.append((tmp_name, {name: shard[name].nbytes for name in tensor_names}))
 
-    all_shards: list[list[tuple[str, dict[str, int]]] | None] = [None] * world.world_size
-    dist.all_gather_object(all_shards, local_shards)
+    encoded_shards = json.dumps(local_shards, separators=(",", ":")).encode()
+    all_shards = [json.loads(payload) for payload in all_gather_bytes(encoded_shards)]
     flat = [(rank, tmp_name, sizes) for rank, shards in enumerate(all_shards) for tmp_name, sizes in shards]
 
     num_shards = len(flat)

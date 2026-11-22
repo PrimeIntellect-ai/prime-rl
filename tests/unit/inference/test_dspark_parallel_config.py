@@ -1,0 +1,121 @@
+from copy import deepcopy
+
+import pytest
+from vllm.config import ParallelConfig
+from vllm.v1.worker.gpu.spec_decode.dspark import utils
+
+from prime_rl.inference.patches import monkey_patch_dspark_dp_compile_cache
+
+
+@pytest.mark.parametrize("replica", [0, 1])
+def test_dspark_preserves_independent_replica_cache_index(replica, monkeypatch):
+    target = ParallelConfig(
+        tensor_parallel_size=2,
+        data_parallel_size=2,
+        data_parallel_size_local=2,
+        data_parallel_rank=replica,
+        distributed_executor_backend="mp",
+    )
+    target.reconfigure_for_independent_dp_rank()
+    assert target.data_parallel_rank == 0
+    assert target.data_parallel_index == replica
+    snapshot = deepcopy(target)
+    monkeypatch.setattr(utils, "_get_dspark_parallel_config", utils._get_dspark_parallel_config)
+
+    monkey_patch_dspark_dp_compile_cache()
+    factory = utils._get_dspark_parallel_config
+    monkey_patch_dspark_dp_compile_cache()
+    assert utils._get_dspark_parallel_config is factory
+    draft = factory(target, tensor_parallel_size=1, draft_model_config=None)
+
+    assert draft.data_parallel_index == replica
+    assert draft.data_parallel_rank == 0
+    assert draft.data_parallel_size == 1
+    assert draft.tensor_parallel_size == 1
+    assert draft.pipeline_parallel_size == 1
+    assert not draft.enable_eplb and not draft.enable_elastic_ep
+    assert target == snapshot
+
+
+def test_packed_block_stride_fits_deepseek_v4_mla_alignment(monkeypatch):
+    import torch
+    from vllm.v1.core import kv_cache_planning
+    from vllm.v1.kv_cache_interface import FullAttentionSpec, KVCacheGroupSpec, MLAAttentionSpec
+    from vllm.v1.kv_cache_layout import KVCacheLayout
+
+    from prime_rl.inference.patches import monkey_patch_block_outermost_mla_stride
+
+    target = MLAAttentionSpec(
+        block_size=256,
+        num_kv_heads=1,
+        max_tp_shards=1,
+        head_size=512,
+        dtype=torch.uint8,
+        tokens_per_state=4,
+        cache_dtype_str="fp8_ds_mla",
+        alignment=576,
+        model_version="deepseek_v4",
+        state_content_bytes=584,
+    )
+    # A bf16 DSpark draft KV group is the widest page and sets the shared stride.
+    draft = FullAttentionSpec(block_size=256, num_kv_heads=8, head_size=128, dtype=torch.bfloat16)
+    groups = [KVCacheGroupSpec(["target"], target), KVCacheGroupSpec([f"draft.{i}" for i in range(5)], draft)]
+    monkeypatch.setattr(
+        kv_cache_planning, "_get_kv_cache_bytes_per_block", kv_cache_planning._get_kv_cache_bytes_per_block
+    )
+    assert kv_cache_planning._get_kv_cache_bytes_per_block(groups, KVCacheLayout.BLHNC) % 576 != 0
+
+    monkey_patch_block_outermost_mla_stride()
+    stride = kv_cache_planning._get_kv_cache_bytes_per_block(groups, KVCacheLayout.BLHNC)
+    assert stride % 576 == 0 and stride >= 5 * draft.page_size_bytes
+
+
+def test_sliding_window_draft_group_fits_under_the_widest_target_group(monkeypatch):
+    from types import SimpleNamespace
+
+    import torch
+    from vllm.v1.core import kv_cache_planning
+    from vllm.v1.kv_cache_interface import MLAAttentionSpec, SlidingWindowSpec
+    from vllm.v1.kv_cache_layout import KVCacheLayout
+
+    from prime_rl.inference.patches import monkey_patch_fit_sliding_window_pages
+
+    target = MLAAttentionSpec(
+        block_size=256,
+        num_kv_heads=1,
+        max_tp_shards=1,
+        head_size=512,
+        dtype=torch.uint8,
+        tokens_per_state=4,
+        cache_dtype_str="fp8_ds_mla",
+        alignment=576,
+        model_version="deepseek_v4",
+        state_content_bytes=584,
+    )
+    # One draft layer's 64-token page (2 MiB) is wider than the whole target group.
+    draft = SlidingWindowSpec(block_size=64, num_kv_heads=64, head_size=128, dtype=torch.bfloat16, sliding_window=2048)
+    specs = {f"target.{i}": target for i in range(21)} | {"draft": draft}
+    config = SimpleNamespace(cache_config=SimpleNamespace(get_resolved_kv_cache_layout=lambda: KVCacheLayout.BLHNC))
+    monkeypatch.setattr(kv_cache_planning, "_get_packed_kv_cache_groups", kv_cache_planning._get_packed_kv_cache_groups)
+
+    def widths(groups):
+        return [group.kv_cache_spec.page_size_bytes for group in groups]
+
+    widest_target, draft_page = widths(kv_cache_planning._get_packed_kv_cache_groups(config, specs))
+    assert draft_page > widest_target
+    monkey_patch_fit_sliding_window_pages()
+    groups = kv_cache_planning._get_packed_kv_cache_groups(config, specs)
+    assert widths(groups)[0] == widest_target and widths(groups)[1] <= widest_target
+    assert groups[1].kv_cache_spec.block_size < 64
+
+
+def test_flashinfer_reads_deepseek_v4_cache_format_as_fp8_draft_rows(monkeypatch):
+    import torch
+    from vllm.v1.attention.backends.flashinfer import FlashInferBackend
+
+    from prime_rl.inference.patches import monkey_patch_flashinfer_fp8_ds_mla_draft
+
+    monkeypatch.setattr(FlashInferBackend, "get_dtype_for_flashinfer", FlashInferBackend.get_dtype_for_flashinfer)
+    monkey_patch_flashinfer_fp8_ds_mla_draft()
+    assert FlashInferBackend.get_dtype_for_flashinfer("fp8_ds_mla") is torch.float8_e4m3fn
+    assert FlashInferBackend.get_dtype_for_flashinfer("fp8_e5m2") is torch.float8_e5m2

@@ -1,4 +1,4 @@
-"""Strict payload accounting in the train sink: every array an env server kept for a
+"""Strict payload accounting in the train sink: every array an env worker pool kept for a
 delivered trace is either shipped in a batch (the trainer deletes it) or deleted by the
 sink when it drops the sample or trace."""
 
@@ -21,7 +21,7 @@ from tests.unit.orchestrator.test_train_sink import episode, trace
 
 
 def kept(hook: PayloadHook, **kwargs) -> vf.Trace:
-    """A trace whose arrays an env server kept."""
+    """A trace whose arrays an env worker pool kept."""
     t = trace(**kwargs)
     for node in t.nodes:
         node.routed_experts = np.ones((len(node.token_ids), 2, 2), dtype=np.uint8)
@@ -32,9 +32,10 @@ def kept(hook: PayloadHook, **kwargs) -> vf.Trace:
 def payload_sink(*, constant=True, batch_size=100) -> TrainSink:
     config = OrchestratorConfig(batch_size=batch_size, constant_trainer_batch_size=constant, max_staleness=1)
     env = SimpleNamespace(
-        config=SimpleNamespace(group_size=1, sampling=SimpleNamespace(temperature=1.0)),
+        config=SimpleNamespace(group_size=1),
+        sampling_at=lambda step: SimpleNamespace(temperature=1.0),
         requires_sampling_masks=False,
-        requires_top_logprobs=False,
+        requires_sampler_logprobs=False,
         algorithm=Algorithm(GRPOAlgoConfig(), None),
     )
     return TrainSink(
@@ -89,7 +90,7 @@ def test_sink_deletes_stale_pruned_and_discarded_arrays_but_not_shipped_ones():
 
 
 def test_eval_sink_deletes_the_arrays_of_eval_episodes():
-    """Env servers keep arrays for every episode; eval never trains, so its sink frees them."""
+    """Env worker pools keep arrays for every episode; eval never trains, so its sink frees them."""
     hook = PayloadHook()
     evaluated = episode([kept(hook)])
     evaluated.run = vf.TrainRunInfo(id="run", work=vf.EvalWorkInfo(step=0))

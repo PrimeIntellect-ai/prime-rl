@@ -52,6 +52,9 @@ class Algorithm:
     async def score_group(self, episodes: list[vf.Episode]) -> None:
         """Assign group-relative annotations to a finalized cohort."""
 
+    def reconfigure(self, config: AlgoConfig) -> None:
+        """Adopt a live config update, in which only fields marked LIVE can differ."""
+
     async def finalize_episode(self, episode: vf.Episode) -> None:
         """Run rollout-local scoring when the episode has trainable traces."""
         if any(True for _ in iter_trainable_traces([episode])):

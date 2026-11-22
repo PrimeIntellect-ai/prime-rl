@@ -3,19 +3,29 @@
 from __future__ import annotations
 
 import random
-from collections import defaultdict
+import uuid
+from collections import Counter, defaultdict, deque
+from collections.abc import Iterable
 from typing import Any
 
 import verifiers.v1 as vf
 
+from prime_rl.control.types import ConfigUpdate, Reconfigurable
 from prime_rl.orchestrator.curriculum import Curriculum
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.types import TaskRequest
 from prime_rl.orchestrator.utils import episode_env_name
+from prime_rl.utils.logger import get_logger
 
 
-class TrainSource:
-    """Mix train envs and host one user-authored curriculum per env."""
+class TrainSource(Reconfigurable):
+    """Mix train envs and host one user-authored curriculum per env.
+
+    Each draw opens a train group, which stays open until its samples first ship or
+    it finalizes without training. The checkpoint saves the open groups, and a
+    resume re-runs them before it draws new tasks, so a task's sampling count is
+    the number of its groups that finished plus the open groups the resume re-runs.
+    """
 
     def __init__(self, train_envs: TrainEnvs) -> None:
         self.rng = random.Random(42)
@@ -30,14 +40,42 @@ class TrainSource:
             tasks = env.tasks if env.num_tasks is None else list(env.tasks)
             self.curricula[env.name] = Curriculum(env.config.curriculum, tasks)
 
+        self.streaming = {env.name for env in self.envs if env.num_tasks is None}
         self.env_names = [env.name for env in self.envs]
+        self.envs_by_name = {env.name: env for env in self.envs}
         self.weights = [float(env.config.ratio) for env in self.envs]
         self._admitted: dict[str, int] = defaultdict(int)
         self._rejected: dict[str, int] = defaultdict(int)
+        # Group id -> (env name, task key, group size), in draw order. The size is fixed at
+        # draw time, so a live group size change never resizes an open group.
+        self.open_groups: dict[str, tuple[str, str, int]] = {}
+        self.reopened: deque[tuple[str, vf.Task, int]] = deque()
+
+    def reconfigure(self, update: ConfigUpdate) -> None:
+        ratios = {source.resolved_name: source.ratio for source in update.config.train.source}
+        self.weights = [float(ratios[name]) for name in self.env_names]
 
     def next_task(self, *, step: int) -> TaskRequest:
-        env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
-        return TaskRequest(env_name=env_name, task=next(self.curricula[env_name].sampler), step=step)
+        # A reopened group was already counted by its sampler, and its env is fixed.
+        if self.reopened:
+            env_name, task, group_size = self.reopened.popleft()
+        else:
+            env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
+            task = next(self.curricula[env_name].sampler)
+            group_size = self.envs_by_name[env_name].config.group_size
+        group_id = str(uuid.uuid4())
+        self.open_groups[group_id] = (env_name, task.key, group_size)
+        return TaskRequest(env_name=env_name, task=task, step=step, rollouts=group_size, group_id=group_id)
+
+    def group_size(self, group_id: str) -> int | None:
+        """The size an open group was drawn with; None once the group closed."""
+        group = self.open_groups.get(group_id)
+        return group[2] if group is not None else None
+
+    def close_groups(self, group_ids: Iterable[str]) -> None:
+        """Close groups that shipped samples or finalized without training."""
+        for group_id in group_ids:
+            self.open_groups.pop(group_id, None)
 
     def on_result(self, group: list[vf.Episode]) -> bool:
         """Report a finalized group and return whether it should train."""
@@ -68,18 +106,50 @@ class TrainSource:
         return {
             "rng": self.rng.getstate(),
             "envs": {name: curriculum.state_dict() for name, curriculum in self.curricula.items()},
+            # Groups still waiting to re-run come last: no new task is drawn before they all re-run.
+            "open_groups": [
+                *self.open_groups.values(),
+                *((env_name, task.key, group_size) for env_name, task, group_size in self.reopened),
+            ],
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
-        expected_fields = {"rng", "envs"}
-        if set(state_dict) != expected_fields:
-            raise ValueError(f"Train-source checkpoint fields must be {sorted(expected_fields)}")
+        """Restore each configured env's curriculum by env name. An env missing from the
+        checkpoint starts fresh; state of an env that is no longer configured is dropped.
+        Open groups re-run, except those of a removed env or task or a streaming taskset."""
+        required_fields = {"rng", "envs"}
+        if not required_fields <= set(state_dict) <= required_fields | {"open_groups"}:
+            raise ValueError(f"Unexpected train-source checkpoint fields: {sorted(state_dict)}")
         env_states = state_dict["envs"]
-        if set(env_states) != set(self.curricula):
-            raise ValueError(
-                f"Train-source checkpoint envs {sorted(env_states)} do not match configured envs "
-                f"{sorted(self.curricula)}"
-            )
         self.rng.setstate(state_dict["rng"])
         for name, curriculum in self.curricula.items():
-            curriculum.load_state_dict(env_states[name])
+            if name in env_states:
+                get_logger().info(f"Resuming curriculum state for env {name}")
+                curriculum.load_state_dict(env_states[name])
+            else:
+                get_logger().info(f"Env {name} is not in the checkpoint, so its curriculum starts fresh")
+        for name in sorted(env_states.keys() - self.curricula.keys()):
+            get_logger().info(f"Dropped the checkpointed curriculum state of env {name}, which is no longer configured")
+        self._reopen(state_dict.get("open_groups", []))
+
+    def _reopen(self, open_groups: list[tuple[str, str] | tuple[str, str, int]]) -> None:
+        removed_env: Counter[str] = Counter()
+        removed_task: Counter[str] = Counter()
+        for group in open_groups:
+            env_name, task_key = group[:2]
+            if env_name not in self.curricula:
+                removed_env[env_name] += 1
+            elif (task := self.curricula[env_name].sampler.find_task(task_key)) is None:
+                removed_task[env_name] += 1
+            else:
+                group_size = group[2] if len(group) == 3 else self.envs_by_name[env_name].config.group_size
+                self.reopened.append((env_name, task, group_size))
+        for name, count in sorted(removed_env.items()):
+            get_logger().info(f"Dropped {count} open group(s) of env {name}, which is no longer configured")
+        for name, count in sorted(removed_task.items()):
+            if name in self.streaming:
+                get_logger().info(f"Dropped {count} open group(s) of env {name}: a streaming taskset cannot re-run")
+            else:
+                get_logger().info(f"Dropped {count} open group(s) of env {name} whose task is no longer in the taskset")
+        if self.reopened:
+            get_logger().info(f"Re-running {len(self.reopened)} open group(s) from the checkpoint")

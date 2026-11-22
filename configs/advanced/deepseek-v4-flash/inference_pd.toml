@@ -1,0 +1,49 @@
+# DeepSeek-V4-Flash, P/D disaggregated for multi-turn agentic rollouts on 4 B200 nodes: one prefill instance and
+# three decode instances, each one node of DP8 + EP with one API server per rank behind vllm-router.
+#
+# - Bidirectional KV transfer: decode keeps each finished turn's KV for 480 s and the session's next prefill reads it
+#   back over NIXL, so prefill computes only the new tokens (tool output, user message) instead of the conversation.
+# - Each rank's NIXL traffic stays on the RDMA port nearest its GPU (deployment.nixl_nic_affinity, on by default).
+#
+# Requires NIXL built against UCX 1.19 (docs/advanced.md, "Disaggregated Prefill/Decode Inference").
+#
+#   uv run inference @ configs/advanced/deepseek-v4-flash/inference_pd.toml
+use_deep_gemm = true
+
+[slurm]
+job_name = "dsv4-pd-bidir"
+
+[deployment]
+type = "disaggregated"
+num_prefill_replicas = 1
+num_decode_replicas = 3
+
+[deployment.bidirectional_kv_transfer]
+decode_blocks_ttl_s = 480
+
+# Expert all2all within each node's NVLink domain. Decode keeps few tokens per step, prefill takes long chunks with
+# a small CUDA graph cap: larger prefill caps fail graph capture next to the NIXL buffers.
+[deployment.prefill_vllm_overrides]
+all2all_backend = "flashinfer_nvlink_one_sided"
+max_num_seqs = 256
+max_num_batched_tokens = 16384
+compilation_config = { cudagraph_mode = "FULL_AND_PIECEWISE", max_cudagraph_capture_size = 512 }
+
+[deployment.decode_vllm_overrides]
+all2all_backend = "flashinfer_nvlink_one_sided"
+max_num_seqs = 512
+max_num_batched_tokens = 4096
+compilation_config = { cudagraph_mode = "FULL_AND_PIECEWISE", max_cudagraph_capture_size = 1024 }
+
+[vllm]
+model = "deepseek-ai/DeepSeek-V4-Flash"
+served_model_name = ["deepseek-v4-flash"]
+max_model_len = 262144
+gpu_memory_utilization = 0.90
+# DeepSeek V4's sparse-MLA layout requires an fp8 KV cache in 256-token blocks.
+kv_cache_dtype = "fp8"
+block_size = 256
+tokenizer_mode = "deepseek_v4"
+tool_call_parser = "deepseek_v4"
+reasoning_parser = "deepseek_v4"
+async_scheduling = true
