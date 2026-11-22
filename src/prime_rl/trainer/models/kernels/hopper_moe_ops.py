@@ -512,7 +512,7 @@ def _weighted_combine_bwd_op(
     route_indices_experts_sorted: torch.Tensor,
     scores_after_experts: torch.Tensor | None,
     needs_score_grad: bool,
-) -> tuple[torch.Tensor, torch.Tensor | None]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     go_c = grad_out.contiguous()
     routed_c = routed_output.contiguous()
     route_c = route_indices_experts_sorted.contiguous()
@@ -520,9 +520,10 @@ def _weighted_combine_bwd_op(
     num_tokens, D = go_c.shape
     grad_routed = torch.empty((M, D), device=go_c.device, dtype=go_c.dtype)
     has_scores = scores_after_experts is not None
+    compute_sgrad = bool(has_scores and needs_score_grad)
     scores_f32 = scores_after_experts.float().contiguous() if has_scores else route_c
     grad_scores_f32 = (
-        torch.empty((M,), device=go_c.device, dtype=torch.float32) if (has_scores and needs_score_grad) else route_c
+        torch.empty((M,), device=go_c.device, dtype=torch.float32) if compute_sgrad else route_c
     )
     if M > 0 and num_tokens > 0:
         top_k = M // num_tokens
@@ -537,16 +538,17 @@ def _weighted_combine_bwd_op(
             D=D,
             TOP_K=top_k,
             HAS_SCORES=has_scores,
-            NEEDS_SCORE_GRAD=bool(has_scores and needs_score_grad),
+            NEEDS_SCORE_GRAD=compute_sgrad,
             stride_go=go_c.stride(0),
             stride_r=routed_c.stride(0),
             stride_gr=grad_routed.stride(0),
             BLOCK_D=block_d,
             num_warps=4,
         )
-    if has_scores and needs_score_grad:
+    if compute_sgrad:
+        assert scores_after_experts is not None
         return grad_routed, grad_scores_f32.to(scores_after_experts.dtype)
-    return grad_routed, None
+    return grad_routed, go_c.new_empty((0,))
 
 
 @_weighted_combine_bwd_op.register_fake
@@ -556,9 +558,13 @@ def _(
     route_indices_experts_sorted: torch.Tensor,
     scores_after_experts: torch.Tensor | None,
     needs_score_grad: bool,
-) -> tuple[torch.Tensor, torch.Tensor | None]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     grad_routed = grad_out.new_empty((route_indices_experts_sorted.numel(), grad_out.shape[1]))
-    grad_scores = torch.empty_like(scores_after_experts) if (scores_after_experts is not None and needs_score_grad) else None
+    grad_scores = (
+        torch.empty_like(scores_after_experts)
+        if (scores_after_experts is not None and needs_score_grad)
+        else grad_out.new_empty((0,))
+    )
     return grad_routed, grad_scores
 
 
@@ -573,7 +579,7 @@ def _weighted_combine_bwd(ctx, grad_out: torch.Tensor):
     grad_routed, grad_scores = _weighted_combine_bwd_op(
         grad_out, routed_output, route_indices, scores_after_experts, needs_score_grad
     )
-    return grad_routed, None, grad_scores, None
+    return grad_routed, None, (grad_scores if needs_score_grad else None), None
 
 
 _weighted_combine_op.register_autograd(_weighted_combine_bwd, setup_context=_weighted_combine_setup)
@@ -715,7 +721,7 @@ def _deepep_sum_routes_bwd_op(
     token_indices: torch.Tensor,
     scores_after_experts: torch.Tensor | None,
     needs_score_grad: bool,
-) -> tuple[torch.Tensor, torch.Tensor | None]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     go_c = grad_out.contiguous()
     routed_c = routed_output.contiguous()
     ti_c = token_indices.contiguous()
@@ -723,9 +729,10 @@ def _deepep_sum_routes_bwd_op(
     D = go_c.shape[1]
     grad_routed = torch.empty((M, D), device=go_c.device, dtype=go_c.dtype)
     has_scores = scores_after_experts is not None
+    compute_sgrad = bool(has_scores and needs_score_grad)
     scores_f32 = scores_after_experts.float().contiguous() if has_scores else ti_c
     grad_scores_f32 = (
-        torch.empty((M,), device=go_c.device, dtype=torch.float32) if (has_scores and needs_score_grad) else ti_c
+        torch.empty((M,), device=go_c.device, dtype=torch.float32) if compute_sgrad else ti_c
     )
     if M > 0:
         block_d = 512 if D % 512 == 0 else 256
@@ -738,16 +745,17 @@ def _deepep_sum_routes_bwd_op(
             grad_scores_f32,
             D=D,
             HAS_SCORES=has_scores,
-            NEEDS_SCORE_GRAD=bool(has_scores and needs_score_grad),
+            NEEDS_SCORE_GRAD=compute_sgrad,
             stride_go=go_c.stride(0),
             stride_r=routed_c.stride(0),
             stride_gr=grad_routed.stride(0),
             BLOCK_D=block_d,
             num_warps=4,
         )
-    if has_scores and needs_score_grad:
+    if compute_sgrad:
+        assert scores_after_experts is not None
         return grad_routed, grad_scores_f32.to(scores_after_experts.dtype)
-    return grad_routed, None
+    return grad_routed, go_c.new_empty((0,))
 
 
 @_deepep_sum_routes_bwd_op.register_fake
@@ -757,9 +765,13 @@ def _(
     token_indices: torch.Tensor,
     scores_after_experts: torch.Tensor | None,
     needs_score_grad: bool,
-) -> tuple[torch.Tensor, torch.Tensor | None]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     grad_routed = grad_out.new_empty((token_indices.numel(), grad_out.shape[1]))
-    grad_scores = torch.empty_like(scores_after_experts) if (scores_after_experts is not None and needs_score_grad) else None
+    grad_scores = (
+        torch.empty_like(scores_after_experts)
+        if (scores_after_experts is not None and needs_score_grad)
+        else grad_out.new_empty((0,))
+    )
     return grad_routed, grad_scores
 
 
@@ -774,7 +786,7 @@ def _deepep_sum_routes_bwd(ctx, grad_out: torch.Tensor):
     grad_routed, grad_scores = _deepep_sum_routes_bwd_op(
         grad_out, routed_output, token_indices, scores_after_experts, needs_score_grad
     )
-    return grad_routed, None, None, grad_scores
+    return grad_routed, None, None, (grad_scores if needs_score_grad else None)
 
 
 _deepep_sum_routes_op.register_autograd(_deepep_sum_routes_bwd, setup_context=_deepep_sum_routes_setup)
