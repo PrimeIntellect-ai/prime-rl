@@ -2,7 +2,7 @@
 # replica (inference not fitted yet). Trainer fit on fake 256k samples:
 # 1 node, cp 8: 12.5k tok/s (1,569 per GPU), 52.2 GiB peak reserved.
 #
-#   uv run rl @ examples/advanced/muse-glimmer-30b/rl.toml @ examples/advanced/muse-glimmer-30b/gpu/h200.toml @ examples/advanced/fake.toml
+#   uv run rl @ examples/advanced/muse-glimmer-30b/rl.toml @ examples/advanced/muse-glimmer-30b/gpu/h200_1node.toml @ examples/advanced/fake.toml
 
 [deployment]
 type = "multi_node"
