@@ -19,8 +19,9 @@ So that the output is read as bf16:
 * ``hf_quant_config.json`` (the release's per-tensor precision metadata) lists the experts as bf16. vLLM
   builds a layer's experts from it, and serves bf16 experts on GPUs without the Blackwell kernels of the
   quantized ones.
-* ``config.json`` loses ``quantization_config``, which would take precedence over that file, and gains
-  ``transformers_version``: without either, transformers reads the directory as the MXFP8 release.
+* ``config.json`` loses ``quantization_config``, which vLLM would read before that file and which tells
+  transformers that the experts are FP8, and gains ``transformers_version``: transformers 5.23 reads a
+  ``config.json`` with neither key as the MXFP8 release.
 
 Every other file is copied, subdirectories included. ``bf16_conversion.json`` records the source revision
 and this tool's commit. Each file is written under a temporary name and renamed when complete, so a rerun
