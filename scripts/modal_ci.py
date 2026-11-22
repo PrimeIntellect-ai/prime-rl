@@ -5,7 +5,8 @@
 The image installs the third-party dependencies from uv.lock and every pyproject.toml, then the local packages
 (packages/ and the deps/ submodules) as editable installs. The source, tests and configs are added when a container
 starts, so a code change does not rebuild the image. Each group's compile caches (Triton, Inductor, vLLM, TileLang, C++
-extensions) persist in a Modal Volume, keyed by uv.lock, the GPU type and the suite.
+extensions) persist in a Modal Volume, keyed by uv.lock, the GPU type and the suite, and so does its Hugging Face Hub
+cache (the models and datasets its tests download), keyed by the suite.
 
 A suite's group without paths runs every test with the suite's marker that no other group claims, so a new test
 always runs somewhere.
@@ -203,13 +204,20 @@ def cached_files(root: Path) -> set[Path]:
     # Otherwise a group can run in the container another group just finished in, with its outputs and caches
     single_use_containers=True,
 )
-def run_group(name: str, pytest_args: list[str], cache_key: str, ref_name: str) -> tuple[int, bytes, float, float]:
+def run_group(
+    name: str, pytest_args: list[str], suite: str, lock_hash: str, ref_name: str
+) -> tuple[int, bytes, float, float]:
     """Run one pytest group. Returns its exit code, a tarball of its logs, and its start time and duration."""
     started = time.time()
-    # A Volume reads small files slowly (50 ms to 0.5 s each, by region), so the cache moves as one tar file.
-    archive = Path(CACHE, cache_key, f"{name}.tar")
     compile_cache = Path("/root/.cache/compile")
-    restored = restore_cache(archive, compile_cache)
+    hub_cache = Path("/root/.cache/huggingface/hub")
+    # A Volume reads small files slowly (50 ms to 0.5 s each, by region), so each cache moves as one tar file. Hub
+    # downloads are slow or fail in some regions, and the Hub cache depends on neither uv.lock nor the GPU.
+    archives = {
+        compile_cache: Path(CACHE, f"{lock_hash}-{GPU}", suite, f"{name}.tar"),
+        hub_cache: Path(CACHE, "huggingface", suite, f"{name}.tar"),
+    }
+    restored = {target: restore_cache(archive, target) for target, archive in archives.items()}
     for kind in ("triton", "inductor", "vllm", "tilelang", "torch_extensions"):
         (compile_cache / kind).mkdir(exist_ok=True)
     # The rl and sft launchers pin these two caches to /tmp paths (prime_rl/utils/process.py)
@@ -230,6 +238,7 @@ def run_group(name: str, pytest_args: list[str], cache_key: str, ref_name: str) 
         "TILELANG_CACHE_DIR": f"{compile_cache}/tilelang",
         # The CPU AdamW of full offload is a C++ extension built on first use
         "TORCH_EXTENSIONS_DIR": f"{compile_cache}/torch_extensions",
+        "HF_HUB_CACHE": str(hub_cache),
     }
     gpus = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True)
     region = os.environ.get("MODAL_REGION")
@@ -248,7 +257,8 @@ def run_group(name: str, pytest_args: list[str], cache_key: str, ref_name: str) 
             print(f"[{name}] {line}", end="", flush=True)
             log.write(line)
     exit_code = process.wait()
-    save_cache(archive, compile_cache, restored)
+    for target, archive in archives.items():
+        save_cache(archive, target, restored[target])
     cache.commit()
 
     artifacts = io.BytesIO()
@@ -274,7 +284,7 @@ async def main(suite: str = "tiny", group: str = ""):
         )
         spawned = time.time()
         exit_code, artifacts, started, duration = await fn.remote.aio(
-            group.name, test_suite.pytest_args(group), f"{lock_hash}-{GPU}/{suite}", ref_name
+            group.name, test_suite.pytest_args(group), suite, lock_hash, ref_name
         )
         if (artifacts_dir / group.name).exists():
             shutil.rmtree(artifacts_dir / group.name)
