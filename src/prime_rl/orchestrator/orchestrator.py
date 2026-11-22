@@ -776,8 +776,8 @@ class Orchestrator:
             metrics = effective.metrics.to_wandb(prefix="train/agg", subset="effective")
             for env_name, env_pool in effective.by_env().items():
                 metrics |= env_pool.metrics.to_wandb(prefix=f"train/{env_name}", subset="effective")
-            num_input = sum(record.trace.num_input_tokens for record in effective.records)
-            num_output = sum(record.trace.num_output_tokens for record in effective.records)
+            num_input = sum(record.value("num_input_tokens") for record in effective.records)
+            num_output = sum(record.value("num_output_tokens") for record in effective.records)
             metrics |= {
                 "progress/input_tokens": num_input,
                 "progress/output_tokens": num_output,
