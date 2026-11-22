@@ -672,7 +672,7 @@ class Inkling2LoopModel(Inkling2Model):
             for j, layer_idx in enumerate(core):
                 hidden_states, block_states = self._run_layer(
                     layer_idx,
-                    layer_idx + pass_idx * len(core),
+                    self.config.layer_visit_ids(layer_idx)[pass_idx],
                     hidden_states,
                     block_states,
                     routed_experts,
@@ -681,10 +681,10 @@ class Inkling2LoopModel(Inkling2Model):
                     message_queries[j] if bank is not None else None,
                 )
 
-        extra_visits = (num_passes - 1) * len(core)
         for layer_idx in range(core.stop, len(self.layers)):
+            (visit,) = self.config.layer_visit_ids(layer_idx)
             hidden_states, block_states = self._run_layer(
-                layer_idx, layer_idx + extra_visits, hidden_states, block_states, routed_experts, layer_args
+                layer_idx, visit, hidden_states, block_states, routed_experts, layer_args
             )
         return hidden_states, block_states
 
