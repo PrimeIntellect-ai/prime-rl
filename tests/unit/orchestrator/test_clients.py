@@ -8,7 +8,7 @@ import httpx
 import pytest
 from verifiers.v1.configs.client import EvalClientConfig
 
-from prime_rl.configs.shared import ClientConfig, NCCLWeightBroadcastConfig
+from prime_rl.configs.shared import ADMIN_TOKEN_HEADER, ClientConfig, NCCLWeightBroadcastConfig, VLLMClientConfig
 from prime_rl.orchestrator.clients import (
     AdminPlane,
     _is_retryable_lora_error,
@@ -189,6 +189,16 @@ def test_weight_broadcast_config_sets_the_update_weights_timeout(tmp_path):
 
     assert posted_paths(client) == ["/pause", "/update_weights", "/resume"]
     assert client.post.await_args_list[1].kwargs["timeout"].read == 1800
+    asyncio.run(admin_plane.aclose())
+
+
+def test_admin_plane_sends_the_admin_token_to_engines_only(monkeypatch):
+    monkeypatch.setenv("PRIME_RL_ADMIN_TOKEN", "secret")
+    config = VLLMClientConfig(base_url="http://router:8000/v1", admin_base_url=["http://engine:8100/v1"])
+    admin_plane = AdminPlane(config)
+
+    assert [client.headers.get(ADMIN_TOKEN_HEADER) for client in admin_plane.clients] == ["secret"]
+    assert [client.headers.get(ADMIN_TOKEN_HEADER) for client in admin_plane._router_clients] == [None]
     asyncio.run(admin_plane.aclose())
 
 

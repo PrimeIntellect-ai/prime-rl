@@ -1,4 +1,3 @@
-import time
 from collections.abc import Sequence
 
 import torch
@@ -40,23 +39,12 @@ class FlopCounter:
 
 class PerfCounter:
     """
-    Computes throughput (tokens/s) and MFU.
-
-    Two modes:
-    - Sliding window over full-step wall time: `count_tokens(tokens)` each step,
-      read smoothed values via `get_tokens_per_second()`.
-      Time is measured between successive `count_tokens` calls (full step).
-    - Single point on a caller-provided duration: `get_step_tokens_per_second(tokens, fwd_bwd_time)`
-      / `get_step_mfu(flops, fwd_bwd_time)`, with `flops` summed from `flop_counter(seq_lens)`. No smoothing.
-
-    Sliding window inspired by https://github.com/pytorch/torchtitan/blob/4b3f2e41a084bf79a8540068ed525539d1244edd/torchtitan/utils.py#L119
+    Computes throughput (tokens/s) and MFU on a caller-provided duration:
+    `get_step_tokens_per_second(tokens, fwd_bwd_time)` / `get_step_mfu(flops, fwd_bwd_time)`,
+    with `flops` summed from `flop_counter(seq_lens)`.
     """
 
-    def __init__(self, model: nn.Module, window_size: int = 10):
-        self.window_size = window_size
-        self.tokens: list[int] = []
-        self.times: list[float] = []
-
+    def __init__(self, model: nn.Module):
         self._world = get_world()
         self._logger = get_logger()
 
@@ -65,19 +53,6 @@ class PerfCounter:
         else:
             self.gpu_peak_flops = 0
         self.flop_counter = FlopCounter(model)
-
-    def count_tokens(self, tokens: int) -> None:
-        """Push a step into the sliding window. Time is recorded internally."""
-        self.tokens.append(tokens)
-        self.times.append(time.perf_counter())
-        if len(self.tokens) > self.window_size:
-            self.tokens.pop(0)
-            self.times.pop(0)
-
-    def get_tokens_per_second(self) -> float | None:
-        if len(self.tokens) < 2:
-            return None
-        return sum(self.tokens[1:]) / (self.times[-1] - self.times[0])
 
     def get_step_tokens_per_second(self, tokens: int, fwd_bwd_time: float) -> float:
         """Single-step throughput from a caller-provided duration."""
@@ -130,9 +105,9 @@ class PerfCounter:
 _PERF_COUNTER: PerfCounter | None = None
 
 
-def get_perf_counter(model: nn.Module, window_size: int = 10) -> PerfCounter:
+def get_perf_counter(model: nn.Module) -> PerfCounter:
     global _PERF_COUNTER
     if _PERF_COUNTER is None:
-        _PERF_COUNTER = PerfCounter(model, window_size)
+        _PERF_COUNTER = PerfCounter(model)
 
     return _PERF_COUNTER

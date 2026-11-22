@@ -6,6 +6,9 @@ on:
       - published
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   trigger-docs-sync:
     runs-on: ubuntu-latest
@@ -44,7 +47,7 @@ jobs:
           echo "All mint.json pages verified."
 
       - name: Trigger public-docs workflow
-        uses: peter-evans/repository-dispatch@v4
+        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
         with:
           token: ${{ secrets.DOCS_SYNC_PAT }}
           repository: PrimeIntellect-ai/public-docs

@@ -1,7 +1,11 @@
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from tests.conftest import ProcessResult
+
+if TYPE_CHECKING:
+    import torch
 
 
 def strip_escape_codes(text: str) -> str:
@@ -208,23 +212,6 @@ def check_avg_mismatch_kl_in_range(
         )
 
 
-def check_mismatch_kl_in_range(
-    lines: list[str],
-    step: int = -1,
-    min_threshold: float | None = None,
-    max_threshold: float | None = None,
-):
-    """Helper to assert that mismatch KL in step logs is within a threshold"""
-    check_metric_in_range(
-        lines,
-        metric_name="Mismatch KL",
-        pattern=r"Mismatch KL:?\s+(\d+\.\d{4})",
-        step=step,
-        min_threshold=min_threshold,
-        max_threshold=max_threshold,
-    )
-
-
 def convert_checkpoint(converter: str, *args: Path) -> None:
     """Run ``tools/convert_<converter>.py`` on a checkpoint."""
     import subprocess
@@ -243,3 +230,11 @@ def check_hf_load(weights_dir: Path) -> None:
     assert not loading_info["unexpected_keys"], f"unexpected keys: {loading_info['unexpected_keys'][:5]}"
     assert not loading_info["mismatched_keys"], f"mismatched keys: {loading_info['mismatched_keys'][:5]}"
     assert all(torch.isfinite(param).all() for param in model.parameters())
+
+
+def assert_relative(actual: "torch.Tensor", reference: "torch.Tensor", rtol: float, label: str) -> None:
+    """Bound the largest absolute deviation by `rtol` times the reference's own scale."""
+    actual, reference = actual.float(), reference.float()
+    deviation = (actual - reference).abs().max()
+    scale = reference.abs().max()
+    assert deviation <= rtol * scale, f"{label}: max deviation {deviation} exceeds {rtol} * scale {scale}"
