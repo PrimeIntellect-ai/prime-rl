@@ -2,7 +2,7 @@
 # Usage: stage_models.sh MODELS_DIR. Downloads config and tokenizer files only (no weights); runs use random init.
 set -euo pipefail
 OUT=$1
-for repo in zai-org/GLM-5.3-Flash-BF16 Qwen/Qwen3.5-0.8B Qwen/Qwen3.8-Flash-Next; do
+for repo in zai-org/GLM-5.3-Flash-BF16 Qwen/Qwen3.5-0.8B Qwen/Qwen3.8-Flash-Next nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 openai/gpt-oss-20b; do
   hf download "$repo" --local-dir "$OUT/${repo/\//--}" \
     --include "*.json" --include "*.txt" --include "*.model" --include "*.jinja" --exclude "*.safetensors.index.json"
 done
