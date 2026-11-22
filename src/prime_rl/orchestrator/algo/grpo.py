@@ -71,17 +71,32 @@ class GRPOAlgorithm(Algorithm):
     def __init__(self, config: GRPOAlgoConfig, clients: InferenceClient):
         super().__init__(config, clients)
         self.length_penalty = config.length_penalty
+        self.fallback_reward = config.fallback_reward
         self.length_weighted_baseline = config.length_weighted_baseline
         self.loss_aggregation = config.loss_aggregation
 
     def reconfigure(self, config: GRPOAlgoConfig) -> None:
         self.length_penalty = config.length_penalty
+        self.fallback_reward = config.fallback_reward
 
     async def score_group(self, episodes: list[vf.Episode]) -> None:
         import torch  # only the trainer-side extras ship torch; an eval process never scores a group
 
         traces = [trace for _, trace in iter_trainable_traces(episodes)]
         rewards = torch.tensor([trace.reward for trace in traces], dtype=torch.float32)
+        fallback = self.fallback_reward
+        if fallback is not None:
+            use_fallback = bool(traces) and not any(trace.reward >= fallback.threshold for trace in traces)
+            for trace in traces:
+                trace.record_metric("binary_reward", trace.reward)
+                trace.record_metric("fallback_reward_active", 1.0 if use_fallback else 0.0)
+                if use_fallback:
+                    value = trace.metrics.get(fallback.metric)
+                    score = 0.0 if value is None else float(value)
+                    trace.rewards.clear()
+                    trace.record_reward("reward", score, weight=fallback.weight)
+            if use_fallback:
+                rewards = torch.tensor([trace.reward for trace in traces], dtype=torch.float32)
         length_penalty = self.length_penalty
         if length_penalty is None:
             shaped_rewards = rewards
@@ -117,8 +132,10 @@ class GRPOAlgorithm(Algorithm):
             scale = schedule_scale(length_penalty.schedule, episodes)
             penalty = scale * rewards.mean() * penalty_frac
             shaped_rewards = rewards - penalty
-            for trace in traces:
+            for trace, pen in zip(traces, penalty.tolist(), strict=True):
                 trace.info["length_penalty_scale"] = scale
+                trace.record_metric("length_penalty_scale", scale)
+                trace.record_metric("length_penalty", pen)
         baseline = shaped_rewards.mean()
         if self.length_weighted_baseline:
             lengths = torch.tensor(

@@ -147,6 +147,22 @@ LengthPenaltyConfig: TypeAlias = Annotated[
 ]
 
 
+class FallbackRewardConfig(BaseConfig):
+    """Per-group fallback reward used when no rollout in the group reaches ``threshold`` on the primary reward.
+
+    Keeps all-fail groups from producing zero advantage without distorting groups that already have a solve.
+    """
+
+    metric: str
+    """Scalar key in ``trace.metrics`` to fall back to (e.g. ``"criteria_score"``). Missing or ``None`` values score ``0.0``."""
+
+    weight: float = Field(0.5, gt=0, allow_inf_nan=False)
+    """Multiplier on the fallback metric. Keeping this below 1 bounds all-fail updates relative to binary-pass groups."""
+
+    threshold: float = Field(1.0, allow_inf_nan=False)
+    """Primary reward threshold that counts as a solve: if any trainable trace in the group reaches it, the group uses primary reward only."""
+
+
 class EchoRoleConfig(BaseConfig):
     """Echo CE supervision for one message role."""
 
@@ -239,6 +255,9 @@ class GRPOAlgoConfig(BaseAlgoConfig):
         if isinstance(value, dict):
             return {"type": "linear", **value}
         return value
+
+    fallback_reward: Annotated[FallbackRewardConfig | None, Live()] = None
+    """Optional per-group fallback reward from ``trace.metrics`` when no rollout in the group reaches ``fallback_reward.threshold`` on the primary reward. None disables fallback."""
 
     length_weighted_baseline: bool = False
     """Use the token-length-weighted group mean reward ``sum_i(L_i * r_i) / sum_i(L_i)`` as the baseline instead of the plain mean, where ``L_i`` is the number of trainable (mask-True, policy-sampled) tokens of rollout ``i`` summed across all its turns."""
