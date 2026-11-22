@@ -4,7 +4,7 @@ RL configs per model at 256k context, layered as in [`deepseek-v4-flash/`](deeps
 
 1. `<model>/rl.toml`: the model definition: the model, its optimizer, and its inference engine
    settings that do not depend on hardware (context length, parsers, prefix caching, router replay).
-2. `<model>/gpu/h200.toml`: the compute overlay: trainer nodes and parallelism, fit to one
+2. `<model>/gpu/h200_<N>nodes.toml`: a compute overlay for N trainer nodes (a model can have several): trainer nodes and parallelism, fit to one
    262144-token sample per micro batch, and one inference node per trainer node. The trainer keeps
    the defaults: optimizer offload, full activation checkpointing and activation offloading.
 3. `data/`: the data overlay: `scaleswe.toml` (ScaleSWE with the bash harness, bash + edit tools,
@@ -12,7 +12,7 @@ RL configs per model at 256k context, layered as in [`deepseek-v4-flash/`](deeps
    (INTELLECT-3 math, eval on AIME 2025).
 
 ```bash
-uv run rl @ examples/advanced/<model>/rl.toml @ examples/advanced/<model>/gpu/h200.toml @ examples/advanced/data/scaleswe.toml \
+uv run rl @ examples/advanced/<model>/rl.toml @ examples/advanced/<model>/gpu/h200_<N>nodes.toml @ examples/advanced/data/scaleswe.toml \
     --slurm.partition <partition> --output-dir <shared-dir>
 ```
 
@@ -54,7 +54,7 @@ many requests in flight decode much faster per GPU.
 `fake.toml` runs the trainer alone on fake 256k samples with random weights and balanced routing:
 
 ```bash
-uv run rl @ examples/advanced/<model>/rl.toml @ examples/advanced/<model>/gpu/h200.toml @ examples/advanced/fake.toml \
+uv run rl @ examples/advanced/<model>/rl.toml @ examples/advanced/<model>/gpu/h200_<N>nodes.toml @ examples/advanced/fake.toml \
     --slurm.partition <partition> --output-dir <shared-dir>
 ```
 

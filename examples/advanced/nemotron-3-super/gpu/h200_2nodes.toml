@@ -2,7 +2,7 @@
 # replicas (inference not fitted yet). Trainer fit on fake 256k samples:
 # 2 nodes, ep 8, cp 8: 29.5k tok/s (1,842 per GPU), 106.3 GiB peak reserved.
 #
-#   uv run rl @ examples/advanced/nemotron-3-super/rl.toml @ examples/advanced/nemotron-3-super/gpu/h200.toml @ examples/advanced/fake.toml --trainer.model.debug.force-balanced-routing
+#   uv run rl @ examples/advanced/nemotron-3-super/rl.toml @ examples/advanced/nemotron-3-super/gpu/h200_2nodes.toml @ examples/advanced/fake.toml --trainer.model.debug.force-balanced-routing
 
 [deployment]
 type = "multi_node"

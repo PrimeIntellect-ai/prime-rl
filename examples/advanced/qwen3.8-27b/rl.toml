@@ -1,10 +1,10 @@
 # Qwen3.8 27B (dense, hybrid Gated DeltaNet, 16 of 64 layers full attention) RL at 256k context.
-# Model settings only: compose it with a hardware overlay from `gpu/` and a data config from
+# Model settings only: compose it with a compute overlay from `gpu/` and a data config from
 # `examples/advanced/data/`:
 #
-#   uv run rl @ examples/advanced/qwen3.8-27b/rl.toml @ examples/advanced/qwen3.8-27b/gpu/h200.toml @ examples/advanced/data/scaleswe.toml
-#   uv run rl @ examples/advanced/qwen3.8-27b/rl.toml @ examples/advanced/qwen3.8-27b/gpu/h200.toml @ examples/advanced/data/scaleswe-short.toml
-#   uv run rl @ examples/advanced/qwen3.8-27b/rl.toml @ examples/advanced/qwen3.8-27b/gpu/h200.toml @ examples/advanced/data/math.toml
+#   uv run rl @ examples/advanced/qwen3.8-27b/rl.toml @ examples/advanced/qwen3.8-27b/gpu/h200_1node.toml @ examples/advanced/data/scaleswe.toml
+#   uv run rl @ examples/advanced/qwen3.8-27b/rl.toml @ examples/advanced/qwen3.8-27b/gpu/h200_1node.toml @ examples/advanced/data/scaleswe-short.toml
+#   uv run rl @ examples/advanced/qwen3.8-27b/rl.toml @ examples/advanced/qwen3.8-27b/gpu/h200_1node.toml @ examples/advanced/data/math.toml
 
 seq_len = 262144
 

@@ -2,7 +2,7 @@
 # replica (inference not fitted yet). Trainer fit on fake 256k samples:
 # 1 node, cp 8: 8.7k tok/s (1,084 per GPU), 73.2 GiB peak reserved.
 #
-#   uv run rl @ examples/advanced/qwen3.8-27b/rl.toml @ examples/advanced/qwen3.8-27b/gpu/h200.toml @ examples/advanced/fake.toml
+#   uv run rl @ examples/advanced/qwen3.8-27b/rl.toml @ examples/advanced/qwen3.8-27b/gpu/h200_1node.toml @ examples/advanced/fake.toml
 
 [deployment]
 type = "multi_node"
