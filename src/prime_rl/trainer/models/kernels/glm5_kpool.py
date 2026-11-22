@@ -6,8 +6,6 @@ import torch
 import triton
 import triton.language as tl
 
-_INV_SQRT_128: tl.constexpr = 0.08838834764831845
-
 
 @triton.jit
 def _fwht128_stage_vec(x, GROUPS: tl.constexpr, STRIDE: tl.constexpr):
@@ -29,7 +27,7 @@ def _fwht128_vec(x):
     x = _fwht128_stage_vec(x, 4, 16)
     x = _fwht128_stage_vec(x, 2, 32)
     x = _fwht128_stage_vec(x, 1, 64)
-    return x * _INV_SQRT_128
+    return x * 0.08838834764831845
 
 
 @triton.jit
