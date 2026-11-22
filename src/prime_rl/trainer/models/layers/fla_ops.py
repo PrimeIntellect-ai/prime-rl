@@ -25,12 +25,12 @@ def prepare_chunk_indices(cu_seqlens: Tensor) -> Tensor:
 
 @torch.library.custom_op("prime_rl::fla_causal_conv1d", mutates_args=())
 def _causal_conv1d(
-    x: Tensor, weight: Tensor, activation: str | None, cu_seqlens: Tensor, chunk_indices: Tensor
+    x: Tensor, weight: Tensor, bias: Tensor | None, activation: str | None, cu_seqlens: Tensor, chunk_indices: Tensor
 ) -> Tensor:
     y, _ = causal_conv1d_fwd(
         x=x,
         weight=weight,
-        bias=None,
+        bias=bias,
         residual=None,
         activation=activation,
         cu_seqlens=cu_seqlens,
@@ -41,44 +41,53 @@ def _causal_conv1d(
 
 
 @_causal_conv1d.register_fake
-def _(x, weight, activation, cu_seqlens, chunk_indices):
+def _(x, weight, bias, activation, cu_seqlens, chunk_indices):
     return torch.empty_like(x)
 
 
 @torch.library.custom_op("prime_rl::fla_causal_conv1d_backward", mutates_args=())
 def _causal_conv1d_backward(
-    dy: Tensor, x: Tensor, weight: Tensor, activation: str | None, cu_seqlens: Tensor, chunk_indices: Tensor
-) -> tuple[Tensor, Tensor]:
-    dx, dweight, _, _, _ = causal_conv1d_bwd(
+    dy: Tensor,
+    x: Tensor,
+    weight: Tensor,
+    bias: Tensor | None,
+    activation: str | None,
+    cu_seqlens: Tensor,
+    chunk_indices: Tensor,
+) -> list[Tensor]:
+    dx, dweight, dbias, _, _ = causal_conv1d_bwd(
         x=x,
         dy=dy,
         dht=None,
         weight=weight,
-        bias=None,
+        bias=bias,
         residual=None,
         activation=activation,
         cu_seqlens=cu_seqlens,
         chunk_indices=chunk_indices,
         chunk_size=FLA_CHUNK_SIZE,
     )
-    return dx, dweight
+    return [dx, dweight] if bias is None else [dx, dweight, dbias.to(bias)]
 
 
 @_causal_conv1d_backward.register_fake
-def _(dy, x, weight, activation, cu_seqlens, chunk_indices):
-    return torch.empty_like(x), torch.empty_like(weight)
+def _(dy, x, weight, bias, activation, cu_seqlens, chunk_indices):
+    grads = [torch.empty_like(x), torch.empty_like(weight)]
+    return grads if bias is None else [*grads, torch.empty_like(bias)]
 
 
 def _causal_conv1d_setup_context(ctx, inputs, output) -> None:
-    x, weight, activation, cu_seqlens, chunk_indices = inputs
-    ctx.save_for_backward(x, weight, cu_seqlens, chunk_indices)
+    x, weight, bias, activation, cu_seqlens, chunk_indices = inputs
+    ctx.save_for_backward(x, weight, bias, cu_seqlens, chunk_indices)
     ctx.activation = activation
 
 
 def _causal_conv1d_autograd(ctx, dy: Tensor):
-    x, weight, cu_seqlens, chunk_indices = ctx.saved_tensors
-    dx, dweight = _causal_conv1d_backward(dy.contiguous(), x, weight, ctx.activation, cu_seqlens, chunk_indices)
-    return dx, dweight, None, None, None
+    x, weight, bias, cu_seqlens, chunk_indices = ctx.saved_tensors
+    dx, dweight, *dbias = _causal_conv1d_backward(
+        dy.contiguous(), x, weight, bias, ctx.activation, cu_seqlens, chunk_indices
+    )
+    return dx, dweight, dbias[0] if dbias else None, None, None, None
 
 
 _causal_conv1d.register_autograd(_causal_conv1d_autograd, setup_context=_causal_conv1d_setup_context)
@@ -89,7 +98,7 @@ def causal_conv1d(
 ) -> Tensor:
     """FLA's varlen causal depthwise convolution without bias or states: ``x`` is (1, tokens, channels), ``weight`` is
     (channels, width)."""
-    return _causal_conv1d(x.contiguous(), weight.contiguous(), activation, cu_seqlens, chunk_indices)
+    return _causal_conv1d(x.contiguous(), weight.contiguous(), None, activation, cu_seqlens, chunk_indices)
 
 
 @torch.library.custom_op("prime_rl::fla_chunk_gated_delta_rule", mutates_args=())
