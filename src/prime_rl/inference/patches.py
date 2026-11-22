@@ -44,6 +44,7 @@ def apply_shared_vllm_patches():
     monkey_patch_nixl_bidirectional_spec_decode_coverage()
     monkey_patch_keep_pause_ignores_held_kv()
     monkey_patch_freeze_nixl_leases_during_keep_pause()
+    monkey_patch_drop_reservation_of_failed_kv_load()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
@@ -297,6 +298,35 @@ def monkey_patch_freeze_nixl_leases_during_keep_pause():
 
     resume_scheduler._prime_rl_freeze_leases = True
     EngineCore.resume_scheduler = resume_scheduler
+
+
+def monkey_patch_drop_reservation_of_failed_kv_load():
+    """Stop requests whose KV load failed from reserving the whole KV pool.
+
+    The scheduler reserves, for every request parked on an asynchronous KV load, the blocks it still needs to hold
+    its full sequence, and admits a new load only if it fits beside those reservations. The reservation is refreshed
+    when the load finishes. A load that failed outright has freed its blocks by then, so the refresh reserves the
+    request's whole sequence, and it is only released when the request runs. Enough such requests (for example
+    turns whose decode blocks expired while they queued) reserve more than the pool holds: no load is admitted any
+    more, nothing runs, and the engine idles with an empty KV cache and a full queue.
+
+    A request that holds no blocks has nothing in flight to protect, so it keeps no reservation.
+    """
+    from vllm.v1.core.sched.scheduler import Scheduler
+
+    original = Scheduler._reserve_parked
+    if getattr(original, "_prime_rl_drops_failed_load", False):
+        return
+
+    def _reserve_parked(self, request) -> None:
+        # Both callers set the computed count first: the load's hit when it is parked, what survived when it ends.
+        if request.num_computed_tokens == 0:
+            self._unreserve_parked(request)
+            return
+        original(self, request)
+
+    _reserve_parked._prime_rl_drops_failed_load = True
+    Scheduler._reserve_parked = _reserve_parked
 
 
 def monkey_patch_block_outermost_mla_stride():

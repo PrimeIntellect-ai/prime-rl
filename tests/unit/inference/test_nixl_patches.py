@@ -236,3 +236,28 @@ def test_keep_pause_freezes_the_nixl_leases_of_the_engines_workers(monkeypatch, 
     clock[0] = 1300.0
     engine.resume_scheduler()
     assert nixl_worker._reqs_to_send == {"held": 1124.0}
+
+
+def test_request_whose_kv_load_failed_keeps_no_reservation():
+    """A load that failed outright freed its blocks; reserving the request's whole sequence afterwards would, with
+    enough such requests, exceed the pool and stop every later load from being admitted."""
+    from vllm.v1.core.sched.scheduler import Scheduler
+
+    from prime_rl.inference.patches import monkey_patch_drop_reservation_of_failed_kv_load
+
+    monkey_patch_drop_reservation_of_failed_kv_load()
+    scheduler = object.__new__(Scheduler)
+    scheduler.kv_cache_config = SimpleNamespace(hisparse_host_num_blocks=None)
+    scheduler._parked_reservations, scheduler._parked_reserved_blocks = {}, 0
+    scheduler._request_remaining_blocks = lambda request: 400
+
+    class _Request:  # hashable, unlike SimpleNamespace: the scheduler keys its reservations by request
+        num_computed_tokens = 98_304
+
+    loading = _Request()
+    scheduler._reserve_parked(loading)
+    assert scheduler._parked_reserved_blocks == 400
+
+    loading.num_computed_tokens = 0  # the load failed and its blocks were freed
+    scheduler._reserve_parked(loading)
+    assert scheduler._parked_reserved_blocks == 0 and not scheduler._parked_reservations
