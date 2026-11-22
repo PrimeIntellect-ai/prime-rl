@@ -1,0 +1,36 @@
+## qwen3_8_flash_next_cp1-base rc=0 sha=9f22c14aa
+layer-frame compiles per rank: {0: 5, 1: 5, 2: 5, 3: 5, 4: 5, 5: 5, 6: 5, 7: 5}
+rank 0 layer-frame ops per compile: [[0, 0, 0, 0, 0]]
+prime_rl custom ops in rank 0's compiled code: {}
+graph breaks per rank: {0: 5, 1: 5, 2: 5, 3: 5, 4: 5, 5: 5, 6: 5, 7: 5}
+  recompile 8x (all ranks): 0/0: args[1] is None
+  recompile 8x (all ranks): 0/2: args[1] is None
+  recompile 8x (all ranks): 0/3: expected type of 'args[1]' to be <class 'torch.Tensor'>, but found <class 'NoneType'>
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 7512, actual 5665
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 3987, actual 7877
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 7613, actual 7526
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 8162, actual 7939
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 4751, actual 3569
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 3792, actual 7348
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 6421, actual 7181
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 7459, actual 796
+time/step: 1:143.03 2:2.09 3:1.48 4:1.27 5:25.05 6:1.40 7:1.30 8:1.25 9:1.28 10:1.31 11:1.30 12:1.26 13:1.28 14:1.23 15:1.27 16:1.25 17:1.28 18:1.30 19:1.28 20:1.27
+all steps: n=20 mean 9.609 s, median 1.280 s, min 1.230 s, max 143.034 s
+last compile ends 238 s after launch; steps after it: n=19 mean 2.587 s, median 1.278 s, min 1.230 s, max 25.049 s
+peak memory over ranks: allocated 62.69 GiB, reserved 67.45 GiB
+## qwen3_8_flash_next_cp1-pr rc=0 sha=27326f132
+layer-frame compiles per rank: {0: 3, 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 4}
+rank 0 layer-frame ops per compile: [[2, 2, 2]]
+prime_rl custom ops in rank 0's compiled code: {'prime_rl::qwen3_8_hc_read': 99, 'prime_rl::fla_causal_conv1d': 48, 'prime_rl::fla_chunk_gated_delta_rule': 92, 'prime_rl::fla_rms_norm_gated': 52, 'prime_rl::qwen3_8_hc_write_read': 108, 'prime_rl::record_moe_routing_statistics': 39, 'prime_rl::stable_argsort': 72, 'prime_rl_collectives::all_to_all_counts': 45, 'prime_rl_collectives::all_to_all_single': 222, 'prime_rl::qwen3_8_hc_write_read_backward': 66, 'prime_rl::fla_rms_norm_gated_backward': 30, 'prime_rl::fla_chunk_gated_delta_rule_backward': 38, 'prime_rl::fla_causal_conv1d_backward': 28, 'prime_rl::qwen3_8_hc_read_backward': 54, 'prime_kernels::select_indexed_blocks': 15, 'prime_kernels::indexed_attention_plan': 24, 'prime_kernels::indexed_attention_forward': 26, 'prime_kernels::indexed_attention_backward': 16}
+graph breaks per rank: {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0}
+  recompile 9x (all ranks): 0/0: KeyError on self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['linear_attn']
+  recompile 8x (all ranks): 0/0: KeyError on self.__dict__['_modules']['_checkpoint_wrapped_module'].ple
+time/step: 1:276.36 2:1.57 3:1.14 4:0.95 5:25.45 6:1.13 7:0.98 8:0.95 9:0.98 10:0.99 11:0.97 12:0.95 13:0.95 14:0.92 15:0.95 16:0.95 17:0.97 18:0.99 19:0.97 20:0.96
+all steps: n=20 mean 16.003 s, median 0.969 s, min 0.917 s, max 276.355 s
+last compile ends 372 s after launch; steps after it: n=19 mean 2.301 s, median 0.968 s, min 0.917 s, max 25.451 s
+peak memory over ranks: allocated 62.66 GiB, reserved 68.42 GiB
+loss: max abs diff 1.817e-03, max rel diff 1.49e-04 (step 18) over 20 steps
+grad_norm: max abs diff 1.854e-02, max rel diff 6.88e-03 (step 8) over 20 steps
+steps after the last compile in both arms: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+  qwen3_8_flash_next_cp1-base: n=19 mean 2.587 s, median 1.278 s, min 1.230 s, max 25.049 s
+  qwen3_8_flash_next_cp1-pr: n=19 mean 2.301 s, median 0.968 s, min 0.917 s, max 25.451 s

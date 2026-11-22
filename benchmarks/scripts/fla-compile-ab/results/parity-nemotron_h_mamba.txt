@@ -1,0 +1,8 @@
+dt_limit (0.0, inf)
+old vs old (noise floor) out 0.00e+00 dx 0.00e+00 {'dt_bias': '0.00e+00', 'A_log': '0.00e+00', 'D': '0.00e+00', 'in_proj.weight': '0.00e+00', 'conv1d.weight': '0.00e+00', 'conv1d.bias': '0.00e+00', 'norm.weight': '0.00e+00', 'out_proj.weight': '0.00e+00'}
+new eager vs old out 0.00e+00 dx 0.00e+00 {'dt_bias': '0.00e+00', 'A_log': '0.00e+00', 'D': '0.00e+00', 'in_proj.weight': '0.00e+00', 'conv1d.weight': '0.00e+00', 'conv1d.bias': '0.00e+00', 'norm.weight': '0.00e+00', 'out_proj.weight': '0.00e+00'}
+new compiled vs old out 4.75e-05 dx 1.03e-04 {'dt_bias': '8.70e-05', 'A_log': '0.00e+00', 'D': '0.00e+00', 'in_proj.weight': '6.61e-05', 'conv1d.weight': '2.13e-04', 'conv1d.bias': '5.24e-06', 'norm.weight': '4.05e-03', 'out_proj.weight': '1.29e-04'}
+dt_limit (0.001, 0.1)
+old vs old (noise floor) out 0.00e+00 dx 0.00e+00 {'dt_bias': '0.00e+00', 'A_log': '0.00e+00', 'D': '0.00e+00', 'in_proj.weight': '0.00e+00', 'conv1d.weight': '0.00e+00', 'conv1d.bias': '0.00e+00', 'norm.weight': '0.00e+00', 'out_proj.weight': '0.00e+00'}
+new eager vs old out 0.00e+00 dx 0.00e+00 {'dt_bias': '0.00e+00', 'A_log': '0.00e+00', 'D': '0.00e+00', 'in_proj.weight': '0.00e+00', 'conv1d.weight': '0.00e+00', 'conv1d.bias': '0.00e+00', 'norm.weight': '0.00e+00', 'out_proj.weight': '0.00e+00'}
+new compiled vs old out 4.48e-05 dx 8.77e-05 {'dt_bias': '0.00e+00', 'A_log': '0.00e+00', 'D': '0.00e+00', 'in_proj.weight': '7.61e-05', 'conv1d.weight': '1.57e-04', 'conv1d.bias': '3.35e-04', 'norm.weight': '3.30e-03', 'out_proj.weight': '8.06e-05'}
