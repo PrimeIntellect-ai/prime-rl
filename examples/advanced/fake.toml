@@ -15,6 +15,10 @@ inference = "None"
 [deployment]
 num_infer_nodes = 0
 
+# Router replay needs the inference engine's routed experts.
+[trainer]
+enable_router_replay = false
+
 # Fit runs are throwaway: do not register a Prime run.
 [trainer.monitors]
 prime = "None"
