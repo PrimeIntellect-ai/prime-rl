@@ -64,14 +64,21 @@ def _is_full_attention_group(group) -> bool:
     return is_full_attention_spec(group.kv_cache_spec)
 
 
-def _is_sliding_window_group(group) -> bool:
-    if hasattr(group, "manager_cls"):
+def _sliding_window_group_test():
+    """Return a test for sliding-window KV cache groups, for the form the installed vLLM has.
+
+    The class the test needs is resolved here. A patch calls this when it is applied, so that a vLLM without the
+    class fails when the plugin loads instead of at the first request that reaches the patch.
+    """
+    from vllm.v1 import kv_cache_interface
+
+    if hasattr(kv_cache_interface, "KVCacheGroup"):
         from vllm.v1.core.single_type_kv_cache_manager import SlidingWindowManager
 
-        return issubclass(group.manager_cls, SlidingWindowManager)
+        return lambda group: issubclass(group.manager_cls, SlidingWindowManager)
     from vllm.v1.kv_cache_interface import SlidingWindowSpec
 
-    return isinstance(group.kv_cache_spec, SlidingWindowSpec)
+    return lambda group: isinstance(group.kv_cache_spec, SlidingWindowSpec)
 
 
 def _is_mamba_group(group) -> bool:
@@ -132,6 +139,7 @@ def monkey_patch_nixl_sliding_window_backoff():
     """
     from vllm.distributed.kv_transfer.kv_connector.v1.nixl import base_scheduler
 
+    is_sliding_window_group = _sliding_window_group_test()
     cls = base_scheduler.NixlBaseConnectorScheduler
     original = cls._prefill_backoff
     if getattr(original, "_prime_rl_sliding_window", False):
@@ -140,7 +148,7 @@ def monkey_patch_nixl_sliding_window_backoff():
     def _prefill_backoff(self) -> int:
         has_sliding_window = getattr(self, "_prime_rl_has_sliding_window", None)
         if has_sliding_window is None:
-            has_sliding_window = any(_is_sliding_window_group(group) for group in self.kv_cache_config.kv_cache_groups)
+            has_sliding_window = any(is_sliding_window_group(group) for group in self.kv_cache_config.kv_cache_groups)
             self._prime_rl_has_sliding_window = has_sliding_window
         return max(original(self), 1 if has_sliding_window else 0)
 
@@ -382,6 +390,7 @@ def monkey_patch_fit_sliding_window_pages():
     from vllm.v1 import kv_cache_interface
     from vllm.v1.core import kv_cache_planning
 
+    is_sliding_window_group = _sliding_window_group_test()
     original = kv_cache_planning._get_packed_kv_cache_groups
     if getattr(original, "_prime_rl_fits_sliding_window_pages", False):
         return
@@ -403,7 +412,7 @@ def monkey_patch_fit_sliding_window_pages():
     def is_plain_sliding_window(group, specs):
         if not hasattr(group, "manager_cls"):
             plain_spec = kv_cache_interface.SlidingWindowSpec
-        elif _is_sliding_window_group(group):
+        elif is_sliding_window_group(group):
             plain_spec = kv_cache_interface.AttentionSpec
         else:
             return False
@@ -415,8 +424,8 @@ def monkey_patch_fit_sliding_window_pages():
             return replace(group, kv_cache_specs=specs, block_size=block_size)
         return replace(group, kv_cache_spec=kv_cache_interface.UniformTypeKVCacheSpecs.from_specs(specs))
 
-    def _get_packed_kv_cache_groups(vllm_config, layers):
-        groups = original(vllm_config, layers)
+    def _get_packed_kv_cache_groups(*args, **kwargs):
+        groups = original(*args, **kwargs)
         if not groups or len(groups) == 1:
             return groups
         fitted = []
