@@ -346,6 +346,7 @@ class Inkling2DecoderLayer(GradientCheckpointingLayer):
         doc_ids: Tensor,
         block_masks: dict[str, BlockMask],
         routed_experts: Tensor | None = None,
+        **kwargs,
     ) -> tuple[Tensor, Tensor]:
         dtype = hidden_states.dtype
         block_residual = hidden_states
