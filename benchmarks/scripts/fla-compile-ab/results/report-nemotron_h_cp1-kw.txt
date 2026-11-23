@@ -1,0 +1,34 @@
+## nemotron_h_cp1-pr rc=0 sha=27326f132
+layer-frame compiles per rank: {0: 6, 1: 6, 2: 6, 3: 6, 4: 6, 5: 6, 6: 6, 7: 6}
+rank 0 layer-frame ops per compile: [[2, 2, 2, 2, 2, 2]]
+prime_rl custom ops in rank 0's compiled code: {'prime_rl::fla_causal_conv1d': 52, 'prime_rl::mamba_chunk_scan': 76, 'prime_rl::mamba_chunk_scan_backward': 62, 'prime_rl::fla_causal_conv1d_backward': 34, 'prime_rl::record_moe_routing_statistics': 26, 'prime_rl::stable_argsort': 48, 'prime_rl_collectives::all_to_all_counts': 30, 'prime_rl_collectives::all_to_all_single': 148, 'prime_rl_attn::flash_attn_3_varlen': 52, 'prime_rl_attn::flash_attn_3_varlen_backward': 30}
+graph breaks per rank: {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0}
+  recompile 16x (all ranks): 0/0: KeyError on self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['mamba']
+  recompile 16x (all ranks): 0/3: KeyError on self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['mamba']
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 7250, actual 5567
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 3880, actual 7622
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 7542, actual 7735
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 7854, actual 7755
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 7912, actual 8192
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 3727, actual 7294
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 6317, actual 6919
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 7932, actual 7878
+time/step: 1:192.10 2:1.96 3:0.31 4:0.34 5:0.35 6:0.31 7:0.32 8:0.33 9:0.34 10:0.31 11:0.30 12:0.31 13:0.29 14:0.30 15:0.31 16:0.30 17:0.30 18:0.30 19:0.29 20:0.31
+all steps: n=20 mean 9.985 s, median 0.311 s, min 0.291 s, max 192.101 s
+last compile ends 311 s after launch; steps after it: n=19 mean 0.400 s, median 0.310 s, min 0.291 s, max 1.961 s
+peak memory over ranks: allocated 17.38 GiB, reserved 19.16 GiB
+## nemotron_h_cp1-kw rc=0 sha=63ccb5e4e
+layer-frame compiles per rank: {0: 3, 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 3}
+rank 0 layer-frame ops per compile: [[2, 2, 2]]
+prime_rl custom ops in rank 0's compiled code: {'prime_rl::fla_causal_conv1d': 26, 'prime_rl::mamba_chunk_scan': 38, 'prime_rl::mamba_chunk_scan_backward': 31, 'prime_rl::fla_causal_conv1d_backward': 17, 'prime_rl::record_moe_routing_statistics': 13, 'prime_rl::stable_argsort': 24, 'prime_rl_collectives::all_to_all_counts': 15, 'prime_rl_collectives::all_to_all_single': 74, 'prime_rl_attn::flash_attn_3_varlen': 26, 'prime_rl_attn::flash_attn_3_varlen_backward': 15}
+graph breaks per rank: {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0}
+  recompile 16x (all ranks): 0/0: KeyError on self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['mamba']
+time/step: 1:177.18 2:2.18 3:0.31 4:0.34 5:0.36 6:0.31 7:0.33 8:0.34 9:0.34 10:0.32 11:0.31 12:0.31 13:0.30 14:0.30 15:0.32 16:0.31 17:0.31 18:0.29 19:0.29 20:0.31
+all steps: n=20 mean 9.253 s, median 0.314 s, min 0.292 s, max 177.180 s
+last compile ends 275 s after launch; steps after it: n=19 mean 0.415 s, median 0.313 s, min 0.292 s, max 2.182 s
+peak memory over ranks: allocated 17.38 GiB, reserved 19.35 GiB
+loss: max abs diff 1.080e-03, max rel diff 9.03e-05 (step 20) over 20 steps
+grad_norm: max abs diff 5.090e-04, max rel diff 2.10e-04 (step 15) over 20 steps
+steps after the last compile in both arms: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+  nemotron_h_cp1-pr: n=19 mean 0.400 s, median 0.310 s, min 0.291 s, max 1.961 s
+  nemotron_h_cp1-kw: n=19 mean 0.415 s, median 0.313 s, min 0.292 s, max 2.182 s

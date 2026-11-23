@@ -1,0 +1,37 @@
+## gpt_oss_cp1-base rc=0 sha=9f22c14aa
+layer-frame compiles per rank: {0: 2, 1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 2}
+rank 0 layer-frame ops per compile: [[0, 0]]
+prime_rl custom ops in rank 0's compiled code: {}
+graph breaks per rank: {0: 2, 1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 2}
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 7324, actual 5530
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 3940, actual 7523
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 7430, actual 7692
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 7897, actual 7753
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 8030, actual 8192
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 3742, actual 7013
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 8141, actual 5081
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 8083, actual 7547
+time/step: 1:23.76 2:1.17 3:0.89 4:0.90 5:0.92 6:0.89 7:0.91 8:0.89 9:0.91 10:0.92 11:0.89 12:0.94 13:0.88 14:0.90 15:0.90 16:0.91 17:0.89 18:0.91 19:0.91 20:0.91
+all steps: n=20 mean 2.060 s, median 0.906 s, min 0.881 s, max 23.763 s
+last compile ends 137 s after launch; steps after it: n=19 mean 0.918 s, median 0.905 s, min 0.881 s, max 1.174 s
+peak memory over ranks: allocated 27.55 GiB, reserved 29.23 GiB
+## gpt_oss_cp1-pr rc=0 sha=27326f132
+layer-frame compiles per rank: {0: 6, 1: 8, 2: 8, 3: 6, 4: 6, 5: 6, 6: 6, 7: 6}
+rank 0 layer-frame ops per compile: [[2, 2, 2, 2, 2, 2]]
+prime_rl custom ops in rank 0's compiled code: {'prime_rl_attn::flash_attn_4_varlen': 178, 'prime_rl::record_moe_routing_statistics': 76, 'prime_rl::stable_argsort': 142, 'prime_rl_collectives::all_to_all_counts': 82, 'prime_rl_collectives::all_to_all_single': 440, 'prime_rl_attn::flash_attn_4_varlen_backward': 114}
+graph breaks per rank: {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0}
+  recompile 10x (all ranks): 0/3: self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['self_attn'].sliding_window is None
+  recompile 8x (all ranks): 0/0: self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['self_attn'].sliding_window == 128
+  recompile 8x (all ranks): 0/1: self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['self_attn'].sliding_window is None
+  recompile 8x (all ranks): 0/2: self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['self_attn'].sliding_window == 128
+  recompile 8x (all ranks): 0/4: self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['self_attn'].sliding_window == 128
+  recompile 2x (all ranks): 0/6: self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['self_attn'].sliding_window == 128
+time/step: 1:124.45 2:27.90 3:14.23 4:14.01 5:15.18 6:0.62 7:27.49 8:14.12 9:0.63 10:0.64 11:0.62 12:0.66 13:0.62 14:0.63 15:0.63 16:14.97 17:0.61 18:0.62 19:0.63 20:0.63
+all steps: n=20 mean 12.994 s, median 0.636 s, min 0.609 s, max 124.452 s
+last compile ends 364 s after launch; steps after it: n=4 mean 0.623 s, median 0.627 s, min 0.609 s, max 0.631 s
+peak memory over ranks: allocated 27.55 GiB, reserved 28.98 GiB
+loss: max abs diff 2.055e-03, max rel diff 1.75e-04 (step 19) over 20 steps
+grad_norm: max abs diff 1.971e-02, max rel diff 2.90e-03 (step 7) over 20 steps
+steps after the last compile in both arms: [17, 18, 19, 20]
+  gpt_oss_cp1-base: n=4 mean 0.905 s, median 0.908 s, min 0.893 s, max 0.910 s
+  gpt_oss_cp1-pr: n=4 mean 0.623 s, median 0.627 s, min 0.609 s, max 0.631 s
