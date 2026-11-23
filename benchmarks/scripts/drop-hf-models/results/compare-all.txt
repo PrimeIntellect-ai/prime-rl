@@ -1,0 +1,428 @@
+main1 status:
+rl-dense-nccl	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T03:36:14Z	561
+ckpt-dense-write	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T03:45:35Z	95
+ckpt-dense-resume	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T03:47:10Z	83
+sft-glm	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T03:48:33Z	146
+rl-moe-nccl	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T03:50:59Z	343
+rl-dense-nccl	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T04:10:52Z	226
+rl-moe-nccl	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T04:14:39Z	300
+sft-dense	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T04:19:40Z	86
+sft-vlm	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T04:21:06Z	179
+sft-glm-cp2	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T04:24:05Z	153
+rl-dense-fs	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T04:26:38Z	383
+rl-moe-fs	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T04:33:02Z	463
+ckpt-moe-write	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T04:40:45Z	131
+ckpt-moe-resume	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T04:42:57Z	119
+sft-qwen-moe	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T06:32:58Z	132
+
+main2 status:
+rl-dense-nccl	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T03:57:13Z	223
+ckpt-dense-resume	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T04:00:57Z	82
+sft-glm	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T04:02:19Z	128
+sft-dense	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T04:04:27Z	84
+rl-moe-nccl	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T04:05:52Z	292
+sft-vlm	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T05:12:13Z	75
+sft-glm-cp2	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T05:13:28Z	147
+ckpt-moe-resume	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T05:15:55Z	113
+sft-qwen-moe	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T06:38:58Z	113
+
+main3 status:
+rl-moe-nccl	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T06:02:15Z	291
+sft-vlm	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T06:12:13Z	78
+sft-glm-cp2	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T06:21:36Z	148
+sft-qwen-moe	0	a67027c12989fbe4fe2141bb5b6bec49c834a4ba	2026-11-23T06:54:05Z	115
+
+pr1 status:
+rl-dense-nccl	0	3e79118e24e3ee87a8a1abb4d78d7260498952b3	2026-11-23T04:46:22Z	241
+ckpt-dense-resume	0	3e79118e24e3ee87a8a1abb4d78d7260498952b3	2026-11-23T04:50:23Z	85
+sft-glm	0	3e79118e24e3ee87a8a1abb4d78d7260498952b3	2026-11-23T04:51:49Z	136
+rl-moe-nccl	0	3e79118e24e3ee87a8a1abb4d78d7260498952b3	2026-11-23T04:54:05Z	300
+sft-dense	0	3e79118e24e3ee87a8a1abb4d78d7260498952b3	2026-11-23T05:40:01Z	86
+sft-vlm	0	3e79118e24e3ee87a8a1abb4d78d7260498952b3	2026-11-23T05:41:27Z	79
+sft-glm-cp2	0	3e79118e24e3ee87a8a1abb4d78d7260498952b3	2026-11-23T05:42:46Z	147
+rl-dense-fs	0	3e79118e24e3ee87a8a1abb4d78d7260498952b3	2026-11-23T05:45:14Z	372
+rl-moe-fs	0	3e79118e24e3ee87a8a1abb4d78d7260498952b3	2026-11-23T05:51:27Z	457
+ckpt-moe-resume	0	3e79118e24e3ee87a8a1abb4d78d7260498952b3	2026-11-23T05:59:04Z	112
+sft-qwen-moe	0	3e79118e24e3ee87a8a1abb4d78d7260498952b3	2026-11-23T06:37:03Z	115
+
+pr2 status:
+rl-dense-nccl	0	428ed24709ff7985254ecf41b297b05bfdd79e0e	2026-11-23T04:59:40Z	246
+ckpt-dense-resume	0	428ed24709ff7985254ecf41b297b05bfdd79e0e	2026-11-23T05:03:46Z	82
+sft-glm	0	428ed24709ff7985254ecf41b297b05bfdd79e0e	2026-11-23T05:05:09Z	132
+rl-moe-nccl	0	428ed24709ff7985254ecf41b297b05bfdd79e0e	2026-11-23T05:07:21Z	292
+sft-dense	0	428ed24709ff7985254ecf41b297b05bfdd79e0e	2026-11-23T05:17:48Z	84
+sft-vlm	0	428ed24709ff7985254ecf41b297b05bfdd79e0e	2026-11-23T05:19:13Z	76
+sft-glm-cp2	0	428ed24709ff7985254ecf41b297b05bfdd79e0e	2026-11-23T05:20:29Z	144
+rl-dense-fs	0	428ed24709ff7985254ecf41b297b05bfdd79e0e	2026-11-23T05:22:53Z	369
+rl-moe-fs	0	428ed24709ff7985254ecf41b297b05bfdd79e0e	2026-11-23T05:29:02Z	470
+ckpt-moe-resume	0	428ed24709ff7985254ecf41b297b05bfdd79e0e	2026-11-23T05:36:52Z	117
+sft-qwen-moe	0	428ed24709ff7985254ecf41b297b05bfdd79e0e	2026-11-23T06:35:10Z	113
+
+pr2r2 status:
+rl-moe-nccl	0	428ed24709ff7985254ecf41b297b05bfdd79e0e	2026-11-23T06:07:06Z	305
+sft-vlm	0	428ed24709ff7985254ecf41b297b05bfdd79e0e	2026-11-23T06:14:50Z	80
+sft-glm-cp2	0	428ed24709ff7985254ecf41b297b05bfdd79e0e	2026-11-23T06:24:04Z	144
+sft-qwen-moe	0	428ed24709ff7985254ecf41b297b05bfdd79e0e	2026-11-23T06:56:00Z	114
+
+## Per-step metrics: each non-main run against its nearest main run, floor = max gap among all main runs
+
+cell               run     metric                                      nearest     max|d|      floor mains  growth  verdict
+ckpt-dense-resume  pr1     trainer:loss/mean                             main1   0.00e+00   0.00e+00     2    1.00  bitwise
+ckpt-dense-resume  pr2     trainer:loss/mean                             main1   0.00e+00   0.00e+00     2    1.00  bitwise
+ckpt-dense-resume  pr1     trainer:optim/grad_norm                       main1   0.00e+00   0.00e+00     2    1.00  bitwise
+ckpt-dense-resume  pr2     trainer:optim/grad_norm                       main1   0.00e+00   0.00e+00     2    1.00  bitwise
+ckpt-dense-resume  main1   step wall time (steps>=3): median 0.63 s, max 0.67 s
+ckpt-dense-resume  pr1     step wall time (steps>=3): median 0.64 s, max 0.65 s
+ckpt-dense-resume  pr2     step wall time (steps>=3): median 0.65 s, max 0.70 s
+
+ckpt-dense-write   main1   step wall time (steps>=3): median 0.62 s, max 6.91 s
+
+ckpt-moe-resume    pr1     trainer:loss/mean                             main1   5.77e-05   3.72e-05     2    0.58  near floor (1.55x)
+ckpt-moe-resume    pr2     trainer:loss/mean                             main2   2.91e-05   3.72e-05     2    1.36  within floor (0.78x)
+ckpt-moe-resume    pr1     trainer:max_vio/mean                          main1   3.86e-03   7.07e-03     2    1.68  within floor (0.55x)
+ckpt-moe-resume    pr2     trainer:max_vio/mean                          main1   4.68e-03   7.07e-03     2    1.68  within floor (0.66x)
+ckpt-moe-resume    pr1     trainer:optim/grad_norm                       main2   7.56e-04   3.29e-03     2    1.01  within floor (0.23x)
+ckpt-moe-resume    pr2     trainer:optim/grad_norm                       main2   2.04e-03   3.29e-03     2    1.52  within floor (0.62x)
+ckpt-moe-resume    main1   step wall time (steps>=3): median 0.53 s, max 0.57 s
+ckpt-moe-resume    pr1     step wall time (steps>=3): median 0.55 s, max 0.63 s
+ckpt-moe-resume    pr2     step wall time (steps>=3): median 0.56 s, max 0.58 s
+
+ckpt-moe-write     main1   step wall time (steps>=3): median 0.53 s, max 6.43 s
+
+rl-dense-fs        pr1     orchestrator:train/agg/all/agent/reward/mean    main1   5.99e-02   1.25e-01     2    0.58  within floor (0.48x)
+rl-dense-fs        pr2     orchestrator:train/agg/all/agent/reward/mean    main1   6.30e-02   1.25e-01     2    0.25  within floor (0.50x)
+rl-dense-fs        pr1     orchestrator:train/agg/effective/agent/reward/mean    main1   5.99e-02   1.25e-01     2    0.52  within floor (0.48x)
+rl-dense-fs        pr2     orchestrator:train/agg/effective/agent/reward/mean    main1   6.30e-02   1.25e-01     2    0.27  within floor (0.50x)
+rl-dense-fs        pr1     orchestrator:train/reverse-text/all/agent/reward/mean    main1   5.99e-02   1.25e-01     2    0.58  within floor (0.48x)
+rl-dense-fs        pr2     orchestrator:train/reverse-text/all/agent/reward/mean    main1   6.30e-02   1.25e-01     2    0.25  within floor (0.50x)
+rl-dense-fs        pr1     orchestrator:train/reverse-text/effective/agent/reward/mean    main1   5.99e-02   1.25e-01     2    0.52  within floor (0.48x)
+rl-dense-fs        pr2     orchestrator:train/reverse-text/effective/agent/reward/mean    main1   6.30e-02   1.25e-01     2    0.27  within floor (0.50x)
+rl-dense-fs        pr1     trainer:entropy/all/mean                      main1   1.90e-01   1.05e-01     2    0.69  near floor (1.81x)
+rl-dense-fs        pr2     trainer:entropy/all/mean                      main1   1.66e-01   1.05e-01     2    0.68  near floor (1.57x)
+rl-dense-fs        pr1     trainer:loss/mean                             main1   3.26e-03   7.48e-03     2    0.94  within floor (0.44x)
+rl-dense-fs        pr2     trainer:loss/mean                             main1   2.95e-03   7.48e-03     2    0.26  within floor (0.39x)
+rl-dense-fs        pr1     trainer:mismatch_kl/all/mean                  main1   1.43e-03   2.57e-03     2    2.60  within floor (0.56x)
+rl-dense-fs        pr2     trainer:mismatch_kl/all/mean                  main1   2.09e-03   2.57e-03     2    3.31  within floor (0.81x)
+rl-dense-fs        pr1     trainer:optim/grad_norm                       main1   4.69e-01   6.53e-01     2    2.20  within floor (0.72x)
+rl-dense-fs        pr2     trainer:optim/grad_norm                       main1   4.38e-01   6.53e-01     2    0.81  within floor (0.67x)
+rl-dense-fs        main1   step wall time (steps>=3): median 13.61 s, max 16.20 s
+rl-dense-fs        pr1     step wall time (steps>=3): median 12.72 s, max 15.03 s
+rl-dense-fs        pr2     step wall time (steps>=3): median 12.77 s, max 16.36 s
+
+rl-dense-nccl      pr1     orchestrator:train/agg/all/agent/reward/mean    main2   6.30e-02   1.25e-01     2    0.32  within floor (0.50x)
+rl-dense-nccl      pr2     orchestrator:train/agg/all/agent/reward/mean    main1   5.32e-02   1.25e-01     2    0.29  within floor (0.43x)
+rl-dense-nccl      pr1     orchestrator:train/agg/effective/agent/reward/mean    main2   6.30e-02   1.25e-01     2    0.32  within floor (0.50x)
+rl-dense-nccl      pr2     orchestrator:train/agg/effective/agent/reward/mean    main1   5.32e-02   1.25e-01     2    0.35  within floor (0.43x)
+rl-dense-nccl      pr1     orchestrator:train/reverse-text/all/agent/reward/mean    main2   6.30e-02   1.25e-01     2    0.32  within floor (0.50x)
+rl-dense-nccl      pr2     orchestrator:train/reverse-text/all/agent/reward/mean    main1   5.32e-02   1.25e-01     2    0.29  within floor (0.43x)
+rl-dense-nccl      pr1     orchestrator:train/reverse-text/effective/agent/reward/mean    main2   6.30e-02   1.25e-01     2    0.32  within floor (0.50x)
+rl-dense-nccl      pr2     orchestrator:train/reverse-text/effective/agent/reward/mean    main1   5.32e-02   1.25e-01     2    0.35  within floor (0.43x)
+rl-dense-nccl      pr1     trainer:entropy/all/mean                      main1   1.32e-01   1.05e-01     2    0.72  near floor (1.25x)
+rl-dense-nccl      pr2     trainer:entropy/all/mean                      main1   1.48e-01   1.05e-01     2    0.94  near floor (1.41x)
+rl-dense-nccl      pr1     trainer:loss/mean                             main2   6.36e-03   7.48e-03     2    0.25  within floor (0.85x)
+rl-dense-nccl      pr2     trainer:loss/mean                             main1   3.66e-03   7.48e-03     2    0.95  within floor (0.49x)
+rl-dense-nccl      pr1     trainer:mismatch_kl/all/mean                  main2   1.58e-03   2.57e-03     2    2.36  within floor (0.61x)
+rl-dense-nccl      pr2     trainer:mismatch_kl/all/mean                  main2   1.05e-03   2.57e-03     2    3.74  within floor (0.41x)
+rl-dense-nccl      pr1     trainer:optim/grad_norm                       main1   9.69e-01   6.53e-01     2    1.85  near floor (1.48x)
+rl-dense-nccl      pr2     trainer:optim/grad_norm                       main2   3.30e-01   6.53e-01     2    4.36  within floor (0.51x)
+rl-dense-nccl      main1   step wall time (steps>=3): median 4.89 s, max 6.20 s
+rl-dense-nccl      pr1     step wall time (steps>=3): median 4.81 s, max 5.99 s
+rl-dense-nccl      pr2     step wall time (steps>=3): median 4.82 s, max 5.95 s
+
+rl-moe-fs          pr1     orchestrator:train/agg/all/agent/reward/mean    main1   2.59e-02   1.87e-02     3    1.29  near floor (1.38x)
+rl-moe-fs          pr2     orchestrator:train/agg/all/agent/reward/mean    main1   2.14e-02   1.87e-02     3    1.84  near floor (1.14x)
+rl-moe-fs          pr1     orchestrator:train/agg/effective/agent/reward/mean    main1   2.59e-02   1.87e-02     3    1.29  near floor (1.38x)
+rl-moe-fs          pr2     orchestrator:train/agg/effective/agent/reward/mean    main1   2.14e-02   1.87e-02     3    1.84  near floor (1.14x)
+rl-moe-fs          pr1     orchestrator:train/reverse-text/all/agent/reward/mean    main1   2.59e-02   1.87e-02     3    1.29  near floor (1.38x)
+rl-moe-fs          pr2     orchestrator:train/reverse-text/all/agent/reward/mean    main1   2.14e-02   1.87e-02     3    1.84  near floor (1.14x)
+rl-moe-fs          pr1     orchestrator:train/reverse-text/effective/agent/reward/mean    main1   2.59e-02   1.87e-02     3    1.29  near floor (1.38x)
+rl-moe-fs          pr2     orchestrator:train/reverse-text/effective/agent/reward/mean    main1   2.14e-02   1.87e-02     3    1.84  near floor (1.14x)
+rl-moe-fs          pr1     trainer:entropy/all/mean                      main1   5.96e-02   1.36e-01     3    2.80  within floor (0.44x)
+rl-moe-fs          pr2     trainer:entropy/all/mean                      main1   7.31e-02   1.36e-01     3    2.24  within floor (0.54x)
+rl-moe-fs          pr1     trainer:loss/mean                             main1   2.37e-06   3.17e-06     3    0.95  within floor (0.75x)
+rl-moe-fs          pr2     trainer:loss/mean                             main1   3.28e-06   3.17e-06     3    1.13  near floor (1.04x)
+rl-moe-fs          pr1     trainer:max_vio/mean                          main1   3.04e-02   9.74e-02     3    0.97  within floor (0.31x)
+rl-moe-fs          pr2     trainer:max_vio/mean                          main1   3.08e-02   9.74e-02     3    0.68  within floor (0.32x)
+rl-moe-fs          pr1     trainer:mismatch_kl/all/mean                  main1   1.44e-05   2.07e-05     3    0.99  within floor (0.69x)
+rl-moe-fs          pr2     trainer:mismatch_kl/all/mean                  main1   1.50e-05   2.07e-05     3    1.06  within floor (0.72x)
+rl-moe-fs          pr1     trainer:optim/grad_norm                       main1   1.55e-02   1.56e-02     3    2.21  within floor (0.99x)
+rl-moe-fs          pr2     trainer:optim/grad_norm                       main1   1.64e-02   1.56e-02     3    0.88  near floor (1.06x)
+rl-moe-fs          main1   step wall time (steps>=3): median 15.18 s, max 17.83 s
+rl-moe-fs          pr1     step wall time (steps>=3): median 15.13 s, max 15.83 s
+rl-moe-fs          pr2     step wall time (steps>=3): median 15.79 s, max 16.83 s
+
+rl-moe-nccl        pr1     orchestrator:train/agg/all/agent/reward/mean    main2   1.60e-02   1.87e-02     3    1.09  within floor (0.86x)
+rl-moe-nccl        pr2     orchestrator:train/agg/all/agent/reward/mean    main2   3.38e-02   1.87e-02     3    0.83  near floor (1.81x)
+rl-moe-nccl        pr2r2   orchestrator:train/agg/all/agent/reward/mean    main3   2.42e-02   1.87e-02     3    1.73  near floor (1.29x)
+rl-moe-nccl        pr1     orchestrator:train/agg/effective/agent/reward/mean    main2   1.60e-02   1.87e-02     3    1.09  within floor (0.86x)
+rl-moe-nccl        pr2     orchestrator:train/agg/effective/agent/reward/mean    main2   3.38e-02   1.87e-02     3    0.83  near floor (1.81x)
+rl-moe-nccl        pr2r2   orchestrator:train/agg/effective/agent/reward/mean    main3   2.42e-02   1.87e-02     3    1.73  near floor (1.29x)
+rl-moe-nccl        pr1     orchestrator:train/reverse-text/all/agent/reward/mean    main2   1.60e-02   1.87e-02     3    1.09  within floor (0.86x)
+rl-moe-nccl        pr2     orchestrator:train/reverse-text/all/agent/reward/mean    main2   3.38e-02   1.87e-02     3    0.83  near floor (1.81x)
+rl-moe-nccl        pr2r2   orchestrator:train/reverse-text/all/agent/reward/mean    main3   2.42e-02   1.87e-02     3    1.73  near floor (1.29x)
+rl-moe-nccl        pr1     orchestrator:train/reverse-text/effective/agent/reward/mean    main2   1.60e-02   1.87e-02     3    1.09  within floor (0.86x)
+rl-moe-nccl        pr2     orchestrator:train/reverse-text/effective/agent/reward/mean    main2   3.38e-02   1.87e-02     3    0.83  near floor (1.81x)
+rl-moe-nccl        pr2r2   orchestrator:train/reverse-text/effective/agent/reward/mean    main3   2.42e-02   1.87e-02     3    1.73  near floor (1.29x)
+rl-moe-nccl        pr1     trainer:entropy/all/mean                      main3   6.40e-02   1.36e-01     3    1.35  within floor (0.47x)
+rl-moe-nccl        pr2     trainer:entropy/all/mean                      main3   1.28e-01   1.36e-01     3    3.01  within floor (0.94x)
+rl-moe-nccl        pr2r2   trainer:entropy/all/mean                      main3   9.51e-02   1.36e-01     3    2.25  within floor (0.70x)
+rl-moe-nccl        pr1     trainer:loss/mean                             main3   2.67e-06   3.17e-06     3    2.36  within floor (0.84x)
+rl-moe-nccl        pr2     trainer:loss/mean                             main2   2.03e-06   3.17e-06     3    1.61  within floor (0.64x)
+rl-moe-nccl        pr2r2   trainer:loss/mean                             main3   1.89e-06   3.17e-06     3    0.93  within floor (0.60x)
+rl-moe-nccl        pr1     trainer:max_vio/mean                          main2   2.52e-02   9.74e-02     3    0.56  within floor (0.26x)
+rl-moe-nccl        pr2     trainer:max_vio/mean                          main3   4.07e-02   9.74e-02     3    1.08  within floor (0.42x)
+rl-moe-nccl        pr2r2   trainer:max_vio/mean                          main2   4.27e-02   9.74e-02     3    2.26  within floor (0.44x)
+rl-moe-nccl        pr1     trainer:mismatch_kl/all/mean                  main3   1.97e-05   2.07e-05     3    1.52  within floor (0.95x)
+rl-moe-nccl        pr2     trainer:mismatch_kl/all/mean                  main3   1.44e-05   2.07e-05     3    1.40  within floor (0.70x)
+rl-moe-nccl        pr2r2   trainer:mismatch_kl/all/mean                  main3   1.16e-05   2.07e-05     3    0.91  within floor (0.56x)
+rl-moe-nccl        pr1     trainer:optim/grad_norm                       main1   1.48e-02   1.56e-02     3    1.02  within floor (0.95x)
+rl-moe-nccl        pr2     trainer:optim/grad_norm                       main1   1.52e-02   1.56e-02     3    3.10  within floor (0.98x)
+rl-moe-nccl        pr2r2   trainer:optim/grad_norm                       main2   1.53e-02   1.56e-02     3    1.23  within floor (0.99x)
+rl-moe-nccl        main1   step wall time (steps>=3): median 5.20 s, max 11.28 s
+rl-moe-nccl        pr1     step wall time (steps>=3): median 4.82 s, max 11.06 s
+rl-moe-nccl        pr2     step wall time (steps>=3): median 4.60 s, max 11.61 s
+
+sft-dense          pr1     trainer:loss/mean                             main1   0.00e+00   0.00e+00     2    1.00  bitwise
+sft-dense          pr2     trainer:loss/mean                             main1   0.00e+00   0.00e+00     2    1.00  bitwise
+sft-dense          pr1     trainer:optim/grad_norm                       main1   0.00e+00   0.00e+00     2    1.00  bitwise
+sft-dense          pr2     trainer:optim/grad_norm                       main1   0.00e+00   0.00e+00     2    1.00  bitwise
+sft-dense          main1   step wall time (steps>=3): median 0.63 s, max 0.68 s
+sft-dense          pr1     step wall time (steps>=3): median 0.62 s, max 0.66 s
+sft-dense          pr2     step wall time (steps>=3): median 0.63 s, max 0.69 s
+
+sft-glm            pr1     trainer:loss/mean                             main2   1.78e-04   1.51e-04     2    0.29  near floor (1.17x)
+sft-glm            pr2     trainer:loss/mean                             main1   2.10e-04   1.51e-04     2    0.33  near floor (1.39x)
+sft-glm            pr1     trainer:max_vio/mean                          main2   3.53e-03   3.17e-03     2    1.92  near floor (1.11x)
+sft-glm            pr2     trainer:max_vio/mean                          main1   3.73e-03   3.17e-03     2    2.55  near floor (1.17x)
+sft-glm            pr1     trainer:optim/grad_norm                       main1   2.38e-02   1.70e-02     2    0.31  near floor (1.40x)
+sft-glm            pr2     trainer:optim/grad_norm                       main1   1.50e-02   1.70e-02     2    1.07  within floor (0.88x)
+sft-glm            main1   step wall time (steps>=3): median 1.27 s, max 1.36 s
+sft-glm            pr1     step wall time (steps>=3): median 1.28 s, max 1.33 s
+sft-glm            pr2     step wall time (steps>=3): median 1.28 s, max 1.32 s
+
+sft-glm-cp2        pr1     trainer:loss/mean                             main3   2.17e-04   2.77e-04     4    0.69  within floor (0.78x)
+sft-glm-cp2        pr1r2   trainer:loss/mean                             main1   3.17e-04   2.77e-04     4    0.31  near floor (1.14x)
+sft-glm-cp2        pr2     trainer:loss/mean                             main3   2.37e-04   2.77e-04     4    1.85  within floor (0.86x)
+sft-glm-cp2        pr2r2   trainer:loss/mean                             main1   1.29e-04   2.77e-04     4    1.06  within floor (0.47x)
+sft-glm-cp2        pr1     trainer:max_vio/mean                          main3   3.11e-03   8.10e-03     4    2.40  within floor (0.38x)
+sft-glm-cp2        pr1r2   trainer:max_vio/mean                          main3   4.77e-03   8.10e-03     4    1.37  within floor (0.59x)
+sft-glm-cp2        pr2     trainer:max_vio/mean                          main2   3.59e-03   8.10e-03     4    1.98  within floor (0.44x)
+sft-glm-cp2        pr2r2   trainer:max_vio/mean                          main3   4.69e-03   8.10e-03     4    1.60  within floor (0.58x)
+sft-glm-cp2        pr1     trainer:optim/grad_norm                       main1   2.45e-02   2.49e-02     4    1.08  within floor (0.99x)
+sft-glm-cp2        pr1r2   trainer:optim/grad_norm                       main1   1.31e-02   2.49e-02     4    0.87  within floor (0.53x)
+sft-glm-cp2        pr2     trainer:optim/grad_norm                       main4   4.50e-02   2.49e-02     4    0.35  near floor (1.81x)
+sft-glm-cp2        pr2r2   trainer:optim/grad_norm                       main3   1.24e-02   2.49e-02     4    1.25  within floor (0.50x)
+sft-glm-cp2        main1   step wall time (steps>=3): median 1.44 s, max 1.48 s
+sft-glm-cp2        pr1     step wall time (steps>=3): median 1.44 s, max 1.48 s
+sft-glm-cp2        pr2     step wall time (steps>=3): median 1.44 s, max 1.48 s
+
+sft-qwen-moe       pr1     trainer:loss/mean                             main4   1.66e-02   3.92e-02     4    5.77  within floor (0.42x)
+sft-qwen-moe       pr2     trainer:loss/mean                             main3   2.09e-02   3.92e-02     4    2.61  within floor (0.53x)
+sft-qwen-moe       pr2r2   trainer:loss/mean                             main1   1.75e-02   3.92e-02     4   15.97  within floor (0.45x)
+sft-qwen-moe       pr1     trainer:max_vio/mean                          main1   0.00e+00   0.00e+00     4    1.00  bitwise
+sft-qwen-moe       pr2     trainer:max_vio/mean                          main1   0.00e+00   0.00e+00     4    1.00  bitwise
+sft-qwen-moe       pr2r2   trainer:max_vio/mean                          main1   0.00e+00   0.00e+00     4    1.00  bitwise
+sft-qwen-moe       pr1     trainer:optim/grad_norm                       main4   8.64e+00   1.52e+01     4   15.74  within floor (0.57x)
+sft-qwen-moe       pr2     trainer:optim/grad_norm                       main3   6.09e+00   1.52e+01     4    4.05  within floor (0.40x)
+sft-qwen-moe       pr2r2   trainer:optim/grad_norm                       main1   4.49e+00   1.52e+01     4    2.65  within floor (0.30x)
+sft-qwen-moe       main1   step wall time (steps>=3): median 1.55 s, max 1.57 s
+sft-qwen-moe       pr1     step wall time (steps>=3): median 1.55 s, max 1.62 s
+sft-qwen-moe       pr2     step wall time (steps>=3): median 1.55 s, max 1.56 s
+
+sft-vlm            pr1     trainer:loss/mean                             main3   1.84e-01   4.27e-01    10   79.86  within floor (0.43x)
+sft-vlm            pr1r2   trainer:loss/mean                             main7   1.41e-02   4.27e-01    10    8.33  within floor (0.03x)
+sft-vlm            pr1r3   trainer:loss/mean                            main10   6.58e-03   4.27e-01    10    1.87  within floor (0.02x)
+sft-vlm            pr2     trainer:loss/mean                             main9   5.00e-02   4.27e-01    10   61.58  within floor (0.12x)
+sft-vlm            pr2r2   trainer:loss/mean                             main3   2.29e-01   4.27e-01    10   34.22  within floor (0.54x)
+sft-vlm            pr2r3   trainer:loss/mean                             main2   1.20e-02   4.27e-01    10    4.13  within floor (0.03x)
+sft-vlm            pr2r4   trainer:loss/mean                             main2   9.54e-03   4.27e-01    10    6.59  within floor (0.02x)
+sft-vlm            pr2r5   trainer:loss/mean                             main8   1.20e-02   4.27e-01    10    4.30  within floor (0.03x)
+sft-vlm            pr2r6   trainer:loss/mean                             main1   2.98e-02   4.27e-01    10   12.41  within floor (0.07x)
+sft-vlm            pr2r7   trainer:loss/mean                            main10   1.03e-02   4.27e-01    10    8.29  within floor (0.02x)
+sft-vlm            pr2r8   trainer:loss/mean                             main1   5.32e-02   4.27e-01    10   16.39  within floor (0.12x)
+sft-vlm            pr1     trainer:optim/grad_norm                      main10   8.79e+01   2.27e+02    10   74.08  within floor (0.39x)
+sft-vlm            pr1r2   trainer:optim/grad_norm                       main7   1.80e+00   2.27e+02    10    2.46  within floor (0.01x)
+sft-vlm            pr1r3   trainer:optim/grad_norm                      main10   8.75e-01   2.27e+02    10    1.63  within floor (0.00x)
+sft-vlm            pr2     trainer:optim/grad_norm                       main9   1.22e+02   2.27e+02    10  130.31  within floor (0.54x)
+sft-vlm            pr2r2   trainer:optim/grad_norm                       main3   1.88e+02   2.27e+02    10  112.44  within floor (0.83x)
+sft-vlm            pr2r3   trainer:optim/grad_norm                       main8   1.24e+00   2.27e+02    10    3.82  within floor (0.01x)
+sft-vlm            pr2r4   trainer:optim/grad_norm                      main10   1.47e+00   2.27e+02    10    3.46  within floor (0.01x)
+sft-vlm            pr2r5   trainer:optim/grad_norm                       main8   2.15e+00   2.27e+02    10    1.46  within floor (0.01x)
+sft-vlm            pr2r6   trainer:optim/grad_norm                       main1   2.48e+00   2.27e+02    10    2.85  within floor (0.01x)
+sft-vlm            pr2r7   trainer:optim/grad_norm                       main8   2.00e+01   2.27e+02    10    4.11  within floor (0.09x)
+sft-vlm            pr2r8   trainer:optim/grad_norm                       main1   4.32e+00   2.27e+02    10    2.35  within floor (0.02x)
+sft-vlm            main1   step wall time (steps>=3): median 0.75 s, max 0.85 s
+sft-vlm            pr1     step wall time (steps>=3): median 0.72 s, max 0.77 s
+sft-vlm            pr2     step wall time (steps>=3): median 0.74 s, max 0.83 s
+
+## Weights received by vLLM (worker fingerprints), filesystem broadcast files, conversion cache
+
+rl-dense-nccl  main1  v0 workers=4 digests=['06fd28ec12710f82'] valid=True | pre digests=['06fd28ec12710f82'] valid=True pre==v0=True
+rl-dense-nccl  pr1    v0 workers=4 digests=['06fd28ec12710f82'] valid=True | pre digests=['06fd28ec12710f82'] valid=True pre==v0=True | v0==main1: True
+rl-dense-nccl  pr2    v0 workers=4 digests=['06fd28ec12710f82'] valid=True | pre digests=['06fd28ec12710f82'] valid=True pre==v0=True | v0==main1: True
+rl-dense-fs    main1  v0 workers=4 digests=['06fd28ec12710f82'] valid=True | pre digests=['06fd28ec12710f82'] valid=False pre==v0=True
+rl-dense-fs    pr1    v0 workers=4 digests=['06fd28ec12710f82'] valid=True | pre digests=['06fd28ec12710f82'] valid=False pre==v0=True | v0==main1: True
+rl-dense-fs    pr1    filesystem step_0 files == main1: True
+rl-dense-fs    pr2    v0 workers=4 digests=['06fd28ec12710f82'] valid=True | pre digests=['06fd28ec12710f82'] valid=False pre==v0=True | v0==main1: True
+rl-dense-fs    pr2    filesystem step_0 files == main1: True
+rl-dense-nccl vs rl-dense-fs main1  v0 identical across transports: True
+rl-dense-nccl vs rl-dense-fs pr1    v0 identical across transports: True
+rl-dense-nccl vs rl-dense-fs pr2    v0 identical across transports: True
+
+rl-moe-nccl    main1  v0 workers=4 digests=['0246170378fcc53f', '268c567b8c62927a', '62d67c05e1a9593f', '9f7e8005827b0a0c'] valid=True | pre digests=['0246170378fcc53f', '268c567b8c62927a', '62d67c05e1a9593f', '9f7e8005827b0a0c'] valid=True pre==v0=True
+rl-moe-nccl    main2  v0 workers=4 digests=['0246170378fcc53f', '268c567b8c62927a', '62d67c05e1a9593f', '9f7e8005827b0a0c'] valid=True | pre digests=['0246170378fcc53f', '268c567b8c62927a', '62d67c05e1a9593f', '9f7e8005827b0a0c'] valid=True pre==v0=True | v0==main1: True
+rl-moe-nccl    main2  HF->prime conversion cache == main1: True
+rl-moe-nccl    main3  v0 workers=4 digests=['0246170378fcc53f', '268c567b8c62927a', '62d67c05e1a9593f', '9f7e8005827b0a0c'] valid=True | pre digests=['0246170378fcc53f', '268c567b8c62927a', '62d67c05e1a9593f', '9f7e8005827b0a0c'] valid=True pre==v0=True | v0==main1: True
+rl-moe-nccl    main3  HF->prime conversion cache == main1: True
+rl-moe-nccl    pr1    v0 workers=4 digests=['0246170378fcc53f', '268c567b8c62927a', '62d67c05e1a9593f', '9f7e8005827b0a0c'] valid=True | pre digests=['0246170378fcc53f', '268c567b8c62927a', '62d67c05e1a9593f', '9f7e8005827b0a0c'] valid=True pre==v0=True | v0==main1: True
+rl-moe-nccl    pr1    HF->prime conversion cache == main1: True
+rl-moe-nccl    pr2    v0 workers=4 digests=['0246170378fcc53f', '268c567b8c62927a', '62d67c05e1a9593f', '9f7e8005827b0a0c'] valid=True | pre digests=['0246170378fcc53f', '268c567b8c62927a', '62d67c05e1a9593f', '9f7e8005827b0a0c'] valid=True pre==v0=True | v0==main1: True
+rl-moe-nccl    pr2    HF->prime conversion cache == main1: True
+rl-moe-nccl    pr2r2  v0 workers=4 digests=['0246170378fcc53f', '268c567b8c62927a', '62d67c05e1a9593f', '9f7e8005827b0a0c'] valid=True | pre digests=['0246170378fcc53f', '268c567b8c62927a', '62d67c05e1a9593f', '9f7e8005827b0a0c'] valid=True pre==v0=True | v0==main1: True
+rl-moe-nccl    pr2r2  HF->prime conversion cache == main1: True
+rl-moe-fs      main1  v0 workers=4 digests=['0246170378fcc53f', '268c567b8c62927a', '62d67c05e1a9593f', '9f7e8005827b0a0c'] valid=True | pre digests=['0246170378fcc53f', '268c567b8c62927a', '62d67c05e1a9593f', '9f7e8005827b0a0c'] valid=True pre==v0=True
+rl-moe-fs      pr1    v0 workers=4 digests=['0246170378fcc53f', '268c567b8c62927a', '62d67c05e1a9593f', '9f7e8005827b0a0c'] valid=True | pre digests=['0246170378fcc53f', '268c567b8c62927a', '62d67c05e1a9593f', '9f7e8005827b0a0c'] valid=False pre==v0=True | v0==main1: True
+rl-moe-fs      pr1    filesystem step_0 files == main1: True
+rl-moe-fs      pr1    HF->prime conversion cache == main1: True
+rl-moe-fs      pr2    v0 workers=4 digests=['0246170378fcc53f', '268c567b8c62927a', '62d67c05e1a9593f', '9f7e8005827b0a0c'] valid=True | pre digests=['0246170378fcc53f', '268c567b8c62927a', '62d67c05e1a9593f', '9f7e8005827b0a0c'] valid=True pre==v0=True | v0==main1: True
+rl-moe-fs      pr2    filesystem step_0 files == main1: True
+rl-moe-fs      pr2    HF->prime conversion cache == main1: True
+rl-moe-nccl vs rl-moe-fs main1  v0 identical across transports: True
+rl-moe-nccl vs rl-moe-fs pr1    v0 identical across transports: True
+rl-moe-nccl vs rl-moe-fs pr2    v0 identical across transports: True
+
+## Checkpoint exports (tools/convert_dcp_to_bf16.py of main1's step_10)
+
+ckpt-dense: source model PrimeIntellect/Qwen3-0.6B, source generation_config.json present
+  main1 derived generation_config.json: {'_from_model_config': True, 'bos_token_id': 151643, 'eos_token_id': 151645, 'output_attentions': False, 'output_hidden_states': False, 'pad_token_id': 151645, 'transformers_version': '5.20.2', 'use_cache': True}
+  main1 vs source: ["_from_model_config: '(missing)' -> True", "do_sample: True -> '(missing)'", 'eos_token_id: [151645, 151643] -> 151645', "output_attentions: '(missing)' -> False", "output_hidden_states: '(missing)' -> False", 'pad_token_id: 151643 -> 151645', "temperature: 0.6 -> '(missing)'", "top_k: 20 -> '(missing)'", "top_p: 0.95 -> '(missing)'", "transformers_version: '4.51.0' -> '5.20.2'", "use_cache: '(missing)' -> True"]
+  main1  check_hf_load: PASS | own step_20 exported by main's tool, check_hf_load: PASS
+  pr1    check_hf_load: PASS | own step_20 exported by main's tool, check_hf_load: PASS
+    safetensors + index + config.json byte-identical to main1: True
+    generation_config.json vs source: bytes equal False, JSON equal False ["transformers_version: '4.51.0' -> '5.20.2'"]
+  pr2    check_hf_load: PASS | own step_20 exported by main's tool, check_hf_load: PASS
+    safetensors + index + config.json byte-identical to main1: True
+    generation_config.json vs source: bytes equal False, JSON equal False ["transformers_version: '4.51.0' -> '5.20.2'"]
+
+ckpt-moe: source model samsja/mini-glm-moe, source generation_config.json present
+  main1 derived generation_config.json: {'_from_model_config': True, 'eos_token_id': [151329, 151336, 151338], 'output_attentions': False, 'output_hidden_states': False, 'pad_token_id': 151329, 'transformers_version': '5.20.2', 'use_cache': True}
+  main1 vs source: ["output_attentions: '(missing)' -> False", "output_hidden_states: '(missing)' -> False", "transformers_version: '4.57.6' -> '5.20.2'", 'use_cache: False -> True']
+  main1  check_hf_load: PASS | own step_20 exported by main's tool, check_hf_load: PASS
+  pr1    check_hf_load: PASS | own step_20 exported by main's tool, check_hf_load: PASS
+    safetensors + index + config.json byte-identical to main1: True
+    generation_config.json vs source: bytes equal False, JSON equal False ["transformers_version: '4.57.6' -> '5.20.2'"]
+  pr2    check_hf_load: PASS | own step_20 exported by main's tool, check_hf_load: PASS
+    safetensors + index + config.json byte-identical to main1: True
+    generation_config.json vs source: bytes equal False, JSON equal False ["transformers_version: '4.57.6' -> '5.20.2'"]
+
+## torch.compile (TORCH_LOGS=recompiles,graph_breaks,dynamo), per trainer rank
+
+ckpt-dense-resume  main1  ranks=8 traced frames=2 recompiles=1 graph-break lines=0
+    rank 0 traced frames: {('forward', 'checkpoint_wrapper.py'): 2}
+    rank 0 recompiles: {('forward', 'checkpoint_wrapper.py'): 1}
+      1x tensor 'args[0]' size mismatch at index 1. expected N, actual N
+ckpt-dense-resume  main2  ranks=8 traced frames=2 recompiles=1 graph-break lines=0 | same compile events as main1 on every rank: True
+ckpt-dense-resume  pr1    ranks=8 traced frames=2 recompiles=1 graph-break lines=0 | same compile events as main1 on every rank: True
+ckpt-dense-resume  pr2    ranks=8 traced frames=2 recompiles=1 graph-break lines=0 | same compile events as main1 on every rank: True
+
+ckpt-dense-write   main1  ranks=8 traced frames=2 recompiles=1 graph-break lines=0
+    rank 0 traced frames: {('forward', 'checkpoint_wrapper.py'): 2}
+    rank 0 recompiles: {('forward', 'checkpoint_wrapper.py'): 1}
+      1x tensor 'args[0]' size mismatch at index 1. expected N, actual N
+
+ckpt-moe-resume    main1  ranks=8 traced frames=4 recompiles=3 graph-break lines=0
+    rank 0 traced frames: {('forward', 'checkpoint_wrapper.py'): 4}
+    rank 0 recompiles: {('forward', 'checkpoint_wrapper.py'): 3}
+      2x ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['mlp'], N), type=<class 'prime_rl.trainer.models.layers.mlp.FeedForward'>  # h
+      2x tensor 'args[0]' size mismatch at index 1. expected 674, actual N
+ckpt-moe-resume    main2  ranks=8 traced frames=4 recompiles=3 graph-break lines=0 | same compile events as main1 on every rank: True
+ckpt-moe-resume    pr1    ranks=8 traced frames=4 recompiles=3 graph-break lines=0 | same compile events as main1 on every rank: True
+ckpt-moe-resume    pr2    ranks=8 traced frames=4 recompiles=3 graph-break lines=0 | same compile events as main1 on every rank: True
+
+ckpt-moe-write     main1  ranks=8 traced frames=4 recompiles=3 graph-break lines=0
+    rank 0 traced frames: {('forward', 'checkpoint_wrapper.py'): 4}
+    rank 0 recompiles: {('forward', 'checkpoint_wrapper.py'): 3}
+      2x ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['mlp'], N), type=<class 'prime_rl.trainer.models.layers.mlp.FeedForward'>  # h
+      2x tensor 'args[0]' size mismatch at index 1. expected N, actual N
+
+rl-dense-fs        main1  ranks=4 traced frames=2 recompiles=1 graph-break lines=0
+    rank 0 traced frames: {('forward', 'checkpoint_wrapper.py'): 2}
+    rank 0 recompiles: {('forward', 'checkpoint_wrapper.py'): 1}
+      1x tensor 'args[0]' size mismatch at index 1. expected N, actual N
+rl-dense-fs        pr1    ranks=4 traced frames=2 recompiles=1 graph-break lines=0 | same compile events as main1 on every rank: True
+rl-dense-fs        pr2    ranks=4 traced frames=2 recompiles=1 graph-break lines=0 | same compile events as main1 on every rank: True
+
+rl-dense-nccl      main1  ranks=4 traced frames=2 recompiles=1 graph-break lines=0
+    rank 0 traced frames: {('forward', 'checkpoint_wrapper.py'): 2}
+    rank 0 recompiles: {('forward', 'checkpoint_wrapper.py'): 1}
+      1x tensor 'args[0]' size mismatch at index 1. expected N, actual N
+rl-dense-nccl      main2  ranks=4 traced frames=2 recompiles=1 graph-break lines=0 | same compile events as main1 on every rank: True
+rl-dense-nccl      pr1    ranks=4 traced frames=2 recompiles=1 graph-break lines=0 | same compile events as main1 on every rank: True
+rl-dense-nccl      pr2    ranks=4 traced frames=2 recompiles=1 graph-break lines=0 | same compile events as main1 on every rank: True
+
+rl-moe-fs          main1  ranks=4 traced frames=4 recompiles=3 graph-break lines=0
+    rank 0 traced frames: {('forward', 'checkpoint_wrapper.py'): 4}
+    rank 0 recompiles: {('forward', 'checkpoint_wrapper.py'): 3}
+      2x ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['mlp'], N), type=<class 'prime_rl.trainer.models.layers.mlp.FeedForward'>  # h
+      2x tensor 'args[0]' size mismatch at index 1. expected N, actual N
+rl-moe-fs          pr1    ranks=4 traced frames=4 recompiles=3 graph-break lines=0 | same compile events as main1 on every rank: True
+rl-moe-fs          pr2    ranks=4 traced frames=4 recompiles=3 graph-break lines=0 | same compile events as main1 on every rank: True
+
+rl-moe-nccl        main1  ranks=4 traced frames=4 recompiles=3 graph-break lines=0
+    rank 0 traced frames: {('forward', 'checkpoint_wrapper.py'): 4}
+    rank 0 recompiles: {('forward', 'checkpoint_wrapper.py'): 3}
+      2x ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['mlp'], N), type=<class 'prime_rl.trainer.models.layers.mlp.FeedForward'>  # h
+      2x tensor 'args[0]' size mismatch at index 1. expected N, actual N
+rl-moe-nccl        main2  ranks=4 traced frames=4 recompiles=3 graph-break lines=0 | same compile events as main1 on every rank: True
+rl-moe-nccl        main3  ranks=4 traced frames=4 recompiles=3 graph-break lines=0 | same compile events as main1 on every rank: True
+rl-moe-nccl        pr1    ranks=4 traced frames=4 recompiles=3 graph-break lines=0 | same compile events as main1 on every rank: True
+rl-moe-nccl        pr2    ranks=4 traced frames=4 recompiles=3 graph-break lines=0 | same compile events as main1 on every rank: True
+rl-moe-nccl        pr2r2  ranks=4 traced frames=4 recompiles=3 graph-break lines=0 | same compile events as main1 on every rank: True
+
+sft-dense          main1  ranks=8 traced frames=2 recompiles=1 graph-break lines=0
+    rank 0 traced frames: {('forward', 'checkpoint_wrapper.py'): 2}
+    rank 0 recompiles: {('forward', 'checkpoint_wrapper.py'): 1}
+      1x tensor 'args[0]' size mismatch at index 1. expected N, actual N
+sft-dense          main2  ranks=8 traced frames=2 recompiles=1 graph-break lines=0 | same compile events as main1 on every rank: True
+sft-dense          pr1    ranks=8 traced frames=2 recompiles=1 graph-break lines=0 | same compile events as main1 on every rank: True
+sft-dense          pr2    ranks=8 traced frames=2 recompiles=1 graph-break lines=0 | same compile events as main1 on every rank: True
+
+sft-glm            main1  ranks=8 traced frames=4 recompiles=3 graph-break lines=0
+    rank 0 traced frames: {('forward', 'checkpoint_wrapper.py'): 4}
+    rank 0 recompiles: {('forward', 'checkpoint_wrapper.py'): 3}
+      2x ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['mlp'], N), type=<class 'prime_rl.trainer.models.layers.mlp.FeedForward'>  # h
+      2x tensor 'args[0]' size mismatch at index 1. expected N, actual N
+sft-glm            main2  ranks=8 traced frames=4 recompiles=3 graph-break lines=0 | same compile events as main1 on every rank: True
+sft-glm            pr1    ranks=8 traced frames=4 recompiles=3 graph-break lines=0 | same compile events as main1 on every rank: True
+sft-glm            pr2    ranks=8 traced frames=4 recompiles=3 graph-break lines=0 | same compile events as main1 on every rank: True
+
+sft-glm-cp2        main1  ranks=8 traced frames=4 recompiles=3 graph-break lines=0
+    rank 0 traced frames: {('forward', 'checkpoint_wrapper.py'): 4}
+    rank 0 recompiles: {('forward', 'checkpoint_wrapper.py'): 3}
+      2x ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['mlp'], N), type=<class 'prime_rl.trainer.models.layers.mlp.FeedForward'>  # h
+      2x tensor 'args[0]' size mismatch at index 1. expected N, actual N
+sft-glm-cp2        main2  ranks=8 traced frames=4 recompiles=3 graph-break lines=0 | same compile events as main1 on every rank: True
+sft-glm-cp2        main3  ranks=8 traced frames=4 recompiles=3 graph-break lines=0 | same compile events as main1 on every rank: True
+sft-glm-cp2        pr1    ranks=8 traced frames=4 recompiles=3 graph-break lines=0 | same compile events as main1 on every rank: True
+sft-glm-cp2        pr2    ranks=8 traced frames=4 recompiles=3 graph-break lines=0 | same compile events as main1 on every rank: True
+sft-glm-cp2        pr2r2  ranks=8 traced frames=4 recompiles=3 graph-break lines=0 | same compile events as main1 on every rank: True
+
+sft-qwen-moe       main1  ranks=8 traced frames=1 recompiles=0 graph-break lines=0
+    rank 0 traced frames: {('forward', 'checkpoint_wrapper.py'): 1}
+    rank 0 recompiles: {}
+sft-qwen-moe       main2  ranks=8 traced frames=1 recompiles=0 graph-break lines=0 | same compile events as main1 on every rank: True
+sft-qwen-moe       main3  ranks=8 traced frames=1 recompiles=0 graph-break lines=0 | same compile events as main1 on every rank: True
+sft-qwen-moe       pr1    ranks=8 traced frames=1 recompiles=0 graph-break lines=0 | same compile events as main1 on every rank: True
+sft-qwen-moe       pr2    ranks=8 traced frames=1 recompiles=0 graph-break lines=0 | same compile events as main1 on every rank: True
+sft-qwen-moe       pr2r2  ranks=8 traced frames=1 recompiles=0 graph-break lines=0 | same compile events as main1 on every rank: True
+
+sft-vlm            main1  ranks=8 traced frames=4 recompiles=1 graph-break lines=10
+    rank 0 traced frames: {('forward', 'checkpoint_wrapper.py'): 4}
+    rank 0 recompiles: {('forward', 'checkpoint_wrapper.py'): 1}
+      1x tensor 'args[0]' size mismatch at index 1. expected N, actual N
+sft-vlm            main2  ranks=8 traced frames=4 recompiles=1 graph-break lines=10 | same compile events as main1 on every rank: True
+sft-vlm            main3  ranks=8 traced frames=4 recompiles=1 graph-break lines=10 | same compile events as main1 on every rank: True
+sft-vlm            pr1    ranks=8 traced frames=4 recompiles=1 graph-break lines=10 | same compile events as main1 on every rank: True
+sft-vlm            pr2    ranks=8 traced frames=4 recompiles=1 graph-break lines=10 | same compile events as main1 on every rank: True
+sft-vlm            pr2r2  ranks=8 traced frames=4 recompiles=1 graph-break lines=10 | same compile events as main1 on every rank: True
+

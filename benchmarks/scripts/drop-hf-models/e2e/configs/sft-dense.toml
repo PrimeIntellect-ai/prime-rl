@@ -1,0 +1,23 @@
+max_steps = 30
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B"
+offload = "none"
+ac_offloading = "None"
+
+[data]
+seed = 0
+batch_size = 32
+micro_batch_size = 1
+seq_len = 2048
+
+[[data.source]]
+name = "reverse-text"
+dataset = "PrimeIntellect/Reverse-Text-SFT"
+
+[optim]
+lr = 2e-5
+
+[deployment]
+type = "single_node"
+num_train_gpus = 8

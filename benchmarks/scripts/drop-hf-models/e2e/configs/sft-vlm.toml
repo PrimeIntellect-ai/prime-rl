@@ -1,0 +1,22 @@
+max_steps = 20
+
+[model]
+name = "Qwen/Qwen3.5-4B"
+offload = "none"
+ac_offloading = "None"
+
+[model.vlm]
+freeze_vision_encoder = true
+
+[data]
+seed = 0
+batch_size = 8
+micro_batch_size = 1
+seq_len = 4096
+
+[optim]
+lr = 1e-5
+
+[deployment]
+type = "single_node"
+num_train_gpus = 8

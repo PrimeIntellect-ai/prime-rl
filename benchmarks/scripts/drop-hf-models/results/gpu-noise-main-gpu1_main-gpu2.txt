@@ -1,0 +1,59 @@
+deepseek_v4: 8 main-gpu1 runs, 8 main-gpu2 runs
+  logits and loss bitwise identical across all runs: True
+  main-gpu1 worst norm spread 1.221e-02 (model.layers.0.attn_hc.base)
+  main-gpu1 worst sum spread 4.575e-02 (model.layers.0.attn_hc.base)
+  main-gpu2 worst norm spread 2.131e-02 (model.layers.0.attn_hc.base)
+  main-gpu2 worst sum spread 3.898e-02 (model.layers.0.attn_hc.base)
+  main-gpu2 values outside the main-gpu1 envelope: 95 of 166 tensor stats
+    model.layers.2.self_attn.compressor.position_bias sum: main-gpu1 [0.000261396, 0.000261396], main-gpu2 [0.000244468, 0.000261396], inf ranges outside
+    model.layers.2.self_attn.compressor.position_bias norm: main-gpu1 [0.110382, 0.110382], main-gpu2 [0.110382, 0.110382], inf ranges outside
+    model.layers.2.self_attn.compressor.kv_proj.weight sum: main-gpu1 [-9.15299, -9.15299], main-gpu2 [-9.15828, -9.15299], inf ranges outside
+    model.layers.2.self_attn.compressor.kv_proj.weight norm: main-gpu1 [55.1496, 55.1496], main-gpu2 [55.1496, 55.1496], inf ranges outside
+    model.layers.2.self_attn.compressor.gate_proj.weight sum: main-gpu1 [-0.745522, -0.745522], main-gpu2 [-0.745541, -0.74552], inf ranges outside
+    model.layers.2.self_attn.compressor.gate_proj.weight norm: main-gpu1 [1.44754, 1.44754], main-gpu2 [1.44754, 1.44754], inf ranges outside
+    model.layers.1.self_attn.o_a_proj.weight sum: main-gpu1 [-701.237, -700.997], main-gpu2 [-701.456, -700.555], 1.84 ranges outside
+    model.layers.0.mlp.router.gate.weight sum: main-gpu1 [0.0880871, 0.089466], main-gpu2 [0.0878388, 0.0919176], 1.78 ranges outside
+    model.layers.0.attn_hc.scale norm: main-gpu1 [0.373052, 0.375002], main-gpu2 [0.371107, 0.375015], 1.00 ranges outside
+    model.layers.0.mlp.shared_expert.gate_proj.weight sum: main-gpu1 [-5.47765, -5.3962], main-gpu2 [-5.55422, -5.46175], 0.94 ranges outside
+glm5_next: 8 main-gpu1 runs, 8 main-gpu2 runs
+  logits and loss bitwise identical across all runs: True
+  main-gpu1 worst norm spread 7.565e-04 (model.layers.0.input_layernorm.weight)
+  main-gpu1 worst sum spread 2.614e-03 (model.layers.0.attn_hc.base)
+  main-gpu2 worst norm spread 7.294e-04 (model.layers.0.input_layernorm.weight)
+  main-gpu2 worst sum spread 2.965e-03 (model.layers.0.attn_hc.scale)
+  main-gpu2 values outside the main-gpu1 envelope: 57 of 102 tensor stats
+    model.layers.1.self_attn.kv_a_layernorm.weight norm: main-gpu1 [7.22975, 7.22975], main-gpu2 [7.22975, 7.22975], 3980.08 ranges outside
+    model.layers.1.self_attn.kv_a_layernorm.weight sum: main-gpu1 [2.95854, 2.95854], main-gpu2 [2.95848, 2.95854], 63.00 ranges outside
+    model.layers.0.attn_hc.base norm: main-gpu1 [0.270474, 0.270503], main-gpu2 [0.270365, 0.270492], 3.89 ranges outside
+    model.layers.0.self_attn.o_norm.weight norm: main-gpu1 [1.70203, 1.70219], main-gpu2 [1.70159, 1.70253], 2.77 ranges outside
+    model.layers.0.self_attn.k_proj.weight sum: main-gpu1 [79.9189, 80.2164], main-gpu2 [79.5002, 80.3882], 1.41 ranges outside
+    model.layers.0.attn_hc.scale norm: main-gpu1 [0.285186, 0.285199], main-gpu2 [0.285187, 0.285212], 1.12 ranges outside
+    model.layers.0.mlp.up_proj.weight sum: main-gpu1 [92.5592, 92.7948], main-gpu2 [92.6357, 93.0533], 1.10 ranges outside
+    model.layers.0.self_attn.o_proj.weight sum: main-gpu1 [-1.96757, -1.85792], main-gpu2 [-1.97157, -1.74537], 1.03 ranges outside
+    model.layers.1.attn_hc.base norm: main-gpu1 [0.442714, 0.442715], main-gpu2 [0.442714, 0.442717], 1.00 ranges outside
+    model.layers.1.attn_hc.base sum: main-gpu1 [0.767456, 0.767517], main-gpu2 [0.767395, 0.767517], 1.00 ranges outside
+glm_moe_dsa: 8 main-gpu1 runs, 8 main-gpu2 runs
+  logits and loss bitwise identical across all runs: True
+  main-gpu1 worst norm spread 5.046e-04 (model.layers.0.input_layernorm.weight)
+  main-gpu1 worst sum spread 1.800e-04 (model.layers.0.post_attention_layernorm.weight)
+  main-gpu2 worst norm spread 4.846e-04 (model.layers.0.post_attention_layernorm.weight)
+  main-gpu2 worst sum spread 3.489e-04 (model.layers.0.input_layernorm.weight)
+  main-gpu2 values outside the main-gpu1 envelope: 25 of 62 tensor stats
+    model.layers.1.input_layernorm.weight norm: main-gpu1 [7.21243, 7.21243], main-gpu2 [7.21195, 7.21243], 355.08 ranges outside
+    model.layers.1.input_layernorm.weight sum: main-gpu1 [0.109245, 0.10952], main-gpu2 [0.10537, 0.109501], 14.11 ranges outside
+    model.layers.0.mlp.down_proj.weight norm: main-gpu1 [41.2665, 41.2666], main-gpu2 [41.2663, 41.2665], 2.46 ranges outside
+    model.layers.1.self_attn.kv_a_proj_with_mqa.weight sum: main-gpu1 [-781.839, -781.823], main-gpu2 [-781.864, -781.824], 1.55 ranges outside
+    model.layers.0.input_layernorm.weight sum: main-gpu1 [0.0335388, 0.0534668], main-gpu2 [0.0379333, 0.0803223], 1.35 ranges outside
+    model.layers.0.self_attn.kv_a_proj_with_mqa.weight sum: main-gpu1 [-303.3, -302.613], main-gpu2 [-303.467, -301.924], 1.00 ranges outside
+    model.layers.1.self_attn.kv_a_proj_with_mqa.weight norm: main-gpu1 [363.221, 363.221], main-gpu2 [363.221, 363.221], 0.98 ranges outside
+    model.layers.0.self_attn.q_b_proj.weight sum: main-gpu1 [1.24803, 1.28856], main-gpu2 [1.21878, 1.26998], 0.72 ranges outside
+    model.layers.0.self_attn.kv_b_proj.weight sum: main-gpu1 [26.6663, 27.0471], main-gpu2 [26.3975, 27.14], 0.71 ranges outside
+    model.layers.0.mlp.up_proj.weight norm: main-gpu1 [41.4762, 41.4765], main-gpu2 [41.4761, 41.4764], 0.48 ranges outside
+laguna: 8 main-gpu1 runs, 8 main-gpu2 runs
+  logits and loss bitwise identical across all runs: True
+  main-gpu1 worst norm spread 8.779e-07 (model.layers.1.self_attn.k_proj.weight)
+  main-gpu1 worst sum spread 2.898e-07 (model.layers.1.self_attn.k_proj.weight)
+  main-gpu2 worst norm spread 8.780e-07 (model.layers.1.self_attn.k_proj.weight)
+  main-gpu2 worst sum spread 2.860e-07 (model.layers.1.self_attn.k_proj.weight)
+  main-gpu2 values outside the main-gpu1 envelope: 1 of 62 tensor stats
+    model.layers.1.self_attn.k_proj.weight norm: main-gpu1 [175.077, 175.077], main-gpu2 [175.077, 175.077], 0.00 ranges outside

@@ -1,0 +1,60 @@
+deepseek_v4: 16 main runs, 16 pr1b runs
+  logits and loss bitwise identical across all runs: True
+  main worst norm spread 2.133e-02 (model.layers.0.attn_hc.base)
+  main worst sum spread 4.836e-02 (model.layers.0.attn_hc.base)
+  pr1b worst norm spread 3.517e-02 (model.layers.0.attn_hc.base)
+  pr1b worst sum spread 3.486e-02 (model.layers.0.attn_hc.base)
+  pr1b values outside the main envelope: 86 of 166 tensor stats
+    model.layers.2.attn_hc.base sum: main [1.27423, 1.2743], pr1b [1.27417, 1.2743], 1.00 ranges outside
+    model.layers.1.self_attn.q_b_proj.weight sum: main [-9.84903, -9.62422], pr1b [-10.0263, -9.63448], 0.79 ranges outside
+    model.layers.2.attn_hc.base norm: main [0.639575, 0.639575], pr1b [0.639575, 0.639576], 0.76 ranges outside
+    model.layers.1.mlp.shared_expert.down_proj.weight sum: main [-24.723, -24.7192], pr1b [-24.7255, -24.7195], 0.66 ranges outside
+    model.layers.0.mlp.experts.gate_proj norm: main [14.1824, 14.1832], pr1b [14.1818, 14.1833], 0.63 ranges outside
+    model.layers.0.ffn_hc.fn norm: main [3.63858, 3.63964], pr1b [3.63843, 3.64029], 0.62 ranges outside
+    model.layers.1.self_attn.kv_proj.weight sum: main [-275.515, -274.804], pr1b [-275.653, -274.391], 0.58 ranges outside
+    model.layers.0.mlp.shared_expert.down_proj.weight norm: main [17.0121, 17.0129], pr1b [17.0119, 17.0134], 0.58 ranges outside
+    model.layers.0.mlp.router.gate.weight sum: main [0.0878388, 0.0919176], pr1b [0.0855734, 0.0923041], 0.56 ranges outside
+    model.layers.0.self_attn.o_b_proj.weight sum: main [537.44, 539.227], pr1b [537.381, 540.203], 0.55 ranges outside
+glm5_next: 16 main runs, 16 pr1b runs
+  logits and loss bitwise identical across all runs: True
+  main worst norm spread 8.112e-04 (model.layers.0.input_layernorm.weight)
+  main worst sum spread 3.027e-03 (model.layers.0.attn_hc.scale)
+  pr1b worst norm spread 6.820e-03 (model.layers.0.attn_hc.scale)
+  pr1b worst sum spread 3.598e-03 (model.layers.0.attn_hc.base)
+  pr1b values outside the main envelope: 52 of 102 tensor stats
+    model.layers.1.ffn_hc.fn sum: main [-7.21222, -7.21222], pr1b [-7.21222, -7.21218], inf ranges outside
+    model.layers.1.ffn_hc.fn norm: main [6.50721, 6.50721], pr1b [6.50721, 6.50721], inf ranges outside
+    model.layers.0.attn_hc.scale norm: main [0.285186, 0.285212], pr1b [0.283253, 0.285198], 75.27 ranges outside
+    model.layers.1.self_attn.kv_a_layernorm.weight norm: main [7.22975, 7.22975], pr1b [7.22975, 7.22975], 15.46 ranges outside
+    model.layers.1.self_attn.kv_a_layernorm.weight sum: main [2.95848, 2.95854], pr1b [2.95848, 2.95879], 4.00 ranges outside
+    model.layers.0.attn_hc.base norm: main [0.270365, 0.270503], pr1b [0.270346, 0.270991], 3.55 ranges outside
+    model.layers.1.input_layernorm.weight norm: main [6.90304, 6.90321], pr1b [6.90308, 6.9034], 1.15 ranges outside
+    model.layers.1.attn_hc.scale sum: main [-0.740692, -0.740448], pr1b [-0.740692, -0.740204], 1.00 ranges outside
+    model.layers.1.attn_hc.scale norm: main [0.718979, 0.718985], pr1b [0.718973, 0.718985], 0.99 ranges outside
+    model.layers.0.ffn_hc.base sum: main [1.61656, 1.61828], pr1b [1.61729, 1.61985], 0.91 ranges outside
+glm_moe_dsa: 16 main runs, 16 pr1b runs
+  logits and loss bitwise identical across all runs: True
+  main worst norm spread 5.047e-04 (model.layers.0.input_layernorm.weight)
+  main worst sum spread 3.851e-04 (model.layers.0.input_layernorm.weight)
+  pr1b worst norm spread 6.075e-04 (model.layers.0.input_layernorm.weight)
+  pr1b worst sum spread 3.773e-04 (model.layers.0.input_layernorm.weight)
+  pr1b values outside the main envelope: 23 of 62 tensor stats
+    model.layers.1.input_layernorm.weight sum: main [0.10537, 0.10952], pr1b [0.108284, 0.113392], 0.93 ranges outside
+    model.layers.0.self_attn.q_a_layernorm.weight sum: main [-0.568588, -0.567776], pr1b [-0.569106, -0.567499], 0.64 ranges outside
+    model.layers.0.mlp.gate_proj.weight sum: main [51.0546, 51.087], pr1b [51.0544, 51.1065], 0.60 ranges outside
+    model.layers.0.self_attn.q_a_proj.weight sum: main [-16.8427, -16.7802], pr1b [-16.8697, -16.7867], 0.43 ranges outside
+    model.layers.0.self_attn.q_b_proj.weight norm: main [14.193, 14.1931], pr1b [14.193, 14.1931], 0.33 ranges outside
+    model.layers.1.self_attn.kv_a_proj_with_mqa.weight norm: main [363.221, 363.221], pr1b [363.221, 363.221], 0.25 ranges outside
+    model.layers.0.self_attn.kv_a_proj_with_mqa.weight norm: main [377.419, 377.428], pr1b [377.417, 377.426], 0.23 ranges outside
+    model.layers.0.input_layernorm.weight sum: main [0.0335388, 0.0803223], pr1b [0.0228271, 0.0686646], 0.23 ranges outside
+    model.layers.0.self_attn.q_a_layernorm.weight norm: main [0.2673, 0.267374], pr1b [0.267293, 0.267391], 0.22 ranges outside
+    model.layers.0.mlp.up_proj.weight sum: main [70.817, 70.865], pr1b [70.8077, 70.8698], 0.19 ranges outside
+laguna: 16 main runs, 16 pr1b runs
+  logits and loss bitwise identical across all runs: True
+  main worst norm spread 8.780e-07 (model.layers.1.self_attn.k_proj.weight)
+  main worst sum spread 2.898e-07 (model.layers.1.self_attn.k_proj.weight)
+  pr1b worst norm spread 8.780e-07 (model.layers.1.self_attn.k_proj.weight)
+  pr1b worst sum spread 2.860e-07 (model.layers.1.self_attn.k_proj.weight)
+  pr1b values outside the main envelope: 2 of 62 tensor stats
+    model.layers.1.self_attn.v_proj.weight sum: main [-178.626, -178.626], pr1b [-178.628, -178.626], inf ranges outside
+    model.layers.1.self_attn.v_proj.weight norm: main [294.228, 294.228], pr1b [294.228, 294.228], inf ranges outside
