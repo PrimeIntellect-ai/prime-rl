@@ -2,7 +2,9 @@
 
 2D linear weights are quantized to e4m3 with per-128x128-block fp32 scales
 stored under ``<name>.weight_scale_inv``; norms, embeddings, lm_head, router
-gates and other sensitive modules stay in the source dtype. The output dir gets
+gates and other sensitive modules stay in the source dtype. Fused MoE experts
+(``experts.gate_up_proj`` and ``experts.down_proj``) are split into per-expert
+``experts.<i>.{gate,up,down}_proj.weight`` first. The output dir gets
 the quantized shards, a rewritten index, all non-weight assets, and a
 ``quantization_config`` block in ``config.json`` that vLLM loads natively.
 
@@ -15,6 +17,7 @@ Writes to ``<model_dir>-FP8`` by default.
 import argparse
 import json
 import shutil
+from collections.abc import Sequence
 from pathlib import Path
 
 import torch
@@ -39,6 +42,10 @@ SKIP_SUBSTRINGS = (
     "visual.",
     "router",
 )
+
+
+# Fused MoE expert tensors of the HF Qwen3.5 layout have no ``.weight`` suffix.
+FUSED_EXPERT_SUFFIXES = (".experts.gate_up_proj", ".experts.down_proj")
 
 
 def quantize_to_fp8_blockwise(weight: Tensor, block_size: int = 128) -> tuple[Tensor, Tensor]:
@@ -82,28 +89,82 @@ def should_quantize(name: str, tensor: torch.Tensor) -> bool:
     )
 
 
+def is_fused_expert_tensor(tensor: Tensor) -> bool:
+    return tensor.ndim == 3 and tensor.is_floating_point() and tensor.element_size() > 1
+
+
+def fused_expert_prefixes(shapes: dict[str, Sequence[int]]) -> set[str]:
+    """Prefixes (ending in ``.experts``) whose ``gate_up_proj`` [E, 2I, H] and ``down_proj`` [E, H, I] are both present.
+
+    The shapes are the gate: gpt-oss stores [E, H, 2I] with interleaved gate and up,
+    which never satisfies them, so it is left alone.
+    """
+    prefixes = set()
+    for name, gate_up in shapes.items():
+        prefix = name.removesuffix(".gate_up_proj")
+        down = shapes.get(f"{prefix}.down_proj")
+        if name == prefix or not prefix.endswith(".experts") or down is None or len(gate_up) != 3:
+            continue
+        num_experts, gate_up_rows, hidden = gate_up
+        if tuple(down) == (num_experts, hidden, gate_up_rows // 2) and gate_up_rows % 2 == 0:
+            prefixes.add(prefix)
+    return prefixes
+
+
+def unfuse_experts(name: str, tensor: Tensor) -> dict[str, Tensor]:
+    """Split a fused expert tensor into the per-expert 2D weights that vLLM and the official FP8 checkpoints use."""
+    prefix, _, proj = name.rpartition(".")
+    if proj == "down_proj":
+        return {f"{prefix}.{expert}.down_proj.weight": weight for expert, weight in enumerate(tensor)}
+    gate, up = tensor.chunk(2, dim=1)
+    weights = {}
+    for expert in range(tensor.shape[0]):
+        weights[f"{prefix}.{expert}.gate_proj.weight"] = gate[expert]
+        weights[f"{prefix}.{expert}.up_proj.weight"] = up[expert]
+    return weights
+
+
 def quantize_state_dict(
-    tensors: dict[str, torch.Tensor], block_size: int, device: str
+    tensors: dict[str, torch.Tensor], block_size: int, device: str, fused_prefixes: set[str] | None = None
 ) -> tuple[dict[str, torch.Tensor], list[str]]:
     """Quantize the quantizable tensors of one CPU state-dict slice; returns (out, modules kept in bf16).
 
     Tensors move to ``device`` one at a time (and are popped from the input as they
-    are consumed), so peak device memory stays near the largest single weight.
+    are consumed), so peak device memory stays near the largest single weight. Fused
+    experts under ``fused_prefixes`` (by default the pairs in ``tensors``) are split into
+    per-expert weights first. Any other fused expert tensor stays in bf16 and its layer
+    goes into the modules kept in bf16.
     """
     out: dict[str, torch.Tensor] = {}
     modules_to_not_convert: list[str] = []
+    if fused_prefixes is None:
+        fused_prefixes = fused_expert_prefixes({name: tensor.shape for name, tensor in tensors.items()})
     for name in list(tensors):
         tensor = tensors.pop(name)
-        if should_quantize(name, tensor):
-            quantized, scales = quantize_to_fp8_blockwise(tensor.to(device), block_size)
-            out[name] = quantized.cpu()
-            out[name + "_scale_inv"] = scales.cpu()
+        if (
+            name.endswith(FUSED_EXPERT_SUFFIXES)
+            and name.rpartition(".")[0] in fused_prefixes
+            and is_fused_expert_tensor(tensor)
+        ):
+            weights = unfuse_experts(name, tensor)
         else:
-            if name.endswith(".weight") and tensor.ndim == 2 and tensor.is_floating_point():
-                modules_to_not_convert.append(name.removesuffix(".weight"))
-            if name.endswith(".weight") and tensor.ndim > 2 and tensor.numel() > 1_000_000:
-                print(f"Warning: leaving large {tensor.ndim}D tensor unquantized: {name} {tuple(tensor.shape)}")
-            out[name] = tensor.cpu()
+            weights = {name: tensor}
+        for weight_name, tensor in weights.items():
+            if should_quantize(weight_name, tensor):
+                quantized, scales = quantize_to_fp8_blockwise(tensor.to(device), block_size)
+                out[weight_name] = quantized.cpu()
+                out[weight_name + "_scale_inv"] = scales.cpu()
+                continue
+            kept_fused_experts = weight_name.endswith(FUSED_EXPERT_SUFFIXES) and is_fused_expert_tensor(tensor)
+            if kept_fused_experts:
+                modules_to_not_convert.append(weight_name.rpartition(".")[0])
+            if weight_name.endswith(".weight") and tensor.ndim == 2 and tensor.is_floating_point():
+                modules_to_not_convert.append(weight_name.removesuffix(".weight"))
+            if kept_fused_experts or (
+                weight_name.endswith(".weight") and tensor.ndim > 2 and tensor.numel() > 1_000_000
+            ):
+                print(f"Warning: leaving large {tensor.ndim}D tensor unquantized: {weight_name} {tuple(tensor.shape)}")
+            out[weight_name] = tensor.cpu()
     return out, modules_to_not_convert
 
 
@@ -138,12 +199,21 @@ def convert(input_dir: Path, output_dir: Path | None = None, block_size: int = 1
     modules_to_not_convert: list[str] = []
     num_quantized = 0
 
-    for shard_name in list_shards(input_dir):
+    # Official Qwen3.5 releases store a layer's gate_up_proj and down_proj in different
+    # shards, so fused experts are matched by the shapes of all shards first.
+    shards = list_shards(input_dir)
+    shapes = {}
+    for shard_name in shards:
+        with safe_open(input_dir / shard_name, framework="pt", device="cpu") as f:
+            shapes.update({name: f.get_slice(name).get_shape() for name in f.keys()})
+    fused_prefixes = fused_expert_prefixes(shapes)
+
+    for shard_name in shards:
         # Shards land in host memory; quantize_state_dict streams them through the
         # device tensor-by-tensor so a whole shard never sits on the GPU at once.
         with safe_open(input_dir / shard_name, framework="pt", device="cpu") as f:
             tensors = {name: f.get_tensor(name) for name in f.keys()}
-        out_shard, shard_modules = quantize_state_dict(tensors, block_size, device)
+        out_shard, shard_modules = quantize_state_dict(tensors, block_size, device, fused_prefixes)
         modules_to_not_convert.extend(shard_modules)
         num_quantized += sum(1 for name in out_shard if name.endswith("_scale_inv"))
         for name, tensor in out_shard.items():
