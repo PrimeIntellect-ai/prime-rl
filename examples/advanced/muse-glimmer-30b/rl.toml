@@ -25,3 +25,5 @@ lr = 1e-6
 # what the model was trained on, so serve 128k until it is evaluated there.
 max_model_len = 131072
 enable_prefix_caching = true
+# Text-only RL: skip the vision encoder.
+language_model_only = true
