@@ -612,8 +612,8 @@ class CheckpointConfig(BaseConfig):
     """Skip loading the dataloader from checkpoint."""
 
     skip_optimizer: bool = False
-    """Skip loading the optimizer state from checkpoint. The learning rates still continue the checkpoint's schedule,
-    unless ``skip_scheduler`` is set."""
+    """Skip loading the optimizer state from checkpoint. The learning rates still continue the checkpoint's schedule
+    (scaled to the configured ``optim.lr``), unless ``skip_scheduler`` is set."""
 
     async_save: bool = False
     """Write checkpoints in the background. A save copies this rank's model and optimizer state into pinned host
@@ -821,7 +821,7 @@ class TrainerConfig(BaseTrainerConfig):
     """Loss config for the rl loss component (see ``setup_rl_loss_fn``). The ce / ref_kl components are fixed and do not read this."""
 
     resume: ResumeConfig | None = None
-    """Resume training from a checkpoint. None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step, ``resume.dir`` from an external checkpoint step directory. Without ``ckpt`` the run loads but saves no new checkpoints."""
+    """Resume training from a checkpoint. None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step, ``resume.dir`` from an external checkpoint step directory. Without ``ckpt`` the run loads but saves no new checkpoints. The learning rate schedule continues from the checkpoint's step, scaled to the configured ``optim.lr``."""
 
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
     """Transport used to broadcast updated weights from trainer to inference."""

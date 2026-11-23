@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ConstantLR, CosineAnnealingLR, LinearLR, LRScheduler, SequentialLR
 
@@ -130,16 +132,34 @@ def restore_configured_lrs(optimizer: OptimizerLike, lrs: list[float]) -> None:
         group.pop("initial_lr", None)
 
 
-def restore_scheduled_lrs(scheduler: LRScheduler) -> None:
-    """For a scheduler loaded without the optimizer's state (``ckpt.skip_optimizer``): put the learning rate of the
-    loaded schedule's last step into each param group, as the optimizer's checkpoint would have. The fresh groups hold
-    the rates the new scheduler set at construction, which the loaded schedule's next steps would otherwise scale."""
-    groups, lrs = scheduler.optimizer.param_groups, scheduler.get_last_lr()
-    if len(groups) != len(lrs):
-        raise ValueError(
-            f"Resuming with ckpt.skip_optimizer: the optimizer has {len(groups)} param groups and the checkpoint's "
-            f"scheduler has learning rates for {len(lrs)}, so the loaded schedule cannot be matched to the groups. "
-            "Resume with ckpt.skip_scheduler too to start a fresh schedule."
-        )
-    for group, lr in zip(groups, lrs):
-        group["lr"] = lr
+def load_scheduler_state(scheduler: LRScheduler, state: dict[str, Any], optimizer_state: bool) -> None:
+    """Load a checkpoint's scheduler state into ``scheduler``, built from the config: the schedule continues from the
+    step it reached, at the configured learning rates.
+
+    Without the optimizer's state (``ckpt.skip_optimizer``), the param groups first get the loaded schedule's last
+    learning rates: the new scheduler set the fresh groups to its start, which the loaded schedule's next steps would
+    scale. Then each group's rate and the schedule's base rates scale by the group's configured / loaded learning
+    rate. The rest of the schedule is the checkpoint's: a linear decay's floor scales with the rates, a cosine's
+    ``min_lr`` stays."""
+    phases = scheduler._schedulers if isinstance(scheduler, SequentialLR) else [scheduler]
+    configured_lrs = list(phases[0].base_lrs)
+    scheduler.load_state_dict(state)
+    loaded_lrs = phases[0].base_lrs
+    groups = scheduler.optimizer.param_groups
+    if not optimizer_state:
+        last_lrs = scheduler.get_last_lr()
+        if len(groups) != len(last_lrs):
+            raise ValueError(
+                f"Resuming with ckpt.skip_optimizer: the optimizer has {len(groups)} param groups and the "
+                f"checkpoint's scheduler has learning rates for {len(last_lrs)}, so the loaded schedule cannot be "
+                "matched to the groups. Resume with ckpt.skip_scheduler too to start a fresh schedule."
+            )
+        for group, lr in zip(groups, last_lrs):
+            group["lr"] = lr
+    for group, configured, loaded in zip(groups, configured_lrs, loaded_lrs, strict=True):
+        if configured != loaded:
+            group["lr"] *= configured / loaded
+        group["initial_lr"] = configured
+    for phase in phases:
+        phase.base_lrs = list(configured_lrs)
+    scheduler._last_lr = [group["lr"] for group in groups]

@@ -177,7 +177,7 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     LoRA and external inference use filesystem broadcast."""
 
     resume: ResumeConfig | None = None
-    """Resume the run from a checkpoint (point at it with the previous run's ``run.name``). Without ``[ckpt]`` the run loads the checkpoint but saves no new ones. If None, does not resume."""
+    """Resume the run from a checkpoint (point at it with the previous run's ``run.name``). Without ``[ckpt]`` the run loads the checkpoint but saves no new ones. The learning rate schedule continues from the checkpoint's step, scaled to the configured ``optim.lr``. If None, does not resume."""
 
     monitors: MonitorsConfig = MonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""

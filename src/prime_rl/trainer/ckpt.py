@@ -42,7 +42,7 @@ from prime_rl.trainer.models.fusions import (
     write_back_loaded_packed_optimizer_state,
 )
 from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
-from prime_rl.trainer.scheduler import restore_scheduled_lrs
+from prime_rl.trainer.scheduler import load_scheduler_state
 from prime_rl.trainer.utils import DCP_TIMEOUT, empty_pinned, get_dcp_group
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
@@ -430,9 +430,7 @@ class AppState(Stateful):
             )
 
         if self.scheduler is not None:
-            self.scheduler.load_state_dict(state_dict["scheduler"])
-            if not self.optimizer_state:
-                restore_scheduled_lrs(self.scheduler)
+            load_scheduler_state(self.scheduler, state_dict["scheduler"], self.optimizer_state)
         if self.progress is not None:
             for key, value in state_dict["progress"].items():
                 setattr(self.progress, key, value)
