@@ -1,6 +1,6 @@
 # Notice
 
-`muon.py`, `newton_schulz_triton.py`, `opt_utils.py` and `scalar_opts.py` are copied from dion, https://github.com/samsja/dion (a fork of https://github.com/microsoft/dion), at commit 0c801b0ae7c3a98433255bff78994e43e859c738. dion is licensed under the MIT license in `LICENSE`.
+`muon.py`, `newton_schulz_triton.py`, `opt_utils.py` and `scalar_opts.py` are copied from dion, https://github.com/samsja/dion (a fork of https://github.com/microsoft/dion), at commit 0c801b0ae7c3a98433255bff78994e43e859c738, then import-sorted and formatted with ruff (`ruff check --fix`, `ruff format`); the code is otherwise unchanged. dion is licensed under the MIT license in `LICENSE`.
 
 dion incorporates material as listed below or described in the code.
 

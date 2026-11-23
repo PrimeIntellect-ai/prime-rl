@@ -84,9 +84,7 @@ def ns_line_1_kernel(
     """
 
     pid = tl.program_id(axis=0)
-    batch_idx, m_idx, n_idx = _pid_to_block(
-        pid, M, BLOCK_SIZE_M, BLOCK_SIZE_N, GROUP_SIZE_M
-    )
+    batch_idx, m_idx, n_idx = _pid_to_block(pid, M, BLOCK_SIZE_M, BLOCK_SIZE_N, GROUP_SIZE_M)
 
     # Skip blocks that don't need to be computed
     skip_block_below_diag = (LOWER_UPPER == 0) and (n_idx + BLOCK_SIZE_N <= m_idx)
@@ -149,11 +147,7 @@ def ns_line_1(A: Tensor, *, out: Tensor = None):
     input_batch_stride = A.stride(0) if A.ndim == 3 else 0
     output_batch_stride = out.stride(0) if out.ndim == 3 else 0
 
-    grid = lambda meta: (
-        batch_size
-        * triton.cdiv(M, meta["BLOCK_SIZE_M"])
-        * triton.cdiv(M, meta["BLOCK_SIZE_N"]),
-    )
+    grid = lambda meta: (batch_size * triton.cdiv(M, meta["BLOCK_SIZE_M"]) * triton.cdiv(M, meta["BLOCK_SIZE_N"]),)
     ns_line_1_kernel[grid](
         A_ptr=A,
         C_ptr=out,
@@ -200,9 +194,7 @@ def ns_line_2_kernel(
     """
 
     pid = tl.program_id(axis=0)
-    batch_idx, m_idx, n_idx = _pid_to_block(
-        pid, M, BLOCK_SIZE_M, BLOCK_SIZE_N, GROUP_SIZE_M
-    )
+    batch_idx, m_idx, n_idx = _pid_to_block(pid, M, BLOCK_SIZE_M, BLOCK_SIZE_N, GROUP_SIZE_M)
 
     # Skip blocks that don't need to be computed
     skip_block_below_diag = (LOWER_UPPER == 0) and (n_idx + BLOCK_SIZE_N <= m_idx)
@@ -267,9 +259,7 @@ def ns_line_2(A: Tensor, alpha: float, beta: float, *, out: Tensor = None):
 
     M, K = A.shape[-2:]
     if M != K:
-        raise ValueError(
-            f"Input must be symmetric square matrix, but got shape {A.shape}"
-        )
+        raise ValueError(f"Input must be symmetric square matrix, but got shape {A.shape}")
 
     if out is None:
         out = torch.empty((*A.shape[:-1], M), device=A.device, dtype=A.dtype)
@@ -280,11 +270,7 @@ def ns_line_2(A: Tensor, alpha: float, beta: float, *, out: Tensor = None):
     input_batch_stride = A.stride(0) if A.ndim == 3 else 0
     output_batch_stride = out.stride(0) if out.ndim == 3 else 0
 
-    grid = lambda meta: (
-        batch_size
-        * triton.cdiv(M, meta["BLOCK_SIZE_M"])
-        * triton.cdiv(M, meta["BLOCK_SIZE_N"]),
-    )
+    grid = lambda meta: (batch_size * triton.cdiv(M, meta["BLOCK_SIZE_M"]) * triton.cdiv(M, meta["BLOCK_SIZE_N"]),)
     ns_line_2_kernel[grid](
         A_ptr=A,
         C_ptr=out,

@@ -1,8 +1,9 @@
-import torch
 from collections import defaultdict
+from typing import Generator, List, Mapping, Optional, Tuple, Union
+
+import torch
 from torch import Tensor
 from torch.distributed.tensor import DTensor
-from typing import Generator, List, Mapping, Optional, Tuple, Union
 
 
 def to_local(tensor: Union[Tensor, List[Tensor]]) -> Union[Tensor, List[Tensor]]:
@@ -15,9 +16,7 @@ def to_local(tensor: Union[Tensor, List[Tensor]]) -> Union[Tensor, List[Tensor]]
     return [t.to_local() if isinstance(t, DTensor) else t for t in tensor]
 
 
-def dtensor_from_local(
-    tensor: Union[Tensor, List[Tensor]], ref: Tensor
-) -> Union[DTensor, List[DTensor]]:
+def dtensor_from_local(tensor: Union[Tensor, List[Tensor]], ref: Tensor) -> Union[DTensor, List[DTensor]]:
     """
     Convert a single local Tensor or list of local Tensors to DTensor.
     The reference tensor's device mesh and placements are used to create the DTensor.
@@ -33,16 +32,11 @@ def dtensor_from_local(
     # If we have a single tensor
     if isinstance(tensor, Tensor):
         assert not isinstance(tensor, DTensor)
-        return DTensor.from_local(
-            tensor, device_mesh=device_mesh, placements=placements
-        )
+        return DTensor.from_local(tensor, device_mesh=device_mesh, placements=placements)
 
     # We have a list of tensors
     assert not isinstance(tensor[0], DTensor)
-    return [
-        DTensor.from_local(t, device_mesh=device_mesh, placements=placements)
-        for t in tensor
-    ]
+    return [DTensor.from_local(t, device_mesh=device_mesh, placements=placements) for t in tensor]
 
 
 def create_param_batches(
@@ -106,9 +100,7 @@ class AsyncRuntime:
     Event loop for running multiple async tasks concurrently.
     """
 
-    def __init__(
-        self, task_gen: Generator["AsyncTask", None, None], max_concurrent_tasks: int
-    ):
+    def __init__(self, task_gen: Generator["AsyncTask", None, None], max_concurrent_tasks: int):
         # Initialize runtime with a generator that produces AsyncTask objects
         if max_concurrent_tasks <= 0:
             raise ValueError(f"{max_concurrent_tasks=} cannot be <= 0")

@@ -1,25 +1,26 @@
 import math
+from itertools import chain
+from typing import Callable, Dict, Generator, List, Mapping, Optional, Sequence, Tuple, Union
+
 import torch
 import torch.distributed as dist
-from itertools import chain
 from torch import Tensor
 from torch.distributed import ProcessGroup
 from torch.distributed.tensor import DeviceMesh, DTensor, Shard
 from torch.distributed.tensor.placement_types import _StridedShard
 from torch.optim.optimizer import Optimizer, ParamsT
-from typing import Callable, Dict, Generator, List, Mapping, Optional, Sequence, Tuple, Union
 
 from .newton_schulz_triton import newton_schulz_triton
 from .opt_utils import (
-    AsyncTask,
     AsyncRuntime,
-    to_local,
+    AsyncTask,
     create_param_batches,
     pad_batch,
+    to_local,
 )
 from .scalar_opts import (
-    lion_update_foreach,
     adamw_update_foreach,
+    lion_update_foreach,
 )
 
 
@@ -88,8 +89,7 @@ class Muon(Optimizer):
             raise ValueError(
                 f"Invalid adjust_lr value: {adjust_lr}. Must be 'spectral_norm', 'rms_norm', 'keller_muon', or None."
             )
-            
-            
+
         self.fsdp_mesh_dim = fsdp_mesh_dim
         self._world_mesh = world_mesh
 
@@ -135,9 +135,7 @@ class Muon(Optimizer):
         # Newton-Schulz configuration
         if newton_schulz_func is not None:
             if not callable(newton_schulz_func):
-                raise TypeError(
-                    f"newton_schulz_func must be a callable function, got {type(newton_schulz_func)}"
-                )
+                raise TypeError(f"newton_schulz_func must be a callable function, got {type(newton_schulz_func)}")
             self._newton_schulz_func = newton_schulz_func
         elif use_triton:
             self._newton_schulz_func = newton_schulz_triton
@@ -158,15 +156,10 @@ class Muon(Optimizer):
             self._matrix_partitions[param] = partitions
 
         num_partitioned = sum(
-            1
-            for group in self.param_groups
-            for param in group["params"]
-            if param in self._matrix_partitions
+            1 for group in self.param_groups for param in group["params"] if param in self._matrix_partitions
         )
         if num_partitioned != len(self._matrix_partitions):
-            raise ValueError(
-                "matrix_partitions contains parameters that were not given to the optimizer"
-            )
+            raise ValueError("matrix_partitions contains parameters that were not given to the optimizer")
 
         self._matrix_shard_dims: Dict[tuple, Tuple[Optional[int], bool]] = {}
 
@@ -222,7 +215,9 @@ class Muon(Optimizer):
                 state["variance"] = torch.zeros_like(param)
         return state
 
-    def _get_group_mesh_info(self, group: dict) -> Tuple[int, int, Optional[ProcessGroup], Optional[Union[DeviceMesh, ProcessGroup]]]:
+    def _get_group_mesh_info(
+        self, group: dict
+    ) -> Tuple[int, int, Optional[ProcessGroup], Optional[Union[DeviceMesh, ProcessGroup]]]:
         """
         Get mesh-related info for a parameter group.
         Returns (device_rank, world_size, process_group, distributed_mesh).
@@ -231,7 +226,7 @@ class Muon(Optimizer):
         group_mesh_name = group.get("distributed_mesh_name", None)
         if group_mesh_name is None:
             return (self._device_rank, self._world_size, self._process_group, self._distributed_mesh)
-        
+
         # Parse group-specific mesh
         group_mesh = self._world_mesh[group_mesh_name]
         if isinstance(group_mesh, DeviceMesh):
@@ -263,9 +258,7 @@ class Muon(Optimizer):
         """
         for group in param_groups:
             assert group["algorithm"] == algo_name
-            assert all(
-                p.ndim >= 2 for p in group["params"]
-            ), "Muon optimizer only supports matrix parameters."
+            assert all(p.ndim >= 2 for p in group["params"]), "Muon optimizer only supports matrix parameters."
 
             group_params = [p for p in group["params"] if p.grad is not None]
             if not group_params:
@@ -300,12 +293,8 @@ class Muon(Optimizer):
                 is_local = False
                 if isinstance(params[0], DTensor):
                     if not isinstance(distributed_mesh, DeviceMesh):
-                        raise RuntimeError(
-                            "Must create optimizer with DeviceMesh if using DTensor parameters."
-                        )
-                    sharded_tensor_dim, is_local = self._get_matrix_shard_dim(
-                        params[0], flatten, process_group
-                    )
+                        raise RuntimeError("Must create optimizer with DeviceMesh if using DTensor parameters.")
+                    sharded_tensor_dim, is_local = self._get_matrix_shard_dim(params[0], flatten, process_group)
 
                 # Local batches need no communication, so they skip the dummy padding
                 if not is_local:
@@ -353,17 +342,14 @@ class Muon(Optimizer):
         shard_placements = [
             (mesh_dim, placement)
             for mesh_dim, placement in enumerate(param.placements)
-            if isinstance(placement, (Shard, _StridedShard))
-            and param.device_mesh.size(mesh_dim) > 1
+            if isinstance(placement, (Shard, _StridedShard)) and param.device_mesh.size(mesh_dim) > 1
         ]
         has_batch_shard = False
         if not flatten:
             # Shards on batch dims (e.g. the expert dim) leave whole matrices on every device
             matrix_dims = (param.ndim - 2, param.ndim - 1)
             matrix_shard_placements = [
-                (mesh_dim, placement)
-                for mesh_dim, placement in shard_placements
-                if placement.dim in matrix_dims
+                (mesh_dim, placement) for mesh_dim, placement in shard_placements if placement.dim in matrix_dims
             ]
             has_batch_shard = len(matrix_shard_placements) < len(shard_placements)
             shard_placements = matrix_shard_placements
@@ -394,9 +380,7 @@ class Muon(Optimizer):
         return result
 
     @staticmethod
-    def _check_shard_group(
-        param: DTensor, sharded_mesh_dim: int, process_group: Optional[ProcessGroup]
-    ):
+    def _check_shard_group(param: DTensor, sharded_mesh_dim: int, process_group: Optional[ProcessGroup]):
         """
         Raise unless Muon's all-to-all runs over the parameter's shard ranks, in shard order.
         """
@@ -406,13 +390,10 @@ class Muon(Optimizer):
         mesh_index = list(param.device_mesh.get_coordinate())
         mesh_index[sharded_mesh_dim] = slice(None)
         shard_ranks = param.device_mesh.mesh[tuple(mesh_index)].tolist()
-        comm_ranks = (
-            dist.get_process_group_ranks(process_group) if process_group is not None else None
-        )
+        comm_ranks = dist.get_process_group_ranks(process_group) if process_group is not None else None
         if shard_ranks != comm_ranks:
             raise ValueError(
-                f"Parameter is sharded over ranks {shard_ranks}, but Muon communicates "
-                f"over ranks {comm_ranks}"
+                f"Parameter is sharded over ranks {shard_ranks}, but Muon communicates over ranks {comm_ranks}"
             )
 
     def _create_lion_tasks(
@@ -553,9 +534,7 @@ def muon_update_batch_async(
     elif shard_dim is not None:
         # Use all-to-all to transform from a batch of shards to a single whole matrix
         # https://www.essential.ai/blog/infra
-        assert (
-            process_group is not None
-        ), "process_group must be provided for sharded DTensors"
+        assert process_group is not None, "process_group must be provided for sharded DTensors"
         assert isinstance(X[0], DTensor), "X should contain DTensors"
         assert not isinstance(U[0], DTensor), "U should contain local shards"
 
@@ -584,9 +563,7 @@ def muon_update_batch_async(
         single_matrix_shards = [torch.empty_like(padded_U[0]) for _ in U]
 
         # Redistribute the shards to form one unique full tensor on each device
-        work = dist.all_to_all(
-            single_matrix_shards, padded_U, group=process_group, async_op=True
-        )
+        work = dist.all_to_all(single_matrix_shards, padded_U, group=process_group, async_op=True)
         yield
         work.wait()
 
@@ -605,16 +582,11 @@ def muon_update_batch_async(
         # Re-pad the updated matrix so every reverse all-to-all transfer has the
         # same shape, then trim this rank's received shards to its FSDP layout.
         single_matrix = pad_to_size(single_matrix, padded_local_size * world_size)
-        single_matrix_shards = [
-            x.contiguous()
-            for x in torch.tensor_split(single_matrix, world_size, dim=shard_dim)
-        ]
+        single_matrix_shards = [x.contiguous() for x in torch.tensor_split(single_matrix, world_size, dim=shard_dim)]
 
         # Redistribute the orthogonalized tensor back to original layout
         padded_U = [torch.empty_like(single_matrix_shards[0]) for _ in U]
-        work = dist.all_to_all(
-            padded_U, single_matrix_shards, group=process_group, async_op=True
-        )
+        work = dist.all_to_all(padded_U, single_matrix_shards, group=process_group, async_op=True)
         yield
         work.wait()
         U = [u.narrow(shard_dim, 0, local_shard_size) for u in padded_U]
@@ -638,9 +610,7 @@ def muon_update_batch_async(
             U = [torch.empty_like(u) for u in U]
 
             # All gather orthogonalized results from other devices into buffer
-            work = dist.all_gather(
-                U, single_matrix.contiguous(), group=process_group, async_op=True
-            )
+            work = dist.all_gather(U, single_matrix.contiguous(), group=process_group, async_op=True)
             yield
             work.wait()
 
@@ -821,9 +791,7 @@ def muon_orthogonalize_update(
     is orthogonalized on its own.
     """
     if partitions is None:
-        return muon_update_newton_schulz(
-            X, newton_schulz_func=newton_schulz_func, flatten=flatten, epsilon=epsilon
-        )
+        return muon_update_newton_schulz(X, newton_schulz_func=newton_schulz_func, flatten=flatten, epsilon=epsilon)
 
     # TODO: when every partition has the same size, the packed rows reshape to
     # [num_partitions, partition_size, fan_in] and Newton-Schulz runs once on the whole
@@ -855,10 +823,7 @@ def partition_row_learning_rates(
     arithmetic, as the single adjusted learning rate of an unpartitioned parameter.
     """
     return torch.cat(
-        [
-            adjust_lr_for_shape(lr, torch.Size((fan_out, fan_in)), adjust_lr).expand(fan_out)
-            for fan_out in partitions
-        ]
+        [adjust_lr_for_shape(lr, torch.Size((fan_out, fan_in)), adjust_lr).expand(fan_out) for fan_out in partitions]
     )
 
 
@@ -893,12 +858,14 @@ def adjust_lr_spectral_norm(lr, param_shape):
     adjusted_lr = lr * math.sqrt(fan_out / fan_in)
     return adjusted_lr
 
+
 def adjust_lr_keller_muon(lr, param_shape):
     # Adjust from spectral norm 1 to RMS operator norm 1
     # https://arxiv.org/abs/2310.17813
-    fan_out, fan_in = param_shape[-2:] # need -2: instead of 2: because it would break experts params that are 3d
-    adjusted_lr = lr * max(1, fan_out / fan_in)**0.5
+    fan_out, fan_in = param_shape[-2:]  # need -2: instead of 2: because it would break experts params that are 3d
+    adjusted_lr = lr * max(1, fan_out / fan_in) ** 0.5
     return adjusted_lr
+
 
 @torch.compile(fullgraph=True)
 def zeropower_via_newtonschulz5(G: Tensor, epsilon: float = 1e-7):
