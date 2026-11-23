@@ -1,6 +1,5 @@
 import itertools
 import json
-import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Literal, cast
@@ -8,7 +7,6 @@ from typing import Any, Callable, Literal, cast
 import numpy as np
 import torch
 from datasets import Dataset, load_dataset
-from huggingface_hub import snapshot_download
 from renderers import AutoRendererConfig, RendererConfig, merge_chat_template_kwargs
 from renderers.base import MultiModalData, PlaceholderRange, Renderer, build_training_sample, create_renderer
 from torch import Tensor
@@ -16,13 +14,7 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.sft import HFDatasetSourceConfig, SFTDataConfig
-from prime_rl.configs.supervised import (
-    BaseDataConfig,
-    ChatValSourceConfig,
-    HFDatasetConfig,
-    LossMaskConfig,
-    SFTColumnsConfig,
-)
+from prime_rl.configs.supervised import ChatValSourceConfig, LossMaskConfig, SFTColumnsConfig
 from prime_rl.trainer.data import (
     Sample,
     StatefulIterableDataset,
@@ -32,7 +24,7 @@ from prime_rl.trainer.data import (
     with_workers,
 )
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
-from prime_rl.utils.logger import format_time, get_logger
+from prime_rl.utils.logger import get_logger
 
 
 class FakeSource:
@@ -530,34 +522,6 @@ class SFTDataset(StatefulIterableDataset):
             self.num_samples[source.name] += 1
             self.num_tokens[source.name] += len(sample["input_ids"])
             yield sample
-
-
-def pre_download_data(data: BaseDataConfig, env_vars: dict[str, str]) -> None:
-    if isinstance(data, SFTDataConfig) and data.fake is None:
-        pre_download_sources(data.source, env_vars)
-
-
-def pre_download_sources(sources: list[HFDatasetConfig], env_vars: dict[str, str]) -> None:
-    """Download every source's HF dataset into the HF cache and point the source at the snapshot."""
-    snapshots: dict[tuple[str, str | None], str] = {}
-    for source in sources:
-        if Path(source.dataset).exists():
-            continue
-        key = (source.dataset, source.revision)
-        if key not in snapshots:
-            t0 = time.perf_counter()
-            get_logger().info(f"Pre-downloading data {source.dataset} at revision {source.revision or 'main'}")
-            snapshots[key] = snapshot_download(
-                repo_id=source.dataset,
-                repo_type="dataset",
-                revision=source.revision,
-                cache_dir=env_vars.get("HF_HUB_CACHE"),
-            )
-            get_logger().debug(
-                f"Finished pre-downloading data {source.dataset} to {snapshots[key]} in "
-                f"{format_time(time.perf_counter() - t0)}"
-            )
-        source.dataset = snapshots[key]
 
 
 def load_sft_dataset(config: SFTDataConfig) -> dict[str, Dataset]:

@@ -34,7 +34,21 @@ launch_inference_rank() {
     # ADMIN_TOKEN_ENV (NAME=value: the admin token's digest) is set by launchers that
     # guard the engines' admin routes; the engine then refuses to start without it.
     local -a rank_env=(CUDA_VISIBLE_DEVICES="$gpus" VLLM_RPC_BASE_PATH="$rpcbase")
-    [ -n "$nixl" ] && rank_env+=(VLLM_NIXL_SIDE_CHANNEL_PORT="$nixl")
+    if [ -n "$nixl" ]; then
+        rank_env+=(VLLM_NIXL_SIDE_CHANNEL_PORT="$nixl")
+        # NIXL_NIC_AFFINITY=1 (P/D): a single-GPU rank sends its NIXL traffic only through the RDMA port nearest its
+        # GPU, on one rail. GPUDirect RDMA through a NIC on the other CPU socket can stall the GPU under load.
+        if [ "${NIXL_NIC_AFFINITY:-0}" = 1 ] && [[ "$gpus" != *,* ]]; then
+            local nic
+            # Same environment as the engine (`uv run`), which need not be the activated .venv.
+            if nic=$(uv run --no-sync python -m prime_rl.utils.rdma "$gpus" 2>>"$log") && [ -n "$nic" ]; then
+                rank_env+=(UCX_NET_DEVICES="$nic" UCX_MAX_RMA_RAILS=1)
+                echo "[nixl] GPU $gpus -> $nic" | tee -a "$log"
+            else
+                echo "[nixl] GPU $gpus: no nearest RDMA port found, NIXL uses every port" | tee -a "$log"
+            fi
+        fi
+    fi
     if [ -n "${ADMIN_TOKEN_ENV:-}" ]; then
         rank_env+=("$ADMIN_TOKEN_ENV")
         cmd+=(--server.require-admin-token)
