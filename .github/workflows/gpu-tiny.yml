@@ -1,16 +1,15 @@
 name: GPU Tiny Tests
 
+# Pushes to main run the tiny suite in gpu.yml, ahead of the full suite
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# One run per PR: a new push cancels the superseded run and stops its Modal app. Every push to main runs.
+# One run per PR: a new push cancels the superseded run and stops its Modal app.
 concurrency:
   group: >-
     ${{ github.workflow }}-${{
@@ -46,7 +45,7 @@ jobs:
               git config --global url."https://github.com/".insteadOf "git@github.com:"
               git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
           - name: Install uv
-            uses: astral-sh/setup-uv@v10.0.1
+            uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
             with:
               enable-cache: false
       - name: Run tiny tests on Modal

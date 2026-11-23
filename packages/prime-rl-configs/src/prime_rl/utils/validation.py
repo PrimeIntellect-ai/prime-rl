@@ -86,9 +86,8 @@ def propagate_shared_fields(data: Any) -> Any:
     propagate("ckpt.async_save", "trainer.ckpt.async_save")
 
     # [monitors.wandb] leaves. (Bare empty ``[monitors.wandb]`` block enablement is at the end.)
-    # ``monitors.wandb.name`` flows verbatim to both sub-configs — shared W&B mode is
-    # always on for the rl entrypoint, so the legacy ``-trainer`` /
-    # ``-orchestrator`` suffix split is gone.
+    # ``monitors.wandb.name`` flows verbatim to both sub-configs: the rl entrypoint
+    # always runs W&B in shared mode, so both log to one run.
     for leaf in ("project", "entity", "name", "group", "tags", "offline"):
         propagate(
             f"monitors.wandb.{leaf}",

@@ -1,0 +1,82 @@
+name: GPU Full Suite
+
+# Called by gpu.yml: one job per test group of `scripts/modal_ci.py --suite full`, each in its own Modal app
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  group:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      # The Modal workspace runs about 10 GPUs at once, so two groups at a time (at most 4 GPUs) leave room for Tiny
+      # runs. Raise it when the workspace GPU limit is raised.
+      max-parallel: 2
+      # Longest first (warm cache)
+      matrix:
+        include:
+          - {group: reverse_text, name: Integration / Reverse Text}
+          - {group: reverse_text_sft, name: Integration / Reverse Text SFT}
+          - {group: reverse_text_lora, name: Integration / Reverse Text LoRA}
+          - {group: offload, name: Unit (GPU) / Offload and checkpoint}
+          - {group: reverse_text_rl_opd, name: Integration / Reverse Text RL OPD}
+          - {group: reverse_text_rl_sft, name: Integration / Reverse Text RL SFT}
+          - {group: alphabet_sort, name: Integration / Alphabet Sort}
+          - {group: reverse_text_moe, name: Integration / Reverse Text MoE}
+          - {group: compile, name: Unit (GPU) / Fullgraph compile}
+          - {group: rest, name: Unit (GPU) / rest}
+          - {group: invariance, name: Unit (GPU) / Distributed invariance}
+          - {group: reverse_text_sft_lora, name: Integration / Reverse Text SFT LoRA}
+          - {group: pretrain, name: Integration / Pretrain}
+          - {group: vllm-parity, name: Unit (GPU) / vLLM parity}
+          - {group: dsv4-kernels, name: Unit (GPU) / DeepSeek-V4 kernels}
+          - {group: dsv4, name: Unit (GPU) / DeepSeek-V4}
+    env:
+      MODAL_APP_NAME: prime-rl-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.group }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+          persist-credentials: false
+      - parallel:
+          - name: Init public submodules
+            env:
+              GITHUB_TOKEN: ${{ github.token }}
+            run: |
+              git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+              git config --global url."https://github.com/".insteadOf "git@github.com:"
+              git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
+          - name: Install uv
+            uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+            with:
+              enable-cache: false
+      - name: Run the test group on Modal
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          GROUP: ${{ matrix.group }}
+        run: uvx --from modal==1.6.4 modal run --name "$MODAL_APP_NAME" scripts/modal_ci.py --suite full --group "$GROUP"
+      # A cancelled job kills the Modal client before it stops the app, whose containers would keep running.
+      - name: Stop the Modal app
+        if: cancelled()
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          uvx --from modal==1.6.4 modal app list --json \
+            | jq -r --arg name "$MODAL_APP_NAME" '.[] | select(.description == $name and .state != "stopped") | .app_id' \
+            | xargs -r -n1 uvx --from modal==1.6.4 modal app stop -y
+      - name: Upload run logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.group }}-logs
+          path: outputs/modal-ci
+          retention-days: 7
+          if-no-files-found: ignore

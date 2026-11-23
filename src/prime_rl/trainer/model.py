@@ -72,38 +72,13 @@ from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.utils import get_dcp_group
 from prime_rl.trainer.vlm import get_language_model, get_vision_encoder
 from prime_rl.trainer.world import get_world, wait_for_master
-from prime_rl.utils.logger import get_logger
+from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import has_step_dir_name, is_checkpoint_step_dir
-from prime_rl.utils.utils import format_time
 from prime_rl.utils.weights import (
     load_state_dict,
     load_state_dict_keys,
     save_state_dict,
 )
-
-
-def pre_download_model(model_name: str, *, skip_weights: bool = False) -> None:
-    """Pre-download model from HuggingFace Hub so all nodes have cached weights before training.
-
-    With ``skip_weights`` (weights that do not come from the HF model), only config and tokenizer files are fetched.
-    """
-    # A checkpoint step directory (gone by a resume, which reads the run's own copies of its files) is never on the Hub.
-    if Path(model_name).exists() or has_step_dir_name(model_name):
-        get_logger().info(f"Model {model_name} is a local path, skipping download")
-        return
-    t0 = time.perf_counter()
-    if skip_weights:
-        get_logger().info(f"Pre-downloading config and tokenizer for {model_name} (skipping weights)")
-        path = snapshot_download(
-            repo_id=model_name, repo_type="model", allow_patterns=["*.json", "*.txt", "tokenizer*", "*.jinja"]
-        )
-    else:
-        get_logger().info(f"Pre-downloading model {model_name}")
-        path = snapshot_download(repo_id=model_name, repo_type="model")
-    get_logger().debug(
-        f"Finished pre-downloading model {model_name} to {path} in {format_time(time.perf_counter() - t0)}"
-    )
-
 
 # Add filter to the standard logging module for transformers.modeling_utils to supress the
 # flash attention dtype warnings since FSDP is used to handle mixed precision.

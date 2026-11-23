@@ -15,6 +15,7 @@ from prime_rl.trainer.models.layers.expert_compute import DeepGemmFP8ExpertCompu
 from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
 from prime_rl.trainer.models.layers.moe import GroupedExperts
 from tests.unit.train.models.test_moe import _grouped_mm_reference
+from tests.utils import assert_relative
 
 pytestmark = [
     pytest.mark.gpu,
@@ -66,14 +67,6 @@ EXPERTS_RTOL = 0.1
 @pytest.fixture(autouse=True)
 def _require_deep_gemm():
     pytest.importorskip("vllm.third_party.deep_gemm")
-
-
-def _assert_relative(actual: torch.Tensor, reference: torch.Tensor, rtol: float, label: str) -> None:
-    """Bound the largest absolute deviation by `rtol` times the reference's own scale."""
-    actual, reference = actual.float(), reference.float()
-    deviation = (actual - reference).abs().max()
-    scale = reference.abs().max()
-    assert deviation <= rtol * scale, f"{label}: max deviation {deviation} exceeds {rtol} * scale {scale}"
 
 
 def _assert_bitwise(actual: torch.Tensor, expected: torch.Tensor, label: str) -> None:
@@ -281,11 +274,11 @@ def test_grouped_experts_route_through_the_fp8_op_and_match_the_reference():
         outputs[name] = output[:used_rows].detach()
         input_grads[name] = x_leaf.grad[:used_rows]
 
-    _assert_relative(outputs["fp8"], outputs["reference"], EXPERTS_RTOL, "output")
-    _assert_relative(input_grads["fp8"], input_grads["reference"], EXPERTS_RTOL, "input gradient")
+    assert_relative(outputs["fp8"], outputs["reference"], EXPERTS_RTOL, "output")
+    assert_relative(input_grads["fp8"], input_grads["reference"], EXPERTS_RTOL, "input gradient")
     for name, param in reference.named_parameters():
         assert param.grad is not None and param.grad.abs().max() > 0, f"vacuous probe: reference {name} has no grad"
-        _assert_relative(experts.get_parameter(name).grad, param.grad, EXPERTS_RTOL, name)
+        assert_relative(experts.get_parameter(name).grad, param.grad, EXPERTS_RTOL, name)
 
 
 def test_op_traces_under_torch_compile():

@@ -1,6 +1,5 @@
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -9,7 +8,9 @@ from prime_rl.configs.orchestrator import OnlineEvalSourceConfig
 from prime_rl.configs.shared import LogConfig
 from prime_rl.configs.supervised import BaseValConfig, SupervisedTrainerConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, run_links
-from prime_rl.utils.config import dump_resolved_config, find_package_resource
+from prime_rl.entrypoints.slurm import load_slurm_template, submit_sbatch
+from prime_rl.utils.admin_token import AdminTokenUses, TokenUse
+from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
@@ -49,6 +50,22 @@ def eval_env_worker_pools(config: SupervisedTrainerConfig) -> list[OnlineEvalSou
     if config.eval is None:
         return []
     return [source for source in config.eval.source if source.serve.address is None]
+
+
+def admin_token_uses(config: SupervisedTrainerConfig) -> AdminTokenUses:
+    """The online evals call the engines' admin routes, so they get the token; the inference
+    server and the control APIs only check it, so they get its digest."""
+    online_eval = config.eval
+    return AdminTokenUses(
+        {
+            "inference": TokenUse(checks=config.inference.server.admin_token_var if config.inference else None),
+            "online-eval": TokenUse(
+                sends=online_eval.client.admin_token_var if online_eval else None,
+                checks=online_eval.control.admin_token_var if online_eval and online_eval.control else None,
+            ),
+            "trainer": TokenUse(checks=config.control.admin_token_var if config.control else None),
+        }
+    )
 
 
 def get_ckpt_base(config: SupervisedTrainerConfig) -> Path:
@@ -151,17 +168,8 @@ def write_slurm_script(
 ) -> None:
     """Write the SLURM script to disk. The trainer runs ``config_path``; a multi-node
     job's run owner registers the Prime run from ``run_config_path``."""
-    from jinja2 import Environment, FileSystemLoader
-
     assert config.slurm is not None
-    assert config.slurm.template_path is not None
-
-    template_dirs = [config.slurm.template_path.parent]
-    bundled_templates = find_package_resource("templates")
-    if bundled_templates is not None:
-        template_dirs.append(bundled_templates)
-    env = Environment(loader=FileSystemLoader(template_dirs), keep_trailing_newline=True)
-    template = env.get_template(config.slurm.template_path.name)
+    template = load_slurm_template(config.slurm)
 
     trainer_env_vars = {
         **DEFAULT_COMMON_ENV_VARS,
@@ -226,6 +234,7 @@ def write_slurm_script(
             wandb_shared=wandb_shared,
             run_name=config.run.name,
             online_eval=online_eval,
+            admin_token=admin_token_uses(config),
             use_nccl_broadcast=(
                 config.eval is not None
                 and config.weight_broadcast is not None
@@ -305,13 +314,7 @@ def launch_slurm(config: SupervisedTrainerConfig, entrypoint: str):
 
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
 
-    logger.info(f"Submitting: sbatch {script_path}")
-    result = subprocess.run(["sbatch", str(script_path)], capture_output=True, text=True)
-    if result.returncode != 0:
-        logger.error(f"sbatch failed: {result.stderr.strip()}")
-        sys.exit(1)
-
-    logger.success(f"{result.stdout.strip()}\n\n{log_message}")
+    submit_sbatch(script_path, log_message)
     log_run_links(dashboard_url)
 
 
@@ -371,19 +374,22 @@ def launch_local(config: SupervisedTrainerConfig, entrypoint: str):
             "WANDB_ARGS": json.dumps(sys.argv),
         }
 
+    base_env, admin_envs = admin_token_uses(config).split(os.environ)
+
     with ProcessGroup() as processes:
         # Optionally, start the inference server for online evals
         if config.inference is not None:
             logger.info(f"Starting inference on GPU(s) {' '.join(map(str, infer_gpu_ids))}")
             processes.start(
                 "inference",
-                ["inference", "@", (config_dir / INFERENCE_CONFIG).as_posix()],
+                ["inference", "@", (config_dir / INFERENCE_CONFIG).as_posix(), "--server.require-admin-token"],
                 env={
-                    **os.environ,
+                    **base_env,
                     **DEFAULT_COMMON_ENV_VARS,
                     **DEFAULT_INFERENCE_ENV_VARS,
                     **config.env_vars,
                     **config.inference.env_vars,
+                    **admin_envs.get("inference", {}),
                     "CUDA_VISIBLE_DEVICES": ",".join(map(str, infer_gpu_ids)),
                 },
                 log_path=log_dir / "inference.log",
@@ -397,7 +403,7 @@ def launch_local(config: SupervisedTrainerConfig, entrypoint: str):
             processes.start(
                 f"env/eval/{name}",
                 ["env-worker-pool", "@", (config_dir / ENVS_DIR / "eval" / f"{name}.json").as_posix()],
-                env={**os.environ, **DEFAULT_COMMON_ENV_VARS, **config.env_vars},
+                env={**base_env, **DEFAULT_COMMON_ENV_VARS, **config.env_vars},
                 log_path=log_dir / ENVS_DIR / "eval" / f"{name}.log",
             )
 
@@ -407,10 +413,11 @@ def launch_local(config: SupervisedTrainerConfig, entrypoint: str):
                 "online-eval",
                 [sys.executable, "-m", "prime_rl.eval.online", "@", (config_dir / ONLINE_EVAL_CONFIG).as_posix()],
                 env={
-                    **os.environ,
+                    **base_env,
                     **DEFAULT_COMMON_ENV_VARS,
                     "LOGURU_FORCE_COLORS": "1",
                     **config.env_vars,
+                    **admin_envs.get("online-eval", {}),
                     "PRL_ATTEMPT_CONFIG_DIR": str(config_dir),
                     "PRL_ATTEMPT_LOG_DIR": str(log_dir),
                     "PRL_LOG_DIR": str(log_dir),
@@ -423,10 +430,11 @@ def launch_local(config: SupervisedTrainerConfig, entrypoint: str):
         gpus_suffix = f" on GPU(s) {' '.join(map(str, trainer_gpu_ids))}" if trainer_gpu_ids else ""
         logger.info(f"Starting {entrypoint} trainer with {config.deployment.num_train_gpus} GPU(s){gpus_suffix}")
         trainer_env = {
-            **os.environ,
+            **base_env,
             **DEFAULT_COMMON_ENV_VARS,
             **DEFAULT_TRAINER_ENV_VARS,
             **config.env_vars,
+            **admin_envs.get("trainer", {}),
             **wandb_shared_env,
             **launcher_attempt_env(config_dir, log_dir),
         }
@@ -487,8 +495,7 @@ def launch(config: SupervisedTrainerConfig, entrypoint: str):
         clean_stale_eval_artifacts(config)
 
     if not config.dry_run:
-        from prime_rl.trainer.model import pre_download_model
-        from prime_rl.trainer.sft.data import pre_download_data
+        from prime_rl.utils.hf import pre_download_data, pre_download_model
 
         pre_download_model(config.model.name, skip_weights=config.model.init.type == "scratch")
         pre_download_data(config.data, config.env_vars)

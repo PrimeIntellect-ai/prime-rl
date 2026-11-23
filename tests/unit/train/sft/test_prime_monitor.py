@@ -50,7 +50,7 @@ def clear_monitors():
 def _sft_config(overrides: dict | None = None) -> SFTConfig:
     config = {
         "model": {"name": "PrimeIntellect/Qwen3-0.6B"},
-        "data": {"type": "fake", "batch_size": 8, "seq_len": 64},
+        "data": {"fake": {}, "batch_size": 8, "seq_len": 64},
         "max_steps": 10,
     }
     if overrides:

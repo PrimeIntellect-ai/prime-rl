@@ -21,9 +21,12 @@ target_modules = [
 ]
 
 [data]
-name = "PrimeIntellect/Reverse-Text-SFT"
 batch_size = 4
 seq_len = 1024
+
+[[data.source]]
+name = "reverse-text"
+dataset = "PrimeIntellect/Reverse-Text-SFT"
 
 [optim]
 lr = 1.5e-5

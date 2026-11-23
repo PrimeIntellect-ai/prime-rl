@@ -73,12 +73,22 @@ source .venv/bin/activate
 # inside the task because unexported vars in .env don't cross srun even with normal
 # SLURM env propagation; otherwise uv would silently fall back to the shared .venv.
 srun --ntasks-per-node=1 bash -s <<'SYNC_SH'
+set -e
 cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync --all-extras --all-packages
+# uv sync restores the locked NIXL wheel, whose bundled UCX breaks P/D KV transfer: reinstall the source build
+# into the project environment (uv pip would otherwise pick the activated .venv, not UV_PROJECT_ENVIRONMENT).
+if compgen -G "deps/nixl_cu13-*.whl" > /dev/null; then uv pip install -q --reinstall --no-deps --python "${UV_PROJECT_ENVIRONMENT:-.venv}" deps/nixl_cu13-*.whl; fi
 SYNC_SH
 {% else %}
 # Shared (NFS) venv: one sync on the batch node populates it for all nodes.
 uv sync --all-extras --all-packages
+# uv sync restores the locked NIXL wheel, whose bundled UCX breaks P/D KV transfer: reinstall the source build
+# into the project environment (uv pip would otherwise pick the activated .venv, not UV_PROJECT_ENVIRONMENT).
+if compgen -G "deps/nixl_cu13-*.whl" > /dev/null; then uv pip install -q --reinstall --no-deps --python "${UV_PROJECT_ENVIRONMENT:-.venv}" deps/nixl_cu13-*.whl; fi
 {% endif %}
+# The environment is synced above. Every later `uv run` would sync it again: the per-process syncs race, and they
+# replace the source-built NIXL with the locked wheel.
+export UV_NO_SYNC=1
 
 # Print inference URLs
 export HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
@@ -233,9 +243,10 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
 
     export VLLM_NIXL_SIDE_CHANNEL_HOST=$LOCAL_IP
     export VLLM_NIXL_SIDE_CHANNEL_PORT=5600
+    export NIXL_NIC_AFFINITY={{ 1 if nixl_nic_affinity else 0 }}
 
-    # The kv_transfer_config (NIXL transfer + any KV offload connector) is built in
-    # InferenceConfig.to_namespace() from the per-node config, so it is no longer assembled here.
+    # InferenceConfig.to_namespace() builds the kv_transfer_config (NIXL transfer + any KV
+    # offload connector) from the per-node config.
 
     DECODE_COMPILE_CFG='{"cudagraph_mode":"FULL_DECODE_ONLY"}'
 
@@ -256,9 +267,13 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
         PORT=$PREFILL_PORT
         HEAD_HOST="${HOSTNAMES[$((REPLICA_BASE + SUB_REPLICA * NODES_PER_PREFILL_REPLICA))]}"
 
+{% if prefill_deepep_high_throughput %}
         # vLLM >= 0.29 auto-enables breakable CUDA graphs; capturing the DeepEP
         # high-throughput internode dispatch then fails ("timeout (dispatch CPU)").
+        # Only for that backend: without breakable graphs vLLM captures decode-only
+        # graphs, and every prefill step runs the model eagerly.
         export VLLM_USE_BREAKABLE_CUDAGRAPH=0
+{% endif %}
 {% for key, value in prefill_env_vars.items() %}
         export {{ key }}="{{ value }}"
 {% endfor %}

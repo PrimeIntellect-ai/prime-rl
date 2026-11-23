@@ -65,6 +65,50 @@ class StatefulIterableDataset(Stateful, IterableDataset):
         self.data_world_size = self.dp_size * num_workers
 
 
+SKIP_DATALOADER = (
+    "With ckpt.skip_dataloader the run resumes without the data state: the data starts over from step 0, in the same "
+    "order as at the run's start (a different data.seed gives a different order)."
+)
+
+
+def due(read: np.ndarray, start: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """When the sources of a mixture are due (weighted fair queuing): what a source read (tokens in pretraining, draws
+    in SFT) since the mixture last changed (``start``), over its weight; never for a source without weight."""
+    with np.errstate(divide="ignore"):
+        return np.where(weights > 0, (read - start) / weights, np.inf)
+
+
+def mixture_changed(saved: dict[str, dict], now: dict[str, dict], log: bool) -> bool:
+    """Whether the mixture of the sources ``now`` differs, in shares or order, from that of a checkpoint's sources
+    ``saved`` (by name, each a weight and the facts of its data). Sources match by name: a kept source reads on where
+    it stopped, which needs the same data, so one whose facts differ raises. With ``log``, a changed mixture logs a line
+    per source."""
+    for name, source in now.items():
+        for key, value in source.items():
+            if name in saved and key != "weight" and saved[name].get(key) != value:
+                raise ValueError(
+                    f"Source {name}: {key} {saved[name].get(key)!r} -> {value!r}, so it can't read on where it "
+                    "stopped. Keep its data and the settings that size it, or rename the source to read it from the "
+                    f"start. {SKIP_DATALOADER}"
+                )
+
+    def shares(sources: dict[str, dict]) -> dict[str, float]:
+        total = sum(source["weight"] for source in sources.values())
+        return {name: source["weight"] / total for name, source in sources.items()}
+
+    # In order too: ties go to the first source.
+    before, after = shares(saved), shares(now)
+    if list(before.items()) == list(after.items()):
+        return False
+    if log:
+        for name, share in after.items():
+            change = f"kept, share {before[name]:.4g} -> {share:.4g}" if name in before else f"added, share {share:.4g}"
+            get_logger().info(f"Source {name}: {change}")
+        for name in [name for name in before if name not in after]:
+            get_logger().info(f"Source {name}: removed, share {before[name]:.4g}")
+    return True
+
+
 class CatDataset(StatefulIterableDataset):
     """Pack samples into rows of at most `seq_len` tokens, padded to a multiple of `pad_to_multiple_of`."""
 
@@ -88,10 +132,10 @@ class CatDataset(StatefulIterableDataset):
         return state
 
     def load_state_dict(self, state_dict: dict):
-        self.dataset.load_state_dict(state_dict["dataset"])
         progress = state_dict.get("progress", {})
         self.dataset.num_samples.update(progress.get("num_samples", {}))
         self.dataset.num_tokens.update(progress.get("num_tokens", {}))
+        self.dataset.load_state_dict(state_dict["dataset"])
         self.pending_sample = state_dict.get("pending_sample")
 
     def __iter__(self):
@@ -229,15 +273,50 @@ def setup_dataloader(dataset: StatefulIterableDataset, config: BaseDataConfig, c
 
 
 def get_dataset_state(dataloader: StatefulDataLoader) -> dict:
-    """Dataset position per worker for the startup log, parsed from ``StatefulDataLoader.state_dict()``.
+    """Dataset position per worker, parsed from the loader's state.
 
     The loader is the only source that is correct in every case: after a resume's
     ``load_state_dict`` the restored position exists solely in the loader's stashed
     state (it reaches the dataset copies inside workers when the iterator forks them;
-    the main-process dataset object stays at position zero). The keys are torchdata's
-    private worker-snapshot layout."""
-    snapshots = dataloader.state_dict()["_snapshot"]["_worker_snapshots"]
-    return {wid: snap["dataset_state"]["dataset"] for wid, snap in sorted(snapshots.items())}
+    the main-process dataset object stays at position zero). Read from the stash, so
+    the workers don't fork yet: ``state_dict()`` would start them. The keys are
+    torchdata's private worker-snapshot layout."""
+    state = dataloader.next_iter_state or dataloader.state_dict()
+    snapshots = state["_snapshot"]["_worker_snapshots"]
+    return {wid: snap["dataset_state"]["dataset"] for wid, snap in snapshots.items()}
+
+
+def with_workers(state: dict, num_workers: int, dataset: dict | None = None) -> dict:
+    """The dataloader state ``state`` for ``num_workers`` workers. With another number of workers, or a given dataset
+    state ``dataset``, every worker reads on from ``dataset`` (else from the dataset state of the saved worker that got
+    furthest), without the samples drawn but not packed, and the first worker keeps the sample counts of all. The keys
+    are torchdata's private layout."""
+    snapshot = state["_snapshot"]
+    saved = list(snapshot["_worker_snapshots"].values())
+    if len(saved) == num_workers and dataset is None:
+        return state
+    furthest = max(saved, key=lambda worker: worker["dataset_state"]["dataset"]["step"])
+    dataset = furthest["dataset_state"]["dataset"] if dataset is None else dataset
+    counts = {key: defaultdict(int) for key in ("num_samples", "num_tokens")}
+    for worker in saved:
+        for key, by_source in worker["dataset_state"].get("progress", {}).items():
+            for name, count in by_source.items():
+                counts[key][name] += count
+    workers = {}
+    for worker_id in range(num_workers):
+        dataset_state = {"dataset": dataset}
+        dataset_state["progress"] = {
+            key: dict(by_source) if worker_id == 0 else {} for key, by_source in counts.items()
+        }
+        workers[f"worker_{worker_id}"] = {**furthest, "worker_id": worker_id, "dataset_state": dataset_state}
+    main = {**snapshot["_main_snapshot"], "_num_workers": num_workers}
+    snapshot = {
+        **snapshot,
+        "_main_snapshot": main,
+        "_worker_snapshots": workers,
+        "_last_yielded_worker_id": num_workers - 1,
+    }
+    return {**state, "_snapshot": snapshot, "_steps_since_snapshot": 0}
 
 
 def get_dataset_progress(dataloader: StatefulDataLoader) -> dict:

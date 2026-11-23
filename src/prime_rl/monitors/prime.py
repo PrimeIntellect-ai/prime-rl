@@ -42,7 +42,7 @@ NO_KEY = (
 
 
 def _base_url() -> str | None:
-    """$PRIME_API_BASE historically points at the RFT API root (``.../api/v1/rft``);
+    """$PRIME_API_BASE may point at the RFT API root (``.../api/v1/rft``);
     the SDK takes the platform base URL. Unset means the SDK resolves it."""
     base = os.getenv(BASE_URL_VAR)
     return base.rstrip("/").removesuffix("/rft") if base else None

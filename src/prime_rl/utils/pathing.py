@@ -81,21 +81,6 @@ def launcher_attempt_env(config_dir: Path, log_dir: Path) -> dict[str, str]:
     return {"PRL_ATTEMPT_CONFIG_DIR": str(config_dir), "PRL_ATTEMPT_LOG_DIR": str(log_dir)}
 
 
-def create_attempt_log_dir(run_dir: Path) -> Path:
-    """Create a log-only attempt for standalone processes without config dumps."""
-    logs_dir = get_log_dir(run_dir)
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    attempt_dir = logs_dir / f"attempt_{1 + max(_attempt_numbers(logs_dir), default=0)}"
-    attempt_dir.mkdir()
-    _point_latest(logs_dir, attempt_dir)
-    return attempt_dir
-
-
-def latest_log_dir(run_dir: Path) -> Path:
-    """The current attempt's log directory, via the ``logs/latest`` symlink."""
-    return get_log_dir(run_dir) / "latest"
-
-
 def shorten(name: str, max_len: int) -> str:
     """A name cut to fit a label column, the same way in every launcher block."""
     return name if len(name) <= max_len else name[: max_len - 3] + "..."
@@ -313,10 +298,6 @@ def get_file_monitor_dir(output_dir: Path) -> Path:
     """Everything the file monitor dumps locally: the metrics, and the traces with
     the annotations about them."""
     return output_dir / "monitors" / "file"
-
-
-def get_eval_dir(output_dir: Path) -> Path:
-    return output_dir / "eval"
 
 
 def get_broadcast_dir(output_dir: Path) -> Path:

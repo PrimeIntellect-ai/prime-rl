@@ -12,11 +12,12 @@ from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
+import torch
 import torch.distributed as dist
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.pretrain import PretrainDataConfig
-from prime_rl.trainer.data import StatefulIterableDataset
+from prime_rl.trainer.data import SKIP_DATALOADER, StatefulIterableDataset, due, mixture_changed
 from prime_rl.utils.bin_packing import fill_rows
 from prime_rl.utils.logger import get_logger
 
@@ -42,6 +43,8 @@ def memmap(path: str, dtype: np.dtype) -> np.ndarray:
     return OPEN_FILES[path]
 
 
+# The cursor's lists of a count per source.
+SOURCE_COUNTS = ("units", "tokens", "mix_start", "pieces", "piece_tokens")
 # Keys the order that subsets take units in apart from the order of the passes: any constant other than 0 does.
 SUBSET_KEY = 0xD1B54A32D192ED03
 
@@ -189,9 +192,9 @@ class TokenSampler:
 
     A unit is a document or a ``seq_len`` piece of a longer one. A source reads its units (or, with ``repetitions``, a
     fixed seeded subset) in passes, each in a keyed order (`permute`). Units are taken in order of due time, their
-    source's tokens over its weight (weighted fair queuing); the unit that crosses the step's end is cut, and
-    `fill_rows` packs the step into full rows, each in a seeded order. ``cache_dir`` keeps the long-document table and
-    the subsets."""
+    source's tokens since the mixture last changed over its weight (weighted fair queuing); the unit that crosses the
+    step's end is cut, and `fill_rows` packs the step into full rows, each in a seeded order. A resumed run can change
+    the mixture (`resume`). ``cache_dir`` keeps the long-document table and the subsets."""
 
     def __init__(
         self,
@@ -204,11 +207,14 @@ class TokenSampler:
         seed: int = 0,
         max_steps: int | None = None,
         cache_dir: Path | None = None,
+        resume: tuple[dict, int] | None = None,
     ):
-        self.names, self.sources, self.repetitions, self.max_steps = names, sources, repetitions, max_steps
+        self.names, self.sources, self.repetitions = names, sources, repetitions
         self.batch_size, self.seq_len, self.seed = batch_size, seq_len, seed
-        # The files of all sources, numbered in source order.
+        self.max_steps, self.cache_dir = max_steps, cache_dir
+        # The files of all sources, numbered in source order, and every source's first.
         self.shards = TokenShards.join(sources)
+        self.first_files = np.cumsum([0, *(len(shards.files) for shards in sources)])[:-1]
         self.num_documents = np.array([shards.num_documents for shards in sources], dtype=np.int64)
         self.num_tokens = np.array([shards.num_tokens for shards in sources], dtype=np.int64)
         # The number of every source's first document, and of every file's, in the documents of all sources.
@@ -227,10 +233,37 @@ class TokenSampler:
         # The units and tokens of every source's (sub)set.
         self.subsets = np.array([times is not None for times in repetitions])
         self.set_units, self.set_tokens = self.num_units.copy(), self.num_tokens.copy()
+        # A state of another format fails to load with its own error (`TokenDataset.load_state_dict`).
+        if resume is not None and "mix_start" in resume[0].get("cursor", {}):
+            self.resize_subsets(*resume)
+        else:
+            for source in np.flatnonzero(self.subsets & (self.weights > 0)):
+                self.subset(source, self.run_tokens[source] / repetitions[source])
+
+    def subset_settings(self, source: int) -> list:
+        """What the source's subset depends on: its size, and the order its units are taken in (``seed``)."""
+        weight, repetitions = float(self.weights[source]), self.repetitions[source]
+        return [weight, repetitions, self.max_steps, self.batch_size, self.seq_len, self.seed]
+
+    def resize_subsets(self, state: dict, steps: int) -> None:
+        """Size the subsets of a run resumed after ``steps`` steps from a checkpoint's data state ``state``. A source
+        whose subset settings (`subset_settings`) are the checkpoint's, or that is paused (weight 0), keeps its subset.
+        Otherwise its subset holds the tokens it reads over the whole run, the ones already read and its share of the
+        remaining steps at these settings, over its repetitions."""
+        plan, read = state["plan"], dict(zip(state["plan"]["sources"], state["cursor"]["tokens"]))
+        if any(isinstance(saved, int) for saved in plan["subsets"].values()):
+            raise ValueError(
+                "The checkpoint's data state records its subsets without what they depend on, so the run can't resume "
+                f"it. {SKIP_DATALOADER}"
+            )
         for source in np.flatnonzero(self.subsets):
-            if self.run_tokens[source] > 0:
-                tokens = self.run_tokens[source] / repetitions[source]
-                self.set_units[source], self.set_tokens[source] = self.subset(source, tokens, cache_dir)
+            name, saved = self.names[source], plan["subsets"].get(self.names[source])
+            if saved is not None and (saved["settings"] == self.subset_settings(source) or self.weights[source] == 0):
+                self.set_units[source], self.set_tokens[source] = saved["units"], saved["tokens"]
+            elif self.weights[source] > 0:
+                steps_left = max(self.max_steps - steps, 0)
+                remaining = steps_left * self.batch_size * self.seq_len * self.weights[source]
+                self.subset(source, (read.get(name, 0) + remaining) / self.repetitions[source])
 
     def long_document_table(self, cache_dir: Path | None) -> tuple[np.ndarray, np.ndarray]:
         """The long documents of all sources (`TokenShards.long_documents`), by their numbers in the documents of all
@@ -258,8 +291,8 @@ class TokenSampler:
         ]
         return hashlib.sha256(repr([self.seq_len, stats, *extra]).encode()).hexdigest()[:24]
 
-    def subset(self, source: int, tokens: float, cache_dir: Path | None) -> tuple[int, int]:
-        """The units and tokens of the source's subset of ``tokens`` tokens: the first units of an order drawn from
+    def subset(self, source: int, tokens: float) -> None:
+        """Set the units and tokens of the source's subset of ``tokens`` tokens: the first units of an order drawn from
         ``seed`` and the source's name, until they hold ``tokens`` (one unit more at most)."""
         name = self.names[source]
         if tokens > self.num_tokens[source]:
@@ -272,11 +305,11 @@ class TokenSampler:
                 f"Source {name}: its subset would hold {tokens:,.1f} tokens, fewer than seq_len ({self.seq_len}); "
                 "lower repetitions, raise the weight, or train more steps"
             )
-        if cache_dir is not None:
-            cache = cache_dir / f"subset-{self.cache_key([source], self.seed, name, round(tokens))}.npy"
+        if self.cache_dir is not None:
+            cache = self.cache_dir / f"subset-{self.cache_key([source], self.seed, name, round(tokens))}.npy"
             if cache.exists():
-                units, set_tokens = np.load(cache).tolist()
-                return units, set_tokens
+                self.set_units[source], self.set_tokens[source] = np.load(cache).tolist()
+                return
         units = set_tokens = 0
         while set_tokens < tokens:
             # In chunks of 2^20 units of the order.
@@ -285,9 +318,9 @@ class TokenSampler:
             cumulative = set_tokens + np.cumsum(self.unit_lengths(np.full_like(chunk, source), chunk))
             taken = min(int(np.searchsorted(cumulative, tokens)) + 1, len(order))
             units, set_tokens = units + taken, int(cumulative[taken - 1])
-        if cache_dir is not None:
+        if self.cache_dir is not None:
             save(cache, np.array([units, set_tokens]))
-        return units, set_tokens
+        self.set_units[source], self.set_tokens[source] = units, set_tokens
 
     def unit_lengths(self, sources: np.ndarray, units: np.ndarray) -> np.ndarray:
         """The tokens of units ``units`` of sources ``sources``, read from the document indexes file by file."""
@@ -303,10 +336,7 @@ class TokenSampler:
         return lengths
 
     def start(self) -> dict:
-        return {key: [0] * len(self.sources) for key in ("units", "tokens", "pieces", "piece_tokens")} | {
-            "step": 0,
-            "rest": None,
-        }
+        return {key: [0] * len(self.sources) for key in SOURCE_COUNTS} | {"rows": 0, "rest": None}
 
     def documents(self, sources: np.ndarray, units: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """The file, document in the file and piece of units ``units`` of sources ``sources``."""
@@ -339,15 +369,18 @@ class TokenSampler:
 
     def plan(self, cursor: dict) -> tuple["Step", dict]:
         """The step that starts at ``cursor``, and the cursor at the start of the next step."""
-        step, weights = cursor["step"], self.weights
-        reads, tokens = np.array(cursor["units"]), np.array(cursor["tokens"])
+        rows, weights = cursor["rows"], self.weights
+        reads, tokens, mix_start = (np.array(cursor[key]) for key in ("units", "tokens", "mix_start"))
+        # The cursor numbers the rest's file within its source.
         rest = np.array(cursor["rest"] or [], dtype=np.int64).reshape(-1, 6)
+        rest[:, 1] += self.first_files[rest[:, 0]]
         np.add.at(tokens, rest[:, 0], rest[:, 3] - rest[:, 2])
         budget = self.batch_size * self.seq_len - int((rest[:, 3] - rest[:, 2]).sum())
-        # The sources' next units by due time: a unit's source's tokens before it, divided by its weight
-        # (ties to the first source); sources without weight have none. Every source offers about twice its share
-        # of the step, and 4 more units for sources whose share is a unit or two; twice as many if the step would take
-        # all of them. These numbers only set how often a step has to locate more units, not which units it takes.
+        # The sources' next units by due time: a unit's source's tokens before it since the mixture last changed,
+        # divided by its weight (ties to the first source); sources without weight have none. Every source offers about
+        # twice its share of the step, and 4 more units for sources whose share is a unit or two; twice as many if the
+        # step would take all of them. These numbers only set how often a step has to locate more units, not which units
+        # it takes.
         sources = np.flatnonzero(weights > 0)
         wanted = np.ceil(2.0 * weights[sources] * budget * self.set_units[sources] / self.set_tokens[sources])
         wanted = wanted.astype(np.int64) + 4
@@ -366,7 +399,7 @@ class TokenSampler:
             counts = have + new
             before = np.cumsum(lengths) - lengths
             before -= np.repeat(before[np.cumsum(counts) - counts], counts)
-            order = np.argsort((tokens[owners] + before) / weights[owners], kind="stable")
+            order = np.argsort(due(tokens[owners] + before, mix_start[owners], weights[owners]), kind="stable")
             ends = np.cumsum(lengths[order])
             taken = order[: np.searchsorted(ends, budget) + 1]
             exhausted = np.bincount(owners[taken], minlength=len(weights))[sources] == counts
@@ -380,20 +413,22 @@ class TokenSampler:
         cut = int(ends[len(taken) - 1]) - budget
         next_rest = chosen[-1].copy()
         next_rest[2] = next_rest[3] - cut
+        next_rest[1] -= self.first_files[next_rest[0]]
         chosen[-1, 3] -= cut
         chosen = chosen[chosen[:, 3] > chosen[:, 2]]
         np.add.at(tokens, chosen[:, 0], chosen[:, 3] - chosen[:, 2])
         units = np.concatenate([rest, chosen])
         pieces = fill_rows(units[:, 3] - units[:, 2], self.batch_size, self.seq_len)
         # The pieces of every row in a random order.
-        shuffled = pieces[np.lexsort((np.random.default_rng([self.seed, step, 1]).random(len(pieces)), pieces[:, 0]))]
+        shuffled = pieces[np.lexsort((np.random.default_rng([self.seed, rows, 1]).random(len(pieces)), pieces[:, 0]))]
         row_starts = np.searchsorted(shuffled[:, 0], np.arange(self.batch_size + 1))
         # Every source's pieces in the step's rows and their tokens, for the step's metrics.
         piece_sources = units[pieces[:, 1], 0]
         cursor = {
-            "step": step + 1,
+            "rows": rows + self.batch_size,
             "units": reads.tolist(),
             "tokens": tokens.tolist(),
+            "mix_start": cursor["mix_start"],
             "rest": next_rest.tolist() if cut else None,
             "pieces": np.bincount(piece_sources, minlength=len(weights)).tolist(),
             "piece_tokens": np.bincount(piece_sources, pieces[:, 3], minlength=len(weights)).astype(int).tolist(),
@@ -420,71 +455,108 @@ class TokenSampler:
         return metrics
 
     def inputs(self) -> dict:
-        """What the plan depends on, for a resumed run to check: the run's tokens only if a source has repetitions, and
-        every source's files with their tokens and documents."""
+        """What the plan depends on, for the ranks to compare and a resumed run to match (`mixture_changed`): every
+        source's weight and its files with their tokens and documents, and the tokens of every source's subset with
+        what its size depends on (None without repetitions)."""
         files = [
             hashlib.sha256(
                 repr([[f.name for f in s.files], np.diff(s.starts).tolist(), np.diff(s.doc_offsets).tolist()]).encode()
             ).hexdigest()[:24]
             for s in self.sources
         ]
+        subsets = [
+            {
+                "units": int(self.set_units[source]),
+                "tokens": int(self.set_tokens[source]),
+                "settings": self.subset_settings(source),
+            }
+            if subset
+            else None
+            for source, subset in enumerate(self.subsets)
+        ]
         return {
             "seq_len": self.seq_len,
-            "batch_size": self.batch_size,
             "seed": self.seed,
-            "sources": [[name, digest] for name, digest in zip(self.names, files)],
-            "weights": self.weights.tolist(),
-            "repetitions": self.repetitions,
-            "max_steps": self.max_steps if self.subsets.any() else None,
+            "sources": {
+                name: {"weight": weight, "files": digest}
+                for name, weight, digest in zip(self.names, self.weights.tolist(), files)
+            },
+            "subsets": dict(zip(self.names, subsets)),
         }
 
-
-SKIP_DATALOADER = (
-    "With ckpt.skip_dataloader the run resumes without the data state: the data starts over from step 0, in the same "
-    "order as at the run's start (a different data.seed gives a different order)."
-)
+    def resume(self, cursor: dict, saved: dict, changed: bool, new_pass: set[str]) -> dict:
+        """The cursor of a checkpoint whose sources were ``saved`` (`inputs`), for these sources, matched by name: a
+        kept source reads on where it stopped, in the same order; an added one starts at its beginning; a removed one
+        drops out, the rest of its unit cut at the step's end too. If the mixture ``changed``, the due times count from
+        here. The sources in ``new_pass``, whose units or order changed, start a new pass, without the rest."""
+        names = list(saved)
+        counts = {key: dict(zip(names, cursor[key])) for key in SOURCE_COUNTS}
+        resumed = {key: [counts[key].get(name, 0) for name in self.names] for key in SOURCE_COUNTS}
+        if changed:
+            resumed["mix_start"] = list(resumed["tokens"])
+        for source, name in enumerate(self.names):
+            if name in new_pass:
+                set_units = int(self.set_units[source])
+                resumed["units"][source] = -(-resumed["units"][source] // set_units) * set_units
+        rest = cursor["rest"]
+        kept = rest is not None and names[rest[0]] in self.names and names[rest[0]] not in new_pass
+        resumed["rest"] = [self.names.index(names[rest[0]]), *rest[1:]] if kept else None
+        resumed["rows"] = cursor["rows"]
+        return resumed
 
 
 class TokenDataset(StatefulIterableDataset):
     """The rows of the sampler's steps: every rank plans every step, and data rank ``r`` of ``R`` yields rows ``r``,
     ``r + R``, ... of each. The state is the cursor at the start of the current step and the rows of it yielded; at a
-    step boundary it is the same on every rank, so a resumed run reads the same rows on any number of GPUs.
+    step boundary it is the same on every rank and worker, so a resumed run reads the same rows on any number of GPUs
+    and dataloader workers.
     ``eod_mask_token`` (set by the trainer) has no loss where it is the input."""
 
-    def __init__(
-        self,
-        sampler: TokenSampler,
-        document_masking: bool = True,
-        num_workers: int = 1,
-        dp_rank: int = 0,
-        dp_size: int = 1,
-    ):
+    def __init__(self, sampler: TokenSampler, document_masking: bool = True, dp_rank: int = 0, dp_size: int = 1):
         super().__init__(dp_rank, dp_size)
         self.sampler = sampler
         self.document_masking = document_masking
         self.eod_mask_token = None
         self.cursor, self.rows_done = sampler.start(), 0
-        # A worker's state holds the rows it yielded, so the number of workers must stay the same.
-        self.inputs = sampler.inputs() | {"num_workers": num_workers}
+        self.inputs = sampler.inputs()
 
     def state_dict(self) -> dict:
-        step = self.cursor["step"] * self.sampler.batch_size
         epoch = sum(self.cursor["tokens"]) / self.sampler.shards.num_tokens
-        return {"step": step, "epoch": epoch, "cursor": self.cursor, "rows_done": self.rows_done, "plan": self.inputs}
+        return {
+            "step": self.cursor["rows"],
+            "epoch": epoch,
+            "cursor": self.cursor,
+            "rows_done": self.rows_done,
+            "plan": self.inputs,
+        }
 
     def load_state_dict(self, state_dict: dict):
         if "cursor" not in state_dict:
             raise ValueError(
                 f"The checkpoint's data state is not the source sampler's, so the run can't resume it. {SKIP_DATALOADER}"
             )
-        plan = state_dict["plan"]
-        if changed := [key for key, value in self.inputs.items() if plan.get(key) != value]:
+        if "mix_start" not in state_dict["cursor"]:
             raise ValueError(
-                "The data settings differ from the checkpoint's: "
-                + "; ".join(f"{key} {plan.get(key)!r} -> {self.inputs[key]!r}" for key in changed)
-                + f". Resume with the same ones. {SKIP_DATALOADER}"
+                "The checkpoint's data state is from before the sources could change on resume, so the run can't "
+                f"resume it. {SKIP_DATALOADER}"
             )
-        self.cursor, self.rows_done = state_dict["cursor"], state_dict["rows_done"]
+        plan, now = state_dict["plan"], self.inputs
+        # Every dataloader worker of every rank loads the state; data rank 0 logs the changes.
+        self._setup_world_info()
+        log = self.data_rank == 0
+        changed = mixture_changed(plan["sources"], now["sources"], log)
+        # A kept source whose units (seq_len), order (seed) or subset changed starts a new pass.
+        reasons = {name: [] for name in self.sampler.names if name in plan["sources"]}
+        for name, why in reasons.items():
+            why += [f"{key} {plan[key]} -> {now[key]}" for key in ("seq_len", "seed") if plan[key] != now[key]]
+            old, new = (subsets[name] and subsets[name]["tokens"] for subsets in (plan["subsets"], now["subsets"]))
+            if old != new:
+                why.append(f"subset {f'{old:,} tokens' if old else 'none'} -> {f'{new:,} tokens' if new else 'none'}")
+            if why and log:
+                get_logger().info(f"Source {name}: new pass ({', '.join(why)})")
+        new_pass = {name for name, why in reasons.items() if why}
+        self.cursor = self.sampler.resume(state_dict["cursor"], plan["sources"], changed, new_pass)
+        self.rows_done = state_dict["rows_done"]
 
     def sample(self, row: np.ndarray) -> dict:
         """The sample of a row's segments (`Step.row_segments`)."""
@@ -599,6 +671,13 @@ def warn_if_no_document_separator(shards: TokenShards, tokenizer: PreTrainedToke
         )
 
 
+def saved_data_state(directory: Path) -> dict:
+    """The data state in a checkpoint's dataloader files in ``directory``: at a step boundary, every worker of every
+    rank saves the same cursor and plan, so the first worker's of rank 0."""
+    workers = torch.load(directory / "rank_0.pt", weights_only=True)["_snapshot"]["_worker_snapshots"]
+    return next(iter(workers.values()))["dataset_state"]["dataset"]
+
+
 def setup_token_dataset(
     config: PretrainDataConfig,
     *,
@@ -606,7 +685,10 @@ def setup_token_dataset(
     dp_size: int,
     cache_dir: Path | None = None,
     max_steps: int | None = None,
+    resume: tuple[dict, int] | None = None,
 ) -> TokenDataset:
+    """``resume``: the data state of the checkpoint a run resumes from (`saved_data_state`) and its step, which size
+    the subsets (`TokenSampler.resize_subsets`)."""
     raise_open_files_limit()
     sources = [TokenShards([source.path]) for source in config.source]
     for source, shards in zip(config.source, sources):
@@ -625,16 +707,18 @@ def setup_token_dataset(
         config.seed,
         max_steps,
         cache_dir,
+        resume,
     )
     for index, (name, shards) in enumerate(zip(sampler.names, sources)):
         set_tokens = int(sampler.set_tokens[index])
         times = sampler.run_tokens[index] / set_tokens if sampler.run_tokens is not None else None
+        times = repetitions[index] if repetitions[index] is not None else times
         get_logger().info(
             f"Source {name}: share {sampler.weights[index]:.4g}, {shards.num_tokens:,} tokens, "
             f"{set_tokens:,} used, repetitions {f'{times:.3g}' if times is not None else '(no max_steps)'}"
             f"{' (given)' if repetitions[index] is not None else ''}"
         )
-    return TokenDataset(sampler, config.document_masking, config.num_workers, dp_rank=dp_rank, dp_size=dp_size)
+    return TokenDataset(sampler, config.document_masking, dp_rank=dp_rank, dp_size=dp_size)
 
 
 def check_ranks_see_same_data(sampler: TokenSampler) -> None:

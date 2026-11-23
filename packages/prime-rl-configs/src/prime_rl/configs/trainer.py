@@ -829,6 +829,11 @@ class TrainerConfig(BaseTrainerConfig):
     Each step gathers every trained token to the master rank before the optimizer step;
     disable with ``--no-annotations`` to skip that work."""
 
+    warmup: bool = True
+    """Before waiting for the first batch, run the training step's forward and backward on synthetic micro batches
+    that train nothing, so compilation, kernel JIT and communicator setup happen while the trainer would idle. The
+    warmup leaves the weights and the optimizer state unchanged."""
+
     enable_router_replay: bool = False
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""
 
