@@ -174,14 +174,14 @@ source .venv/bin/activate
 # SLURM env propagation; otherwise uv would silently fall back to the shared .venv.
 srun --ntasks-per-node=1 bash -s <<'SYNC_SH'
 set -e
-cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync --all-extras --all-packages
+cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync {{ sync_args }}
 # uv sync restores the locked NIXL wheel, whose bundled UCX breaks P/D KV transfer: reinstall the source build
 # into the project environment (uv pip would otherwise pick the activated .venv, not UV_PROJECT_ENVIRONMENT).
 if compgen -G "deps/nixl_cu13-*.whl" > /dev/null; then uv pip install -q --reinstall --no-deps --python "${UV_PROJECT_ENVIRONMENT:-.venv}" deps/nixl_cu13-*.whl; fi
 SYNC_SH
 {% else %}
 # Shared (NFS) venv: one sync on the batch node populates it for all nodes.
-uv sync --all-extras --all-packages
+uv sync {{ sync_args }}
 # uv sync restores the locked NIXL wheel, whose bundled UCX breaks P/D KV transfer: reinstall the source build
 # into the project environment (uv pip would otherwise pick the activated .venv, not UV_PROJECT_ENVIRONMENT).
 if compgen -G "deps/nixl_cu13-*.whl" > /dev/null; then uv pip install -q --reinstall --no-deps --python "${UV_PROJECT_ENVIRONMENT:-.venv}" deps/nixl_cu13-*.whl; fi
