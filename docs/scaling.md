@@ -199,7 +199,7 @@ State-only optimizer offload is enabled by default (`model.offload = "optimizer"
 - Matrices that FSDP shards along a row or column dim are gathered onto one rank of their shard group with uneven all-to-alls, orthogonalized there and scattered back. Ranks own matrices by Newton-Schulz FLOPs, matrices move in buckets of a few layers, and the next bucket gathers while the current one is orthogonalized. The all-to-alls run on Muon's own NCCL communicators, next to FSDP's.
 - Newton-Schulz runs in bf16, batched over all matrices of one shape, on QuACK's symmetric GEMM where available (`quack` extra, SM80+).
 
-Packed parameters (runtime fusions) are orthogonalized per logical matrix. `optim.newton_schulz` picks the iteration schedule and `optim.update_rms` the RMS of each update (0.2, which matches AdamW's learning rates).
+Packed parameters (runtime fusions) are orthogonalized per logical matrix. `optim.newton_schulz_schedule` picks the Newton-Schulz coefficient schedule and `optim.update_rms` the RMS of each update (0.2, which matches AdamW's learning rates).
 
 ### LM Head Chunking
 

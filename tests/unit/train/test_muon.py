@@ -9,37 +9,39 @@ from prime_rl.trainer.optim.muon import NEWTON_SCHULZ, Muon, newton_schulz, orth
 DEFAULT = NEWTON_SCHULZ["default"]
 
 
-def newton_schulz_fp32(G: torch.Tensor) -> torch.Tensor:
+def newton_schulz_fp32(G: torch.Tensor, schedule=DEFAULT) -> torch.Tensor:
     X = G.mT if G.size(-2) > G.size(-1) else G
-    X = X / X.norm(dim=(-2, -1), keepdim=True)
-    for a, b, c in DEFAULT.coefficients:
+    X = X / (X.norm(dim=(-2, -1), keepdim=True) * schedule.safety)
+    for a, b, c in schedule.coefficients:
         A = X @ X.mT
         X = a * X + (b * A + c * A @ A) @ X
     return X.mT if G.size(-2) > G.size(-1) else X
 
 
-def newton_schulz_bf16(G: torch.Tensor) -> torch.Tensor:
-    """The plain bf16 Newton-Schulz Muon has used so far (no fused GEMM epilogues)."""
+def newton_schulz_plain(G: torch.Tensor, schedule=DEFAULT) -> torch.Tensor:
+    """The plain Newton-Schulz (no fused GEMM epilogues): normalized in bf16, iterated in the schedule's dtype."""
     X = G.bfloat16()
     X = X.mT if G.size(-2) > G.size(-1) else X
-    X = X / (X.norm(dim=(-2, -1), keepdim=True) + 1e-8)
-    for a, b, c in DEFAULT.coefficients:
+    X = (X / (X.norm(dim=(-2, -1), keepdim=True) * schedule.safety + 1e-8)).to(schedule.dtype)
+    for a, b, c in schedule.coefficients:
         A = X @ X.mT
         X = a * X + (b * A + c * (A @ A)) @ X
     return X.mT if G.size(-2) > G.size(-1) else X
 
 
 @pytest.mark.gpu
+@pytest.mark.parametrize("schedule", list(NEWTON_SCHULZ))
 @pytest.mark.parametrize("shape", [(1, 1024, 3072), (1, 3072, 1024), (8, 768, 2048), (4, 100, 60)])
-def test_newton_schulz_is_as_accurate_as_bf16(shape):
+def test_newton_schulz_is_as_accurate_as_the_plain_iteration(shape, schedule):
     torch.manual_seed(0)
     G = torch.randn(shape, device="cuda")
-    reference = newton_schulz_fp32(G)
+    reference = newton_schulz_fp32(G, NEWTON_SCHULZ[schedule])
 
     def error(X: torch.Tensor) -> float:
         return ((X.float() - reference).norm() / reference.norm()).item()
 
-    assert error(newton_schulz(G, DEFAULT, 1e-8)) <= 1.25 * error(newton_schulz_bf16(G))
+    plain = error(newton_schulz_plain(G, NEWTON_SCHULZ[schedule]))
+    assert error(newton_schulz(G, NEWTON_SCHULZ[schedule], 1e-8)) <= 1.25 * plain
 
 
 def test_orthogonalize_packed_matrices_each_on_their_own():
@@ -161,14 +163,31 @@ def test_resume_from_state_dict_matches_continuous_training():
         assert torch.equal(p, q)
 
 
-def test_bucket_order_is_the_same_on_every_rank_with_uneven_shards():
-    from prime_rl.trainer.optim.muon import _Matrix, _owned_class, _shape_class, _Sharding
+def test_steps_of_one_param_group_at_a_time_match_the_full_step():
+    """Optimizer offload steps one param group at a time, swapping ``param_groups`` for a one-group list."""
 
-    # The last dim (10) split 6 / 4 over two ranks: each rank's local width differs, the gathered width does not
-    def matrix(rank, width):
-        sharding = _Sharding(dim=-1, group=None, rank=rank, sizes=(6, 4))
-        return _Matrix(param=torch.zeros(8, width), group=0, partitions=(8,), sharding=sharding, lr_ratio=1.0)
+    def train(one_group_at_a_time: bool) -> list[torch.Tensor]:
+        torch.manual_seed(0)
+        params = [torch.nn.Parameter(torch.randn(shape)) for shape in [(16, 48), (3, 32, 16), (8, 16), (24,)]]
+        groups = [
+            dict(params=params[:1], algorithm="muon"),
+            dict(params=params[1:2], algorithm="muon"),
+            dict(params=params[2:3], algorithm="muon"),
+            dict(params=params[3:], algorithm="adamw"),
+        ]
+        optimizer = Muon(groups, lr=0.02, matrix_partitions={params[1]: (16, 16)})
+        for _ in range(3):
+            for p in params:
+                p.grad = torch.randn(p.shape)
+            if one_group_at_a_time:
+                all_groups = optimizer.param_groups
+                for group in all_groups:
+                    optimizer.param_groups = [group]
+                    optimizer.step()
+                optimizer.param_groups = all_groups
+            else:
+                optimizer.step()
+        return [p.detach() for p in params]
 
-    on_rank0, on_rank1 = matrix(0, 6), matrix(1, 4)
-    assert _shape_class(on_rank0) != _shape_class(on_rank1)
-    assert _owned_class(on_rank0) == _owned_class(on_rank1) == (10, (8,))
+    for reference, grouped in zip(train(False), train(True)):
+        torch.testing.assert_close(grouped, reference, atol=1e-6, rtol=0)

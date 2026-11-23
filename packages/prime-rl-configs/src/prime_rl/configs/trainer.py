@@ -587,8 +587,8 @@ class MuonConfig(BaseOptimizerConfig):
     update_rms: float = Field(0.2, gt=0)
     """RMS of each Muon update matrix, so Muon reuses the AdamW learning rate. DeepSeek-V4.1 uses 0.18."""
 
-    newton_schulz: Literal["default", "deepseek_v4", "polar_express", "step3p5"] = "default"
-    """Newton-Schulz schedule. ``default``: 5 quintic steps with per-step coefficients. ``deepseek_v4``: 8 steps of (3.4445, -4.7750, 2.0315), then 2 steps of (2, -1.5, 0.5) that pin the singular values at 1. ``polar_express``: 5 steps of Polar Express (arXiv 2505.16932) in bf16, with its 1.01 safety factor. ``step3p5``: 6 Polar Express steps in fp16, as in Step 3.5 Flash."""
+    newton_schulz_schedule: Literal["default", "deepseek_v4", "polar_express", "step3p5"] = "default"
+    """Coefficient schedule of the Newton-Schulz iteration that orthogonalizes the updates. ``default``: 5 quintic steps with per-step coefficients. ``deepseek_v4``: 8 steps of (3.4445, -4.7750, 2.0315), then 2 steps of (2, -1.5, 0.5) that pin the singular values at 1. ``polar_express``: 5 steps of Polar Express (arXiv 2505.16932) in bf16, with its 1.01 safety factor. ``step3p5``: 6 Polar Express steps in fp16, as in Step 3.5 Flash."""
 
 
 class SignSGDConfig(BaseOptimizerConfig):

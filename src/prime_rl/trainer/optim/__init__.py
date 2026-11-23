@@ -147,7 +147,7 @@ def _create_muon_optimizer(
         else:
             pass
 
-    # dion's groups and keys, so that checkpoints of runs on dion's Muon load as they are
+    # The groups (and their order) that Muon checkpoints have always had, so older checkpoints resume
     param_groups = [dict(params=muon_params, algorithm="muon")]
     if expert_params:
         param_groups.append(dict(params=expert_params, algorithm="muon"))
@@ -175,6 +175,6 @@ def _create_muon_optimizer(
         epsilon=config.eps,
         nesterov=config.nesterov,
         update_rms=config.update_rms,
-        newton_schulz=config.newton_schulz,
+        newton_schulz=config.newton_schulz_schedule,
         matrix_partitions=matrix_partitions,
     )
