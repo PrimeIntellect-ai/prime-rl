@@ -1,0 +1,130 @@
+# Length penalty ablations: base RL config and the no-penalty baseline. Qwen3.6-35B-A3B under
+# the rlm harness with subagents (max_depth 1, delegation prompt + the "hard" addendum from
+# nudge.toml), on scaleswe, i3math, oolong and BrowseComp-Plus. Eval is the 30 held-out
+# BrowseComp-Plus tasks (bcplus_eval_idx.txt), avg@4. Penalty arms override
+# orchestrator.train.source[*].algo.length_penalty on top of this file.
+#
+# 1 trainer node + 1 inference node (tp1 dp8, no expert parallelism) on H200.
+#
+#   uv run rl @ ablations/lp/rl.toml
+
+seq_len = 262144
+max_steps = 500
+
+[run]
+name = "lp-baseline"
+
+[slurm]
+job_name = "lp-baseline"
+
+[model]
+name = "Qwen/Qwen3.6-35B-A3B"
+
+[weight_broadcast]
+type = "nccl"
+
+[ckpt]
+interval = 25
+keep_last = 2
+
+[monitors.wandb]
+project = "lp-ablations"
+name = "baseline"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+num_infer_replicas = 1
+
+# --- Trainer: one 262144-token sample per micro batch fits with cp 4 (see the qwen3.6 example) ---
+
+[trainer.model]
+ep = 8
+cp = 4
+ac_offloading = "None"
+
+# --- Orchestrator ---
+
+[orchestrator]
+batch_size = 64
+max_staleness = 16
+
+[orchestrator.train]
+group_size = 8
+
+[[orchestrator.train.source]]
+name = "scaleswe"
+env.taskset.id = "scaleswe"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+env.agent.harness.append_to_system_prompt = '''
+## Required: use subagents
+You must delegate. Spawn at least two subagents with `child = await rlm.agent.spawn(brief, name=...)` before you write your final answer. Give each subagent an independent part of the task, a self-contained brief and the expected result. Do not do all the work yourself. Collect each result with `await child.result()`, check it, and combine the results into your answer.'''
+
+[[orchestrator.train.source]]
+name = "i3math"
+env.taskset.id = "i3-math"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+env.agent.harness.append_to_system_prompt = '''
+## Required: use subagents
+You must delegate. Spawn at least two subagents with `child = await rlm.agent.spawn(brief, name=...)` before you write your final answer. Give each subagent an independent part of the task, a self-contained brief and the expected result. Do not do all the work yourself. Collect each result with `await child.result()`, check it, and combine the results into your answer.'''
+
+[[orchestrator.train.source]]
+name = "oolong"
+env.taskset.id = "oolong-synth"
+env.taskset.context_len = 131072
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+env.agent.harness.append_to_system_prompt = '''
+## Required: use subagents
+You must delegate. Spawn at least two subagents with `child = await rlm.agent.spawn(brief, name=...)` before you write your final answer. Give each subagent an independent part of the task, a self-contained brief and the expected result. Do not do all the work yourself. Collect each result with `await child.result()`, check it, and combine the results into your answer.'''
+
+[[orchestrator.train.source]]
+name = "bcplus"
+env.taskset.id = "browsecomp-plus"
+select.exclude.files.idx = "ablations/lp/bcplus_eval_idx.txt"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+env.agent.harness.append_to_system_prompt = '''
+## Required: use subagents
+You must delegate. Spawn at least two subagents with `child = await rlm.agent.spawn(brief, name=...)` before you write your final answer. Give each subagent an independent part of the task, a self-contained brief and the expected result. Do not do all the work yourself. Collect each result with `await child.result()`, check it, and combine the results into your answer.'''
+
+[orchestrator.eval]
+interval = 25
+group_size = 4
+
+[[orchestrator.eval.source]]
+name = "bcplus-heldout"
+env.taskset.id = "browsecomp-plus"
+select.include.files.idx = "ablations/lp/bcplus_eval_idx.txt"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+env.agent.harness.append_to_system_prompt = '''
+## Required: use subagents
+You must delegate. Spawn at least two subagents with `child = await rlm.agent.spawn(brief, name=...)` before you write your final answer. Give each subagent an independent part of the task, a self-contained brief and the expected result. Do not do all the work yourself. Collect each result with `await child.result()`, check it, and combine the results into your answer.'''
+
+# --- Inference ---
+
+[inference.vllm]
+max_model_len = 262144
+enable_prefix_caching = true
+tensor_parallel_size = 1
+data_parallel_size = 8
+gpu_memory_utilization = 0.85
+
+# Text-only RL: skip the vision encoder.
+[inference.vllm.limit_mm_per_prompt]
+image = 0
+video = 0
