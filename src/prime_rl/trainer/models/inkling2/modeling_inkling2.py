@@ -398,6 +398,7 @@ class Inkling2DecoderLayer(GradientCheckpointingLayer):
         routed_experts: Tensor | None = None,
         bank: Tensor | None = None,
         message_queries: Tensor | None = None,
+        **kwargs,
     ) -> tuple[Tensor, Tensor]:
         """``bank`` (``[B, S, n, H]``) and ``message_queries`` (``[4, H]``) are given to a loop core
         layer after the first pass: the blocks the previous pass sealed inside the core followed by
