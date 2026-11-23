@@ -18,6 +18,7 @@ from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.glm5_next import Glm5NextTextConfig
 from prime_rl.trainer.models.glm_moe_dsa import GlmMoeDsaConfig
 from prime_rl.trainer.models.gpt_oss import GptOssConfig
+from prime_rl.trainer.models.inkling2 import Inkling2TextConfig
 from prime_rl.trainer.models.laguna import LagunaConfig
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.models.minimax_m2 import MiniMaxM2Config
@@ -263,6 +264,28 @@ TINY_PRIME_RL_MODELS: dict[str, PretrainedConfig] = {
         num_local_experts=8,
         num_experts_per_tok=2,
         sliding_window=32,
+    ),
+    # Two blocks of two layers: sliding-window layers that start a block (0, 2) and one that does not (1), and a
+    # global layer (3)
+    "inkling2": Inkling2TextConfig(
+        vocab_size=151936,
+        hidden_size=256,
+        num_hidden_layers=4,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=64,
+        swa_num_attention_heads=4,
+        swa_num_key_value_heads=2,
+        swa_head_dim=64,
+        d_rel=16,
+        rel_extent=128,
+        sliding_window_size=128,
+        local_layer_ids=[0, 1, 2],
+        n_layers_per_attn_res_block=2,
+        log_scaling_n_floor=64,
+        n_routed_experts=8,
+        num_experts_per_tok=2,
+        moe_intermediate_size=128,
     ),
 }
 
