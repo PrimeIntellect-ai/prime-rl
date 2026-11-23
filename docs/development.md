@@ -78,7 +78,7 @@ Drop the modeling code under `src/prime_rl/trainer/models/<arch>/`, mirroring an
 
 - **Config**: a subclass of HF `PretrainedConfig`, so the `config.json` the trainer writes stays loadable by vLLM.
 - **Model**: an inner model and a `*ForCausalLM`, both subclassing `PreTrainedModelPrimeRL` (`models/base.py`, a plain `nn.Module`) and ending `__init__` with `self.post_init()`, which initializes the weights off the meta device and then ties them. The inner model returns the output dataclasses from `models/base.py`.
-- **Tying**: set `ties_word_embeddings = True` on the `*ForCausalLM` if the checkpoint can tie `lm_head` to the input embeddings through `tie_word_embeddings`.
+- **Tying**: set `supports_tied_word_embeddings = True` on the `*ForCausalLM` if the architecture allows tying `lm_head` to the input embeddings. The config's `tie_word_embeddings` then decides whether a checkpoint ties.
 - **Init**: override `_init_weights` for parameters the default init does not cover, calling `super()._init_weights(module)` first, and `init_buffers_post_meta` for buffers no checkpoint carries.
 - **Conversion**: `conversion_chain`, `is_hf_state_dict` and `is_prime_state_dict`, which map between the HF checkpoint and the training layout.
 - **Registration**: the config class / model class pair in `_CUSTOM_CAUSAL_LM_MODELS` (`models/__init__.py`), and the config class with `AutoConfig.register`. A VLM family also registers its composite `model_type` in `_CUSTOM_VLM_MAPPING`.

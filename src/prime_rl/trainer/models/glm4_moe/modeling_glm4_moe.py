@@ -212,7 +212,7 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
 
 
 class Glm4MoeForCausalLM(Glm4MoePreTrainedModel):
-    ties_word_embeddings = True
+    supports_tied_word_embeddings = True
 
     def __init__(self, config):
         super().__init__(config)

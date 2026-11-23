@@ -157,7 +157,7 @@ class GptOssModel(GptOssPreTrainedModel):
 
 
 class GptOssForCausalLM(GptOssPreTrainedModel):
-    ties_word_embeddings = True
+    supports_tied_word_embeddings = True
 
     def __init__(self, config: GptOssConfig) -> None:
         super().__init__(config)

@@ -353,7 +353,7 @@ class AfmoeModel(AfmoePreTrainedModel):
 
 
 class AfmoeForCausalLM(AfmoePreTrainedModel):
-    ties_word_embeddings = True
+    supports_tied_word_embeddings = True
 
     def __init__(self, config):
         super().__init__(config)

@@ -71,7 +71,7 @@ class PreTrainedModelPrimeRL(nn.Module):
     """
 
     cp_context: CPContext = CPContext()
-    ties_word_embeddings: ClassVar[bool] = False
+    supports_tied_word_embeddings: ClassVar[bool] = False
 
     def __init__(self, config) -> None:
         super().__init__()
@@ -104,8 +104,8 @@ class PreTrainedModelPrimeRL(nn.Module):
         self.tie_weights()
 
     def tie_weights(self) -> None:
-        """Share the input embedding weight with `lm_head` when the class ties them and the config asks for it."""
-        if self.ties_word_embeddings and getattr(self.config, "tie_word_embeddings", False):
+        """Share the input embedding weight with `lm_head` when the class supports it and the config asks for it."""
+        if self.supports_tied_word_embeddings and getattr(self.config, "tie_word_embeddings", False):
             self.lm_head.weight = self.get_input_embeddings().weight
 
     def get_input_embeddings(self) -> nn.Embedding:

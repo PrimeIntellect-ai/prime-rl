@@ -168,7 +168,7 @@ class MiniMaxM2Model(MiniMaxM2PreTrainedModel):
 
 
 class MiniMaxM2ForCausalLM(MiniMaxM2PreTrainedModel):
-    ties_word_embeddings = True
+    supports_tied_word_embeddings = True
 
     def __init__(self, config):
         super().__init__(config)

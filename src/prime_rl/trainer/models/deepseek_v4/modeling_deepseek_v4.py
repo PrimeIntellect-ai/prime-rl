@@ -253,7 +253,7 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
 
 
 class DeepseekV4ForCausalLM(DeepseekV4PreTrainedModel):
-    ties_word_embeddings = True
+    supports_tied_word_embeddings = True
 
     def __init__(self, config: DeepseekV4Config):
         super().__init__(config)

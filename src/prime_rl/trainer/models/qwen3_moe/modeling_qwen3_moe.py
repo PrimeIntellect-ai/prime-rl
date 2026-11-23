@@ -200,7 +200,7 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
 
 
 class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel):
-    ties_word_embeddings = True
+    supports_tied_word_embeddings = True
 
     def __init__(self, config):
         super().__init__(config)
