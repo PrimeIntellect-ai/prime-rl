@@ -48,7 +48,11 @@ def build_cp_context(
     group: dist.ProcessGroup,
     conv1d_kernel_size: int | None = None,
 ) -> tuple[Tensor, Tensor, Tensor]:
-    """Build FLA's CP context outside compiled layers, returning ``(local_cu_seqlens, chunk_indices, handle)``."""
+    """Build FLA's CP context once per packed row outside the compiled layers, returning
+    ``(local_cu_seqlens, chunk_indices, handle)``.
+
+    CP setup searchsorts tensor-valued sequence boundaries on the host, so it must stay outside the compiled graph.
+    """
     cp_context = fla_build_cp_context(
         cu_seqlens=cu_seqlens.to(dtype=torch.int32),
         group=group,
@@ -146,6 +150,9 @@ def causal_conv1d(
     return _causal_conv1d(x.contiguous(), weight.contiguous(), activation, cu_seqlens, chunk_indices)
 
 
+# Keep CP convolution opaque/eager inside a custom op instead of letting Dynamo trace its collectives:
+# Dynamo lowers all-gather to concatenation and fails to copy the result into FLA's stacked output buffer
+# (https://github.com/pytorch/pytorch/issues/155632).
 @torch.library.custom_op("prime_rl::fla_causal_conv1d_cp", mutates_args=())
 def _causal_conv1d_cp(
     x: Tensor,
