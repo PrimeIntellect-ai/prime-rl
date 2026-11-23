@@ -76,6 +76,7 @@ train = [
 # The vLLM server and the transports that carry trainer weights to it. vLLM also bundles
 # kernels the trainer borrows (DeepGEMM for FP8 and MegaMoE, FlashMLA for sparse attention).
 inference = [
+    "vllm-router ; sys_platform == 'linux'",
     "vllm>=0.34.0 ; sys_platform == 'linux'",
     "torchaudio ; sys_platform == 'linux'",
     "mooncake-transfer-engine>=0.3.10.post2 ; sys_platform == 'linux'",

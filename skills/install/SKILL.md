@@ -39,19 +39,21 @@ When bumping a package past the workspace-wide `exclude-newer = "7 days"` window
 
 ### GPU extras
 
-The `gpu` extra is the union of two extras:
-
-- `train`: the trainer stack (torch, torchtitan, the model kernels). Enough for `sft` and `pretrain` without online evals.
-- `inference`: vLLM, its precompiled FlashInfer kernels and the weight-broadcast transports. Needed by `rl`, `inference` and online evals.
+Pick the extra for the process that runs in the environment:
 
 ```bash
-uv sync --extra train   # SFT / pretraining only
-uv sync --extra gpu     # train + inference
+uv sync --extra train      # SFT, pretraining, or filesystem weight sender
+uv sync --extra inference  # standalone server, default router and filesystem worker
+uv sync --extra gpu        # train + inference
 ```
 
-FP8 training, MegaMoE and the `cudnn_flashmla` sparse-attention backend use kernels bundled in the vLLM wheel, so they need `inference` as well.
+Use `gpu` for trainers using NCCL, NIXL or ModelExpress and for training with FP8, MegaMoE or `cudnn_flashmla` (kernels bundled with vLLM). NIXL and ModelExpress inference workers also import trainer code. Use `gpu` when training and serving share an environment, including colocated online evals.
 
-SLURM jobs run `uv sync --all-extras --all-packages` by default. Narrow it with `[slurm] sync_args` in the TOML config, e.g. `sync_args = "--extra train"`.
+On a Linux GPU host, check the standalone install from a checkout with initialized submodules:
+
+```bash
+UV_PROJECT_ENVIRONMENT="$(mktemp -d)/venv" uv run --locked --extra inference pytest tests/integration/test_inference_install.py
+```
 
 ### CUDA kernels
 
