@@ -194,6 +194,7 @@ VLM training requires a registered custom PrimeRL implementation.
 - **Precision settings are separate.** The examples serve with `inference.vllm.dtype = "bfloat16"` while retaining `trainer.model.optimization_dtype = "float32"` and `reduce_dtype = "float32"`. VLM mode does not require BF16 optimizer state or gradient reduction.
 - **Monitor trainer–inference mismatch.** Image encoding, parallel reductions and model kernels can contribute numerical differences. Track `mismatch_kl/all/mean`, `masked_mismatch_kl/mean`, `unmasked_mismatch_kl/mean` and `is_masked/mean` alongside reward.
 - **Images aren't logged to monitors.** Sample logging captures the prompt text but not the actual images.
+- **Videos are Qwen3.8 Flash Next and RL only.** Videos arrive as base64 `video_url` data URLs. The trainer decodes them with vLLM's media connector and frame sampler and preprocesses them the way vLLM's Qwen3-VL processor does with its default settings, so keep vLLM's video `media_io_kwargs` and `mm_processor_kwargs` (fps, frame counts, pixel limits) and video pruning at their defaults.
 
 ## LoRA Training
 
