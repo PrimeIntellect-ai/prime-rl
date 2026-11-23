@@ -1,0 +1,30 @@
+# /home/garrett/tmp/inkling2-compile/runs/runs/inkling2_proxy-base
+rc=0 wall_s=499.7511911392212 sha=97d47d779d8a32acce27c4efc5b1d57e6b8a9e64 host=None
+rank0: fwd compiles=7 bwd=0 recompiles=6 compile wall s=189.6 (dynamo cum 189.6, aot 172.7, inductor 130.5)
+max over ranks: compile wall s=191.2 (rank 6)
+| frame | label | compiles | wall s |
+|---|---|---|---|
+| 0 | forward @ checkpoint_wrapper.py:143 | 7 | 189.6 |
+layer-frame entries (rank 0), with the recompile reason that triggered each:
+- forward @ checkpoint_wrapper.py:143 0/0 (83.1 s, inductor 69.4 s, 3 ops): first compile
+- forward @ checkpoint_wrapper.py:143 0/1 (9.9 s, inductor 4.4 s, 2 ops): 0/0: tensor 'args[1]' requires_grad mismatch. expected requires_grad=0
+- forward @ checkpoint_wrapper.py:143 0/2 (16.3 s, inductor 4.6 s, 2 ops): 0/1: tensor 'args[2]' rank mismatch. expected 1, actual 2
+- forward @ checkpoint_wrapper.py:143 0/3 (20.7 s, inductor 14.3 s, 3 ops): 0/2: tensor 'args[2]' rank mismatch. expected 2, actual 1
+- forward @ checkpoint_wrapper.py:143 0/4 (21.3 s, inductor 14.3 s, 2 ops): 0/3: tensor 'args[1]' size mismatch at index 2. expected 1, actual 2
+- forward @ checkpoint_wrapper.py:143 0/5 (21.5 s, inductor 13.9 s, 2 ops): 0/4: tensor 'args[2]' rank mismatch. expected 1, actual 2
+- forward @ checkpoint_wrapper.py:143 0/6 (16.7 s, inductor 9.6 s, 3 ops): 0/5: tensor 'args[2]' rank mismatch. expected 2, actual 1
+graph breaks (rank 0, restart reasons):
+- 1x <class 'torch._dynamo.exc.TensorifyScalarRestartAnalysis'>
+recompile reasons (rank 0):
+- 1x 0/0: tensor 'args[1]' requires_grad mismatch. expected requires_grad=0
+- 1x 0/1: tensor 'args[2]' rank mismatch. expected 1, actual 2
+- 1x 0/2: tensor 'args[2]' rank mismatch. expected 2, actual 1
+- 1x 0/3: tensor 'args[1]' size mismatch at index 2. expected 1, actual 2
+- 1x 0/4: tensor 'args[2]' rank mismatch. expected 1, actual 2
+- 1x 0/5: tensor 'args[2]' rank mismatch. expected 2, actual 1
+step log end s from launch: {0: 218.73359274864197, 1: 474.73359274864197, 2: 477.73359274864197, 3: 480.73359274864197, 4: 482.73359274864197, 5: 485.73359274864197}
+step 1: loss=13.100733907966884 grad_norm=3.7370691299438477 time/step=256.3079712279141 end s from launch=475.2276074886322
+step 2: loss=13.054899286170235 grad_norm=4.646358489990234 time/step=3.184346206020564 end s from launch=478.4426655769348
+step 3: loss=12.99044671990043 grad_norm=4.059872150421143 time/step=2.6007674136199057 end s from launch=481.0591447353363
+step 4: loss=12.94811260526629 grad_norm=3.9921717643737793 time/step=2.598675328772515 end s from launch=483.6741178035736
+step 5: loss=12.861564105144128 grad_norm=4.1043877601623535 time/step=2.599832195788622 end s from launch=486.28607726097107

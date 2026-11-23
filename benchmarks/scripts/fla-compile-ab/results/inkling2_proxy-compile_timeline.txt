@@ -1,0 +1,6 @@
+step 0: wall 219 s, compile s per rank {}
+step 1: wall 256 s, compile s per rank {0: 190, 1: 187, 2: 190, 3: 191, 4: 187, 5: 190, 6: 191, 7: 188}
+step 2: wall 3 s, compile s per rank {}
+step 3: wall 3 s, compile s per rank {}
+step 4: wall 2 s, compile s per rank {}
+step 5: wall 3 s, compile s per rank {}
