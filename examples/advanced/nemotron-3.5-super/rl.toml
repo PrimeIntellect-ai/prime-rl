@@ -1,0 +1,41 @@
+# Nemotron 3.5 Super 120B-A12B (hybrid Mamba + 512-expert MoE, the language model of a vision-language
+# checkpoint) RL at 256k context. Model settings only: compose it with a compute overlay from `gpu/`
+# and a data config from `examples/advanced/data/`:
+#
+#   uv run rl @ examples/advanced/nemotron-3.5-super/rl.toml @ examples/advanced/nemotron-3.5-super/gpu/h200_4nodes.toml @ examples/advanced/data/scaleswe.toml
+#   uv run rl @ examples/advanced/nemotron-3.5-super/rl.toml @ examples/advanced/nemotron-3.5-super/gpu/h200_4nodes.toml @ examples/advanced/data/scaleswe-short.toml
+#   uv run rl @ examples/advanced/nemotron-3.5-super/rl.toml @ examples/advanced/nemotron-3.5-super/gpu/h200_4nodes.toml @ examples/advanced/data/math.toml
+#
+# Not tested in this layout. The settings come from research-prod #412 (RCA RL at 131k on Model
+# Factory, from a text-only export of this checkpoint).
+
+seq_len = 262144
+
+[slurm]
+
+[model]
+# The trainer loads only the language model (`nemotron_h_omni`, text only).
+name = "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16"
+
+[weight_broadcast]
+type = "nccl"
+
+# research-prod #412 trains this model with AdamW.
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+
+[orchestrator.renderer]
+# The VL repo id is not in the renderer map; research-prod #412 renders this model with nemotron-3.5.
+name = "nemotron-3.5"
+
+[inference.vllm]
+max_model_len = 262144
+enable_expert_parallel = true
+# vLLM disables prefix caching by default for hybrid-Mamba models; agentic turns share long prefixes.
+enable_prefix_caching = true
+# Text-only RL: skip the vision encoder.
+language_model_only = true
+# Set explicitly so that a local copy of the checkpoint resolves them too.
+tool_call_parser = "qwen3_coder"
+reasoning_parser = "nemotron_v3"
