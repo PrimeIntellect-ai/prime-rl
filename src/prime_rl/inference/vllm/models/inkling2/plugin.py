@@ -52,7 +52,24 @@ def _register_parsers() -> None:
     ToolParserManager.register_module(["inkling2"], module=Inkling2ToolParser)
 
 
+def _vllm_ships_inkling2() -> bool:
+    """Whether this vLLM has its own Inkling 2 model, as builds newer than the release prime-rl pins do."""
+    from vllm.model_executor.models.registry import ModelRegistry
+
+    entry = ModelRegistry.models.get(ARCHITECTURE)
+    return getattr(entry, "module_name", "").startswith("vllm.")
+
+
 def register() -> None:
+    if _vllm_ships_inkling2():
+        # The port below is written against the internals of the pinned release and does not import on such a
+        # build. vLLM runs every general plugin unguarded, so an import error here would stop the server.
+        from vllm.logger import init_logger
+
+        init_logger("vllm.prime_rl.inkling2").warning(
+            "The prime-rl inkling2 plugin is inactive: this vLLM ships its own Inkling 2 (%s)", ARCHITECTURE
+        )
+        return
     _patch_deep_gemm_situ()
     _register_parsers()
     from transformers import AutoConfig
