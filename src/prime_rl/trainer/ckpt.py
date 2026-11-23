@@ -76,13 +76,17 @@ class ModelFiles:
         self.tokenizer.save_pretrained(directory)
 
 
+def load_generation_config(model_name: str) -> GenerationConfig | None:
+    try:
+        return GenerationConfig.from_pretrained(model_name)
+    except OSError:  # Not every model has a generation_config.json
+        return None
+
+
 def setup_model_files(
     config: ModelConfig, tokenizer: PreTrainedTokenizerBase, processor: ProcessorMixin | None
 ) -> ModelFiles:
-    try:
-        generation_config = GenerationConfig.from_pretrained(config.name)
-    except OSError:  # Not every model has a generation_config.json
-        generation_config = None
+    generation_config = load_generation_config(config.name)
     model_config = AutoConfig.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
     return ModelFiles(model_config, tokenizer, processor, generation_config)
 

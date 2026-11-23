@@ -8,7 +8,6 @@ import stat
 import tempfile
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +23,7 @@ from transformers import PretrainedConfig
 from transformers.utils import SAFE_WEIGHTS_INDEX_NAME
 
 from prime_rl.configs.trainer import ModelConfig, TokenizerConfig
+from prime_rl.trainer.ckpt import load_generation_config
 from prime_rl.trainer.model import get_model, setup_tokenizer
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.conversion_ops import ChunkedConvOp
@@ -270,10 +270,9 @@ def save_model_assets(
     """Save model config, generation config, processor and tokenizer next to the weights."""
     _export_config(model.config)
     model.config.save_pretrained(output_dir)
-    if getattr(model, "generation_config", None):
-        generation_config = deepcopy(model.generation_config)
-        generation_config.use_cache = True
-        generation_config.save_pretrained(output_dir)
+    generation_config = load_generation_config(model_config.name)
+    if generation_config is not None:
+        generation_config.to_json_file(output_dir / "generation_config.json")
     # Processor first: it saves its own (unmodified) tokenizer, which the configured
     # tokenizer (pad token, custom chat template) must override.
     processor = setup_processor(model_config)
