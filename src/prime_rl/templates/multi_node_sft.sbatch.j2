@@ -64,8 +64,9 @@ rm -f "$TRAINER_DONE" "$ORCHESTRATOR_DONE" "$CONFIG_DIR/orchestrator.address"
 export PRL_RUN_ID={{ prl_run_id }}
 export PRL_RUN_NAME={{ run_name }}
 {% if wandb_shared %}
-# Trainer and orchestrator log to one shared W&B run. The trainer creates the run,
-# and the orchestrator finalizes it after the final eval epoch.
+# Trainer and orchestrator log to one shared W&B run. The trainer creates the run. Both
+# write its final state (the primary always does), so the last to finish decides it: the
+# orchestrator after the final eval epoch, usually the trainer on a pause.
 export WANDB_SHARED_MODE=1
 export WANDB_SHARED_PRIMARY=trainer
 export WANDB_SHARED_FINISHER=orchestrator

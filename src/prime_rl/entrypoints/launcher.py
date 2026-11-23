@@ -354,8 +354,8 @@ def launch_local(config: SupervisedTrainerConfig, entrypoint: str):
     # ($WANDB_RUN_ID) equals $PRL_RUN_ID, one label per process.
     wandb_shared_env: dict[str, str] = {}
     if config.orchestrator.eval is not None:
-        # The trainer creates the run; the orchestrator (which drains its final evals
-        # after the trainer exits) finalizes it.
+        # The trainer creates the run. Both write its final state (the primary always does), so the
+        # last to finish decides it: the orchestrator after its final evals, usually the trainer on a pause.
         wandb_shared_env = {
             "WANDB_SHARED_MODE": "1",
             "WANDB_RUN_ID": os.environ["PRL_RUN_ID"],

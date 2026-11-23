@@ -346,7 +346,7 @@ tensor_parallel_size = 8
 job_name = "my-run"
 ```
 
-The shared script passes the trainer rank-0 hostname to the orchestrator for NCCL weight broadcasts. Each transfer is synchronous, but eval rollout execution overlaps with later training steps. The allocation remains active while the final eval finishes. Without `max_steps`, the trainer never reaches a final step, so the job remains active until walltime. Trainer and orchestrator log to one shared W&B run. The trainer creates it, and the orchestrator finalizes it.
+The shared script passes the trainer rank-0 hostname to the orchestrator for NCCL weight broadcasts. Each transfer is synchronous, but eval rollout execution overlaps with later training steps. The allocation remains active while the final eval finishes. Without `max_steps`, the trainer never reaches a final step, so the job remains active until walltime. Trainer and orchestrator log to one shared W&B run. The trainer creates it, and the one that finishes last finalizes it: the orchestrator after its final evals, usually the trainer on a pause.
 
 ### Validation
 
