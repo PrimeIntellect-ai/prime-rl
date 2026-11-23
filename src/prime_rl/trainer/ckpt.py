@@ -31,6 +31,7 @@ from transformers import AutoConfig, GenerationConfig, PretrainedConfig, PreTrai
 
 from prime_rl.configs.shared import ResumeConfig
 from prime_rl.configs.trainer import CheckpointConfig, ModelConfig
+from prime_rl.trainer.data import with_workers
 from prime_rl.trainer.lora import has_lora_layers
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.conversion_ops import view_mapping
@@ -574,14 +575,16 @@ class CheckpointManager:
             dataloader_path = path / "dataloader" / f"rank_{self.world.rank}.pt"
             if not dataloader_path.exists():
                 self.logger.warning(
-                    f"Did not find local dataloader checkpoint at path {dataloader_path}. This might be because you tried restarting the trainer with a different world size. Falling back to using the master rank's dataloader checkpoint. Note, that this may cause training inconsistencies."
+                    f"No dataloader state at {dataloader_path} (the saved run had fewer ranks): this rank loads rank "
+                    "0's, from which the data reads on"
                 )
                 dataloader_path = path / "dataloader" / "rank_0.pt"
                 if not dataloader_path.exists():
                     raise RuntimeError(
                         f"Couldn't fallback to using the master rank's dataloader checkpoint, because dataloder checkpoint was not found at path {dataloader_path}. Cannot resume training."
                     )
-            dataloader.load_state_dict(torch.load(dataloader_path, weights_only=False))
+            state = torch.load(dataloader_path, weights_only=False)
+            dataloader.load_state_dict(with_workers(state, dataloader.num_workers))
 
         self.logger.debug(f"Loaded training checkpoint in {format_time(time.perf_counter() - start_time)}")
 

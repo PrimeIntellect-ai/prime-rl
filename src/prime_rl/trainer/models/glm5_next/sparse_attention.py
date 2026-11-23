@@ -121,13 +121,15 @@ class KPoolIndexer(nn.Module):
 
     def _pool_keys(self, key: torch.Tensor, gate: torch.Tensor, pool_start_tokens: torch.Tensor) -> torch.Tensor:
         # Same accumulation order as vLLM's kpool kernel: max, exp, running sums, then one divide.
-        logits = gate[pool_start_tokens[:, None] + torch.arange(self.pool_size, device=key.device)].float()
+        # Not pool_start_tokens + slot: Inductor drops slot 0's "+ 0" and the checkpointed compile then fails.
+        pool_tokens = pool_start_tokens[:, None] + torch.arange(self.pool_size, device=key.device)
+        logits = gate[pool_tokens].float()
         logits = logits + self.index_kpool_compress_ape.float()
         weights = (logits - logits.amax(dim=1, keepdim=True)).exp()
         pooled = torch.zeros_like(weights[:, 0])
         normalizer = torch.zeros_like(weights[:, 0])
         for slot in range(self.pool_size):
-            pooled = pooled + key[pool_start_tokens + slot].float() * weights[:, slot]
+            pooled = pooled + key[pool_tokens[:, slot]].float() * weights[:, slot]
             normalizer = normalizer + weights[:, slot]
         pooled = (pooled / normalizer).to(key.dtype)
         return hadamard_128(pooled).to(key.dtype)
@@ -167,7 +169,8 @@ class KPoolIndexer(nn.Module):
         # The selected pools' tokens fill the first `token_budget` columns in any order, the incomplete
         # pool's tokens the next ones, and the rest of the row is the sentinel.
         sentinel = total_tokens
-        pool_start_tokens = F.pad(layout.pool_start_tokens, (0, 1), value=sentinel)
+        # cat, not F.pad: pad's scalar value would pin the token count and recompile per length.
+        pool_start_tokens = torch.cat((layout.pool_start_tokens, layout.pool_start_tokens.new_full((1,), sentinel)))
         offsets = torch.arange(self.pool_size, device=device)
         selected_tokens = pool_start_tokens[selected_pools.long()][:, :, None] + offsets
         selected_tokens = selected_tokens.masked_fill((selected_pools == max_pools)[:, :, None], sentinel)

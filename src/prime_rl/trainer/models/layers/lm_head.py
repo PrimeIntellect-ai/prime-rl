@@ -99,7 +99,17 @@ def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
     )
 
 
-class FusedOutputLinear(torch.nn.Linear):
+class _OutputLinear(torch.nn.Linear):
+    # Checkpoints may store padding rows above the sampler's vocabulary.
+    unpadded_vocab_size: int | None = None
+
+    def projection_weight(self) -> Tensor:
+        if self.unpadded_vocab_size is None:
+            return self.weight
+        return self.weight[: self.unpadded_vocab_size]
+
+
+class FusedOutputLinear(_OutputLinear):
     """Chunked LM head that never materializes the full [N, V] logits.
 
     With ``labels`` and no ``temperature`` it returns the summed cross-entropy over labels != IGNORE_INDEX
@@ -130,10 +140,11 @@ class FusedOutputLinear(torch.nn.Linear):
         hidden_states = hidden_states.reshape(b * s, h).contiguous()
         labels = labels.reshape(b * s).contiguous()
 
+        weight = self.projection_weight()
         if temperature is None:
             assert support is None, "Sampling evidence requires per-token temperatures"
             # needs_input_grad follows requires_grad, also under no_grad: a detached weight skips the gradients there.
-            weight = self.weight if torch.is_grad_enabled() else self.weight.detach()
+            weight = weight if torch.is_grad_enabled() else weight.detach()
             loss = _ChunkedCrossEntropySumFn.apply(hidden_states, weight, labels, self.chunk_size, self.softcap)
             return PrimeLmOutput(loss=loss)
 
@@ -146,7 +157,7 @@ class FusedOutputLinear(torch.nn.Linear):
             offsets = support.offsets
         logprobs, entropy, support_logprobs = _SequenceChunkedLogProbEntropyFn.apply(
             hidden_states,
-            self.weight,
+            weight,
             labels,
             inv_t,
             self.chunk_size,
@@ -162,7 +173,7 @@ class FusedOutputLinear(torch.nn.Linear):
         )
 
 
-class VanillaOutputLinear(torch.nn.Linear):
+class VanillaOutputLinear(_OutputLinear):
     """LM head that returns the full logits, or with ``labels`` and no ``temperature`` the summed fp32
     cross-entropy over labels != IGNORE_INDEX as ``loss``. The logits are FP32, also from BF16 operands (see
     ``fp32_output_mm``); with ``softcap`` they are capped first."""
@@ -178,7 +189,7 @@ class VanillaOutputLinear(torch.nn.Linear):
         temperature: Tensor | None = None,
         support: TokenSupport | None = None,
     ) -> PrimeLmOutput:
-        logits = FP32OutputMatmulBF16Backward.apply(hidden_states.flatten(0, -2), self.weight).unflatten(
+        logits = FP32OutputMatmulBF16Backward.apply(hidden_states.flatten(0, -2), self.projection_weight()).unflatten(
             0, hidden_states.shape[:-1]
         )
         if self.softcap is not None:
@@ -657,6 +668,7 @@ def inject_prime_lm_head(
         model.lm_head = VanillaOutputLinear(
             in_features=old_lm_head.in_features, out_features=old_lm_head.out_features, softcap=softcap
         )
+    model.lm_head.unpadded_vocab_size = getattr(old_lm_head, "unpadded_vocab_size", None)
     model.lm_head.weight = old_lm_head.weight
     del old_lm_head
 

@@ -39,9 +39,350 @@ def apply_shared_vllm_patches():
     monkey_patch_fit_sliding_window_pages()
     monkey_patch_flashinfer_fp8_ds_mla_draft()
     monkey_patch_dspark_dp_compile_cache()
+    monkey_patch_nixl_bidirectional_single_pull()
+    monkey_patch_nixl_sliding_window_backoff()
+    monkey_patch_nixl_bidirectional_spec_decode_coverage()
+    monkey_patch_keep_pause_ignores_held_kv()
+    monkey_patch_freeze_nixl_leases_during_keep_pause()
+    monkey_patch_drop_reservation_of_failed_kv_load()
+    monkey_patch_skip_store_lookup_after_match()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
+
+
+def monkey_patch_nixl_bidirectional_single_pull():
+    """Bidirectional NIXL: a prefill request that comes back through the connector lookup after its D->P pull
+    prefills locally instead of waiting for a second read.
+
+    With ``bidirectional_kv_xfer``, the next turn's prefill request carries decode's block ids, and the first lookup
+    registers the D->P read and marks them ``_remote_blocks_processed``. If the read fails under the ``recompute``
+    load-failure policy (e.g. prefill declines it because decode's blocks are close to their TTL), or the request is
+    preempted after the pull and its blocks are evicted, the request goes through the lookup again. That lookup
+    still offered decode's tokens, so the request waited in ``WAITING_FOR_REMOTE_KVS`` for a read that is never
+    issued, holding its blocks: under load the prefill instance stalls. Backport of vllm-project/vllm#64860.
+    """
+    from vllm.distributed.kv_transfer.kv_connector.v1.nixl import pull_scheduler
+
+    cls = pull_scheduler.NixlPullConnectorScheduler
+    original = cls.get_num_new_matched_tokens
+    if getattr(original, "_prime_rl_single_pull", False):
+        return
+
+    def get_num_new_matched_tokens(self, request, num_computed_tokens):
+        params = request.kv_transfer_params
+        if (
+            params is not None
+            and params.get("do_remote_decode")
+            and params.get("_remote_blocks_processed")
+            and not params.get("do_remote_prefill")
+        ):
+            return 0, False
+        return original(self, request, num_computed_tokens)
+
+    get_num_new_matched_tokens._prime_rl_single_pull = True
+    cls.get_num_new_matched_tokens = get_num_new_matched_tokens
+
+
+def monkey_patch_nixl_sliding_window_backoff():
+    """P/D with sliding-window layers: leave the last prompt token to decode, as for Mamba.
+
+    Decode recomputes the last prompt token to sample the first output token. If prefill transfers the whole prompt,
+    the sliding-window group is laid out for the next position, which drops the oldest block of the window whenever
+    ``N - W + 1`` is a multiple of the block size: the recomputed token then attends to the null block. Prefill
+    therefore stops one token short and decode recomputes it with its window intact (DeepSeek V4's compressor
+    caches are sliding-window specs). Backport of vllm-project/vllm#65584 (NIXL side).
+    """
+    from vllm.distributed.kv_transfer.kv_connector.v1.nixl import base_scheduler
+    from vllm.v1.kv_cache_interface import SlidingWindowSpec
+
+    cls = base_scheduler.NixlBaseConnectorScheduler
+    original = cls._prefill_backoff
+    if getattr(original, "_prime_rl_sliding_window", False):
+        return
+
+    def _prefill_backoff(self) -> int:
+        has_sliding_window = getattr(self, "_prime_rl_has_sliding_window", None)
+        if has_sliding_window is None:
+            has_sliding_window = any(
+                isinstance(group.kv_cache_spec, SlidingWindowSpec) for group in self.kv_cache_config.kv_cache_groups
+            )
+            self._prime_rl_has_sliding_window = has_sliding_window
+        return max(original(self), 1 if has_sliding_window else 0)
+
+    _prefill_backoff._prime_rl_sliding_window = True
+    cls._prefill_backoff = _prefill_backoff
+
+
+def trim_block_ids_to_tokens(block_ids, kv_cache_groups, num_tokens: int):
+    """Keep, per KV cache group, only the blocks that hold positions ``[0, num_tokens)``.
+
+    Block lists are positional from token 0 for every attention group (sliding-window groups pad out-of-window
+    positions with null blocks), so the blocks to keep are the first ``cdiv(num_tokens, block_size)``. SSM groups hold
+    one running state, not positions, and stay as they are.
+    """
+    from vllm.v1.kv_cache_interface import MambaSpec
+
+    trimmed = []
+    for group, blocks in zip(kv_cache_groups, block_ids, strict=True):
+        spec = group.kv_cache_spec
+        if isinstance(spec, MambaSpec):
+            trimmed.append(blocks)
+            continue
+        keep = -(-num_tokens // spec.block_size)
+        trimmed.append(list(blocks)[:keep])
+    return tuple(trimmed)
+
+
+def monkey_patch_nixl_bidirectional_spec_decode_coverage():
+    """Bidirectional NIXL with speculative decoding: decode's handle covers only tokens with valid KV.
+
+    When a request finishes, decode exports its retained blocks for the next turn's prefill with
+    ``remote_num_tokens = request.num_computed_tokens``. With speculative decoding, the last step also computed the
+    drafted positions after the final token; the request ends before a rejection rolls them back, so the count
+    includes positions holding rejected drafts' KV (e.g. 42 for 23 prompt + 16 output tokens with 3 drafts). Only
+    ``num_tokens - 1`` positions hold KV of the actual sequence: every token but the last was an input. Prefill would
+    load the stale draft KV, and a router that checks coverage against the tokens it has seen drops every such
+    handle, so the readback never happens. The extra positions can also add a trailing block, and prefill pairs block
+    lists from their ends, which would shift every block.
+
+    Report ``num_tokens - 1`` and drop the blocks past it, per KV cache group, before vLLM clips sliding-window
+    groups to their in-window tail (clipping a list with an extra trailing block would cut a block the window needs).
+    Without speculative decoding, ``num_computed_tokens`` is already ``num_tokens - 1`` and nothing changes.
+    """
+    from vllm.distributed.kv_transfer.kv_connector.v1.nixl import pull_scheduler
+    from vllm.v1.request import RequestStatus
+
+    cls = pull_scheduler.NixlPullConnectorScheduler
+    original = cls.request_finished
+    if getattr(original, "_prime_rl_spec_decode_coverage", False):
+        return
+
+    def request_finished(self, request, block_ids):
+        params = request.kv_transfer_params
+        valid = request.num_tokens - 1
+        if (
+            getattr(self, "is_bidirectional_kv_xfer_enabled", False)
+            and params
+            and not params.get("do_remote_decode")
+            and request.status in (RequestStatus.FINISHED_LENGTH_CAPPED, RequestStatus.FINISHED_STOPPED)
+            and 0 < valid < request.num_computed_tokens
+        ):
+            block_ids = trim_block_ids_to_tokens(block_ids, self.kv_cache_config.kv_cache_groups, valid)
+            computed = request.num_computed_tokens
+            request.num_computed_tokens = valid
+            try:
+                return original(self, request, block_ids)
+            finally:
+                request.num_computed_tokens = computed
+        return original(self, request, block_ids)
+
+    request_finished._prime_rl_spec_decode_coverage = True
+    cls.request_finished = request_finished
+
+
+def monkey_patch_keep_pause_ignores_held_kv():
+    """A ``keep`` pause completes without waiting for KV blocks held for another instance.
+
+    A paused engine reports itself idle, which completes a ``keep`` pause, once the scheduler has no requests. Under
+    P/D, the scheduler also counts finished requests whose blocks it holds for a remote reader: prefill holds each
+    finished prefill until decode pulls it, and decode's lease heartbeats keep that hold alive while the request waits
+    in decode's queue; with bidirectional transfer, decode holds each finished turn for up to its TTL so the next
+    turn's prefill can read it. Pausing for a weight update therefore waits for decode to admit its whole queue and
+    for every held turn to be read or expire, which takes many minutes under load.
+
+    While the scheduler is paused with ``PAUSED_ALL``, count only requests the next step must still report as
+    finished. The held blocks stay allocated, a weight update does not touch them, remote reads of them proceed without
+    this engine stepping, and the engine processes their completion or expiry once it resumes. The paused peer sends no
+    lease heartbeats, so ``monkey_patch_freeze_nixl_leases_during_keep_pause`` keeps those leases from expiring meanwhile.
+    """
+    from vllm.v1.core.sched.interface import PauseState
+    from vllm.v1.core.sched.scheduler import Scheduler
+
+    original = Scheduler.has_finished_requests
+    if getattr(original, "_prime_rl_keep_pause", False):
+        return
+
+    def has_finished_requests(self) -> bool:
+        if self.pause_state == PauseState.PAUSED_ALL:
+            return bool(self.finished_req_ids)
+        return original(self)
+
+    has_finished_requests._prime_rl_keep_pause = True
+    Scheduler.has_finished_requests = has_finished_requests
+
+
+def freeze_send_leases(nixl_worker) -> None:
+    """Record the time each unexpired NIXL send lease has left; expired leases are not recorded, so not revived."""
+    import time
+
+    now = time.perf_counter()
+    nixl_worker._prime_rl_frozen_leases = {
+        req_id: expires - now for req_id, expires in nixl_worker._reqs_to_send.items() if expires > now
+    }
+
+
+def thaw_send_leases(nixl_worker) -> None:
+    """Give each lease recorded by ``freeze_send_leases`` that is still outstanding its recorded remaining time from
+    now, keeping a later deadline set by a heartbeat. Leases granted since the freeze stay as they are."""
+    import time
+
+    now = time.perf_counter()
+    frozen = getattr(nixl_worker, "_prime_rl_frozen_leases", None) or {}
+    for req_id, remaining in frozen.items():
+        if req_id in nixl_worker._reqs_to_send:
+            nixl_worker._reqs_to_send[req_id] = max(nixl_worker._reqs_to_send[req_id], now + remaining)
+    nixl_worker._prime_rl_frozen_leases = None
+
+
+def _nixl_workers() -> list:
+    """The NIXL connector workers in this worker process, also inside a MultiConnector."""
+    from vllm.distributed.kv_transfer import get_kv_transfer_group, has_kv_transfer_group
+    from vllm.distributed.kv_transfer.kv_connector.v1.nixl.base_worker import NixlBaseConnectorWorker
+
+    if not has_kv_transfer_group():
+        return []
+    group = get_kv_transfer_group()
+    connectors = getattr(group, "sub_connectors", None) or [group]
+    workers = [getattr(connector, "connector_worker", None) for connector in connectors]
+    return [worker for worker in workers if isinstance(worker, NixlBaseConnectorWorker)]
+
+
+def _freeze_nixl_send_leases(_worker) -> None:
+    for nixl_worker in _nixl_workers():
+        freeze_send_leases(nixl_worker)
+
+
+def _thaw_nixl_send_leases(_worker) -> None:
+    for nixl_worker in _nixl_workers():
+        thaw_send_leases(nixl_worker)
+
+
+def monkey_patch_freeze_nixl_leases_during_keep_pause():
+    """NIXL send leases keep their remaining time across a ``keep`` pause.
+
+    A worker holds a finished request's blocks for a remote reader until the reader reports the read or the lease
+    expires; the reader extends the lease with heartbeats it sends as it steps. While both engines are paused for a
+    weight update, no heartbeats are sent or processed, and a lease that runs on wall-clock time would expire: on
+    resume the holder would release and reuse blocks the reader still reads.
+
+    A ``keep`` pause records each unexpired lease's remaining time in the engine's workers, and resume restores it from
+    the resume time before the next step reaps expired leases. Outside of a ``keep`` pause, vLLM's wall-clock lease
+    reaper is unchanged, so leases run down during slow steps as they do without this patch.
+    """
+    from vllm.v1.engine.core import EngineCore, EngineCoreProc
+
+    for cls in (EngineCore, EngineCoreProc):
+        original_pause = cls.__dict__["pause_scheduler"]
+        if getattr(original_pause, "_prime_rl_freeze_leases", False):
+            continue
+
+        def pause_scheduler(self, mode="abort", clear_cache=True, *args, _original=original_pause, **kwargs):
+            result = _original(self, mode, clear_cache, *args, **kwargs)
+            if mode == "keep" and self.vllm_config.kv_transfer_config is not None:
+                self.collective_rpc(_freeze_nixl_send_leases)
+                self._prime_rl_leases_frozen = True
+            return result
+
+        pause_scheduler._prime_rl_freeze_leases = True
+        cls.pause_scheduler = pause_scheduler
+
+    original_resume = EngineCore.resume_scheduler
+    if getattr(original_resume, "_prime_rl_freeze_leases", False):
+        return
+
+    def resume_scheduler(self) -> None:
+        original_resume(self)
+        if getattr(self, "_prime_rl_leases_frozen", False):
+            self.collective_rpc(_thaw_nixl_send_leases)
+            self._prime_rl_leases_frozen = False
+
+    resume_scheduler._prime_rl_freeze_leases = True
+    EngineCore.resume_scheduler = resume_scheduler
+
+
+def monkey_patch_drop_reservation_of_failed_kv_load():
+    """Stop requests whose KV load failed from reserving the whole KV pool.
+
+    The scheduler reserves, for every request parked on an asynchronous KV load, the blocks it still needs to hold
+    its full sequence, and admits a new load only if it fits beside those reservations. The reservation is refreshed
+    when the load finishes. A load that failed outright has freed its blocks by then, so the refresh reserves the
+    request's whole sequence, and it is only released when the request runs. Enough such requests (for example
+    turns whose decode blocks expired while they queued) reserve more than the pool holds: no load is admitted any
+    more, nothing runs, and the engine idles with an empty KV cache and a full queue.
+
+    A request that holds no blocks has nothing in flight to protect, so it keeps no reservation.
+    """
+    from vllm.v1.core.sched.scheduler import Scheduler
+
+    original = Scheduler._reserve_parked
+    if getattr(original, "_prime_rl_drops_failed_load", False):
+        return
+
+    def _reserve_parked(self, request) -> None:
+        # Both callers set the computed count first: the load's hit when it is parked, what survived when it ends.
+        if request.num_computed_tokens == 0:
+            self._unreserve_parked(request)
+            return
+        original(self, request)
+
+    _reserve_parked._prime_rl_drops_failed_load = True
+    Scheduler._reserve_parked = _reserve_parked
+
+
+def has_remote_kv_handle(request) -> bool:
+    """Whether the request carries another instance's KV blocks to read (a bidirectional decode handle)."""
+    params = request.kv_transfer_params
+    return bool(params and params.get("remote_block_ids"))
+
+
+def monkey_patch_skip_store_lookup_after_match():
+    """A request whose KV another connector already supplies does not also look it up in the Mooncake store.
+
+    ``MultiConnector`` asks every connector how many tokens it can supply and uses the first that has any, but it
+    keeps asking the rest. Under bidirectional P/D, a prefill request whose missing KV comes back from decode over
+    NIXL still pays a store lookup (one key per KV block and group, so thousands for a long prompt) whose answer is
+    discarded. A synchronous lookup blocks ``Scheduler.schedule()`` for its whole duration, and the data-parallel
+    ranks of a node step together, so one rank waiting on the store stalls them all: under a backlog a prefill engine
+    spent two thirds of its time there. An asynchronous lookup that is still pending makes ``MultiConnector`` report
+    the request as not ready, which delays it by a step.
+
+    After a connector has matched, the remaining store connectors are not asked, and a request that arrives with a
+    remote KV handle does not start the store's lookup prefetch. Other connectors are still asked, since they may
+    track requests through this call. A request without a match is looked up in the store as before.
+    """
+    from vllm.distributed.kv_transfer.kv_connector.v1 import multi_connector
+    from vllm.distributed.kv_transfer.kv_connector.v1.mooncake.store.connector import MooncakeStoreConnector
+    from vllm.distributed.kv_transfer.kv_connector.v1.mooncake.store.scheduler import MooncakeStoreScheduler
+
+    cls = multi_connector.MultiConnector
+    if getattr(cls.get_num_new_matched_tokens, "_prime_rl_skip_store_lookup", False):
+        return
+
+    def get_num_new_matched_tokens(self, request, num_computed_tokens):
+        to_return = (0, False)
+        for i, connector in enumerate(self._connectors):
+            if to_return[0] > 0 and isinstance(connector, MooncakeStoreConnector):
+                continue
+            tokens, load_async = connector.get_num_new_matched_tokens(request, num_computed_tokens)
+            if tokens is None:
+                return (None, False)
+            if to_return[0] == 0 and tokens > 0:
+                self._requests_to_connector[request.request_id] = i
+                to_return = (tokens, load_async)
+        return to_return
+
+    get_num_new_matched_tokens._prime_rl_skip_store_lookup = True
+    cls.get_num_new_matched_tokens = get_num_new_matched_tokens
+
+    original_prefetch = MooncakeStoreScheduler.start_lookup_prefetch
+
+    def start_lookup_prefetch(self, request) -> None:
+        if has_remote_kv_handle(request):
+            return
+        original_prefetch(self, request)
+
+    MooncakeStoreScheduler.start_lookup_prefetch = start_lookup_prefetch
 
 
 def monkey_patch_block_outermost_mla_stride():

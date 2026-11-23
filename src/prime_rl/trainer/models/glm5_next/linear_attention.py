@@ -2,19 +2,10 @@ import math
 
 import torch
 from fla.modules import FusedRMSNormGated
-from fla.modules.conv import causal_conv1d
-from fla.ops.cp import build_cp_context
-from fla.ops.kda import chunk_kda
 from torch import nn
 
+from prime_rl.trainer.models.layers import fla_ops
 from prime_rl.utils.cp import CPContext
-
-# Dynamo lowers all-gather to concatenation, then fails to copy the result into
-# FLA's stacked output buffer. Keep CP convolution eager until this is fixed:
-# https://github.com/pytorch/pytorch/issues/155632
-causal_conv1d_with_context_parallelism = torch.compiler.disable(causal_conv1d)
-# CP setup searchsorts tensor-valued sequence boundaries; keep it outside the compiled graph.
-build_cp_context_eager = torch.compiler.disable(build_cp_context)
 
 
 class KimiDeltaAttention(nn.Module):
@@ -81,59 +72,39 @@ class KimiDeltaAttention(nn.Module):
             bias=False,
         )
 
-    def forward(self, hidden_states: torch.Tensor, cu_seqlens: torch.LongTensor) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, fla_varlen: fla_ops.FlaVarlen) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape
-        # FLA memoizes cu_seqlens metadata by tensor identity. A per-layer copy makes every layer
-        # miss that cache in the forward and in its activation-checkpoint recompute alike, so both
-        # run the same ops and checkpoint replay (matched by op invocation order) stays aligned.
-        cu_seqlens = cu_seqlens.clone()
-
-        context = None
-        if self.cp_context.cp_enabled:
-            context = build_cp_context_eager(
-                cu_seqlens=cu_seqlens.to(device=hidden_states.device, dtype=torch.int32),
-                group=self.cp_context.cp_group,
-                conv1d_kernel_size=self.conv_kernel_size,
-            )
-
         mixed_qkv = torch.cat(
             (self.q_proj(hidden_states), self.k_proj(hidden_states), self.v_proj(hidden_states)), dim=-1
         )
         conv_weight = torch.cat((self.q_conv1d.weight, self.k_conv1d.weight, self.v_conv1d.weight)).squeeze(1)
-        convolution = {"x": mixed_qkv, "weight": conv_weight, "bias": None, "activation": "silu"}
-        if context is None:
-            mixed_qkv, _ = causal_conv1d(**convolution, cu_seqlens=cu_seqlens)
-        else:
-            mixed_qkv, _ = causal_conv1d_with_context_parallelism(**convolution, cp_context=context)
+        mixed_qkv = fla_ops.causal_conv1d(mixed_qkv, conv_weight, "silu", fla_varlen, self.cp_context)
 
         head_shape = (batch_size, sequence_length, self.num_heads, self.head_dim)
         query, key, value = (part.reshape(head_shape) for part in mixed_qkv.chunk(3, dim=-1))
         forget_gate = self.f_b_proj(self.f_a_proj(hidden_states)).reshape(head_shape)
+        beta = self.b_proj(hidden_states)
 
-        delta_rule = {
-            "q": query,
-            "k": key,
-            "v": value,
-            "g": forget_gate,
-            "beta": self.b_proj(hidden_states),
-            "A_log": self.A_log,
-            "dt_bias": self.dt_bias,
-            "use_qk_l2norm_in_kernel": True,
-            "use_gate_in_kernel": True,
-            "use_beta_sigmoid_in_kernel": True,
-            "safe_gate": True,
-            "lower_bound": self.gate_lower_bound,
-            "cu_seqlens": context.cu_seqlens if context is not None else cu_seqlens,
-        }
-        if context is None:
-            core_output, _ = chunk_kda(**delta_rule, initial_state=None, output_final_state=False)
-        else:
-            core_output, _ = chunk_kda(**delta_rule, cp_context=context)
+        core_output = fla_ops.chunk_kda(
+            query,
+            key,
+            value,
+            forget_gate,
+            beta,
+            self.A_log,
+            self.dt_bias,
+            self.gate_lower_bound,
+            fla_varlen,
+            self.cp_context,
+        )
 
         output_gate = self.g_b_proj(self.g_a_proj(hidden_states))
-        core_output = self.o_norm(
+        core_output = fla_ops.rms_norm_gated(
             core_output.reshape(-1, self.head_dim),
             output_gate.reshape(-1, self.head_dim),
+            self.o_norm.weight,
+            self.o_norm.eps,
+            self.o_norm.activation,
         )
         return self.o_proj(core_output.reshape(batch_size, sequence_length, self.projection_size))
 

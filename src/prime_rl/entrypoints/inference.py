@@ -9,6 +9,7 @@ from typing import Any
 
 from prime_rl.configs.inference import InferenceConfig, MooncakeKVCacheOffloadConfig
 from prime_rl.entrypoints.slurm import load_slurm_template, submit_sbatch
+from prime_rl.utils.admin_token import digest_var
 from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
@@ -38,6 +39,16 @@ def vllm_overrides_fragment(overrides: dict[str, Any]) -> str:
     if not overrides:
         return ""
     return ", " + json.dumps(overrides)[1:-1].replace('"', '\\"')
+
+
+def prefill_uses_deepep_high_throughput(overrides: dict[str, Any]) -> bool:
+    """Whether prefill runs the P/D templates' default all2all backend, DeepEP high-throughput.
+
+    vLLM cannot capture that backend's internode dispatch in a breakable CUDA graph, so the templates turn breakable
+    graphs off for it. With any other backend prefill keeps them: without them vLLM falls back to decode-only graphs
+    and every step that carries a prompt runs the model eagerly.
+    """
+    return overrides.get("all2all_backend", "deepep_high_throughput") == "deepep_high_throughput"
 
 
 def write_config(
@@ -124,7 +135,12 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, log_dir: Path
             prefill_env_vars=config.deployment.prefill_env_vars,
             decode_env_vars=config.deployment.decode_env_vars,
             prefill_vllm_extra_json=vllm_overrides_fragment(config.deployment.prefill_vllm_overrides),
+            prefill_deepep_high_throughput=prefill_uses_deepep_high_throughput(
+                config.deployment.prefill_vllm_overrides
+            ),
             decode_vllm_extra_json=vllm_overrides_fragment(config.deployment.decode_vllm_overrides),
+            pd_bidirectional=config.deployment.bidirectional_kv_transfer,
+            nixl_nic_affinity=config.deployment.nixl_nic_affinity,
         )
     elif is_multi_node:
         template_vars.update(
@@ -192,10 +208,16 @@ def start_router(config: InferenceConfig) -> subprocess.Popen:
         str(config.router.request_timeout_secs),
         "--worker-startup-timeout-secs",
         "4200",
+        # The default of 30 s leaves a started engine idle for up to 30 s before the router admits it
+        "--worker-startup-check-interval",
+        "1",
         "--prometheus-port",
         str(config.server.port + 21000),
     ]
-    return subprocess.Popen(cmd)
+    # The router never calls the engine's admin routes.
+    token_vars = (config.server.admin_token_var, digest_var(config.server.admin_token_var))
+    env = {key: value for key, value in os.environ.items() if key not in token_vars}
+    return subprocess.Popen(cmd, env=env)
 
 
 def inference_local(config: InferenceConfig):
