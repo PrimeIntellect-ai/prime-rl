@@ -856,7 +856,8 @@ DYNAMIC_INT_ARGS = (
 DYNAMIC_TENSOR_ARG_DIMS = (
     # DeepSeek V4, GLM5-next: decoder layer input, (batch, seq, hc_mult, hidden). seq follows this rank's row length.
     ("mhc_states", 1),
-    # Qwen3.5, Qwen3.8: decoder layer input, (batch, seq, ...), and its rotary (cos, sin), each (batch, seq, rotary_dim).
+    # Decoder layer input, (batch, seq, ...), and its rotary (cos, sin), each (batch, seq, rotary_dim), for every model
+    # that passes them to its layers by keyword.
     ("hidden_states", 1),
     ("position_embeddings", 1),
     # Qwen3.8: per-layer n-gram embedding, (batch, seq, ngram_dim).
