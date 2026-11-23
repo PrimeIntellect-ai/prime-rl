@@ -1819,3 +1819,26 @@ def test_trainer_and_orchestrator_share_one_ckpt_dir_and_policy(leaf):
         RLConfig.model_validate(
             {"ckpt": {}, "trainer": {"ckpt": {name: value}}, "orchestrator": {"renderer": {"name": "default"}}}
         )
+
+
+def test_env_worker_pool_uses_ckpt_output_dir_as_save_root(tmp_path):
+    from prime_rl.entrypoints.rl import write_subconfigs
+
+    ckpt_dir = tmp_path / "external_ckpts"
+    config = RLConfig.model_validate(
+        {
+            "output_dir": str(tmp_path / "run"),
+            "ckpt": {"output_dir": str(ckpt_dir), "rollouts": True},
+            "trainer": {},
+            "orchestrator": {
+                "renderer": {"name": "default"},
+                "train": {"source": [{"env": {"taskset": {"id": "harbor"}}}]},
+            },
+        }
+    )
+    cfg_dir = tmp_path / "configs"
+    write_subconfigs(config, cfg_dir)
+    pool_configs = list((cfg_dir / "envs" / "train").glob("*.json"))
+    assert pool_configs
+    data = json.loads(pool_configs[0].read_text())
+    assert Path(data["output_dir"]) == ckpt_dir.resolve()

@@ -192,7 +192,7 @@ class EnvWorkerPool:
         # request_id -> (replied_at, worker), oldest first: a late cancel still reaches
         # the worker that may hold the run's kept arrays (`LATE_CANCEL_SECONDS`).
         replied: dict[bytes, tuple[float, dict]] = {}
-        # `BROADCAST` request_id -> {client_id, waiting, replies}; each worker's part
+        # `BROADCAST` request_id -> {client_id, pending, replies}; each worker's part
         # carries `<request_id>/<worker index>`.
         broadcasts: dict[bytes, dict] = {}
         sizing = (
@@ -206,7 +206,7 @@ class EnvWorkerPool:
         try:
             in_flight = 0
             while True:
-                events = dict(await self._poller.poll())
+                events = dict(await self._poller.poll(timeout=1000 if broadcasts else None))
                 if self.frontend in events:
                     frames = await self.frontend.recv_multipart()
                     # Drop malformed requests without skipping ready worker replies.
@@ -247,14 +247,21 @@ class EnvWorkerPool:
                                 in_flight += 1
                                 await worker["dealer"].send_multipart([request_id, method, payload])
                         elif method in BROADCAST:
-                            broadcasts[request_id] = {
-                                "client_id": client_id,
-                                "waiting": len(self.workers),
-                                "replies": [],
-                            }
-                            for w in self.workers:
-                                part = request_id + b"/" + str(w["index"]).encode()
-                                await w["dealer"].send_multipart([part, method, payload])
+                            live = [w for w in self.workers if w["process"].is_alive()]
+                            if not live:
+                                error = msgpack.packb(
+                                    {"success": False, "error": "no live env workers"}, use_bin_type=True
+                                )
+                                await self.frontend.send_multipart([client_id, request_id, b"reply", error])
+                            else:
+                                broadcasts[request_id] = {
+                                    "client_id": client_id,
+                                    "pending": {w["index"] for w in live},
+                                    "replies": [],
+                                }
+                                for w in live:
+                                    part = request_id + b"/" + str(w["index"]).encode()
+                                    await w["dealer"].send_multipart([part, method, payload])
                         else:
                             worker = min(self.workers, key=lambda w: w["active"])
                             worker["active"] += 1
@@ -274,9 +281,10 @@ class EnvWorkerPool:
                         parent = request_id.bytes.rpartition(b"/")[0]
                         if kind.bytes == b"reply" and parent in broadcasts:
                             broadcast = broadcasts[parent]
-                            broadcast["replies"].append(data.bytes)
-                            broadcast["waiting"] -= 1
-                            if broadcast["waiting"] == 0:
+                            if w["index"] in broadcast["pending"]:
+                                broadcast["pending"].discard(w["index"])
+                                broadcast["replies"].append(data.bytes)
+                            if not broadcast["pending"]:
                                 del broadcasts[parent]
                                 with contextlib.suppress(zmq.ZMQError):
                                     await self.frontend.send_multipart(
@@ -318,6 +326,27 @@ class EnvWorkerPool:
                                         ),
                                     ]
                                 )
+                if broadcasts:
+                    dead = {w["index"] for w in self.workers if not w["process"].is_alive()}
+                    if dead:
+                        for req_id, broadcast in list(broadcasts.items()):
+                            dropped = broadcast["pending"] & dead
+                            if not dropped:
+                                continue
+                            broadcast["pending"] -= dropped
+                            for index in sorted(dropped):
+                                broadcast["replies"].append(
+                                    msgpack.packb(
+                                        {"success": False, "error": f"env worker {index} exited during broadcast"},
+                                        use_bin_type=True,
+                                    )
+                                )
+                            if not broadcast["pending"]:
+                                del broadcasts[req_id]
+                                with contextlib.suppress(zmq.ZMQError):
+                                    await self.frontend.send_multipart(
+                                        [broadcast["client_id"], req_id, b"reply", merge_replies(broadcast["replies"])]
+                                    )
         except (asyncio.CancelledError, KeyboardInterrupt):
             pass
         finally:

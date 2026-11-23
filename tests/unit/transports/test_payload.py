@@ -458,3 +458,24 @@ def test_a_rollout_store_persists_the_files_it_holds(tmp_path, monkeypatch):
     assert (directory / "t1-0").read_bytes() == b"arrays"
     # The trainer's marks still reach the store on the same port.
     require_rollout_store(store.url)
+
+
+def test_link_or_copy_fallback_copies_atomically(tmp_path, monkeypatch):
+    import errno
+    import os
+
+    from prime_rl.transports.payload import link_or_copy
+
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src.write_bytes(b"payload-bytes")
+
+    def exdev(a, b):
+        raise OSError(errno.EXDEV, "Cross-device link")
+
+    monkeypatch.setattr(os, "link", exdev)
+    assert link_or_copy(src, dst) is True
+    assert dst.read_bytes() == b"payload-bytes"
+    assert [p.name for p in tmp_path.iterdir()] == sorted(["src", "dst"])
+    assert link_or_copy(tmp_path / "missing", tmp_path / "dst2") is False
+    assert not (tmp_path / "dst2").exists()

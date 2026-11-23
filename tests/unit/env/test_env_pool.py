@@ -45,3 +45,70 @@ def test_broadcast_replies_merge() -> None:
     merged = msgpack.unpackb(merge_replies([replies[0], failed]))
     assert merged["success"] is False and merged["error"] == "boom"
     assert merged["restores"] == {"r1": {"trace_id": "t1"}}
+
+
+@pytest.mark.asyncio
+async def test_broadcast_completes_when_a_worker_exits() -> None:
+    """If a worker dies mid-broadcast, the broker completes the broadcast instead of hanging."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    import zmq
+
+    from prime_rl.configs.env_worker_pool import StaticPoolConfig
+    from prime_rl.env.pool import EnvWorkerPool
+
+    pool = EnvWorkerPool(StaticPoolConfig(num_workers=2), "tcp://127.0.0.1:0", {}, None, None)
+    sockets = []
+    procs = []
+
+    def fake_spawn() -> None:
+        i = len(pool.workers)
+        addr = f"ipc://{pool._worker_path(i)}"
+        srv = pool.ctx.socket(zmq.ROUTER)
+        srv.bind(addr)
+        dealer = pool.ctx.socket(zmq.DEALER)
+        dealer.setsockopt(zmq.LINGER, 0)
+        dealer.connect(addr)
+        proc = MagicMock()
+        proc.is_alive.return_value = True
+        sockets.append(srv)
+        procs.append(proc)
+        pool.workers.append({"process": proc, "dealer": dealer, "pipe": MagicMock(), "active": 0, "index": i})
+        if pool._poller is not None:
+            pool._poller.register(dealer, zmq.POLLIN)
+
+    pool._spawn_worker = fake_spawn  # type: ignore[method-assign]
+    task = asyncio.create_task(pool.run())
+    await asyncio.sleep(0.05)
+    client = pool.ctx.socket(zmq.DEALER)
+    try:
+        client.connect(pool.address)
+        await client.send_multipart([b"req1", b"save", msgpack.packb({"dir": "/tmp"})])
+        ident0, rid0, _, _ = await sockets[0].recv_multipart()
+        await sockets[0].send_multipart(
+            [
+                ident0,
+                rid0,
+                b"reply",
+                msgpack.packb({"success": True, "error": None, "restores": {"r1": {"trace_id": "t1"}}}),
+            ]
+        )
+        await sockets[1].recv_multipart()
+        procs[1].is_alive.return_value = False
+
+        rid, kind, data = await asyncio.wait_for(client.recv_multipart(), timeout=3.0)
+        reply = msgpack.unpackb(data, raw=False)
+        assert rid == b"req1" and kind == b"reply"
+        assert reply["success"] is False
+        assert "worker 1 exited" in reply["error"]
+        assert reply["restores"] == {"r1": {"trace_id": "t1"}}
+    finally:
+        client.close()
+        for s in sockets:
+            s.close()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
