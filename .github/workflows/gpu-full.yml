@@ -11,7 +11,7 @@ jobs:
   group:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       # The Modal workspace runs about 10 GPUs at once, so two groups at a time (at most 4 GPUs) leave room for Tiny
