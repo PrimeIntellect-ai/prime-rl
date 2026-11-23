@@ -244,7 +244,16 @@ def link_or_copy(source: Path, target: Path) -> bool:
     except FileNotFoundError:
         return False
     except OSError:
-        shutil.copyfile(source, target)
+        tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            shutil.copyfile(source, tmp)
+            tmp.replace(target)
+        except FileNotFoundError:
+            tmp.unlink(missing_ok=True)
+            return False
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
     return True
 
 

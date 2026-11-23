@@ -24,6 +24,7 @@ from prime_rl.utils.admin_token import AdminTokenUses, TokenUse
 from prime_rl.utils.config import check_mode, cli, dump_resolved_config, dump_rl_components
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
+    ckpt_output_dir,
     clean_future_steps,
     format_config_message,
     format_log_message,
@@ -195,11 +196,10 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     # orchestrator picks it up.
     # Train pools of a retaining run keep their arrays on node-local disk, not in memory.
     retain = config.rollout_transport is not None and config.rollout_transport.retain
+    save_dir = ckpt_output_dir(config.orchestrator.output_dir, config.orchestrator.ckpt)
     for split, source in env_worker_pools(config):
         store_dir = ROLLOUT_STORE_DIR if retain and split == "train" else None
-        write_env_worker_pool_config(
-            output_dir, split, source, config.orchestrator.log, config.orchestrator.output_dir, store_dir
-        )
+        write_env_worker_pool_config(output_dir, split, source, config.orchestrator.log, save_dir, store_dir)
 
 
 def rl_local(config: RLConfig):
