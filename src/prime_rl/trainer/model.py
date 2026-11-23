@@ -868,8 +868,11 @@ DYNAMIC_TENSOR_ARG_DIMS = (
     ("query_positions", 0),
     ("first_pool", 0),
     ("visible_pools", 0),
-    # GLM5-next, Qwen3.5, Qwen3.8: FLA chunk indices, (chunks, 2), one entry per 64-token chunk of each document.
+    # GLM5-next, Qwen3.5, Qwen3.8 (FlaVarlen fields) and Nemotron-H (by keyword): FLA chunk indices, (chunks, 2), one
+    # entry per 64-token chunk of each document of this rank.
     ("chunk_indices", 0),
+    # GLM5-next, Qwen3.5, Qwen3.8: FlaVarlen's document boundaries on this rank, (documents + 1,).
+    ("local_cu_seqlens", 0),
     # Qwen3.8: each token's document start and end, one entry per token of the full row across CP ranks.
     ("document_starts", 0),
     ("document_ends", 0),

@@ -4,7 +4,7 @@ from transformers.modeling_outputs import BaseModelOutput
 from transformers.utils import torch_compilable_check
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, count_active_params
-from prime_rl.trainer.models.layers.fla_ops import prepare_chunk_indices
+from prime_rl.trainer.models.layers.fla_ops import FlaVarlen, prepare_fla_varlen
 from prime_rl.trainer.models.layers.gated_delta_net import GatedDeltaNet
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, VanillaOutputLinear
 from prime_rl.trainer.models.layers.moe import MoE
@@ -104,8 +104,7 @@ class Qwen3_8FlashNextDecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         ngram_embedding: torch.Tensor | None,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        cu_seqlens: torch.LongTensor,
-        chunk_indices: torch.Tensor,
+        fla_varlen: FlaVarlen,
         document_starts: torch.Tensor,
         document_ends: torch.Tensor,
         routed_experts: torch.LongTensor | None = None,
@@ -115,7 +114,7 @@ class Qwen3_8FlashNextDecoderLayer(nn.Module):
 
         block_input, (hidden_states, injection_weights) = self.attn_hyper_connection.mix(hidden_states)
         if self.layer_type == "linear_attention":
-            block_output = self.linear_attn(block_input, cu_seqlens, chunk_indices)
+            block_output = self.linear_attn(block_input, fla_varlen)
         else:
             block_output = self.self_attn(block_input, position_embeddings, document_starts, document_ends)
 
@@ -213,8 +212,7 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
             seq_lens.to(inputs_embeds.device),
             total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
-        torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
-        chunk_indices = prepare_chunk_indices(cu_seqlens)
+        fla_varlen = prepare_fla_varlen(cu_seqlens, self.cp_context)
         document_starts, document_ends = document_bounds(
             cu_seqlens, inputs_embeds.shape[1] * self.cp_context.cp_world_size
         )
@@ -228,8 +226,7 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
                 hidden_states=hidden_states,
                 ngram_embedding=self.ngram.embed(ngram_ids, layer_index),
                 position_embeddings=position_embeddings,
-                cu_seqlens=cu_seqlens,
-                chunk_indices=chunk_indices,
+                fla_varlen=fla_varlen,
                 document_starts=document_starts,
                 document_ends=document_ends,
                 routed_experts=layer_routed_experts,

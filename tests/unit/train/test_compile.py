@@ -133,14 +133,8 @@ CASES = [
 ]
 
 
-CP_CONTEXT_IS_COMPILER_DISABLED = "build_cp_context runs under torch.compiler.disable with context parallelism"
 INKLING2_LAYER_KINDS_UNCOUNTED = "layer_kinds counts 2 kinds for Inkling 2's 4 distinct decoder layer graphs"
-KNOWN_FAILURES = {
-    **dict.fromkeys(
-        ["qwen3_5-cp2", "qwen3_5_moe-cp2", "qwen3_8_flash_next-cp2", "glm5_next-cp2"], CP_CONTEXT_IS_COMPILER_DISABLED
-    ),
-    "inkling2-dp2": INKLING2_LAYER_KINDS_UNCOUNTED,
-}
+KNOWN_FAILURES = {"inkling2-dp2": INKLING2_LAYER_KINDS_UNCOUNTED}
 
 
 def isolated(run, *args) -> dict:
