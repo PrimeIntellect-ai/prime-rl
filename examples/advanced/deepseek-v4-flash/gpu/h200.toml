@@ -1,0 +1,51 @@
+# H200 overlay for rl.toml: 4 trainer nodes + 2 one-node DEP8 inference replicas, FP8 on both
+# sides. Add inference replicas with `--deployment.num-infer-replicas`.
+#
+#   uv run rl @ examples/advanced/deepseek-v4-flash/rl.toml @ examples/advanced/deepseek-v4-flash/gpu/h200.toml
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 4
+num_infer_nodes = 1
+num_infer_replicas = 2
+
+# --- Trainer: blockwise FP8 to match vLLM's online FP8 bit for bit ---
+
+[trainer.model]
+# 32k tokens per rank. Peak memory is set by the optimizer step, not by activations.
+cp = 4
+
+# Dense linears in DeepGEMM blockwise FP8. The compressor and indexer stay bf16, as on vLLM.
+[trainer.model.quantization]
+type = "fp8"
+extra_ignore_patterns = ['compressor\.', 'indexer\.']
+
+[trainer.model.moe.compute]
+type = "deepgemm_fp8"
+
+# --- Orchestrator ---
+
+[orchestrator.concurrency]
+initial_inflight = 1024
+min_inflight = 1024
+
+# --- Inference: online per-block FP8 through DeepGEMM ---
+
+[inference]
+# Required for online FP8: DeepSeek V4's grouped output projection runs DeepGEMM's fp8_einsum.
+use_deep_gemm = true
+
+[inference.env_vars]
+# vLLM defaults to power-of-two (UE8M0) scales; the trainer uses exact fp32 scales on SM90.
+VLLM_USE_DEEP_GEMM_E8M0 = "0"
+# Its small-batch path JIT-compiles a TensorRT-LLM kernel that needs nvcc; DeepGEMM covers all sizes.
+VLLM_DISABLED_KERNELS = "FlashInferFp8DeepGEMMDynamicBlockScaledKernel"
+
+[inference.vllm]
+dtype = "bfloat16"
+quantization = "fp8_per_block"
+# The indexer's top-k key selection is discrete; keep its projections bf16 on both sides.
+quantization_config = { ignore = ["re:.*indexer.*"] }
+# Keep vLLM's default all2all. With `deepep_low_latency`, DeepSeek V4's MoE output is wrong for ~0.1% of
+# tokens, which raises the trainer/inference mismatch KL from ~0.004 to ~0.03.
+gpu_memory_utilization = 0.85

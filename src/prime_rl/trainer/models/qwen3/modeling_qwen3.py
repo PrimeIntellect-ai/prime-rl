@@ -111,10 +111,6 @@ class Qwen3PreTrainedModel(PreTrainedModelPrimeRL):
     def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
         return state_dict
 
-    @classmethod
-    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        return state_dict
-
 
 @auto_docstring
 class Qwen3Model(Qwen3PreTrainedModel):

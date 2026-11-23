@@ -99,7 +99,17 @@ def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
     )
 
 
-class FusedOutputLinear(torch.nn.Linear):
+class _OutputLinear(torch.nn.Linear):
+    # Checkpoints may store padding rows above the sampler's vocabulary.
+    unpadded_vocab_size: int | None = None
+
+    def projection_weight(self) -> Tensor:
+        if self.unpadded_vocab_size is None:
+            return self.weight
+        return self.weight[: self.unpadded_vocab_size]
+
+
+class FusedOutputLinear(_OutputLinear):
     """Chunked LM head that never materializes the full [N, V] logits.
 
     With ``labels`` and no ``temperature`` it returns the summed cross-entropy over labels != IGNORE_INDEX
@@ -130,10 +140,11 @@ class FusedOutputLinear(torch.nn.Linear):
         hidden_states = hidden_states.reshape(b * s, h).contiguous()
         labels = labels.reshape(b * s).contiguous()
 
+        weight = self.projection_weight()
         if temperature is None:
             assert support is None, "Sampling evidence requires per-token temperatures"
             # needs_input_grad follows requires_grad, also under no_grad: a detached weight skips the gradients there.
-            weight = self.weight if torch.is_grad_enabled() else self.weight.detach()
+            weight = weight if torch.is_grad_enabled() else weight.detach()
             loss = _ChunkedCrossEntropySumFn.apply(hidden_states, weight, labels, self.chunk_size, self.softcap)
             return PrimeLmOutput(loss=loss)
 
@@ -146,7 +157,7 @@ class FusedOutputLinear(torch.nn.Linear):
             offsets = support.offsets
         logprobs, entropy, support_logprobs = _SequenceChunkedLogProbEntropyFn.apply(
             hidden_states,
-            self.weight,
+            weight,
             labels,
             inv_t,
             self.chunk_size,
@@ -162,7 +173,7 @@ class FusedOutputLinear(torch.nn.Linear):
         )
 
 
-class VanillaOutputLinear(torch.nn.Linear):
+class VanillaOutputLinear(_OutputLinear):
     """LM head that returns the full logits, or with ``labels`` and no ``temperature`` the summed fp32
     cross-entropy over labels != IGNORE_INDEX as ``loss``. The logits are FP32, also from BF16 operands (see
     ``fp32_output_mm``); with ``softcap`` they are capped first."""
@@ -178,7 +189,7 @@ class VanillaOutputLinear(torch.nn.Linear):
         temperature: Tensor | None = None,
         support: TokenSupport | None = None,
     ) -> PrimeLmOutput:
-        logits = FP32OutputMatmulBF16Backward.apply(hidden_states.flatten(0, -2), self.weight).unflatten(
+        logits = FP32OutputMatmulBF16Backward.apply(hidden_states.flatten(0, -2), self.projection_weight()).unflatten(
             0, hidden_states.shape[:-1]
         )
         if self.softcap is not None:
@@ -526,12 +537,15 @@ def _cross_entropy(logits: Tensor, labels: Tensor, loss: Tensor, with_grad: bool
     ``with_grad`` it also returns the gradient w.r.t. ``logits``: softmax minus one-hot, zero on ignored rows. Where
     quack supports it, one quack kernel reads the logits once, does the math in fp32 and writes the gradient over them."""
     if _quack_cross_entropy_supported(logits):
-        # The kernel reads the label's logit unchecked: check the labels on the device, without a host sync.
+        # The kernel trusts the labels: check them on the device, without a host sync.
         in_vocab = (labels >= 0) & (labels < logits.shape[1])
         torch._assert_async((in_vocab | (labels == IGNORE_INDEX)).all())
+        # Left to itself, the kernel reads each label's logit from the logits while other CTAs of the row write the
+        # gradient over them, unordered, and sometimes gets the gradient. Gather the labels' logits first and pass them.
+        label_logits = logits.gather(1, labels.clamp(min=0).unsqueeze(1)).squeeze(1)
         # dx=None selects quack's online-softmax variant, which returns NaN when a warp's columns all lie past the
         # vocab (Dao-AILab/quack#64). Always writing the gradient keeps the two-pass variant.
-        _quack_cross_entropy_fwd_out()(logits, labels, None, loss, None, logits, None, IGNORE_INDEX)
+        _quack_cross_entropy_fwd_out()(logits, labels, label_logits, loss, None, logits, None, IGNORE_INDEX)
         return logits if with_grad else None
 
     valid = labels != IGNORE_INDEX
@@ -654,6 +668,7 @@ def inject_prime_lm_head(
         model.lm_head = VanillaOutputLinear(
             in_features=old_lm_head.in_features, out_features=old_lm_head.out_features, softcap=softcap
         )
+    model.lm_head.unpadded_vocab_size = getattr(old_lm_head, "unpadded_vocab_size", None)
     model.lm_head.weight = old_lm_head.weight
     del old_lm_head
 

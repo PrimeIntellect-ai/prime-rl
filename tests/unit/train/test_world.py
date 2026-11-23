@@ -4,8 +4,6 @@ import pytest
 
 from prime_rl.trainer.world import get_world
 
-ENV_VARS = ["RANK", "WORLD_SIZE", "LOCAL_RANK", "LOCAL_WORLD_SIZE"]
-
 
 def test_init_with_default_args():
     world = get_world()

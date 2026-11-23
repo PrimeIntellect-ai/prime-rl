@@ -1,0 +1,50 @@
+# A short reverse-text RL run for the tiny GPU CI job: 5 steps of 32 samples, no checkpoint.
+max_steps = 5
+seq_len = 2048
+
+[weight_broadcast]
+# TEMP: NCCL weight broadcast currently crashes the trainer on CI GPU runners
+# (trainer exits during NCCL init). Use filesystem transport until the NCCL
+# path is fixed. See CI RL integration test failures on main.
+type = "filesystem"
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[trainer.model]
+# The tiny SFT test covers the compiled trainer
+compile = "None"
+
+[trainer.optim]
+lr = 3e-6
+
+[orchestrator]
+batch_size = 32
+
+[orchestrator.train]
+group_size = 8
+
+[orchestrator.concurrency]
+max_inflight = 32
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.train.source]]
+name = "reverse-text"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[inference]
+
+[inference.vllm]
+max_model_len = 2048
+# CUDA graph capture, torch.compile and FlashInfer autotuning take longer at startup than they save in five steps
+enforce_eager = true
+enable_flashinfer_autotune = false
+
+# PrimeIntellect Qwen3 fine-tune - select its renderer explicitly (the -SFT
+# suffix misses the MODEL_RENDERER_MAP exact match).
+[orchestrator.renderer]
+name = "prime-qwen3"

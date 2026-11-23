@@ -710,6 +710,7 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
     _MAX_INFLIGHT_BACKWARDS = 16
     _TIMEOUT_SECONDS = 120.0
     _MASTER_WEIGHT_STATE = "prime_rl_master_weight"
+    checkpoint_weights_key = _MASTER_WEIGHT_STATE
 
     def __init__(
         self,
@@ -1033,16 +1034,9 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
             self._gradient_manager.wait_for_output_slots()
         self._initialized = True
 
-    @torch.no_grad()
     def finish_model_only_checkpoint_load(self) -> None:
-        if self._master_weights is None:
-            raise RuntimeError("Full optimizer offload has no master weights")
-        for master in self._master_weights.values():
-            if not isinstance(master.model_param, DTensor):
-                raise TypeError(f"Expected FSDP2 DTensor parameter, got {type(master.model_param)}")
-            master.cpu_tensor.copy_(master.model_param.to_local(), non_blocking=True)
-        torch.cuda.synchronize()
-        self._initialized = True
+        # The checkpoint's model weights load into the masters
+        self.finish_checkpoint_load()
 
 
 @torch.no_grad()

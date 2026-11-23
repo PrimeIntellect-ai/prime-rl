@@ -240,7 +240,12 @@ class Glm5NextTextModel(Glm5NextPreTrainedModel):
         mhc_states = inputs_embeds.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()
         for layer_idx, decoder_layer in enumerate(self.layers):
             layer_routed_experts = routed_experts[:, :, layer_idx].contiguous() if routed_experts is not None else None
-            mhc_states = decoder_layer(mhc_states, cu_seqlens, pool_layout, routed_experts=layer_routed_experts)
+            mhc_states = decoder_layer(
+                mhc_states=mhc_states,
+                cu_seqlens=cu_seqlens,
+                pool_layout=pool_layout,
+                routed_experts=layer_routed_experts,
+            )
         return BaseModelOutput(last_hidden_state=self.norm(mhc_states.mean(dim=2)))
 
 

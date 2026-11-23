@@ -253,6 +253,9 @@ def write_back_loaded_packed_optimizer_state(
                     continue
                 logical_param_states = [checkpoint_state_dict["state"][fqn] for fqn in packed_info.logical_fqns]
                 for state_key, value in state.items():
+                    # A load without the optimizer state still writes back full offload's masters
+                    if state_key not in logical_param_states[0]:
+                        continue
                     loaded_value = logical_param_states[0][state_key]
                     if isinstance(value, torch.Tensor) and value.shape == packed_info.parameter.shape:
                         loaded_value = packed_info.spec.pack_logical_tensors(

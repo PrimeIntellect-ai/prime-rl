@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -33,7 +34,7 @@ from verifiers.v1.configs.client import (
 )
 
 from prime_rl.configs.algorithm import FrozenModelConfig
-from prime_rl.configs.shared import ClientConfig, PolicyClientConfig
+from prime_rl.configs.shared import ADMIN_TOKEN_HEADER, ClientConfig, PolicyClientConfig
 from prime_rl.utils.logger import get_logger
 
 
@@ -180,7 +181,7 @@ class AdminPlane:
     """Runs after each policy transfer while the engines are still paused (a draft swap)."""
 
     def __init__(self, client_config: ClientConfig, roles: list[str | None] | None = None):
-        self.clients = setup_admin_clients(client_config)
+        self.clients = setup_admin_clients(client_config, send_admin_token=True)
         self.roles = roles
         # When admin URLs bypass a router, also health-check the client-facing
         # (router) endpoint - it only starts serving once its workers are healthy.
@@ -232,10 +233,11 @@ class AdminPlane:
                 )
                 response.raise_for_status()
             except httpx.HTTPStatusError as error:
-                if error.response.status_code == 404:
-                    get_logger().warning(
-                        "The route /init_broadcaster does not exist. Skipping NCCL broadcast initialization."
-                    )
+                if error.response.status_code != 404:
+                    raise
+                get_logger().warning(
+                    "The route /init_broadcaster does not exist. Skipping NCCL broadcast initialization."
+                )
 
         await asyncio.gather(
             *(
@@ -447,13 +449,19 @@ def _setup_session_client(client_config: ClientConfig) -> AsyncClient:
 
 
 def setup_admin_clients(
-    client_config: ClientConfig, limits: httpx.Limits = httpx.Limits(max_connections=4, max_keepalive_connections=1)
+    client_config: ClientConfig,
+    limits: httpx.Limits = httpx.Limits(max_connections=4, max_keepalive_connections=1),
+    *,
+    send_admin_token: bool = False,
 ) -> list[AsyncClient]:
     """Create dedicated admin clients for weight update operations.
 
     Uses a separate connection pool to avoid queueing behind streaming requests.
     When admin_base_url is set, uses those URLs instead of base_url, allowing
     weight updates to bypass routers in disaggregated P/D deployments.
+
+    ``send_admin_token`` attaches the admin token to every request. Only the clients
+    that call the engines' admin routes set it, so routers never see the token.
     """
     urls = client_config.admin_base_url if client_config.admin_base_url else [client_config.base_url]
 
@@ -463,6 +471,10 @@ def setup_admin_clients(
         api_key = resolve_api_key(config)
         if api_key != "EMPTY":
             headers["Authorization"] = f"Bearer {api_key}"
+        if send_admin_token and client_config.admin_token_var is not None:
+            admin_token = os.environ.get(client_config.admin_token_var)
+            if admin_token:
+                headers[ADMIN_TOKEN_HEADER] = admin_token
 
         # Strip /v1 suffix since admin endpoints are at root level
         base_url = base_url.rstrip("/").removesuffix("/v1")
@@ -646,8 +658,8 @@ def _is_retryable_lora_error(exception: BaseException) -> bool:
 # (small adapter file + KV cache reset, single-digit seconds in practice) but
 # the global admin AsyncClient uses `timeout=None`, so a stuck server would
 # hang the orchestrator forever.
-# `_PER_ATTEMPT` converts a hang into a TimeoutException so tenacity retries;
-# `_TOTAL` is the wall-clock budget across all retries — pick whichever
+# `LORA_LOAD_READ_TIMEOUT_S` converts a hang into a TimeoutException so tenacity
+# retries; `LORA_LOAD_TOTAL_TIMEOUT_S` is the wall-clock budget across all retries — pick whichever
 # stop condition fires first.
 LORA_LOAD_READ_TIMEOUT_S = 30.0
 LORA_LOAD_TOTAL_TIMEOUT_S = 120.0

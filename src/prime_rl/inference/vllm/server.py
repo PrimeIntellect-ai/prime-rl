@@ -1,10 +1,11 @@
 import asyncio
 import gc
+import os
 from argparse import Namespace
 from typing import Literal
 
 import uvloop
-from fastapi import APIRouter, FastAPI, HTTPException, Request, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from starlette.datastructures import State
 from vllm.engine.protocol import EngineClient
@@ -17,13 +18,26 @@ from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.shared import ADMIN_TOKEN_HEADER
 from prime_rl.inference.server import setup_model_source
+from prime_rl.utils.admin_token import admin_token_matches, digest_var, expected_admin_digest
 from prime_rl.utils.specdec import check_draft_swap, local_draft_dir
 
 logger = init_logger("vllm.entrypoints.launchers.api_server.entry")
 
-# Create our own router for custom endpoints
+
+def require_admin_token(request: Request) -> None:
+    """Reject the request unless it carries the server's admin token. A server started without one accepts every request."""
+    expected = request.app.state.admin_token_digest
+    if expected is None:
+        return
+    if not admin_token_matches(request.headers.get(ADMIN_TOKEN_HEADER), expected):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing or invalid admin token")
+
+
+# Routes that change engine state require the admin token; probes stay on the open router.
 router = APIRouter()
+admin_router = APIRouter(dependencies=[Depends(require_admin_token)])
 
 
 def engine_client(request: Request) -> EngineClient:
@@ -44,20 +58,20 @@ WORKER_EXTENSION_CLS = {
 }
 
 
-@router.post("/pause")
+@admin_router.post("/pause")
 async def pause(request: Request):
     logger.debug("Received /pause request (mode=keep, clear_cache=False)")
     await engine_client(request).pause_generation(mode="keep", clear_cache=False)
     return {"status": "paused"}
 
 
-@router.post("/resume")
+@admin_router.post("/resume")
 async def resume(request: Request):
     await engine_client(request).resume_generation()
     return {"status": "resumed"}
 
 
-@router.post("/update_weights")
+@admin_router.post("/update_weights")
 async def update_weights(request: Request):
     data = await request.json()
     client = engine_client(request)
@@ -67,7 +81,7 @@ async def update_weights(request: Request):
     return {"status": "ok"}
 
 
-@router.post("/prefetch_weights")
+@admin_router.post("/prefetch_weights")
 async def prefetch_weights(request: Request):
     """Start decoding a sparse weight delta in the workers and wait for it without
     blocking generation: the workers decode on a background thread."""
@@ -79,7 +93,7 @@ async def prefetch_weights(request: Request):
     return {"status": "ok"}
 
 
-@router.post("/update_weights_from_modelexpress")
+@admin_router.post("/update_weights_from_modelexpress")
 async def update_weights_from_modelexpress(request: Request):
     data = await request.json()
     client = engine_client(request)
@@ -88,7 +102,7 @@ async def update_weights_from_modelexpress(request: Request):
     return {"status": "ok"}
 
 
-@router.post("/update_draft_weights")
+@admin_router.post("/update_draft_weights")
 async def update_draft_weights(request: Request):
     """Load a draft checkpoint from disk on every engine. Cached draft KV stays; the target verifies every token."""
     weight_dir = (await request.json())["weight_dir"]
@@ -105,7 +119,7 @@ async def update_draft_weights(request: Request):
     return {"status": "ok"}
 
 
-@router.get("/weight_fingerprint/{target}")
+@admin_router.get("/weight_fingerprint/{target}")
 async def weight_fingerprint(request: Request, target: Literal["model", "draft"]):
     # vLLM's public collective RPC discards all but the first DP engine's result.
     results = await engine_client(request).engine_core.call_utility_all_async(
@@ -114,9 +128,10 @@ async def weight_fingerprint(request: Request, target: Literal["model", "draft"]
     return {"results": [worker for engine in results for worker in engine]}
 
 
-@router.post("/load_lora_adapter")
+@admin_router.post("/load_lora_adapter")
 async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request, weight_version: str):
-    """Wrapper around vLLM's /v1/load_lora_adapter.
+    """Load a LoRA adapter through the handler behind vLLM's /v1/load_lora_adapter (which
+    ``drop_unused_routes`` removes).
 
     prime-rl reloads a fixed-name adapter with fresh weights every step (the path
     changes per policy version; the name is constant — the model name every client
@@ -150,7 +165,7 @@ async def liveness(raw_request: Request):
     return {"status": "ok"}
 
 
-@router.post("/init_broadcaster")
+@admin_router.post("/init_broadcaster")
 async def init_broadcaster(request: Request):
     data = await request.json()
     host = data.get("host")
@@ -183,6 +198,12 @@ async def custom_init_app_state(
     await init_app_state(engine_client, state, args, supported_tasks)
 
     state.liveness_timeout_seconds = args.liveness_timeout_seconds
+    state.admin_token_digest = expected_admin_digest(args.admin_token_var)
+    if state.admin_token_digest is None:
+        logger.warning(
+            f"${args.admin_token_var} and ${digest_var(args.admin_token_var)} are not set: the admin routes (weight updates, pause/resume, "
+            "broadcaster setup, LoRA loading) accept unauthenticated requests"
+        )
 
     # Swap in our ServingTokens subclass for /inference/v1/generate so the
     # X-data-parallel-rank header and routed_experts response field — both
@@ -213,20 +234,28 @@ from vllm.v1.utils import run_api_server_worker_proc as _original_run_api_server
 # adapters. prime-rl uses neither.
 SAGEMAKER_ROUTE_PATHS = frozenset({"/invocations", "/adapters", "/adapters/{adapter_name}"})
 
+# vLLM mounts its own LoRA routes when VLLM_ALLOW_RUNTIME_LORA_UPDATING is set, as it is for
+# LoRA runs. They sit behind vLLM's API key only when one is set, and the launchers set none.
+# prime-rl loads adapters through its own /load_lora_adapter and never unloads them.
+LORA_ROUTE_PATHS = frozenset({"/v1/load_lora_adapter", "/v1/unload_lora_adapter"})
 
-def drop_sagemaker_routes(app: FastAPI) -> None:
+UNUSED_ROUTE_PATHS = SAGEMAKER_ROUTE_PATHS | LORA_ROUTE_PATHS
+
+
+def drop_unused_routes(app: FastAPI) -> None:
     app.router.routes[:] = [
-        route for route in app.router.routes if getattr(route, "path", None) not in SAGEMAKER_ROUTE_PATHS
+        route for route in app.router.routes if getattr(route, "path", None) not in UNUSED_ROUTE_PATHS
     ]
 
 
 def custom_build_app(args: Namespace, supported_tasks: tuple, model_config=None):
     """
-    Wrap build_app to include our custom router and drop the SageMaker routes.
+    Wrap build_app to include our custom router and drop the vLLM routes prime-rl does not use.
     """
     app = _original_build_app(args, supported_tasks, model_config)
-    drop_sagemaker_routes(app)
+    drop_unused_routes(app)
     app.include_router(router)
+    app.include_router(admin_router)
     return app
 
 
@@ -249,8 +278,6 @@ vllm.v1.utils.run_api_server_worker_proc = custom_run_api_server_worker_proc
 # Only difference we do some config translation (i.e. pass populated namespace
 # to `parse_args`) and additional arg validation
 def server(config: InferenceConfig):
-    import os
-
     from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
     from vllm.entrypoints.launchers.api_server.entry import run_server
 
@@ -258,6 +285,10 @@ def server(config: InferenceConfig):
     lora_target_modules = config.vllm.lora_target_modules
     if lora_target_modules and not any("expert" in m for m in lora_target_modules):
         os.environ["PRIME_NO_MOE_LORA"] = "1"
+
+    token_var = config.server.admin_token_var
+    if config.server.require_admin_token and expected_admin_digest(token_var) is None:
+        raise ValueError(f"server.require_admin_token is set but neither ${token_var} nor ${digest_var(token_var)} is")
 
     setup_model_source(config)
     namespace = config.to_namespace()

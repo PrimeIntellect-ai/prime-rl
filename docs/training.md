@@ -201,6 +201,38 @@ The trainer warns when batch wait time exceeds active trainer time. Add inferenc
 
 `uv run sft` runs supervised fine-tuning from a HF dataset. It shares model loaders, FSDP setup, checkpointing, and the chat-template plumbing with the RL trainer, so a typical workflow is _SFT → RL → SFT → …_ without any reformatting.
 
+### Sources
+
+The run trains on one or more `[[data.source]]` tables, the same shape as [pretraining](#pretraining) sources. A source is one `(dataset, subset, split)` of a HF dataset or local path, with a unique `name` that keys its metrics:
+
+```toml
+[data]
+seq_len = 4096
+batch_size = 32
+
+[[data.source]]
+name = "chat"
+dataset = "org/sft-release"
+subset = "chat"
+weight = 3                 # relative to the other weights; leave it out on every source for natural shares
+
+[[data.source]]
+name = "reasoning"
+dataset = "org/sft-release"
+subset = "reasoning"
+revision = "abc123"
+weight = 1
+renderer.reasoning_effort = "high"
+columns.messages = "conversation"
+```
+
+- **Weights.** A source's share of the drawn samples is its weight over the sum of the weights. Set `weight` on every source or on none. Without weights, a source's share is its share of all rows: every epoch reads each row once.
+- **Order.** The sources take turns by due time (weighted fair queuing), so every stretch of samples holds the mixture. A source reads its rows in passes, each in its own seeded order (`data.shuffle`, `data.seed`), and repeats when the other sources still draw. `max_steps` sets the length of the run.
+- **Columns and renderer.** `data.columns` applies to every source; a source's `columns` overrides single fields. A source's `renderer` table sets chat-template kwargs for its rows, over `[renderer]` and under a row's `[data.columns.renderer]` values. It needs a typed `[renderer]`.
+- **Fake data.** `[data.fake]` replaces the sources with synthetic token sequences of `seq_len` tokens (`length = "variable"` for random lengths, `input_ids = "random"` for random ids), as `[data.fake]` does for the RL trainer. It needs no renderer and is for throughput and plumbing tests.
+- **Resume.** The data state is the count of draws of every source. With the same sources, weights, GPUs, model-parallel layout and `num_workers`, a resume continues the draws exactly; `batch_size` may change, since the draws do not depend on it. The sources, their weights, the number of GPUs, the model-parallel layout (e.g. `model.cp`) and `num_workers` may change too. Sources match by name, as in pretraining: a kept source continues its draws, an added one (also a renamed one) starts at its first, and a removed one stops. From a change of the mixture on, the sources take turns by their draws since the change, so the new shares hold at once. Any of these changes starts every dataloader worker of every rank at the furthest draw that any saved worker had reached: a worker that was behind skips its draws up to there (at most the gap between the workers), every worker drops its sample drawn but not yet packed, and the rows of kept sources among them come back in the next pass. A checkpoint from before the mixture was recorded always starts that way and resumes with the configured weights. A resume stops with an error if a kept source's number of rows changed, or if such an older checkpoint has other sources than the configured ones.
+- **Validation.** `[val.data]` takes sources in the same shape. Every validation reads one epoch: without weights, every row of every source once.
+
 ### Dataset Format
 
 Two accepted layouts:
@@ -208,7 +240,7 @@ Two accepted layouts:
 - **Prompt-completion**: a HF dataset with `prompt` and `completion` columns ([TRL format](https://huggingface.co/docs/trl/en/dataset_formats#prompt-completion)). The trainer masks out the prompt and computes loss only over the completion.
 - **Messages**: a HF dataset with a single `messages` column containing a list of chat turns. The trainer interprets the whole conversation as one sample, applies role-based loss masking, and trains over all assistant turns.
 
-If both columns are present, `messages` takes precedence. A dataset that stores these under other names maps them in `[data.columns]`; the trainer renames the columns at load time:
+If both columns are present, `messages` takes precedence. A dataset that stores these under other names maps them in `[data.columns]`, or per source in its `columns`:
 
 ```toml
 [data.columns]
@@ -318,7 +350,7 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 
 | Knob | What it controls |
 |---|---|
-| `data.name` | HF dataset name or local path |
+| `data.source` | The sources to draw samples from; see [Sources](#sources) |
 | `data.batch_size` | Tokens per trainer step (packed) |
 | `data.seq_len` | Per-sample sequence length |
 | `loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |
@@ -332,10 +364,11 @@ Pulled from the console log and mirrored to W&B.
 **Progress and loss:**
 
 - `loss/mean`, `loss/perplexity` — main signal. Should decrease through the run.
-- `val/loss`, `val/perplexity` — validation metrics when `[val]` is set, logged every `val.interval` steps.
+- `val/loss`, `val/perplexity` — SFT validation metrics when `[val]` is set, logged every `val.interval` steps. Pretraining logs `val/<name>/loss@<seq_len>` and `val/<name>/bpb@<seq_len>` per validation set; see [Pretraining](#pretraining).
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
-- `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
+- `progress/<name>/{num_samples,epoch}` — SFT: a source's drawn samples over all ranks and its passes over its rows. With several sources, `progress/<name>/ratio_{samples,tokens}` is the realized mixture of rank 0's samples and tokens.
+- `progress/<name>/{num_tokens,unique_tokens,repetitions,mean_segment_length}` — pretraining: a source's tokens read, the unique ones among them (at most its subset's), their ratio, and the mean length of its document pieces in the step's rows; `progress/{unique_tokens,repetitions,mean_segment_length}` over all sources. In pretraining, `progress/epoch` is the tokens read over all sources' tokens.
 
 **Stability and optimization:**
 
@@ -381,7 +414,7 @@ LocalPipelineExecutor(
 ).run()
 ```
 
-**Configure.** Only `data.paths` is required:
+**Configure.** Only `[[data.source]]` (a name and a folder each) is required:
 
 ```toml
 mode = "pretrain"          # optional; lets `uv run launch` run this config
@@ -391,22 +424,39 @@ max_steps = 1000
 name = "Qwen/Qwen3-0.6B"   # only the architecture is read
 
 [data]
-paths = ["data/fineweb-edu"]
 seq_len = 2048
 batch_size = 256
 
+[[data.source]]
+name = "web"
+path = "data/fineweb-edu"
+weight = 7                 # relative to the other weights; leave it out on every source for natural shares
+
+[[data.source]]
+name = "code"
+path = "data/code"
+weight = 3
+repetitions = 4            # optional: every token seen 4 times, so a subset of its share (3/10) x the run's tokens / 4
+
 [val]                      # optional
 interval = 100
-num_samples = 512          # documents per validation; leave out to score every held-out document
+num_samples = 512          # optional: the first 512 documents of each set; default: all of them
 
-[val.data]
-paths = ["data/fineweb-edu-val"]
-seq_len = 2048
+[[val.set]]
+type = "documents"
+name = "fineweb-edu"
+path = "data/fineweb-edu-val"
 ```
 
-All files in `data.paths` (in folder order, then file name order) form one token pool. Each epoch reads every `seq_len` window of the pool once, in a new random order and from a new random offset drawn from `data.seed`. Attention and positions restart at every document; `data.document_masking = false` makes a window one sequence. In training, the model is not trained to predict the next document's first token: there is no loss where the input is the document separator (`data.eod_mask_loss = false` turns this off). The separator is the special token the training shards' documents end with, detected at startup; shards whose documents start with BOS have nothing to mask. A resumed run reads exactly the windows an uninterrupted run would, also on another number of GPUs, as long as `data.num_workers` stays the same.
+**Mixture.** Weights are relative: a source's share of the training tokens is its weight over the sum of all weights, so `7` and `3` give the same mixture as `0.7` and `0.3`. Set `weight` on every source or on none; without weights, a source's share is its share of all sources' tokens. The sources take turns deterministically, so every step holds the mixture up to about one document per source.
 
-Validation scores every document in `val.data.paths` on its own, from its first token, and logs the mean loss over all scored tokens as `val/loss`. A document is cut into non-overlapping windows of `val.data.seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it. Every token after a document's first is scored, and no position predicts a token of another document. The windows are packed into rows of `val.data.seq_len * val.data.micro_batch_size` tokens and shared out over the data-parallel ranks. `val.num_samples` limits every validation to the first documents of the held-out shards, the same ones every time; without it, every validation scores all of them.
+**Repetitions.** `repetitions` is how often every token of a source is seen over the run (`max_steps * batch_size * seq_len` tokens; needs `max_steps`). The source then reads a fixed, seeded subset of `share * run tokens / repetitions` tokens that many times. Without it, a source is read whole, in a new order on every pass.
+
+**Rows.** Documents longer than `seq_len` are cut into `seq_len` pieces. A step's documents fill `batch_size` rows of exactly `seq_len` tokens, without padding and without losing a prediction within a document. Attention and positions restart at every document and piece (`data.document_masking = false` makes a row one sequence). With `data.eod_mask_loss` (on by default), positions whose input is the separator have no loss: their target is the first token of another document.
+
+**Resume.** A resume is exact, also on another number of GPUs or dataloader workers (`num_workers`). The sources, their weights and `batch_size` may change. Sources match by name: a kept source reads on where it stopped, in the same order; an added one (also a renamed one) starts at its beginning; a removed one stops (weight 0 pauses a source and keeps its place). A source may move to another folder. From the change on, the sources take turns by their tokens since the change, so every step holds the new mixture at once, and the `progress/<name>/*` metrics count on. `seq_len` and `seed` may change too. A source with `repetitions` keeps its subset unless `max_steps`, `batch_size`, `seq_len`, `seed`, its share (its weight or the other sources) or its `repetitions` change; then its subset holds the tokens the source reads over the whole run, the ones already read and its share of the remaining steps at the new settings, over its `repetitions`, so the run still reads it that many times on average (the units of the old subset more often, the new ones less). Every source (`seq_len`, `seed`) or a source whose subset changed starts a new pass at the change, without the rest of the unit cut at the step's end. That breaks the passes once: the units the interrupted pass had not read come back in the next pass, and the ones it had read can come back sooner. A resume stops with an error if the files of a kept source (their tokens and documents) change. With `ckpt.skip_dataloader`, the run resumes without the data state: the data starts over from step 0, in the same order as at the run's start (a different `data.seed` gives a different order). `data.batch_size` must be a multiple of dp × `num_workers` × `micro_batch_size`.
+
+**Validation.** `[val]` scores named held-out document sets every `val.interval` steps (also before the first step with `val.eval_on_start`). Each `[[val.set]]` table has `type = "documents"`, a unique `name`, a `path` (a folder of datatrove tokenized shards) and an optional `seq_len` (default: `data.seq_len`). Every document is scored on its own, from its first token, with the tokens as stored, in non-overlapping windows of `seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it. Every set logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and with a byte-level BPE tokenizer `val/<name>/bpb@<seq_len>`, the bits per UTF-8 byte of the scored tokens (special tokens count 0 bytes), e.g. `val/fineweb-edu/bpb@2k`. With another tokenizer (e.g. SentencePiece), the trainer logs one warning and only the loss. The sets are read once at startup. At every validation, the windows of all sets are packed longest first into rows of `val.micro_batch_tokens` tokens (default: the training micro-batch, `data.seq_len * data.micro_batch_size`, or the longest set `seq_len` if that is longer, rounded up to a multiple of `model.cp`), with attention and positions restarting at every window and the rest of a row padded, and the rows are shared out over the data-parallel ranks. The log-probs are computed in fp32. `val.num_samples` limits every validation to the first documents of each set, the same ones every time. `val.save_arrays` writes the per-document arrays of every set (summed loss, scored tokens, greedy hits and bytes) to `<run_dir>/val/step_N/`.
 
 **Launch.**
 
@@ -525,16 +575,18 @@ uv run rl @ rl.toml --model.name outputs/my-sft/checkpoints/step_500 --orchestra
 
 ### Pausing or Checkpointing a Live Run
 
-With `--trainer.control` and `--orchestrator.control` (SFT: `--control`), the trainer serves a small control API on port 8040 and the orchestrator on 8041. Each saves only its own state, so a pause asks the trainer first: it accepts the pause at its next step N, trains N, saves it and stops. The orchestrator is then asked to pause at N and saves its state as of shipping N, which it can always do because a paused trainer never requests N + 1. A pause is `committed` on each once that component saved N, and the run continues with `--resume`:
+With `--trainer.control` and `--orchestrator.control` (SFT: `--control`), the trainer serves a small control API on port 8040 and the orchestrator on 8041. Each saves only its own state, so a pause asks the trainer first: it accepts the pause at its next step N, trains N, saves it and stops. The orchestrator is then asked to pause at N and saves its state as of shipping N, which it can always do because a paused trainer never requests N + 1. A pause is `committed` on each once that component saved N, and the run continues with `--resume`. Every request needs the run's admin token in the `X-Prime-Admin-Token` header ([Admin Routes](inference.md#admin-routes)); the launcher generates one per run unless `PRIME_RL_ADMIN_TOKEN` is set, so set it to call the API yourself:
 
 ```bash
+export PRIME_RL_ADMIN_TOKEN=$(openssl rand -hex 32)
 uv run rl @ rl.toml --ckpt --trainer.control --orchestrator.control --run.name my-run
 
-curl -X POST localhost:8040/v1/actions -H 'content-type: application/json' -d '{"type": "pause"}'
+AUTH="X-Prime-Admin-Token: $PRIME_RL_ADMIN_TOKEN"
+curl -X POST localhost:8040/v1/actions -H "$AUTH" -H 'content-type: application/json' -d '{"type": "pause"}'
 # {"id": "3f2a...", "type": "pause", "state": "pending", "step": null, "changes": null}
-curl localhost:8040/v1/actions/3f2a...
+curl localhost:8040/v1/actions/3f2a... -H "$AUTH"
 # {"id": "3f2a...", "type": "pause", "state": "accepted", "step": 12, "changes": null}
-curl -X POST localhost:8041/v1/actions -H 'content-type: application/json' -d '{"type": "pause", "step": 12}'
+curl -X POST localhost:8041/v1/actions -H "$AUTH" -H 'content-type: application/json' -d '{"type": "pause", "step": 12}'
 # {"id": "9c41...", "type": "pause", "state": "pending", "step": 12, "changes": null}
 ```
 
