@@ -154,3 +154,31 @@ def test_receiver_prefetches_again_when_a_restarted_trainer_offers_the_version_a
 
     asyncio.run(run())
     assert prefetched == ["first", "second"] and updated == [True]
+
+
+def _check_shard_ownership(rank, rendezvous):
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.tensor import Replicate, Shard, distribute_tensor
+
+    from prime_rl.transports.weights.sparse import SparseDeltaEncoder
+
+    dist.init_process_group("gloo", init_method=rendezvous, rank=rank, world_size=4)
+    try:
+        mesh = init_device_mesh("cpu", (2, 2))
+        weight = torch.arange(1, 16).reshape(5, 3)
+        for placements in [(Replicate(), Shard(0)), (Shard(0), Replicate()), (Replicate(), Replicate())]:
+            tensor = distribute_tensor(weight, mesh, placements)
+            shard = SparseDeltaEncoder._local_shard("weight", tensor, rank == 0)
+            published = torch.zeros_like(weight).flatten()
+            if shard is not None:
+                values, offset = shard
+                published[offset : offset + values.numel()] = values.flatten()
+            dist.all_reduce(published)
+            torch.testing.assert_close(published, weight.flatten())
+    finally:
+        dist.destroy_process_group()
+
+
+def test_hsdp_shards_contribute_once(tmp_path):
+    torch.multiprocessing.spawn(_check_shard_ownership, args=((tmp_path / "rendezvous").as_uri(),), nprocs=4)

@@ -204,13 +204,18 @@ class SparseDeltaEncoder:
             self.compiled_fp8 = compile_fp8_quantizer()
             get_logger().info(f"Compiled the fp8 quantizer ahead of time in {time.perf_counter() - start:.1f}s")
 
-    def _local_shard(self, key: str, value: torch.Tensor, is_master: bool) -> tuple[torch.Tensor, int] | None:
+    @staticmethod
+    def _local_shard(key: str, value: torch.Tensor, is_master: bool) -> tuple[torch.Tensor, int] | None:
         """This rank's dim-0 slice of ``value`` and its global flat offset, or None when another rank owns the
         elements. Not flattened here: ``reshape(-1)`` copies a non-contiguous slice."""
         if not isinstance(value, DTensor):
             return (value.detach(), 0) if is_master else None
         if all(placement.is_replicate() for placement in value.placements):
             return (value.to_local().detach(), 0) if is_master else None
+        # HSDP repeats each shard along its replicate dimensions. Publish it from just the first replica.
+        coordinate = value.device_mesh.get_coordinate()
+        if coordinate is None or any(p.is_replicate() and i != 0 for p, i in zip(value.placements, coordinate)):
+            return None
         local_shape, global_offset = compute_local_shape_and_global_offset(
             value.shape, value.device_mesh, value.placements
         )
