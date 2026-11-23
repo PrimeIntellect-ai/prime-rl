@@ -261,3 +261,71 @@ def test_request_whose_kv_load_failed_keeps_no_reservation():
     loading.num_computed_tokens = 0  # the load failed and its blocks were freed
     scheduler._reserve_parked(loading)
     assert scheduler._parked_reserved_blocks == 0 and not scheduler._parked_reservations
+
+
+def test_store_lookup_is_skipped_once_another_connector_matched():
+    """With NIXL ahead of the Mooncake store in a MultiConnector, a request NIXL supplies does not ask the store, even
+    while the store's lookup would still be pending; a request NIXL cannot supply is looked up as before."""
+    from vllm.distributed.kv_transfer.kv_connector.v1.mooncake.store.connector import MooncakeStoreConnector
+    from vllm.distributed.kv_transfer.kv_connector.v1.multi_connector import MultiConnector
+
+    from prime_rl.inference.patches import monkey_patch_skip_store_lookup_after_match
+
+    monkey_patch_skip_store_lookup_after_match()
+    asked: list[str] = []
+
+    def connector(name, answer, cls=None):
+        stub = object.__new__(cls) if cls else SimpleNamespace()
+        stub.get_num_new_matched_tokens = lambda request, computed: asked.append(name) or answer[0]
+        return stub
+
+    nixl_answer, store_answer = [(4096, True)], [(None, False)]
+    multi = object.__new__(MultiConnector)
+    multi._requests_to_connector = {}
+    multi._connectors = [
+        connector("nixl", nixl_answer),
+        connector("store", store_answer, MooncakeStoreConnector),
+        connector("other", [(0, False)]),
+    ]
+    request = SimpleNamespace(request_id="turn-2")
+
+    assert multi.get_num_new_matched_tokens(request, 0) == (4096, True)
+    assert asked == ["nixl", "other"] and multi._requests_to_connector == {"turn-2": 0}
+
+    # No decode handle: the store is asked, and a pending lookup defers the request.
+    asked.clear()
+    nixl_answer[0] = (0, False)
+    assert multi.get_num_new_matched_tokens(request, 0) == (None, False)
+    assert asked == ["nixl", "store"]
+    asked.clear()
+    store_answer[0] = (2048, True)
+    assert multi.get_num_new_matched_tokens(request, 0) == (2048, True)
+    assert asked == ["nixl", "store", "other"] and multi._requests_to_connector == {"turn-2": 1}
+
+
+def test_store_lookup_prefetch_is_skipped_for_requests_with_a_decode_handle():
+    from vllm.distributed.kv_transfer.kv_connector.v1.mooncake.store.scheduler import MooncakeStoreScheduler
+
+    from prime_rl.inference.patches import monkey_patch_skip_store_lookup_after_match
+
+    monkey_patch_skip_store_lookup_after_match()
+    prefetched: list[str] = []
+    scheduler = object.__new__(MooncakeStoreScheduler)
+    scheduler.enable_lookup = scheduler.lookup_async = True
+    scheduler.enable_partial_hash_hits = False
+    scheduler._block_size = scheduler._hash_block_size = 256
+    scheduler.client = SimpleNamespace(prefetch=lambda request_id, num_tokens, hashes: prefetched.append(request_id))
+
+    def request(request_id, params):
+        return SimpleNamespace(
+            request_id=request_id,
+            kv_transfer_params=params,
+            skip_reading_external_kv=False,
+            num_tokens=4096,
+            block_hashes=[b"h"] * 16,
+        )
+
+    scheduler.start_lookup_prefetch(request("turn-1", {"do_remote_decode": True}))
+    scheduler.start_lookup_prefetch(request("turn-2", {"do_remote_decode": True, "remote_block_ids": [[1, 2]]}))
+    scheduler.start_lookup_prefetch(request("plain", None))
+    assert prefetched == ["turn-1", "plain"]

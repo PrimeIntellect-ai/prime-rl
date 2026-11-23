@@ -1500,6 +1500,8 @@ def test_pd_role_connectors():
     decode = config.for_pd_role("decode").build_kv_transfer_config()["kv_connector_extra_config"]["connectors"]
     assert [c["kv_connector"] for c in prefill] == ["NixlConnector", "MooncakeStoreConnector"]
     assert [c["kv_connector"] for c in decode] == ["NixlConnector", "MooncakeStoreConnector"]
+    # The store lookup runs off the scheduler thread.
+    assert prefill[1]["kv_connector_extra_config"]["lookup_async"] is True
     assert decode[1]["kv_connector_extra_config"]["save_decode_cache"]
 
     with pytest.raises(ValidationError, match="decode_kv_cache_offload"):
