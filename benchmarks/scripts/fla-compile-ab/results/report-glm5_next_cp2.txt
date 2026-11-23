@@ -1,0 +1,10 @@
+### glm5_next_cp2
+pr1 d7565ddb6: steps 1-20 total 452.4 s, steps 2-20 total 68.0 s, step 1 384.4 s; last compile at step 1; 19 post-compile steps median 2.092 s mean 3.579 s; steps 3-20 median 2.091 s; peak alloc/reserved 85.00/95.97 GiB
+    layer-frame compiles/rank {0: 1, 1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1, 7: 1}; recompiles/rank {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0}; graph breaks/rank {0: 1, 1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1, 7: 1}; rank 0 ops ['forward:[0]']
+    time/step 1:384.43 2:29.37 3:2.55 4:2.34 5:2.37 6:2.09 7:2.08 8:2.12 9:2.11 10:2.15 11:2.09 12:2.07 13:2.09 14:2.09 15:2.07 16:2.09 17:2.10 18:2.10 19:2.07 20:2.06
+pr2 8d190c835: steps 1-20 total 560.8 s, steps 2-20 total 59.6 s, step 1 501.2 s; last compile at step 1; 19 post-compile steps median 1.665 s mean 3.139 s; steps 3-20 median 1.663 s; peak alloc/reserved 85.00/95.78 GiB
+    layer-frame compiles/rank {0: 3, 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 3}; recompiles/rank {0: 2, 1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 2}; graph breaks/rank {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0}; rank 0 ops ['forward:[2, 2, 2]']
+    recompile on 8 rank(s) at step 1: ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['mlp']), type=<class 'prime_rl.trainer
+    recompile on 8 rank(s) at step 1: ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['self_attn']), type=<class 'prime_rl.t
+    time/step 1:501.16 2:28.90 3:2.02 4:1.88 5:1.94 6:1.65 7:1.65 8:1.71 9:1.68 10:1.69 11:1.67 12:1.65 13:1.66 14:1.67 15:1.63 16:1.65 17:1.68 18:1.66 19:1.64 20:1.63
+pr2 vs pr1: loss max rel 1.07e-04, grad norm max rel 9.32e-04 over 20 steps

@@ -39,7 +39,7 @@ def recompiles(run):
                 if not guard_match:
                     break
                 guards.append(guard_match)
-            guard = re.sub(r"  # .*", "", guards[-1].group(2))[:120] if guards else "?"
+            guard = re.sub(r", \d+\)", ")", re.sub(r"  # .*", "", guards[-1].group(2)))[:120] if guards else "?"
             index = bisect.bisect_right(times, match.group(1))
             found.append((match.group(2), steps[index][1] if index < len(steps) else None, guard))
         per_rank[int(path.split("/")[-2])] = found
@@ -68,7 +68,8 @@ for cell in sys.argv[2:]:
             f"{arm} {summary['sha']}: steps 1-{len(all_steps)} total {sum(all_steps):.1f} s, steps 2-{len(all_steps)} total "
             f"{sum(all_steps[1:]):.1f} s, step 1 {times.get(1):.1f} s; last compile at step {last}; "
             f"{len(post)} post-compile steps median {fmt(statistics.median(post) if post else nan)} s "
-            f"mean {fmt(statistics.mean(post) if post else nan)} s; peak alloc/reserved "
+            f"mean {fmt(statistics.mean(post) if post else nan)} s; steps 3-{len(all_steps)} median "
+            f"{fmt(statistics.median(all_steps[2:]))} s; peak alloc/reserved "
             f"{summary['peak_alloc']:.2f}/{summary['peak_res']:.2f} GiB"
         )
         print(

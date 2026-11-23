@@ -1,0 +1,14 @@
+### qwen3_8_flash_next_cp1
+pr1 d7565ddb6: steps 1-20 total 317.0 s, steps 2-20 total 43.3 s, step 1 273.7 s; last compile at step 1; 19 post-compile steps median 0.970 s mean 2.280 s; steps 3-20 median 0.969 s; peak alloc/reserved 62.66/68.42 GiB
+    layer-frame compiles/rank {0: 3, 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 4}; recompiles/rank {0: 2, 1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 3}; graph breaks/rank {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0}; rank 0 ops ['forward:[2, 2, 2]']
+    recompile on 1 rank(s) at step 1: 6144*kwargs['hidden_states'].size()[1] >= 5242880
+    recompile on 8 rank(s) at step 1: KeyError on self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['ple']
+    recompile on 8 rank(s) at step 1: KeyError on self.__dict__['_modules']['_checkpoint_wrapped_module'].ple
+    time/step 1:273.70 2:1.61 3:1.14 4:0.96 5:25.09 6:1.09 7:0.97 8:0.94 9:0.97 10:0.99 11:0.97 12:0.96 13:0.95 14:0.91 15:0.95 16:0.93 17:0.98 18:0.98 19:0.97 20:0.95
+pr2 8d190c835: steps 1-20 total 322.0 s, steps 2-20 total 43.8 s, step 1 278.2 s; last compile at step 1; 19 post-compile steps median 0.980 s mean 2.306 s; steps 3-20 median 0.975 s; peak alloc/reserved 62.66/68.42 GiB
+    layer-frame compiles/rank {0: 3, 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 4}; recompiles/rank {0: 2, 1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 3}; graph breaks/rank {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0}; rank 0 ops ['forward:[2, 2, 2]']
+    recompile on 1 rank(s) at step 1: 6144*kwargs['hidden_states'].size()[1] >= 5242880
+    recompile on 8 rank(s) at step 1: KeyError on self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['ple']
+    recompile on 8 rank(s) at step 1: KeyError on self.__dict__['_modules']['_checkpoint_wrapped_module'].ple
+    time/step 1:278.18 2:1.62 3:1.21 4:0.96 5:25.41 6:1.12 7:0.98 8:0.94 9:0.98 10:0.98 11:0.99 12:0.95 13:0.95 14:0.91 15:0.95 16:0.94 17:0.98 18:0.98 19:0.97 20:0.96
+pr2 vs pr1: loss max rel 1.71e-04, grad norm max rel 2.86e-02 over 20 steps
