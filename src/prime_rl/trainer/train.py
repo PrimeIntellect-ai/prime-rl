@@ -23,7 +23,7 @@ from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.optim import setup_optimizer
-from prime_rl.trainer.scheduler import setup_scheduler
+from prime_rl.trainer.scheduler import restore_configured_lrs, setup_scheduler
 from prime_rl.trainer.micro_batches import run_micro_batches, step_result, to_host
 from prime_rl.trainer.model import (
     forward,
@@ -189,6 +189,7 @@ def train(config: SFTConfig | PretrainConfig):
         else config.max_steps
     )
     logger.info(f"Initializing scheduler with {scheduler_steps} steps ({config.scheduler})")
+    configured_lrs = [group["lr"] for group in optimizer.param_groups]
     scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
 
     # Set up the dataset and dataloader
@@ -278,8 +279,8 @@ def train(config: SFTConfig | PretrainConfig):
         )
         # The checkpoint finished step ``checkpoint_step``; resume training at the next step.
         progress.step += 1
-        # This redundant setup is necessary because loading the optimizer's state has side effects on the scheduler state dict
         if skip.skip_scheduler:
+            restore_configured_lrs(optimizer, configured_lrs)
             scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
         if isinstance(dataset, SFTDataset) and not skip.skip_dataloader:
             path = resume_dir / "trainer" if resume_dir is not None else ckpt_manager.get_ckpt_path(checkpoint_step)

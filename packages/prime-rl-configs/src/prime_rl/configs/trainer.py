@@ -606,13 +606,14 @@ class CheckpointConfig(BaseConfig):
     """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
 
     skip_scheduler: bool = False
-    """Skip loading the scheduler from checkpoint."""
+    """Skip loading the scheduler from checkpoint: start the configured schedule over the remaining steps."""
 
     skip_dataloader: bool = False
     """Skip loading the dataloader from checkpoint."""
 
     skip_optimizer: bool = False
-    """Skip loading the optimizer state from checkpoint."""
+    """Skip loading the optimizer state from checkpoint. The learning rates still continue the checkpoint's schedule,
+    unless ``skip_scheduler`` is set."""
 
     async_save: bool = False
     """Write checkpoints in the background. A save copies this rank's model and optimizer state into pinned host

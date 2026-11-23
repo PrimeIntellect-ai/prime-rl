@@ -119,3 +119,27 @@ def setup_scheduler(
             )
         case _:
             raise ValueError(f"Invalid scheduler type: {scheduler_config.type}")
+
+
+def restore_configured_lrs(optimizer: OptimizerLike, lrs: list[float]) -> None:
+    """For a fresh schedule after a resume (``ckpt.skip_scheduler``): put back each param group's configured learning
+    rate, ``lrs`` as read from the groups when the optimizer was built, for the fresh schedule to start from. The
+    scheduler built before the load and the optimizer's checkpoint have changed the groups' rates since."""
+    for group, lr in zip(optimizer.param_groups, lrs, strict=True):
+        group["lr"] = lr
+        group.pop("initial_lr", None)
+
+
+def restore_scheduled_lrs(scheduler: LRScheduler) -> None:
+    """For a scheduler loaded without the optimizer's state (``ckpt.skip_optimizer``): put the learning rate of the
+    loaded schedule's last step into each param group, as the optimizer's checkpoint would have. The fresh groups hold
+    the rates the new scheduler set at construction, which the loaded schedule's next steps would otherwise scale."""
+    groups, lrs = scheduler.optimizer.param_groups, scheduler.get_last_lr()
+    if len(groups) != len(lrs):
+        raise ValueError(
+            f"Resuming with ckpt.skip_optimizer: the optimizer has {len(groups)} param groups and the checkpoint's "
+            f"scheduler has learning rates for {len(lrs)}, so the loaded schedule cannot be matched to the groups. "
+            "Resume with ckpt.skip_scheduler too to start a fresh schedule."
+        )
+    for group, lr in zip(groups, lrs):
+        group["lr"] = lr
