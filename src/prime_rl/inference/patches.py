@@ -47,6 +47,10 @@ def apply_shared_vllm_patches():
     monkey_patch_drop_reservation_of_failed_kv_load()
     monkey_patch_skip_store_lookup_after_match()
     monkey_patch_release_failed_kv_loads()
+    from prime_rl.inference.kv_spill import monkey_patch_nixl_spill_expiring_kv_to_store
+
+    # After the spec-decode coverage patch: the spill stores the blocks that patch exports.
+    monkey_patch_nixl_spill_expiring_kv_to_store()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()

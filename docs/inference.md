@@ -354,6 +354,33 @@ decode_blocks_ttl_s = 480   # how long decode keeps a finished turn's blocks
 
 A handle is used at most once. Decode frees the blocks after the first read, so reading them a second time (a retried turn, a client retry after an error) would load whatever KV has since been written there, and the model would continue from corrupted context. The router therefore drops the handle when a turn starts, and a retried turn runs a plain prefill. Requires the `vllm-router` router. HiSparse decode instances are not supported.
 
+##### Spilling idle turns to a store
+
+Decode pins a finished turn's blocks for the whole `decode_blocks_ttl_s`, so sessions that pause between turns fill decode's KV cache with KV nobody is using, and a turn that returns after the lease (or within the router's 30 s margin before it) is recomputed in full. `spill_to_store` removes that trade-off:
+
+1. Shortly before a lease ends unread, decode writes the turn's blocks to a Mooncake store from a background thread, then lets the lease expire.
+2. The router keeps the handle for `fetchable_for_s`. When such a turn comes back, prefill finds the handle expired and fetches the blocks it lacks from the store, in place of the read from decode.
+3. If the store no longer has them, the load fails and the turn is recomputed (`kv_load_failure_policy`, which bidirectional transfer sets to `recompute` by default), as for a declined read.
+
+```toml
+[inference.deployment.bidirectional_kv_transfer]
+decode_blocks_ttl_s = 20          # short: active sessions return within seconds
+
+[inference.deployment.bidirectional_kv_transfer.spill_to_store]
+# start_before_expiry_s = 10      # when the put starts; must leave it time to finish 5 s before the lease ends
+# fetch_wait_s = 6                # how long a fetch waits for a put still in flight
+# fetchable_for_s = 3600          # how long the router keeps the handle
+
+# The store itself. Both roles need it; vLLM's own store lookups, loads and saves stay off.
+[inference.kv_cache_offload]
+type = "mooncake"
+
+[inference.kv_cache_offload.cpu]
+num_bytes = 600_000_000_000       # per node
+```
+
+Full blocks of the main KV group are stored under their content hash, so a session's unchanged prefix is written once and each later spill adds only its new blocks. The store ends up holding about one copy of every live session's context (roughly the same bytes per token as on the GPU), so size it for the sessions you expect to be idle at once; the store evicts least recently used objects when it is full. Nothing runs on the engines' stepping threads.
+
 > **Required:** The pip-wheel NIXL's bundled UCX segfaults on the prefill→decode KV transfer. You must build NIXL against UCX 1.19.x from source — see [Disaggregated Prefill/Decode Inference](advanced.md#disaggregated-prefilldecode-inference) in the Advanced docs for the full setup.
 
 For configuring various knobs with environment variables, we enable you to configure prefill and decode environment variables separately. This is useful if you want to configure different environment variables for the prefill and decode stages.
