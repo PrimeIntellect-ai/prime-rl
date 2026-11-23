@@ -74,7 +74,14 @@ Bringing up a new model family is three steps: implement the modeling code, regi
 
 ### Implement the Modeling Code
 
-Drop the modeling code under `src/prime_rl/trainer/models/<arch>/` (HF-compatible config, modeling, and weight conversion). Mirror the layout of an existing family — `glm4_moe/` or `qwen3_moe/` are good starting points.
+Drop the modeling code under `src/prime_rl/trainer/models/<arch>/`, mirroring an existing family (`glm4_moe/` or `qwen3_moe/` are good starting points). A model family provides:
+
+- **Config**: a subclass of HF `PretrainedConfig`, so the `config.json` the trainer writes stays loadable by vLLM.
+- **Model**: an inner model and a `*ForCausalLM`, both subclassing `PreTrainedModelPrimeRL` (`models/base.py`, a plain `nn.Module`) and ending `__init__` with `self.post_init()`, which initializes the weights off the meta device and then ties them. The inner model returns the output dataclasses from `models/base.py`.
+- **Tying**: set `ties_word_embeddings = True` on the `*ForCausalLM` if the checkpoint can tie `lm_head` to the input embeddings through `tie_word_embeddings`.
+- **Init**: override `_init_weights` for parameters the default init does not cover, calling `super()._init_weights(module)` first, and `init_buffers_post_meta` for buffers no checkpoint carries.
+- **Conversion**: `conversion_chain`, `is_hf_state_dict` and `is_prime_state_dict`, which map between the HF checkpoint and the training layout.
+- **Registration**: the config class / model class pair in `_CUSTOM_CAUSAL_LM_MODELS` (`models/__init__.py`), and the config class with `AutoConfig.register`. A VLM family also registers its composite `model_type` in `_CUSTOM_VLM_MAPPING`.
 
 ### Register a Mini Preset
 
@@ -138,7 +145,7 @@ Don't expect reward to climb meaningfully in 20 steps on a random model.
 
 Before merging a new model, you need to ensure the following:
 
-- The model is correctly registered and defines all the required methods, such as `conversion_chain`, `is_hf_state_dict` and `is_prime_state_dict`.
+- The model meets the contract in [Implement the Modeling Code](#implement-the-modeling-code).
 - The small smoke test passes.
 
 In the PR that adds the new model, you also need to provide a table covering the KL mismatch across 20 steps on `math` environment with `batch_size=64`. All the entries in the table must lower than 0.015. If this is not met, the PR will not be merged (unless reasonable justification is provided). This is to ensure all our models are consistent and their implementations match the implementations in the inference framework.
