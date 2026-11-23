@@ -110,7 +110,6 @@ class GlmMoeDsaDecoderLayer(nn.Module):
 
 class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
     config: GlmMoeDsaConfig
-    base_model_prefix = "model"
 
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:
@@ -242,7 +241,7 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
 
 
 class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel):
-    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
+    ties_word_embeddings = True
 
     def __init__(self, config):
         super().__init__(config)

@@ -254,8 +254,6 @@ class LagunaDecoderLayer(nn.Module):
 
 class LagunaPreTrainedModel(PreTrainedModelPrimeRL):
     config: LagunaConfig
-    config_class = LagunaConfig
-    base_model_prefix = "model"
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
@@ -333,7 +331,7 @@ class LagunaModel(LagunaPreTrainedModel):
 
 
 class LagunaForCausalLM(LagunaPreTrainedModel):
-    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
+    ties_word_embeddings = True
 
     def __init__(self, config: LagunaConfig):
         super().__init__(config)

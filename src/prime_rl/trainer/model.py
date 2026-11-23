@@ -46,9 +46,9 @@ from prime_rl.trainer.activation_checkpointing import (
 )
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
-    AutoModelForCausalLMPrimeRL,
     PrimeLmOutput,
     cast_float_and_contiguous,
+    custom_causal_lm_from_config,
     get_custom_causal_lm_cls,
     get_custom_vlm_cls,
     supports_custom_impl,
@@ -321,9 +321,7 @@ def get_expert_load_stats(tokens_per_expert: Tensor, group: dist.ProcessGroup) -
     return {name: value.item() for name, value in compute_expert_load_stats(tokens_per_expert).items()}
 
 
-def get_model(
-    config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
-) -> nn.Module:
+def get_model(config: ModelConfig, dtype: torch.dtype = torch.bfloat16) -> nn.Module:
     logger = get_logger()
     logger.debug(
         f"Loading model config (name={config.name}, attn={config.attn}, trust_remote_code={config.trust_remote_code})"
@@ -419,21 +417,15 @@ def get_model(
             f"VLM training requires a registered PrimeRL VLM implementation; {model_config.model_type!r} has none."
         )
 
-    with device:
-        model_cls = custom_vlm_cls or AutoModelForCausalLMPrimeRL
+    with torch.device("meta"):
+        model_cls = custom_vlm_cls or get_custom_causal_lm_cls(model_config)
 
         load_model_start_time = time.perf_counter()
-        if device == torch.device("meta"):
-            logger.info(f"Loading model {config.name} using {model_cls.__name__} to meta device")
-            model = model_cls.from_config(model_config, trust_remote_code=config.trust_remote_code, dtype=dtype)
+        logger.info(f"Loading model {config.name} using {model_cls.__name__} to meta device")
+        if custom_vlm_cls is not None:
+            model = custom_vlm_cls.from_config(model_config, dtype=dtype)
         else:
-            logger.info(f"Loading model {config.name} using {model_cls.__name__} to CPU")
-            model = model_cls.from_pretrained(
-                pretrained_model_name_or_path=config.name,
-                config=model_config,
-                trust_remote_code=config.trust_remote_code,
-                dtype=dtype,
-            )
+            model = custom_causal_lm_from_config(model_config, dtype=dtype)
         logger.debug(f"Loaded model {config.name} in {format_time(time.perf_counter() - load_model_start_time)}")
 
     assert model.lm_head.weight.dtype == dtype, (
@@ -1042,7 +1034,7 @@ def setup_model(
     logger = get_logger()
 
     # Build on the meta device; weights are materialized after FSDP sharding.
-    model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
+    model = get_model(config, dtype=DTYPE_MAP[config.optimization_dtype])
 
     if config.fusions.enabled and config.lora is not None:
         logger.warning("Skipping runtime model fusions because LoRA targets the unfused projections")

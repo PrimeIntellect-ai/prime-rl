@@ -80,7 +80,6 @@ class MiniMaxM2DecoderLayer(nn.Module):
 
 class MiniMaxM2PreTrainedModel(PreTrainedModelPrimeRL):
     config: MiniMaxM2Config
-    base_model_prefix = "model"
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
@@ -169,7 +168,7 @@ class MiniMaxM2Model(MiniMaxM2PreTrainedModel):
 
 
 class MiniMaxM2ForCausalLM(MiniMaxM2PreTrainedModel):
-    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
+    ties_word_embeddings = True
 
     def __init__(self, config):
         super().__init__(config)

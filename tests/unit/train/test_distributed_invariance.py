@@ -118,7 +118,7 @@ def run_reference(config: ModelConfig, rows: list[dict]) -> dict:
     """All rows through an unsharded model in bf16 (FSDP's compute dtype), accumulating gradients in fp32. Parameters
     that get no gradient, like the indexers, which reach the loss only through top-k indices, have no entry. Also
     returns the experts each row routed to, which the cases replay."""
-    model = get_model(config, device=torch.device("meta"), dtype=torch.float32)
+    model = get_model(config, dtype=torch.float32)
     if config.fusions.enabled:
         apply_model_fusions(model, config.fusions.enabled)
     inject_prime_lm_head(model, chunk_size=config.fused_lm_head_token_chunk_size)

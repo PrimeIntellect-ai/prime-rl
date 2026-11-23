@@ -83,8 +83,6 @@ class GptOssDecoderLayer(nn.Module):
 
 class GptOssPreTrainedModel(PreTrainedModelPrimeRL):
     config: GptOssConfig
-    base_model_prefix = "model"
-    _keep_in_fp32_modules = ["post_attention_layernorm", "input_layernorm", "norm"]
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
@@ -159,7 +157,7 @@ class GptOssModel(GptOssPreTrainedModel):
 
 
 class GptOssForCausalLM(GptOssPreTrainedModel):
-    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
+    ties_word_embeddings = True
 
     def __init__(self, config: GptOssConfig) -> None:
         super().__init__(config)

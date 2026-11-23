@@ -412,8 +412,6 @@ def _build_block_masks(
 
 class Inkling2PreTrainedModel(PreTrainedModelPrimeRL):
     config: Inkling2Config
-    config_class = Inkling2Config
-    base_model_prefix = "model"
 
     @torch.no_grad()
     def _init_weights(self, module):
@@ -533,8 +531,6 @@ class SoftcapLinear(nn.Linear):
 
 
 class Inkling2ForCausalLM(Inkling2PreTrainedModel):
-    _tied_weights_keys = set()
-
     def __init__(self, config: Inkling2Config | Inkling2TextConfig):
         text_config = getattr(config, "text_config", None)
         if isinstance(text_config, dict):

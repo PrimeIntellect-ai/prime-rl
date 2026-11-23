@@ -86,7 +86,6 @@ class LlamaDecoderLayer(nn.Module):
 
 class LlamaPreTrainedModel(PreTrainedModelPrimeRL):
     config: LlamaConfig
-    base_model_prefix = "model"
 
     # Llama models don't need format conversion - they use standard HF format for both training and inference
     @classmethod
@@ -186,7 +185,7 @@ class LlamaModel(LlamaPreTrainedModel):
 
 
 class LlamaForCausalLM(LlamaPreTrainedModel):
-    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
+    ties_word_embeddings = True
 
     def __init__(self, config):
         super().__init__(config)

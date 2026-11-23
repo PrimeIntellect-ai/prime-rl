@@ -79,7 +79,6 @@ class Qwen3DecoderLayer(nn.Module):
 
 class Qwen3PreTrainedModel(PreTrainedModelPrimeRL):
     config: Qwen3Config
-    base_model_prefix = "model"
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
@@ -169,7 +168,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
 
 class Qwen3ForCausalLM(Qwen3PreTrainedModel):
-    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
+    ties_word_embeddings = True
 
     def __init__(self, config):
         super().__init__(config)

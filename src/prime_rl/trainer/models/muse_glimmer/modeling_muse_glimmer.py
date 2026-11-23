@@ -133,9 +133,6 @@ class MuseGlimmerDecoderLayer(nn.Module):
 
 
 class MuseGlimmerPreTrainedModel(PreTrainedModelPrimeRL):
-    config_class = MuseGlimmerConfig
-    base_model_prefix = "model"
-
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return True
@@ -153,8 +150,6 @@ class MuseGlimmerPreTrainedModel(PreTrainedModelPrimeRL):
 
 
 class MuseGlimmerTextModel(MuseGlimmerPreTrainedModel):
-    config_class = MuseGlimmerTextConfig
-
     def __init__(self, config: MuseGlimmerTextConfig) -> None:
         super().__init__(config)
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)

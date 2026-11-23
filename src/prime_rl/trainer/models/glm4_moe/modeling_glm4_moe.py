@@ -111,7 +111,6 @@ class Glm4MoeDecoderLayer(nn.Module):
 
 class Glm4MoePreTrainedModel(PreTrainedModelPrimeRL):
     config: Glm4MoeConfig
-    base_model_prefix = "model"
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
@@ -213,7 +212,7 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
 
 
 class Glm4MoeForCausalLM(Glm4MoePreTrainedModel):
-    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
+    ties_word_embeddings = True
 
     def __init__(self, config):
         super().__init__(config)

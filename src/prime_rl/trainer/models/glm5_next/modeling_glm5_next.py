@@ -141,9 +141,6 @@ class Glm5NextDecoderLayer(nn.Module):
 
 
 class Glm5NextPreTrainedModel(PreTrainedModelPrimeRL):
-    config_class = Glm5NextConfig
-    base_model_prefix = "model"
-
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:
         # KDA, the indexer and sparse MLA all-gather what they need over the CP group themselves.
@@ -181,8 +178,6 @@ class Glm5NextPreTrainedModel(PreTrainedModelPrimeRL):
 
 
 class Glm5NextTextModel(Glm5NextPreTrainedModel):
-    config_class = Glm5NextTextConfig
-
     def __init__(self, config: Glm5NextTextConfig, dsa_backend: DSABackend = "tilelang") -> None:
         super().__init__(config)
         _check_supported(config)

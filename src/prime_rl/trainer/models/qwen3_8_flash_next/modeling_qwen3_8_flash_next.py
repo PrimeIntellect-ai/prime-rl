@@ -123,9 +123,6 @@ class Qwen3_8FlashNextDecoderLayer(nn.Module):
 
 
 class Qwen3_8FlashNextPreTrainedModel(PreTrainedModelPrimeRL):
-    config_class = Qwen3_8FlashNextConfig
-    base_model_prefix = "model"
-
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return is_hf_state_dict(state_dict)
@@ -147,8 +144,6 @@ class Qwen3_8FlashNextPreTrainedModel(PreTrainedModelPrimeRL):
 
 
 class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
-    config_class = Qwen3_8FlashNextTextConfig
-
     def __init__(self, config: Qwen3_8FlashNextTextConfig) -> None:
         super().__init__(config)
         self.vocab_size = config.vocab_size

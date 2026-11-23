@@ -113,8 +113,6 @@ class Qwen3_5DecoderLayer(nn.Module):
 
 
 class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL):
-    config_class = Qwen3_5TextConfig
-
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
         return name.endswith(("linear_attn.A_log", "linear_attn.norm.weight"))

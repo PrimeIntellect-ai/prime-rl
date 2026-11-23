@@ -260,18 +260,6 @@ class AfmoeDecoderLayer(nn.Module):
 
 
 class AfmoePreTrainedModel(PreTrainedModelPrimeRL):
-    config_class = AfmoeConfig
-    base_model_prefix = "model"
-    _keep_in_fp32_modules = [
-        "input_layernorm",
-        "post_attention_layernorm",
-        "pre_mlp_layernorm",
-        "post_mlp_layernorm",
-        "q_norm",
-        "k_norm",
-        "norm",
-    ]
-
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, torch.Tensor]) -> bool:
         return any("mlp.experts.1.up_proj" in module_name for module_name in state_dict.keys())
@@ -365,7 +353,7 @@ class AfmoeModel(AfmoePreTrainedModel):
 
 
 class AfmoeForCausalLM(AfmoePreTrainedModel):
-    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
+    ties_word_embeddings = True
 
     def __init__(self, config):
         super().__init__(config)
