@@ -1,0 +1,261 @@
+from typing import Optional, Union
+
+import torch
+from torch import Tensor, nn
+from transformers.cache_utils import Cache
+from transformers.generation import GenerationMixin
+from transformers.modeling_layers import GradientCheckpointingLayer
+from transformers.modeling_outputs import BaseModelOutputWithPast
+from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
+from transformers.processing_utils import Unpack
+from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple
+
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
+from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
+from prime_rl.trainer.models.layers.mlp import FeedForward
+from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
+from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
+from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
+
+
+def _get_rope_type(config: Qwen2Config) -> str:
+    rope_parameters = getattr(config, "rope_parameters", None)
+    if isinstance(rope_parameters, dict):
+        return rope_parameters.get("rope_type", rope_parameters.get("type", "default"))
+    if rope_parameters is not None:
+        return getattr(rope_parameters, "rope_type", getattr(rope_parameters, "type", "default"))
+    rope_scaling = getattr(config, "rope_scaling", None)
+    if isinstance(rope_scaling, dict):
+        return rope_scaling.get("rope_type", rope_scaling.get("type", "default"))
+    return "default"
+
+
+class Qwen2DecoderLayer(GradientCheckpointingLayer):
+    def __init__(self, config: Qwen2Config, layer_idx: int):
+        super().__init__()
+        self.hidden_size = config.hidden_size
+        self.layer_type = config.layer_types[layer_idx]
+
+        attn_config = AttentionConfig(
+            hidden_size=config.hidden_size,
+            head_dim=getattr(config, "head_dim", config.hidden_size // config.num_attention_heads),
+            num_attention_heads=config.num_attention_heads,
+            num_key_value_heads=config.num_key_value_heads,
+            is_causal=True,
+            attention_bias=True,
+            output_bias=False,
+            use_qk_norm=False,
+            rms_norm_eps=config.rms_norm_eps,
+        )
+        self.self_attn = ATTN_IMPL2CLASS[config._attn_implementation](attn_config)
+        if self.layer_type == "sliding_attention":
+            self.self_attn.sliding_window = config.sliding_window
+
+        self.mlp = FeedForward(
+            dim=config.hidden_size,
+            hidden_dim=config.intermediate_size,
+            activation=config.hidden_act,
+        )
+        self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
+        self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        cu_seqlens: torch.LongTensor | None = None,
+        max_seqlen: int | None = None,
+    ) -> torch.FloatTensor:
+        residual = hidden_states
+        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states, _ = self.self_attn(
+            hidden_states=hidden_states,
+            position_embeddings=position_embeddings,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
+        )
+        hidden_states = residual + hidden_states
+
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        return residual + hidden_states
+
+
+@auto_docstring
+class Qwen2PreTrainedModel(PreTrainedModelPrimeRL):
+    config: Qwen2Config
+    base_model_prefix = "model"
+
+    @classmethod
+    def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
+        return True
+
+    @classmethod
+    def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
+        # Dense models use identical key names in HF and PrimeRL format, so we
+        # never claim to be in a separate PrimeRL format. This disables the
+        # auto-conversion path in load_dcp_from_hf and lets DCP load directly.
+        return False
+
+    @classmethod
+    def convert_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        return state_dict
+
+    @classmethod
+    def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        return state_dict
+
+    @classmethod
+    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
+        return state_dict
+
+
+@auto_docstring
+class Qwen2Model(Qwen2PreTrainedModel):
+    def __init__(self, config: Qwen2Config):
+        super().__init__(config)
+        self.vocab_size = config.vocab_size
+
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.layers = nn.ModuleList(
+            [Qwen2DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+        )
+        self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
+        rotary_config = RotaryEmbeddingConfig(
+            max_position_embeddings=config.max_position_embeddings,
+            rope_type=_get_rope_type(config),
+            model_config=config,
+        )
+        self.rotary_emb = RotaryEmbedding(rotary_config)
+        self.gradient_checkpointing = False
+
+        self.post_init()
+
+    @auto_docstring
+    def forward(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        *,
+        seq_lens: torch.LongTensor,
+        seq_lens_are_pre_shard: bool = False,
+    ) -> BaseModelOutputWithPast:
+        r"""
+        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
+            Per-document lengths of the packed row (PrimeRL packed-batch contract).
+        seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
+            Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
+        """
+        if (input_ids is None) ^ (inputs_embeds is not None):
+            raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
+
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids)
+        if position_ids is None:
+            position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
+
+        cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
+            seq_lens.to(device=inputs_embeds.device),
+            total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
+        )
+        torch._dynamo.mark_dynamic(cu_seqlens, 0)
+
+        hidden_states = inputs_embeds
+        position_embeddings = self.rotary_emb(hidden_states, position_ids)
+
+        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+            hidden_states = decoder_layer(
+                hidden_states,
+                position_embeddings=position_embeddings,
+                cu_seqlens=cu_seqlens,
+                max_seqlen=max_seqlen,
+            )
+
+        hidden_states = self.norm(hidden_states)
+        return BaseModelOutputWithPast(last_hidden_state=hidden_states)
+
+
+@auto_docstring
+class Qwen2ForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
+    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.model = Qwen2Model(config)
+        self.vocab_size = config.vocab_size
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+
+        self.post_init()
+
+    def set_decoder(self, decoder):
+        self.model = decoder
+
+    def get_decoder(self):
+        return self.model
+
+    @can_return_tuple
+    @auto_docstring
+    def forward(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Cache] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        logits_to_keep: Union[int, torch.Tensor] = 0,
+        temperature: Optional[torch.Tensor] = None,
+        *,
+        seq_lens: torch.LongTensor,
+        seq_lens_are_pre_shard: bool = False,
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> PrimeLmOutput:
+        r"""
+        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
+            Per-document lengths of the packed row (PrimeRL packed-batch contract).
+        seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
+            Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
+        cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
+            Indices of input tokens in the KV cache. Accepted only for HuggingFace API
+            compatibility; prime-rl asserts `use_cache is None` since training does not
+            perform autoregressive decoding, so this argument is unused.
+        labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Labels used by PrimeRL's wrapped LM head to optionally compute per-token logprobs/entropy.
+            If not provided, the wrapped LM head returns logits only.
+        temperature (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Per-token temperatures for logprobs/entropy computation when `labels` are provided.
+        """
+        assert use_cache is None, "use_cache is not supported for custom qwen2 for now"
+        assert past_key_values is None, "past_key_values is not supported for custom qwen2 for now"
+
+        outputs: BaseModelOutputWithPast = self.model(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            inputs_embeds=inputs_embeds,
+            seq_lens=seq_lens,
+            seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+        )
+        hidden_states = outputs.last_hidden_state
+        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
+        return self.lm_head(
+            hidden_states[:, slice_indices, :],
+            labels[:, slice_indices] if labels is not None else None,
+            temperature=temperature,
+        )
+
+    def init_buffers_post_meta(self):
+        buffer_names = [name for name, _ in self.named_buffers()]
+        if "model.rotary_emb.inv_freq" in buffer_names:
+            rotary_emb = self.model.rotary_emb
+            inv_freq, rotary_emb.attention_scaling = rotary_emb.rope_init_fn(
+                rotary_emb.config, rotary_emb.inv_freq.device
+            )
+            rotary_emb.inv_freq.copy_(inv_freq)
+
+
+__all__ = ["Qwen2ForCausalLM", "Qwen2Model", "Qwen2PreTrainedModel"]
