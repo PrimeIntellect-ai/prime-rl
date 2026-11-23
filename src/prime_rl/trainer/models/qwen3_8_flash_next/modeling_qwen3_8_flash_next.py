@@ -104,7 +104,6 @@ class Qwen3_8FlashNextDecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         ngram_embedding: torch.Tensor | None,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        cu_seqlens: torch.LongTensor,
         fla_varlen: FlaVarlen,
         document_starts: torch.Tensor,
         document_ends: torch.Tensor,
@@ -213,7 +212,6 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
             seq_lens.to(inputs_embeds.device),
             total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
-        torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
         fla_varlen = prepare_fla_varlen(cu_seqlens, self.cp_context)
         document_starts, document_ends = document_bounds(
             cu_seqlens, inputs_embeds.shape[1] * self.cp_context.cp_world_size
@@ -228,7 +226,6 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
                 hidden_states=hidden_states,
                 ngram_embedding=self.ngram.embed(ngram_ids, layer_index),
                 position_embeddings=position_embeddings,
-                cu_seqlens=cu_seqlens,
                 fla_varlen=fla_varlen,
                 document_starts=document_starts,
                 document_ends=document_ends,
