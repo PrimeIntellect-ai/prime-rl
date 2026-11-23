@@ -21,13 +21,13 @@ num_decode_replicas = 3
 [deployment.bidirectional_kv_transfer]
 decode_blocks_ttl_s = 480
 
-# Expert all2all within each node's NVLink domain. Decode keeps few tokens per step, prefill takes long chunks with
-# a small CUDA graph cap: larger prefill caps fail graph capture next to the NIXL buffers.
+# Expert all2all within each node's NVLink domain. Decode keeps few tokens per step; prefill takes long chunks and
+# captures CUDA graphs for batches up to 4,096 tokens (larger batches run eagerly).
 [deployment.prefill_vllm_overrides]
 all2all_backend = "flashinfer_nvlink_one_sided"
 max_num_seqs = 256
 max_num_batched_tokens = 16384
-compilation_config = { cudagraph_mode = "FULL_AND_PIECEWISE", max_cudagraph_capture_size = 512 }
+compilation_config = { cudagraph_mode = "FULL_AND_PIECEWISE", max_prefill_cudagraph_capture_tokens = 4096 }
 
 [deployment.decode_vllm_overrides]
 all2all_backend = "flashinfer_nvlink_one_sided"

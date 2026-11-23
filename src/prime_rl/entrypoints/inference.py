@@ -41,6 +41,16 @@ def vllm_overrides_fragment(overrides: dict[str, Any]) -> str:
     return ", " + json.dumps(overrides)[1:-1].replace('"', '\\"')
 
 
+def prefill_uses_deepep_high_throughput(overrides: dict[str, Any]) -> bool:
+    """Whether prefill runs the P/D templates' default all2all backend, DeepEP high-throughput.
+
+    vLLM cannot capture that backend's internode dispatch in a breakable CUDA graph, so the templates turn breakable
+    graphs off for it. With any other backend prefill keeps them: without them vLLM falls back to decode-only graphs
+    and every step that carries a prompt runs the model eagerly.
+    """
+    return overrides.get("all2all_backend", "deepep_high_throughput") == "deepep_high_throughput"
+
+
 def write_config(
     config: InferenceConfig, output_dir: Path, exclude: set[str] | None = None, engine_only: bool = False
 ) -> Path:
@@ -125,6 +135,9 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, log_dir: Path
             prefill_env_vars=config.deployment.prefill_env_vars,
             decode_env_vars=config.deployment.decode_env_vars,
             prefill_vllm_extra_json=vllm_overrides_fragment(config.deployment.prefill_vllm_overrides),
+            prefill_deepep_high_throughput=prefill_uses_deepep_high_throughput(
+                config.deployment.prefill_vllm_overrides
+            ),
             decode_vllm_extra_json=vllm_overrides_fragment(config.deployment.decode_vllm_overrides),
             pd_bidirectional=config.deployment.bidirectional_kv_transfer,
             nixl_nic_affinity=config.deployment.nixl_nic_affinity,
