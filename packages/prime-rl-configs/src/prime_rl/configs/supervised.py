@@ -1,13 +1,13 @@
 import uuid
 import warnings
 from pathlib import Path
-from typing import Annotated, ClassVar, TypeAlias
+from typing import Annotated, Literal, TypeAlias
 from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
-from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.inference import InferenceConfig, setup_dummy_load
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
@@ -51,6 +51,30 @@ class BaseDataConfig(BaseConfig):
         return self
 
 
+class BaseSourceConfig(BaseConfig):
+    """One named source of the training data (``[[data.source]]``), in pretraining and SFT."""
+
+    name: str = Field(pattern=r"^[^/]+$")
+    """Names the source in the ``progress/<name>/*`` metrics."""
+
+    weight: float | None = Field(None, ge=0)
+    """The source's relative weight: its share of the training data (tokens in pretraining, samples in SFT) is its
+    weight over the sum of all weights. If None on every source, the share is the source's share of all sources' data
+    (tokens in pretraining, rows in SFT)."""
+
+
+def check_sources(sources: list[BaseSourceConfig]) -> None:
+    """Raise if two sources share a name, or the weights are set on only some sources or sum to 0."""
+    names = [source.name for source in sources]
+    if len(set(names)) < len(names):
+        raise ValueError(f"data.source: the names must be unique, got {names}")
+    weights = [source.weight for source in sources]
+    if None in weights and any(weight is not None for weight in weights):
+        raise ValueError("data.source: set weight on every source or on none (natural shares)")
+    if None not in weights and sum(weights) <= 0:
+        raise ValueError("data.source: the weights must sum to more than 0")
+
+
 class BaseValConfig(BaseConfig):
     interval: int = Field(50, ge=1)
     """Run validation every N training steps."""
@@ -59,6 +83,55 @@ class BaseValConfig(BaseConfig):
     """Run validation before the first training step."""
 
     data: BaseDataConfig
+
+
+class DocumentsValSetConfig(BaseConfig):
+    """Pre-tokenized documents. Every document is scored on its own, from its first token, in non-overlapping windows
+    of ``seq_len`` scored tokens: a longer document continues in the next window, which does not see the tokens
+    before it."""
+
+    type: Literal["documents"] = "documents"
+
+    name: str = Field(pattern=r"^[^/]+$")
+    """Names the set's metrics, ``val/<name>/<metric>@<seq_len>``, e.g. ``val/fineweb-edu/bpb@2k``."""
+
+    path: Path
+    """Folder of datatrove tokenized shards, as for a pretraining source's ``path``. The tokens are scored as stored."""
+
+    seq_len: int | None = Field(None, ge=1)
+    """Context length: the most input tokens a scored sequence has. Defaults to the training ``data.seq_len``."""
+
+
+class ValConfig(BaseConfig):
+    interval: int = Field(50, ge=1)
+    """Run validation every N training steps."""
+
+    eval_on_start: bool = False
+    """Run validation before the first training step."""
+
+    set: list[DocumentsValSetConfig] = Field(min_length=1)
+    """The validation sets (``[[val.set]]``). Each logs ``val/<name>/loss@<seq_len>``, the mean loss per scored
+    token, and with a byte-level BPE tokenizer ``val/<name>/bpb@<seq_len>``, bits per UTF-8 byte of the scored
+    tokens."""
+
+    num_samples: int | None = Field(None, ge=1)
+    """Items per set and validation: the first ``num_samples`` documents of each set, the same ones every time. If
+    None, every item."""
+
+    micro_batch_tokens: int | None = Field(None, ge=1)
+    """Tokens per packed row of the sets (one forward pass). Defaults to the training micro-batch
+    (``data.seq_len * data.micro_batch_size``) or the longest set ``seq_len``, whichever is larger, rounded up to a
+    multiple of ``model.cp``; must be at least that longest ``seq_len``."""
+
+    save_arrays: bool = False
+    """Write the per-item arrays (npz) and summary (json) of every set to ``<run_dir>/val/step_N/``."""
+
+    @model_validator(mode="after")
+    def validate_unique_names(self):
+        names = [val_set.name for val_set in self.set]
+        if len(set(names)) < len(names):
+            raise ValueError(f"val.set names must be unique: {names}")
+        return self
 
 
 class SingleNodeDeploymentConfig(BaseSingleNodeDeploymentConfig):
@@ -86,12 +159,9 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     auto_freeze_moe_router = False
     # Standard L2 regularization for supervised training.
     auto_weight_decay = 0.01
-    # Initialize the weights from scratch instead of loading them from ``model.name``, unless resuming.
-    init_from_scratch: ClassVar[bool] = False
-
     data: BaseDataConfig
 
-    val: BaseValConfig | None = None
+    val: BaseValConfig | ValConfig | None = None
     """Validation configuration. If None, no validation runs."""
 
     eval: SFTOnlineEvalConfig | None = None
@@ -128,11 +198,12 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
 
     @model_validator(mode="after")
     def auto_setup_run_identity(self):
-        """Auto-generate the run name (``<dataset>--<model>--<short-id>``) when unset and
-        default the run directory, W&B run name and platform run name to it when not
-        set explicitly."""
+        """Auto-generate the run name (``<source>--<model>--<short-id>``, with the source only if it is the only
+        one) when unset and default the run directory, W&B run name and platform run name to it when not set
+        explicitly."""
         if self.run.name is None:
-            dataset = str(getattr(self.data, "name", "")).split("/")[-1]
+            sources = getattr(self.data, "source", [])
+            dataset = "fake" if getattr(self.data, "fake", None) else sources[0].name if len(sources) == 1 else ""
             model = self.model.name.split("/")[-1]
             parts = [part for part in (dataset, model) if part]
             self.run.name = "--".join([*parts, uuid.uuid4().hex[:8]]).lower()
@@ -161,17 +232,21 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     @model_validator(mode="before")
     @classmethod
     def propagate_model_to_inference(cls, data):
-        """Fill ``inference.vllm.model`` from ``model.name`` before InferenceConfig
-        construction, so its parser auto-resolution sees the right model name."""
+        """Fill ``inference.vllm.model`` and ``tokenizer`` from ``model.name`` and ``tokenizer.name`` before
+        InferenceConfig construction, so its parser auto-resolution sees the right names."""
         if not isinstance(data, dict):
             return data
         inference = data.get("inference")
-        model = data.get("model")
-        name = model.get("name") if isinstance(model, dict) else None
-        if isinstance(inference, dict) and name:
-            vllm = inference.setdefault("vllm", {})
-            if isinstance(vllm, dict):
-                vllm.setdefault("model", name)
+        if not isinstance(inference, dict):
+            return data
+        vllm = inference.setdefault("vllm", {})
+        if not isinstance(vllm, dict):
+            return data
+        for section, key in (("model", "model"), ("tokenizer", "tokenizer")):
+            config = data.get(section)
+            name = config.get("name") if isinstance(config, dict) else None
+            if name:
+                vllm.setdefault(key, name)
         return data
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
@@ -201,6 +276,10 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
                     "make sure to set --enable_lora and --max-lora-rank.",
                     stacklevel=2,
                 )
+
+        # A scratch init reaches the server with the trainer's startup broadcast.
+        if self.inference is not None:
+            setup_dummy_load(self.inference, self.model.init.type == "scratch")
 
         if self.weight_broadcast is None:
             if self.model.lora is not None or self.inference is None:
@@ -314,11 +393,28 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_val(self):
+        if not isinstance(self.val, ValConfig):
+            return self
+        for val_set in self.val.set:
+            if val_set.seq_len is None:
+                val_set.seq_len = self.data.seq_len
+        longest = max(val_set.seq_len for val_set in self.val.set)
+        if self.val.micro_batch_tokens is None:
+            row_len = max(self.data.seq_len * self.data.micro_batch_size, longest)
+            self.val.micro_batch_tokens = -(-row_len // self.model.cp) * self.model.cp
+        elif self.val.micro_batch_tokens < longest:
+            raise ValueError(f"val.micro_batch_tokens must be at least the longest set seq_len ({longest})")
+        return self
+
+    @model_validator(mode="after")
     def validate_cp_seq_len(self):
         if self.model.cp > 1:
             if self.data.seq_len % self.model.cp != 0:
                 raise ValueError("Sequence length must be divisible by CP degree")
-            if self.val is not None and self.val.data.seq_len % self.model.cp != 0:
+            if isinstance(self.val, ValConfig) and self.val.micro_batch_tokens % self.model.cp != 0:
+                raise ValueError("val.micro_batch_tokens must be divisible by CP degree")
+            if isinstance(self.val, BaseValConfig) and self.val.data.seq_len % self.model.cp != 0:
                 raise ValueError("Validation sequence length must be divisible by CP degree")
         return self
 
@@ -326,10 +422,14 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     def resolve_mega_moe_max_tokens_per_rank(self):
         dispatch = self.model.moe.dispatch
         if dispatch.type == "mega_moe":
-            data_configs = [self.data] + ([self.val.data] if self.val is not None else [])
+            row_lens = [self.data.micro_batch_size * self.data.seq_len]
+            if isinstance(self.val, ValConfig):
+                row_lens.append(self.val.micro_batch_tokens)
+            elif self.val is not None:
+                row_lens.append(self.val.data.micro_batch_size * self.val.data.seq_len)
             dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
                 dispatch.max_tokens_per_rank,
-                max(data.micro_batch_size * data.seq_len for data in data_configs),
+                max(row_lens),
                 self.model.cp,
             )
         return self
@@ -339,7 +439,7 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
         if self.model.cp > 1:
             if self.data.micro_batch_size != 1:
                 raise ValueError("Micro batch size must be 1 when CP is enabled")
-            if self.val is not None and self.val.data.micro_batch_size != 1:
+            if isinstance(self.val, BaseValConfig) and self.val.data.micro_batch_size != 1:
                 raise ValueError("Validation micro batch size must be 1 when CP is enabled")
         return self
 

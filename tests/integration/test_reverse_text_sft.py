@@ -21,7 +21,7 @@ def run_dir(output_dir: Path) -> Path:
 
 TIMEOUT = 300  # 5 minutes
 RL_TIMEOUT = 600
-RL_INIT_FROM_RUN_NAME = "reverse-text-rl-init-from"
+RL_FROM_CHECKPOINT_RUN_NAME = "reverse-text-rl-from-checkpoint"
 
 
 @pytest.fixture(scope="module")
@@ -127,7 +127,7 @@ def sft_full_offload_model_only_resume_process(
 
 
 @pytest.fixture(scope="module")
-def rl_init_from_process(
+def rl_from_checkpoint_process(
     sft_process,
     run_process: Callable[..., ProcessResult],
     wandb_project: str,
@@ -135,8 +135,8 @@ def rl_init_from_process(
     output_dir: Path,
     run_dir: Path,
 ) -> ProcessResult:
-    """RL from the SFT checkpoint's weights, with a zero learning rate so its
-    checkpoint holds exactly the weights it started from."""
+    """RL from the SFT checkpoint, with a zero learning rate so its checkpoint holds exactly the weights it started
+    from. Inference starts from dummy weights and gets the checkpoint's weights from the trainer's startup broadcast."""
     cmd = [
         "uv",
         "run",
@@ -145,7 +145,7 @@ def rl_init_from_process(
         "configs/ci/integration/reverse-text/start.toml",
         "--max-steps",
         "1",
-        "--trainer.model.init-from",
+        "--model.name",
         (run_dir / "checkpoints" / "step_5").as_posix(),
         "--trainer.optim.lr",
         "0",
@@ -155,21 +155,23 @@ def rl_init_from_process(
         "--monitors.wandb.project",
         wandb_project,
         "--monitors.wandb.name",
-        f"{wandb_name}-rl-init-from",
+        f"{wandb_name}-rl-from-checkpoint",
         "--no-monitors.prime",
         "--output-dir",
         output_dir.as_posix(),
         "--run.name",
-        RL_INIT_FROM_RUN_NAME,
+        RL_FROM_CHECKPOINT_RUN_NAME,
     ]
     return run_process(cmd, timeout=RL_TIMEOUT)
 
 
+@pytest.mark.tiny
 def test_no_error(sft_process: ProcessResult):
     """Tests that the SFT process does not fail."""
     assert sft_process.returncode == 0, f"Process has non-zero return code ({sft_process})"
 
 
+@pytest.mark.tiny
 def test_loss_goes_down(sft_process: ProcessResult, run_dir: Path):
     """Tests that the loss goes down in the SFT process"""
     trainer_log_path = run_dir / "logs" / "latest" / "trainer.log"
@@ -179,11 +181,11 @@ def test_loss_goes_down(sft_process: ProcessResult, run_dir: Path):
     check_loss_goes_down(trainer_stdout)
 
 
-def test_rl_init_from_starts_from_the_sft_weights(
-    rl_init_from_process: ProcessResult, output_dir: Path, run_dir: Path, tmp_path: Path
+def test_rl_from_checkpoint_starts_from_the_sft_weights(
+    rl_from_checkpoint_process: ProcessResult, output_dir: Path, run_dir: Path, tmp_path: Path
 ):
-    rl_run_dir = output_dir / RL_INIT_FROM_RUN_NAME
-    check_no_error(rl_init_from_process, rl_run_dir)
+    rl_run_dir = output_dir / RL_FROM_CHECKPOINT_RUN_NAME
+    check_no_error(rl_from_checkpoint_process, rl_run_dir)
 
     sft = _model_state(run_dir / "checkpoints" / "step_5", tmp_path / "sft.pt")
     rl = _model_state(rl_run_dir / "checkpoints" / "step_1", tmp_path / "rl.pt")
@@ -219,12 +221,10 @@ def test_full_offload_model_only_resume_preserves_weights(
     before = _model_state(run_dir / "checkpoints" / "step_5", tmp_path / "step_5.pt")
     after = _model_state(run_dir / "checkpoints" / "step_6", tmp_path / "step_6.pt")
     assert before.keys() == after.keys()
-    # The runs train in different compute dtypes (fp32 vs bf16 under full offload),
-    # so compare in the dtype the resumed model actually loaded.
+    # Full offload loads the model weights into its FP32 masters and saves the masters as the model weights, so a
+    # step at lr 0 keeps them exactly
     for key in before:
-        assert torch.equal(before[key].to(torch.bfloat16), after[key].to(torch.bfloat16)), (
-            f"Weight mismatch after model-only resume: {key}"
-        )
+        assert torch.equal(before[key], after[key]), f"Weight mismatch after model-only resume: {key}"
 
 
 def test_convert_final_checkpoint(sft_resume_process: ProcessResult, run_dir: Path, tmp_path: Path):

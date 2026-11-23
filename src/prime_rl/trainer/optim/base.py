@@ -5,6 +5,9 @@ from torch.optim import Optimizer
 
 
 class OffloadOptimizer(ABC):
+    checkpoint_weights_key: str | None = None
+    """The optimizer state entry that holds a parameter's weights, which checkpoints save as the model's weights."""
+
     @property
     @abstractmethod
     def base_optimizer(self) -> Optimizer: ...

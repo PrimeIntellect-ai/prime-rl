@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = "==3.12.*"
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
@@ -203,7 +203,7 @@ version = "1.4.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ai-dynamo-runtime" },
-    { name = "aiohttp", version = "3.14.5", source = { registry = "https://pypi.org/simple" } },
+    { name = "aiohttp" },
     { name = "kubernetes", version = "32.0.1", source = { registry = "https://pypi.org/simple" } },
     { name = "msgspec" },
     { name = "prometheus-client" },
@@ -294,47 +294,22 @@ wheels = [
 
 [[package]]
 name = "aiohttp"
-version = "3.14.3"
-source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "platform_machine == 'arm64' and sys_platform == 'darwin'",
-]
-dependencies = [
-    { name = "aiohappyeyeballs" },
-    { name = "aiosignal" },
-    { name = "attrs" },
-    { name = "frozenlist" },
-    { name = "multidict", version = "6.7.1", source = { registry = "https://pypi.org/simple" } },
-    { name = "propcache" },
-    { name = "typing-extensions" },
-    { name = "yarl", version = "1.24.2", source = { registry = "https://pypi.org/simple" } },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/58/d9/22ce5786ac0c1653ae8b6c23bded02c1686d11f0dbb45b31ce128e0df985/aiohttp-3.14.3.tar.gz", hash = "sha256:9491196535a88924a60afd5b5f434b5b203b6cc616250878dbdb223a8f7844bc", size = 7971213, upload-time = "2026-07-23T01:57:27.037Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/18/d4/eb96299230e20acf2efae207cb8d69051f1f68e357e5ea5e479bf6fb097a/aiohttp-3.14.3-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:39aded8c7f3b935b54aab1d8d73c70ec0ee2d3ec3b943e0e86611bc150ba47f5", size = 754690, upload-time = "2026-07-23T01:53:47.332Z" },
-    { url = "https://files.pythonhosted.org/packages/30/07/4bbc222cc8dbe31d4c3e8a5baad2286e4d42026ac0c570027b89afce6344/aiohttp-3.14.3-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:617105e2c3018ee38d0c8ce5ee3c84f621a6d8b9f723202aacaff28449ca91ee", size = 511949, upload-time = "2026-07-23T01:53:55.083Z" },
-]
-
-[[package]]
-name = "aiohttp"
 version = "3.14.5"
 source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "platform_machine == 'x86_64' and sys_platform == 'linux'",
-    "platform_machine == 'aarch64' and sys_platform == 'linux'",
-]
 dependencies = [
     { name = "aiohappyeyeballs" },
     { name = "aiosignal" },
     { name = "attrs" },
     { name = "frozenlist" },
-    { name = "multidict", version = "7.2.1", source = { registry = "https://pypi.org/simple" } },
+    { name = "multidict" },
     { name = "propcache" },
     { name = "typing-extensions" },
-    { name = "yarl", version = "1.25.1", source = { registry = "https://pypi.org/simple" } },
+    { name = "yarl" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6c/4c/bdccd81e9ee225b69c60e7766c9a5b05364f118f4d383713b89a682d772d/aiohttp-3.14.5.tar.gz", hash = "sha256:5558a7f5a05af9ecf744af91e5baefc436f93c9333e656c27ec253f9a6bbe178", size = 8078052, upload-time = "2026-10-11T01:05:12.408Z" }
 wheels = [
+    { url = "https://files.pythonhosted.org/packages/d5/94/6ba86efddcb616c811b40e6a0dfdd862738f647e4e3860a961075d5e9ed8/aiohttp-3.14.5-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:df37b620684e19b5e25724412518ccafc3b1a49cdac706fdbd2f983fad943450", size = 817499, upload-time = "2026-10-11T01:00:18.901Z" },
+    { url = "https://files.pythonhosted.org/packages/64/91/11b89f45ca486252dd67dd5f3231fec04bf5518da39a95cb3997619f17fb/aiohttp-3.14.5-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:d079c0a0135c36e7beb6f1c88087c8f108dc5891cdd0b5eafa778421bda70ed2", size = 548067, upload-time = "2026-10-11T01:00:22.659Z" },
     { url = "https://files.pythonhosted.org/packages/22/ff/c6615806c14aab34f82b9424ccde8ce6e417315fd57ce1c5b4d4747888e1/aiohttp-3.14.5-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:abfda5cb094a829f7bc25216a32f7db2e85cc65bd59910f8e7b40b3d9b224764", size = 1896245, upload-time = "2026-10-11T01:00:24.638Z" },
     { url = "https://files.pythonhosted.org/packages/da/e4/aa172eb534b7f02f1f8ff1c3213347eaf3cf218db91a727c6863c22f1035/aiohttp-3.14.5-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:20f085697d7e911f1f73c43ed03fafbed1e7121797e2eb5428efa80398060584", size = 1919630, upload-time = "2026-10-11T01:00:32.548Z" },
     { url = "https://files.pythonhosted.org/packages/b2/94/eee018537ba19da0ceb2ac79cab83faed4ac49568e08376e2799043f2538/aiohttp-3.14.5-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:19e2ba471507c34f8252402ab50f5ab512398b9ea8c8f1cb26beb3f75793ba30", size = 1858112, upload-time = "2026-10-11T01:00:36.581Z" },
@@ -673,7 +648,8 @@ dependencies = [
     { name = "google-genai" },
     { name = "google-search-results" },
     { name = "html2text" },
-    { name = "huggingface-hub" },
+    { name = "huggingface-hub", version = "1.33.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "huggingface-hub", version = "2.4.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "mistralai" },
     { name = "mpmath" },
     { name = "networkx" },
@@ -699,7 +675,7 @@ dependencies = [
 
 [[package]]
 name = "bfcl-v3"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "deps/prime-envs/environments/tool_use/bfcl_v3" }
 dependencies = [
     { name = "bfcl-eval" },
@@ -716,7 +692,7 @@ requires-dist = [
 
 [[package]]
 name = "black"
-version = "26.5.1"
+version = "26.10.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
@@ -726,11 +702,11 @@ dependencies = [
     { name = "platformdirs" },
     { name = "pytokens" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c0/37/5628dd55bf2b34257fc7603f0fe97c40e3aaf24265f416a9c85c95ca1436/black-26.5.1.tar.gz", hash = "sha256:dd321f668053961824bcc1be1cc1df748b2d7e4fa28086b08331e577b0100a73", size = 679439, upload-time = "2026-05-18T16:53:36.107Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/65/a9611a6ec0a8c88d86e59385da02d68d9533f7e86a05913d20c67be54029/black-26.10.1.tar.gz", hash = "sha256:5f9f83beae62437e060dafd53d7f1fc327e3d3494f74d72ee5c2b73eb90fc4e7", size = 741979, upload-time = "2026-10-10T04:13:40.776Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b7/c0/c5a3b1636dfd09c42534f2b3cf33506814f6d3e066fb0879ffa16c1ae860/black-26.5.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:3915f256e75a2d7cf88d8953d37f780455dc586cc72dee059c528fe77f581217", size = 1816016, upload-time = "2026-05-18T17:05:21.84Z" },
-    { url = "https://files.pythonhosted.org/packages/1f/0e/36044316b65ca471d3bb6d3703fd06fb50c6b727c3562f6a5a3153634f88/black-26.5.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:9d98d4137277c75dfb898ec8d846c4fd68ba1e9cf77f95e2865c203dc18f4c3d", size = 1884150, upload-time = "2026-05-18T17:05:23.546Z" },
-    { url = "https://files.pythonhosted.org/packages/94/51/f975cae76d44274cc2868dc9040ac5d58d464784610234455b4e7b19c6ef/black-26.5.1-py3-none-any.whl", hash = "sha256:4ed7f7da04046d2e488437170797d3b4a4ad83906683bcb7dfc68b673bbce5e2", size = 213693, upload-time = "2026-05-18T16:53:33.964Z" },
+    { url = "https://files.pythonhosted.org/packages/a5/a2/4709110a7ca326ba7b4f81a669fbebc20653c79a972b0f8de4ba5b5c5e68/black-26.10.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:182f6c32be38074b16d378498c498b32cb51928178ee611485344972c35ec9c6", size = 1990732, upload-time = "2026-10-10T04:18:48.252Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/96/9f8fa839c169d19c38ce6582d9449f2d7d70dabd313ac28f15a930260c1f/black-26.10.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b5347d760f0c02bb00dd249384cab71c3bf828b4f68d5b401eb116e0390f147d", size = 2065235, upload-time = "2026-10-10T04:18:50.064Z" },
+    { url = "https://files.pythonhosted.org/packages/b1/28/9dd29175c1db777e6189e2a0bb5f37101adf19c3e509b236c8920f778d0b/black-26.10.1-py3-none-any.whl", hash = "sha256:28842f9a8207cc1df6eb983a35a14c5a0dfcd603d214fe82d84bef552afd2e3a", size = 239267, upload-time = "2026-10-10T04:13:38.808Z" },
 ]
 
 [[package]]
@@ -856,15 +832,15 @@ requires-dist = [
 
 [[package]]
 name = "cbor2"
-version = "6.1.1"
+version = "6.2.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/be/db/810437bcfe13cf5e09b68bad1ce57c8fa04ca9272c68946bbf2f4fa522c8/cbor2-6.1.1.tar.gz", hash = "sha256:6f0644869e0fdcd6f3874330b8f1cebd009f33191de43acf609dc2409cd362c4", size = 86297, upload-time = "2026-05-14T10:57:42.231Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/49/22/4a1d4b8436f46caf4a4b7d841b9c1314226090345bee171de7419ba47b84/cbor2-6.2.0.tar.gz", hash = "sha256:85f87591f85bd60e35550b2e093630cb036580e6f1d8b7777089dee194a33e42", size = 101015, upload-time = "2026-11-01T14:41:19.888Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/19/16/ac4710211e506a522bfe522dc02d676f308cff24c512b375b10e1cff62ed/cbor2-6.1.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:1f72e5f7e42a92f5ad2486dd14431bd09f966d167fc9e61cecef6740acf1b451", size = 410055, upload-time = "2026-05-14T10:56:54.133Z" },
-    { url = "https://files.pythonhosted.org/packages/13/3a/ae0df2f8e4f8fac9212a3a9684a6213b6ba3190cd7762d78e5bd5043dddb/cbor2-6.1.1-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:a409b0b6de923f68f5e35287f25ec654fc68135991e41ae9a1c500ddd982c1fb", size = 453919, upload-time = "2026-05-14T10:56:55.468Z" },
-    { url = "https://files.pythonhosted.org/packages/87/4c/f5b3feb35e942998f60545199ff9c4c80d552a8b783d07f7ff70e78e8b1f/cbor2-6.1.1-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:911b34263f39300dd8ec6b78f247b257caba0bbcd278bd2421a54d45595ff602", size = 467302, upload-time = "2026-05-14T10:56:56.76Z" },
-    { url = "https://files.pythonhosted.org/packages/17/6d/a0472d99d9a38728498c9bcb4c65687383a948b0152e0bd7a20c1a87c949/cbor2-6.1.1-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:596418d033cff6eb0de9cb4ae63dd91c80e68d4ed01e1d0c61ad51709acc8ed2", size = 521305, upload-time = "2026-05-14T10:56:58.484Z" },
-    { url = "https://files.pythonhosted.org/packages/c0/28/1d8cdb754def050e0d0674a556540d4a26bab0d7cfc3e11df14f2e4a2830/cbor2-6.1.1-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:ce0e9a33d7ee2c8f47ae216be68a3a0a4d6d9832594a69e34be070cf6d13a9d8", size = 534365, upload-time = "2026-05-14T10:56:59.85Z" },
+    { url = "https://files.pythonhosted.org/packages/2c/b6/ad5330b1aa4300b925d2c848c2b17468f90bd47e1042480eb13dce62a8b4/cbor2-6.2.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:14e47404c00bafe4e600910563f58ba481df4010d113eaece07031dcd0e639b4", size = 409758, upload-time = "2026-11-01T14:40:14.342Z" },
+    { url = "https://files.pythonhosted.org/packages/54/83/499afdc823421ca4a31db4d5b14111c4871a8bab2abf6cdeda4f687ee5aa/cbor2-6.2.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:621f250a34371f7a2ff3ec300adb6c31b5987c1389dab62add4111946c2251aa", size = 454144, upload-time = "2026-11-01T14:40:15.622Z" },
+    { url = "https://files.pythonhosted.org/packages/3a/37/0d422175caa4f2b219d64bf768fe8ac985b9d1b0655511d7986f0b08e26b/cbor2-6.2.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:f2c28833e67cf570d4c22a1cf9b84e501bfe34c6a32741bb01d14788f0350e60", size = 465149, upload-time = "2026-11-01T14:40:16.947Z" },
+    { url = "https://files.pythonhosted.org/packages/e7/0d/15a1dfb61b082ac61f5a521f568ec618ad079d6e4dbf8cd50992599040ba/cbor2-6.2.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:4bba73b04dad40ae9be2a9f59754b7227050268f8d45f0ccc543dbbcc7cebc4e", size = 520807, upload-time = "2026-11-01T14:40:18.532Z" },
+    { url = "https://files.pythonhosted.org/packages/55/37/69f468227dfbb13e1dceac633a51b979675a0665b410223fb65022f3b4f4/cbor2-6.2.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:59447b0cde54b6453ce762da0c8064cb6696474e8144aeb172c4f926b5a8ab87", size = 532822, upload-time = "2026-11-01T14:40:19.89Z" },
 ]
 
 [[package]]
@@ -1260,8 +1236,7 @@ name = "dashscope"
 version = "1.26.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "aiohttp", version = "3.14.3", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "aiohttp", version = "3.14.5", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "aiohttp" },
     { name = "certifi" },
     { name = "cryptography" },
     { name = "httpx" },
@@ -1291,7 +1266,7 @@ wheels = [
 
 [[package]]
 name = "datamodel-code-generator"
-version = "0.68.0"
+version = "0.81.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
@@ -1302,10 +1277,11 @@ dependencies = [
     { name = "jinja2" },
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/56/6e/4d9a96931b619d7cf6ceb5bcc0026330fd045455e2b4cd45af168d94ef91/datamodel_code_generator-0.68.0.tar.gz", hash = "sha256:2b5d64a6104478c8b4a04ba17ad285e075871b14e4a374bbdddb689b642d6b7e", size = 1565609, upload-time = "2026-07-06T07:03:23.584Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/41/a1/87deb406ca27b0ae25cda946940208dfe2a2953b7fef20f8a968746e6b36/datamodel_code_generator-0.81.0.tar.gz", hash = "sha256:3b4d1639cc7430f7e34fddc3827fb5d3eb0a4f5394750890c46ba2a9d56e3ee2", size = 2912162, upload-time = "2026-09-14T00:05:20.43Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/81/84/a33706fe3f19a76227ff63947ed420983c8652de3141a627a29a9c3e3776/datamodel_code_generator-0.68.0-py3-none-any.whl", hash = "sha256:f2f51a3af2e638254fc26cb28358f4d7d9f3675701897c43e612d56f8d00693d", size = 422927, upload-time = "2026-07-06T07:03:21.811Z" },
+    { url = "https://files.pythonhosted.org/packages/84/30/acea9e8d4c5e7819c10b25581accfa805e5368ec564fc210c8f4c4ffd666/datamodel_code_generator-0.81.0-py3-none-any.whl", hash = "sha256:82ff0c295685065a83c530ce42ec03fc75b7ca01e72083eb8232d68f7637013a", size = 721675, upload-time = "2026-09-14T00:05:18.451Z" },
 ]
 
 [[package]]
@@ -1316,7 +1292,8 @@ dependencies = [
     { name = "dill" },
     { name = "filelock" },
     { name = "fsspec", extra = ["http"] },
-    { name = "huggingface-hub" },
+    { name = "huggingface-hub", version = "1.33.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "huggingface-hub", version = "2.4.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "multiprocess" },
     { name = "numpy" },
     { name = "packaging" },
@@ -1354,45 +1331,45 @@ wheels = [
 [[package]]
 name = "deep-ep"
 version = "1.2.1+29d31c0"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl" }
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl" }
 resolution-markers = [
     "platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl", hash = "sha256:25fea893dace9e932cea2bcffccf8362321def2929269d8771ccc53152dae61d" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl", hash = "sha256:610a68350f358a78ffc0fa6ff7e27b10ba5a5ffcd4d3a030cfabc205fc5696c0" },
 ]
 
 [[package]]
 name = "deep-ep"
 version = "1.2.1+29d31c0"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl", hash = "sha256:b94a1f6d673dd8a519b4107c158482422a7ed1edc2a7c3e470532c5e48eb5c8e" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl", hash = "sha256:0880b1c8bffc688099fa1d98923b25ccf205d6cb80a9ca6a6f463efe8a15e257" },
 ]
 
 [[package]]
 name = "deep-select"
-version = "1.0.0+bfa4507.20261116.161551"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/deep_select-1.0.0+bfa4507.20261116.161551-cp312-cp312-linux_aarch64.whl" }
+version = "1.0.0+bfa4507.20261109.170213"
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_select-1.0.0+bfa4507.20261109.170213-cp312-cp312-linux_aarch64.whl" }
 resolution-markers = [
     "platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/deep_select-1.0.0+bfa4507.20261116.161551-cp312-cp312-linux_aarch64.whl", hash = "sha256:7f814227bc775680da85384002fec7c234fca6261616ace7394f65acd7220fae" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_select-1.0.0+bfa4507.20261109.170213-cp312-cp312-linux_aarch64.whl", hash = "sha256:b8f4d2732fd6531c65ef82b32ca64383fdf3ba415de73d0f8ef9be91f36296ce" },
 ]
 
 [[package]]
 name = "deep-select"
-version = "1.0.0+bfa4507.20261116.162554"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/deep_select-1.0.0+bfa4507.20261116.162554-cp312-cp312-linux_x86_64.whl" }
+version = "1.0.0+bfa4507.20261109.170237"
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_select-1.0.0+bfa4507.20261109.170237-cp312-cp312-linux_x86_64.whl" }
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/deep_select-1.0.0+bfa4507.20261116.162554-cp312-cp312-linux_x86_64.whl", hash = "sha256:d8faf5eb8065787349205414e77ac945512c70c58107f90022f708f1bcd4da05" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_select-1.0.0+bfa4507.20261109.170237-cp312-cp312-linux_x86_64.whl", hash = "sha256:03442fc30d80e5bc1d2ec3b3b8c797a8f9a4cb5fc72f759f5a3951c095849e78" },
 ]
 
 [[package]]
@@ -1419,6 +1396,15 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "verifiers", specifier = ">=0.4.2.dev47" },
+]
+
+[[package]]
+name = "defusedxml"
+version = "0.7.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0f/d5/c66da9b79e5bdb124974bfe172b4daf3c984ebd9c2a06e2b8a4dc7331c72/defusedxml-0.7.1.tar.gz", hash = "sha256:1bb3032db185915b62d7c6209c5a8792be6a32ab2fedacc84e01b52c51aa3e69", size = 75520, upload-time = "2021-03-08T10:59:26.269Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/07/6c/aa3f2f849e01cb6a001cd8554a88d4c77c5c1a31c95bdf1cf9301e6d9ef4/defusedxml-0.7.1-py2.py3-none-any.whl", hash = "sha256:a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61", size = 25604, upload-time = "2021-03-08T10:59:24.45Z" },
 ]
 
 [[package]]
@@ -1451,7 +1437,8 @@ name = "deshuffle-papers"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/reasoning/deshuffle_papers" }
 dependencies = [
-    { name = "huggingface-hub" },
+    { name = "huggingface-hub", version = "1.33.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "huggingface-hub", version = "2.4.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "verifiers" },
 ]
 
@@ -1580,7 +1567,8 @@ name = "drug-discovery-bench"
 version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/science/drug_discovery_bench" }
 dependencies = [
-    { name = "huggingface-hub" },
+    { name = "huggingface-hub", version = "1.33.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "huggingface-hub", version = "2.4.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "verifiers", extra = ["harbor"] },
 ]
 
@@ -1623,11 +1611,12 @@ wheels = [
 
 [[package]]
 name = "enterprise-ops-gym"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "deps/prime-envs/environments/tool_use/enterprise_ops_gym" }
 dependencies = [
     { name = "datasets" },
     { name = "mcp" },
+    { name = "prime-sandboxes" },
     { name = "verifiers" },
 ]
 
@@ -1635,6 +1624,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0,<5" },
     { name = "mcp", specifier = ">=2,<3" },
+    { name = "prime-sandboxes", specifier = ">=0.5.11" },
     { name = "verifiers", specifier = ">=0.4.2.dev47" },
 ]
 
@@ -1813,11 +1803,11 @@ wheels = [
 
 [[package]]
 name = "filelock"
-version = "3.32.7"
+version = "4.2.10"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/0f/59/e19834834cb01a32febfbb0f8a23a9088088f5d45991824ff2bc3b5e8acb/filelock-3.32.7.tar.gz", hash = "sha256:37b8a3d9811b0f9aef7e5ec5c71bb320de52df51e6ca9bcd6f5ad81187660da7", size = 225154, upload-time = "2026-09-16T00:24:20.907Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a1/cf/05bcdacabdc0aec7dc8e19d76281bd82325df62dae3b6430e9ba57397689/filelock-4.2.10.tar.gz", hash = "sha256:fcc3c0cb8bfe7f4b3bb0e231c04b15dbad068cb3c2515f343d8fde4dce93bd5d", size = 670595, upload-time = "2026-11-09T18:58:00.54Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/15/df/31098c5aeb4d966b553641472bd55fcf5fdfac953549894b8a765ba44e91/filelock-3.32.7-py3-none-any.whl", hash = "sha256:65ff0d0190ea42038b32bda4b77834fb05be2cad4c5b9b01aa4dfb3614536e52", size = 100157, upload-time = "2026-09-16T00:24:19.543Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/90/5d0096a325aa0f83ba7a3968bfb485b67e32c947bdf9cd0fcb4b485be718/filelock-4.2.10-py3-none-any.whl", hash = "sha256:9479aaeb4db20b5a53e3da28493edd24720b66b8a0b84030aa56ccdf243d6857", size = 218040, upload-time = "2026-11-09T18:57:59.088Z" },
 ]
 
 [[package]]
@@ -1902,16 +1892,16 @@ dependencies = [
 
 [[package]]
 name = "flashinfer-cubin"
-version = "0.7.2.post1"
+version = "0.7.3"
 source = { registry = "https://flashinfer.ai/whl" }
 wheels = [
-    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_cubin-0.7.2.post1-py3-none-any.whl", hash = "sha256:1998c7006bcc06ee5dd3208a682af247382c6710d6b370a961381262c04c11f0" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_cubin-0.7.3-py3-none-any.whl", hash = "sha256:115b96065fa2dcc1674c74fcb0544ec2890a6fa4a8519b2251d1f6ab3d780093" },
 ]
 
 [[package]]
 name = "flashinfer-jit-cache"
-version = "0.7.2.post1+cu130"
-source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache-0.7.2.post1%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl" }
+version = "0.7.3+cu130"
+source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache-0.7.3%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl" }
 resolution-markers = [
     "platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
@@ -1926,25 +1916,25 @@ dependencies = [
     { name = "flashinfer-jit-cache-sm90a" },
 ]
 wheels = [
-    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache-0.7.2.post1%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:8449156043036d240f3581c25e6883810f7ea6d656f56e78183b39eee9066877" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache-0.7.3%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:7efad92ca3b9305cbf2815b32e76d0ca902ad7bd8255b128f13c3d633d0633f9" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "flashinfer-jit-cache-sm100a", specifier = "==0.7.2.post1+cu130" },
-    { name = "flashinfer-jit-cache-sm103a", specifier = "==0.7.2.post1+cu130" },
-    { name = "flashinfer-jit-cache-sm110a", specifier = "==0.7.2.post1+cu130" },
-    { name = "flashinfer-jit-cache-sm120f", specifier = "==0.7.2.post1+cu130" },
-    { name = "flashinfer-jit-cache-sm121a", specifier = "==0.7.2.post1+cu130" },
-    { name = "flashinfer-jit-cache-sm80", specifier = "==0.7.2.post1+cu130" },
-    { name = "flashinfer-jit-cache-sm89", specifier = "==0.7.2.post1+cu130" },
-    { name = "flashinfer-jit-cache-sm90a", specifier = "==0.7.2.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm100a", specifier = "==0.7.3+cu130" },
+    { name = "flashinfer-jit-cache-sm103a", specifier = "==0.7.3+cu130" },
+    { name = "flashinfer-jit-cache-sm110a", specifier = "==0.7.3+cu130" },
+    { name = "flashinfer-jit-cache-sm120f", specifier = "==0.7.3+cu130" },
+    { name = "flashinfer-jit-cache-sm121a", specifier = "==0.7.3+cu130" },
+    { name = "flashinfer-jit-cache-sm80", specifier = "==0.7.3+cu130" },
+    { name = "flashinfer-jit-cache-sm89", specifier = "==0.7.3+cu130" },
+    { name = "flashinfer-jit-cache-sm90a", specifier = "==0.7.3+cu130" },
 ]
 
 [[package]]
 name = "flashinfer-jit-cache"
-version = "0.7.2.post1+cu130"
-source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache-0.7.2.post1%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl" }
+version = "0.7.3+cu130"
+source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache-0.7.3%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl" }
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
@@ -1957,92 +1947,92 @@ dependencies = [
     { name = "flashinfer-jit-cache-sm90a" },
 ]
 wheels = [
-    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache-0.7.2.post1%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:5a0a92ce56e11c19cec31948a4828b245314377eb587fe17307730b096225500" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache-0.7.3%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:567dc9a3fa1bc0f9856fbd7e2550ce3e4b169a69ca2accb6c6e0a45648c61c6c" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "flashinfer-jit-cache-sm100a", specifier = "==0.7.2.post1+cu130" },
-    { name = "flashinfer-jit-cache-sm103a", specifier = "==0.7.2.post1+cu130" },
-    { name = "flashinfer-jit-cache-sm120f", specifier = "==0.7.2.post1+cu130" },
-    { name = "flashinfer-jit-cache-sm80", specifier = "==0.7.2.post1+cu130" },
-    { name = "flashinfer-jit-cache-sm89", specifier = "==0.7.2.post1+cu130" },
-    { name = "flashinfer-jit-cache-sm90a", specifier = "==0.7.2.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm100a", specifier = "==0.7.3+cu130" },
+    { name = "flashinfer-jit-cache-sm103a", specifier = "==0.7.3+cu130" },
+    { name = "flashinfer-jit-cache-sm120f", specifier = "==0.7.3+cu130" },
+    { name = "flashinfer-jit-cache-sm80", specifier = "==0.7.3+cu130" },
+    { name = "flashinfer-jit-cache-sm89", specifier = "==0.7.3+cu130" },
+    { name = "flashinfer-jit-cache-sm90a", specifier = "==0.7.3+cu130" },
 ]
 
 [[package]]
 name = "flashinfer-jit-cache-sm100a"
-version = "0.7.2.post1+cu130"
+version = "0.7.3+cu130"
 source = { registry = "https://flashinfer.ai/whl/cu130" }
 wheels = [
-    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache_sm100a-0.7.2.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:ed6c128c4033de6fb6edbd1743a008ee70d9a3d4c8d1b60b45d821bd7e4143a2" },
-    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache_sm100a-0.7.2.post1+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:2d118fdb9a4a403ae22c08192830885eb27aba6d363ffa9c88758c7a51d1c126" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache_sm100a-0.7.3+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:f5305760f7aa55661b8b335b97b2264dd6f2de04061786459686605284c49eab" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache_sm100a-0.7.3+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:1d73108ed8b84856ffb9f6e1b0740178d54d606900a196f291cae2bf670d60cd" },
 ]
 
 [[package]]
 name = "flashinfer-jit-cache-sm103a"
-version = "0.7.2.post1+cu130"
+version = "0.7.3+cu130"
 source = { registry = "https://flashinfer.ai/whl/cu130" }
 wheels = [
-    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache_sm103a-0.7.2.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:8883759aaf289b8d494f714bb28766c9bef2e84fe6115d439d10e2417a8c7ae3" },
-    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache_sm103a-0.7.2.post1+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:c9c8430cd8c49d80edc44af820d4817c1c1b99cbe738c40034b41a44403ec5c7" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache_sm103a-0.7.3+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:7b4bc2298f916ed1a1f7c5aec6ac14930c487acc236c88794e7974f55cc27343" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache_sm103a-0.7.3+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:78eb17c7c7bd379f69e8e811ccf9464c96b11b9f2956fa17d91ca7cda593bb9c" },
 ]
 
 [[package]]
 name = "flashinfer-jit-cache-sm110a"
-version = "0.7.2.post1+cu130"
+version = "0.7.3+cu130"
 source = { registry = "https://flashinfer.ai/whl/cu130" }
 wheels = [
-    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache_sm110a-0.7.2.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:ff08fecf03bec168d37c8518c679e2332ba77d79824e806cc3cdd67c4f6b7a75" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache_sm110a-0.7.3+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:2082ba21f9b734e4d8e9f2bce89db8eee27adb8978a3ebf7bbaf6f7e171801de" },
 ]
 
 [[package]]
 name = "flashinfer-jit-cache-sm120f"
-version = "0.7.2.post1+cu130"
+version = "0.7.3+cu130"
 source = { registry = "https://flashinfer.ai/whl/cu130" }
 wheels = [
-    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache_sm120f-0.7.2.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:1d3582708053a70b383c6d4df842a18c86f19518e230eaff6c1f689ce279dda5" },
-    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache_sm120f-0.7.2.post1+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:ab05a6e987bf79e18594d43ccc89ccdc8dbeacb3241c031ede8bc054a2baa9a7" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache_sm120f-0.7.3+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:01cd9f18b98eb5b734308664e3baaaef41f9c2f125fac86fa6b0ae2ba9702050" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache_sm120f-0.7.3+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:2fbb367b27ce0964211d648592750f37758310be9ace3d0f4c0d189c1aeaec4b" },
 ]
 
 [[package]]
 name = "flashinfer-jit-cache-sm121a"
-version = "0.7.2.post1+cu130"
+version = "0.7.3+cu130"
 source = { registry = "https://flashinfer.ai/whl/cu130" }
 wheels = [
-    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache_sm121a-0.7.2.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:bcbd9b7d51cefcaaac9629cec260d37e253f6a8493876d045b6869ddf42b49c7" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache_sm121a-0.7.3+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:e505912489b30fdae67c1dd693f140581a17927faa3fa9f500d66407d81b01ed" },
 ]
 
 [[package]]
 name = "flashinfer-jit-cache-sm80"
-version = "0.7.2.post1+cu130"
+version = "0.7.3+cu130"
 source = { registry = "https://flashinfer.ai/whl/cu130" }
 wheels = [
-    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache_sm80-0.7.2.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:f84fd89aac415b9cf79494e5606a307ecff2e421bcff132b62c6dba88f447a3b" },
-    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache_sm80-0.7.2.post1+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:b5076a39be7b63d15df44ecdfb9ce5be7206d39629b6d317b06d6e314f0b4cd6" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache_sm80-0.7.3+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:36681930906f222a089c4435973359b239e0b6faec8a6c91bc2bf24216220972" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache_sm80-0.7.3+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:c04c3fd68343045ba9bcab52e6839c104577c7539cff6712df146b1ef639438b" },
 ]
 
 [[package]]
 name = "flashinfer-jit-cache-sm89"
-version = "0.7.2.post1+cu130"
+version = "0.7.3+cu130"
 source = { registry = "https://flashinfer.ai/whl/cu130" }
 wheels = [
-    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache_sm89-0.7.2.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:18fa31a010e3942a00ed4b6ffb4def344b5e10fc1ff9f56a538ce646bc316a7c" },
-    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache_sm89-0.7.2.post1+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:61ae80c3a78f20ebd8ef350bfe16bde947242bb9ac93f1cafb63e26c04c009dc" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache_sm89-0.7.3+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:d04880e3448c6cadd050c4e9c6f0227d95bf4adebda7edf0401e506fb5a29d02" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache_sm89-0.7.3+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:943d9942f0ceb02f8ca179012ad3af7b994338fde8b68a5cdcc2ff98693a6542" },
 ]
 
 [[package]]
 name = "flashinfer-jit-cache-sm90a"
-version = "0.7.2.post1+cu130"
+version = "0.7.3+cu130"
 source = { registry = "https://flashinfer.ai/whl/cu130" }
 wheels = [
-    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache_sm90a-0.7.2.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:3bd375e978255d3215ee69da3434ca4b9dcce7a2d655c5d3445cd048fcc62096" },
-    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache_sm90a-0.7.2.post1+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:52e5cc064b52290dad2f8889ee0eb5cd59621dfac8351841e4b3987d42d034a3" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache_sm90a-0.7.3+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:f4070b6d8d44359da1c004301d2621aa27547e99ec0b6755d283f04104d7560e" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache_sm90a-0.7.3+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:20cb636c72e099e2e0aebfc814e4de32b64d1692997b9342340711a29248cf88" },
 ]
 
 [[package]]
 name = "flashinfer-python"
-version = "0.7.2.post1"
+version = "0.7.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "apache-tvm-ffi" },
@@ -2063,9 +2053,9 @@ dependencies = [
     { name = "torch", version = "2.14.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/05/76/1a42eafe2a3cd26924e485fb85bc635a2a41fcb14f453a8c037214b32940/flashinfer_python-0.7.2.post1.tar.gz", hash = "sha256:af60319898dcfd552ba12a34165b9dd46c0bbd83d48ce665b1df6bd6ae77e9f1", size = 51431554, upload-time = "2026-10-23T18:49:35.84Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fc/ee/e897c21736ad55a032ad308ee3686fadbe74f3a93148edd494858946b162/flashinfer_python-0.7.3.tar.gz", hash = "sha256:eb48e9fa001c6b0ac4d1d8eb837776306871bd589e2d66396bd111e99146b08a", size = 91128922, upload-time = "2026-11-04T06:06:48.833Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b6/ad/da1fc7644b28ab82db922021955a0c85c8d6b3b1d6db224a13ef65cef85e/flashinfer_python-0.7.2.post1-py3-none-any.whl", hash = "sha256:bfdc18b9e1e4d8d0730fe4343dc0e284cd0c160086de80f99888bc4867922d49", size = 62052965, upload-time = "2026-10-23T18:49:31.516Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/38/3069de273d72ecd81157a968ecf717a6081643982673a2feee8b50d5c0e2/flashinfer_python-0.7.3-py3-none-any.whl", hash = "sha256:548a3ea1f9057025ace0a21b298824f8de049eb4b6c5c458f763309509e2ae40", size = 79764540, upload-time = "2026-11-04T06:06:42.456Z" },
 ]
 
 [[package]]
@@ -2093,7 +2083,7 @@ requires-dist = [
 
 [[package]]
 name = "forth-lang"
-version = "0.3.2"
+version = "0.4.0"
 source = { editable = "deps/prime-envs/environments/code/forth_lang" }
 dependencies = [
     { name = "datasets" },
@@ -2103,7 +2093,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.2.dev56" },
 ]
 
 [[package]]
@@ -2147,20 +2137,19 @@ wheels = [
 
 [package.optional-dependencies]
 http = [
-    { name = "aiohttp", version = "3.14.3", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "aiohttp", version = "3.14.5", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "aiohttp" },
 ]
 
 [[package]]
 name = "general-agent"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/tool_use/general_agent" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev56" }]
 
 [[package]]
 name = "genson"
@@ -2391,18 +2380,18 @@ requires-dist = [{ name = "verifiers", specifier = ">=0.4.2.dev47" }]
 
 [[package]]
 name = "grpcio"
-version = "1.80.0"
+version = "1.80.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b7/48/af6173dbca4454f4637a4678b67f52ca7e0c1ed7d5894d89d434fecede05/grpcio-1.80.0.tar.gz", hash = "sha256:29aca15edd0688c22ba01d7cc01cb000d72b2033f4a3c72a81a19b56fd143257", size = 12978905, upload-time = "2026-03-30T08:49:10.502Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2e/60/04becc7b90edeb6900618aa82bc841482342486399af7139d8d39be1a025/grpcio-1.80.1.tar.gz", hash = "sha256:3d2bb23039e55fbabf32ad264eb787fcb205f4ce6d5d93dfa217f4526273c027", size = 13159234, upload-time = "2026-11-05T08:33:34.687Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3e/97/b1282161a15d699d1e90c360df18d19165a045ce1c343c7f313f5e8a0b77/grpcio-1.80.0-cp312-cp312-macosx_11_0_universal2.whl", hash = "sha256:f49eddcac43c3bf350c0385366a58f36bed8cc2c0ec35ef7b74b49e56552c0c2", size = 12014204, upload-time = "2026-03-30T08:47:15.873Z" },
-    { url = "https://files.pythonhosted.org/packages/6e/5e/d319c6e997b50c155ac5a8cb12f5173d5b42677510e886d250d50264949d/grpcio-1.80.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:d334591df610ab94714048e0d5b4f3dd5ad1bee74dfec11eee344220077a79de", size = 6563866, upload-time = "2026-03-30T08:47:18.588Z" },
-    { url = "https://files.pythonhosted.org/packages/db/f0/a3deb5feba60d9538a962913e37bd2e69a195f1c3376a3dd44fe0427e996/grpcio-1.80.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:4e78c4ac0d97dc2e569b2f4bcbbb447491167cb358d1a389fc4af71ab6f70411", size = 6782121, upload-time = "2026-03-30T08:47:23.827Z" },
-    { url = "https://files.pythonhosted.org/packages/ca/84/36c6dcfddc093e108141f757c407902a05085e0c328007cb090d56646cdf/grpcio-1.80.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:2ed770b4c06984f3b47eb0517b1c69ad0b84ef3f40128f51448433be904634cd", size = 7383811, upload-time = "2026-03-30T08:47:26.517Z" },
-    { url = "https://files.pythonhosted.org/packages/9b/8d/9d4d27ed7f33d109c50d6b5ce578a9914aa68edab75d65869a17e630a8d1/grpcio-1.80.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:9a6284a5d907c37db53350645567c522be314bac859a64a7a5ca63b77bb7958f", size = 7830132, upload-time = "2026-03-30T08:47:33.254Z" },
+    { url = "https://files.pythonhosted.org/packages/7e/66/a3bfeb4507da192765d447f0f7128527ba153032e5143cd9e96adfc0da91/grpcio-1.80.1-cp312-cp312-macosx_11_0_universal2.whl", hash = "sha256:c23d9ebf31e948193ea75e329e9f7cb7f06da4c723c4bdf4e665c096c28ef17b", size = 12099204, upload-time = "2026-11-05T08:31:53.468Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/9b/8895862459c60d9f04c6b120b6cbf28946aed89b11d169e2c710a445269b/grpcio-1.80.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:1cdf651bf9ef74162176d3bb49fd0f232b9e0979bc40255ff0b4a4cf13c552f0", size = 6649352, upload-time = "2026-11-05T08:31:56.239Z" },
+    { url = "https://files.pythonhosted.org/packages/fb/17/db7585e39f52e50fde189de958fae27fb5fa44096f181b8724b96212cf01/grpcio-1.80.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:42ce71d3a516465620fc5662c5a628f3f444141a75c303287fa329604cd4bec3", size = 6867602, upload-time = "2026-11-05T08:32:00.954Z" },
+    { url = "https://files.pythonhosted.org/packages/7b/e8/c1501a5ecc5d926048dc4db2f2523cee0916123ade7f90e13753bca8381b/grpcio-1.80.1-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:2c0af4ccb4ecc83eff4fc676a4f8c341962291d6565e42ed0ab3b3fdf32c4efd", size = 7469290, upload-time = "2026-11-05T08:32:03.079Z" },
+    { url = "https://files.pythonhosted.org/packages/f9/d4/60465d5d5608c5d16835314c2cb90617af58ee4cdb7962643e9943bd4a00/grpcio-1.80.1-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:57a3f307b4be70fdc016d16b8a29cc0191b5a0bf3e42d8ab1aa274994e6c8971", size = 7915618, upload-time = "2026-11-05T08:32:08.657Z" },
 ]
 
 [[package]]
@@ -2411,8 +2400,7 @@ version = "0.4.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "h2" },
-    { name = "multidict", version = "6.7.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "multidict", version = "7.2.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "multidict" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/5b/28/5a2c299ec82a876a252c5919aa895a6f1d1d35c96417c5ce4a4660dc3a80/grpclib-0.4.9.tar.gz", hash = "sha256:cc589c330fa81004c6400a52a566407574498cb5b055fa927013361e21466c46", size = 84798, upload-time = "2025-12-14T22:23:14.349Z" }
 wheels = [
@@ -2463,7 +2451,8 @@ dependencies = [
     { name = "httpx" },
     { name = "jinja2" },
     { name = "jsonschema" },
-    { name = "litellm" },
+    { name = "litellm", version = "1.103.10", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "litellm", version = "1.108.3", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "packaging" },
     { name = "pathspec" },
     { name = "platformdirs" },
@@ -2642,6 +2631,9 @@ wheels = [
 name = "huggingface-hub"
 version = "1.33.0"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "platform_machine == 'arm64' and sys_platform == 'darwin'",
+]
 dependencies = [
     { name = "click" },
     { name = "filelock" },
@@ -2656,6 +2648,30 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/25/2a/484d112c0d8fc5f665d7b65137ac9cdb2953c982391598c3597968a12ee7/huggingface_hub-1.33.0.tar.gz", hash = "sha256:367be21a201db9523eddf8aeac7048f2602c1b308691c97640d5e72ed188007e", size = 1043548, upload-time = "2026-09-24T09:49:29.971Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fc/16/963096d224b80909432dc16561a615fd33d2d13beef3ce4c63fa25e40867/huggingface_hub-1.33.0-py3-none-any.whl", hash = "sha256:04e434b06e100eddbce9a6e817d72693a7884b10a79bd67ab48080d5c07eb899", size = 846435, upload-time = "2026-09-24T09:49:28.059Z" },
+]
+
+[[package]]
+name = "huggingface-hub"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "platform_machine == 'x86_64' and sys_platform == 'linux'",
+    "platform_machine == 'aarch64' and sys_platform == 'linux'",
+]
+dependencies = [
+    { name = "click" },
+    { name = "filelock" },
+    { name = "fsspec" },
+    { name = "hf-xet" },
+    { name = "httpx2" },
+    { name = "packaging" },
+    { name = "pyyaml" },
+    { name = "tqdm" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b5/3b/2fcef1eabe52aec90fc8cd253cc154da1d02a446d7bbcdec59b4a51d4be7/huggingface_hub-2.4.0.tar.gz", hash = "sha256:13a6158b9e3393d9d3f248ce99074d50c2a0a1449fb9d8e2f710751e2084c188", size = 1066194, upload-time = "2026-10-29T15:30:12.321Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d4/55/ff47f1b082ecf5f43f4bc1e3b932d68eead171dabbbd1a92666c686301d7/huggingface_hub-2.4.0-py3-none-any.whl", hash = "sha256:42ecfd93ede47bdd333daebbf66a32d7bfe2e18752754fe4d2d4f98a0179d801", size = 857021, upload-time = "2026-10-29T15:30:10.421Z" },
 ]
 
 [[package]]
@@ -3228,7 +3244,7 @@ resolution-markers = [
     "platform_machine == 'arm64' and sys_platform == 'darwin'",
 ]
 dependencies = [
-    { name = "aiohttp", version = "3.14.3", source = { registry = "https://pypi.org/simple" } },
+    { name = "aiohttp" },
     { name = "certifi" },
     { name = "durationpy" },
     { name = "python-dateutil" },
@@ -3299,7 +3315,7 @@ wheels = [
 
 [[package]]
 name = "lean-common"
-version = "0.1.3"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/packages/lean_common" }
 dependencies = [
     { name = "verifiers" },
@@ -3310,18 +3326,53 @@ requires-dist = [{ name = "verifiers", specifier = ">=0.4.2.dev47" }]
 
 [[package]]
 name = "litellm"
-version = "1.108.2"
+version = "1.103.10"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "platform_machine == 'x86_64' and sys_platform == 'linux'",
+    "platform_machine == 'aarch64' and sys_platform == 'linux'",
+]
 dependencies = [
-    { name = "aiohttp", version = "3.14.3", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "aiohttp", version = "3.14.5", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "aiohttp" },
+    { name = "boto3" },
+    { name = "certifi" },
+    { name = "click" },
+    { name = "fastuuid" },
+    { name = "httpx", extra = ["http2"] },
+    { name = "importlib-metadata" },
+    { name = "jinja2" },
+    { name = "jsonschema" },
+    { name = "openai" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "python-dotenv" },
+    { name = "tiktoken" },
+    { name = "tokenizers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fc/0d/4d210a75f88820903421d36d8160ed07e844e53941730433c294145d5b98/litellm-1.103.10.tar.gz", hash = "sha256:b1bf12810b6565156c6b23bda2ccaf115c6edafbbf92e98220ecbc73f89d6972", size = 18763166, upload-time = "2026-10-27T19:41:29.156Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/34/6f/54181ae5987dec3442d902e3199498f855e14644092d44dc2b7704e6a2d9/litellm-1.103.10-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:ca4cbf0492f65c383de264da0ff98f48d4eb56e4edf4a55713d2562a554b986f", size = 27388878, upload-time = "2026-10-27T19:41:15.568Z" },
+    { url = "https://files.pythonhosted.org/packages/e9/a1/6b49bbaa6bd180f981e51f03d56f86c3e3f47dc41d7994b54b0a893f57f6/litellm-1.103.10-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:f639bd02ac34869080b7792732336345bc066ffb04be301093090425f6caa2bc", size = 27934228, upload-time = "2026-10-27T19:41:18.366Z" },
+    { url = "https://files.pythonhosted.org/packages/b3/4c/7eedabeabf932658f31db95179607e31842e7e04e30be615d2233aa883df/litellm-1.103.10-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:5774a19560e93b1da1838b160d0ac4fec5238c11bde2cd2411422a06fb4f5e7f", size = 27463638, upload-time = "2026-10-27T19:41:21.225Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/5e/d044b5092079b76b509e29faf0bd2f7a66f4d0ecdd1ffe53d0a8dc9e694e/litellm-1.103.10-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:a7d2b6a0de7c0abfc97fe89184cb2b719a5f76170a4cac9ffd4d14e85fbb3b73", size = 28047479, upload-time = "2026-10-27T19:41:23.808Z" },
+]
+
+[[package]]
+name = "litellm"
+version = "1.108.3"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "platform_machine == 'arm64' and sys_platform == 'darwin'",
+]
+dependencies = [
+    { name = "aiohttp" },
     { name = "boto3" },
     { name = "certifi" },
     { name = "click" },
     { name = "fastuuid" },
     { name = "filelock" },
     { name = "httpx", extra = ["http2"] },
-    { name = "huggingface-hub" },
+    { name = "huggingface-hub", version = "1.33.0", source = { registry = "https://pypi.org/simple" } },
     { name = "importlib-metadata" },
     { name = "jinja2" },
     { name = "jsonschema" },
@@ -3335,13 +3386,9 @@ dependencies = [
     { name = "tokenizers" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9c/7c/31ac3c23315c19e6f8e113f3e33279a2ffc9dabdec8ddbe5e9fb27e576cf/litellm-1.108.2.tar.gz", hash = "sha256:cbecfdd71ef8b218322c8fadfd857dae6d8948f18819270c9e8c270e0943c72c", size = 21456516, upload-time = "2026-11-06T22:03:32.983Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f3/e5/12c5184d984554d968cd8f8963b604e4759ffcdb8d5a63d3996529746bd1/litellm-1.108.3.tar.gz", hash = "sha256:b6ce7a78efbaff7214e731ba0769b156e05b150d05184def61913ee9ff0befb3", size = 21457171, upload-time = "2026-11-07T22:26:06.992Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e0/05/f9d8f9c850161acf174f98acf60edf1358adf5df4e8c1d6cc8cd5d1e54f4/litellm-1.108.2-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:7d6dcb68ed08696fac3bc58734d3e11a9856d8173a7053e4e4b41ac9da6f1015", size = 34970671, upload-time = "2026-11-06T22:03:16.644Z" },
-    { url = "https://files.pythonhosted.org/packages/78/66/010e470ce0815ee28924ac1e6e932006d3df0c9c8c426b84b9d3dfef0f09/litellm-1.108.2-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:b33118df9f5264fe2a4ce8e035ae760148c1689b56c0c51e2bdc753c77c7f6e5", size = 35474305, upload-time = "2026-11-06T22:03:19.61Z" },
-    { url = "https://files.pythonhosted.org/packages/c3/08/fa1303128b7927a6cb74d5e94867fbd6b5c983464292ad156c78bf4fdfc0/litellm-1.108.2-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:bf48429179c3cec9449f2ebaf0a4d74f224d7c03af1d8876872b45a74e5d571e", size = 36341255, upload-time = "2026-11-06T22:03:22.263Z" },
-    { url = "https://files.pythonhosted.org/packages/c9/43/17dcecf20777f791ba5f2b5bdc96fb20db2fc83012e62f97558aa69d3662/litellm-1.108.2-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:d09a07daaf2d8776b8be7467ed569869641a32f7bea77323cb038bd3c472c38e", size = 35603328, upload-time = "2026-11-06T22:03:25.27Z" },
-    { url = "https://files.pythonhosted.org/packages/8f/d8/9bfe7e2984bcbb3d573267731f6d12844f66754377f44261b5c56d824b04/litellm-1.108.2-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:8c1b93f1a065e5821e73a08d926f426c10ebdfaf9ba345828977f8a2c798a280", size = 36405924, upload-time = "2026-11-06T22:03:27.835Z" },
+    { url = "https://files.pythonhosted.org/packages/52/15/b45ffb4cd6f82e26b37eba73a3c9191677186f8de61fe145a886eaa30590/litellm-1.108.3-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:9955cc7a29b3060bb791a90cefb6d10df2f0cf63ea720c9d3a26bc8d253eae43", size = 34971257, upload-time = "2026-11-07T22:25:43.822Z" },
 ]
 
 [[package]]
@@ -3350,7 +3397,8 @@ version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/code/livecodebench" }
 dependencies = [
     { name = "datasets" },
-    { name = "huggingface-hub" },
+    { name = "huggingface-hub", version = "1.33.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "huggingface-hub", version = "2.4.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "verifiers" },
 ]
 
@@ -3639,7 +3687,7 @@ wheels = [
 
 [[package]]
 name = "mcp-atlas"
-version = "0.5.0"
+version = "0.6.0"
 source = { editable = "deps/prime-envs/environments/tool_use/mcp_atlas" }
 dependencies = [
     { name = "datasets" },
@@ -3693,7 +3741,7 @@ requires-dist = [
 
 [[package]]
 name = "mistral-common"
-version = "1.11.7"
+version = "1.13.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jsonschema" },
@@ -3703,11 +3751,10 @@ dependencies = [
     { name = "pydantic-extra-types", extra = ["pycountry"] },
     { name = "requests" },
     { name = "tiktoken" },
-    { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6f/d0/61b2c24be62a8e2f0e46a1c16de23de386c8644408da249bc66768a6681b/mistral_common-1.11.7.tar.gz", hash = "sha256:d3b79583595cf6d96a2ab33e42cb8449768383147b8c56cac5a4f193be19d20d", size = 6387178, upload-time = "2026-07-23T09:21:17.206Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/be/1b/a0b95fe6ec635e8f3579cc680f7e2b414c49152852aed4b22e54e92ca748/mistral_common-1.13.1.tar.gz", hash = "sha256:ad8d5b7e866e907925e31274c314fdaa7f7c45a0a43e7d2f543fd7fe65ddcea9", size = 6420824, upload-time = "2026-11-02T20:05:17.15Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ef/a4/bc2850eb33cc2d633a21f51530756350dca325ee69b07c9202552f2bbadb/mistral_common-1.11.7-py3-none-any.whl", hash = "sha256:a9511b88eacacbe7dacddd9d3498c1739f56847b7fdddbd5a22e7844fd9def95", size = 6553583, upload-time = "2026-07-23T09:21:19.818Z" },
+    { url = "https://files.pythonhosted.org/packages/e5/9c/58411e76b2bdd31a012a756dd0d13a624669cdd728e8966d709113d0d437/mistral_common-1.13.1-py3-none-any.whl", hash = "sha256:98b4d0755b8d90bf4691fa8f1b70cb3b4a8cd4dc1653c4ed08ef3d1c7d2c29af", size = 6589302, upload-time = "2026-11-02T20:05:14.753Z" },
 ]
 
 [package.optional-dependencies]
@@ -3835,8 +3882,7 @@ name = "modal"
 version = "1.5.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "aiohttp", version = "3.14.3", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "aiohttp", version = "3.14.5", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "aiohttp" },
     { name = "cbor2" },
     { name = "certifi" },
     { name = "click" },
@@ -3881,7 +3927,7 @@ dependencies = [
     { name = "boto3" },
     { name = "google-crc32c" },
     { name = "grpcio" },
-    { name = "huggingface-hub" },
+    { name = "huggingface-hub", version = "2.4.0", source = { registry = "https://pypi.org/simple" } },
     { name = "instanttensor" },
     { name = "numpy" },
     { name = "protobuf" },
@@ -3903,7 +3949,7 @@ name = "mooncake-transfer-engine"
 version = "0.3.11.post1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "aiohttp", version = "3.14.5", source = { registry = "https://pypi.org/simple" } },
+    { name = "aiohttp" },
     { name = "requests" },
 ]
 wheels = [
@@ -4032,28 +4078,12 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "multidict"
-version = "6.7.1"
-source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "platform_machine == 'arm64' and sys_platform == 'darwin'",
-]
-sdist = { url = "https://files.pythonhosted.org/packages/1a/c2/c2d94cbe6ac1753f3fc980da97b3d930efe1da3af3c9f5125354436c073d/multidict-6.7.1.tar.gz", hash = "sha256:ec6652a1bee61c53a3e5776b6049172c53b6aaba34f18c9ad04f82712bac623d", size = 102010, upload-time = "2026-01-26T02:46:45.979Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/8d/9c/f20e0e2cf80e4b2e4b1c365bf5fe104ee633c751a724246262db8f1a0b13/multidict-6.7.1-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:a90f75c956e32891a4eda3639ce6dd86e87105271f43d43442a3aedf3cddf172", size = 76893, upload-time = "2026-01-26T02:43:52.754Z" },
-    { url = "https://files.pythonhosted.org/packages/a9/65/1caac9d4cd32e8433908683446eebc953e82d22b03d10d41a5f0fefe991b/multidict-6.7.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:b0fa96985700739c4c7853a43c0b3e169360d6855780021bfc6d0f1ce7c123e7", size = 43872, upload-time = "2026-01-26T02:43:55.041Z" },
-    { url = "https://files.pythonhosted.org/packages/81/08/7036c080d7117f28a4af526d794aab6a84463126db031b007717c1a6676e/multidict-6.7.1-py3-none-any.whl", hash = "sha256:55d97cc6dae627efa6a6e548885712d4864b81110ac76fa4e534c03819fa4a56", size = 12319, upload-time = "2026-01-26T02:46:44.004Z" },
-]
-
-[[package]]
-name = "multidict"
 version = "7.2.1"
 source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "platform_machine == 'x86_64' and sys_platform == 'linux'",
-    "platform_machine == 'aarch64' and sys_platform == 'linux'",
-]
 sdist = { url = "https://files.pythonhosted.org/packages/7b/6b/29ef8e752f5854dcc267ded0652c475bec99b86f255957a0d4fcad657b18/multidict-7.2.1.tar.gz", hash = "sha256:e8af3e6f1bdbc31fd762b094133b478b89988eaebc63cbe82b1d9e3bbd15cede", size = 369994, upload-time = "2026-10-24T20:41:35.457Z" }
 wheels = [
+    { url = "https://files.pythonhosted.org/packages/27/21/53c299f1ea289f5fd438e70d4f1f053f59b4485f5a410bcc85eecb553394/multidict-7.2.1-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:cb43bb34346155d479acdc5423afccdff79ce1fc66adfcc9de995cbec8a13acf", size = 172948, upload-time = "2026-10-24T20:40:10.189Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/e4/bd8838244fd1309165c79e74af9a6b9e9e42fd0f2c24c75bee665fc9ba69/multidict-7.2.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:d37773029ba034a2cc970b6eeb67dad3bff9d894393c51f6bb1c6b4f563a032c", size = 103911, upload-time = "2026-10-24T20:40:13.517Z" },
     { url = "https://files.pythonhosted.org/packages/72/13/c081a1af93258029471636ea1c741141ece10f1045578a5f73ba99b694a0/multidict-7.2.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:fa0ecd064b0ae18d235283abb5adbc4e07304dba8f2aa7c0d61f28bebcc70d4c", size = 506972, upload-time = "2026-10-24T20:40:11.68Z" },
     { url = "https://files.pythonhosted.org/packages/43/50/6bd8600b4843f0a9d939e0cc0f4160f4c727bd6c69e4f7e294a1caa93db8/multidict-7.2.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:1fb8c1a3480c130c3a6422d5f16f3cad6552bf08c2089dd288ba7134649183b5", size = 516796, upload-time = "2026-10-24T20:40:13.481Z" },
     { url = "https://files.pythonhosted.org/packages/e8/bf/30a0c0911e4b61accb9995165acfdc5107dd335ad3ce003007afaf168dec/multidict-7.2.1-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:b4821bd30b38144d8ab75df56af0b07e9d71327c9cf94c0c7a1965f865bb9615", size = 492916, upload-time = "2026-10-24T20:40:16.619Z" },
@@ -4210,17 +4240,18 @@ requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2
 
 [[package]]
 name = "nltk"
-version = "3.9.4"
+version = "3.10.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
+    { name = "defusedxml" },
     { name = "joblib" },
     { name = "regex" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/74/a1/b3b4adf15585a5bc4c357adde150c01ebeeb642173ded4d871e89468767c/nltk-3.9.4.tar.gz", hash = "sha256:ed03bc098a40481310320808b2db712d95d13ca65b27372f8a403949c8b523d0", size = 2946864, upload-time = "2026-03-24T06:13:40.641Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3a/cb/bbaa9be58e95d21729c6b9194376610230e0755f6de0bf38b6acc0dce079/nltk-3.10.4.tar.gz", hash = "sha256:44679f4e9220abfd496d2c8cdb22f8425ccbe557604f9aa5cacb1c44003dabc1", size = 4300570, upload-time = "2026-10-21T11:34:35.851Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9d/91/04e965f8e717ba0ab4bdca5c112deeab11c9e750d94c4d4602f050295d39/nltk-3.9.4-py3-none-any.whl", hash = "sha256:f2fa301c3a12718ce4a0e9305c5675299da5ad9e26068218b69d692fda84828f", size = 1552087, upload-time = "2026-03-24T06:13:38.47Z" },
+    { url = "https://files.pythonhosted.org/packages/a2/04/e7816813e409ca874ba2fcc35455db0e4130b79eb277e1f9edd270ca3c69/nltk-3.10.4-py3-none-any.whl", hash = "sha256:769ba5413f265b7d3e87cd163cc28efa01e29eeef8bb6080bc907949d9fcfb51", size = 1722994, upload-time = "2026-10-21T11:34:27.975Z" },
 ]
 
 [[package]]
@@ -4362,15 +4393,15 @@ wheels = [
 
 [[package]]
 name = "nvidia-cudnn-frontend"
-version = "1.31.0"
+version = "1.32.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "apache-tvm-ffi" },
     { name = "nvidia-cutlass-dsl" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bf/4b/ba084b26c9709b05446642413aa4bbb1056fe00af7f99e356a3cf24774d6/nvidia_cudnn_frontend-1.31.0-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:47d1a5432f59a2a7d0f903727c0d244e1413a20686b98d8e3890919c5d82a508", size = 9970357, upload-time = "2026-10-08T18:05:50.547Z" },
-    { url = "https://files.pythonhosted.org/packages/cb/24/8ec9de1fd9ea95e1c1cb9e6e2d3a5547aa9c5ece1136d650ffce1bb5d8c5/nvidia_cudnn_frontend-1.31.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:3171f102254136418f24b4470dfa5419f34b03d9d792a4b773cf65c7a37e6bf8", size = 10159344, upload-time = "2026-10-08T18:06:15.766Z" },
+    { url = "https://files.pythonhosted.org/packages/34/03/2a7a61af93c2bd83cbd68c95f738102cf0e6178587b26dc3430cc96ecb12/nvidia_cudnn_frontend-1.32.2-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:7d55ceb51bad55ee1cd2c650b78d657bde8b09cdb545d48de38dc0e8e4d9388b", size = 11441935, upload-time = "2026-11-04T19:33:50.307Z" },
+    { url = "https://files.pythonhosted.org/packages/3e/6b/6b399089df9fc54ec4a028d65bec01472fc7fc1a334cab83fb64dc0b1964/nvidia_cudnn_frontend-1.32.2-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:321f3d915697c1113a48b6a602d3e243d24c56e9033b44eef8a87768703c1449", size = 11623466, upload-time = "2026-11-04T19:34:13.677Z" },
 ]
 
 [[package]]
@@ -4571,7 +4602,8 @@ name = "officeqa-pro-v2"
 version = "0.1.2"
 source = { editable = "deps/prime-envs/environments/search/officeqa_pro_v2" }
 dependencies = [
-    { name = "huggingface-hub" },
+    { name = "huggingface-hub", version = "1.33.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "huggingface-hub", version = "2.4.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "verifiers" },
 ]
 
@@ -4603,7 +4635,8 @@ version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/long_context/oolong_pairs" }
 dependencies = [
     { name = "datasets" },
-    { name = "huggingface-hub" },
+    { name = "huggingface-hub", version = "1.33.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "huggingface-hub", version = "2.4.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "verifiers" },
 ]
 
@@ -4716,7 +4749,8 @@ version = "0.1.5"
 source = { editable = "deps/prime-envs/environments/swe/openswe" }
 dependencies = [
     { name = "datasets" },
-    { name = "huggingface-hub" },
+    { name = "huggingface-hub", version = "1.33.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "huggingface-hub", version = "2.4.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "verifiers" },
 ]
 
@@ -5040,7 +5074,7 @@ wheels = [
 
 [[package]]
 name = "pi-automationbench"
-version = "1.1.1"
+version = "1.1.2"
 source = { editable = "deps/prime-envs/environments/tool_use/pi_automationbench" }
 dependencies = [
     { name = "automation-bench" },
@@ -5050,7 +5084,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "automation-bench", git = "https://github.com/xeophon/AutomationBench-PI.git?rev=9556666" },
-    { name = "verifiers", specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", specifier = ">=0.4.2.dev58" },
 ]
 
 [[package]]
@@ -5180,8 +5214,7 @@ dependencies = [
     { name = "deprecation" },
     { name = "httpx", extra = ["http2"] },
     { name = "pydantic" },
-    { name = "yarl", version = "1.24.2", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "yarl", version = "1.25.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "yarl" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e2/22/88c470d8838d2678a44e0172d061630b8837cba3fb7fb492e28f6578c309/postgrest-2.31.0.tar.gz", hash = "sha256:2f395d84b2ee34fc57622ff2f711df603e2ede625f98e5015240741888f7bd0c", size = 14419, upload-time = "2026-06-04T13:37:20.474Z" }
 wheels = [
@@ -5207,7 +5240,7 @@ wheels = [
 [[package]]
 name = "prime-kernels"
 version = "0.1.0+cu130torch2.14.0"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_aarch64.whl" }
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_aarch64.whl" }
 resolution-markers = [
     "platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
@@ -5215,7 +5248,7 @@ dependencies = [
     { name = "torch", version = "2.14.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_aarch64.whl", hash = "sha256:ab80955a2f379fda233a95d59957811fe25dbf0d6121402903bc754a9f603204" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_aarch64.whl", hash = "sha256:dbc3b7f505d1568b566617be8e9febdeb753ad163896a106beb04af94bf11b68" },
 ]
 
 [package.metadata]
@@ -5224,7 +5257,7 @@ requires-dist = [{ name = "torch", specifier = ">=2.9.0" }]
 [[package]]
 name = "prime-kernels"
 version = "0.1.0+cu130torch2.14.0"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_x86_64.whl" }
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_x86_64.whl" }
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
@@ -5232,7 +5265,7 @@ dependencies = [
     { name = "torch", version = "2.14.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_x86_64.whl", hash = "sha256:d377417516de3847e599da0048734d5c30d84d1eace57de4f4769dd1e73a23e3" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_x86_64.whl", hash = "sha256:83d4437eea38e951e7a1ddea62e863ea190b7239651e13efd1ec893b3b6c8028" },
 ]
 
 [package.metadata]
@@ -5270,7 +5303,7 @@ dev = [
 
 [[package]]
 name = "prime-rl"
-version = "0.10.0"
+version = "0.11.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiolimiter" },
@@ -5308,18 +5341,18 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
-    { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "deep-select", version = "1.0.0+bfa4507.20261116.161551", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/deep_select-1.0.0+bfa4507.20261116.161551-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "deep-select", version = "1.0.0+bfa4507.20261116.162554", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/deep_select-1.0.0+bfa4507.20261116.162554-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "deep-select", version = "1.0.0+bfa4507.20261109.170213", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_select-1.0.0+bfa4507.20261109.170213-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "deep-select", version = "1.0.0+bfa4507.20261109.170237", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_select-1.0.0+bfa4507.20261109.170237-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "flash-attn", version = "2.8.3+cu130torch2.14", source = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.10.0/flash_attn-2.8.3+cu130torch2.14-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "flash-attn", version = "2.8.3+cu130torch2.14", source = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.10.1/flash_attn-2.8.3+cu130torch2.14-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
     { name = "flash-attn-3", marker = "sys_platform == 'linux'" },
     { name = "flash-attn-4", marker = "sys_platform == 'linux'" },
     { name = "flash-linear-attention", marker = "sys_platform == 'linux'" },
     { name = "flashinfer-cubin", marker = "sys_platform == 'linux'" },
-    { name = "flashinfer-jit-cache", version = "0.7.2.post1+cu130", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache-0.7.2.post1%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "flashinfer-jit-cache", version = "0.7.2.post1+cu130", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache-0.7.2.post1%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "flashinfer-jit-cache", version = "0.7.3+cu130", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache-0.7.3%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "flashinfer-jit-cache", version = "0.7.3+cu130", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache-0.7.3%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "mamba-ssm", marker = "sys_platform == 'linux'" },
     { name = "modelexpress", marker = "sys_platform == 'linux'" },
     { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux'" },
@@ -5332,27 +5365,27 @@ all = [
     { name = "tilelang" },
     { name = "torch", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "torch", version = "2.14.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "sys_platform == 'linux'" },
-    { name = "torchao", version = "0.18.0+git5f2baf9d5", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "torchao", version = "0.18.0+git5f2baf9d5", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "torchao", version = "0.18.0+git5f2baf9d5", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "torchao", version = "0.18.0+git5f2baf9d5", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "torchaudio", marker = "sys_platform == 'linux'" },
     { name = "torchdata", marker = "sys_platform == 'linux'" },
     { name = "torchtitan", marker = "sys_platform == 'linux'" },
     { name = "torchvision", marker = "sys_platform == 'linux'" },
-    { name = "vllm", version = "0.33.0", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.33.0rc3/vllm-0.33.0-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "vllm", version = "0.33.0", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.33.0rc3/vllm-0.33.0-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "vllm-router", version = "0.2.4", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.4/vllm_router-0.2.4-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "vllm-router", version = "0.2.4", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.4/vllm_router-0.2.4-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "vllm", version = "0.34.0", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.34.0/vllm-0.34.0-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "vllm", version = "0.34.0", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.34.0/vllm-0.34.0-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "vllm-router", version = "0.2.8", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.8/vllm_router-0.2.8-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "vllm-router", version = "0.2.8", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.8/vllm_router-0.2.8-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 dashboard = [
     { name = "fastapi" },
     { name = "uvicorn" },
 ]
 disagg = [
-    { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "deep-ep", version = "1.2.1+29d31c0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "nixl", marker = "sys_platform == 'linux'" },
-    { name = "vllm-router", version = "0.2.4", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.4/vllm_router-0.2.4-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "vllm-router", version = "0.2.4", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.4/vllm_router-0.2.4-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "vllm-router", version = "0.2.8", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.8/vllm_router-0.2.8-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "vllm-router", version = "0.2.8", source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.8/vllm_router-0.2.8-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 dynamo = [
     { name = "ai-dynamo", marker = "sys_platform == 'linux'" },
@@ -5368,12 +5401,12 @@ flash-attn-cute = [
     { name = "flash-attn-4", marker = "sys_platform == 'linux'" },
 ]
 gpu = [
-    { name = "deep-select", version = "1.0.0+bfa4507.20261116.161551", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/deep_select-1.0.0+bfa4507.20261116.161551-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "deep-select", version = "1.0.0+bfa4507.20261116.162554", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/deep_select-1.0.0+bfa4507.20261116.162554-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "deep-select", version = "1.0.0+bfa4507.20261109.170213", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_select-1.0.0+bfa4507.20261109.170213-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "deep-select", version = "1.0.0+bfa4507.20261109.170237", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_select-1.0.0+bfa4507.20261109.170237-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "flash-linear-attention", marker = "sys_platform == 'linux'" },
     { name = "flashinfer-cubin", marker = "sys_platform == 'linux'" },
-    { name = "flashinfer-jit-cache", version = "0.7.2.post1+cu130", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache-0.7.2.post1%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "flashinfer-jit-cache", version = "0.7.2.post1+cu130", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache-0.7.2.post1%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "flashinfer-jit-cache", version = "0.7.3+cu130", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache-0.7.3%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "flashinfer-jit-cache", version = "0.7.3+cu130", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache-0.7.3%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "mamba-ssm", marker = "sys_platform == 'linux'" },
     { name = "modelexpress", marker = "sys_platform == 'linux'" },
     { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux'" },
@@ -5383,18 +5416,18 @@ gpu = [
     { name = "tilelang" },
     { name = "torch", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "torch", version = "2.14.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "sys_platform == 'linux'" },
-    { name = "torchao", version = "0.18.0+git5f2baf9d5", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "torchao", version = "0.18.0+git5f2baf9d5", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "torchao", version = "0.18.0+git5f2baf9d5", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "torchao", version = "0.18.0+git5f2baf9d5", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "torchaudio", marker = "sys_platform == 'linux'" },
     { name = "torchdata", marker = "sys_platform == 'linux'" },
     { name = "torchtitan", marker = "sys_platform == 'linux'" },
     { name = "torchvision", marker = "sys_platform == 'linux'" },
-    { name = "vllm", version = "0.33.0", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.33.0rc3/vllm-0.33.0-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "vllm", version = "0.33.0", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.33.0rc3/vllm-0.33.0-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "vllm", version = "0.34.0", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.34.0/vllm-0.34.0-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "vllm", version = "0.34.0", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.34.0/vllm-0.34.0-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 kernels = [
-    { name = "prime-kernels", version = "0.1.0+cu130torch2.14.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "prime-kernels", version = "0.1.0+cu130torch2.14.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "prime-kernels", version = "0.1.0+cu130torch2.14.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "prime-kernels", version = "0.1.0+cu130torch2.14.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 quack = [
     { name = "quack-kernels", marker = "sys_platform == 'linux'" },
@@ -5420,12 +5453,12 @@ requires-dist = [
     { name = "aiolimiter", specifier = ">=1.2.1" },
     { name = "beartype", specifier = ">=0.21.0" },
     { name = "datasets", specifier = ">=4.0.0" },
-    { name = "deep-ep", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl" },
+    { name = "deep-ep", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl" },
     { name = "deep-ep", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'disagg'" },
-    { name = "deep-ep", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" },
-    { name = "deep-select", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/deep_select-1.0.0+bfa4507.20261116.161551-cp312-cp312-linux_aarch64.whl" },
+    { name = "deep-ep", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" },
+    { name = "deep-select", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_select-1.0.0+bfa4507.20261109.170213-cp312-cp312-linux_aarch64.whl" },
     { name = "deep-select", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'gpu'" },
-    { name = "deep-select", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/deep_select-1.0.0+bfa4507.20261116.162554-cp312-cp312-linux_x86_64.whl" },
+    { name = "deep-select", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_select-1.0.0+bfa4507.20261109.170237-cp312-cp312-linux_x86_64.whl" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "fastapi", marker = "extra == 'dashboard'", specifier = ">=0.115" },
     { name = "flash-attn", marker = "platform_machine == 'aarch64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.10.1/flash_attn-2.8.3+cu130torch2.14-cp312-cp312-linux_aarch64.whl" },
@@ -5433,10 +5466,10 @@ requires-dist = [
     { name = "flash-attn-3", marker = "sys_platform == 'linux' and extra == 'flash-attn-3'", index = "https://download.pytorch.org/whl/test/cu130" },
     { name = "flash-attn-4", marker = "sys_platform == 'linux' and extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=0251105" },
     { name = "flash-linear-attention", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/fla-org/flash-linear-attention" },
-    { name = "flashinfer-cubin", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = "==0.7.2.post1", index = "https://flashinfer.ai/whl" },
-    { name = "flashinfer-jit-cache", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache-0.7.2.post1%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl" },
-    { name = "flashinfer-jit-cache", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", specifier = "==0.7.2.post1+cu130" },
-    { name = "flashinfer-jit-cache", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.2.post1/flashinfer_jit_cache-0.7.2.post1%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl" },
+    { name = "flashinfer-cubin", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = "==0.7.3", index = "https://flashinfer.ai/whl" },
+    { name = "flashinfer-jit-cache", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache-0.7.3%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl" },
+    { name = "flashinfer-jit-cache", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", specifier = "==0.7.3+cu130" },
+    { name = "flashinfer-jit-cache", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache-0.7.3%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "mamba-ssm", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/state-spaces/mamba?rev=f577286" },
@@ -5447,14 +5480,14 @@ requires-dist = [
     { name = "nixl", marker = "sys_platform == 'linux' and extra == 'disagg'", specifier = "==1.5.0" },
     { name = "nixl-cu13", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = "==1.5.0" },
     { name = "numpy", specifier = ">=2.2.6" },
-    { name = "nvidia-cudnn-frontend", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=1.31.0,<1.32" },
+    { name = "nvidia-cudnn-frontend", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = "==1.32.2" },
     { name = "nvidia-ml-py", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=12.575.51" },
     { name = "openai", specifier = ">=1.106.1" },
     { name = "orjson", specifier = ">=3.11.0" },
     { name = "pillow", specifier = ">=13.0.0" },
-    { name = "prime-kernels", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_aarch64.whl" },
+    { name = "prime-kernels", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_aarch64.whl" },
     { name = "prime-kernels", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'kernels'" },
-    { name = "prime-kernels", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_x86_64.whl" },
+    { name = "prime-kernels", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_x86_64.whl" },
     { name = "prime-pydantic-config", editable = "deps/pydantic-config" },
     { name = "prime-rl", extras = ["disagg"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["flash-attn"], marker = "extra == 'all'" },
@@ -5479,9 +5512,9 @@ requires-dist = [
     { name = "tenacity", specifier = ">=8.2.0" },
     { name = "tilelang", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.1.8" },
     { name = "torch", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=2.14.0", index = "https://download.pytorch.org/whl/cu130" },
-    { name = "torchao", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl" },
+    { name = "torchao", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl" },
     { name = "torchao", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.18.0" },
-    { name = "torchao", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl" },
+    { name = "torchao", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl" },
     { name = "torchaudio", marker = "sys_platform == 'linux' and extra == 'gpu'", index = "https://download.pytorch.org/whl/cu130" },
     { name = "torchdata", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.11.0" },
     { name = "torchtitan", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/pytorch/torchtitan?rev=23e4dfc" },
@@ -5491,12 +5524,12 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'dashboard'", specifier = ">=0.30" },
     { name = "uvloop", specifier = ">=0.21.0" },
     { name = "verifiers", extras = ["harbor"], editable = "deps/verifiers" },
-    { name = "vllm", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/vllm-project/vllm/releases/download/v0.33.0rc3/vllm-0.33.0-cp38-abi3-manylinux_2_28_aarch64.whl" },
-    { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.33.0" },
-    { name = "vllm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/vllm-project/vllm/releases/download/v0.33.0rc3/vllm-0.33.0-cp38-abi3-manylinux_2_28_x86_64.whl" },
-    { name = "vllm-router", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.4/vllm_router-0.2.4-cp38-abi3-manylinux_2_28_aarch64.whl" },
+    { name = "vllm", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/vllm-project/vllm/releases/download/v0.34.0/vllm-0.34.0-cp38-abi3-manylinux_2_28_aarch64.whl" },
+    { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.34.0" },
+    { name = "vllm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/vllm-project/vllm/releases/download/v0.34.0/vllm-0.34.0-cp38-abi3-manylinux_2_28_x86_64.whl" },
+    { name = "vllm-router", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.8/vllm_router-0.2.8-cp38-abi3-manylinux_2_28_aarch64.whl" },
     { name = "vllm-router", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'disagg'" },
-    { name = "vllm-router", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.4/vllm_router-0.2.4-cp38-abi3-manylinux_2_28_x86_64.whl" },
+    { name = "vllm-router", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.8/vllm_router-0.2.8-cp38-abi3-manylinux_2_28_x86_64.whl" },
     { name = "wandb", specifier = ">=0.26.1" },
     { name = "wandb-workspaces", specifier = ">=0.4.3" },
 ]
@@ -5557,7 +5590,7 @@ train = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.5.9"
+version = "0.5.11"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -5569,9 +5602,9 @@ dependencies = [
     { name = "pyqwest" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8d/50/40e351b1fada75c8a166c3e482584912e660d7a143b5a1fa317c2038f2d0/prime_sandboxes-0.5.9.tar.gz", hash = "sha256:4aab8f2ca2dbd1f18cf356bb8c072baa29747cdee0305817d4d4eed7283c8cae", size = 173127, upload-time = "2026-11-10T01:03:33.691Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/87/a4/863ce60f0c8cf74e7c59a754a53db5f9089c9ca68f976758f11bebb9c4a6/prime_sandboxes-0.5.11.tar.gz", hash = "sha256:c80062d3767ac352bc463ea4442a47eb3066e2c4ddd52ca6f39afafda1abd500", size = 177262, upload-time = "2026-11-11T17:52:49.813Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/60/77/888edf3076ef91d424f323aad4455e4a2c426cf1dde91728a46e19a029ac/prime_sandboxes-0.5.9-py3-none-any.whl", hash = "sha256:f66355ab2c8384d1ade329c82b9497165c490778031f927c00fefa6101f1536d", size = 93862, upload-time = "2026-11-10T01:03:31.814Z" },
+    { url = "https://files.pythonhosted.org/packages/61/73/10c87464a895c551409fb0496af01cd02d41d2f15d57ac9581506ad4ca88/prime_sandboxes-0.5.11-py3-none-any.whl", hash = "sha256:0496639fceacfc80a5778e7901b8c95fa2dac2dedda00ff30f58a5185db646e5", size = 96085, upload-time = "2026-11-11T17:52:48.032Z" },
 ]
 
 [[package]]
@@ -5772,7 +5805,7 @@ wheels = [
 
 [[package]]
 name = "ptx-remote"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/code/ptx_remote" }
 dependencies = [
     { name = "httpx" },
@@ -6435,7 +6468,7 @@ requires-dist = [
     { name = "numpy" },
     { name = "openai", specifier = ">=1.108.1" },
     { name = "openai-harmony", specifier = ">=0.0.4" },
-    { name = "pillow", marker = "extra == 'multimodal'", specifier = ">=12.2.0" },
+    { name = "pillow", marker = "extra == 'multimodal'", specifier = ">=13.0.0" },
     { name = "prime-pydantic-config", specifier = ">=0.3.0.dev83" },
     { name = "tiktoken" },
     { name = "transformers", marker = "extra == 'multimodal'", specifier = ">=4.50.0" },
@@ -6445,7 +6478,7 @@ provides-extras = ["multimodal", "transformers"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "pillow", specifier = ">=12.2.0" },
+    { name = "pillow", specifier = ">=13.0.0" },
     { name = "pre-commit" },
     { name = "pytest", specifier = ">=7.0.0" },
     { name = "pytest-asyncio", specifier = ">=0.21.0" },
@@ -6628,7 +6661,8 @@ name = "s1-deepresearch"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/search/s1_deepresearch" }
 dependencies = [
-    { name = "huggingface-hub" },
+    { name = "huggingface-hub", version = "1.33.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "huggingface-hub", version = "2.4.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "verifiers" },
 ]
 
@@ -6766,7 +6800,8 @@ name = "sentence-transformers"
 version = "5.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "huggingface-hub" },
+    { name = "huggingface-hub", version = "1.33.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "huggingface-hub", version = "2.4.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "numpy" },
     { name = "scikit-learn" },
     { name = "scipy" },
@@ -6930,11 +6965,11 @@ wheels = [
 
 [[package]]
 name = "soupsieve"
-version = "2.8.4"
+version = "4.0.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/47/2c/0a5f6f8ee0d5589e48c7640213ed5175d52cf540a06725b628cc1a45d6ce/soupsieve-2.8.4.tar.gz", hash = "sha256:e121fd02e975c695e4e9e8774a5ee35d74714b59307868dcc5319ad2d9e3328e", size = 121110, upload-time = "2026-05-24T13:55:57.154Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/01/7c/a64eedae0b7776cb9602d2da9cb8f8caae8e1b4c1da5e8e87bf1e68121ec/soupsieve-4.0.1.tar.gz", hash = "sha256:7621e3c5f6b371ed2c5eabaac5de300ac3d66d05e6d7f34783e31b63c4f90c75", size = 153302, upload-time = "2026-11-04T16:36:27.749Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5e/f5/0c41cb68dcae6b7de4fac4188a3a9589e21fb31df21ea3a2e888db95e6c9/soupsieve-2.8.4-py3-none-any.whl", hash = "sha256:e7e6b0769c8f51ed59acab6e994b00621096cfb1c640a7509295987388fbaf65", size = 37304, upload-time = "2026-05-24T13:55:55.406Z" },
+    { url = "https://files.pythonhosted.org/packages/2c/5c/4f68370847b561a389dd9a2d7eb3d19fd8cbb8acbae543a0c6b8d0d9700b/soupsieve-4.0.1-py3-none-any.whl", hash = "sha256:2e68cf7dd5a0f29d81f9d485275ccf294e6475f615e211895d91cb81f8614f04", size = 50688, upload-time = "2026-11-04T16:36:26.158Z" },
 ]
 
 [[package]]
@@ -6985,8 +7020,7 @@ dependencies = [
     { name = "deprecation" },
     { name = "httpx", extra = ["http2"] },
     { name = "pydantic" },
-    { name = "yarl", version = "1.24.2", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "yarl", version = "1.25.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "yarl" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/13/30/fee43d523d3f680a833a4aae5bf8094de0b9031b0c2bddb3e0bc6e829e1b/storage3-2.31.0.tar.gz", hash = "sha256:d2161e2ea650dc115a1787c30e09b118365589ac772f4dd8643e3a503ecfc667", size = 20348, upload-time = "2026-06-04T13:37:23.703Z" }
 wheels = [
@@ -7013,8 +7047,7 @@ dependencies = [
     { name = "storage3" },
     { name = "supabase-auth" },
     { name = "supabase-functions" },
-    { name = "yarl", version = "1.24.2", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "yarl", version = "1.25.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "yarl" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/fe/8e/54a2f950629689b1613434a61fc3bff5f92f84ba6b20213f5b2add05c1bb/supabase-2.31.0.tar.gz", hash = "sha256:3467b09d00482b9a0138235bdbde7a350426f93cf2a1342372eaddfc669f1206", size = 9805, upload-time = "2026-06-04T13:37:25.22Z" }
 wheels = [
@@ -7042,8 +7075,7 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx", extra = ["http2"] },
     { name = "strenum" },
-    { name = "yarl", version = "1.24.2", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "yarl", version = "1.25.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "yarl" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/84/5d/61c2446ed26a57fa5543f9c270a731320911569202340d15341f72cdba7c/supabase_functions-2.31.0.tar.gz", hash = "sha256:4ad027b3ae3bd28b31233339f4db1da6965affd3546f655b421baf40cee2690f", size = 4683, upload-time = "2026-06-04T13:37:28.878Z" }
 wheels = [
@@ -7377,7 +7409,8 @@ name = "terminal-lego"
 version = "0.1.2"
 source = { editable = "deps/prime-envs/environments/terminal/terminal_lego" }
 dependencies = [
-    { name = "huggingface-hub" },
+    { name = "huggingface-hub", version = "1.33.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "huggingface-hub", version = "2.4.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "verifiers", extra = ["harbor"] },
 ]
 
@@ -7472,7 +7505,8 @@ name = "tokenizers"
 version = "0.23.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "huggingface-hub" },
+    { name = "huggingface-hub", version = "1.33.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "huggingface-hub", version = "2.4.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e0/7c/2cabb2174e772636683008f2c5621949b645da7d303c596589e84516a184/tokenizers-0.23.3.tar.gz", hash = "sha256:cded33237c77caeef62944d32aa9a7ef42bdce2b3497e18d137e072a8c4be438", size = 385286, upload-time = "2026-10-09T10:16:55.759Z" }
 wheels = [
@@ -7605,12 +7639,12 @@ wheels = [
 [[package]]
 name = "torchao"
 version = "0.18.0+git5f2baf9d5"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl" }
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl" }
 resolution-markers = [
     "platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl", hash = "sha256:d95b8e3c0d78ca352231dae7ba48d58a556b145a33ae3db10379bb8f66639c0b" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl", hash = "sha256:2a6ba16229911d9e92c2e00ec05dafe16a6254162f562dace2b541f7a19d6410" },
 ]
 
 [package.metadata]
@@ -7646,12 +7680,12 @@ provides-extras = ["dev"]
 [[package]]
 name = "torchao"
 version = "0.18.0+git5f2baf9d5"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl" }
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl" }
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-78e4f14/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl", hash = "sha256:e22f82d53b62566f65c0657d3a039ab1bb7c8bb517ae04369f81f2e97d87cd64" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl", hash = "sha256:b7c4785ae27aa343a97375ea3357500c1e07d3054d9943aa23bf02e30e65a236" },
 ]
 
 [package.metadata]
@@ -7745,15 +7779,15 @@ wheels = [
 
 [[package]]
 name = "tornado"
-version = "6.6"
+version = "6.6.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d0/02/5f549b1ad5da6267ed1e1fac2eef69257b1979cc812497002499b7895ff9/tornado-6.6.tar.gz", hash = "sha256:34c4aa916d7f2b2d5cadee2c6850f5a4a7f3d688cbf58399ea9bd3057af4abd5", size = 617998, upload-time = "2026-10-21T15:31:04.733Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/64/2b/8ff2b41620cbba0eeb0862fed21dcaa5a2ad36c6dd9bb465f9ff7a147be2/tornado-6.6.1.tar.gz", hash = "sha256:28e6311402af59c8b02e3fa0f5e7d8eb465b25081381803b127d97e6a4395d5a", size = 623388, upload-time = "2026-11-09T21:09:22.71Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/df/f5/d3e6f76b945f9812842db742d0708a3b6287e850e81be3ca10e290c103c6/tornado-6.6-cp311-abi3-macosx_10_9_universal2.whl", hash = "sha256:01abf15429d64f04ccfafc238b191cc2c177108b7a331f4461707ad77198c8c2", size = 528326, upload-time = "2026-10-21T15:30:05.528Z" },
-    { url = "https://files.pythonhosted.org/packages/30/69/b20cf3a8bf641ec792a5a6050aa153e8f120604f9c23471142de535113e5/tornado-6.6-cp311-abi3-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:11bb97c00981eb8254e55bd6a5ad960c983ae343fef8ae3ae5584cd1fb70236a", size = 529544, upload-time = "2026-10-21T15:30:07.126Z" },
-    { url = "https://files.pythonhosted.org/packages/0f/f4/d9d8d3ac345aa9df3a132ad03bd443160c2ab24ad4003b4e8d6d5af06371/tornado-6.6-cp311-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:4e152a3b2d3eae113b836d979823f7bb2320f7e334a84449729964921f374a4c", size = 530523, upload-time = "2026-10-21T15:30:08.478Z" },
-    { url = "https://files.pythonhosted.org/packages/54/5b/67d3d452b1179bc9e265cebd381a56ab4cf2d7b2a54607aedd8d6e1ebc2e/tornado-6.6-cp311-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:61fc5513cea97720ab9bf54b04827ac0f4500c63f0b072b963d6145c798b4661", size = 530367, upload-time = "2026-10-21T15:30:15.183Z" },
-    { url = "https://files.pythonhosted.org/packages/49/04/6c59a9413adfe4810f648a4dd9fdf476f13b0495f9cc25ef856b71f9ce1e/tornado-6.6-cp311-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:fc7c8a3263501fbe97518cd699101bc3c5f499a7dd4f75fc6cbb3bd9ee1db1f1", size = 529751, upload-time = "2026-10-21T15:30:20.826Z" },
+    { url = "https://files.pythonhosted.org/packages/77/d3/ef3a4d38d1a72c52ad07483ed760dbb93027d28f19c3a2d98148abdd63e1/tornado-6.6.1-cp311-abi3-macosx_10_9_universal2.whl", hash = "sha256:a8d3e6acde5a80d13b13b5e4c7c226ca682f31d0a62b6c33cea038714bc2de1b", size = 533249, upload-time = "2026-11-09T21:08:22.475Z" },
+    { url = "https://files.pythonhosted.org/packages/38/4d/c65ea949a3cdc185f1afac8c337074d4f2d029b48293d2db4d2c3dea4849/tornado-6.6.1-cp311-abi3-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:1b6ff57cc69b339f8feb9e7b567b0e0eacb16bfaf234159496623ef7a67ba640", size = 534470, upload-time = "2026-11-09T21:08:24.27Z" },
+    { url = "https://files.pythonhosted.org/packages/03/ff/20911f85dd399b56761496e8138810e8608ea25f0912377f4205d52af853/tornado-6.6.1-cp311-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:da6ce2da215810d56539fa6cac77d9e27f4d8139c6868c53436b2fe933f43c79", size = 535446, upload-time = "2026-11-09T21:08:25.625Z" },
+    { url = "https://files.pythonhosted.org/packages/a6/bb/b733df2d487a78283080663bd6d96955121b58b6d445d9cb832607da9786/tornado-6.6.1-cp311-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:b62fded687e55acaf9e36c1230b006066a35b3f6df093ba1fd3b2ff592070e1d", size = 535289, upload-time = "2026-11-09T21:08:31.692Z" },
+    { url = "https://files.pythonhosted.org/packages/18/11/b5107ac6a278387635d73d283e7ab5a5c76fb8ccf402efa57006ea25852f/tornado-6.6.1-cp311-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:6596f3e939962f13099ce8d1a96b83226e908ca369b193370a6efa84585a1601", size = 534676, upload-time = "2026-11-09T21:08:37.209Z" },
 ]
 
 [[package]]
@@ -7770,7 +7804,8 @@ name = "trace-cheating-recall-500"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/judges/trace_cheating_recall_500" }
 dependencies = [
-    { name = "huggingface-hub" },
+    { name = "huggingface-hub", version = "1.33.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "huggingface-hub", version = "2.4.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "orjson" },
     { name = "verifiers" },
 ]
@@ -7796,7 +7831,8 @@ name = "transformers"
 version = "5.20.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "huggingface-hub" },
+    { name = "huggingface-hub", version = "1.33.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "huggingface-hub", version = "2.4.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "numpy" },
     { name = "packaging" },
     { name = "pyyaml" },
@@ -7874,11 +7910,11 @@ requires-dist = [
 
 [[package]]
 name = "truststore"
-version = "0.10.4"
+version = "0.10.5"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/53/a3/1585216310e344e8102c22482f6060c7a6ea0322b63e026372e6dcefcfd6/truststore-0.10.4.tar.gz", hash = "sha256:9d91bd436463ad5e4ee4aba766628dd6cd7010cf3e2461756b3303710eebc301", size = 26169, upload-time = "2025-08-12T18:49:02.73Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ee/9f/c5201d42a484c061e528825fc8e2d565f5abd50a4ced6fb7d29c4ec99b2b/truststore-0.10.5.tar.gz", hash = "sha256:30d36967ccaded5cbb38d602c433f53600036c79d502f4533a49b60a03bbefcd", size = 28091, upload-time = "2026-10-12T22:27:31.808Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/19/97/56608b2249fe206a67cd573bc93cd9896e1efb9e98bce9c163bcdc704b88/truststore-0.10.4-py3-none-any.whl", hash = "sha256:adaeaecf1cbb5f4de3b1959b42d41f6fab57b2b1666adb59e89cb0b53361d981", size = 18660, upload-time = "2025-08-12T18:49:01.46Z" },
+    { url = "https://files.pythonhosted.org/packages/51/e9/3a7820be2bb0fe53b6bc9c3be26d3d1158004e4c3ab953aa6840b955b1e9/truststore-0.10.5-py3-none-any.whl", hash = "sha256:9aaaedaefaf06d8b206278cf8b5012bc897f485a874503501e12d776df78951c", size = 19017, upload-time = "2026-10-12T22:27:30.377Z" },
 ]
 
 [[package]]
@@ -7940,11 +7976,11 @@ wheels = [
 
 [[package]]
 name = "typing-extensions"
-version = "4.15.0"
+version = "4.16.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/72/94/1a15dd82efb362ac84269196e94cf00f187f7ed21c242792a923cdb1c61f/typing_extensions-4.15.0.tar.gz", hash = "sha256:0cea48d173cc12fa28ecabc3b837ea3cf6f38c6d1136f85cbaaf598984861466", size = 109391, upload-time = "2025-08-25T13:49:26.313Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f6/cc/6253133b5bb138fc3306cebfbda2c520f545d36b5be2c7255cc528bb45d6/typing_extensions-4.16.0.tar.gz", hash = "sha256:dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5", size = 113555, upload-time = "2026-07-02T08:40:05.92Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/18/67/36e9267722cc04a6b9f15c7f3441c2363321a3ea07da7ae0c0707beb2a9c/typing_extensions-4.15.0-py3-none-any.whl", hash = "sha256:f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548", size = 44614, upload-time = "2025-08-25T13:49:24.86Z" },
+    { url = "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl", hash = "sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8", size = 45571, upload-time = "2026-07-02T08:40:04.659Z" },
 ]
 
 [[package]]
@@ -8085,8 +8121,7 @@ requires-dist = [
 name = "verifiers"
 source = { editable = "deps/verifiers" }
 dependencies = [
-    { name = "aiohttp", version = "3.14.3", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "aiohttp", version = "3.14.5", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "aiohttp" },
     { name = "anthropic" },
     { name = "h11" },
     { name = "httpx" },
@@ -8137,7 +8172,7 @@ requires-dist = [
     { name = "prime-sandboxes", specifier = ">=0.5.9" },
     { name = "prime-tunnel", specifier = ">=0.1.17" },
     { name = "pydantic", specifier = ">=2.12.3" },
-    { name = "renderers", extras = ["multimodal"], specifier = ">=0.2.1.dev9" },
+    { name = "renderers", extras = ["multimodal"], specifier = ">=0.2.1.dev12" },
     { name = "tenacity", specifier = ">=8.5.0" },
     { name = "textarena", marker = "extra == 'ta'", specifier = "==0.7.4" },
     { name = "tomli-w", specifier = ">=1.0.0" },
@@ -8182,7 +8217,8 @@ version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/multimodal/virl39k" }
 dependencies = [
     { name = "datasets" },
-    { name = "huggingface-hub" },
+    { name = "huggingface-hub", version = "1.33.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "huggingface-hub", version = "2.4.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "verifiers" },
 ]
 
@@ -8211,13 +8247,13 @@ wheels = [
 
 [[package]]
 name = "vllm"
-version = "0.33.0"
-source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.33.0rc3/vllm-0.33.0-cp38-abi3-manylinux_2_28_aarch64.whl" }
+version = "0.34.0"
+source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.34.0/vllm-0.34.0-cp38-abi3-manylinux_2_28_aarch64.whl" }
 resolution-markers = [
     "platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
 dependencies = [
-    { name = "aiohttp", version = "3.14.5", source = { registry = "https://pypi.org/simple" } },
+    { name = "aiohttp" },
     { name = "anthropic" },
     { name = "apache-tvm-ffi" },
     { name = "blake3" },
@@ -8232,7 +8268,7 @@ dependencies = [
     { name = "fastsafetensors" },
     { name = "filelock" },
     { name = "flashinfer-python" },
-    { name = "huggingface-hub" },
+    { name = "huggingface-hub", version = "2.4.0", source = { registry = "https://pypi.org/simple" } },
     { name = "humming-kernels", extra = ["cu13"] },
     { name = "ijson" },
     { name = "instanttensor" },
@@ -8244,7 +8280,7 @@ dependencies = [
     { name = "mistral-common", extra = ["image"] },
     { name = "model-hosting-container-standards" },
     { name = "msgspec" },
-    { name = "multidict", version = "7.2.1", source = { registry = "https://pypi.org/simple" } },
+    { name = "multidict" },
     { name = "ninja" },
     { name = "numba" },
     { name = "numpy" },
@@ -8297,7 +8333,7 @@ dependencies = [
     { name = "xgrammar" },
 ]
 wheels = [
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.33.0rc3/vllm-0.33.0-cp38-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:e9e404f52c8494b69bd83fe99fe7ecfa9f6b89fbd156d2a9639c24ea41d6d606" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.34.0/vllm-0.34.0-cp38-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:7d96231fc141ad4b3a441292b77362b285b335ca7d1b0e2ab441d4ebde82f405" },
 ]
 
 [package.metadata]
@@ -8319,10 +8355,10 @@ requires-dist = [
     { name = "fastapi", extras = ["standard"], specifier = ">=0.133.0,<0.137.0" },
     { name = "fastsafetensors", specifier = ">=0.3.3" },
     { name = "fastsafetensors", marker = "extra == 'fastsafetensors'", specifier = ">=0.3.3" },
-    { name = "filelock", specifier = ">=3.20.3" },
-    { name = "flashinfer-python", specifier = "==0.7.2.post1" },
+    { name = "filelock", specifier = ">=4.2.4" },
+    { name = "flashinfer-python", specifier = "==0.7.3" },
     { name = "helion", marker = "extra == 'helion'", specifier = "==1.4.0" },
-    { name = "huggingface-hub", specifier = ">=1.31.0" },
+    { name = "huggingface-hub", specifier = ">=2.0.0" },
     { name = "humming-kernels", extras = ["cu13"], specifier = "==0.1.19" },
     { name = "ijson" },
     { name = "instanttensor", specifier = ">=0.2.2" },
@@ -8334,7 +8370,7 @@ requires-dist = [
     { name = "matplotlib", marker = "extra == 'bench'" },
     { name = "mcp", specifier = ">=2.2.0,<3.0.0" },
     { name = "mistral-common", extras = ["audio"], marker = "extra == 'audio'" },
-    { name = "mistral-common", extras = ["image"], specifier = ">=1.11.6" },
+    { name = "mistral-common", extras = ["image"], specifier = ">=1.13.0" },
     { name = "model-hosting-container-standards", specifier = ">=0.1.14,<1.0.0" },
     { name = "msgspec" },
     { name = "multidict", specifier = ">=6.9.1" },
@@ -8347,11 +8383,11 @@ requires-dist = [
     { name = "nvtx", specifier = "==0.2.15" },
     { name = "openai", specifier = ">=2.25.0" },
     { name = "opencv-python-headless", specifier = ">=4.13.0" },
-    { name = "opentelemetry-api", specifier = ">=1.27.0" },
+    { name = "opentelemetry-api", specifier = ">=1.45.1" },
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.26.0" },
-    { name = "opentelemetry-exporter-otlp", specifier = ">=1.27.0" },
+    { name = "opentelemetry-exporter-otlp", specifier = ">=1.45.1" },
     { name = "opentelemetry-exporter-otlp", marker = "extra == 'otel'", specifier = ">=1.26.0" },
-    { name = "opentelemetry-sdk", specifier = ">=1.27.0" },
+    { name = "opentelemetry-sdk", specifier = ">=1.45.1" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.26.0" },
     { name = "opentelemetry-semantic-conventions-ai", specifier = ">=0.4.1" },
     { name = "opentelemetry-semantic-conventions-ai", marker = "extra == 'otel'", specifier = ">=0.4.1" },
@@ -8377,7 +8413,7 @@ requires-dist = [
     { name = "quack-kernels", specifier = "==0.6.5" },
     { name = "regex" },
     { name = "requests", specifier = ">=2.33.0" },
-    { name = "runai-model-streamer", extras = ["azure", "gcs", "s3"], marker = "extra == 'runai'", specifier = ">=0.15.7" },
+    { name = "runai-model-streamer", extras = ["azure", "gcs", "s3"], marker = "extra == 'runai'", specifier = ">=0.17.1" },
     { name = "safetensors", specifier = ">=0.6.2" },
     { name = "scipy", marker = "extra == 'audio'" },
     { name = "scipy", marker = "extra == 'bench'" },
@@ -8393,31 +8429,31 @@ requires-dist = [
     { name = "tensorizer", marker = "extra == 'tensorizer'", specifier = "==2.10.1" },
     { name = "tiktoken", specifier = ">=0.6.0" },
     { name = "tilelang", specifier = "==0.1.12" },
-    { name = "tokenizers", specifier = ">=0.23.2" },
+    { name = "tokenizers", specifier = ">=0.23.3" },
     { name = "tokenspeed-mla", marker = "sys_platform == 'linux'", specifier = "==2.0.3" },
     { name = "torch", specifier = "==2.14.0" },
     { name = "torchaudio", specifier = "==2.11.0" },
     { name = "torchcodec", specifier = ">=0.14" },
     { name = "torchvision", specifier = "==0.29.0" },
     { name = "tqdm" },
-    { name = "transformers", specifier = ">=5.16.1,<5.21.0" },
+    { name = "transformers", specifier = ">=5.16.1,<5.23.0" },
     { name = "typing-extensions", specifier = ">=4.10" },
     { name = "vllm-gguf-plugin", marker = "extra == 'extra-quant'", specifier = ">=0.0.2" },
     { name = "watchfiles" },
     { name = "xgrammar", marker = "platform_machine == 'aarch64' or platform_machine == 'arm64' or platform_machine == 'ppc64le' or platform_machine == 's390x' or platform_machine == 'x86_64'", specifier = "==0.2.8" },
-    { name = "zentorch", marker = "extra == 'zen'", specifier = "==2.14.0.1" },
+    { name = "zentorch", marker = "extra == 'zen'", specifier = "==2.14.0.2" },
 ]
 provides-extras = ["zen", "bench", "tensorizer", "fastsafetensors", "instanttensor", "runai", "audio", "video", "deepstream", "flashinfer", "b12x", "helion", "grpc", "otel", "extra-quant"]
 
 [[package]]
 name = "vllm"
-version = "0.33.0"
-source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.33.0rc3/vllm-0.33.0-cp38-abi3-manylinux_2_28_x86_64.whl" }
+version = "0.34.0"
+source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.34.0/vllm-0.34.0-cp38-abi3-manylinux_2_28_x86_64.whl" }
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
 dependencies = [
-    { name = "aiohttp", version = "3.14.5", source = { registry = "https://pypi.org/simple" } },
+    { name = "aiohttp" },
     { name = "anthropic" },
     { name = "apache-tvm-ffi" },
     { name = "blake3" },
@@ -8432,7 +8468,7 @@ dependencies = [
     { name = "fastsafetensors" },
     { name = "filelock" },
     { name = "flashinfer-python" },
-    { name = "huggingface-hub" },
+    { name = "huggingface-hub", version = "2.4.0", source = { registry = "https://pypi.org/simple" } },
     { name = "humming-kernels", extra = ["cu13"] },
     { name = "ijson" },
     { name = "instanttensor" },
@@ -8444,7 +8480,7 @@ dependencies = [
     { name = "mistral-common", extra = ["image"] },
     { name = "model-hosting-container-standards" },
     { name = "msgspec" },
-    { name = "multidict", version = "7.2.1", source = { registry = "https://pypi.org/simple" } },
+    { name = "multidict" },
     { name = "ninja" },
     { name = "numba" },
     { name = "numpy" },
@@ -8497,7 +8533,7 @@ dependencies = [
     { name = "xgrammar" },
 ]
 wheels = [
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.33.0rc3/vllm-0.33.0-cp38-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:4b6bdec4ab269990bf70d45a3c1e94c3760a27064513760193b26d6f0da883aa" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.34.0/vllm-0.34.0-cp38-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:79ca4b3cd74aec08c4bf476bdf0cb15735b605ae5368526a2faae1e30f044ca2" },
 ]
 
 [package.metadata]
@@ -8519,10 +8555,10 @@ requires-dist = [
     { name = "fastapi", extras = ["standard"], specifier = ">=0.133.0,<0.137.0" },
     { name = "fastsafetensors", specifier = ">=0.3.3" },
     { name = "fastsafetensors", marker = "extra == 'fastsafetensors'", specifier = ">=0.3.3" },
-    { name = "filelock", specifier = ">=3.20.3" },
-    { name = "flashinfer-python", specifier = "==0.7.2.post1" },
+    { name = "filelock", specifier = ">=4.2.4" },
+    { name = "flashinfer-python", specifier = "==0.7.3" },
     { name = "helion", marker = "extra == 'helion'", specifier = "==1.4.0" },
-    { name = "huggingface-hub", specifier = ">=1.31.0" },
+    { name = "huggingface-hub", specifier = ">=2.0.0" },
     { name = "humming-kernels", extras = ["cu13"], specifier = "==0.1.19" },
     { name = "ijson" },
     { name = "instanttensor", specifier = ">=0.2.2" },
@@ -8534,7 +8570,7 @@ requires-dist = [
     { name = "matplotlib", marker = "extra == 'bench'" },
     { name = "mcp", specifier = ">=2.2.0,<3.0.0" },
     { name = "mistral-common", extras = ["audio"], marker = "extra == 'audio'" },
-    { name = "mistral-common", extras = ["image"], specifier = ">=1.11.6" },
+    { name = "mistral-common", extras = ["image"], specifier = ">=1.13.0" },
     { name = "model-hosting-container-standards", specifier = ">=0.1.14,<1.0.0" },
     { name = "msgspec" },
     { name = "multidict", specifier = ">=6.9.1" },
@@ -8547,11 +8583,11 @@ requires-dist = [
     { name = "nvtx", specifier = "==0.2.15" },
     { name = "openai", specifier = ">=2.25.0" },
     { name = "opencv-python-headless", specifier = ">=4.13.0" },
-    { name = "opentelemetry-api", specifier = ">=1.27.0" },
+    { name = "opentelemetry-api", specifier = ">=1.45.1" },
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.26.0" },
-    { name = "opentelemetry-exporter-otlp", specifier = ">=1.27.0" },
+    { name = "opentelemetry-exporter-otlp", specifier = ">=1.45.1" },
     { name = "opentelemetry-exporter-otlp", marker = "extra == 'otel'", specifier = ">=1.26.0" },
-    { name = "opentelemetry-sdk", specifier = ">=1.27.0" },
+    { name = "opentelemetry-sdk", specifier = ">=1.45.1" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.26.0" },
     { name = "opentelemetry-semantic-conventions-ai", specifier = ">=0.4.1" },
     { name = "opentelemetry-semantic-conventions-ai", marker = "extra == 'otel'", specifier = ">=0.4.1" },
@@ -8577,7 +8613,7 @@ requires-dist = [
     { name = "quack-kernels", specifier = "==0.6.5" },
     { name = "regex" },
     { name = "requests", specifier = ">=2.33.0" },
-    { name = "runai-model-streamer", extras = ["azure", "gcs", "s3"], marker = "extra == 'runai'", specifier = ">=0.15.7" },
+    { name = "runai-model-streamer", extras = ["azure", "gcs", "s3"], marker = "extra == 'runai'", specifier = ">=0.17.1" },
     { name = "safetensors", specifier = ">=0.6.2" },
     { name = "scipy", marker = "extra == 'audio'" },
     { name = "scipy", marker = "extra == 'bench'" },
@@ -8593,31 +8629,31 @@ requires-dist = [
     { name = "tensorizer", marker = "extra == 'tensorizer'", specifier = "==2.10.1" },
     { name = "tiktoken", specifier = ">=0.6.0" },
     { name = "tilelang", specifier = "==0.1.12" },
-    { name = "tokenizers", specifier = ">=0.23.2" },
+    { name = "tokenizers", specifier = ">=0.23.3" },
     { name = "tokenspeed-mla", marker = "sys_platform == 'linux'", specifier = "==2.0.3" },
     { name = "torch", specifier = "==2.14.0" },
     { name = "torchaudio", specifier = "==2.11.0" },
     { name = "torchcodec", specifier = ">=0.14" },
     { name = "torchvision", specifier = "==0.29.0" },
     { name = "tqdm" },
-    { name = "transformers", specifier = ">=5.16.1,<5.21.0" },
+    { name = "transformers", specifier = ">=5.16.1,<5.23.0" },
     { name = "typing-extensions", specifier = ">=4.10" },
     { name = "vllm-gguf-plugin", marker = "extra == 'extra-quant'", specifier = ">=0.0.2" },
     { name = "watchfiles" },
     { name = "xgrammar", marker = "platform_machine == 'aarch64' or platform_machine == 'arm64' or platform_machine == 'ppc64le' or platform_machine == 's390x' or platform_machine == 'x86_64'", specifier = "==0.2.8" },
-    { name = "zentorch", marker = "extra == 'zen'", specifier = "==2.14.0.1" },
+    { name = "zentorch", marker = "extra == 'zen'", specifier = "==2.14.0.2" },
 ]
 provides-extras = ["zen", "bench", "tensorizer", "fastsafetensors", "instanttensor", "runai", "audio", "video", "deepstream", "flashinfer", "b12x", "helion", "grpc", "otel", "extra-quant"]
 
 [[package]]
 name = "vllm-router"
-version = "0.2.4"
-source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.4/vllm_router-0.2.4-cp38-abi3-manylinux_2_28_aarch64.whl" }
+version = "0.2.8"
+source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.8/vllm_router-0.2.8-cp38-abi3-manylinux_2_28_aarch64.whl" }
 resolution-markers = [
     "platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
 dependencies = [
-    { name = "aiohttp", version = "3.14.5", source = { registry = "https://pypi.org/simple" } },
+    { name = "aiohttp" },
     { name = "fastapi" },
     { name = "orjson" },
     { name = "requests" },
@@ -8625,7 +8661,7 @@ dependencies = [
     { name = "uvicorn" },
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.4/vllm_router-0.2.4-cp38-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:a09433a40f409e6dc897458473d1c43abb27c51d20e0599ddeb4231a71a2fd9f" },
+    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.8/vllm_router-0.2.8-cp38-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:383abbe7d06dc9ed69092669bc4224b7108148e0898b8dfa4bf0451d9cafbd3e" },
 ]
 
 [package.metadata]
@@ -8644,13 +8680,13 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "vllm-router"
-version = "0.2.4"
-source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.4/vllm_router-0.2.4-cp38-abi3-manylinux_2_28_x86_64.whl" }
+version = "0.2.8"
+source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.8/vllm_router-0.2.8-cp38-abi3-manylinux_2_28_x86_64.whl" }
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
 dependencies = [
-    { name = "aiohttp", version = "3.14.5", source = { registry = "https://pypi.org/simple" } },
+    { name = "aiohttp" },
     { name = "fastapi" },
     { name = "orjson" },
     { name = "requests" },
@@ -8658,7 +8694,7 @@ dependencies = [
     { name = "uvicorn" },
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.4/vllm_router-0.2.4-cp38-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:c2ed887d8be68430630b187c4044131bbe6d9ed4b7d99f40e2c7cc5e73a4824c" },
+    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.8/vllm_router-0.2.8-cp38-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:a1a6e3fc85c6d68e6330c75e17e2e030dbd51865f00b9ef8952bd2d44d1dbd38" },
 ]
 
 [package.metadata]
@@ -8898,38 +8934,17 @@ wheels = [
 
 [[package]]
 name = "yarl"
-version = "1.24.2"
-source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "platform_machine == 'arm64' and sys_platform == 'darwin'",
-]
-dependencies = [
-    { name = "idna" },
-    { name = "multidict", version = "6.7.1", source = { registry = "https://pypi.org/simple" } },
-    { name = "propcache" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/79/12/1e8f37460ea0f7eb59c221fdaf0ed75e7ac43e97f8093b9c6f411df50a78/yarl-1.24.2.tar.gz", hash = "sha256:9ac374123c6fd7abf64d1fec93962b0bd4ee2c19751755a762a72dd96c0378f8", size = 210798, upload-time = "2026-05-19T21:31:05.599Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/f0/da/866bcb01076ba49d2b42b309867bed3826421f1c479655eb7a607b44f20b/yarl-1.24.2-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:b975866c184564c827e0877380f0dae57dcca7e52782128381b72feff6dfceb8", size = 129957, upload-time = "2026-05-19T21:28:51.695Z" },
-    { url = "https://files.pythonhosted.org/packages/29/b6/170e2b8d4e3bc30e6bfdcca53556537f5bf595e938632dfcb059311f3ff6/yarl-1.24.2-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:8ae44649b00947634ab0dab2a374a638f52923a6e67083f2c156cd5cbd1a881d", size = 91688, upload-time = "2026-05-19T21:28:54.865Z" },
-    { url = "https://files.pythonhosted.org/packages/fd/4d/4b880086bd0d3e034d25647be1d830afc3e3f610e98c4ab3490af6b1b6d5/yarl-1.24.2-py3-none-any.whl", hash = "sha256:2783d9226db8797636cd6896e4de81feed252d1db72265686c9558d97a4d94b9", size = 53576, upload-time = "2026-05-19T21:31:03.909Z" },
-]
-
-[[package]]
-name = "yarl"
 version = "1.25.1"
 source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "platform_machine == 'x86_64' and sys_platform == 'linux'",
-    "platform_machine == 'aarch64' and sys_platform == 'linux'",
-]
 dependencies = [
     { name = "idna" },
-    { name = "multidict", version = "7.2.1", source = { registry = "https://pypi.org/simple" } },
+    { name = "multidict" },
     { name = "propcache" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/75/16/e8be8e2fb175bbf41a0680381a319f1199fae256588241a2ac8677eafb49/yarl-1.25.1.tar.gz", hash = "sha256:03dd38de09bc213e9a8b29761eec33ee1d5318dac0e49d8af36e4d27830e23a7", size = 246245, upload-time = "2026-09-15T19:35:02.264Z" }
 wheels = [
+    { url = "https://files.pythonhosted.org/packages/75/b3/cd32ac66ae622b854c2df0ac52106dda220d361b65a64fde7d5b3684aa3f/yarl-1.25.1-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:94d7aa6debf92a1dd14cb5280b083a764169a13cfb23a452111160274ed989f4", size = 144798, upload-time = "2026-09-15T19:31:01.821Z" },
+    { url = "https://files.pythonhosted.org/packages/be/dd/ee38aec8e09fdf957e50d4085453fbe202f56c6c3b4cf07b81cdb4f09ee9/yarl-1.25.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:e029648f9c951db30e98a7d7ec90835db88ec4b32820efe2a9bdc2287e032eb6", size = 104325, upload-time = "2026-09-15T19:31:06.338Z" },
     { url = "https://files.pythonhosted.org/packages/1e/b3/058dbfb1857b484c9cf9cc135659f50b85ce66e03c99e44dc2f7b6161f55/yarl-1.25.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:4d781294bb815ecb5ea57ff6bbf8038e0a31a95fdf3e1788f66e0dc100d64b58", size = 115358, upload-time = "2026-09-15T19:31:08.593Z" },
     { url = "https://files.pythonhosted.org/packages/bc/7b/ca212cbe170ac8b96e45317ecbcf9c3c3ecf0cdec98d5b088a9c4088929b/yarl-1.25.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:c6f117789d22dce188e5754e8bc65b7e6ebf8cb73963b9fa761f672a5883769d", size = 117050, upload-time = "2026-09-15T19:31:17.241Z" },
     { url = "https://files.pythonhosted.org/packages/e8/43/268717870f9ba0cc9701a95181587f6dc8c5f387aab4aeecc83158f38a79/yarl-1.25.1-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:e80f557716fd765439577131e526b8942ffc2c07bdbc5e39fa62f660ba1e963f", size = 114944, upload-time = "2026-09-15T19:31:21.414Z" },

@@ -122,7 +122,7 @@ CUDA_HOME = "/usr/local/cuda-13.0"
 PATH = "/usr/local/cuda-13.0/bin:${PATH}"
 ```
 
-With `[trainer.model.moe.dispatch.llep]`, Mega MoE (`precision = "bf16"` on SM90, `"mxfp8_qat"` on SM100) runs least-loaded expert parallelism ([LLEP](https://arxiv.org/abs/2601.17111)): when routing overloads a rank's experts, some of their routes are computed on the least-loaded ranks, which receive a copy of those experts' weights over NVLink (with MXFP8, the owner's quantized weights and scales). Every rank plans on the GPU from all ranks' per-expert counts (no host sync, no recompiles as the routing changes), and the weight copies overlap with the expert computation. Outputs are bitwise identical to plain Mega MoE and expert gradients are as accurate. Because the plan bounds what a rank receives, the symmetric buffers are several times smaller than plain Mega MoE's; `chunk_tokens` runs long sequences in several calls over a buffer sized for one chunk. With LLEP, `num_reserved_sms` defaults to 32, since the weight copies run next to the grid. It needs the prime-mega-moe build with LLEP support.
+With `[trainer.model.moe.dispatch.llep]`, Mega MoE (`precision = "bf16"` on SM90, `"mxfp8"` or `"mxfp8_qat"` on SM100) runs least-loaded expert parallelism ([LLEP](https://arxiv.org/abs/2601.17111)): when routing overloads a rank's experts, some of their routes are computed on the least-loaded ranks, which receive a copy of those experts' weights over NVLink (with MXFP8, the owner's quantized weights and scales). Every rank plans on the GPU from all ranks' per-expert counts (no host sync, no recompiles as the routing changes), and the weight copies overlap with the expert computation. Outputs are bitwise identical to plain Mega MoE and expert gradients are as accurate. Because the plan bounds what a rank receives, the symmetric buffers are several times smaller than plain Mega MoE's; `chunk_tokens` runs long sequences in several calls over a buffer sized for one chunk. With LLEP, `num_reserved_sms` defaults to 32, since the weight copies run next to the grid. It needs the prime-mega-moe build with LLEP support.
 
 ```toml
 [trainer.model.moe.dispatch.llep]
@@ -136,7 +136,7 @@ chunk_tokens = 16384  # optional: tokens per rank per kernel call (long sequence
 
 ### Context Parallelism
 
-CP shards a single sequence across multiple GPUs along the token dimension — for long-context sequences. It uses Ulysses: an all-to-all turns sequence-sharded Q/K/V into head-sharded Q/K/V over the full sequence, attention runs locally, and a second all-to-all shards the output back. Hybrid linear-attention/Mamba models (Qwen3.5, NemotronH) redistribute their recurrent layers the same way. The sparse-attention models (DeepSeek-V4, GLM-5 DSA) keep queries sequence-sharded and all-gather their keys instead, which needs no head sharding.
+CP shards a single sequence across multiple GPUs along the token dimension, for long-context sequences. It uses Ulysses: an all-to-all turns sequence-sharded Q/K/V into head-sharded Q/K/V over the full sequence, attention runs locally, and a second all-to-all shards the output back. Hybrid linear-attention/Mamba models (Qwen3.5, NemotronH) redistribute their recurrent layers the same way. The sparse-attention models (DeepSeek-V4, GLM-5 DSA) keep queries sequence-sharded instead, which needs no head sharding. GLM-5 DSA all-gathers its keys. DeepSeek-V4 receives from the ranks before it only the tokens its sliding windows and compressors reach back into, pools the compressed entries that end in its own shard, and all-gathers those entries.
 
 Ulysses head-shards Q/K/V, so the CP degree must divide `num_attention_heads`. GQA models with fewer KV heads than the CP degree (e.g. NemotronH: 32 query heads, 2 KV heads) are supported via KV-head replication; the CP degree must then be a multiple of `num_key_value_heads`. Nemotron-H redistributes its Mamba activations between sequence- and head-parallel layouts in the model-owned Mamba path; the CP degree must divide `mamba_num_heads` and `n_groups`.
 
@@ -162,6 +162,17 @@ mode = "selective"
 ```
 
 Set `targets` to operator names (for example, `"aten::mm"`) or namespaces (for example, `"prime_rl_collectives"`) to replace the default selective targets. Correctness-required operations remain retained.
+
+To retain an operator only at some call sites, append `@` and a module path pattern relative to the transformer block. The pattern is an `fnmatch` glob, and it also matches inside the modules it names. Module-qualified targets require `trainer.model.compile`, whose module metadata identifies each call site. The trainer raises if a pattern matches no module, and after the first training forward if a target matched no traced operation, for example because the named module runs a different operator. This example names the FP8 GEMM, which runs only under `trainer.model.quantization.type = "fp8"`:
+
+```toml
+[trainer.model.ac]
+mode = "selective"
+targets = [
+  "prime_rl::fp8_blockwise_mm@self_attn.o_b_proj",
+  "prime_rl::fp8_blockwise_mm@mlp.shared_expert",
+]
+```
 
 Activation offloading still applies to tensors saved by autograd, but tensors retained by the checkpoint policy remain on the accelerator.
 
@@ -293,9 +304,9 @@ gpus_per_node = 8
 
 ### Examples
 
-Full multi-node configs ship under [`examples/advanced/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced):
+Full multi-node configs ship under [`examples/advanced/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced) and [`configs/advanced/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/configs/advanced):
 
-- [`nemotron-3-super/swe.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/configs/advanced/nemotron-3-super/swe.toml) — 4 trainer + 1 inference node RL on a 120B hybrid-Mamba MoE with NCCL weight broadcast.
+- [`configs/advanced/nemotron-3-super/swe.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/configs/advanced/nemotron-3-super/swe.toml) — 4 trainer + 1 inference node RL on a 120B hybrid-Mamba MoE with NCCL weight broadcast.
 - [`glm-5.3/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/glm-5.3) — large-scale and P/D-disaggregated inference across the GLM-5 family.
 - [`glm-4.5-air/swe-2-node.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/advanced/glm-4.5-air/swe-2-node.toml) — train a 100B+ MoE on only two nodes: a single-node sign-SGD trainer (full optimizer offload) paired with one inference replica at batch size 64. An overlay on the shared `swe-budget.toml` base — launch with `uv run rl @ swe-budget.toml @ swe-2-node.toml`.
 
@@ -339,7 +350,7 @@ To benchmark a parallelism config before committing a multi-day run, run a short
 
 ```bash
 # SFT trainer alone
-uv run sft @ sft.toml --data.type fake --max-steps 4
+uv run sft @ sft.toml --data.fake --max-steps 4
 
 # RL trainer alone (no inference involved) -- launch it under torchrun, like the `rl` launcher does
 uv run torchrun --nproc-per-node=8 src/prime_rl/trainer/rl/train.py @ train.toml --data.fake --max-steps 4 --no-monitors.prime

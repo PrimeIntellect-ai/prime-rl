@@ -4,6 +4,7 @@ import gc
 import json
 import shutil
 import time
+from collections import defaultdict
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -11,7 +12,7 @@ from typing import Any
 
 import torch
 from torch import nn
-from torch.distributed.checkpoint import FileSystemWriter
+from torch.distributed.checkpoint import FileSystemReader, FileSystemWriter
 from torch.distributed.checkpoint.state_dict import (
     get_model_state_dict,
     get_state_dict,
@@ -26,9 +27,11 @@ from torch.nn import Module
 from torch.optim.lr_scheduler import LRScheduler
 from torch.optim.optimizer import Optimizer
 from torchdata.stateful_dataloader import StatefulDataLoader
+from transformers import AutoConfig, GenerationConfig, PretrainedConfig, PreTrainedTokenizerBase, ProcessorMixin
 
 from prime_rl.configs.shared import ResumeConfig
-from prime_rl.configs.trainer import CheckpointConfig
+from prime_rl.configs.trainer import CheckpointConfig, ModelConfig
+from prime_rl.trainer.data import with_workers
 from prime_rl.trainer.lora import has_lora_layers
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.conversion_ops import view_mapping
@@ -50,6 +53,92 @@ class Progress:
     step: int = 1
     total_tokens: int = 0
     total_samples: int = 0
+
+
+@dataclass
+class ModelFiles:
+    """What a checkpoint step directory holds besides the weights, so that it loads as a model name: the model's
+    config.json, the tokenizer, a VLM's processor and the generation config."""
+
+    config: PretrainedConfig
+    tokenizer: PreTrainedTokenizerBase
+    processor: ProcessorMixin | None
+    generation_config: GenerationConfig | None
+
+    def save(self, directory: Path) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "config.json").write_text(self.config.to_json_string(use_diff=False))
+        if self.generation_config is not None:
+            self.generation_config.to_json_file(directory / "generation_config.json")
+        # The processor saves its own tokenizer, which the configured one (pad token, chat template) overrides.
+        if self.processor is not None:
+            self.processor.save_pretrained(directory)
+        self.tokenizer.save_pretrained(directory)
+
+
+def setup_model_files(
+    config: ModelConfig, tokenizer: PreTrainedTokenizerBase, processor: ProcessorMixin | None
+) -> ModelFiles:
+    try:
+        generation_config = GenerationConfig.from_pretrained(config.name)
+    except OSError:  # Not every model has a generation_config.json
+        generation_config = None
+    model_config = AutoConfig.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
+    return ModelFiles(model_config, tokenizer, processor, generation_config)
+
+
+# Fields of a saved config.json that are metadata, not architecture.
+NOT_ARCHITECTURE = {"transformers_version", "_name_or_path", "architectures", "dtype", "use_cache"}
+MISSING = "(missing)"
+
+
+def describe_change(key: str, old: Any, new: Any) -> str:
+    """One field of an architecture mismatch: scalars as ``old -> new``, lists by their first differing index or
+    their lengths, dicts by name."""
+    if isinstance(old, dict) or isinstance(new, dict):
+        return key
+    if isinstance(old, list) and isinstance(new, list):
+        if len(old) != len(new):
+            return f"{key} ({len(old)} -> {len(new)} entries)"
+        index = next(index for index, (a, b) in enumerate(zip(old, new)) if a != b)
+        return f"{key} (differs from index {index})"
+    old, new = (f"{len(value)} entries" if isinstance(value, list) else value for value in (old, new))
+    return f"{key} {old} -> {new}"
+
+
+def architecture_changes(saved: dict, current: dict, config: PretrainedConfig, prefix: str = "") -> list[str]:
+    """The fields in which two dumps of ``config`` differ, recursing into sub-configs (e.g. a VLM's ``text_config``)."""
+    # A field only the current dump has (e.g. added by a newer transformers version) takes the value this version
+    # derives from the saved fields, as layer_types follows num_hidden_layers.
+    filled = {**json.loads(type(config).from_dict(saved).to_json_string(use_diff=False)), **saved}
+    changes = []
+    for key in sorted((filled.keys() | current.keys()) - NOT_ARCHITECTURE):
+        old, new = filled.get(key), current.get(key)
+        sub_config = getattr(config, key, None)
+        if isinstance(sub_config, PretrainedConfig) and isinstance(old, dict) and isinstance(new, dict):
+            changes += architecture_changes(old, new, sub_config, f"{prefix}{key}.")
+        elif old != new:
+            changes.append(describe_change(prefix + key, saved.get(key, MISSING), current.get(key, MISSING)))
+    return changes
+
+
+def check_model_config(model_config: PretrainedConfig, directory: Path) -> None:
+    """Fail when the checkpoint in ``directory`` was saved with another model architecture than ``model_config``. A
+    checkpoint without a config.json loads after a warning."""
+    path = directory / "config.json"
+    if not path.exists():
+        if get_world().is_master:
+            get_logger().warning(
+                f"Checkpoint {directory} has no config.json; skipping the architecture check, so a resume with another "
+                "architecture would load silently"
+            )
+        return
+    saved = json.loads(path.read_text())
+    current = json.loads(model_config.to_json_string(use_diff=False))
+    changes = architecture_changes(saved, current, model_config)
+    if changes:
+        more = f", +{len(changes) - 5} more" if len(changes) > 5 else ""
+        raise ValueError(f"Checkpoint at {directory} has another architecture: {', '.join(changes[:5])}{more}")
 
 
 @dataclass
@@ -141,6 +230,51 @@ def _copy_cpu_state_split_on_sharded_dim_to_gpu(
     return {**optimizer_state_dict, "state": state}
 
 
+# Param group entries that belong to this run, not to the checkpoint: how its optimizer computes (AdamW's kernel
+# choice; optimizer offload keeps the step counters on the CPU, which the fused kernel rejects) and its layout (Muon
+# checkpoints saved by dion name a mesh of that run's layout). A checkpoint saved with other offloading or another
+# layout restores the hyperparameters only.
+RUN_PARAM_GROUP_KEYS = ("fused", "foreach", "capturable", "differentiable", "distributed_mesh_name")
+
+
+def _with_run_param_group_keys(loaded_groups: list[dict], live_groups: list[dict]) -> list[dict]:
+    """The loaded param groups, with this run's entries for `RUN_PARAM_GROUP_KEYS`."""
+    return [
+        {**loaded, **{key: live[key] for key in RUN_PARAM_GROUP_KEYS if key in live}}
+        for loaded, live in zip(loaded_groups, live_groups, strict=True)
+    ]
+
+
+def _store_weights_in_model_state(
+    model_state_dict: dict[str, Any], optimizer_state_dict: dict[str, Any], key: str
+) -> list[str]:
+    """Move the weights an optimizer keeps in its state under `key` (full offload's FP32 masters) into the model
+    entries of their parameters, including a tied parameter's other names, so that every offloading saves and loads
+    the same model weights. Returns the names whose state held them."""
+    storage_keys = {name: _storage_key(value) for name, value in model_state_dict.items()}
+    names = defaultdict(list)
+    for name, storage_key in storage_keys.items():
+        names[storage_key].append(name)
+    moved = []
+    for fqn, state in optimizer_state_dict.get("state", {}).items():
+        if key in state:
+            weights = state.pop(key)
+            for name in names[storage_keys[fqn]]:
+                model_state_dict[name] = weights
+            moved.append(fqn)
+    return moved
+
+
+def _keeps_weights(optimizer: OptimizerLike) -> bool:
+    return isinstance(optimizer, OffloadOptimizer) and optimizer.checkpoint_weights_key is not None
+
+
+def _storage_key(tensor: torch.Tensor) -> tuple:
+    """What two model entries share exactly when they are names of one tied parameter."""
+    local = tensor._local_tensor if isinstance(tensor, DTensor) else tensor
+    return local.untyped_storage()._cdata, local.storage_offset(), tuple(local.shape)
+
+
 def _try_rmtree(path: Path, logger) -> None:
     """Remove a directory tree, logging and skipping on failure."""
     try:
@@ -164,11 +298,20 @@ class AppState(Stateful):
         optimizers: list[OptimizerLike],
         scheduler: LRScheduler | None,
         progress: Progress | None,
+        optimizer_state: bool = True,
+        masters_in_optimizer_state: bool = False,
     ):
         self.model = model
-        self.optimizers = optimizers
         self.scheduler = scheduler
         self.progress = progress
+        self.optimizer_state = optimizer_state
+        """False leaves the optimizer state out (``ckpt.skip_optimizer``, ``model.init`` from a step directory). The
+        model weights that full offload keeps in its optimizer, its FP32 masters, still load."""
+        self.masters_in_optimizer_state = masters_in_optimizer_state
+        """Keep full offload's masters in the optimizer state, the layout of `_saved_masters_in_optimizer_state`."""
+        self.optimizers = optimizers if optimizer_state else [o for o in optimizers if _keeps_weights(o)]
+        self.weights_in_model_state: dict[str, str] = {}
+        """The optimizer state entries that the last state dict holds as model weights, by parameter name."""
 
     def _get_checkpoint_optimizers(self) -> list[Optimizer]:
         """Expose optimizers keyed by their model parameters for DCP."""
@@ -189,10 +332,15 @@ class AppState(Stateful):
         # Runtime fusions own one physical state tensor per fused parameter; the checkpoint
         # sees it under the canonical names. This dict is also the template dcp_load writes
         # into, and load_state_dict packs the loaded entries back into the runtime state.
-        state_dict = {
-            "model": model_state_dict,
-            "optimizers": split_packed_optimizer_state_for_checkpoint(self.model, optimizer_state_dict),
-        }
+        optimizer_state_dict = split_packed_optimizer_state_for_checkpoint(self.model, optimizer_state_dict)
+        for optimizer in self.optimizers:
+            if _keeps_weights(optimizer) and not self.masters_in_optimizer_state:
+                key = optimizer.checkpoint_weights_key
+                for fqn in _store_weights_in_model_state(model_state_dict, optimizer_state_dict, key):
+                    self.weights_in_model_state[fqn] = key
+        state_dict = {"model": model_state_dict}
+        if self.optimizer_state:
+            state_dict["optimizers"] = optimizer_state_dict
         if self.scheduler is not None:
             scheduler_state_dict = self.scheduler.state_dict()
             state_dict["scheduler"] = scheduler_state_dict
@@ -227,8 +375,16 @@ class AppState(Stateful):
     def load_state_dict(self, state_dict: dict[str, Any]):
         checkpoint_optimizers = self._get_checkpoint_optimizers()
         has_cpu_offload = self._has_cpu_offload()
+        # Full offload's masters load as model weights. A packed parameter's master is aliased only where the packing
+        # dimension is unsharded, so they rejoin the optimizer state that the write-back below packs.
+        optimizer_state_dict = state_dict.get("optimizers", {"state": {}})
+        for fqn, key in self.weights_in_model_state.items():
+            optimizer_state_dict["state"].setdefault(fqn, {})[key] = state_dict["model"][fqn]
 
-        if has_cpu_offload:
+        if not self.optimizer_state:
+            set_model_state_dict(self.model, model_state_dict=state_dict["model"])
+            write_back_loaded_packed_optimizer_state(self.model, checkpoint_optimizers, optimizer_state_dict)
+        elif has_cpu_offload:
             # When CPU offload is on, the optimizer is already loaded by the time we
             # get here: state_dict() handed dcp_load a template whose tensors share
             # storage with optim.state[p][k], and dcp_load wrote the checkpoint bytes
@@ -243,13 +399,14 @@ class AppState(Stateful):
             set_model_state_dict(self.model, model_state_dict=state_dict["model"])
             # The template only aliases a packed parameter's state where the packing
             # dimension is unsharded, so the loaded logical entries are packed back in.
-            write_back_loaded_packed_optimizer_state(self.model, checkpoint_optimizers, state_dict["optimizers"])
-            # The in-place load reaches tensors only: restore the param groups' values too (Muon keeps its
-            # step count there, so AdamW's bias correction would restart).
-            loaded_groups = iter(state_dict["optimizers"]["param_groups"])
-            for optimizer in checkpoint_optimizers:
-                for group in optimizer.param_groups:
-                    group.update({key: value for key, value in next(loaded_groups).items() if key != "params"})
+            write_back_loaded_packed_optimizer_state(self.model, checkpoint_optimizers, optimizer_state_dict)
+            # The in-place load reaches tensors only: restore the param groups' values too (lr, and Muon keeps its step
+            # count there), in the live groups, since full offload's checkpoint optimizer holds copies.
+            live_groups = [group for optimizer in self.optimizers for group in optimizer.param_groups]
+            for group, loaded in zip(live_groups, optimizer_state_dict["param_groups"], strict=True):
+                group.update(
+                    {key: value for key, value in loaded.items() if key not in ("params", *RUN_PARAM_GROUP_KEYS)}
+                )
             for optimizer in self.optimizers:
                 if isinstance(optimizer, OffloadOptimizer):
                     optimizer.finish_checkpoint_load()
@@ -257,12 +414,17 @@ class AppState(Stateful):
             # The runtime state dict read back here keys the fused parameters' state by their
             # physical names; the loaded logical entries are packed into it.
             _, runtime_optimizer_state_dict = get_state_dict(self.model, checkpoint_optimizers)
+            if optimizer_state_dict:
+                live_groups = [group for optimizer in checkpoint_optimizers for group in optimizer.param_groups]
+                optimizer_state_dict["param_groups"] = _with_run_param_group_keys(
+                    optimizer_state_dict["param_groups"], live_groups
+                )
             set_state_dict(
                 self.model,
                 checkpoint_optimizers,
                 model_state_dict=state_dict["model"],
                 optim_state_dict=join_loaded_optimizer_state_for_runtime(
-                    self.model, state_dict["optimizers"], runtime_optimizer_state_dict
+                    self.model, optimizer_state_dict, runtime_optimizer_state_dict
                 ),
             )
 
@@ -274,10 +436,17 @@ class AppState(Stateful):
 
 
 class CheckpointManager:
-    """Utility class to save and load trainer checkpoints to resume SFT and RL training."""
+    """Saves and loads trainer checkpoints. Every step directory also holds the ``ModelFiles``."""
 
-    def __init__(self, output_dir: Path, config: CheckpointConfig, resume: ResumeConfig | None = None):
+    def __init__(
+        self,
+        output_dir: Path,
+        config: CheckpointConfig,
+        model_files: ModelFiles,
+        resume: ResumeConfig | None = None,
+    ):
         self.config = config
+        self.model_files = model_files
         self.skip_optimizer = config.skip_optimizer
         self.ckpt_dir = get_ckpt_dir(output_dir)
         self.logger = get_logger()
@@ -406,21 +575,23 @@ class CheckpointManager:
             dataloader_path = path / "dataloader" / f"rank_{self.world.rank}.pt"
             if not dataloader_path.exists():
                 self.logger.warning(
-                    f"Did not find local dataloader checkpoint at path {dataloader_path}. This might be because you tried restarting the trainer with a different world size. Falling back to using the master rank's dataloader checkpoint. Note, that this may cause training inconsistencies."
+                    f"No dataloader state at {dataloader_path} (the saved run had fewer ranks): this rank loads rank "
+                    "0's, from which the data reads on"
                 )
                 dataloader_path = path / "dataloader" / "rank_0.pt"
                 if not dataloader_path.exists():
                     raise RuntimeError(
                         f"Couldn't fallback to using the master rank's dataloader checkpoint, because dataloder checkpoint was not found at path {dataloader_path}. Cannot resume training."
                     )
-            dataloader.load_state_dict(torch.load(dataloader_path, weights_only=False))
+            state = torch.load(dataloader_path, weights_only=False)
+            dataloader.load_state_dict(with_workers(state, dataloader.num_workers))
 
         self.logger.debug(f"Loaded training checkpoint in {format_time(time.perf_counter() - start_time)}")
 
     def load_weights(self, path: Path, model: nn.Module, optimizers: list[OptimizerLike]) -> None:
         """Load only the model weights of the trainer checkpoint at ``path`` (in-place)."""
         if not path.exists():
-            raise FileNotFoundError(f"model.init_from has no trainer checkpoint at {path}")
+            raise FileNotFoundError(f"No trainer checkpoint at {path}")
         self.logger.info(f"Initializing weights from {path}")
         start_time = time.perf_counter()
         _load_app_state(path, model, optimizers, scheduler=None, progress=None, model_only=True)
@@ -441,6 +612,7 @@ class CheckpointManager:
         ckpt_path = path if path is not None else self.get_ckpt_path(step)
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
+        check_model_config(self.model_files.config, ckpt_path.parent)
         self.load_from_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
 
     def save(
@@ -462,7 +634,7 @@ class CheckpointManager:
         # Master-only mkdir + barrier: concurrent mkdir from every rank can
         # re-raise FileExistsError on a parallel FS (see save_to_path).
         if self.world.is_master:
-            ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+            self.model_files.save(ckpt_path.parent)
         torch.distributed.barrier(group=get_dcp_group())
 
         futures = self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
@@ -546,12 +718,29 @@ class CheckpointManager:
 def setup_ckpt_manager(
     output_dir: Path,
     ckpt_config: CheckpointConfig | None,
+    model_files: ModelFiles,
     resume: ResumeConfig | None = None,
 ) -> CheckpointManager:
     """The checkpoint manager always exists: ``resume`` decides whether it loads,
     ``ckpt`` whether it saves (a resume without ``ckpt`` loads but saves nothing)."""
-    ckpt_output_dir = (ckpt_config.output_dir if ckpt_config else None) or output_dir
-    return CheckpointManager(ckpt_output_dir, ckpt_config or CheckpointConfig(), resume)
+    return CheckpointManager(
+        ckpt_output_dir(output_dir, ckpt_config), ckpt_config or CheckpointConfig(), model_files, resume
+    )
+
+
+def ckpt_output_dir(output_dir: Path, ckpt_config: CheckpointConfig | None) -> Path:
+    return (ckpt_config.output_dir if ckpt_config else None) or output_dir
+
+
+# Compat, remove once no run resumes from such a checkpoint. Full offload used to save the BF16 GPU weights as the model
+# weights and its FP32 masters in the optimizer state. A resume with full offload reads such a checkpoint in that
+# layout, so that the masters load exactly; other loads read its BF16 model weights, as they did.
+def _saved_masters_in_optimizer_state(path: Path, optimizers: list[OptimizerLike]) -> bool:
+    keys = {optimizer.checkpoint_weights_key for optimizer in optimizers if _keeps_weights(optimizer)}
+    if not keys:
+        return False
+    saved = FileSystemReader(path).read_metadata().state_dict_metadata
+    return any(name.rsplit(".", 1)[-1] in keys for name in saved)
 
 
 def _load_app_state(
@@ -563,7 +752,15 @@ def _load_app_state(
     *,
     model_only: bool,
 ) -> None:
-    app_state = AppState(model, [] if model_only else optimizers, scheduler, progress)
+    masters_in_optimizer_state = not model_only and _saved_masters_in_optimizer_state(path, optimizers)
+    app_state = AppState(
+        model,
+        optimizers,
+        scheduler,
+        progress,
+        optimizer_state=not model_only,
+        masters_in_optimizer_state=masters_in_optimizer_state,
+    )
     dcp_load(state_dict={"app": app_state}, checkpoint_id=path, process_group=get_dcp_group())
     # DCP materializes the optimizer state with a zero-grad step, which allocates a full set of
     # gradients. Left in the allocator cache, those blocks fragment the pool and the first step

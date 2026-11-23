@@ -129,11 +129,6 @@ class LlamaPreTrainedModel(PreTrainedModelPrimeRL):
         """Convert a single layer's state dict from PrimeRL format to HuggingFace format in-place."""
         return state_dict
 
-    @classmethod
-    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        """Convert a single layer's state dict from HuggingFace format to PrimeRL format in-place."""
-        return state_dict
-
 
 @auto_docstring
 class LlamaModel(LlamaPreTrainedModel):

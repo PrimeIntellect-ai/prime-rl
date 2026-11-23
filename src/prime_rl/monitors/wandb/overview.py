@@ -81,6 +81,8 @@ INFERENCE_PANELS = [
 
 # SFT flavor: no rollout-based train sections — the training signal is the loss curve.
 SFT_TRAIN_METRICS = ["loss/mean", "loss/perplexity", "val/loss", "val/perplexity", "progress/epoch"]
+# Pretraining's validation logs val/<set>/<metric>@<seq_len>, one series per set and length in each panel.
+SFT_TRAIN_REGEXES = ["val/[^/]+/loss@[^/]+", "val/[^/]+/bpb@[^/]+"]
 SFT_STABILITY_METRICS = ["optim/grad_norm", "optim/lr", "loss/nan_count"]
 SFT_PERFORMANCE_METRICS = [
     "perf/mfu",
@@ -160,7 +162,7 @@ def build_sections(
     # SFT trains on a dataset, not rollouts: the train section is the loss/perplexity
     # curves, eval sections are the same rollout-based ones as RL.
     if flavor == "sft":
-        sections = [section("train", metrics=SFT_TRAIN_METRICS)]
+        sections = [section("train", metrics=SFT_TRAIN_METRICS, regexes=SFT_TRAIN_REGEXES)]
         if eval_envs:
             sections += [eval_section(f"eval/{env}", re.escape(env)) for env in eval_envs]
         else:
