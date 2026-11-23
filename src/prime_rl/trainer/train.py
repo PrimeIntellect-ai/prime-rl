@@ -52,6 +52,7 @@ from prime_rl.trainer.pretrain.data import (
     TokenDataset,
     check_ranks_see_same_data,
     detect_separator,
+    saved_data_state,
     setup_token_dataset,
     warn_if_no_document_separator,
 )
@@ -211,6 +212,14 @@ def train(config: SFTConfig | PretrainConfig):
             f"micro_batch_size ({rows}), so every dataloader worker reads whole micro-batches of every step"
         )
 
+        # A resume sizes the subsets from the checkpoint's data state.
+        resume = None
+        if checkpoint_step is not None and not (config.ckpt and config.ckpt.skip_dataloader):
+            path = config.resume.dir / "trainer" if config.resume.dir else ckpt_manager.get_ckpt_path(checkpoint_step)
+            # Without the files, loading the checkpoint fails with its own error.
+            if (path / "dataloader" / "rank_0.pt").exists():
+                resume = (saved_data_state(path / "dataloader"), checkpoint_step)
+
         def setup_dataset() -> TokenDataset:
             return setup_token_dataset(
                 config.data,
@@ -218,6 +227,7 @@ def train(config: SFTConfig | PretrainConfig):
                 dp_size=dp_size,
                 cache_dir=config.run_dir / "data",
                 max_steps=config.max_steps,
+                resume=resume,
             )
 
         # Rank 0 writes the table of long documents to the cache, the other ranks then read it. Rank 0's error reaches

@@ -493,8 +493,7 @@ def launch(config: SupervisedTrainerConfig, entrypoint: str):
         clean_stale_eval_artifacts(config)
 
     if not config.dry_run:
-        from prime_rl.trainer.model import pre_download_model
-        from prime_rl.trainer.sft.data import pre_download_data, pre_download_sources
+        from prime_rl.utils.hf import pre_download_data, pre_download_model, pre_download_sources
 
         pre_download_model(config.model.name, skip_weights=config.model.init.type == "scratch")
         pre_download_data(config.data, config.env_vars)

@@ -187,7 +187,9 @@ def scoring_head(self, hidden_states, labels, temperature=None, support=None):
     precision = torch.get_float32_matmul_precision()
     torch.set_float32_matmul_precision("highest")
     try:
-        logprobs, hits = head_logprobs(hidden[keep], self.weight, labels[keep], softcap=getattr(self, "softcap", None))
+        logprobs, hits = head_logprobs(
+            hidden[keep], self.projection_weight(), labels[keep], softcap=getattr(self, "softcap", None)
+        )
     finally:
         torch.set_float32_matmul_precision(precision)
     return {"logprobs": logprobs, "entropy": hits}

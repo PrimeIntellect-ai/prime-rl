@@ -13,7 +13,12 @@ from prime_rl.configs.inference import VllmRouterConfig
 from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, run_links
-from prime_rl.entrypoints.inference import mooncake_offloads, vllm_overrides_fragment, write_pd_configs
+from prime_rl.entrypoints.inference import (
+    mooncake_offloads,
+    prefill_uses_deepep_high_throughput,
+    vllm_overrides_fragment,
+    write_pd_configs,
+)
 from prime_rl.entrypoints.slurm import load_slurm_template, submit_sbatch
 from prime_rl.utils.admin_token import AdminTokenUses, TokenUse
 from prime_rl.utils.config import check_mode, cli, dump_resolved_config, dump_rl_components
@@ -458,7 +463,10 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             orchestrator_env_vars=orchestrator_env_vars,
             inference_env_vars=inference_env_vars,
             prefill_vllm_extra_json=vllm_overrides_fragment(infer_deploy.prefill_vllm_overrides),
+            prefill_deepep_high_throughput=prefill_uses_deepep_high_throughput(infer_deploy.prefill_vllm_overrides),
             decode_vllm_extra_json=vllm_overrides_fragment(infer_deploy.decode_vllm_overrides),
+            pd_bidirectional=infer_deploy.bidirectional_kv_transfer,
+            nixl_nic_affinity=infer_deploy.nixl_nic_affinity,
             dp_per_node=config.deployment.gpus_per_node // config.inference.vllm.tensor_parallel_size,
             **mooncake_vars,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
@@ -606,7 +614,7 @@ def rl(config: RLConfig):
         clean_future_steps(config.run_dir, -1)
 
     if not config.dry_run:
-        from prime_rl.trainer.model import pre_download_model
+        from prime_rl.utils.hf import pre_download_model
 
         pre_download_model(config.trainer.model.name, skip_weights=config.trainer.model.init.type == "scratch")
 
