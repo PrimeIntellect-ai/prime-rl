@@ -449,7 +449,7 @@ def train(config: TrainerConfig):
                 ).to("cuda")
                 label_support = support.shift_left()
             if score_centering:
-                vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
+                vocab_size = model.lm_head.num_logits
                 if support is None or support.logprobs is None:
                     # Raises unless the micro batch has no RL tokens
                     validate_score_centering_data(micro_batch, vocab_size=vocab_size)
@@ -552,7 +552,7 @@ def train(config: TrainerConfig):
                 if score_centering and label_support is not None:
                     out["support_logprobs"] = gather_ragged_for_cp(out["support_logprobs"], cp_shard_entries, cp_group)
 
-            vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
+            vocab_size = model.lm_head.num_logits
             # This is not really necessary as the first token should be masked out, but we do it anyway to be sure
             out["logprobs"] = shift_tensor_right(
                 out["logprobs"], pad_value=torch.log(torch.tensor(1.0 / vocab_size)).item()
