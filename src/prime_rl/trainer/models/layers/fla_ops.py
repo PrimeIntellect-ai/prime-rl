@@ -183,13 +183,17 @@ def _causal_conv1d_cp(
         chunk_size=FLA_CHUNK_SIZE,
     )
     if initial_state is None:
-        initial_state = x.new_empty((cu_seqlens.shape[0] - 1, weight.shape[0], weight.shape[1]))
-    return y, initial_state
+        compressed_initial_state = x.new_empty((1, weight.shape[0], weight.shape[1]))
+    else:
+        # In contiguous CP only sequence 0 can carry state from the previous rank; save just that row so
+        # the output has static shape (1, D, W) and never triggers 0/1 Dynamo specialization on num_seqs.
+        compressed_initial_state = initial_state[:1].contiguous()
+    return y, compressed_initial_state
 
 
 @_causal_conv1d_cp.register_fake
 def _(x, weight, activation, cu_seqlens, chunk_indices, cp_context_handle):
-    return torch.empty_like(x), x.new_empty((cu_seqlens.shape[0] - 1, weight.shape[0], weight.shape[1]))
+    return torch.empty_like(x), x.new_empty((1, weight.shape[0], weight.shape[1]))
 
 
 @torch.library.custom_op("prime_rl::fla_causal_conv1d_cp_backward", mutates_args=())
@@ -204,7 +208,15 @@ def _causal_conv1d_cp_backward(
     cp_context_handle: Tensor,
 ) -> tuple[Tensor, Tensor]:
     cp_context = _get_cp_context(cp_context_handle)
-    init_state = None if (cp_context.layout == "contiguous" and cp_context.is_first_rank) else initial_state
+    if weight.shape[-1] == 1 or cp_context.is_first_rank:
+        init_state = None
+    else:
+        num_seqs = cu_seqlens.shape[0] - 1
+        if num_seqs == 1:
+            init_state = initial_state
+        else:
+            init_state = initial_state.new_zeros((num_seqs, weight.shape[0], weight.shape[1]))
+            init_state[:1] = initial_state
     dx, dweight, _, _, dh0 = causal_conv1d_bwd(
         x=x,
         dy=dy,
