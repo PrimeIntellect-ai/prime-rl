@@ -52,7 +52,15 @@ from prime_rl.utils.logger import setup_logger
 NUM_RANKS = 2
 PROCESS_GROUP_TIMEOUT = timedelta(minutes=5)
 TINY_CONFIGS = TINY_MODELS | TINY_PRIME_RL_MODELS
-WRAPPER_MODEL_TYPES = {"glm5_next", "muse_glimmer", "nemotron_h_omni", "qwen3_5", "qwen3_5_moe", "qwen4_exp"}
+WRAPPER_MODEL_TYPES = {
+    "glm5_next",
+    "inkling2",
+    "muse_glimmer",
+    "nemotron_h_omni",
+    "qwen3_5",
+    "qwen3_5_moe",
+    "qwen4_exp",
+}
 
 
 def needs_sm100() -> str | None:
