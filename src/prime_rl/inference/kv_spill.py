@@ -26,6 +26,8 @@ logger = init_logger("vllm.prime_rl.kv_spill")  # under the vllm logger, so INFO
 
 LEAD_KEY = "prime_rl_spill_lead_s"
 WAIT_KEY = "prime_rl_spill_fetch_wait_s"
+# A put that started before the lease ended is done by this long after it.
+PUT_GRACE_S = 2.0
 
 
 def spill_settings(connector) -> tuple[float, float] | None:
@@ -213,7 +215,7 @@ def _remove(state: _State, keys: list[str]) -> None:
         logger.info("KV spill: remove keys=%d failed=%d", len(keys), failed)
 
 
-def _fetch(state: _State, request_id: str, plan) -> bool:
+def _fetch(state: _State, request_id: str, plan, wait_s: float) -> bool:
     keys, addrs, sizes = plan
     start = time.perf_counter()
     try:
@@ -221,7 +223,7 @@ def _fetch(state: _State, request_id: str, plan) -> bool:
             present = sum(1 for exists in state.store.batch_is_exist(keys) if exists == 1)
             if present == len(keys):
                 break
-            if time.perf_counter() - start > state.wait_s:
+            if time.perf_counter() - start > wait_s:
                 logger.info("KV spill: fetch miss req=%s keys=%d present=%d", request_id, len(keys), present)
                 return False
             time.sleep(0.2)
@@ -380,7 +382,11 @@ def monkey_patch_nixl_spill_expiring_kv_to_store():
                 return
             plan = fetch_plan(self, meta, group_keys) if state is not None and group_keys is not None else None
             if plan is not None:
-                state.fetches[req_id] = state.pool.submit(_fetch, state, req_id, plan)
+                # Only a turn that returns right at its deadline can find its put still in flight; later the
+                # objects are either there or evicted, and waiting would only delay the recompute.
+                deadline = remote.blocks_expiry_time - self._engine_clock_offset[remote.engine_id]
+                wait_s = state.wait_s if time.perf_counter() < deadline + PUT_GRACE_S else 0.0
+                state.fetches[req_id] = state.pool.submit(_fetch, state, req_id, plan, wait_s)
                 return
         return original_read(self, req_id, meta)
 

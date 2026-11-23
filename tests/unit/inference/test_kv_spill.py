@@ -142,7 +142,7 @@ def test_fetch_deletes_the_objects_keyed_by_the_request_and_keeps_shared_blocks(
     state = _state()
     state.store = _Store({"spill-kv@g0@00", "spill-req@turn-1@g0@1", "spill-req@turn-1@g1@0"})
     plan = (["spill-kv@g0@00", "spill-req@turn-1@g0@1", "spill-req@turn-1@g1@0"], [[1], [2], [3]], [[9], [9], [9]])
-    assert kv_spill._fetch(state, "turn-2", plan)
+    assert kv_spill._fetch(state, "turn-2", plan, 0.0)
     assert state.store.existing == {"spill-kv@g0@00"}
 
 
@@ -150,7 +150,7 @@ def test_fetch_whose_objects_are_not_in_the_store_fails_so_the_turn_is_recompute
     state = _state()
     state.store = _Store({"spill-kv@g0@00"})
     plan = (["spill-kv@g0@00", "spill-req@turn-1@g0@1"], [[1], [2]], [[9], [9]])
-    assert not kv_spill._fetch(state, "turn-2", plan)
+    assert not kv_spill._fetch(state, "turn-2", plan, 0.0)
     assert state.store.existing == {"spill-kv@g0@00"}
 
 
