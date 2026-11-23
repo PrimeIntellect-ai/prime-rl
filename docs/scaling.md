@@ -244,9 +244,7 @@ Examples:
 
 The `rl`, `sft`, and `inference` entrypoints all submit to SLURM when a `[slurm]` table is present — there's no separate entrypoint.
 
-> **The prime-rl checkout and its `uv` venv must live on a shared filesystem** visible to every node. The generated sbatch script runs a single `uv sync` on the batch node (not once per node), so all ranks share that one environment — a node-local venv would leave the other nodes stale.
-
-The sync installs every extra and every environment package by default. Set `[slurm] sync_args` to narrow it, e.g. `sync_args = "--extra train"` for an SFT job without online evals.
+> **The prime-rl checkout and its `uv` venv must live on a shared filesystem** visible to every node. The generated sbatch script runs a single `uv sync --all-extras --all-packages` on the batch node (not once per node), so all ranks share that one environment — a node-local venv would leave the other nodes stale.
 
 Compile and JIT caches are node-local by default: the launcher sets `TRITON_CACHE_DIR=/tmp/triton-<uid>` for every component, and `VLLM_CACHE_ROOT=/tmp/.vllm-cache-<uid>` and `FLASHINFER_WORKSPACE_BASE=/tmp/.flashinfer-cache-<uid>` for inference. Ranks writing one cache on a shared filesystem can crash or hang. Override them in `[env_vars]` or a component's `env_vars`.
 

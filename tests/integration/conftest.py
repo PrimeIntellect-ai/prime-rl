@@ -10,6 +10,7 @@ import pytest
 
 from prime_rl.utils.process import cleanup_process
 
+REF_MODEL = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
 REF_PORT = 8001
 REF_READY_TIMEOUT_S = 300
 
@@ -35,7 +36,7 @@ def ref_inference(output_dir: Path) -> Generator[subprocess.Popen, None, None]:
         "run",
         "inference",
         "--vllm.model",
-        "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL",
+        REF_MODEL,
         "--server.port",
         str(REF_PORT),
         "--vllm.gpu-memory-utilization",
