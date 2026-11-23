@@ -14,10 +14,8 @@ num_infer_replicas = 3
 [trainer.model]
 cp = 8
 ep = 8
-# Activation offloading cost 11% throughput without lowering the allocated peak.
-ac_offloading = "None"
 
-# TP4 x DP2 decoded ~60% faster than DEP8 per node under a synthetic agentic load (256 sessions).
+# One DEP8 replica per node: attention data parallel, experts sharded 8 ways.
 [inference.vllm]
-tensor_parallel_size = 4
-data_parallel_size = 2
+tensor_parallel_size = 1
+data_parallel_size = 8

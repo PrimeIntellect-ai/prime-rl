@@ -17,5 +17,7 @@ num_infer_replicas = 4
 cp = 8
 ep = 8
 
+# One DEP8 replica per node: attention data parallel, experts sharded 8 ways.
 [inference.vllm]
-tensor_parallel_size = 8
+tensor_parallel_size = 1
+data_parallel_size = 8
