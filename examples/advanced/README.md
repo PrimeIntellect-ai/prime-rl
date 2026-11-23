@@ -4,7 +4,7 @@ RL configs per model at 256k context, layered as in [`deepseek-v4-flash/`](deeps
 
 1. `<model>/rl.toml`: the model definition: the model, its optimizer, and its inference engine
    settings that do not depend on hardware (context length, parsers, prefix caching, router replay).
-2. `<model>/gpu/h200_<N>nodes.toml`: a compute overlay for N trainer nodes (a model can have several): trainer nodes and parallelism, fit to one
+2. `<model>/gpu/h200_<N>nodes.toml`: a compute overlay for N trainer nodes (a model can have several; `b300_<N>nodes.toml` for B300): trainer nodes and parallelism, fit to one
    262144-token sample per micro batch, and one inference node per trainer node. The trainer keeps
    the defaults: optimizer offload, full activation checkpointing and activation offloading.
 3. `data/`: the data overlay: `scaleswe.toml` (ScaleSWE with the bash harness, bash + edit tools,
@@ -29,10 +29,16 @@ checkpointing and activation offloading.
 | [Nemotron 3 Super](nemotron-3-super/rl.toml) | 2 | 29.5k tok/s | 1,842 tok/s | 106.3 GiB (reserved) | |
 | [Qwen3.8 Flash Next](qwen3.8-flash-next/rl.toml) | 3 | 39.1k tok/s | 1,629 tok/s | 109.3 GiB allocated | 2 nodes ran out of memory |
 | [GLM-5.3 Flash](glm-5.3-flash/rl.toml) | 6 | 61.0k tok/s | 1,270 tok/s | 94.6 GiB allocated | 4 and 5 nodes ran out of memory |
+| [Qwen3.6-35B-A3B](qwen3.6-35b-a3b/rl.toml) | 1 | | | | not tested in this layout |
+| [DeepSeek-V4-Flash](deepseek-v4-flash/rl.toml) | 4 | | | | not tested in this layout; FP8 trainer and inference, also on B300 (MXFP8) |
+| [Nemotron 3.5 Super](nemotron-3.5-super/rl.toml) | 4 | | | | not tested in this layout |
+| [Inkling 2 Small](inkling2/rl.toml) | 6 | | | | not tested in this layout; 16k context, as the trainer has no context parallelism for Inkling 2 |
 
 "Reserved" includes PyTorch's allocator cache, so real use is lower; "allocated" is the peak of
 live tensors (`perf/peak_allocated_memory`). Both include memory outside the allocator (NCCL, CUDA
 context). The inference configs are not fitted yet, and no recipe has run on real weights and data yet.
+The models not tested in this layout take their settings from the configs named in their overlay
+headers.
 
 ## ScaleSWE RL
 
