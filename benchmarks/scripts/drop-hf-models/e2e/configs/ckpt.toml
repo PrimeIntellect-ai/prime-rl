@@ -1,4 +1,0 @@
-max_steps = 20
-
-[ckpt]
-interval = 10
