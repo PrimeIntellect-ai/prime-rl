@@ -24,7 +24,7 @@ from prime_rl.trainer.models.glm5_next.converting_glm5_next import (
 from prime_rl.trainer.models.glm5_next.linear_attention import KimiDeltaAttention
 from prime_rl.trainer.models.glm5_next.sparse_attention import KPoolIndexer, PoolLayout, SparseMlaAttention
 from prime_rl.trainer.models.layers.activations import ClampedSilu
-from prime_rl.trainer.models.layers.fla_ops import prepare_chunk_indices
+from prime_rl.trainer.models.layers.fla_ops import build_cp_context, prepare_chunk_indices
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
@@ -125,6 +125,7 @@ class Glm5NextDecoderLayer(GradientCheckpointingLayer):
         chunk_indices: torch.Tensor,
         pool_layout: PoolLayout,
         routed_experts: torch.LongTensor | None = None,
+        cp_context_handle: torch.Tensor | None = None,
     ) -> torch.Tensor:
         # mhc_states: [batch, seq, hc_mult, hidden]. `collapsed` is the single-stream sublayer input;
         # `post` and `comb` are the weights for writing the output back and mixing the streams.
@@ -132,7 +133,7 @@ class Glm5NextDecoderLayer(GradientCheckpointingLayer):
         attention_input = self.input_layernorm(collapsed)
         if self.layer_type == "linear_attention":
             # KDA resets its recurrent state at each packed-document boundary.
-            attn_output = self.self_attn(attention_input, cu_seqlens, chunk_indices)
+            attn_output = self.self_attn(attention_input, cu_seqlens, chunk_indices, cp_context_handle)
         else:
             # Sparse MLA attends to the pools the indexer selects within the query's own document.
             attn_output = self.self_attn(attention_input, pool_layout)
@@ -231,7 +232,17 @@ class Glm5NextTextModel(Glm5NextPreTrainedModel):
         )
         # A hint, not a constraint: a one-document row (2-entry cu_seqlens) gets its own graph.
         torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
-        chunk_indices = prepare_chunk_indices(cu_seqlens)
+        if self.cp_context.cp_enabled:
+            kda_cu_seqlens, chunk_indices, cp_context_handle = build_cp_context(
+                cu_seqlens,
+                group=self.cp_context.cp_group,
+                conv1d_kernel_size=self.config.linear_conv_kernel_dim,
+            )
+            torch._dynamo.maybe_mark_dynamic(kda_cu_seqlens, 0)
+        else:
+            kda_cu_seqlens = cu_seqlens
+            chunk_indices = prepare_chunk_indices(cu_seqlens)
+            cp_context_handle = None
         pool_layout = PoolLayout.build(
             cu_seqlens,
             inputs_embeds.shape[1],
@@ -245,10 +256,11 @@ class Glm5NextTextModel(Glm5NextPreTrainedModel):
             layer_routed_experts = routed_experts[:, :, layer_idx].contiguous() if routed_experts is not None else None
             mhc_states = decoder_layer(
                 mhc_states=mhc_states,
-                cu_seqlens=cu_seqlens,
+                cu_seqlens=kda_cu_seqlens,
                 chunk_indices=chunk_indices,
                 pool_layout=pool_layout,
                 routed_experts=layer_routed_experts,
+                cp_context_handle=cp_context_handle,
             )
         return BaseModelOutput(last_hidden_state=self.norm(mhc_states.mean(dim=2)))
 
