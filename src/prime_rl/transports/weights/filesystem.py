@@ -18,7 +18,9 @@ from prime_rl.transports.weights.base import (
     WeightSender,
     marker_exists,
 )
+from prime_rl.utils.pathing import get_step_path
 from prime_rl.utils.sparse_weights import DELTA_DIR, MANIFEST
+from prime_rl.utils.weight_store import storage_path
 from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
     gather_weights_parallel,
@@ -82,14 +84,19 @@ class FileSystemWeightReceiver(WeightReceiver):
         pause only applies the delta."""
         if self.prepared_step == step:
             return
-        weights_dir = self.step_dir(step)
-        manifest, finished = weights_dir / DELTA_DIR / MANIFEST, weights_dir / FINISHED_MARKER
-        while not (marker_exists(manifest) or marker_exists(finished)):
+        weights_dir, data_dir = self.step_dir(step), self._data_dir(step)
+        manifest, finished = data_dir / DELTA_DIR / MANIFEST, weights_dir / FINISHED_MARKER
+
+        def manifest_written() -> bool:
+            # Local markers revalidate NFS lookups; an object store needs no revalidation
+            return marker_exists(manifest) if isinstance(manifest, Path) else manifest.exists()
+
+        while not (await asyncio.to_thread(manifest_written) or marker_exists(finished)):
             self._ack_offer(step)
             await asyncio.sleep(0.05)
-        if marker_exists(manifest):
+        if await asyncio.to_thread(manifest_written):
             start = time.perf_counter()
-            await self.admin_plane.prefetch_weights(weights_dir)
+            await self.admin_plane.prefetch_weights(data_dir)
             self.logger.debug(f"Prefetched sparse weight delta v{step} in {time.perf_counter() - start:.2f}s")
         self.prepared_step = step
 
@@ -116,4 +123,9 @@ class FileSystemWeightReceiver(WeightReceiver):
         if (weights_dir / "adapter_config.json").exists():
             await load_lora_adapter(self.admin_plane, self.model_name, weights_dir, step)
         else:
-            await self.admin_plane.update_weights(weights_dir, transport="filesystem", step=step)
+            await self.admin_plane.update_weights(self._data_dir(step), transport="filesystem", step=step)
+
+    def _data_dir(self, step: int):
+        """Where v{step}'s weights are: the broadcast step dir, or the step dir under ``delta.path``."""
+        delta_path = self.config.delta.path if self.config.delta is not None else None
+        return get_step_path(storage_path(delta_path), step) if delta_path else self.step_dir(step)

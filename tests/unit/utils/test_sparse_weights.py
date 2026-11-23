@@ -139,7 +139,7 @@ def test_receiver_prefetches_again_when_a_restarted_trainer_offers_the_version_a
         (step_dir / DELTA_DIR / MANIFEST).write_text(manifest)
 
     admin = SimpleNamespace(prefetch_weights=prefetch_weights, update_weights=update_weights)
-    receiver = FileSystemWeightReceiver(tmp_path, SimpleNamespace(), admin, "model")
+    receiver = FileSystemWeightReceiver(tmp_path, SimpleNamespace(delta=None), admin, "model")
 
     async def run():
         task = asyncio.create_task(receiver.receive(1))

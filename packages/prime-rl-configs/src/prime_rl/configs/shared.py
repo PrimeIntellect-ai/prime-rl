@@ -54,6 +54,12 @@ class DeltaWeightBroadcastConfig(BaseConfig):
     against the previous step. Engines that join or fall off the delta chain load the last anchor and replay
     the deltas since."""
 
+    path: str | None = None
+    """Where the trainer publishes deltas and anchors and engines read them: the broadcast dir (default),
+    another dir, or an S3-compatible bucket (``s3://bucket/prefix``) so engines can run in another region.
+    Endpoint and credentials come from the standard AWS environment variables (e.g. ``AWS_ENDPOINT_URL``).
+    The handshake stays in the broadcast dir."""
+
 
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
