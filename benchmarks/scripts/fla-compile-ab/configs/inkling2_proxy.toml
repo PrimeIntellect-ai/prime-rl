@@ -1,0 +1,31 @@
+max_steps = 5
+
+[model]
+name = "MODELS_DIR/thinkingmachines--Inkling-2-Small-proxy"
+ep = 8
+cp = 1
+debug.num_layers = 24
+
+[model.compile]
+fullgraph = true
+
+[renderer]
+name = "inkling-2"
+
+[data]
+shuffle = true
+seed = 0
+batch_size = 16
+micro_batch_size = 1
+seq_len = 4096
+pad_to_seq_len = true
+
+[[data.source]]
+name = "chat"
+dataset = "DATA_DIR/INTELLECT-3-SFT-10K"
+split = "chat"
+
+[[data.source]]
+name = "if"
+dataset = "DATA_DIR/INTELLECT-3-SFT-10K"
+split = "if"

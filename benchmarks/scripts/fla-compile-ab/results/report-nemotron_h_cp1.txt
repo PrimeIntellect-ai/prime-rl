@@ -1,0 +1,41 @@
+## nemotron_h_cp1-base rc=0 sha=9f22c14aa
+layer-frame compiles per rank: {0: 2, 1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 2}
+rank 0 layer-frame ops per compile: [[0, 0]]
+prime_rl custom ops in rank 0's compiled code: {}
+graph breaks per rank: {0: 2, 1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 2}
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 7250, actual 5567
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 3880, actual 7622
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 7542, actual 7735
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 7854, actual 7755
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 7912, actual 8192
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 3727, actual 7294
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 6317, actual 6919
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 7932, actual 7878
+time/step: 1:99.43 2:2.18 3:0.42 4:0.64 5:1.22 6:0.42 7:0.43 8:0.45 9:0.44 10:0.43 11:0.42 12:0.41 13:0.40 14:0.40 15:0.40 16:0.40 17:0.40 18:0.39 19:0.39 20:0.41
+all steps: n=20 mean 5.505 s, median 0.419 s, min 0.391 s, max 99.426 s
+last compile ends 313 s after launch; steps after it: n=19 mean 0.561 s, median 0.419 s, min 0.391 s, max 2.180 s
+peak memory over ranks: allocated 17.38 GiB, reserved 19.02 GiB
+## nemotron_h_cp1-pr rc=0 sha=27326f132
+layer-frame compiles per rank: {0: 6, 1: 6, 2: 6, 3: 6, 4: 6, 5: 6, 6: 6, 7: 6}
+rank 0 layer-frame ops per compile: [[2, 2, 2, 2, 2, 2]]
+prime_rl custom ops in rank 0's compiled code: {'prime_rl::fla_causal_conv1d': 52, 'prime_rl::mamba_chunk_scan': 76, 'prime_rl::mamba_chunk_scan_backward': 62, 'prime_rl::fla_causal_conv1d_backward': 34, 'prime_rl::record_moe_routing_statistics': 26, 'prime_rl::stable_argsort': 48, 'prime_rl_collectives::all_to_all_counts': 30, 'prime_rl_collectives::all_to_all_single': 148, 'prime_rl_attn::flash_attn_3_varlen': 52, 'prime_rl_attn::flash_attn_3_varlen_backward': 30}
+graph breaks per rank: {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0}
+  recompile 16x (all ranks): 0/0: KeyError on self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['mamba']
+  recompile 16x (all ranks): 0/3: KeyError on self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['mamba']
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 7250, actual 5567
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 3880, actual 7622
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 7542, actual 7735
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 7854, actual 7755
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 7912, actual 8192
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 3727, actual 7294
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 6317, actual 6919
+  recompile 1x (all ranks): 0/0: tensor 'args[0]' size mismatch at index 1. expected 7932, actual 7878
+time/step: 1:192.10 2:1.96 3:0.31 4:0.34 5:0.35 6:0.31 7:0.32 8:0.33 9:0.34 10:0.31 11:0.30 12:0.31 13:0.29 14:0.30 15:0.31 16:0.30 17:0.30 18:0.30 19:0.29 20:0.31
+all steps: n=20 mean 9.985 s, median 0.311 s, min 0.291 s, max 192.101 s
+last compile ends 311 s after launch; steps after it: n=19 mean 0.400 s, median 0.310 s, min 0.291 s, max 1.961 s
+peak memory over ranks: allocated 17.38 GiB, reserved 19.16 GiB
+loss: max abs diff 7.043e-04, max rel diff 5.87e-05 (step 17) over 20 steps
+grad_norm: max abs diff 4.706e-04, max rel diff 1.93e-04 (step 9) over 20 steps
+steps after the last compile in both arms: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+  nemotron_h_cp1-base: n=19 mean 0.561 s, median 0.419 s, min 0.391 s, max 2.180 s
+  nemotron_h_cp1-pr: n=19 mean 0.400 s, median 0.310 s, min 0.291 s, max 1.961 s

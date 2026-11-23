@@ -1,0 +1,30 @@
+max_steps = 20
+
+[model]
+name = "MODELS_DIR/openai--gpt-oss-20b"
+ep = 8
+cp = 1
+debug.num_layers = 8
+
+[renderer]
+name = "gpt-oss"
+
+[data]
+shuffle = true
+seed = 0
+batch_size = 16
+micro_batch_size = 1
+seq_len = 8192
+
+[[data.source]]
+name = "chat"
+dataset = "DATA_DIR/INTELLECT-3-SFT-10K"
+split = "chat"
+
+[[data.source]]
+name = "if"
+dataset = "DATA_DIR/INTELLECT-3-SFT-10K"
+split = "if"
+
+[gc]
+interval = 1

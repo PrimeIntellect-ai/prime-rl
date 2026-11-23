@@ -1,0 +1,39 @@
+## glm5_next_cp1-base rc=0 sha=9f22c14aa
+layer-frame compiles per rank: {0: 1, 1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1, 7: 1}
+rank 0 layer-frame ops per compile: [[0]]
+prime_rl custom ops in rank 0's compiled code: {}
+graph breaks per rank: {0: 1, 1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1, 7: 1}
+time/step: 1:254.38 2:3.29 3:1.60 4:1.57 5:27.58 6:28.01 7:2.14 8:1.59 9:1.57 10:27.97 11:1.74 12:1.59 13:1.56 14:1.57 15:1.57 16:1.58 17:1.51 18:1.81 19:1.59 20:1.56
+all steps: n=20 mean 18.289 s, median 1.590 s, min 1.512 s, max 254.380 s
+last compile ends 106 s after launch; steps after it: n=19 mean 5.864 s, median 1.588 s, min 1.512 s, max 28.014 s
+peak memory over ranks: allocated 88.68 GiB, reserved 98.96 GiB
+## glm5_next_cp1-pr rc=0 sha=27326f132
+layer-frame compiles per rank: {0: 3, 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 3}
+rank 0 layer-frame ops per compile: [[2, 2, 2]]
+prime_rl custom ops in rank 0's compiled code: {'prime_rl::dsv4_mhc_pre': 198, 'prime_rl::dsv4_mhc_sinkhorn': 156, 'prime_rl::fla_causal_conv1d': 52, 'prime_rl::fla_chunk_kda': 88, 'prime_rl::fla_rms_norm_gated': 52, 'prime_rl::dsv4_mhc_post_bda': 120, 'prime_rl::dsv4_mhc_post_bda_backward': 107, 'prime_rl::dsv4_mhc_sinkhorn_backward': 66, 'prime_rl::dsv4_mhc_pre_backward': 105, 'prime_rl::fla_rms_norm_gated_backward': 30, 'prime_rl::fla_chunk_kda_backward': 46, 'prime_rl::fla_causal_conv1d_backward': 26, 'prime_rl::fp8_indexer': 17, 'prime_rl::sparse_mla': 30, 'prime_rl::record_moe_routing_statistics': 26, 'prime_rl::stable_argsort': 48, 'prime_rl_collectives::all_to_all_counts': 30, 'prime_rl_collectives::all_to_all_single': 148, 'prime_rl::sparse_mla_backward': 13}
+graph breaks per rank: {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0}
+  recompile 1x (all ranks): 0/0: ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['mlp'], 1263329952), type=<class 'prime_rl.trainer.models.layers.mlp.FeedForward'>
+  recompile 1x (all ranks): 0/1: ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['self_attn'], 1360784064), type=<class 'prime_rl.trainer.models.glm5_next.sparse_attention.SparseMlaAttention'>
+  recompile 1x (all ranks): 0/0: ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['mlp'], 268052800), type=<class 'prime_rl.trainer.models.layers.mlp.FeedForward'>
+  recompile 1x (all ranks): 0/1: ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['self_attn'], 363521408), type=<class 'prime_rl.trainer.models.glm5_next.sparse_attention.SparseMlaAttention'>
+  recompile 1x (all ranks): 0/0: ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['mlp'], 469126352), type=<class 'prime_rl.trainer.models.layers.mlp.FeedForward'>
+  recompile 1x (all ranks): 0/1: ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['self_attn'], 564799360), type=<class 'prime_rl.trainer.models.glm5_next.sparse_attention.SparseMlaAttention'>
+  recompile 1x (all ranks): 0/0: ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['mlp'], 859372720), type=<class 'prime_rl.trainer.models.layers.mlp.FeedForward'>
+  recompile 1x (all ranks): 0/1: ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['self_attn'], 954769648), type=<class 'prime_rl.trainer.models.glm5_next.sparse_attention.SparseMlaAttention'>
+  recompile 1x (all ranks): 0/0: ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['mlp'], 592865808), type=<class 'prime_rl.trainer.models.layers.mlp.FeedForward'>
+  recompile 1x (all ranks): 0/1: ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['self_attn'], 690788992), type=<class 'prime_rl.trainer.models.glm5_next.sparse_attention.SparseMlaAttention'>
+  recompile 1x (all ranks): 0/0: ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['mlp'], 241040192), type=<class 'prime_rl.trainer.models.layers.mlp.FeedForward'>
+  recompile 1x (all ranks): 0/1: ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['self_attn'], 340420400), type=<class 'prime_rl.trainer.models.glm5_next.sparse_attention.SparseMlaAttention'>
+  recompile 1x (all ranks): 0/0: ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['mlp'], 608405232), type=<class 'prime_rl.trainer.models.layers.mlp.FeedForward'>
+  recompile 1x (all ranks): 0/1: ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['self_attn'], 703330656), type=<class 'prime_rl.trainer.models.glm5_next.sparse_attention.SparseMlaAttention'>
+  recompile 1x (all ranks): 0/0: ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['mlp'], 1272340320), type=<class 'prime_rl.trainer.models.layers.mlp.FeedForward'>
+  recompile 1x (all ranks): 0/1: ___check_type_id(self.__dict__['_modules']['_checkpoint_wrapped_module']._modules['self_attn'], 1371778272), type=<class 'prime_rl.trainer.models.glm5_next.sparse_attention.SparseMlaAttention'>
+time/step: 1:363.12 2:3.36 3:1.34 4:1.32 5:28.58 6:28.28 7:1.51 8:1.36 9:1.32 10:28.15 11:1.50 12:1.33 13:1.33 14:1.34 15:1.33 16:1.36 17:1.29 18:1.52 19:1.34 20:1.33
+all steps: n=20 mean 23.601 s, median 1.353 s, min 1.286 s, max 363.122 s
+last compile ends 437 s after launch; steps after it: n=19 mean 5.732 s, median 1.345 s, min 1.286 s, max 28.575 s
+peak memory over ranks: allocated 88.26 GiB, reserved 99.07 GiB
+loss: max abs diff 2.053e-03, max rel diff 1.61e-04 (step 5) over 20 steps
+grad_norm: max abs diff 3.214e-03, max rel diff 1.49e-03 (step 18) over 20 steps
+steps after the last compile in both arms: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+  glm5_next_cp1-base: n=19 mean 5.864 s, median 1.588 s, min 1.512 s, max 28.014 s
+  glm5_next_cp1-pr: n=19 mean 5.732 s, median 1.345 s, min 1.286 s, max 28.575 s
