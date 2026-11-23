@@ -34,6 +34,14 @@ checkpointing and activation offloading.
 live tensors (`perf/peak_allocated_memory`). Both include memory outside the allocator (NCCL, CUDA
 context). The inference configs are not fitted yet, and no recipe has run on real weights and data yet.
 
+## ScaleSWE RL
+
+Real weights, `data/scaleswe.toml` (batch 128, group 8), steady steps after warm-up:
+
+| Model | Trainer + inference | Step time | Trainer waiting | Decode per inference node | Peak allocated | Mismatch KL |
+|---|---|---|---|---|---|---|
+| Muse Glimmer 30B | 1 (cp 4) + 1 (TP2 × DP4) | 12-14 min | ~65% | 13.5k tok/s | 48 GiB | 0.0003 |
+
 ## Inference layout
 
 Muse Glimmer 30B on math (real weights, ~170 prompt and ~14k output tokens per sample), one 8x H200
