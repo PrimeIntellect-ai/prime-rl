@@ -209,6 +209,7 @@ class FileSystemWeightUpdateWorker(WeightRPCMixin, Worker):
             "write_layout": base_step is None,
             "load": None,
             "deltas": [],
+            "verify_anchor_from_delta": False,
             # Steps that carry an anchor recompute every checksum from the params; others update them with the changes
             "full_verify": any(step_dir.glob("anchor_rank*")),
         }
@@ -232,6 +233,7 @@ class FileSystemWeightUpdateWorker(WeightRPCMixin, Worker):
                 source = source.parent / f"step_{source_base}"
             plan["load"] = source.as_posix() if anchor_complete(source) else "boot"
             plan["deltas"] = [delta_dir.as_posix() for delta_dir in reversed(chain)]
+            plan["verify_anchor_from_delta"] = not chain
             logger.info(f"Replaying {len(chain)} sparse weight deltas on top of {Path(plan['load']).name}")
         return plan
 
@@ -239,7 +241,8 @@ class FileSystemWeightUpdateWorker(WeightRPCMixin, Worker):
         """Load and apply what ``plan`` says; returns the check of the final weights for ``_check``."""
         check = None
         if plan["load"] is not None:
-            check = self._load_checkpoint(self._boot_dir() if plan["load"] == "boot" else Path(plan["load"]))
+            checkpoint = self._boot_dir() if plan["load"] == "boot" else Path(plan["load"])
+            check = self._load_checkpoint(checkpoint, verify_from_delta=plan["verify_anchor_from_delta"])
         for delta_dir in plan["deltas"]:
             checksums = self._apply_delta(Path(delta_dir))
             # Each delta's checksums cover every tensor, so the last one checks the whole chain
@@ -434,7 +437,7 @@ class FileSystemWeightUpdateWorker(WeightRPCMixin, Worker):
         self.coverage_cache = (names, held, coverage)
         return coverage
 
-    def _load_checkpoint(self, step_dir: Path) -> tuple | None:
+    def _load_checkpoint(self, step_dir: Path, *, verify_from_delta: bool) -> tuple | None:
         """Reload every weight from the HF checkpoint (or anchor) in ``step_dir``. In a sparse run, each worker reads
         only the rows it holds, straight into its params, and returns their check for ``_check``."""
         model = self._model()
@@ -444,8 +447,12 @@ class FileSystemWeightUpdateWorker(WeightRPCMixin, Worker):
             return None
         start = time.perf_counter()
         index_map = self.index_map
-        # Checksums of anchors and full checkpoints written by the trainer (none for the boot checkpoint)
-        expected = read_anchor_checksums(step_dir)
+        if verify_from_delta:
+            # The co-published delta describes the live weights, including FP8 block scales. Read only its headers.
+            with ThreadPoolExecutor(1) as pool:
+                _, expected = read_delta(step_dir, pool, names=set())
+        else:
+            expected = read_anchor_checksums(step_dir)
         num_bytes = 0
         for name, begin, rows in _read_rows(index_map, step_dir, next(model.parameters()).device):
             index_map.load_rows(name, rows, begin)

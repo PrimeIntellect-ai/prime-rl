@@ -1,11 +1,25 @@
+import json
+from types import SimpleNamespace
+
+import numpy as np
 import pytest
 import torch
 from safetensors.torch import save_file
 from torch import nn
 
-from prime_rl.inference.vllm.worker.filesystem import _read_rows
+from prime_rl.inference.vllm.worker.filesystem import FileSystemWeightUpdateWorker, _read_rows
 from prime_rl.inference.vllm.worker.weight_transfer import CheckpointIndexMap
-from prime_rl.utils.sparse_weights import as_bits, bits_checksum
+from prime_rl.utils.sparse_weights import (
+    DELTA_DIR,
+    MANIFEST,
+    anchor_checksums_file,
+    as_bits,
+    bits_checksum,
+    quantize_fp8_blocks,
+    rank_part,
+    rank_parts_marker,
+    write_rank_file,
+)
 
 
 class Toy(nn.Module):
@@ -217,3 +231,40 @@ def test_read_rows_skips_only_tied_names_the_checkpoint_omits(tmp_path):
     save_file({"weight": embed}, tmp_path / "model.safetensors")
     with pytest.raises(KeyError, match="norm"):
         list(_read_rows(index_map, tmp_path, "cpu"))
+
+
+@pytest.mark.gpu
+def test_fp8_recovery_exactly_at_anchor(tmp_path):
+    step = tmp_path / "step_2"
+    delta = step / DELTA_DIR
+    delta.mkdir(parents=True)
+    boot = torch.ones(128, 128, dtype=torch.bfloat16, device="cuda")
+    weight = boot * 3
+    weight[0, 0] = -1
+    save_file({"weight": weight.cpu()}, step / "model.safetensors")
+    (step / "anchor_rank0.done").write_text("1")
+    (step / anchor_checksums_file(0)).write_text(json.dumps({"weight": bits_checksum(as_bits(weight))}))
+
+    def engine_weights(source):
+        bits, scales = quantize_fp8_blocks(source, ue8m0=False)
+        return {"weight": bits.view(torch.float8_e4m3fn), "weight_scale_inv": scales}
+
+    current = engine_weights(weight)
+    tensors = {name: [list(t.shape), str(t.dtype).removeprefix("torch.")] for name, t in current.items()}
+    expected = {name: bits_checksum(as_bits(t)) for name, t in current.items()}
+    (delta / MANIFEST).write_text(json.dumps({"ranks": 1, "base_step": 1, "tensors": tensors}))
+    write_rank_file(delta / rank_part(0, 0), [], np.empty(0, np.int32), np.empty(0, np.uint8), tensors, expected)
+    (delta / rank_parts_marker(0)).write_text(json.dumps({"parts": 1}))
+
+    model = Toy()
+    model.weight = nn.Parameter(boot, requires_grad=False)
+    worker = FileSystemWeightUpdateWorker()
+    worker.model_runner = SimpleNamespace(get_model=lambda: model)
+    worker.index_map = CheckpointIndexMap(model, tensors)
+    # vLLM records checkpoint-format writes before the online quantizer installs its engine-format weights.
+    boot_params = engine_weights(boot)
+    model.weight.data = boot_params["weight"]
+    model.weight_scale_inv = nn.Parameter(boot_params["weight_scale_inv"], requires_grad=False)
+    worker.index_map.fp8_layout(model, lambda name: boot)
+    _, names, sums, _, trainer_sums = worker._run_plan(worker._plan_update(step))
+    assert dict(zip(names, sums.tolist())) == trainer_sums == expected
