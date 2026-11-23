@@ -1,21 +1,21 @@
 # Length penalty ablations: base RL config and the no-penalty baseline. Qwen3.6-35B-A3B under
-# the rlm harness with subagents (max_depth 1, delegation prompt + the "hard" addendum from
-# nudge.toml), on BrowseComp-Plus without its 30 held-out tasks. Eval is those held-out
-# tasks (bcplus_eval_idx.txt), avg@4. Penalty arms override
+# the rlm harness without subagents (max_depth 0), on BrowseComp-Plus without its 30 held-out
+# tasks. The system prompt names the corpus search tool, so the model skips MCP tool discovery.
+# Eval is the held-out tasks (bcplus_eval_idx.txt), avg@4. Penalty arms override
 # orchestrator.train.source[*].algo.length_penalty on top of this file.
 #
-# 1 trainer node + 1 inference node (tp1 dp8, no expert parallelism) on H200.
+# 1 trainer node + 1 inference node (tp1 dp8, no expert parallelism) on H200. The held-out
+# indices are inlined from bcplus_eval_idx.txt so the config needs no local files at launch.
 #
-#   uv run rl @ ablations/lp/rl.toml
+#   prime train run ablations/lp/rl.toml --ref <commit> --gpu-type H200_141GB -e WANDB_API_KEY
+#   uv run rl @ ablations/lp/rl.toml --slurm.job-name lp-baseline
 
+mode = "rl"
 seq_len = 131072
 max_steps = 500
 
 [run]
 name = "lp-baseline"
-
-[slurm]
-job_name = "lp-baseline"
 
 [model]
 name = "Qwen/Qwen3.6-35B-A3B"
@@ -56,16 +56,15 @@ group_size = 8
 [[orchestrator.train.source]]
 name = "bcplus"
 env.taskset.id = "browsecomp-plus"
-select.exclude.files.idx = "ablations/lp/bcplus_eval_idx.txt"
+select.exclude.idx = [41, 97, 101, 142, 143, 150, 223, 256, 265, 288, 310, 317, 366, 394, 414, 430, 488, 497, 516, 523, 545, 597, 616, 633, 722, 773, 776, 802, 818, 829]
 # A call to a tool the harness lacks ends the rollout with reward 0.
 env.taskset.task.stops.unknown_native_tool = { fn = "ablations/lp/hooks.py:unknown_native_tool", skip_scoring = true }
 env.agent.harness.id = "rlm"
-env.agent.timeout.rollout = 1800
-env.agent.harness.max_depth = 1
-env.agent.harness.delegation_prompt = true
+env.agent.timeout.rollout = 3600
+env.agent.harness.max_depth = 0
 env.agent.harness.append_to_system_prompt = '''
-## Required: use subagents
-You must delegate. Spawn at least two subagents with `child = await rlm.agent.spawn(brief, name=...)` before you write your final answer. Give each subagent an independent part of the task, a self-contained brief and the expected result. Do not do all the work yourself. Collect each result with `await child.result()`, check it, and combine the results into your answer.'''
+## Corpus search
+Search the document corpus with the `browsecomp_plus_search` MCP tool. Load it once in an `ipython` cell with `search = await rlm.tools.get("browsecomp_plus_search")`, then call `result = await search(query="...")`. You do not need `rlm.tools.search` or `rlm.tools.servers` to find it.'''
 
 [orchestrator.eval]
 interval = 20
@@ -74,14 +73,13 @@ group_size = 4
 [[orchestrator.eval.source]]
 name = "bcplus-heldout"
 env.taskset.id = "browsecomp-plus"
-select.include.files.idx = "ablations/lp/bcplus_eval_idx.txt"
+select.include.idx = [41, 97, 101, 142, 143, 150, 223, 256, 265, 288, 310, 317, 366, 394, 414, 430, 488, 497, 516, 523, 545, 597, 616, 633, 722, 773, 776, 802, 818, 829]
 env.agent.harness.id = "rlm"
-env.agent.timeout.rollout = 1800
-env.agent.harness.max_depth = 1
-env.agent.harness.delegation_prompt = true
+env.agent.timeout.rollout = 3600
+env.agent.harness.max_depth = 0
 env.agent.harness.append_to_system_prompt = '''
-## Required: use subagents
-You must delegate. Spawn at least two subagents with `child = await rlm.agent.spawn(brief, name=...)` before you write your final answer. Give each subagent an independent part of the task, a self-contained brief and the expected result. Do not do all the work yourself. Collect each result with `await child.result()`, check it, and combine the results into your answer.'''
+## Corpus search
+Search the document corpus with the `browsecomp_plus_search` MCP tool. Load it once in an `ipython` cell with `search = await rlm.tools.get("browsecomp_plus_search")`, then call `result = await search(query="...")`. You do not need `rlm.tools.search` or `rlm.tools.servers` to find it.'''
 
 # --- Inference ---
 
