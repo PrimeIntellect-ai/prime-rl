@@ -373,6 +373,13 @@ class EpisodeMetrics:
     def num_turns(self) -> Stat:
         return self._episode_stat("num_turns")
 
+    def format_turns(self) -> str:
+        per_agent = ", ".join(
+            f"{agent}={sum(trace.num_turns for trace in group.traces) / len(group.records):.1f}"
+            for agent, group in self.by_agent().items()
+        )
+        return f"Turns/episode {self.num_turns.mean():.1f} | Turns/rollout {per_agent or 'n/a'}"
+
     @property
     def num_branches(self) -> Stat:
         return self._episode_stat("num_branches")

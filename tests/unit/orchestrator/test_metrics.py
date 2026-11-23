@@ -183,6 +183,7 @@ def test_episode_and_agent_levels():
         ),
     ]
     m = train_episodes(episodes).metrics
+    assert m.format_turns() == "Turns/episode 12.0 | Turns/rollout proposer=2.0, solver=5.0"
     assert m.num_turns.mean() == 12.0  # episode-level sums: 1+2+4 and 3+6+8
     assert m.num_total_tokens.values == [30.0, 30.0]  # summed across the episode's traces
     out = m.to_wandb(prefix="train/agg", subset="all")
@@ -194,6 +195,19 @@ def test_episode_and_agent_levels():
     assert out["train/agg/all/proposer/is_truncated/mean"] == 0.0
     assert "train/agg/all/proposer/is_truncated/p90" not in out  # rates emit /mean only
     assert "train/agg/all/reward/mean" not in out  # reward never pools across agents
+
+
+def test_turns_summary_for_grouped_solver_rollouts():
+    grouped = combine(
+        *(mk(agent_name="solver", num_turns=turns) for turns in range(1, 17)),
+        mk(agent_name="judge", num_turns=30, trainable=False),
+    )
+    batch = train_episodes([grouped])
+    assert batch.effective.metrics.format_turns() == "Turns/episode 136.0 | Turns/rollout solver=8.5"
+
+    batch = train_episodes([grouped, mk(agent_name="solver", num_turns=34)])
+    assert batch.effective.metrics.format_turns() == "Turns/episode 85.0 | Turns/rollout solver=10.0"
+    assert TrainEpisodes().effective.metrics.format_turns() == "Turns/episode 0.0 | Turns/rollout n/a"
 
 
 def test_agent_metrics_are_flat_over_traces():
