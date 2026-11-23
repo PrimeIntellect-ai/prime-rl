@@ -3,7 +3,7 @@
 # MODEL is a configs/*.toml name, ARM a label (base or fix), SHA the commit to run.
 # Env: PYTHON (interpreter with prime-rl's dependencies), MODELS_DIR, DATA_DIR, OUT_DIR (default ./ab-runs),
 # CACHE_ROOT (compile caches, default OUT_DIR/cache; use node-local disk when OUT_DIR is on a network filesystem),
-# HOOK_DIR (directory holding the sitecustomize.py hook, default peaklog).
+# HOOK_DIR (directory holding the sitecustomize.py hook, default peaklog), NPROC (GPUs per run, default 8).
 set -euo pipefail
 MODEL=$1
 ARM=$2
@@ -32,7 +32,7 @@ export PYTHONPATH=${HOOK_DIR:-$HERE/peaklog}:$SRC/src:$SRC/packages/prime-rl-con
 echo "$SHA" > "$RUN/sha.txt"
 date +%s.%N > "$RUN/start_epoch.txt"
 set +e
-"$PYTHON" -m torch.distributed.run --standalone --nproc-per-node=8 --log-dir="$RUN/torchrun" \
+"$PYTHON" -m torch.distributed.run --standalone --nproc-per-node="${NPROC:-8}" --log-dir="$RUN/torchrun" \
   --local-ranks-filter=0 --redirect=3 --tee=3 \
   -m prime_rl.trainer.sft.train @ "$RUN/common.toml" @ "$RUN/$MODEL.toml" --output-dir "$RUN/out" "${@:4}" \
   > "$RUN/logs/trainer.log" 2>&1
