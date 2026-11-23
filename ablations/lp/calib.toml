@@ -1,0 +1,177 @@
+# Task calibration for the LP ablations: Qwen3.6-35B-A3B under the rlm harness, with
+# subagents off (depth 0) and on (depth 1, with nano-rlm's delegation prompt), against
+# the one-node server from serve.toml. Pass the server address with --client.base-url.
+#
+#   uv run eval @ ablations/lp/calib.toml --client.base-url http://<node>:8000/v1
+#
+# Per source, read: pass rate, tokens (root and subagent), turns, subagent calls, and
+# wall-clock.
+
+model = "Qwen/Qwen3.6-35B-A3B"
+group_size = 4
+
+[run]
+name = "lp-calib-q36"
+
+[select]
+limit = 32
+shuffle = true
+
+[concurrency]
+min_inflight = 64
+max_inflight = 256
+
+[[source]]
+name = "scaleswe-d0"
+env.taskset.id = "scaleswe"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 0
+
+[[source]]
+name = "scaleswe-d1"
+env.taskset.id = "scaleswe"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+
+[[source]]
+name = "wideseek-d0"
+env.taskset.id = "wideseek"
+env.agent.harness.builtin_skills = ["edit", "search"]
+env.agent.harness.forward_env = ["SERPER_API_KEY"]
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 0
+
+[[source]]
+name = "wideseek-d1"
+env.taskset.id = "wideseek"
+env.agent.harness.builtin_skills = ["edit", "search"]
+env.agent.harness.forward_env = ["SERPER_API_KEY"]
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+
+[[source]]
+name = "oolong-d0"
+env.taskset.id = "oolong-synth"
+env.taskset.context_len = 131072
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 0
+
+[[source]]
+name = "oolong-d1"
+env.taskset.id = "oolong-synth"
+env.taskset.context_len = 131072
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+
+[[source]]
+name = "deshuffle-d0"
+env.taskset.id = "deshuffle-papers"
+env.taskset.max_papers = 3
+select.include.idx = ["0:1000"]
+select.limit = 32
+select.shuffle = true
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 0
+
+[[source]]
+name = "deshuffle-d1"
+env.taskset.id = "deshuffle-papers"
+env.taskset.max_papers = 3
+select.include.idx = ["0:1000"]
+select.limit = 32
+select.shuffle = true
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+
+[[source]]
+name = "graphwalks-d0"
+env.taskset.id = "graphwalks"
+env.taskset.task.scoring = "f1"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 0
+
+[[source]]
+name = "graphwalks-d1"
+env.taskset.id = "graphwalks"
+env.taskset.task.scoring = "f1"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+
+[[source]]
+name = "bcplus-d0"
+env.taskset.id = "browsecomp-plus"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 0
+
+[[source]]
+name = "bcplus-d1"
+env.taskset.id = "browsecomp-plus"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+
+[[source]]
+name = "openseeker-d0"
+env.taskset.id = "openseeker"
+env.agent.harness.builtin_skills = ["edit", "search"]
+env.agent.harness.forward_env = ["SERPER_API_KEY"]
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 0
+
+[[source]]
+name = "openseeker-d1"
+env.taskset.id = "openseeker"
+env.agent.harness.builtin_skills = ["edit", "search"]
+env.agent.harness.forward_env = ["SERPER_API_KEY"]
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+
+[[source]]
+name = "longcot-d0"
+env.taskset.id = "longcot-mini"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 0
+
+[[source]]
+name = "longcot-d1"
+env.taskset.id = "longcot-mini"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+
+[[source]]
+name = "i3math-d0"
+env.taskset.id = "i3-math"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 0
+
+[[source]]
+name = "i3math-d1"
+env.taskset.id = "i3-math"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true

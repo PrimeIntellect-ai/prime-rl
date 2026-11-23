@@ -1,0 +1,23 @@
+# One-node DEP8 server for LP ablation task calibration. Matches the inference
+# block of examples/advanced/qwen3.6-35b-a3b (rl.toml + gpu/h200.toml).
+#
+#   uv run inference @ ablations/lp/serve.toml
+
+output_dir = "outputs/lp-calib-serve"
+
+[slurm]
+job_name = "lp-calib-serve"
+partition = "all"
+
+[vllm]
+model = "Qwen/Qwen3.6-35B-A3B"
+max_model_len = 262144
+enable_prefix_caching = true
+tensor_parallel_size = 1
+data_parallel_size = 8
+enable_expert_parallel = true
+gpu_memory_utilization = 0.85
+
+[vllm.limit_mm_per_prompt]
+image = 0
+video = 0

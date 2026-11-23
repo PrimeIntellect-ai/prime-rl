@@ -1,0 +1,57 @@
+# BrowseComp-Plus on its held-out eval split (30 tasks in bcplus_eval_idx.txt, avg@4):
+# subagents off (d0), on with nano-rlm's delegation prompt (d1), and d1 plus the soft and
+# hard delegation addenda from nudge.toml. Training must exclude the same file
+# (select.exclude.files.idx).
+#
+#   uv run eval @ ablations/lp/bcplus.toml --client.base-url http://<node>:8000/v1
+
+model = "Qwen/Qwen3.6-35B-A3B"
+group_size = 4
+
+[run]
+name = "lp-bcplus-q36"
+
+[concurrency]
+min_inflight = 120
+max_inflight = 120
+
+[[source]]
+name = "bcplus-d0"
+env.taskset.id = "browsecomp-plus"
+select.include.files.idx = "ablations/lp/bcplus_eval_idx.txt"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 0
+
+[[source]]
+name = "bcplus-d1"
+env.taskset.id = "browsecomp-plus"
+select.include.files.idx = "ablations/lp/bcplus_eval_idx.txt"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+
+[[source]]
+name = "bcplus-soft"
+env.taskset.id = "browsecomp-plus"
+select.include.files.idx = "ablations/lp/bcplus_eval_idx.txt"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+env.agent.harness.append_to_system_prompt = '''
+## Use subagents
+Split this task across subagents. Before you do the work yourself, find the independent parts of the task. Spawn one subagent per part with `child = await rlm.agent.spawn(brief, name=...)`. Give each subagent a self-contained brief and the expected result. While they run, work on another part or wait. Collect each result with `await child.result()`, check it, and combine the results into your answer.'''
+
+[[source]]
+name = "bcplus-hard"
+env.taskset.id = "browsecomp-plus"
+select.include.files.idx = "ablations/lp/bcplus_eval_idx.txt"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+env.agent.harness.append_to_system_prompt = '''
+## Required: use subagents
+You must delegate. Spawn at least two subagents with `child = await rlm.agent.spawn(brief, name=...)` before you write your final answer. Give each subagent an independent part of the task, a self-contained brief and the expected result. Do not do all the work yourself. Collect each result with `await child.result()`, check it, and combine the results into your answer.'''

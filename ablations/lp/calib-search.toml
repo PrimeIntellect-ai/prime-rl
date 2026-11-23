@@ -1,0 +1,61 @@
+# Task calibration for the LP ablations: Qwen3.6-35B-A3B under the rlm harness, with
+# subagents off (depth 0) and on (depth 1, with nano-rlm's delegation prompt), against
+# the one-node server from serve.toml. Pass the server address with --client.base-url.
+#
+#   uv run eval @ ablations/lp/calib.toml --client.base-url http://<node>:8000/v1
+#
+# Per source, read: pass rate, tokens (root and subagent), turns, subagent calls, and
+# wall-clock.
+
+model = "Qwen/Qwen3.6-35B-A3B"
+group_size = 4
+
+[run]
+name = "lp-calib-q36-search"
+
+[select]
+limit = 32
+shuffle = true
+
+[concurrency]
+min_inflight = 32
+max_inflight = 96
+
+[[source]]
+name = "wideseek-d0"
+env.taskset.id = "wideseek"
+env.agent.harness.builtin_skills = ["edit", "search"]
+env.agent.harness.forward_env = ["SERPER_API_KEY"]
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 0
+
+[[source]]
+name = "wideseek-d1"
+env.taskset.id = "wideseek"
+env.agent.harness.builtin_skills = ["edit", "search"]
+env.agent.harness.forward_env = ["SERPER_API_KEY"]
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+
+[[source]]
+name = "openseeker-d0"
+env.taskset.id = "openseeker"
+env.agent.harness.builtin_skills = ["edit", "search"]
+env.agent.harness.forward_env = ["SERPER_API_KEY"]
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 0
+
+[[source]]
+name = "openseeker-d1"
+env.taskset.id = "openseeker"
+env.agent.harness.builtin_skills = ["edit", "search"]
+env.agent.harness.forward_env = ["SERPER_API_KEY"]
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+

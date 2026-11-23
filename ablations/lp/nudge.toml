@@ -1,0 +1,145 @@
+# Delegation probe for the LP ablations: can a system-prompt addendum make Qwen3.6-35B-A3B
+# use subagents? In calib.toml, nano-rlm's delegation prompt alone gave 0 subagent calls.
+# Two addenda per task: "soft" (asks to split the task) and "hard" (requires >= 2 subagents).
+#
+#   uv run eval @ ablations/lp/nudge.toml --client.base-url http://<node>:8000/v1
+
+model = "Qwen/Qwen3.6-35B-A3B"
+group_size = 4
+
+[run]
+name = "lp-nudge-q36"
+
+[select]
+limit = 16
+shuffle = true
+
+[concurrency]
+min_inflight = 128
+max_inflight = 128
+
+[[source]]
+name = "scaleswe-soft"
+env.taskset.id = "scaleswe"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+env.agent.harness.append_to_system_prompt = '''
+## Use subagents
+Split this task across subagents. Before you do the work yourself, find the independent parts of the task. Spawn one subagent per part with `child = await rlm.agent.spawn(brief, name=...)`. Give each subagent a self-contained brief and the expected result. While they run, work on another part or wait. Collect each result with `await child.result()`, check it, and combine the results into your answer.'''
+
+[[source]]
+name = "scaleswe-hard"
+env.taskset.id = "scaleswe"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+env.agent.harness.append_to_system_prompt = '''
+## Required: use subagents
+You must delegate. Spawn at least two subagents with `child = await rlm.agent.spawn(brief, name=...)` before you write your final answer. Give each subagent an independent part of the task, a self-contained brief and the expected result. Do not do all the work yourself. Collect each result with `await child.result()`, check it, and combine the results into your answer.'''
+
+[[source]]
+name = "oolong-soft"
+env.taskset.id = "oolong-synth"
+env.taskset.context_len = 131072
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+env.agent.harness.append_to_system_prompt = '''
+## Use subagents
+Split this task across subagents. Before you do the work yourself, find the independent parts of the task. Spawn one subagent per part with `child = await rlm.agent.spawn(brief, name=...)`. Give each subagent a self-contained brief and the expected result. While they run, work on another part or wait. Collect each result with `await child.result()`, check it, and combine the results into your answer.'''
+
+[[source]]
+name = "oolong-hard"
+env.taskset.id = "oolong-synth"
+env.taskset.context_len = 131072
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+env.agent.harness.append_to_system_prompt = '''
+## Required: use subagents
+You must delegate. Spawn at least two subagents with `child = await rlm.agent.spawn(brief, name=...)` before you write your final answer. Give each subagent an independent part of the task, a self-contained brief and the expected result. Do not do all the work yourself. Collect each result with `await child.result()`, check it, and combine the results into your answer.'''
+
+[[source]]
+name = "deshuffle2-soft"
+env.taskset.id = "deshuffle-papers"
+env.taskset.min_papers = 2
+env.taskset.max_papers = 2
+select.include.idx = ["0:1000"]
+select.limit = 16
+select.shuffle = true
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+env.agent.harness.append_to_system_prompt = '''
+## Use subagents
+Split this task across subagents. Before you do the work yourself, find the independent parts of the task. Spawn one subagent per part with `child = await rlm.agent.spawn(brief, name=...)`. Give each subagent a self-contained brief and the expected result. While they run, work on another part or wait. Collect each result with `await child.result()`, check it, and combine the results into your answer.'''
+
+[[source]]
+name = "deshuffle2-hard"
+env.taskset.id = "deshuffle-papers"
+env.taskset.min_papers = 2
+env.taskset.max_papers = 2
+select.include.idx = ["0:1000"]
+select.limit = 16
+select.shuffle = true
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+env.agent.harness.append_to_system_prompt = '''
+## Required: use subagents
+You must delegate. Spawn at least two subagents with `child = await rlm.agent.spawn(brief, name=...)` before you write your final answer. Give each subagent an independent part of the task, a self-contained brief and the expected result. Do not do all the work yourself. Collect each result with `await child.result()`, check it, and combine the results into your answer.'''
+
+[[source]]
+name = "i3math-soft"
+env.taskset.id = "i3-math"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+env.agent.harness.append_to_system_prompt = '''
+## Use subagents
+Split this task across subagents. Before you do the work yourself, find the independent parts of the task. Spawn one subagent per part with `child = await rlm.agent.spawn(brief, name=...)`. Give each subagent a self-contained brief and the expected result. While they run, work on another part or wait. Collect each result with `await child.result()`, check it, and combine the results into your answer.'''
+
+[[source]]
+name = "i3math-hard"
+env.taskset.id = "i3-math"
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+env.agent.harness.append_to_system_prompt = '''
+## Required: use subagents
+You must delegate. Spawn at least two subagents with `child = await rlm.agent.spawn(brief, name=...)` before you write your final answer. Give each subagent an independent part of the task, a self-contained brief and the expected result. Do not do all the work yourself. Collect each result with `await child.result()`, check it, and combine the results into your answer.'''
+
+[[source]]
+name = "wideseek-soft"
+env.taskset.id = "wideseek"
+env.agent.harness.builtin_skills = ["edit", "search"]
+env.agent.harness.forward_env = ["SERPER_API_KEY"]
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+env.agent.harness.append_to_system_prompt = '''
+## Use subagents
+Split this task across subagents. Before you do the work yourself, find the independent parts of the task. Spawn one subagent per part with `child = await rlm.agent.spawn(brief, name=...)`. Give each subagent a self-contained brief and the expected result. While they run, work on another part or wait. Collect each result with `await child.result()`, check it, and combine the results into your answer.'''
+
+[[source]]
+name = "wideseek-hard"
+env.taskset.id = "wideseek"
+env.agent.harness.builtin_skills = ["edit", "search"]
+env.agent.harness.forward_env = ["SERPER_API_KEY"]
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 1800
+env.agent.harness.max_depth = 1
+env.agent.harness.delegation_prompt = true
+env.agent.harness.append_to_system_prompt = '''
+## Required: use subagents
+You must delegate. Spawn at least two subagents with `child = await rlm.agent.spawn(brief, name=...)` before you write your final answer. Give each subagent an independent part of the task, a self-contained brief and the expected result. Do not do all the work yourself. Collect each result with `await child.result()`, check it, and combine the results into your answer.'''
