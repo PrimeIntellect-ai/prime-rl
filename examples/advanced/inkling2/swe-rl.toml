@@ -36,7 +36,7 @@ use_deep_gemm = false
 enable_fp32_lm_head = true
 
 [inference.vllm]
-model = "<path to the bf16 export>"
+model = "PrimeIntellect/Inkling-2-Small-bf16"
 dtype = "bfloat16"
 quantization = "fp8_per_block"
 tensor_parallel_size = 8
@@ -55,7 +55,7 @@ reasoning_parser = "inkling2"
 override_generation_config = {skip_special_tokens = false}
 
 [model]
-name = "<path to the bf16 export>"
+name = "PrimeIntellect/Inkling-2-Small-bf16"
 
 [trainer]
 dist_timeout_seconds = 1800
