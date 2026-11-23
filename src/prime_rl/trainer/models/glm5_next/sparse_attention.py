@@ -121,6 +121,7 @@ class KPoolIndexer(nn.Module):
 
     def _pool_keys(self, key: torch.Tensor, gate: torch.Tensor, pool_start_tokens: torch.Tensor) -> torch.Tensor:
         # Same accumulation order as vLLM's kpool kernel: max, exp, running sums, then one divide.
+        # Not pool_start_tokens + slot: Inductor drops slot 0's "+ 0" and the checkpointed compile then fails.
         pool_tokens = pool_start_tokens[:, None] + torch.arange(self.pool_size, device=key.device)
         logits = gate[pool_tokens].float()
         logits = logits + self.index_kpool_compress_ape.float()

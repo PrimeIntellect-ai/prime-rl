@@ -32,7 +32,8 @@ from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
 def document_bounds(cu_seqlens: torch.Tensor, total_tokens: int) -> tuple[torch.Tensor, torch.Tensor]:
-    """Each token's document start and end (exclusive), so the compiled layers never see the document count."""
+    """Each token's document start and end (exclusive), built outside the compiled layers: slicing cu_seqlens inside
+    them recompiles every layer type on the first one-document row."""
     tokens = torch.arange(total_tokens, device=cu_seqlens.device)
     documents = torch.searchsorted(cu_seqlens[1:], tokens, right=True)
     return cu_seqlens[:-1][documents], cu_seqlens[1:][documents]
