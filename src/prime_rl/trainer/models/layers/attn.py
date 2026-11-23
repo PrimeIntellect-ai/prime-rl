@@ -338,6 +338,10 @@ def _flash_attn_2_varlen(
         window_size_left=window_size_left,
         window_size_right=window_size_right,
     )
+    # The XPU build of the kernel returns a contiguous output whatever q's layout is. Compiled graphs check the
+    # strides the fake promises, so give the output q's layout when the kernel did not.
+    if out_padded.stride() != q.stride():
+        out_padded = torch.empty_like(q).copy_(out_padded)
     return out_padded[..., :head_dim], lse
 
 

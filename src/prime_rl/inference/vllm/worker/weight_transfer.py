@@ -124,6 +124,31 @@ def load_draft_weights(model_runner, state_iter, vllm_config) -> None:
     )
 
 
+def xpu_moe_kernel_layout_experts(model: Module) -> list[Module]:
+    """Expert modules whose weights vLLM's XPU expert kernel has rewritten into its own layout.
+
+    On its first forward the kernel rewrites unquantized ``w13_weight`` and ``w2_weight`` in place from the
+    checkpoint's [E, N, K] to [E, K, N] and marks ``w13_weight`` with ``xpu_fused_moe``.
+    """
+    return [
+        module
+        for module in model.modules()
+        if getattr(getattr(module, "w13_weight", None), "xpu_fused_moe", False)
+        and getattr(module, "w13_weight_scale", None) is None
+    ]
+
+
+def transpose_xpu_moe_weights(experts: list[Module]) -> None:
+    """Switch expert weights between the checkpoint layout and the XPU kernel layout (a transpose either way).
+
+    The data stays in the same storage: captured XPU graphs read the weights by address."""
+    for module in experts:
+        for weight in (module.w13_weight, module.w2_weight):
+            transposed = weight.data.transpose(-1, -2).contiguous()
+            weight.data = weight.data.view(transposed.shape)
+            weight.data.copy_(transposed)
+
+
 @torch.no_grad()
 def load_weights_checkpoint_layerwise(
     model: Module,
@@ -142,6 +167,10 @@ def load_weights_checkpoint_layerwise(
         for name, value in vars(module).items()
         if preserve_tensor_attributes and isinstance(value, torch.Tensor)
     ]
+    # The layerwise reload copies checkpoint-layout weights into the parameters, so put the XPU kernel's expert
+    # weights back in checkpoint layout first and back in kernel layout after.
+    xpu_experts = xpu_moe_kernel_layout_experts(model) if device.type == "xpu" else []
+    transpose_xpu_moe_weights(xpu_experts)
     with torch.device(device), set_current_vllm_config(vllm_config):
         initialize_layerwise_reload(model)
         model.load_weights(state_iter)  # type: ignore
@@ -153,3 +182,4 @@ def load_weights_checkpoint_layerwise(
                     raise ValueError(f"Weight reload changed the layout of {type(module).__name__}.{name}")
                 original.copy_(updated)
                 setattr(module, name, original)
+    transpose_xpu_moe_weights(xpu_experts)
