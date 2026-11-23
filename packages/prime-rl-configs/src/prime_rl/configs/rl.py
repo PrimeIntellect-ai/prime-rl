@@ -499,7 +499,10 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_policy_lag(self):
-        """Engines that get the policy every N steps run up to N shipped batches behind it."""
+        """Engines that get the policy every N steps run up to N shipped batches behind it. A configured
+        ``orchestrator.max_policy_lag`` is kept (e.g. a larger one, so the dispatcher never pauses)."""
+        if "max_policy_lag" in self.orchestrator.model_fields_set:
+            return self
         self.orchestrator = self.orchestrator.model_copy(
             update={"max_policy_lag": self.trainer.weight_broadcast_interval}
         )
