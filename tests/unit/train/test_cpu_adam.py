@@ -1,3 +1,5 @@
+import threading
+
 import torch
 
 from prime_rl.trainer.optim.cpu_adam import (
@@ -5,6 +7,7 @@ from prime_rl.trainer.optim.cpu_adam import (
     add_bfloat16_,
     copy_bfloat16_,
     copy_or_add_bfloat16_multi_,
+    set_num_threads,
     sign_sgd_step,
 )
 from prime_rl.trainer.optim.offload import _cast_full_offload_compute_parameters
@@ -47,7 +50,7 @@ def test_native_cpu_adamw_matches_fused_torch_and_preserves_gradients():
     for actual, expected_tensor in zip(destinations, expected):
         torch.testing.assert_close(actual, expected_tensor, rtol=0, atol=0)
 
-    shapes = [(17,), (33, 65), (257, 129)]
+    shapes = [(29,), (33, 65), (257, 129)]
     initial = [torch.randn(shape) for shape in shapes]
     native_params = [tensor.clone() for tensor in initial]
     float_gradient_params = [tensor.clone() for tensor in initial]
@@ -132,6 +135,68 @@ def test_native_cpu_adamw_matches_fused_torch_and_preserves_gradients():
         torch.testing.assert_close(exp_avgs[index], state["exp_avg"], rtol=1e-6, atol=1e-8)
         torch.testing.assert_close(exp_avg_sqs[index], state["exp_avg_sq"], rtol=1e-6, atol=1e-8)
         assert state_steps[index].item() == state["step"].item() == 5
+
+
+def test_native_cpu_adamw_does_not_depend_on_the_thread_count():
+    torch.manual_seed(0)
+    shapes = [(100_003,), (1025, 67)]
+    initial = [torch.randn(shape) for shape in shapes]
+    gradients = [torch.randn(shape).bfloat16() for shape in shapes]
+    default_threads = torch.get_num_threads()
+    results = []
+    try:
+        for threads in (1, 2, 3, 5, 6):
+            torch.set_num_threads(threads)
+            params = [tensor.clone() for tensor in initial]
+            exp_avgs = [torch.full(shape, 1e-3) for shape in shapes]
+            exp_avg_sqs = [torch.full(shape, 1e-6) for shape in shapes]
+            compute_params = [torch.empty(shape, dtype=torch.bfloat16) for shape in shapes]
+            adamw_step(
+                params,
+                gradients,
+                exp_avgs,
+                exp_avg_sqs,
+                [torch.tensor(3.0) for _ in shapes],
+                compute_params,
+                lr=3e-4,
+                beta1=0.9,
+                beta2=0.95,
+                weight_decay=0.1,
+                eps=1e-8,
+                gradient_scale=0.37,
+            )
+            results.append(params + exp_avgs + exp_avg_sqs + compute_params)
+    finally:
+        torch.set_num_threads(default_threads)
+    for result in results[1:]:
+        for actual, expected in zip(result, results[0]):
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+def test_set_num_threads_outlives_a_lower_process_default():
+    default_threads = torch.get_num_threads()
+    threads_set, lowered = threading.Event(), threading.Event()
+    seen = []
+
+    def worker():
+        try:
+            set_num_threads(4)
+        finally:
+            threads_set.set()
+        lowered.wait()
+        add_bfloat16_(torch.zeros(8), torch.zeros(8, dtype=torch.bfloat16))
+        seen.append(torch.get_num_threads())
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    threads_set.wait()
+    try:
+        torch.set_num_threads(1)  # what torch's DataLoader pin-memory thread does
+        lowered.set()
+        thread.join()
+    finally:
+        torch.set_num_threads(default_threads)
+    assert seen == [4]
 
 
 def test_native_cpu_sign_sgd_matches_python_reference():
