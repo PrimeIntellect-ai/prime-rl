@@ -1,6 +1,5 @@
 import torch
 import torch.distributed as dist
-from dion import Muon
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
 from torch.optim import AdamW, Optimizer
@@ -10,6 +9,7 @@ from prime_rl.trainer.models.fusions import get_model_packed_parameters
 from prime_rl.trainer.models.layers.ngram import NGramTable
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
+from prime_rl.trainer.optim.muon import Muon
 from prime_rl.trainer.optim.offload import (
     FullCPUOffloadOptimizer,
     GradientOffloadManager,
@@ -39,7 +39,7 @@ def _warmup_muon_mesh(mesh: DeviceMesh) -> None:
 
     get_logger().info(f"Warming Muon all-to-all connections on group {group.group_name} ({size} ranks)")
     device = torch.device("cuda", torch.cuda.current_device())
-    # Use a bulk list all-to-all, matching Dion's path rather than a scalar
+    # Use a bulk list all-to-all, matching Muon's path rather than a scalar
     # collective that may leave bulk-transfer peer channels uninitialized.
     inputs = [torch.zeros(3 * 1024 * 1024, dtype=torch.bfloat16, device=device) for _ in range(size)]
     outputs = [torch.empty_like(tensor) for tensor in inputs]

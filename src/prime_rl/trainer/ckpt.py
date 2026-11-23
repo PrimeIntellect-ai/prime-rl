@@ -231,8 +231,8 @@ def _copy_cpu_state_split_on_sharded_dim_to_gpu(
 
 
 # Param group entries that belong to this run, not to the checkpoint: how its optimizer computes (AdamW's kernel
-# choice; optimizer offload keeps the step counters on the CPU, which the fused kernel rejects) and its layout (dion's
-# Muon names a mesh of this run's layout). A checkpoint saved with other offloading or another layout restores the
+# choice; optimizer offload keeps the step counters on the CPU, which the fused kernel rejects) and its layout (Muon
+# names a mesh of this run's layout). A checkpoint saved with other offloading or another layout restores the
 # hyperparameters only.
 RUN_PARAM_GROUP_KEYS = ("fused", "foreach", "capturable", "differentiable", "distributed_mesh_name")
 
@@ -400,7 +400,7 @@ class AppState(Stateful):
             # The template only aliases a packed parameter's state where the packing
             # dimension is unsharded, so the loaded logical entries are packed back in.
             write_back_loaded_packed_optimizer_state(self.model, checkpoint_optimizers, optimizer_state_dict)
-            # The in-place load reaches tensors only: restore the param groups' values too (lr, and dion's Muon keeps
+            # The in-place load reaches tensors only: restore the param groups' values too (lr, and Muon keeps
             # its step count there), in the live groups, since full offload's checkpoint optimizer holds copies.
             live_groups = [group for optimizer in self.optimizers for group in optimizer.param_groups]
             for group, loaded in zip(live_groups, optimizer_state_dict["param_groups"], strict=True):
