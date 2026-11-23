@@ -52,6 +52,7 @@ dashboard = "prime_rl.entrypoints.dashboard:main"
 
 [project.entry-points."vllm.general_plugins"]
 prime_rl = "prime_rl.inference.patches:apply_shared_vllm_patches"
+inkling2 = "prime_rl.inference.vllm.models.inkling2.plugin:register"
 
 [project.optional-dependencies]
 gpu = [

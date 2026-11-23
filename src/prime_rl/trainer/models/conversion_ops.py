@@ -236,6 +236,24 @@ class SplitConcat(ConvOp):
 
 
 @dataclass
+class MapValue(ConvOp):
+    """Apply a value transform to one key: ``forward`` runs HF->prime, ``backward`` prime->HF. For non-structural
+    conversions, such as a dtype the checkpoint stores a tensor in."""
+
+    prime: str  # the PrimeRL-side key the value lives under (after any rename)
+    forward: Callable[[Tensor], Tensor]
+    backward: Callable[[Tensor], Tensor]
+
+    def hf_to_prime(self, sd: StateDict) -> None:
+        if self.prime in sd:
+            sd[self.prime] = self.forward(sd[self.prime])
+
+    def prime_to_hf(self, sd: StateDict) -> None:
+        if self.prime in sd:
+            sd[self.prime] = self.backward(sd[self.prime])
+
+
+@dataclass
 class SqueezeLeading(ConvOp):
     """Backward-only: if a prime key carries a leading singleton dim that HF
     doesn't expect, drop it (GLM shared experts stored as ``(1, …)``). Forward
