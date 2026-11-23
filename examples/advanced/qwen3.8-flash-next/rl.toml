@@ -36,6 +36,11 @@ mamba_cache_dtype = "float32"
 tool_call_parser = "qwen3_coder"
 reasoning_parser = "qwen3"
 
+# vLLM's strict weight check expects every shard of the fused hyper-connection weight from the
+# checkpoint, including its alignment padding, which no checkpoint holds.
+[inference.vllm.model_loader_extra_config]
+enable_weights_track = false
+
 [inference.vllm.engram_config]
 cpu_offload = true
 
