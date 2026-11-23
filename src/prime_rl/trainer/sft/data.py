@@ -380,7 +380,6 @@ class SFTDataset(StatefulIterableDataset):
         self,
         sources: list[HFSource | FakeSource],
         weights: list[float] | None = None,
-        max_epochs: int | None = None,
         dp_rank: int = 0,
         dp_size: int = 1,
     ):
@@ -391,8 +390,6 @@ class SFTDataset(StatefulIterableDataset):
         assert len(weights) == len(sources) and sum(weights) > 0
         self.weights = weights
         self.num_rows = sum(source.size for source in sources if source.size is not None)
-        assert max_epochs is None or self.num_rows > 0, "max_epochs needs a source with rows"
-        self.max_epochs = max_epochs
         self.mixture = {
             source.name: {"weight": weight, "rows": source.size} for source, weight in zip(sources, weights)
         }
@@ -503,7 +500,7 @@ class SFTDataset(StatefulIterableDataset):
 
     def __iter__(self):
         self._setup_world_info()
-        while self.max_epochs is None or self.step < self.max_epochs * self.num_rows:
+        while True:
             index = self.next_source()
             source, k = self.sources[index], self.draws[index]
             self.draws[index] += 1

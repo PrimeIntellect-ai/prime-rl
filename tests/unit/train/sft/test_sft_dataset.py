@@ -1,5 +1,6 @@
 import json
 from collections import Counter
+from itertools import islice
 
 import numpy as np
 import pytest
@@ -88,16 +89,16 @@ def source(build_dummy_dataset, dummy_renderer):
     return make
 
 
-@pytest.mark.parametrize("max_epochs", [1, 2])
-def test_natural_shares_read_every_row_once_per_epoch(source, max_epochs: int):
-    dataset = SFTDataset([source("a", 2), source("b", 4)], max_epochs=max_epochs)
-    order = [_content(sample) for sample in dataset]
+@pytest.mark.parametrize("epochs", [1, 2])
+def test_natural_shares_read_every_row_once_per_epoch(source, epochs: int):
+    dataset = SFTDataset([source("a", 2), source("b", 4)])
+    order = [_content(sample) for sample in islice(dataset, 6 * epochs)]
     # Due times (draws + 1) / rows, ties to the first source
-    assert order == ["b0", "a0", "b1", "b2", "a1", "b3"] * max_epochs
+    assert order == ["b0", "a0", "b1", "b2", "a1", "b3"] * epochs
     assert position(dataset.state_dict()) == {
-        "step": 6 * max_epochs,
-        "epoch": max_epochs - 1,
-        "draws": {"a": 2 * max_epochs, "b": 4 * max_epochs},
+        "step": 6 * epochs,
+        "epoch": epochs - 1,
+        "draws": {"a": 2 * epochs, "b": 4 * epochs},
     }
 
 
@@ -130,7 +131,7 @@ def test_ranks_split_the_same_draws(source, dp_size: int):
 
 def test_sft_dataset_state(source):
     """Tests the state of the dataset within and across epochs."""
-    dataset = SFTDataset([source("", 4)], max_epochs=2)
+    dataset = SFTDataset([source("", 4)])
     dataiter = iter(dataset)
 
     assert position(dataset.state_dict()) == {"step": 0, "epoch": 0, "draws": {"": 0}}
@@ -140,24 +141,21 @@ def test_sft_dataset_state(source):
             step = 4 * epoch + i + 1
             assert position(dataset.state_dict()) == {"step": step, "epoch": (step - 1) // 4, "draws": {"": step}}
 
-    with pytest.raises(StopIteration):
-        next(dataiter)
-
 
 def test_sft_dataset_state_resume(source):
     """A resumed dataset continues the draws of an uninterrupted one, within a pass and across passes."""
 
     def make() -> SFTDataset:
-        return SFTDataset([source("a", 3, shuffle=True), source("b", 4, shuffle=True)], max_epochs=3)
+        return SFTDataset([source("a", 3, shuffle=True), source("b", 4, shuffle=True)])
 
-    expected = [_content(sample) for sample in make()]
+    expected = [_content(sample) for sample in islice(make(), 21)]
     for stop in (2, 7, 12):
         dataset = make()
         dataiter = iter(dataset)
         contents = [_content(next(dataiter)) for _ in range(stop)]
         resumed = make()
         resumed.load_state_dict(dataset.state_dict())
-        contents += [_content(sample) for sample in resumed]
+        contents += [_content(sample) for sample in islice(resumed, 21 - stop)]
         assert contents == expected
 
 
