@@ -57,6 +57,19 @@ at 73 GiB for 16k, and 24k rows run out of memory. The peak follows the tokens a
 an eighth of the row, and 131k-token rows peak at 77 GiB per GPU on one 8-GPU node, 67 GiB on two nodes and 58 GiB
 on eight (49 GiB on two with compiled layers).
 
+Serving it for rollouts needs a vLLM that has the looped Inkling 2 model itself (vllm-project/vllm#69028, merged
+after the pinned 0.34.0), so its inference server runs from its own environment. The `inkling2` plugin that serves
+Inkling 2 Small on the pinned vLLM has no loop and stands down on such a build, where `prime-rl` serves the
+checkpoint through `Inkling2LoopForRL` (`inference/vllm/models/inkling2_loop/`): routed experts in BF16, as
+`tools/convert_inkling2_loop_to_bf16.py` writes them (the packed release is rejected), weight updates loaded in
+place, and one replica per GPU (`data_parallel_size`; tensor parallelism is not supported). The server-side
+parsers are vLLM's own `inkling` ones, not the plugin's `inkling2`. At the memory figures above the trainer takes
+all eight GPUs of its node, so the rollouts are served from a second node. Serve it text only
+(`limit_mm_per_prompt = { image = 0 }`): the trainer does not hold the vision tower. Rollouts take the reasoning
+effort from the renderer (`[orchestrator.renderer]` with `name = "inkling-2"` and `reasoning_effort`); online
+evals go through chat completions and take it from `[orchestrator.eval.sampling]`, where the router accepts `low`,
+`medium` and `high`.
+
 ### Low-precision training
 
 Dense linear precision and routed-expert precision are configured independently. `[trainer.model.quantization]` applies only to dense `Linear` modules:

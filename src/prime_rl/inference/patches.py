@@ -60,6 +60,7 @@ def apply_shared_vllm_patches():
 
     patch_gpt_oss_weight_loading()
     patch_qwen38_weight_loading()
+    register_inkling2_loop_for_rl()
     _patch_lora_key_prefix()
     _patch_qwen35_moe_lora_format()
     monkey_patch_minimax_m2_think_end_passthrough()
@@ -93,6 +94,19 @@ def apply_shared_vllm_patches():
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
+
+
+def register_inkling2_loop_for_rl():
+    """Serve looped Inkling 2 checkpoints (Inkling 2 Mini) through ``Inkling2LoopForRL``, which runs the experts in
+    BF16 and loads weight updates in place."""
+    if _missing_in_vllm("vllm.models.inkling2.nvidia.loop"):
+        return  # The vLLM release prime-rl pins has no Inkling 2 of its own.
+    from vllm import ModelRegistry
+
+    ModelRegistry.register_model(
+        "Inkling2LoopForConditionalGeneration",
+        "prime_rl.inference.vllm.models.inkling2_loop.model:Inkling2LoopForRL",
+    )
 
 
 def monkey_patch_nixl_bidirectional_single_pull():
