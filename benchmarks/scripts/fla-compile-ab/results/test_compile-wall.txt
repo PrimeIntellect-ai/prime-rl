@@ -1,2 +1,0 @@
-2x H200, tests/unit/train/test_compile.py with every case unskipped, cold Inductor and Triton caches: 31 passed, 2 skipped, 17 warnings in 2370.80s (0:39:30) 
-2x H200, tests/unit/train/test_compile.py with every case unskipped, warm Inductor and Triton caches: 31 passed, 2 skipped, 16 warnings in 419.92s (0:06:59) 
