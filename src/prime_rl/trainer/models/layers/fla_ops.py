@@ -449,7 +449,7 @@ def _rms_norm_gated_backward(
         is_rms_norm=True,
         x_dtype=x.dtype,
     )
-    return dx, dgate, dweight
+    return dx, dgate.to(gate), dweight
 
 
 @_rms_norm_gated_backward.register_fake
