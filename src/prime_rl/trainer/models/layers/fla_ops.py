@@ -29,12 +29,12 @@ class FlaVarlen:
     """This rank's documents of a packed row, as the ops below take them."""
 
     local_cu_seqlens: Tensor
-    """`[local_documents + 1]` boundaries of this rank's documents; the whole row's without CP."""
+    """`[local_documents + 1]` boundaries of this rank's documents, or the whole row's without CP."""
     chunk_indices: Tensor
     """`[chunks, 2]` each chunk's (document, chunk within document) index."""
     cp_boundary: Tensor | None = None
-    """CPU int64 `[5]`: FLA's is_first_rank, is_last_rank, pre_num_ranks, post_num_ranks and pre_num_conv_tokens, as a
-    tensor so that every CP rank compiles the same graph; None without CP."""
+    """CPU int64 `[5]`: FLA's is_first_rank, is_last_rank, pre_num_ranks, post_num_ranks and pre_num_conv_tokens, or
+    None without CP. A tensor, not ints, because they change with every packed row and ints would recompile layers."""
 
 
 def prepare_chunk_indices(cu_seqlens: Tensor) -> Tensor:
