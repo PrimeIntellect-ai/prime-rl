@@ -49,7 +49,8 @@ def test_broadcast_replies_merge() -> None:
 
 @pytest.mark.asyncio
 async def test_broadcast_completes_when_a_worker_exits() -> None:
-    """If a worker dies mid-broadcast, the broker completes the broadcast instead of hanging."""
+    """If a worker dies mid-broadcast, the broker completes the broadcast instead of hanging,
+    and the live workers' restores still reach the client."""
     import asyncio
     from unittest.mock import MagicMock
 
@@ -100,8 +101,8 @@ async def test_broadcast_completes_when_a_worker_exits() -> None:
         rid, kind, data = await asyncio.wait_for(client.recv_multipart(), timeout=3.0)
         reply = msgpack.unpackb(data, raw=False)
         assert rid == b"req1" and kind == b"reply"
-        assert reply["success"] is False
-        assert "worker 1 exited" in reply["error"]
+        assert reply["success"] is True
+        assert reply["skipped"] == ["env worker 1 exited during the save"]
         assert reply["restores"] == {"r1": {"trace_id": "t1"}}
     finally:
         client.close()

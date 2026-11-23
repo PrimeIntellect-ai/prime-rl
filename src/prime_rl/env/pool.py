@@ -192,7 +192,7 @@ class EnvWorkerPool:
         # request_id -> (replied_at, worker), oldest first: a late cancel still reaches
         # the worker that may hold the run's kept arrays (`LATE_CANCEL_SECONDS`).
         replied: dict[bytes, tuple[float, dict]] = {}
-        # `BROADCAST` request_id -> {client_id, pending, replies}; each worker's part
+        # `BROADCAST` request_id -> {client_id, method, pending, replies}; each worker's part
         # carries `<request_id>/<worker index>`.
         broadcasts: dict[bytes, dict] = {}
         sizing = (
@@ -256,6 +256,7 @@ class EnvWorkerPool:
                             else:
                                 broadcasts[request_id] = {
                                     "client_id": client_id,
+                                    "method": method,
                                     "pending": {w["index"] for w in live},
                                     "replies": [],
                                 }
@@ -335,12 +336,12 @@ class EnvWorkerPool:
                                 continue
                             broadcast["pending"] -= dropped
                             for index in sorted(dropped):
-                                broadcast["replies"].append(
-                                    msgpack.packb(
-                                        {"success": False, "error": f"env worker {index} exited during broadcast"},
-                                        use_bin_type=True,
-                                    )
-                                )
+                                # The dead worker's rollouts are gone with it; the others'
+                                # replies, and the snapshots their restores own, still count.
+                                part: dict = {"success": True, "error": None}
+                                if broadcast["method"] == b"save":
+                                    part["skipped"] = [f"env worker {index} exited during the save"]
+                                broadcast["replies"].append(msgpack.packb(part, use_bin_type=True))
                             if not broadcast["pending"]:
                                 del broadcasts[req_id]
                                 with contextlib.suppress(zmq.ZMQError):
