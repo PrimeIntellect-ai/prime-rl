@@ -1,19 +1,23 @@
-# H200 overlay for rl.toml: 4 trainer nodes + 2 one-node DEP8 inference replicas, FP8 on both
-# sides. Add inference replicas with `--deployment.num-infer-replicas`.
+# H200 overlay for rl.toml: 4 trainer nodes and 4 one-node DEP8 inference replicas, blockwise FP8 on
+# both sides. Not tested in this layout: the settings come from this example's earlier
+# `gpu/h200.toml` (#4525), which ran 5 RL steps at 131k with cp 4 (32k tokens per rank, 118-122 GiB
+# peak) and 2 inference replicas.
 #
-#   uv run rl @ examples/advanced/deepseek-v4-flash/rl.toml @ examples/advanced/deepseek-v4-flash/gpu/h200.toml
+#   uv run rl @ examples/advanced/deepseek-v4-flash/rl.toml @ examples/advanced/deepseek-v4-flash/gpu/h200_4nodes.toml @ examples/advanced/fake.toml --trainer.model.debug.force-balanced-routing --trainer.data.fake.batch-size 4
 
 [deployment]
 type = "multi_node"
 num_train_nodes = 4
 num_infer_nodes = 1
-num_infer_replicas = 2
+# As many inference nodes as trainer nodes.
+num_infer_replicas = 4
 
 # --- Trainer: blockwise FP8 to match vLLM's online FP8 bit for bit ---
 
 [trainer.model]
-# 32k tokens per rank. Peak memory is set by the optimizer step, not by activations.
-cp = 4
+# Ring CP. 262144 / 8 = 32k tokens per rank, as at 131k with cp 4, where the optimizer step, not
+# activations, set the peak.
+cp = 8
 
 # Dense linears in DeepGEMM blockwise FP8. The compressor and indexer stay bf16, as on vLLM.
 [trainer.model.quantization]
@@ -29,7 +33,8 @@ type = "deepgemm_fp8"
 initial_inflight = 1024
 min_inflight = 1024
 
-# --- Inference: online per-block FP8 through DeepGEMM ---
+# --- Inference: one DEP8 replica per node (attention data parallel, experts sharded 8 ways), online
+# per-block FP8 through DeepGEMM ---
 
 [inference]
 # Required for online FP8: DeepSeek V4's grouped output projection runs DeepGEMM's fp8_einsum.
@@ -42,6 +47,9 @@ VLLM_USE_DEEP_GEMM_E8M0 = "0"
 VLLM_DISABLED_KERNELS = "FlashInferFp8DeepGEMMDynamicBlockScaledKernel"
 
 [inference.vllm]
+tensor_parallel_size = 1
+data_parallel_size = 8
+enable_expert_parallel = true
 dtype = "bfloat16"
 quantization = "fp8_per_block"
 # The indexer's top-k key selection is discrete; keep its projections bf16 on both sides.
