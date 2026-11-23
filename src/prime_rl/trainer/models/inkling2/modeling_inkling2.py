@@ -25,7 +25,7 @@ from typing import Union
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
-from torch.nn.attention.flex_attention import BlockMask, create_block_mask
+from torch.nn.attention.flex_attention import AuxRequest, BlockMask, create_block_mask
 from torch.nn.attention.flex_attention import flex_attention as _flex_attention
 from transformers.cache_utils import Cache
 from transformers.generation import GenerationMixin
@@ -249,7 +249,7 @@ class Inkling2Attention(nn.Module):
         q = query_states.transpose(1, 2)
         k = key_states.transpose(1, 2)
         v = value_states.transpose(1, 2)
-        out, lse = flex_attention(
+        out, aux = flex_attention(
             q,
             k,
             v,
@@ -257,9 +257,9 @@ class Inkling2Attention(nn.Module):
             block_mask=block_mask,
             scale=self.scaling,
             enable_gqa=self.num_heads != self.num_kv_heads,
-            return_lse=True,
+            return_aux=AuxRequest(lse=True),
         )
-        attn_output = (out * torch.sigmoid(lse - sinks.float()).unsqueeze(-1)).to(out.dtype)
+        attn_output = (out * torch.sigmoid(aux.lse - sinks.float()).unsqueeze(-1)).to(out.dtype)
         attn_output = attn_output.transpose(1, 2).reshape(*input_shape, -1).contiguous()
         attn_output = (attn_output.float() * torch.sigmoid(gate.float())).to(attn_output.dtype)
         return self.o_proj(attn_output)
