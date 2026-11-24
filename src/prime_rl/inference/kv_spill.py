@@ -54,6 +54,10 @@ class _State:
         self.spilled: set[str] = set()
         # prefill: request id -> fetch
         self.fetches: dict[str, Future] = {}
+        # decode: requests read back while their put was still copying; their blocks stay until it is done
+        self.read_back: set[str] = set()
+        # prefill: requests reported as failed by NIXL while their fetch was still writing
+        self.failed_while_fetching: set[str] = set()
         self.calls = 0
 
 
@@ -260,7 +264,8 @@ def start_due_spills(worker, state: _State, now: float) -> None:
             leases[request_id] = deadline
             state.spilled.add(request_id)
         else:
-            # Read back while the put ran: its blocks may have been reused under the put.
+            # Read back while the put ran (`hold_back_while_spilling` kept its blocks until now, so what was written
+            # is intact): the handle is used up, and its per-request objects will never be fetched.
             held = state.held.get(request_id)
             if held is not None:
                 state.pool.submit(_remove, state, spill_plan(worker, held)[0])
@@ -284,6 +289,22 @@ def start_due_spills(worker, state: _State, now: float) -> None:
         state.spilled.intersection_update(leases)
 
 
+def hold_back_while_spilling(state: _State, done_sending: set[str]) -> None:
+    """Decode: a request that finished sending while its put is still copying is not reported yet.
+
+    The lease is taken out of the reaper's reach during a put, but a readback can still complete then. Reporting it
+    would let the scheduler free the request's blocks, and they could be rewritten under the put; the content-keyed
+    objects it writes are shared by every later turn with the same prefix. The request is reported on the step after
+    its put has finished.
+    """
+    for request_id in [r for r in done_sending if r in state.putting]:
+        done_sending.discard(request_id)
+        state.read_back.add(request_id)
+    for request_id in [r for r in state.read_back if r not in state.putting]:
+        state.read_back.discard(request_id)
+        done_sending.add(request_id)
+
+
 def monkey_patch_nixl_spill_expiring_kv_to_store():
     """Install the spill on the NIXL pull connector. It stays inert on engines whose NIXL connector config carries
     no ``prime_rl_spill_lead_s`` (set from ``deployment.bidirectional_kv_transfer.spill_to_store``)."""
@@ -301,6 +322,7 @@ def monkey_patch_nixl_spill_expiring_kv_to_store():
     original_reap = NixlBaseConnectorWorker._reap_expired_send_leases
     original_read = NixlPullConnectorWorker._read_blocks_for_req
     original_results = NixlBaseConnectorWorker.get_transfer_results
+    original_failed = NixlBaseConnectorWorker._handle_failed_transfer
 
     def request_finished(self, request, block_ids):
         delay_free, params = original_finished(self, request, block_ids)
@@ -368,7 +390,18 @@ def monkey_patch_nixl_spill_expiring_kv_to_store():
         state = getattr(self, "_prime_rl_spill", None)
         if state:
             start_due_spills(self, state, time.perf_counter())
-        return original_reap(self, done_sending)
+        original_reap(self, done_sending)
+        if state:
+            hold_back_while_spilling(state, done_sending)
+
+    def _handle_failed_transfer(self, req_id, handle, failed_req_ids=None, record_failed_transfer=True):
+        state = getattr(self, "_prime_rl_spill", None)
+        if state and handle is None and req_id in state.fetches:
+            # Something else failed this request (its peer went away, say) while the fetch is still writing into
+            # its blocks. Reporting it now would let the scheduler free them under the fetch: report when it is done.
+            state.failed_while_fetching.add(req_id)
+            return True
+        return original_failed(self, req_id, handle, failed_req_ids, record_failed_transfer)
 
     def _read_blocks_for_req(self, req_id, meta):
         remote = meta.remote
@@ -397,9 +430,13 @@ def monkey_patch_nixl_spill_expiring_kv_to_store():
                 if not fetch.done():
                     continue
                 del state.fetches[req_id]
+                failed = req_id in state.failed_while_fetching
+                state.failed_while_fetching.discard(req_id)
                 if req_id not in self._recving_metadata:
                     continue
-                if fetch.result():
+                # An aborted request is reported like any other: the scheduler keeps the blocks of a request
+                # waiting for remote KV until its load is reported, so the fetch never writes into freed blocks.
+                if fetch.result() and not failed:
                     # No NIXL transfer outstanding: reported as received by the original below.
                     self._recving_transfers[req_id] = []
                 else:
@@ -414,3 +451,4 @@ def monkey_patch_nixl_spill_expiring_kv_to_store():
     NixlBaseConnectorWorker._reap_expired_send_leases = _reap_expired_send_leases
     NixlPullConnectorWorker._read_blocks_for_req = _read_blocks_for_req
     NixlBaseConnectorWorker.get_transfer_results = get_transfer_results
+    NixlBaseConnectorWorker._handle_failed_transfer = _handle_failed_transfer

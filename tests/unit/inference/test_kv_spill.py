@@ -163,3 +163,20 @@ def test_spill_is_off_unless_the_nixl_connector_config_asks_for_it():
     assert kv_spill.spill_settings(_connector({"bidirectional_kv_xfer": True})) is None
     settings = kv_spill.spill_settings(_connector({"prime_rl_spill_lead_s": 10, "prime_rl_spill_fetch_wait_s": 3}))
     assert settings == (10.0, 3.0)
+
+
+def test_request_read_back_during_its_put_keeps_its_blocks_until_the_put_is_done():
+    """Reporting it as done sending would free its blocks under the put, which writes content-keyed objects that later
+    turns with the same prefix read."""
+    state = _state()
+    state.putting["turn-1"] = (Future(), 100.0)
+    done_sending = {"turn-1", "other"}
+    kv_spill.hold_back_while_spilling(state, done_sending)
+    assert done_sending == {"other"} and state.read_back == {"turn-1"}
+
+    kv_spill.hold_back_while_spilling(state, done_sending)
+    assert done_sending == {"other"}
+
+    del state.putting["turn-1"]  # the put has finished
+    kv_spill.hold_back_while_spilling(state, done_sending)
+    assert done_sending == {"other", "turn-1"} and not state.read_back
