@@ -719,8 +719,9 @@ def train(config: TrainerConfig):
 
         # Optionally, clip the gradients
         grad_norm: torch.Tensor | None = None
+        group_grad_norms: dict[str, torch.Tensor] = {}
         if config.optim.max_norm is not None:
-            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
+            grad_norm, group_grad_norms = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
 
         # An async checkpoint must finish copying the state before the optimizer step mutates it
         ckpt_manager.wait_for_staging()
@@ -849,6 +850,9 @@ def train(config: TrainerConfig):
         }
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
+        if group_grad_norms:
+            values = torch.stack(list(group_grad_norms.values())).tolist()
+            optim_metrics.update({f"optim/grad_norm/{group}": value for group, value in zip(group_grad_norms, values)})
         asyncio.run(monitors.log(optim_metrics, step=progress.step))
 
         # Compute derived metrics

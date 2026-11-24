@@ -502,9 +502,10 @@ def train(config: SFTConfig | PretrainConfig):
             reshard_module(model)
 
         grad_norm: torch.Tensor | None = None
+        group_grad_norms: dict[str, torch.Tensor] = {}
         if config.optim.max_norm is not None:
             logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
-            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
+            grad_norm, group_grad_norms = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
         # An async checkpoint must finish copying the state before the optimizer step mutates it
         ckpt_manager.wait_for_staging()
         logger.debug("Optimizer step")
@@ -515,7 +516,12 @@ def train(config: SFTConfig | PretrainConfig):
         current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
 
-        step_stats, norms = to_host(step_stats, {"grad_norm": grad_norm} if grad_norm is not None else {})
+        norms = (
+            {"grad_norm": grad_norm, **{f"grad_norm/{group}": norm for group, norm in group_grad_norms.items()}}
+            if grad_norm is not None
+            else {}
+        )
+        step_stats, norms = to_host(step_stats, norms)
         result = step_result(step_stats, parallel_dims)
         loss = result.loss_sum / step_stats["loss_tokens"].item() if step_stats["loss_tokens"] > 0 else 0.0
         grad_norm_value = norms["grad_norm"].item() if norms else None
@@ -626,6 +632,9 @@ def train(config: SFTConfig | PretrainConfig):
         }
         if grad_norm_value is not None:
             optim_metrics["optim/grad_norm"] = grad_norm_value
+        optim_metrics.update(
+            {f"optim/{key}": value.item() for key, value in norms.items() if key.startswith("grad_norm/")}
+        )
         asyncio.run(monitors.log(optim_metrics, step=progress.step))
 
         loss_log_metrics = {
