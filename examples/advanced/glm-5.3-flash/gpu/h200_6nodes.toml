@@ -29,3 +29,8 @@ block_size = 768
 gpu_memory_utilization = 0.85
 # Each sequence holds one linear-attention state block; 0.85 leaves ~300 per DP rank.
 max_num_seqs = 256
+
+# The KV cache holds ~0.9M tokens per DP rank. At 1,536 ScaleSWE episodes in flight it filled and
+# preempted ~17k requests (steps 29-50 min); at 600 it peaked at 87-98% with no preemptions (12-17 min).
+[orchestrator.concurrency]
+max_inflight = 600
