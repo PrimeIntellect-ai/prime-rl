@@ -51,10 +51,11 @@ max_staleness = 16
 # Count zero-advantage groups toward the batch; they are still pruned before the trainer.
 constant_trainer_batch_size = false
 
-# Fixed concurrency: the same load on the one inference node in every arm.
+# Bounded adaptive concurrency: 512 in flight filled the inference node's KV cache
+# (512 x ~72k context ~ its 37M tokens) and throughput collapsed.
 [orchestrator.concurrency]
-min_inflight = 512
-max_inflight = 512
+min_inflight = 128
+max_inflight = 384
 
 [orchestrator.train]
 group_size = 8
