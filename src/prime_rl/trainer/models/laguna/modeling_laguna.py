@@ -107,13 +107,13 @@ class LagunaFlashAttention(FlashAttention):
         self.attention_dropout = config.attention_dropout
         self.is_local_attention = config.layer_types[layer_idx] == "sliding_attention"
         self.sliding_window = config.sliding_window if self.is_local_attention else None
-        # Attention output gating, mirroring the upstream Laguna implementation:
-        #   True / "per-element" (Laguna M): one gate per (head, head_dim) channel
-        #   "per-head"           (Laguna S): one gate per head, broadcast across head_dim
-        #   False:                           no gating
-        gating = getattr(config, "gating", True)
+        # Attention output gating, read as transformers and vLLM read `gating`:
+        #   True / "per-head": one gate per head, broadcast across head_dim (e.g. Laguna-XS.2)
+        #   "per-element":     one gate per (head, head_dim) channel (e.g. Laguna-M.1)
+        #   False:             no gating, as in vLLM
+        gating = config.gating
         self.gating = bool(gating)
-        self.gate_per_head = gating == "per-head"
+        self.gate_per_head = gating is True or gating == "per-head"
         if self.gating:
             gate_size = num_heads if self.gate_per_head else num_heads * self.head_dim
             self.g_proj = nn.Linear(config.hidden_size, gate_size, bias=False)
