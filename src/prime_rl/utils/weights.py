@@ -109,12 +109,7 @@ def convert_state_dict_to_hf(model: nn.Module, state_dict: dict[str, Tensor]) ->
         # PrimeRL custom model holding weights in prime format: apply the model's
         # declarative prime->HF conversion chain (renames, expert stack/unstack).
         return model.convert_to_hf(state_dict)
-    else:
-        # Plain transformers model: undo the key renames transformers applied when
-        # it loaded the HF checkpoint.
-        from transformers.core_model_loading import revert_weight_conversion
-
-        return revert_weight_conversion(model, state_dict)
+    return state_dict
 
 
 def resolve_fqn(model: nn.Module, key: str) -> str:

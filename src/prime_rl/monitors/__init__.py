@@ -20,7 +20,7 @@ from prime_rl.configs.monitors import (
 )
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.monitors.file import FileMonitor
-from prime_rl.monitors.prime import PrimeMonitor
+from prime_rl.monitors.prime import EVAL_ID_VAR, PrimeMonitor
 from prime_rl.monitors.wandb import WandbMonitor
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import format_time, get_logger
@@ -65,6 +65,11 @@ async def setup(
     rank = int(os.environ.get("RANK", os.environ.get("DP_RANK", "0")))
     if rank != 0:
         return
+
+    # A platform launch creates the run ($RUN_ID, or a hosted eval's $PRIME_RUNS_EVAL_ID) and builds
+    # the component configs with the default, which leaves the monitor off: log to that run anyway.
+    if prime is None and (os.getenv("RUN_ID") or os.getenv(EVAL_ID_VAR)):
+        prime = PrimeMonitorConfig()
 
     monitors: list[tuple[str, Monitor, dict[str, Any]]] = []
     if prime is not None:

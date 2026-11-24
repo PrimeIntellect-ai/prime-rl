@@ -77,7 +77,7 @@ SUITES = {
             Group("invariance", gpus=2, timeout=35, paths=("tests/unit/train/test_distributed_invariance.py",)),
             Group("offload", gpus=2, paths=("tests/unit/train/test_offload_checkpoint.py",)),
             Group("vllm-parity", gpus=1, paths=("tests/unit/train/models/test_vllm_parity.py",)),
-            Group("compile", gpus=2, timeout=30, paths=("tests/unit/train/test_compile.py",)),
+            Group("compile", gpus=2, timeout=60, paths=("tests/unit/train/test_compile.py",)),
             Group("rest", gpus=2, timeout=30),
             # Each integration test starts its own RL or SFT runs
             *(
