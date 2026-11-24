@@ -90,8 +90,6 @@ KEEP_IN_FP32_MODULES = (
 
 class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     config: DeepseekV4Config
-    config_class = DeepseekV4Config
-    base_model_prefix = "model"
 
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:
@@ -255,7 +253,7 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
 
 
 class DeepseekV4ForCausalLM(DeepseekV4PreTrainedModel):
-    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
+    supports_tied_word_embeddings = True
 
     def __init__(self, config: DeepseekV4Config):
         super().__init__(config)

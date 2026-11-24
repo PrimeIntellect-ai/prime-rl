@@ -76,7 +76,7 @@ def test_layer_export_matches_original_hf_weights(tmp_path, exporter, monkeypatc
     )
     if ngram_parts is None:
         config = Qwen3MoeConfig(**config_kwargs)
-        model = Qwen3MoeForCausalLM._from_config(config)
+        model = Qwen3MoeForCausalLM.from_config(config)
     else:
         config = Qwen3_8FlashNextTextConfig(
             **config_kwargs,
@@ -308,7 +308,7 @@ def test_model_assets_carry_the_source_generation_config(tmp_path, exporter, sou
     tokenizer = Tokenizer(WordLevel({"<eos>": 0, "a": 1}, unk_token="<eos>"))
     PreTrainedTokenizerFast(tokenizer_object=tokenizer, eos_token="<eos>").save_pretrained(model_dir)
     model_config = ModelConfig(name=str(model_dir), attn="flash_attention_2")
-    model = get_model(model_config, device=torch.device("meta"), dtype=torch.float32)
+    model = get_model(model_config, dtype=torch.float32)
     output = tmp_path / "export"
     exporter.save_model_assets(model, model_config, TokenizerConfig(), output)
     assert (output / "config.json").is_file() and (output / "tokenizer.json").is_file()
@@ -359,7 +359,7 @@ def test_convert_exports_a_run_checkpoint_end_to_end(tmp_path, exporter, monkeyp
     (config_dir / "trainer.json").write_text(json.dumps(run_config))
     # The run config keeps attn=auto, which the exporter must resolve without a GPU.
     model_config = ModelConfig(**run_config["model"], attn="flash_attention_2")
-    model = get_model(model_config, device=torch.device("meta"), dtype=torch.float32)
+    model = get_model(model_config, dtype=torch.float32)
     state = {
         name: torch.randn(tensor.shape) if tensor.is_floating_point() else torch.zeros(tensor.shape, dtype=tensor.dtype)
         for name, tensor in model.state_dict().items()

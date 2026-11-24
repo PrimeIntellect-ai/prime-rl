@@ -113,8 +113,6 @@ class Qwen3_5DecoderLayer(nn.Module):
 
 
 class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL):
-    config_class = Qwen3_5TextConfig
-
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
         # vLLM allocates A_log in fp32 but the gated norm in the model dtype, so an fp32 norm
