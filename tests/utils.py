@@ -14,14 +14,13 @@ def strip_escape_codes(text: str) -> str:
 
 
 def check_no_error(process: ProcessResult, run_dir: Path) -> None:
-    """Helper to assert that a process did not error"""
+    """Helper to assert that a process did not error. On an error, prints the end of every log the run wrote, which
+    are none if the launcher failed before starting a component."""
     if process.returncode != 0:
-        print("=== Inference Outputs ===")
-        with open(run_dir / "logs" / "latest" / "inference.log", "r") as f:
-            print(*f.readlines()[-100:], sep="")
-        print("=== Orchestrator Outputs ===")
-        with open(run_dir / "logs" / "latest" / "orchestrator.log", "r") as f:
-            print(*f.readlines()[-1000:], sep="")
+        for log in sorted((run_dir / "logs" / "latest").glob("*.log")):
+            print(f"=== {log.name} ===")
+            with open(log) as f:
+                print(*f.readlines()[-500:], sep="")
     assert process.returncode == 0, f"Process has non-zero return code ({process})"
 
 

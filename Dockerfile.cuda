@@ -114,15 +114,17 @@ RUN --mount=type=cache,target=/usr/local/share/uv/cache \
 ARG INCLUDE_NIXL_FROM_SOURCE=1
 # NIXL tags carry a `v` prefix from 1.0 on.
 ARG NIXL_VERSION=v1.5.0
-RUN if [ "$INCLUDE_NIXL_FROM_SOURCE" = "1" ]; then \
-        VIRTUAL_ENV=/app/.venv uv pip install pip \
+ARG PIP_VERSION=26.3
+RUN --mount=type=cache,target=/usr/local/share/uv/cache \
+    if [ "$INCLUDE_NIXL_FROM_SOURCE" = "1" ]; then \
+        VIRTUAL_ENV=/app/.venv uv pip install "pip==${PIP_VERSION}" \
         && git clone --depth 1 --branch ${NIXL_VERSION} https://github.com/ai-dynamo/nixl.git /tmp/nixl \
         && cd /tmp/nixl \
         && uv run --no-project --with tomlkit python contrib/tomlutil.py --wheel-name nixl-cu13 pyproject.toml \
         && sed -i '/^requires = /s/, *"torch[^"]*"//' pyproject.toml \
         && printf 'meson-python==0.21.1\n' > /tmp/nixl-build-constraints.txt \
         && PKG_CONFIG_PATH=/opt/ucx/lib/pkgconfig \
-           /app/.venv/bin/python -m pip wheel . --no-deps --wheel-dir=/tmp/nixl-whl \
+           /app/.venv/bin/python -m pip wheel . --no-deps --no-cache-dir --wheel-dir=/tmp/nixl-whl \
                --build-constraint /tmp/nixl-build-constraints.txt \
         && VIRTUAL_ENV=/app/.venv uv pip install --reinstall --no-deps /tmp/nixl-whl/nixl_cu13-*.whl \
         && PLUGIN=/app/.venv/lib/python3.12/site-packages/.nixl_cu13.mesonpy.libs/plugins/libplugin_UCX.so \

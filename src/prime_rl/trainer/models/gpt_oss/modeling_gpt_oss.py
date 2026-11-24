@@ -151,10 +151,10 @@ class GptOssModel(GptOssPreTrainedModel):
         for layer_idx, decoder_layer in enumerate(self.layers):
             layer_routed_experts = routed_experts[:, :, layer_idx].contiguous() if routed_experts is not None else None
             hidden_states = decoder_layer(
-                hidden_states,
-                position_embeddings,
-                cu_seqlens,
-                max_seqlen,
+                hidden_states=hidden_states,
+                position_embeddings=position_embeddings,
+                cu_seqlens=cu_seqlens,
+                max_seqlen=max_seqlen,
                 routed_experts=layer_routed_experts,
             )
         return BaseModelOutput(last_hidden_state=self.norm(hidden_states))

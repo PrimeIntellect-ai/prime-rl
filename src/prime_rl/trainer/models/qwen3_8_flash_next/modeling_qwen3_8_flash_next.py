@@ -4,6 +4,7 @@ from transformers.modeling_outputs import BaseModelOutput
 from transformers.utils import torch_compilable_check
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, count_active_params
+from prime_rl.trainer.models.layers.fla_ops import FlaVarlen, prepare_fla_varlen
 from prime_rl.trainer.models.layers.gated_delta_net import GatedDeltaNet
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, VanillaOutputLinear
 from prime_rl.trainer.models.layers.moe import MoE
@@ -28,6 +29,14 @@ from prime_rl.trainer.models.qwen3_8_flash_next.vision import Qwen3_8FlashNextVi
 from prime_rl.trainer.vlm import get_language_model
 from prime_rl.utils.cp import CPContext, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
+
+
+def document_bounds(cu_seqlens: torch.Tensor, total_tokens: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Each token's document start and end (exclusive), built outside the compiled layers: slicing cu_seqlens inside
+    them recompiles every layer type on the first one-document row."""
+    tokens = torch.arange(total_tokens, device=cu_seqlens.device)
+    documents = torch.searchsorted(cu_seqlens[1:], tokens, right=True)
+    return cu_seqlens[:-1][documents], cu_seqlens[1:][documents]
 
 
 class Qwen3_8FlashNextDecoderLayer(nn.Module):
@@ -95,17 +104,19 @@ class Qwen3_8FlashNextDecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         ngram_embedding: torch.Tensor | None,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        cu_seqlens: torch.LongTensor,
+        fla_varlen: FlaVarlen,
+        document_starts: torch.Tensor,
+        document_ends: torch.Tensor,
         routed_experts: torch.LongTensor | None = None,
     ) -> torch.Tensor:
         if self.ple is not None:
-            hidden_states = hidden_states + self.ple(hidden_states, ngram_embedding, cu_seqlens)
+            hidden_states = hidden_states + self.ple(hidden_states, ngram_embedding, document_starts)
 
         block_input, (hidden_states, injection_weights) = self.attn_hyper_connection.mix(hidden_states)
         if self.layer_type == "linear_attention":
-            block_output = self.linear_attn(block_input, cu_seqlens)
+            block_output = self.linear_attn(block_input, fla_varlen)
         else:
-            block_output = self.self_attn(block_input, position_embeddings, cu_seqlens)
+            block_output = self.self_attn(block_input, position_embeddings, document_starts, document_ends)
 
         # The MLP's mix applies the attention's combine in the same pass.
         block_input, residual_state = self.mlp_hyper_connection.mix(hidden_states, (block_output, injection_weights))
@@ -201,7 +212,10 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
             seq_lens.to(inputs_embeds.device),
             total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
-        torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
+        fla_varlen = prepare_fla_varlen(cu_seqlens, self.cp_context)
+        document_starts, document_ends = document_bounds(
+            cu_seqlens, inputs_embeds.shape[1] * self.cp_context.cp_world_size
+        )
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
         ngram_ids = self.ngram.hash(input_ids, cu_seqlens)
 
@@ -209,10 +223,12 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
         for layer_index, decoder_layer in enumerate(self.layers):
             layer_routed_experts = routed_experts[:, :, layer_index] if routed_experts is not None else None
             hidden_states = decoder_layer(
-                hidden_states,
-                self.ngram.embed(ngram_ids, layer_index),
-                position_embeddings,
-                cu_seqlens,
+                hidden_states=hidden_states,
+                ngram_embedding=self.ngram.embed(ngram_ids, layer_index),
+                position_embeddings=position_embeddings,
+                fla_varlen=fla_varlen,
+                document_starts=document_starts,
+                document_ends=document_ends,
                 routed_experts=layer_routed_experts,
             )
         hidden_states, _ = self.hyper_connection_mixer(hidden_states)

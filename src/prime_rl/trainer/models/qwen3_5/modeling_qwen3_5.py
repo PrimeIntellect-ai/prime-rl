@@ -3,6 +3,7 @@ from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, count_active_params
+from prime_rl.trainer.models.layers.fla_ops import FlaVarlen, prepare_fla_varlen
 from prime_rl.trainer.models.layers.gated_delta_net import GatedDeltaNet
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward, SigmoidGatedFeedForward
@@ -90,16 +91,14 @@ class Qwen3_5DecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor,
+        fla_varlen: FlaVarlen,
         max_seqlen: int,
         routed_experts: torch.LongTensor | None = None,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         if self.layer_type == "linear_attention":
-            hidden_states = self.linear_attn(
-                hidden_states,
-                cu_seqlens,
-            )
+            hidden_states = self.linear_attn(hidden_states, fla_varlen)
         else:
             hidden_states, _ = self.self_attn(
                 hidden_states,
@@ -175,16 +174,18 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
             total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        fla_varlen = prepare_fla_varlen(cu_seqlens, self.cp_context)
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
 
         hidden_states = inputs_embeds
         for layer_index, decoder_layer in enumerate(self.layers):
             layer_routed_experts = routed_experts[:, :, layer_index] if routed_experts is not None else None
             hidden_states = decoder_layer(
-                hidden_states,
-                position_embeddings,
-                cu_seqlens,
-                max_seqlen,
+                hidden_states=hidden_states,
+                position_embeddings=position_embeddings,
+                cu_seqlens=cu_seqlens,
+                fla_varlen=fla_varlen,
+                max_seqlen=max_seqlen,
                 routed_experts=layer_routed_experts,
             )
         return BaseModelOutput(last_hidden_state=self.norm(hidden_states))

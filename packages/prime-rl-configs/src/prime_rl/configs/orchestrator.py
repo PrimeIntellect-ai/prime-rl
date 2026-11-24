@@ -259,7 +259,7 @@ class TrainSourceConfig(EnvConfig):
             return self
         # The source owns the distribution replayed by the trainer; agents may
         # change generation limits and rendering without changing that distribution.
-        agent_options = {"max_tokens", "reasoning_effort", "chat_template_kwargs"}
+        agent_options = {"max_tokens", "reasoning_effort", "chat_template_kwargs", "skip_special_tokens"}
         supported = (
             agent_options
             | TrainSamplingConfig.model_fields.keys()

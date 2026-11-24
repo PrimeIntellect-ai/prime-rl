@@ -922,6 +922,54 @@ def test_single_node_auto_inference_ports_follow_server_port():
     assert config.orchestrator.model.client.admin_base_url == ["http://localhost:8101/v1"]
 
 
+def test_rl_launcher_gives_the_admin_token_to_callers_and_its_digest_to_checkers():
+    from prime_rl.entrypoints.rl import admin_token_uses
+    from prime_rl.utils.admin_token import admin_token_digest
+
+    config = RLConfig.model_validate(
+        {
+            "trainer": {"control": {}},
+            "orchestrator": {"control": {}},
+            "inference": {"vllm": {"tensor_parallel_size": 1}},
+            "deployment": {"type": "single_node", "gpus_per_node": 4, "num_train_gpus": 2, "num_infer_gpus": 2},
+        }
+    )
+    uses = admin_token_uses(config)
+
+    base, envs = uses.split({"HOME": "/home/user", "PRIME_RL_ADMIN_TOKEN_SHA256": "stale"})
+    token = envs["orchestrator"]["PRIME_RL_ADMIN_TOKEN"]
+    digest = admin_token_digest(token)
+    assert len(token) >= 32
+    assert base == {"HOME": "/home/user"}
+    assert envs["inference"] == envs["trainer"] == {"PRIME_RL_ADMIN_TOKEN_SHA256": digest}
+    assert envs["orchestrator"] == {"PRIME_RL_ADMIN_TOKEN": token, "PRIME_RL_ADMIN_TOKEN_SHA256": digest}
+
+    base, envs = uses.split({"HOME": "/home/user", "PRIME_RL_ADMIN_TOKEN": "from-operator"})
+    assert base == {"HOME": "/home/user"}
+    assert envs["orchestrator"]["PRIME_RL_ADMIN_TOKEN"] == "from-operator"
+    assert envs["inference"] == {"PRIME_RL_ADMIN_TOKEN_SHA256": admin_token_digest("from-operator")}
+
+
+def test_sft_launcher_gives_the_admin_token_to_online_evals_and_its_digest_to_checkers():
+    from prime_rl.entrypoints.launcher import admin_token_uses
+    from prime_rl.utils.admin_token import admin_token_digest
+
+    config = SFTConfig.model_validate(
+        {
+            "control": {},
+            "eval": {"source": [{"name": "reverse-text", "env": {"taskset": {"id": "reverse-text"}}}]},
+            "inference": {},
+            "deployment": {"num_train_gpus": 1, "num_infer_gpus": 1},
+        }
+    )
+
+    base, envs = admin_token_uses(config).split({"HOME": "/home/user"})
+    token = envs["online-eval"]["PRIME_RL_ADMIN_TOKEN"]
+    assert base == {"HOME": "/home/user"}
+    assert envs["online-eval"] == {"PRIME_RL_ADMIN_TOKEN": token}
+    assert envs["inference"] == envs["trainer"] == {"PRIME_RL_ADMIN_TOKEN_SHA256": admin_token_digest(token)}
+
+
 def test_single_node_nccl_resolved_json_roundtrips(tmp_path):
     """The resolved rl.json re-parses (as a SLURM launch does) to the same config."""
     import json
@@ -1452,6 +1500,8 @@ def test_pd_role_connectors():
     decode = config.for_pd_role("decode").build_kv_transfer_config()["kv_connector_extra_config"]["connectors"]
     assert [c["kv_connector"] for c in prefill] == ["NixlConnector", "MooncakeStoreConnector"]
     assert [c["kv_connector"] for c in decode] == ["NixlConnector", "MooncakeStoreConnector"]
+    # The store lookup runs off the scheduler thread.
+    assert prefill[1]["kv_connector_extra_config"]["lookup_async"] is True
     assert decode[1]["kv_connector_extra_config"]["save_decode_cache"]
 
     with pytest.raises(ValidationError, match="decode_kv_cache_offload"):
@@ -1468,6 +1518,40 @@ def test_pd_role_connectors():
         InferenceConfig(
             kv_cache_offload={"type": "native", "cpu": {"num_bytes": 1000}}, hisparse={"host_pool_gib": 160}
         )
+
+
+def test_pd_bidirectional_kv_transfer():
+    deployment = {"type": "disaggregated", "bidirectional_kv_transfer": {"decode_blocks_ttl_s": 600}}
+    config = InferenceConfig(deployment=deployment, slurm={})
+    assert config.deployment.bidirectional_kv_transfer.effective_router_ttl_s == 570
+
+    for role in ("prefill", "decode"):
+        connector = config.for_pd_role(role).build_kv_transfer_config()
+        assert connector["kv_connector"] == "NixlConnector"
+        assert connector["kv_connector_extra_config"] == {
+            "num_threads": 1,
+            "bidirectional_kv_xfer": True,
+            "decoder_kv_blocks_ttl": 600,
+        }
+
+    # The per-role engine configs drop `deployment`; bidirectional transfer survives through the persisted TTL.
+    role = InferenceConfig(**dump_resolved_config(config.for_pd_role("decode"), exclude={"deployment", "slurm"}))
+    assert role.build_kv_transfer_config()["kv_connector_extra_config"]["decoder_kv_blocks_ttl"] == 600
+
+    with pytest.raises(ValidationError, match="shorter than decode_blocks_ttl_s"):
+        InferenceConfig(
+            deployment={**deployment, "bidirectional_kv_transfer": {"decode_blocks_ttl_s": 60, "router_ttl_s": 60}},
+            slurm={},
+        )
+    with pytest.raises(ValidationError, match="requires the vllm-router"):
+        InferenceConfig(deployment=deployment, slurm={}, router={"type": "llm-d"})
+    with pytest.raises(ValidationError, match="HiSparse"):
+        InferenceConfig(deployment=deployment, slurm={}, hisparse={"host_pool_gib": 160})
+
+    # One-way P/D is unchanged: no bidirectional flags.
+    config = InferenceConfig(deployment={"type": "disaggregated"}, slurm={})
+    decode = config.for_pd_role("decode").build_kv_transfer_config()
+    assert decode["kv_connector_extra_config"] == {"num_threads": 1}
 
 
 CUSTOM_RENDERER_SOURCE = """

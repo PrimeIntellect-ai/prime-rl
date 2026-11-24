@@ -80,30 +80,6 @@ from prime_rl.utils.weights import (
     save_state_dict,
 )
 
-
-def pre_download_model(model_name: str, *, skip_weights: bool = False) -> None:
-    """Pre-download model from HuggingFace Hub so all nodes have cached weights before training.
-
-    With ``skip_weights`` (weights that do not come from the HF model), only config and tokenizer files are fetched.
-    """
-    # A checkpoint step directory (gone by a resume, which reads the run's own copies of its files) is never on the Hub.
-    if Path(model_name).exists() or has_step_dir_name(model_name):
-        get_logger().info(f"Model {model_name} is a local path, skipping download")
-        return
-    t0 = time.perf_counter()
-    if skip_weights:
-        get_logger().info(f"Pre-downloading config and tokenizer for {model_name} (skipping weights)")
-        path = snapshot_download(
-            repo_id=model_name, repo_type="model", allow_patterns=["*.json", "*.txt", "tokenizer*", "*.jinja"]
-        )
-    else:
-        get_logger().info(f"Pre-downloading model {model_name}")
-        path = snapshot_download(repo_id=model_name, repo_type="model")
-    get_logger().debug(
-        f"Finished pre-downloading model {model_name} to {path} in {format_time(time.perf_counter() - t0)}"
-    )
-
-
 # Add filter to the standard logging module for transformers.modeling_utils to supress the
 # flash attention dtype warnings since FSDP is used to handle mixed precision.
 transformers_modeling_utils_logger = logging.getLogger("transformers.modeling_utils")
@@ -880,6 +856,26 @@ DYNAMIC_INT_ARGS = (
 DYNAMIC_TENSOR_ARG_DIMS = (
     # DeepSeek V4, GLM5-next: decoder layer input, (batch, seq, hc_mult, hidden). seq follows this rank's row length.
     ("mhc_states", 1),
+    # Decoder layer input, (batch, seq, ...), and its rotary (cos, sin), each (batch, seq, rotary_dim), for every model
+    # that passes them to its layers by keyword.
+    ("hidden_states", 1),
+    ("position_embeddings", 1),
+    # Qwen3.8: per-layer n-gram embedding, (batch, seq, ngram_dim).
+    ("ngram_embedding", 1),
+    # GLM5-next: PoolLayout tensors, one entry per pool slot or per local query, so they follow the row length too.
+    ("pool_start_tokens", 0),
+    ("query_tokens", 0),
+    ("query_positions", 0),
+    ("first_pool", 0),
+    ("visible_pools", 0),
+    # GLM5-next, Qwen3.5, Qwen3.8 (FlaVarlen fields) and Nemotron-H (by keyword): FLA chunk indices, (chunks, 2), one
+    # entry per 64-token chunk of each document of this rank.
+    ("chunk_indices", 0),
+    # GLM5-next, Qwen3.5, Qwen3.8: FlaVarlen's document boundaries on this rank, (documents + 1,).
+    ("local_cu_seqlens", 0),
+    # Qwen3.8: each token's document start and end, one entry per token of the full row across CP ranks.
+    ("document_starts", 0),
+    ("document_ends", 0),
 )
 
 
@@ -892,8 +888,9 @@ def mark_dynamic_args() -> None:
         # or as an attribute of an arg (L['kwargs']['packed'].compression_layouts[4].max_entries_per_doc).
         patterns.append(rf".*(\['{arg}'\]|\.{arg}$)")
     for arg, dim in DYNAMIC_TENSOR_ARG_DIMS:
+        # Matches the arg (L['kwargs']['mhc_states']) or an attribute of an arg (L['kwargs']['pool_layout'].query_tokens).
         # Unanchored, so it also matches the FSDP view's base (L['kwargs']['mhc_states']._base), which is guarded too.
-        patterns.append(rf".*\['{arg}'\]:{dim}")
+        patterns.append(rf".*(\['{arg}'\]|\.{arg}):{dim}")
     for pattern in patterns:
         if pattern not in sources:
             sources.append(pattern)
