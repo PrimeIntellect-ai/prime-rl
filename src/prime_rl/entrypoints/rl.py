@@ -312,7 +312,13 @@ def rl_local(config: RLConfig):
             processes.start(
                 f"{split} env worker pool {name}",
                 ["env-worker-pool", "@", (config_dir / ENVS_DIR / split / f"{name}.json").as_posix()],
-                env={**base_env, **DEFAULT_COMMON_ENV_VARS, **config.env_vars, **config.orchestrator.env_vars},
+                env={
+                    **base_env,
+                    **DEFAULT_COMMON_ENV_VARS,
+                    **config.env_vars,
+                    **config.orchestrator.env_vars,
+                    **attempt_env,
+                },
                 log_path=log_dir / ENVS_DIR / split / f"{name}.log",
             )
 
