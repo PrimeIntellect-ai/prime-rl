@@ -56,8 +56,6 @@ group_size = 8
 name = "bcplus"
 env.taskset.id = "browsecomp-plus"
 select.exclude.idx = [41, 97, 101, 142, 143, 150, 223, 256, 265, 288, 310, 317, 366, 394, 414, 430, 488, 497, 516, 523, 545, 597, 616, 633, 722, 773, 776, 802, 818, 829]
-# A call to a tool the harness lacks ends the rollout with reward 0.
-env.taskset.task.stops.unknown_native_tool = { fn = "ablations/lp/hooks.py:unknown_native_tool", skip_scoring = true }
 env.agent.harness.id = "rlm"
 env.agent.timeout.rollout = 3600
 env.agent.harness.max_depth = 0
