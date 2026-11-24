@@ -1781,3 +1781,32 @@ def test_score_centering_replays_top_p_alone():
     assert sampling.top_k == 10000 and sampling.logprobs == 1
     assert sampling.extra_body["extra_args"]["prl_replay"]
     assert config.inference.enable_return_sampling_mask
+
+
+@pytest.mark.parametrize(
+    "orchestrator, lag",
+    [({"max_staleness": 32}, 32), ({"max_staleness": 1_000_000, "max_policy_lag": 1_000_000}, 1_000_000)],
+)
+def test_policy_lag_follows_the_broadcast_interval_unless_set(orchestrator, lag):
+    config = RLConfig.model_validate(
+        {
+            "trainer": {"weight_broadcast_interval": 32},
+            "orchestrator": {**orchestrator, "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]}},
+            "inference": {},
+        }
+    )
+    assert config.orchestrator.max_policy_lag == lag
+
+
+def test_broadcast_interval_must_fit_max_staleness():
+    with pytest.raises(ValidationError, match="must not exceed"):
+        RLConfig.model_validate(
+            {
+                "trainer": {"weight_broadcast_interval": 32},
+                "orchestrator": {
+                    "max_staleness": 8,
+                    "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
+                },
+                "inference": {},
+            }
+        )
