@@ -75,6 +75,7 @@ def unroll_looped_state_dict(
     start, end = resolve_loop_bounds(loop_config, num_layers)
     rank = int(loop_config.get("lora_rank", 0))
     alpha = float(loop_config.get("lora_alpha", 32.0))
+    gamma_scale = float(loop_config.get("gamma_scale", 100.0))
     scaling = (alpha / rank) if rank > 0 else 0.0
 
     out_sd: dict[str, Any] = {}
@@ -127,7 +128,13 @@ def unroll_looped_state_dict(
 
         gamma_key = f"loop_gammas.{extra}"
         if gamma_key in src:
-            gamma = src[gamma_key]
+            raw_gamma = _to_f32(src[gamma_key]) * gamma_scale
+            if hasattr(raw_gamma, "tanh"):
+                gamma = raw_gamma.tanh()
+            else:
+                import numpy as np
+
+                gamma = np.tanh(raw_gamma)
             layer_char = pattern[src_idx]
             if layer_char == "*":
                 merged["self_attn.o_proj.weight"] = _fold_row_scale(merged["self_attn.o_proj.weight"], gamma, axis=0)

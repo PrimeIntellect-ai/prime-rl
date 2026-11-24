@@ -113,10 +113,12 @@ class NemotronHDecoderLayer(nn.Module):
         self.loop_norms: nn.ModuleList | None = None
         self.loop_gammas: nn.ParameterList | None = None
         self.loop_routers: nn.ModuleList | None = None
+        self.loop_gamma_scale: float = 100.0
         loop_cfg = getattr(config, "loop_config", None)
         if loop_cfg is not None:
             start, end = resolve_loop_bounds(loop_cfg, config.num_hidden_layers)
             num_extra = int(loop_cfg["num_loops"]) - 1
+            self.loop_gamma_scale = float(loop_cfg.get("gamma_scale", 100.0))
             if start <= layer_idx < end and num_extra > 0:
                 self.loop_norms = nn.ModuleList(
                     RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.layer_norm_epsilon))
@@ -199,7 +201,8 @@ class NemotronHDecoderLayer(nn.Module):
                 loop_idx=loop_idx,
             )
         if loop_idx > 0:
-            hidden_states = hidden_states * self.loop_gammas[loop_idx - 1]
+            gate = torch.tanh(self.loop_gamma_scale * self.loop_gammas[loop_idx - 1])
+            hidden_states = hidden_states * gate
         return residual + hidden_states
 
 

@@ -23,6 +23,7 @@ def main() -> None:
     p.add_argument("--end-layer", type=int, default=None)
     p.add_argument("--lora-rank", type=int, default=16)
     p.add_argument("--lora-alpha", type=float, default=32.0)
+    p.add_argument("--gamma-scale", type=float, default=100.0)
     args = p.parse_args()
 
     cfg_dict = json.loads((args.src / "config.json").read_text())
@@ -32,6 +33,7 @@ def main() -> None:
         "end_layer": args.end_layer,
         "lora_rank": args.lora_rank,
         "lora_alpha": args.lora_alpha,
+        "gamma_scale": args.gamma_scale,
     }
 
     sd = load_state_dict(args.src)

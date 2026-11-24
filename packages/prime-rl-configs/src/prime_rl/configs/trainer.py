@@ -122,6 +122,11 @@ class LoopConfig(BaseConfig):
         Field(description="Give each extra loop pass its own MoE router (cloned from pass 1 at init)."),
     ] = True
 
+    gamma_scale: Annotated[
+        float,
+        Field(gt=0, description="Gain multiplier inside tanh(gamma_scale * loop_gamma) so zero-init gates open quickly while staying bounded in (-1, 1)."),
+    ] = 100.0
+
     def resolve_bounds(self, num_hidden_layers: int) -> tuple[int, int]:
         end = num_hidden_layers - 4 if self.end_layer is None else (
             num_hidden_layers + self.end_layer if self.end_layer < 0 else self.end_layer

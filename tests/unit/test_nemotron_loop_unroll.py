@@ -93,7 +93,7 @@ def _run_layer(
         raise AssertionError(layer_char)
 
     if loop_idx > 0:
-        out = out * sd[f"{p}.loop_gammas.{loop_idx - 1}"]
+        out = out * np.tanh(100.0 * sd[f"{p}.loop_gammas.{loop_idx - 1}"])
     return x + out
 
 
