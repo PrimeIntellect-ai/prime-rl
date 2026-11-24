@@ -1,0 +1,22 @@
+# H200 overlay for rl.toml: 1 trainer node and 1 one-node inference
+# replica. ScaleSWE RL (batch 128): steady steps of 12-14 min, the trainer waits ~65% of each step,
+# so a second inference replica would roughly halve the step time.
+#
+#   uv run rl @ recipes/muse-glimmer-30b/rl.toml @ recipes/muse-glimmer-30b/gpu/h200_1node.toml @ recipes/fake.toml --trainer.data.fake.batch-size 2
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+# As many inference nodes as trainer nodes.
+num_infer_replicas = 1
+
+[trainer.model]
+# cp 4 trained 5% faster than cp 8 at 256k (12.2k vs 11.6k tok/s, 56.5 GiB allocated).
+cp = 4
+
+# 2 KV heads: TP above 2 makes several GPUs read the same heads. TP2 x DP4 decoded 2.8x faster per
+# node than TP8 on math (see ../../README.md).
+[inference.vllm]
+tensor_parallel_size = 2
+data_parallel_size = 4

@@ -1,0 +1,36 @@
+# H200 overlay for rl.toml: 6 trainer nodes and 6 one-node inference replicas, FP8 on the routed
+# experts on both sides. Trainer fit on fake 16k samples (6 nodes, ep 8, full offload, Sign-SGD):
+# 41.7k tok/s (870 per GPU), 107.6 GiB peak allocated. RL not tested in this layout; the inference
+# settings come from examples/advanced/inkling2/{math-rl,swe-rl}.toml, which ran 6 trainer nodes and
+# 2 inference replicas.
+#
+#   uv run rl @ recipes/inkling2/rl.toml @ recipes/inkling2/gpu/h200_6nodes.toml @ recipes/fake.toml --trainer.model.debug.force-balanced-routing --trainer.data.fake.batch-size 48
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 6
+num_infer_nodes = 1
+# As many inference nodes as trainer nodes.
+num_infer_replicas = 6
+
+[trainer]
+dist_timeout_seconds = 1800
+
+[trainer.model]
+ep = 8
+offload = "full"
+
+# FP8 on the routed experts only, matching vLLM's online fp8_per_block; dense layers stay bf16.
+[trainer.model.moe.compute]
+type = "deepgemm_fp8"
+
+[inference.vllm]
+tensor_parallel_size = 8
+enable_expert_parallel = true
+dtype = "bfloat16"
+quantization = "fp8_per_block"
+gpu_memory_utilization = 0.72
+# swe-rl.toml's limits for long SWE prefills. math-rl.toml runs 64 sequences with 1024-token chunks
+# and async scheduling for short math prompts.
+max_num_seqs = 32
+max_num_batched_tokens = 2048

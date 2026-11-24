@@ -6,16 +6,17 @@ New here? Follow [`basic/reverse-text/`](basic/reverse-text/README.md) first —
 
 ## advanced/ — frontier models, multi-node
 
+Per-model RL recipes at 256k context (model, H200 compute overlay, ScaleSWE or math data), with measured trainer fits and RL runs, live in [`recipes/`](../recipes/README.md).
+
 Larger runs on frontier models, one folder per model, each with a launch README covering requirements, credentials, launch, monitoring, and resume:
 
 - [`qwen3-30b-a3b/`](advanced/qwen3-30b-a3b/README.md) — `Qwen3-30B-A3B` RL on math (`i3_math`), SWE (`r2e-gym`), and agentic tool use (general-agent on Modal). 2 train + 2 infer nodes; the SWE config runs at 131k context with `ep = 8` + `cp = 2`.
 - [`glm-4.5-air/`](advanced/glm-4.5-air/README.md) — `GLM-4.5-Air` (100B MoE) RL across search, SWE, and terminal domains at 131k context, with agents in sandboxes. 2 train + 4 infer nodes (SWE: 1 + 3).
 - [`glm-5.3/`](advanced/glm-5.3/README.md) — the GLM-5 family at scale: 16 trainer nodes, P/D-disaggregated FP8 inference, and an llm-d router + Mooncake KV-offload variant. Also ships standalone `infer/` pre-flights.
-- `inkling2/` — `Inkling 2 Small` (594B MoE) math and SWE RL on H200 (`math-rl.toml` at 8k, `swe-rl.toml` at 16k): 6 train + 2 infer nodes, FP8 MoE experts on both sides, sign-SGD with full CPU offload.
+- `deepseek-v4-flash/` — `DeepSeek-V4-Flash` (284B MoE) agentic RL on SWE tasks (`scaleswe`, eval on SWE-bench Verified) at 131k context with 1024+ rollouts in flight. A base plus per-GPU overlays: H200 runs 4 train + 2 infer nodes with blockwise FP8, B300 runs 4 train + 4 infer nodes with MXFP8.
+- `qwen3.6-35b-a3b/` — `Qwen3.6-35B-A3B` agentic RL on SWE tasks (`scaleswe`, eval on SWE-bench Verified) at 256k context. A base plus per-GPU overlays: H200 runs 1 train + 3 DEP8 infer nodes.
 - `intellect-3.1/` — reproduce the `INTELLECT-3.1` run: 4 train + 12 infer nodes on SWE.
 - [`qwen3-235b-a22b/`](advanced/qwen3-235b-a22b/README.md) — SFT max trainer perf: `Qwen3-235B-A22B` on 4 trainer nodes at 16k context, a throughput reference using the max trainer throughput recipe.
-
-Per-model RL configs at 256k context in three layers (`<model>/rl.toml` + `<model>/gpu/h200_<N>nodes.toml` + one of `data/scaleswe.toml`, `data/scaleswe-short.toml`, `data/math.toml`) for Muse Glimmer 30B, Qwen3.8 27B, Qwen3.8 Flash Next, GLM-5.3 Flash and Nemotron 3 Super. Qwen3.6-35B-A3B, DeepSeek-V4-Flash (also on B300), Nemotron 3.5 Super and Inkling 2 Small (16k) are in the same layout but not tested in it yet. See [`advanced/README.md`](advanced/README.md) for the trainer fits.
 
 All advanced configs submit through SLURM (the `rl` entrypoint writes the sbatch job when the config has a `[slurm]` table) and are monitored with `uv run dashboard`. See the per-model README for the full walkthrough.
 
