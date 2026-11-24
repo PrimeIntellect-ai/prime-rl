@@ -1,8 +1,8 @@
 # Muse Glimmer 30B math RL smoke run on Model Factory, 2x 8xH100 nodes (1 trainer + 1 inference).
 # Flattened from examples/advanced/muse-glimmer-30b/{rl.toml,gpu/h200_1node.toml} + examples/advanced/data/math.toml,
-# with full CPU offload for the 80 GB H100s. Weights come from the sami-muse-glimmer-sft volume.
+# with full CPU offload for the 80 GB H100s.
 #
-#   prime train run configs/exp/muse-glimmer-30b-h100-mf.toml --gpu-type H100_80GB --volume sami-muse-glimmer-sft --ref <sha>
+#   prime train run configs/exp/muse-glimmer-30b-h100-mf.toml --gpu-type H100_80GB --volume <volume> --ref <sha>
 
 mode = "rl"
 name = "muse-glimmer-30b-h100-math-smoke"
@@ -10,7 +10,7 @@ max_steps = 10
 seq_len = 262144
 
 [model]
-name = "/volume/models/muse-glimmer-30b"
+name = "meta-models/Muse-Glimmer-30B"
 
 [deployment]
 type = "multi_node"
@@ -40,9 +40,6 @@ max_norm = "None"
 batch_size = 128
 max_staleness = 8
 
-[orchestrator.renderer]
-name = "muse-glimmer"
-
 [orchestrator.train]
 group_size = 8
 
@@ -71,8 +68,5 @@ group_size = 8
 max_model_len = 131072
 enable_prefix_caching = true
 language_model_only = true
-# A /volume path does not match the parser patterns for meta-models/Muse-Glimmer.
-tool_call_parser = "muse_glimmer"
-reasoning_parser = "muse_glimmer"
 tensor_parallel_size = 2
 data_parallel_size = 4
