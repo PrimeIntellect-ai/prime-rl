@@ -118,7 +118,9 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
-        return name.endswith(("linear_attn.A_log", "linear_attn.norm.weight"))
+        # vLLM allocates A_log in fp32 but the gated norm in the model dtype, so an fp32 norm
+        # would only be narrowed (with a warning) on every load.
+        return name.endswith("linear_attn.A_log")
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
