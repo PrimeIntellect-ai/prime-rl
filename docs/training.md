@@ -384,6 +384,26 @@ seq_len = 2048             # optional; default: the training sequence length
 
 Every source logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and with a byte-level BPE tokenizer `val/<name>/bpb@<seq_len>`, the bits per UTF-8 byte of the scored tokens (special tokens count 0 bytes), e.g. `val/fineweb-edu/bpb@2k`. With another tokenizer (e.g. SentencePiece), the trainer logs one warning and only the loss. The sources are tokenized once at startup. At every validation, the sequences of all sources are packed longest first into rows of `val.micro_batch_tokens` tokens (default: the training micro-batch, `data.seq_len * data.micro_batch_size` in SFT and pretraining and `model.seq_len` in RL, or the longest source `seq_len` if that is longer, rounded up to a multiple of `model.cp`), with attention and positions restarting at every sequence and the rest of a row padded, and the rows are shared out over the data-parallel ranks. The log-probs are computed in fp32. `val.save_arrays` writes the per-item arrays of every source (summed loss, scored tokens, greedy hits and bytes per document or row) to `<run_dir>/val/step_N/`. A `chat` source needs a typed renderer, also in pretraining. In RL, the trainer's renderer defaults to `orchestrator.renderer`, so `chat` sources render like the policy's rollouts. Validation does not support VLM models.
 
+**Contrasts.** A `[[val.contrast]]` table (`[[orchestrator.val.contrast]]` in RL) compares two sources by their item losses (an item is a document or a row). It is a cheap probe of a behavior, mostly in RL: rollouts that solved and that failed the same tasks, honest and cheating solutions, long and short answers, good and sloppy code. An item's loss is its mean loss per scored token; items with no scored token are left out. Each contrast logs `val/contrast/<name>/gap`, the mean item loss of `b` minus that of `a`, and `val/contrast/<name>/gap_se`, its standard error, with the two sources as independent samples. The gap is a difference of mean log-perplexities: it is positive when the model finds `b` less likely than `a`. With `pair_by`, a column of two `chat` sources such as a task id, a contrast also logs `val/contrast/<name>/win_rate`: the share of the keys both sources have at which `a` has the lower mean item loss. Any other difference between the two sources (length, content, prompts) also moves the gap, so build them to differ only in the probed behavior. Larger sources give a smaller standard error.
+
+```toml
+[[orchestrator.val.source]]
+type = "chat"
+name = "solved"
+dataset = "data/probes/solved"
+
+[[orchestrator.val.source]]
+type = "chat"
+name = "failed"
+dataset = "data/probes/failed"
+
+[[orchestrator.val.contrast]]
+name = "success"
+a = "solved"
+b = "failed"               # gap = loss of failed - loss of solved
+pair_by = "task_id"        # optional: adds win_rate, the share of tasks at which solved is more likely
+```
+
 ### SFT-Specific Knobs
 
 | Knob | What it controls |

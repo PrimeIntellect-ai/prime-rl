@@ -108,6 +108,22 @@ class ChatValSourceConfig(HFDatasetConfig, BaseValSourceConfig):
 ValSourceConfig: TypeAlias = Annotated[DocumentsValSourceConfig | ChatValSourceConfig, Field(discriminator="type")]
 
 
+class ValContrastConfig(BaseConfig):
+    """Two validation sources compared by their item losses, e.g. failed and successful rollouts of the same tasks."""
+
+    name: str = Field(pattern=r"^[^/]+$")
+    """Names the contrast's metrics, ``val/contrast/<name>/<metric>``."""
+
+    a: str
+    """Name of the first source (a ``[[val.source]]``)."""
+
+    b: str
+    """Name of the second source. The gap is b minus a."""
+
+    pair_by: str | None = None
+    """Dataset column that pairs the rows of two ``chat`` sources, e.g. a task id. Adds ``win_rate``."""
+
+
 class ValConfig(BaseConfig):
     interval: int = Field(50, ge=1)
     """Run validation every N training steps."""
@@ -130,6 +146,12 @@ class ValConfig(BaseConfig):
     ``seq_len``, whichever is larger, rounded up to a multiple of ``model.cp``; must be at least that longest
     ``seq_len`` and divisible by ``model.cp``."""
 
+    contrast: list[ValContrastConfig] = []
+    """Contrasts between two sources (``[[val.contrast]]``). An item's loss is its mean loss per scored token; items
+    with no scored token are left out. Each logs ``val/contrast/<name>/gap``, the mean item loss of b minus that of a,
+    and ``gap_se``, its standard error. With ``pair_by``, also ``win_rate``: the share of the keys both sources have at
+    which a's mean item loss is below b's."""
+
     save_arrays: bool = False
     """Write the per-item arrays (npz) and summary (json) of every source to ``<run_dir>/val/step_N/``."""
 
@@ -142,6 +164,20 @@ class ValConfig(BaseConfig):
         names = [val_source.name for val_source in self.source]
         if len(set(names)) < len(names):
             raise ValueError(f"val.source names must be unique: {names}")
+        return self
+
+    @model_validator(mode="after")
+    def validate_contrasts(self):
+        names = [contrast.name for contrast in self.contrast]
+        if len(set(names)) < len(names):
+            raise ValueError(f"val.contrast names must be unique: {names}")
+        types = {val_source.name: val_source.type for val_source in self.source}
+        for contrast in self.contrast:
+            for name in (contrast.a, contrast.b):
+                if name not in types:
+                    raise ValueError(f"val.contrast {contrast.name}: {name!r} is not a val.source name")
+                if contrast.pair_by is not None and types[name] != "chat":
+                    raise ValueError(f"val.contrast {contrast.name}: pair_by needs chat sources, but {name} is not one")
         return self
 
     def resolve(

@@ -6,9 +6,11 @@ import json
 import math
 import time
 import types
-from collections.abc import Iterator
+from collections import defaultdict
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from itertools import compress
 from pathlib import Path
 
 import numpy as np
@@ -41,15 +43,47 @@ def loss_and_bpb(nll: np.ndarray, tokens: np.ndarray, num_bytes: np.ndarray | No
     return summary
 
 
+def mean_per_key(keys: Iterable, values: np.ndarray) -> dict:
+    """The mean of the values of every key."""
+    groups = defaultdict(list)
+    for key, value in zip(keys, values):
+        groups[key].append(value)
+    return {key: np.mean(group) for key, group in groups.items()}
+
+
+def contrast_summary(
+    a: dict[str, np.ndarray], b: dict[str, np.ndarray], keys: tuple[list, list] | None = None
+) -> dict[str, float]:
+    """Compares the per-item arrays (`ValSource.summarize`) of sources a and b. An item's loss is its mean loss per
+    scored token; items with no scored token are left out. ``gap`` is the mean item loss of b minus that of a (a
+    difference of mean log-perplexities) and ``gap_se`` its standard error, with a and b as independent samples. With every
+    item's key in a and in b, ``win_rate`` is the share of the keys both have at which a's mean item loss is below
+    b's."""
+    scored_a, scored_b = a["tokens"] > 0, b["tokens"] > 0
+    loss_a = a["nll"][scored_a] / a["tokens"][scored_a]
+    loss_b = b["nll"][scored_b] / b["tokens"][scored_b]
+    summary = {
+        "gap": loss_b.mean() - loss_a.mean(),
+        "gap_se": math.sqrt(loss_a.var(ddof=1) / len(loss_a) + loss_b.var(ddof=1) / len(loss_b)),
+    }
+    if keys is not None:
+        key_loss_a = mean_per_key(compress(keys[0], scored_a), loss_a)
+        key_loss_b = mean_per_key(compress(keys[1], scored_b), loss_b)
+        summary["win_rate"] = np.mean([key_loss_a[key] < key_loss_b[key] for key in key_loss_a.keys() & key_loss_b])
+    return summary
+
+
 @dataclass
 class ValSource:
-    """A source's requests and the item (document, row) every request belongs to."""
+    """A source's requests, the item (document, row) every request belongs to, and every item's value in the dataset
+    columns its contrasts pair by (``pair_keys``, column to values)."""
 
     name: str
     seq_len: int
     requests: list[Request]
     items: np.ndarray
     num_items: int
+    pair_keys: dict[str, list] = field(default_factory=dict)
 
     def summarize(
         self, logprobs: np.ndarray, hits: np.ndarray, tokens: np.ndarray, num_bytes: np.ndarray | None
@@ -105,11 +139,15 @@ def documents_source(config: DocumentsValSourceConfig, num_samples: int | None) 
 
 
 def chat_source(
-    config: ChatValSourceConfig, num_samples: int | None, tokenizer: PreTrainedTokenizer, renderer: RendererConfig
+    config: ChatValSourceConfig,
+    num_samples: int | None,
+    tokenizer: PreTrainedTokenizer,
+    renderer: RendererConfig,
+    pair_by: Iterable[str],
 ) -> ValSource:
     """The rows of the split (or the first ``num_samples``), rendered as SFT renders them, with the tokens SFT trains
     on scored and every row cut after ``seq_len`` input tokens. A row with no scored token in that window scores
-    nothing, as SFT skips it."""
+    nothing, as SFT skips it. The rows' values in the ``pair_by`` columns are the source's ``pair_keys``."""
     source = HFSource(
         load_dataset(config.dataset, config.subset, split=config.split, revision=config.revision),
         source_renderers(tokenizer, renderer, config),
@@ -129,15 +167,20 @@ def chat_source(
         labels = np.where(sample["loss_mask"], sample["target_ids"], IGNORE_INDEX)[: config.seq_len].astype(np.int32)
         requests.append((inputs, labels))
         items.append(item)
-    return ValSource(config.name, config.seq_len, requests, np.array(items, dtype=np.int64), source.size)
+    pair_keys = {column: list(source.dataset[column]) for column in pair_by}
+    return ValSource(config.name, config.seq_len, requests, np.array(items, dtype=np.int64), source.size, pair_keys)
 
 
 def prepare_source(
-    config: ValSourceConfig, num_samples: int | None, tokenizer: PreTrainedTokenizer, renderer: RendererConfig
+    config: ValSourceConfig,
+    num_samples: int | None,
+    tokenizer: PreTrainedTokenizer,
+    renderer: RendererConfig,
+    pair_by: Iterable[str],
 ) -> ValSource:
     if config.type == "documents":
         return documents_source(config, num_samples)
-    return chat_source(config, num_samples, tokenizer, renderer)
+    return chat_source(config, num_samples, tokenizer, renderer, pair_by)
 
 
 # The 256 characters byte-level BPE tokenizers (GPT-2, Llama 3, Qwen, DeepSeek) write the bytes as.
@@ -296,7 +339,8 @@ def length_label(seq_len: int) -> str:
 
 
 class Validation:
-    """The ``[[val.source]]``, tokenized once at startup and scored on the training model at every validation."""
+    """The ``[[val.source]]``, tokenized once at startup and scored on the training model at every validation, and the
+    ``[[val.contrast]]`` between them."""
 
     def __init__(
         self,
@@ -310,9 +354,14 @@ class Validation:
         self.config = config
         self.parallel_dims = parallel_dims
         self.run_dir = run_dir
-        self.sources = [
-            prepare_source(val_source, config.num_samples, tokenizer, renderer) for val_source in config.source
-        ]
+        self.sources = []
+        for val_source in config.source:
+            pair_by = {
+                contrast.pair_by
+                for contrast in config.contrast
+                if contrast.pair_by and val_source.name in (contrast.a, contrast.b)
+            }
+            self.sources.append(prepare_source(val_source, config.num_samples, tokenizer, renderer, pair_by))
         for val_source in self.sources:
             if not val_source.requests:
                 raise ValueError(f"Validation source {val_source.name} has nothing to score")
@@ -348,12 +397,13 @@ class Validation:
         if scored is None:
             return {}
         logprobs, hits = scored
-        metrics, offset = {}, 0
+        metrics, offset, per_item = {}, 0, {}
         for val_source in self.sources:
             window = slice(offset, offset + len(val_source.requests))
             offset = window.stop
             num_bytes = self.bytes[window] if self.bytes is not None else None
             summary, arrays = val_source.summarize(logprobs[window], hits[window], self.tokens[window], num_bytes)
+            per_item[val_source.name] = arrays
             length = length_label(val_source.seq_len)
             label = f"{val_source.name}@{length}"
             metrics |= {f"val/{val_source.name}/{key}@{length}": float(value) for key, value in summary.items()}
@@ -366,4 +416,14 @@ class Validation:
                 out.mkdir(parents=True, exist_ok=True)
                 np.savez(out / f"{label}.npz", **arrays)
                 (out / f"{label}.json").write_text(json.dumps(summary))
+        sources = {val_source.name: val_source for val_source in self.sources}
+        for contrast in self.config.contrast:
+            a, b = sources[contrast.a], sources[contrast.b]
+            keys = (a.pair_keys[contrast.pair_by], b.pair_keys[contrast.pair_by]) if contrast.pair_by else None
+            summary = contrast_summary(per_item[a.name], per_item[b.name], keys)
+            metrics |= {f"val/contrast/{contrast.name}/{key}": float(value) for key, value in summary.items()}
+            get_logger().success(
+                f"Validation | Step {step} | contrast {contrast.name} ({contrast.b} - {contrast.a}) | "
+                + " | ".join(f"{key} {value:.4f}" for key, value in summary.items())
+            )
         return metrics
