@@ -64,6 +64,7 @@ group_size = 8
 name = "bcplus"
 # No algo.length_penalty: the GRPO default (None) disables it.
 env.taskset.id = "browsecomp-plus"
+env.taskset.task.judge = { model = "internal/deepseek-v4.1-flash-1017-judge", question_field = "question" }
 select.exclude.idx = [41, 97, 101, 142, 143, 150, 223, 256, 265, 288, 310, 317, 366, 394, 414, 430, 488, 497, 516, 523, 545, 597, 616, 633, 722, 773, 776, 802, 818, 829]
 env.agent.harness.id = "rlm"
 env.agent.timeout.rollout = 10800
@@ -76,6 +77,7 @@ group_size = 4
 [[orchestrator.eval.source]]
 name = "bcplus-heldout"
 env.taskset.id = "browsecomp-plus"
+env.taskset.task.judge = { model = "internal/deepseek-v4.1-flash-1017-judge", question_field = "question" }
 select.include.idx = [41, 97, 101, 142, 143, 150, 223, 256, 265, 288, 310, 317, 366, 394, 414, 430, 488, 497, 516, 523, 545, 597, 616, 633, 722, 773, 776, 802, 818, 829]
 env.agent.harness.id = "rlm"
 env.agent.timeout.rollout = 10800
