@@ -1,4 +1,7 @@
 from pathlib import Path
+from typing import Annotated
+
+from pydantic import Field
 
 from prime_rl.utils.config import BaseConfig
 
@@ -41,6 +44,20 @@ class FileMonitorConfig(BaseConfig):
     """Decimals kept for per-token float streams (logprobs, entropies, advantages) in
     trace and annotation records; ``None`` keeps every digit. Training reads the wire,
     not the records, so this only trades record size against overlay precision."""
+
+    live: bool = True
+    """Write in-flight traces under ``traces/live/`` for the dashboard's live view: one file
+    per trace, appended as each turn streams, plus a placeholder per dispatched episode. Off,
+    an episode is written once, when it finishes (the dashboard shows finished episodes only),
+    which spares the run directory a small append per turn of every in-flight rollout."""
+
+    trace_sample: Annotated[float, Field(gt=0, le=1)] = 1.0
+    """Fraction of train rollout groups whose traces are written: their episodes in the
+    trace stream, their live traces, and the annotations of the process that logs the
+    episodes (the orchestrator). A group is in or out as a whole, decided by a hash of its
+    id, so every written group is complete. Eval episodes and metrics are always written.
+    Annotations from a process that logs no episodes (the trainer's ``annotations``) are
+    not sampled. Lower it to cut the run directory's write load on a busy run."""
 
 
 class PrimeMonitorConfig(BaseConfig):

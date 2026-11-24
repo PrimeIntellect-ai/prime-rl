@@ -706,6 +706,8 @@ Monitors receive the run's metrics and episodes. The file and Prime monitors are
 
 The file monitor writes the run's metrics (`metrics.jsonl`) and trace stream under `<run_dir>/monitors/file/`, and feeds the local [dashboard](#dashboard). Turn it off with `--no-monitors.file`.
 
+On a large run the traces dominate what the monitor writes. `--monitors.file.trace-sample 0.1` keeps the traces (episodes, live traces, and the orchestrator's annotations) of one train group in ten, chosen by group id so each written group is complete; metrics and eval episodes are always written. `--no-monitors.file.live` stops the live traces: one file per in-flight trace under `traces/live/`, appended on every turn, which feed the dashboard's live view. Episodes are then written once, when they finish.
+
 ### Weights & Biases
 
 W&B is off by default:
