@@ -147,10 +147,11 @@ def _create_muon_optimizer(
         else:
             pass
 
-    # The groups (and their order) that Muon checkpoints have always had, so older checkpoints resume
+    # The groups (and their order) and keys that Muon checkpoints have always had, so checkpoints resume either way.
+    # The expert group's mesh name is not read here, and a load keeps the run's own (RUN_PARAM_GROUP_KEYS).
     param_groups = [dict(params=muon_params, algorithm="muon")]
     if expert_params:
-        param_groups.append(dict(params=expert_params, algorithm="muon"))
+        param_groups.append(dict(params=expert_params, algorithm="muon", distributed_mesh_name=None))
     if router_params:
         param_groups.append(dict(params=router_params, algorithm="muon"))
     param_groups.append(dict(params=adamw_params, algorithm="adamw"))
