@@ -315,6 +315,13 @@ def start_fetch(worker, state: _State, request_id: str, meta, wait_s: float) -> 
     return True
 
 
+def fetch_in_flight(worker, request_id: str) -> bool:
+    """Prefill: whether a store fetch is writing into this request's blocks. Its result decides the load, so NIXL
+    must neither read into the same blocks nor report the request meanwhile."""
+    state = getattr(worker, "_prime_rl_spill", None)
+    return bool(state) and request_id in state.fetches
+
+
 def hold_back_while_spilling(state: _State, done_sending: set[str]) -> None:
     """Decode: a request that finished sending while its put is still copying is not reported yet.
 
@@ -438,6 +445,9 @@ def monkey_patch_nixl_spill_expiring_kv_to_store():
         return original_failed(self, req_id, handle, failed_req_ids, record_failed_transfer)
 
     def _read_blocks_for_req(self, req_id, meta):
+        if fetch_in_flight(self, req_id):
+            # Called again for the same request (a handshake finished, say) after a failed read turned to the store.
+            return
         remote = meta.remote
         if remote.engine_id in self._invalid_remote_engines or remote.engine_id not in self._remote_agents:
             # Fails (and then tries the store, see `_handle_failed_transfer`), or comes back here once the
@@ -446,8 +456,6 @@ def monkey_patch_nixl_spill_expiring_kv_to_store():
         if self._bidirectional_kv_xfer_enabled and self._is_turn2_read_expired(meta):
             state = _state(self)
             if state is not None:
-                if req_id in state.fetches:
-                    return
                 # Only a turn that returns right at its deadline can find its put still in flight; later the
                 # objects are either there or evicted, and waiting would only delay the recompute.
                 deadline = remote.blocks_expiry_time - self._engine_clock_offset[remote.engine_id]

@@ -212,3 +212,14 @@ def test_read_that_cannot_happen_gets_one_store_fetch():
     assert not kv_spill.start_fetch(worker, state, "turn-2", meta, 0.0)
     # A request the scheduler sent no keys for (no handle, or the spill is off for it) is left to NIXL.
     assert not kv_spill.start_fetch(worker, state, "turn-3", meta, 0.0)
+
+
+def test_request_being_fetched_from_the_store_is_left_alone_by_a_repeated_read():
+    """A second read attempt for the same request would fail it, or write into the blocks the fetch is filling."""
+    state = _state()
+    worker = _worker()
+    assert not kv_spill.fetch_in_flight(worker, "turn-2")  # the spill was never used on this worker
+    worker._prime_rl_spill = state
+    assert not kv_spill.fetch_in_flight(worker, "turn-2")
+    state.fetches["turn-2"] = Future()
+    assert kv_spill.fetch_in_flight(worker, "turn-2") and not kv_spill.fetch_in_flight(worker, "turn-3")
