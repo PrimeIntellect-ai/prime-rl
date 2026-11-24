@@ -47,6 +47,7 @@ from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.control.controller import Controller, validate_update
 from prime_rl.control.server import ControlServer
 from prime_rl.control.types import ConfigUpdate, InvalidConfigError, Reconfigurable
+from prime_rl.env.sandbox_owners import reap_previous_sandbox_pools
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.batch import BatchPacker
@@ -309,6 +310,8 @@ class Orchestrator:
             self.heart = Heartbeat(config.heartbeat)
 
         config_dir = get_config_dir(config.output_dir)
+        if config.resume is not None and config.resume.dir is None:
+            await reap_previous_sandbox_pools(config_dir)
         self.train_envs = TrainEnvs(
             config.train.source,
             config.env_addresses,
@@ -354,6 +357,12 @@ class Orchestrator:
             await self.eval_envs.start()
             get_logger().success(f"Eval environments ready in {format_time(time.perf_counter() - t0)}")
 
+        if config.resume is not None and config.resume.dir is None:
+            ledger = self.ckpt_manager.snapshots
+            for step in list(ledger.steps):
+                if not (self.ckpt_manager.get_ckpt_path(step) / "progress.pt").is_file():
+                    ledger.record(step, [])
+            await self.sweep_snapshots()
         self.train_source = TrainSource(self.train_envs)
         open_work = None
         if self.resume_step is not None:

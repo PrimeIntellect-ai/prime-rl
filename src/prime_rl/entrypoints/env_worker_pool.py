@@ -9,10 +9,12 @@ from contextlib import ExitStack
 from functools import partial
 from pathlib import Path
 
+from verifiers.v1.configs.agent import agent_config_fields
 from verifiers.v1.runtimes import set_base_sandbox_labels
 
 from prime_rl.configs.env_worker_pool import EnvWorkerPoolConfig
 from prime_rl.env import run_env_worker_pool, set_episode_hook
+from prime_rl.env.sandbox_owners import register_sandbox_pool
 from prime_rl.orchestrator.utils import setup_env_worker_pool_logging
 from prime_rl.transports.payload import PayloadHook, RolloutStore, StoreWriter, payload_host
 from prime_rl.utils.config import check_mode, cli
@@ -62,6 +64,13 @@ def run_pool(config: EnvWorkerPoolConfig):
         addresses = queue.SimpleQueue()
         threading.Thread(target=publish_address, args=(addresses, config.address_file), daemon=True).start()
     with ExitStack() as stack:
+        attempt_dir = os.environ.get("PRL_ATTEMPT_CONFIG_DIR")
+        if (
+            attempt_dir
+            and config.address_file
+            and any(agent.runtime.type == "prime" for agent in agent_config_fields(config.env).values())
+        ):
+            sandbox_labels.append(stack.enter_context(register_sandbox_pool(Path(attempt_dir))))
         store = None
         if config.store_dir is not None:
             # The broker serves the arrays its workers write, so they outlive any one worker.
