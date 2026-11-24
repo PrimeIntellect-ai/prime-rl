@@ -19,7 +19,7 @@ from prime_rl.trainer.models.glm5_next.converting_glm5_next import (
     is_hf_state_dict,
     is_prime_state_dict,
 )
-from prime_rl.trainer.models.glm5_next.linear_attention import KimiDeltaAttention
+from prime_rl.trainer.models.glm5_next.linear_attention import KimiDeltaAttention, KimiDeltaAttentionDecay
 from prime_rl.trainer.models.glm5_next.sparse_attention import KPoolIndexer, PoolLayout, SparseMlaAttention
 from prime_rl.trainer.models.layers.activations import ClampedSilu
 from prime_rl.trainer.models.layers.fla_ops import FlaVarlen, prepare_fla_varlen
@@ -125,7 +125,9 @@ class Glm5NextDecoderLayer(nn.Module):
     ) -> torch.Tensor:
         # mhc_states: [batch, seq, hc_mult, hidden]. `collapsed` is the single-stream sublayer input;
         # `post` and `comb` are the weights for writing the output back and mixing the streams.
-        post, comb, collapsed = self.attn_hc(mhc_states)
+        # The hyper-connections are FP32 modules (see `Glm5NextPreTrainedModel.fp32_modules`): called through
+        # `forward`, so that their FSDP hooks stay out of the compiled layer.
+        post, comb, collapsed = self.attn_hc.forward(mhc_states)
         attention_input = self.input_layernorm(collapsed)
         if self.layer_type == "linear_attention":
             # KDA resets its recurrent state at each packed-document boundary.
@@ -135,7 +137,7 @@ class Glm5NextDecoderLayer(nn.Module):
             attn_output = self.self_attn(attention_input, pool_layout)
         mhc_states = self.attn_hc.update_states(post, comb, attn_output, mhc_states)
 
-        post, comb, collapsed = self.ffn_hc(mhc_states)
+        post, comb, collapsed = self.ffn_hc.forward(mhc_states)
         mlp_output = self.mlp(self.post_attention_layernorm(collapsed), routed_experts=routed_experts)
         return self.ffn_hc.update_states(post, comb, mlp_output, mhc_states)
 
@@ -148,9 +150,25 @@ class Glm5NextPreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
+        # hc fn is BF16 in the checkpoint but trains and computes in FP32 with the rest of the hyper-connection.
         return name.endswith(
-            ("hc.base", "hc.scale", "self_attn.A_log", "self_attn.dt_bias", "mlp.router.selection_bias")
+            (
+                "hc.fn",
+                "hc.base",
+                "hc.scale",
+                "self_attn.decay.A_log",
+                "self_attn.decay.dt_bias",
+                "mlp.router.selection_bias",
+            )
         )
+
+    def fp32_modules(self) -> list[nn.Module]:
+        # vLLM computes the hyper-connections and KDA's decay in FP32.
+        return [
+            module
+            for module in self.modules()
+            if isinstance(module, (DeepseekV4HyperConnection, KimiDeltaAttentionDecay))
+        ]
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
@@ -169,7 +187,7 @@ class Glm5NextPreTrainedModel(PreTrainedModelPrimeRL):
         init_std = getattr(self.config, "text_config", self.config).initializer_range
         if isinstance(module, DeepseekV4HyperConnection):
             module.init_weights(init_std)
-        elif isinstance(module, KimiDeltaAttention):
+        elif isinstance(module, KimiDeltaAttentionDecay):
             module.reset_parameters()
         elif isinstance(module, KPoolIndexer):
             # Uniform pooling, as constructed.

@@ -795,9 +795,11 @@ def test_matches_vllm(
     case.config.save_pretrained(tmp_path)
     model = build_trainer_model(tmp_path, case)
     state_dict = broadcast_state_dict(model)
-    # FSDP computes in bf16 from the fp32 master weights
+    # FSDP computes in bf16 from the fp32 master weights, except in the model's fp32 modules
+    fp32_params = {param for module in model.fp32_modules() for param in module.parameters()}
     for param in model.parameters():
-        param.data = param.data.bfloat16()
+        if param not in fp32_params:
+            param.data = param.data.bfloat16()
     moe = bool(moe_routers(model))
     vllm, vllm_routes = vllm_logprobs(tmp_path, case, state_dict, rows, moe, plugin_configs)
 

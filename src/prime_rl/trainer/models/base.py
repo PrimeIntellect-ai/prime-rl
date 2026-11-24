@@ -155,6 +155,16 @@ class PreTrainedModelPrimeRL(nn.Module):
         """
         return False
 
+    def fp32_modules(self) -> list[nn.Module]:
+        """Modules whose parameters stay FP32 in the forward instead of taking FSDP's BF16 cast.
+
+        Each must own only such parameters. FSDP shards each as its own unit, gathers it in FP32 before the language
+        model's forward and frees it after the backward. The decoder layers must not call such a module, since
+        `module(...)` would run its FSDP hooks inside the compiled layer: they read its parameters or call its methods
+        (`module.forward(...)`) instead.
+        """
+        return []
+
     def num_active_params(self) -> int:
         """Parameters a text token multiplies through, LoRA adapters included."""
         return count_active_params(self)
