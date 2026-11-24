@@ -1291,7 +1291,7 @@ def test_shared_monitor_disable_and_prime_propagate():
 
 @pytest.mark.parametrize(
     "monitor,trainer,orchestrator",
-    [("wandb", {"wandb": {"project": "p"}}, {}), ("prime", {}, {"prime": "None"})],
+    [("wandb", {"wandb": {"project": "p"}}, {}), ("prime", {"prime": {}}, {})],
 )
 def test_monitor_on_in_one_component_only_is_rejected(monitor, trainer, orchestrator):
     """The components log to one run per monitor, so a monitor is on in all or none."""

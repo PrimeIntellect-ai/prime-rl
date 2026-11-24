@@ -52,6 +52,7 @@ def _sft_config(overrides: dict | None = None) -> SFTConfig:
         "model": {"name": "PrimeIntellect/Qwen3-0.6B"},
         "data": {"fake": {}, "batch_size": 8, "seq_len": 64},
         "max_steps": 10,
+        "monitors": {"prime": {}},
     }
     if overrides:
         config.update(overrides)
