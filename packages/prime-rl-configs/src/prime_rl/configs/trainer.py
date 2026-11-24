@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
 from pydantic import Field, field_validator, model_validator
+from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
+from renderers.base import MODEL_RENDERER_MAP
 
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
@@ -713,6 +715,10 @@ class BaseTrainerConfig(BaseConfig):
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
+    renderer: RendererConfig = AutoRendererConfig()
+    """Renderer config, for SFT data and ``chat`` validation sources. Defaults to auto-selecting from the tokenizer
+    model name."""
+
     optim: OptimizerConfig = AdamWConfig()
 
     scheduler: SchedulerConfig = ConstantSchedulerConfig()
@@ -806,6 +812,34 @@ class BaseTrainerConfig(BaseConfig):
         if self.tokenizer.trust_remote_code is None:
             self.tokenizer.trust_remote_code = self.model.trust_remote_code
         return self
+
+    def renders_conversations(self) -> bool:
+        """Whether the trainer renders conversations with ``renderer``."""
+        return False
+
+    @model_validator(mode="after")
+    def validate_typed_renderer(self):
+        """Require a typed renderer whenever the trainer renders conversations: SFT data or a ``chat`` validation
+        source."""
+        if not self.renders_conversations():
+            return self
+
+        model_id = self.tokenizer.name or self.model.name
+        if isinstance(self.renderer, AutoRendererConfig):
+            if model_id in MODEL_RENDERER_MAP:
+                return self
+            reason = f"no typed renderer is registered for {model_id!r}"
+        elif isinstance(self.renderer, DefaultRendererConfig):
+            reason = "renderer.name='default' selects DefaultRenderer"
+        else:
+            return self
+
+        raise ValueError(
+            f"Rendering SFT data or chat validation sources requires a typed renderer with sampled-token and content "
+            f"attribution, but {reason}. "
+            "Implement and register the renderer in the renderers package, or explicitly select an existing "
+            "typed renderer only when its template is verified to match."
+        )
 
 
 class TrainerConfig(BaseTrainerConfig):

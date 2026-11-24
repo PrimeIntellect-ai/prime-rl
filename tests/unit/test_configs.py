@@ -32,6 +32,7 @@ from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig, SFTDataConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
+from prime_rl.configs.val import ValConfig
 from prime_rl.utils.config import MODES, BaseConfig, check_mode, cli, dump_resolved_config
 
 # All config config classes
@@ -265,6 +266,16 @@ def test_val_source_defaults(tmp_path):
     odd_source = json.dumps([{**val_sources[1], "seq_len": 4097}])
     cp_args = [*args, "--model.cp", "2", "--data.micro-batch-size", "1", "--val.source", odd_source]
     assert cli(PretrainConfig, args=cp_args).val.micro_batch_tokens == 4098
+
+
+@pytest.mark.parametrize(
+    ("eval_on_start", "start_step", "step", "due"),
+    [(True, 1, 1, True), (False, 1, 1, False), (False, 10, 10, False), (False, 1, 10, True), (True, 11, 15, False)],
+)
+def test_val_due(eval_on_start: bool, start_step: int, step: int, due: bool):
+    """Validation runs every val.interval steps, and at the trainer's first step only with eval_on_start."""
+    val = ValConfig(interval=10, eval_on_start=eval_on_start, source=[{"type": "documents", "name": "d", "path": "d"}])
+    assert val.due(step, start_step) == due
 
 
 def test_chat_val_sources_score_the_training_loss_mask():

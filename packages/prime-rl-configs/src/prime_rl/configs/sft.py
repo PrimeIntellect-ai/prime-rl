@@ -2,15 +2,8 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from prime_rl.configs.supervised import (
-    BaseDataConfig,
-    BaseSourceConfig,
-    HFDatasetConfig,
-    LossMaskConfig,
-    SFTColumnsConfig,
-    SupervisedTrainerConfig,
-    check_sources,
-)
+from prime_rl.configs.supervised import BaseDataConfig, BaseSourceConfig, SupervisedTrainerConfig, check_sources
+from prime_rl.configs.val import HFDatasetConfig, LossMaskConfig, SFTColumnsConfig
 from prime_rl.utils.config import BaseConfig
 
 
