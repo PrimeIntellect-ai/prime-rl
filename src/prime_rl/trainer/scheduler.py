@@ -32,7 +32,7 @@ def _linear_factor(epoch: int, horizon: int | None, warmup_steps: int, decay_ste
     the first decay step to ``min_factor`` at the last one)."""
     if epoch < warmup_steps:
         return min_factor + (1 - min_factor) * epoch / warmup_steps
-    if decay_steps <= 1:
+    if decay_steps == 0:
         return 1.0
     decay_epoch = min(max(epoch - (horizon - decay_steps), 0), decay_steps - 1)
     return min_factor + (1 - min_factor) * (decay_steps - 1 - decay_epoch) / (decay_steps - 1)

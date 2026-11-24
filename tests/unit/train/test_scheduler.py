@@ -3,7 +3,12 @@ import math
 import pytest
 import torch
 
-from prime_rl.configs.trainer import ConstantSchedulerConfig, CosineSchedulerConfig, LinearSchedulerConfig
+from prime_rl.configs.trainer import (
+    ConstantSchedulerConfig,
+    CosineSchedulerConfig,
+    LinearSchedulerConfig,
+    validate_scheduler,
+)
 from prime_rl.trainer.scheduler import setup_scheduler
 
 MAX_STEPS = 16
@@ -82,3 +87,8 @@ def test_start_step_starts_a_fresh_schedule_there(config):
 def test_start_step_after_the_resume_step_raises(checkpoint_step, error):
     with pytest.raises(ValueError, match=error):
         run(ConstantSchedulerConfig(start_step=5), checkpoint_step)
+
+
+def test_a_single_decay_step_raises():
+    with pytest.raises(ValueError, match="decay_steps must be 0 or at least 2"):
+        validate_scheduler(LinearSchedulerConfig(warmup_steps=2, decay_steps=1), MAX_STEPS)

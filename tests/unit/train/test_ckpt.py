@@ -1,5 +1,6 @@
 import re
 from dataclasses import dataclass, field, replace
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -42,6 +43,10 @@ class Run:
     eps: float = 1e-8
     scheduler: SchedulerConfig = field(default_factory=lambda: LinearSchedulerConfig(warmup_steps=4, decay_steps=4))
     max_steps: int | None = 16
+    bias_group: bool = True
+    """Give the bias its own param group, at twice the lr."""
+    group_entries: tuple[tuple[str, Any], ...] = ()
+    """More entries of every param group."""
 
 
 BASE = Run()
@@ -63,7 +68,12 @@ def train(run: Run, checkpoint_step: int | None, manager: CheckpointManager | No
     Returns the param groups after the setup, every group's lr at each step and the warnings of the setup."""
     torch.manual_seed(0)
     model = torch.nn.Linear(4, 2)
-    groups = [{"params": [model.weight]}, {"params": [model.bias], "lr": 2 * run.lr}]
+    groups = (
+        [{"params": [model.weight]}, {"params": [model.bias], "lr": 2 * run.lr}]
+        if run.bias_group
+        else [{"params": [model.weight, model.bias]}]
+    )
+    groups = [{**group, **dict(run.group_entries)} for group in groups]
     optimizer = torch.optim.AdamW(groups, lr=run.lr, weight_decay=run.weight_decay, betas=run.betas, eps=run.eps)
     scheduler = setup_scheduler(optimizer, run.scheduler, run.max_steps, run.lr, checkpoint_step)
     progress = Progress(step=checkpoint_step or 0)
@@ -93,8 +103,9 @@ def train(run: Run, checkpoint_step: int | None, manager: CheckpointManager | No
         (BASE, replace(BASE, weight_decay=0.2, betas=(0.8, 0.9), eps=1e-6), False, {"weight_decay", "betas", "eps"}),
         (BASE, replace(BASE, scheduler=LinearSchedulerConfig(warmup_steps=4, decay_steps=12)), False, {"lr"}),
         (RL_WARMUP, replace(RL_WARMUP, lr=2e-2), False, {"lr", "initial_lr"}),
+        (BASE, replace(BASE, group_entries=(("new_key", 1.0),)), False, {"new_key"}),
     ],
-    ids=["lr", "lr-skip_optimizer", "weight_decay-betas-eps", "decay_steps", "rl-lr"],
+    ids=["lr", "lr-skip_optimizer", "weight_decay-betas-eps", "decay_steps", "rl-lr", "new-param-group-key"],
 )
 def test_resume_trains_with_the_config(tmp_path, process_group, saved, resumed, skip_optimizer, changed):
     """A resume trains with the hyperparameters and the schedule of its config, as a run with that config set up at
@@ -107,3 +118,27 @@ def test_resume_trains_with_the_config(tmp_path, process_group, saved, resumed, 
     assert result["groups"] == expected["groups"]
     assert result["lrs"] == expected["lrs"]
     assert result["changed"] == changed
+
+
+@pytest.mark.parametrize(
+    "saved, resumed, error",
+    [
+        (BASE, replace(BASE, bias_group=False), "has 1 param groups and the checkpoint 2"),
+        (replace(BASE, bias_group=False), BASE, "has 2 param groups and the checkpoint 1"),
+        (
+            replace(BASE, group_entries=(("algorithm", "adamw"),)),
+            replace(BASE, group_entries=(("algorithm", "lion"),)),
+            "algorithm changed",
+        ),
+    ],
+    ids=["fewer-groups", "more-groups", "algorithm"],
+)
+def test_resume_rejects_optimizer_state_of_other_param_groups(tmp_path, process_group, saved, resumed, error):
+    """A resume that loads the optimizer state raises when the param groups changed in number or algorithm; with
+    ckpt.skip_optimizer it trains."""
+    model_files = Mock(spec=ModelFiles, config=None)
+    train(saved, None, CheckpointManager(tmp_path, CheckpointConfig(), model_files))
+    with pytest.raises(ValueError, match=error):
+        train(resumed, RESUME_STEP, CheckpointManager(tmp_path, CheckpointConfig(), model_files))
+    manager = CheckpointManager(tmp_path, CheckpointConfig(skip_optimizer=True), model_files)
+    assert train(resumed, RESUME_STEP, manager)["lrs"] == train(resumed, RESUME_STEP)["lrs"]

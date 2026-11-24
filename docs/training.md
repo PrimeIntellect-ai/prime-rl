@@ -532,11 +532,11 @@ A fork continues the other run, so both runs must be of the same kind. To start 
 
 #### The trainer's hyperparameters on resume
 
-A trainer resume loads only state from the checkpoint: the weights, the optimizer state (moments and step counts), the training step and the data position. Every hyperparameter and the learning rate schedule come from the config of the resumed run. The schedule is a function of the step, so the first resumed step trains at the learning rate that the config gives that step: a changed `optim.lr` applies from the resume on, and a changed `max_steps` or `scheduler.decay_steps` moves the decay. A changed weight decay, betas or eps applies too. The same holds with `ckpt.skip_optimizer`, which starts with fresh optimizer state.
+A trainer resume loads only state from the checkpoint: the weights, the optimizer's moments and step counts, the training step and the data position. Every hyperparameter and the learning rate schedule come from the resumed run's config, so a changed `optim.lr`, weight decay, betas, eps, `max_steps` or `scheduler.decay_steps` applies from the first resumed step. When the loaded optimizer settings differ from the config's, the trainer logs one warning listing each change as `group <index>: <key> <old> -> <new>`; with `ckpt.skip_optimizer`, which loads no optimizer state, there is nothing to compare and no warning.
 
-When a resume loads the optimizer state and the optimizer's settings differ from the checkpoint's, the trainer logs one warning that lists each change as `group <index>: <key> <old> -> <new>`.
+A resume that loads the optimizer state stops with an error when the number of param groups or a group's algorithm changed since the checkpoint, since the saved optimizer state no longer fits. Resume such a run with `ckpt.skip_optimizer`.
 
-To start a fresh schedule at a resume (a new warmup, or a decay over the remaining steps), set `scheduler.start_step` to the resume step: the warmup and the decay then span the `max_steps - start_step` steps after it. Later resumes keep the same `start_step` and follow the same schedule. The trainer stops at startup if `start_step` is after the resume step. It also stops if the checkpoint's step is not the resume step (for example, a renamed `--resume.dir` directory), since the learning rate would not match the training step.
+To start a fresh schedule at a resume, set `scheduler.start_step` to the resume step and keep it in later resumes: the warmup and decay then span the `max_steps - start_step` steps after it. With a bare `--resume`, that is the latest checkpoint's step; with `--resume.dir`, the step in the directory name. The trainer stops at startup if `start_step` is after the resume step or nonzero without a resume, and if the checkpoint's step differs from the resume step (for example, a renamed `--resume.dir`).
 
 #### What a resume restores
 

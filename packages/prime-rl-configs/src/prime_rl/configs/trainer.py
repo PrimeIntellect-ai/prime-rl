@@ -505,7 +505,8 @@ class LinearSchedulerConfig(BaseConfig):
     """Steps to decay the learning rate during the final portion of training."""
 
     min_lr: float = Field(0.0, ge=0)
-    """Minimum learning rate to converge to."""
+    """Learning rate the base param group, whose peak is ``optim.lr``, warms up from and decays to. Every other param
+    group warms up from and decays to ``min_lr / optim.lr`` times its own peak. 0 means a factor of ``1e-8``."""
 
     start_step: int = Field(0, ge=0)
     """The step the schedule starts at: its warmup and decay span the ``max_steps - start_step`` steps after it. Set
@@ -519,7 +520,9 @@ class CosineSchedulerConfig(BaseConfig):
     """Warmup steps for the learning rate scheduler."""
 
     min_lr: float = Field(0.0, ge=0)
-    """Minimum learning rate to converge to."""
+    """Learning rate the base param group, whose peak is ``optim.lr``, warms up from and decays to. Every other param
+    group warms up from and decays to ``min_lr / optim.lr`` times its own peak. 0 means a warmup from ``1e-8`` times
+    the peak and a decay to 0."""
 
     start_step: int = Field(0, ge=0)
     """The step the schedule starts at: its warmup and decay span the ``max_steps - start_step`` steps after it. Set
@@ -542,6 +545,8 @@ def validate_scheduler(scheduler: SchedulerConfig, max_steps: int | None) -> Non
             raise ValueError(
                 "Linear scheduler requires warmup_steps > 0 or decay_steps > 0 (use the constant scheduler instead)"
             )
+        if scheduler.decay_steps == 1:
+            raise ValueError("decay_steps must be 0 or at least 2")
         if scheduler.decay_steps > 0:
             if horizon is None:
                 raise ValueError("Must specify max_steps when using a linear scheduler with decay_steps > 0")
@@ -626,7 +631,8 @@ class CheckpointConfig(BaseConfig):
     """Skip loading the dataloader from checkpoint."""
 
     skip_optimizer: bool = False
-    """Skip loading the optimizer state from checkpoint: start with fresh moments and step counts."""
+    """Start the optimizer state fresh: new moments and dion Muon step counts. Loads none of the checkpoint's param
+    groups, so it has no hyperparameters to compare and logs no mismatch warning."""
 
     async_save: bool = False
     """Write checkpoints in the background. A save copies this rank's model and optimizer state into pinned host

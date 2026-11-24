@@ -316,6 +316,42 @@ def _loaded_state_entries(loaded_group: dict) -> dict:
     return {key: loaded_group[key] for key in STATE_PARAM_GROUP_KEYS if key in loaded_group}
 
 
+# The prefix of the checkpoint keys of the optimizer's param group entries: `<prefix>.<index>.<key>`
+SAVED_PARAM_GROUPS = "app.optimizers.param_groups"
+
+
+def _saved_param_group_entries(optimizer_state_dict: dict[str, Any], saved_keys: set[str]) -> dict[str, Any]:
+    """``optimizer_state_dict`` with only the param group entries that the checkpoint holds (``saved_keys``): DCP fails
+    on an entry the checkpoint lacks, and this run's value fills it after the load."""
+    groups = [
+        {key: value for key, value in group.items() if f"{SAVED_PARAM_GROUPS}.{index}.{key}" in saved_keys}
+        for index, group in enumerate(optimizer_state_dict["param_groups"])
+    ]
+    return {**optimizer_state_dict, "param_groups": groups}
+
+
+def _check_param_group_count(saved_keys: set[str], optimizers: list[OptimizerLike]) -> None:
+    """Raise unless the checkpoint holds as many param groups as this run's optimizers."""
+    saved = sum(key.startswith(f"{SAVED_PARAM_GROUPS}.") and key.endswith(".params") for key in saved_keys)
+    live = sum(len(optimizer.param_groups) for optimizer in optimizers)
+    if saved != live:
+        raise ValueError(
+            f"The optimizer has {live} param groups and the checkpoint {saved}, so its optimizer state does not apply: "
+            "resume with ckpt.skip_optimizer"
+        )
+
+
+def _check_param_group_algorithms(loaded_groups: list[dict], live_groups: list[dict]) -> None:
+    """Raise unless each loaded param group ran its live group's algorithm (dion's Muon names one per group), whose
+    optimizer state it holds."""
+    for index, (loaded, live) in enumerate(zip(loaded_groups, live_groups, strict=True)):
+        if loaded.get("algorithm") != live.get("algorithm"):
+            raise ValueError(
+                f"Param group {index}'s algorithm changed since the checkpoint ({loaded.get('algorithm')} -> "
+                f"{live.get('algorithm')}), so its optimizer state does not apply: resume with ckpt.skip_optimizer"
+            )
+
+
 def _store_weights_in_model_state(
     model_state_dict: dict[str, Any], optimizer_state_dict: dict[str, Any], key: str
 ) -> list[str]:
@@ -370,6 +406,7 @@ class AppState(Stateful):
         progress: Progress | None,
         optimizer_state: bool = True,
         masters_in_optimizer_state: bool = False,
+        saved_keys: set[str] | None = None,
     ):
         self.model = model
         self.progress = progress
@@ -378,6 +415,9 @@ class AppState(Stateful):
         model weights that full offload keeps in its optimizer, its FP32 masters, still load."""
         self.masters_in_optimizer_state = masters_in_optimizer_state
         """Keep full offload's masters in the optimizer state, the layout of `_saved_masters_in_optimizer_state`."""
+        self.saved_keys = saved_keys
+        """The keys of the checkpoint a load reads: its template leaves out the param group entries the checkpoint
+        lacks."""
         self.optimizers = optimizers if optimizer_state else [o for o in optimizers if _keeps_weights(o)]
         self.weights_in_model_state: dict[str, str] = {}
         """The optimizer state entries that the last state dict holds as model weights, by parameter name."""
@@ -407,6 +447,8 @@ class AppState(Stateful):
                 key = optimizer.checkpoint_weights_key
                 for fqn in _store_weights_in_model_state(model_state_dict, optimizer_state_dict, key):
                     self.weights_in_model_state[fqn] = key
+        if self.saved_keys is not None and optimizer_state_dict:
+            optimizer_state_dict = _saved_param_group_entries(optimizer_state_dict, self.saved_keys)
         state_dict = {"model": model_state_dict}
         if self.optimizer_state:
             state_dict["optimizers"] = optimizer_state_dict
@@ -470,6 +512,7 @@ class AppState(Stateful):
             # count there), in the live groups, since full offload's checkpoint optimizer holds copies.
             live_groups = [group for optimizer in self.optimizers for group in optimizer.param_groups]
             loaded_groups = optimizer_state_dict["param_groups"]
+            _check_param_group_algorithms(loaded_groups, live_groups)
             _warn_changed_param_groups(loaded_groups, live_groups)
             for group, loaded in zip(live_groups, loaded_groups, strict=True):
                 group.update(_loaded_state_entries(loaded))
@@ -482,6 +525,7 @@ class AppState(Stateful):
             _, runtime_optimizer_state_dict = get_state_dict(self.model, checkpoint_optimizers)
             loaded_groups = optimizer_state_dict.get("param_groups", [])
             live_groups = runtime_optimizer_state_dict.get("param_groups", [])
+            _check_param_group_algorithms(loaded_groups, live_groups)
             _warn_changed_param_groups(loaded_groups, live_groups)
             optimizer_state_dict = join_loaded_optimizer_state_for_runtime(
                 self.model, optimizer_state_dict, runtime_optimizer_state_dict
@@ -805,12 +849,9 @@ def ckpt_output_dir(output_dir: Path, ckpt_config: CheckpointConfig | None) -> P
 # Compat, remove once no run resumes from such a checkpoint. Full offload used to save the BF16 GPU weights as the model
 # weights and its FP32 masters in the optimizer state. A resume with full offload reads such a checkpoint in that
 # layout, so that the masters load exactly; other loads read its BF16 model weights, as they did.
-def _saved_masters_in_optimizer_state(path: Path, optimizers: list[OptimizerLike]) -> bool:
+def _saved_masters_in_optimizer_state(saved_keys: set[str], optimizers: list[OptimizerLike]) -> bool:
     keys = {optimizer.checkpoint_weights_key for optimizer in optimizers if _keeps_weights(optimizer)}
-    if not keys:
-        return False
-    saved = FileSystemReader(path).read_metadata().state_dict_metadata
-    return any(name.rsplit(".", 1)[-1] in keys for name in saved)
+    return any(name.rsplit(".", 1)[-1] in keys for name in saved_keys)
 
 
 def _load_app_state(
@@ -821,13 +862,16 @@ def _load_app_state(
     *,
     model_only: bool,
 ) -> None:
-    masters_in_optimizer_state = not model_only and _saved_masters_in_optimizer_state(path, optimizers)
+    saved_keys = None if model_only else set(FileSystemReader(path).read_metadata().state_dict_metadata)
+    if saved_keys is not None:
+        _check_param_group_count(saved_keys, optimizers)
     app_state = AppState(
         model,
         optimizers,
         progress,
         optimizer_state=not model_only,
-        masters_in_optimizer_state=masters_in_optimizer_state,
+        masters_in_optimizer_state=saved_keys is not None and _saved_masters_in_optimizer_state(saved_keys, optimizers),
+        saved_keys=saved_keys,
     )
     dcp_load(state_dict={"app": app_state}, checkpoint_id=path, process_group=get_dcp_group())
     # DCP materializes the optimizer state with a zero-grad step, which allocates a full set of
