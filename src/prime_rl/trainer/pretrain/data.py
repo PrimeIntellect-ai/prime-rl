@@ -16,7 +16,7 @@ import torch
 import torch.distributed as dist
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.pretrain import PretrainDataConfig
+from prime_rl.configs.supervised import DocumentsDataConfig
 from prime_rl.trainer.data import SKIP_DATALOADER, StatefulIterableDataset, due, mixture_changed
 from prime_rl.utils.bin_packing import fill_rows
 from prime_rl.utils.logger import get_logger
@@ -679,7 +679,7 @@ def saved_data_state(directory: Path) -> dict:
 
 
 def setup_token_dataset(
-    config: PretrainDataConfig,
+    config: DocumentsDataConfig,
     *,
     dp_rank: int,
     dp_size: int,

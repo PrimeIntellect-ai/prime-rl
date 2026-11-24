@@ -480,9 +480,9 @@ def custom_renderer_config(tmp_path):
 
 
 def test_source_renderer_kwargs_apply_to_that_source_only(custom_renderer_config):
-    from prime_rl.configs.sft import SFTDataConfig
+    from prime_rl.configs.supervised import ChatDataConfig
 
-    config = SFTDataConfig(
+    config = ChatDataConfig(
         source=[
             {"name": "high", "dataset": "unused", "renderer": {"reasoning_effort": "high"}},
             {"name": "default", "dataset": "unused"},
@@ -546,7 +546,7 @@ def test_renderer_resolver_rejects_renderer_columns_without_the_field():
 
 
 def test_sft_dataset_reads_mapped_message_columns(dummy_renderer):
-    from prime_rl.configs.sft import SFTColumnsConfig
+    from prime_rl.configs.val import SFTColumnsConfig
 
     dataset = Dataset.from_list([{"conversation": [{"role": "assistant", "content": "a0"}]}])
 
@@ -563,7 +563,7 @@ def test_sft_dataset_reads_mapped_message_columns(dummy_renderer):
 
 
 def test_sft_dataset_passes_tools_through_from_the_mapped_column(dummy_renderer):
-    from prime_rl.configs.sft import SFTColumnsConfig
+    from prime_rl.configs.val import SFTColumnsConfig
 
     tools = [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}]
     dataset = Dataset.from_list(
@@ -590,7 +590,7 @@ def test_sft_dataset_passes_tools_through_from_the_mapped_column(dummy_renderer)
 @pytest.mark.parametrize("column", ["message_loss_mask", "selection"])
 @pytest.mark.parametrize("mask", [None, [True, True, True, True], [0, 0, 0, 1], [0, 1, 0, 0], [0, 0, 0, 0]])
 def test_sft_message_selection(model, layout, column, mask):
-    from prime_rl.configs.sft import SFTColumnsConfig
+    from prime_rl.configs.val import SFTColumnsConfig
 
     tokenizer = AutoTokenizer.from_pretrained(model)
     renderer = create_renderer(tokenizer)

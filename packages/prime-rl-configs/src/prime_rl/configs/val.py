@@ -61,7 +61,7 @@ class HFDatasetConfig(BaseConfig):
     """Split of the dataset."""
 
     columns: SFTColumnsConfig | None = None
-    """Columns of this dataset. Unset fields keep ``data.columns`` (the defaults in pretraining and RL)."""
+    """Columns of this dataset. Unset fields keep ``data.columns`` (the defaults with ``documents`` data and in RL)."""
 
     renderer: dict[str, Any] = {}
     """Chat-template kwargs for this dataset's rows, applied over ``[renderer]`` and under a row's
@@ -90,19 +90,19 @@ class DocumentsValSourceConfig(BaseValSourceConfig):
     type: Literal["documents"] = "documents"
 
     path: Path
-    """Folder of datatrove tokenized shards, as for a pretraining source's ``path``. The tokens are scored as stored."""
+    """Folder of datatrove tokenized shards, as a ``documents`` source's ``path``. The tokens are scored as stored."""
 
 
 class ChatValSourceConfig(HFDatasetConfig, BaseValSourceConfig):
-    """Conversations, rendered as SFT renders its training data: the fields of an SFT ``[[data.source]]`` but
-    ``weight``. The rows are scored in order; the tokens SFT trains on (``loss_mask``) are scored, and a conversation is
-    cut after ``seq_len`` input tokens."""
+    """Conversations, rendered as ``chat`` data is: the fields of a ``chat`` ``[[data.source]]`` but ``weight``. The
+    rows are scored in order; the tokens ``chat`` data trains on (``loss_mask``) are scored, and a conversation is cut
+    after ``seq_len`` input tokens."""
 
     type: Literal["chat"] = "chat"
 
     loss_mask: LossMaskConfig | None = None
-    """Which message types are scored. Defaults to the training ``data.loss_mask`` (the default mask in pretraining
-    and RL)."""
+    """Which message types are scored. Defaults to the training ``data.loss_mask`` (the default mask with
+    ``documents`` data and in RL)."""
 
 
 ValSourceConfig: TypeAlias = Annotated[DocumentsValSourceConfig | ChatValSourceConfig, Field(discriminator="type")]
