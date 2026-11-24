@@ -11,7 +11,7 @@ from prime_rl.configs.supervised import ChatDataConfig
 from prime_rl.configs.val import ChatValSourceConfig, DocumentsValSourceConfig
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.sft.data import setup_sft_dataset
-from prime_rl.trainer.val import chat_source, documents_source, rank_rows, token_byte_lengths
+from prime_rl.trainer.val import chat_source, contrast_summary, documents_source, rank_rows, token_byte_lengths
 
 # Documents in two files of one folder, with an empty one. A token's id is its position in the folder.
 DOCUMENTS = [[range(0, 10), range(10, 30), range(30, 30), range(30, 60)], [range(60, 103)]]
@@ -91,7 +91,7 @@ def test_chat_source_scores_the_tokens_sft_trains_on(tmp_path: Path):
     config = ChatValSourceConfig(name="chat", dataset=str(tmp_path), seq_len=1024, loss_mask=data.loss_mask)
     config.resolve_columns(data.columns)
     # num_samples above the split's size scores every row.
-    ((inputs, labels),) = chat_source(config, 5, tokenizer, renderer).requests
+    ((inputs, labels),) = chat_source(config, 5, tokenizer, renderer, ()).requests
     assert inputs.tolist() == sample["input_ids"].tolist()
     assert labels.tolist() == np.where(sample["loss_mask"], sample["target_ids"], IGNORE_INDEX).tolist()
     assert tokenizer.convert_tokens_to_ids("<|im_start|>") not in labels
@@ -104,3 +104,15 @@ def test_token_byte_lengths_add_up_to_the_text_bytes():
     byte_lengths = token_byte_lengths(tokenizer)
     assert byte_lengths[tokenizer.encode(text)].sum() == len(text.encode())
     assert byte_lengths[tokenizer.eos_token_id] == 0
+
+
+def test_contrast_summary_compares_item_losses():
+    """A contrast compares the item losses (mean loss per scored token) of two sources, without the items with no scored
+    token: the gap of the means, its standard error, and with pair keys the share of keys at which a's loss is lower."""
+    # Item losses: a [2, 1, -, 2] with keys x, y, (z), x; b [3, 0.5, 1] with keys x, y, z.
+    a = {"nll": np.array([2.0, 3.0, 0.0, 4.0]), "tokens": np.array([1, 3, 0, 2])}
+    b = {"nll": np.array([6.0, 0.5, 1.0]), "tokens": np.array([2, 1, 1])}
+    summary = contrast_summary(a, b, (["x", "y", "z", "x"], ["x", "y", "z"]))
+    # Sample variances 1/3 (a) and 7/4 (b), over 3 items each.
+    assert summary == pytest.approx({"gap": 1.5 - 5 / 3, "gap_se": 5 / 6, "win_rate": 0.5})
+    assert contrast_summary(a, b).keys() == {"gap", "gap_se"}

@@ -294,6 +294,21 @@ def test_val_due(eval_on_start: bool, start_step: int, step: int, due: bool):
     assert val.due(step, start_step) == due
 
 
+@pytest.mark.parametrize(
+    ("contrast", "error"),
+    [
+        ({"name": "c", "a": "chat", "b": "missing"}, "'missing' is not a val.source name"),
+        ({"name": "c", "a": "chat", "b": "docs", "pair_by": "task_id"}, "pair_by needs chat sources"),
+    ],
+)
+def test_val_contrasts_compare_val_sources(contrast: dict, error: str):
+    """A contrast compares two val.source names, and only chat sources have the columns pair_by reads."""
+    sources = [{"type": "chat", "name": "chat", "dataset": "x"}, {"type": "documents", "name": "docs", "path": "d"}]
+    ValConfig(source=sources, contrast=[{"name": "c", "a": "chat", "b": "docs"}])
+    with pytest.raises(ValidationError, match=error):
+        ValConfig(source=sources, contrast=[contrast])
+
+
 def test_rl_orchestrator_val_fills_the_trainer_val(tmp_path):
     """An rl config's [orchestrator.val] gives the trainer its validation sources (with RL's model.seq_len defaults),
     which are not set directly, and chat sources render like the policy's rollouts."""
