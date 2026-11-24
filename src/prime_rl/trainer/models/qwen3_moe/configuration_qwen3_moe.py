@@ -106,15 +106,7 @@ class Qwen3MoeConfig(PretrainedConfig):
             Indicate which layers use Qwen3MoeMLP rather than Qwen3MoeSparseMoeBlock
             The list contains layer index, from 0 to num_layers-1 if we have num_layers layers
             If `mlp_only_layers` is empty, `decoder_sparse_step` is used to determine the sparsity.
-    ```python
-    >>> from transformers import Qwen3MoeModel, Qwen3MoeConfig
-    >>> # Initializing a Qwen3MoE style configuration
-    >>> configuration = Qwen3MoeConfig()
-    >>> # Initializing a model from the Qwen3-15B-A2B" style configuration
-    >>> model = Qwen3MoeModel(configuration)
-    >>> # Accessing the model configuration
-    >>> configuration = model.config
-    ```"""
+    """
 
     model_type = "qwen3_moe"
     keys_to_ignore_at_inference = ["past_key_values"]

@@ -11,11 +11,8 @@ from __future__ import annotations
 
 import torch
 from torch import Tensor, nn
-from transformers.generation import GenerationMixin
-from transformers.modeling_layers import GradientCheckpointingLayer
-from transformers.modeling_outputs import MoeModelOutputWithPast
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, TextModelOutput
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4.converting_deepseek_v4 import conversion_chain
@@ -31,7 +28,7 @@ from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 
 
-class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
+class DeepseekV4DecoderLayer(nn.Module):
     """One hyper-connected block: mHC, attention, mHC, MoE.
 
     Both sublayers read the single sequence their `DeepseekV4HyperConnection` collapsed the
@@ -176,7 +173,6 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
         )
         self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.hc_head = DeepseekV4HyperHead(config)
-        self.gradient_checkpointing = False
 
         self.post_init()
 
@@ -189,7 +185,7 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> MoeModelOutputWithPast:
+    ) -> TextModelOutput:
         """
         input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Token ids. Threaded down to every decoder layer, not just the embedding: the
@@ -255,10 +251,10 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             )
 
         hidden_states = self.norm(self.hc_head(mhc_states))
-        return MoeModelOutputWithPast(last_hidden_state=hidden_states)
+        return TextModelOutput(last_hidden_state=hidden_states)
 
 
-class DeepseekV4ForCausalLM(DeepseekV4PreTrainedModel, GenerationMixin):
+class DeepseekV4ForCausalLM(DeepseekV4PreTrainedModel):
     _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
 
     def __init__(self, config: DeepseekV4Config):

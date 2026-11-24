@@ -1,4 +1,5 @@
-import logging
+import importlib.metadata
+import importlib.util
 import os
 import shutil
 import sys
@@ -28,7 +29,6 @@ from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
 from torch.distributed.tensor import DTensor, Shard
 from transformers import AutoConfig, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
-from transformers.utils.import_utils import is_flash_attn_3_available
 
 from prime_rl.configs.trainer import (
     MODULE_TARGET_SEPARATOR,
@@ -78,13 +78,6 @@ from prime_rl.utils.weights import (
     load_state_dict,
     load_state_dict_keys,
     save_state_dict,
-)
-
-# Add filter to the standard logging module for transformers.modeling_utils to supress the
-# flash attention dtype warnings since FSDP is used to handle mixed precision.
-transformers_modeling_utils_logger = logging.getLogger("transformers.modeling_utils")
-transformers_modeling_utils_logger.addFilter(
-    lambda record: "Flash Attention 2 only supports torch.float16 and torch.bfloat16 dtypes" not in record.getMessage()
 )
 
 DTYPE_MAP = {
@@ -980,6 +973,16 @@ def _reset_runtime_moe_buffers(model: nn.Module) -> None:
             module.routing_confidence_sum.zero_()
 
 
+def _is_flash_attn_3_available() -> bool:
+    if importlib.util.find_spec("flash_attn_interface") is None or not torch.cuda.is_available():
+        return False
+    try:
+        importlib.metadata.distribution("flash-attn-3")
+    except importlib.metadata.PackageNotFoundError:
+        return False
+    return True
+
+
 def _validate_flash_attn_4_installed() -> None:
     """Validate that flash-attn-cute is installed and not overwritten by flash-attn.
 
@@ -1028,7 +1031,7 @@ def setup_model(
 ) -> nn.Module:
     resolve_auto_attn(config)
 
-    if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
+    if config.attn == "flash_attention_3" and not _is_flash_attn_3_available():
         raise ValueError(
             "Flash attention 3 is only supported if the flash_attn_3 package is installed. Install with `uv pip install 'flash-attn-3 @ git+https://github.com/Dao-AILab/flash-attention.git@main#subdirectory=hopper' --no-build-isolation`"
         )

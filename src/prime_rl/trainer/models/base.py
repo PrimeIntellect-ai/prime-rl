@@ -1,4 +1,5 @@
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from torch import Tensor, nn
@@ -16,6 +17,21 @@ class AttentionFlops(Protocol):
     def attention_flops(self, seq_len: int) -> int:
         """Training FLOPs of this layer's sequence mixing for one document of `seq_len` tokens."""
         ...
+
+
+@dataclass
+class TextModelOutput:
+    """Final hidden states of an inner text model."""
+
+    last_hidden_state: Tensor
+
+
+@dataclass
+class VisionModelOutput:
+    """Per-patch hidden states of a vision encoder and the merged embeddings it feeds the text model."""
+
+    last_hidden_state: Tensor
+    pooler_output: Tensor
 
 
 def count_active_params(model: nn.Module, params: Iterable[nn.Parameter] | None = None) -> int:
@@ -189,4 +205,4 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         raise NotImplementedError(f"init_buffers_post_meta is not implemented for {self.__class__.__name__}")
 
 
-__all__ = ["PreTrainedModelPrimeRL"]
+__all__ = ["PreTrainedModelPrimeRL", "TextModelOutput", "VisionModelOutput"]

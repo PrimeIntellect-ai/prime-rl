@@ -4,16 +4,8 @@ from typing import Optional, Union
 
 import torch
 from torch import nn
-from transformers.cache_utils import Cache
-from transformers.generation import GenerationMixin
-from transformers.modeling_layers import GradientCheckpointingLayer
-from transformers.modeling_outputs import (
-    MoeModelOutputWithPast,
-)
-from transformers.processing_utils import Unpack
-from transformers.utils import TransformersKwargs
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, TextModelOutput
 from prime_rl.trainer.models.layers.attn import (
     flash_attn_2_varlen_op,
     flash_attn_3_varlen_op,
@@ -188,7 +180,7 @@ def _get_afmoe_attention(config: AfmoeConfig, layer_idx: int) -> nn.Module:
     return AFMOE_ATTN_IMPL2CLASS[attn_impl](attn_config)
 
 
-class AfmoeDecoderLayer(GradientCheckpointingLayer):
+class AfmoeDecoderLayer(nn.Module):
     def __init__(self, config: AfmoeConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -304,7 +296,6 @@ class AfmoeModel(AfmoePreTrainedModel):
         )
         self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.rotary_emb = _create_rotary_emb(config)
-        self.gradient_checkpointing = False
 
         self.post_init()
 
@@ -324,7 +315,7 @@ class AfmoeModel(AfmoePreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> MoeModelOutputWithPast:
+    ) -> TextModelOutput:
         """
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
@@ -368,12 +359,12 @@ class AfmoeModel(AfmoePreTrainedModel):
             )
 
         hidden_states = self.norm(hidden_states)
-        return MoeModelOutputWithPast(
+        return TextModelOutput(
             last_hidden_state=hidden_states,
         )
 
 
-class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
+class AfmoeForCausalLM(AfmoePreTrainedModel):
     _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
 
     def __init__(self, config):
@@ -408,10 +399,8 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
         input_ids: torch.LongTensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Cache] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         token_type_ids: Optional[torch.Tensor] = None,  # will be ignored
         temperature: Optional[torch.Tensor] = None,
@@ -419,7 +408,6 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-        **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -430,10 +418,7 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
         """
-        assert use_cache is None, "use_cache is not supported for custom afmoe for now"
-        assert past_key_values is None, "past_key_values is not supported for custom afmoe for now"
-
-        outputs: MoeModelOutputWithPast = self.model(
+        outputs: TextModelOutput = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             position_ids=position_ids,
