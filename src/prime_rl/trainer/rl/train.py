@@ -256,7 +256,7 @@ def train(config: TrainerConfig):
     logger.debug(f"Initialized optimizer in {format_time(time.perf_counter() - t0)}")
 
     logger.info(f"Initializing scheduler ({config.scheduler})")
-    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
+    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr, checkpoint_step)
 
     # Set up weight broadcast (skip when using fake data since there's no inference server)
     if config.data.fake:
@@ -294,7 +294,6 @@ def train(config: TrainerConfig):
             checkpoint_step,
             model,
             [optimizer],
-            scheduler,
             progress,
             path=resume_dir / "trainer" if resume_dir is not None else None,
         )
@@ -765,9 +764,9 @@ def train(config: TrainerConfig):
         optimizer.zero_grad()
 
         # Update learning rate scheduler
+        current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
 
-        current_lr = optimizer.param_groups[0]["lr"]
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # Broadcast the model just produced (policy v{progress.step}). The final
@@ -802,7 +801,7 @@ def train(config: TrainerConfig):
         if (is_ckpt_step or step_action == "checkpoint") and not is_last_step:
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
-            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+            ckpt_manager.save(progress.step, model, [optimizer], progress)
             if step_action == "checkpoint" or config.rollout_transport.retain:
                 # The action and the release of retained rollouts both need the checkpoint on storage
                 ckpt_manager.wait()
@@ -927,7 +926,7 @@ def train(config: TrainerConfig):
     # Write final checkpoint
     if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
-        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+        ckpt_manager.save(progress.step, model, [optimizer], progress)
         ckpt_manager.wait()
         dataloader.commit(progress.step, release=is_data_master)
         if step_action is not None:
