@@ -17,6 +17,7 @@ from pathlib import Path
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers import Glm4MoeForCausalLM as HFGlm4MoeForCausalLM
+from transformers.models.qwen3_5_moe.configuration_qwen3_5_moe import Qwen3_5MoeConfig as HFQwen3_5MoeConfig
 from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
     Qwen3_5MoeForConditionalGeneration as HFQwen3_5MoeVLM,
 )
@@ -37,7 +38,8 @@ setup_logger("info")
 
 def _qwen3_5_moe_vlm_config():
     """Build a tiny composite VLM config for Qwen3.5 MoE."""
-    config = AutoConfig.from_pretrained("Qwen/Qwen3.5-35B-A3B", trust_remote_code=True, attn_implementation="sdpa")
+    # PrimeRL registers its own Qwen3.5 configs with AutoConfig, so use HF's config class for the HF model
+    config = HFQwen3_5MoeConfig.from_pretrained("Qwen/Qwen3.5-35B-A3B", attn_implementation="sdpa")
     config.use_cache = False
 
     tc = config.text_config
@@ -258,8 +260,13 @@ def verify(arch: str, model_dir: Path) -> None:
     text_config = getattr(config, "text_config", config)
     vocab_size = text_config.vocab_size
 
+    hf_config = config
+    if is_vlm:
+        # AutoConfig returns PrimeRL's Qwen3.5 config, which HF's vision model can't use
+        hf_config = HFQwen3_5MoeConfig.from_pretrained(str(model_dir), attn_implementation="sdpa")
+
     # PrimeRL models only run FlashAttention, which needs half precision; fp16 rounds less than bf16
-    hf_model = _load_hf_model(preset, model_dir, config).to(device="cuda", dtype=torch.float16)
+    hf_model = _load_hf_model(preset, model_dir, hf_config).to(device="cuda", dtype=torch.float16)
     with torch.device("cuda"):
         prime_model = preset["prime_model_class"].from_config(
             config, attn_implementation="flash_attention_3", dtype=torch.float16
@@ -282,16 +289,10 @@ def verify(arch: str, model_dir: Path) -> None:
     hf_output = hf_model(input_ids=input_ids, position_ids=position_ids)
     prime_output = prime_model(input_ids, position_ids, seq_lens=seq_lens)
 
-    if is_vlm:
-        # HF GatedDeltaNet has a dtype bug in float32 mode; just verify non-NaN output
-        assert not torch.isnan(prime_output["logits"]).any(), "PrimeRL VLM output contains NaN"
-        assert prime_output["logits"].shape == hf_output.logits.shape
-        print("  VLM forward pass verified (shape match, no NaN)")
-    else:
-        # The mean, not the max: at half precision a near-tie in routing can send a token to another expert
-        mean_diff = (prime_output["logits"] - hf_output.logits).abs().mean().item()
-        print(f"  HF vs PrimeRL mean logits diff: {mean_diff:.6f}")
-        assert mean_diff < 0.02, f"HF vs PrimeRL logits mismatch: mean diff {mean_diff}"
+    # The mean, not the max: at half precision a near-tie in routing can send a token to another expert
+    mean_diff = (prime_output["logits"] - hf_output.logits).abs().mean().item()
+    print(f"  HF vs PrimeRL mean logits diff: {mean_diff:.6f}")
+    assert mean_diff < 0.02, f"HF vs PrimeRL logits mismatch: mean diff {mean_diff}"
 
     # Roundtrip weight conversion: HF -> PrimeRL -> HF
     # Normalize both through the same roundtrip to handle expert format differences
