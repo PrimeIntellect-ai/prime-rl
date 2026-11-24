@@ -45,6 +45,7 @@ def apply_shared_vllm_patches():
     monkey_patch_keep_pause_ignores_held_kv()
     monkey_patch_freeze_nixl_leases_during_keep_pause()
     monkey_patch_drop_reservation_of_failed_kv_load()
+    monkey_patch_skip_store_lookup_after_match()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
@@ -327,6 +328,61 @@ def monkey_patch_drop_reservation_of_failed_kv_load():
 
     _reserve_parked._prime_rl_drops_failed_load = True
     Scheduler._reserve_parked = _reserve_parked
+
+
+def has_remote_kv_handle(request) -> bool:
+    """Whether the request carries another instance's KV blocks to read (a bidirectional decode handle)."""
+    params = request.kv_transfer_params
+    return bool(params and params.get("remote_block_ids"))
+
+
+def monkey_patch_skip_store_lookup_after_match():
+    """A request whose KV another connector already supplies does not also look it up in the Mooncake store.
+
+    ``MultiConnector`` asks every connector how many tokens it can supply and uses the first that has any, but it
+    keeps asking the rest. Under bidirectional P/D, a prefill request whose missing KV comes back from decode over
+    NIXL still pays a store lookup (one key per KV block and group, so thousands for a long prompt) whose answer is
+    discarded. A synchronous lookup blocks ``Scheduler.schedule()`` for its whole duration, and the data-parallel
+    ranks of a node step together, so one rank waiting on the store stalls them all: under a backlog a prefill engine
+    spent two thirds of its time there. An asynchronous lookup that is still pending makes ``MultiConnector`` report
+    the request as not ready, which delays it by a step.
+
+    After a connector has matched, the remaining store connectors are not asked, and a request that arrives with a
+    remote KV handle does not start the store's lookup prefetch. Other connectors are still asked, since they may
+    track requests through this call. A request without a match is looked up in the store as before.
+    """
+    from vllm.distributed.kv_transfer.kv_connector.v1 import multi_connector
+    from vllm.distributed.kv_transfer.kv_connector.v1.mooncake.store.connector import MooncakeStoreConnector
+    from vllm.distributed.kv_transfer.kv_connector.v1.mooncake.store.scheduler import MooncakeStoreScheduler
+
+    cls = multi_connector.MultiConnector
+    if getattr(cls.get_num_new_matched_tokens, "_prime_rl_skip_store_lookup", False):
+        return
+
+    def get_num_new_matched_tokens(self, request, num_computed_tokens):
+        to_return = (0, False)
+        for i, connector in enumerate(self._connectors):
+            if to_return[0] > 0 and isinstance(connector, MooncakeStoreConnector):
+                continue
+            tokens, load_async = connector.get_num_new_matched_tokens(request, num_computed_tokens)
+            if tokens is None:
+                return (None, False)
+            if to_return[0] == 0 and tokens > 0:
+                self._requests_to_connector[request.request_id] = i
+                to_return = (tokens, load_async)
+        return to_return
+
+    get_num_new_matched_tokens._prime_rl_skip_store_lookup = True
+    cls.get_num_new_matched_tokens = get_num_new_matched_tokens
+
+    original_prefetch = MooncakeStoreScheduler.start_lookup_prefetch
+
+    def start_lookup_prefetch(self, request) -> None:
+        if has_remote_kv_handle(request):
+            return
+        original_prefetch(self, request)
+
+    MooncakeStoreScheduler.start_lookup_prefetch = start_lookup_prefetch
 
 
 def monkey_patch_block_outermost_mla_stride():

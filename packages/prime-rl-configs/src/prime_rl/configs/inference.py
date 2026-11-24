@@ -277,6 +277,12 @@ class MooncakeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
     own ``kv_lease_duration``, not this lease. Under P/D the larger of the two roles' values applies, since one
     master serves both."""
 
+    lookup_async: bool = True
+    """Look up a request's prefix in the store on a background thread (``lookup_async``), starting when the request
+    arrives. A synchronous lookup blocks the scheduler for its whole duration (tens of ms for a long prompt, one key
+    per KV block and group), and with data parallelism the ranks of a node step together, so one rank's lookup
+    stalls them all."""
+
     def to_connector_dict(self) -> dict[str, Any]:
         # Addresses/sizes/tiers are realized by the per-node store launch in the sbatch
         # template (MOONCAKE_CONFIG_PATH JSON); blocks are keyed by model + parallel rank +
@@ -284,7 +290,7 @@ class MooncakeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
         return {
             "kv_connector": "MooncakeStoreConnector",
             "kv_role": "kv_both",
-            "kv_connector_extra_config": {},
+            "kv_connector_extra_config": {"lookup_async": self.lookup_async},
         }
 
 
