@@ -630,7 +630,10 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_sampler_kl_pruning(self):
-        """Zero-advantage tokens still have a sampler KL gradient, so keep them."""
+        """Zero-advantage tokens still have a sampler KL gradient, so keep them, unless
+        orchestrator.prune_zero_advantages is set: then the KL trains only on rollouts with an advantage."""
+        if "prune_zero_advantages" in self.orchestrator.model_fields_set:
+            return self
         sampler_kl = getattr(self.trainer.loss, "sampler_kl", None)
         if sampler_kl is not None and (sampler_kl.coef > 0 or sampler_kl.adaptive is not None):
             self.orchestrator.prune_zero_advantages = False
