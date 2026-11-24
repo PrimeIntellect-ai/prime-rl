@@ -1,0 +1,11 @@
+# Over reinforce-kl.toml: the token-level KL mask. A token whose KL(sampler || trainer) at its position exceeds the
+# threshold is dropped from both the policy gradient (with score centering) and the sampler KL: the trust-region role
+# of the icepop mask without importance weights. The exact estimator thresholds the KL over the sampler support at
+# the position, so the mask does not depend on the sampled token.
+#
+#   uv run rl @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/base.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/reinforce-kl.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/reinforce-kl-mask.toml
+#   uv run rl @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/base.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/mxfp8.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/nvfp4.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/stale-nocap.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/reinforce-kl.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/reinforce-kl-mask.toml
+
+[trainer.loss.kl_mask]
+threshold = 0.3
+estimator = "exact"
