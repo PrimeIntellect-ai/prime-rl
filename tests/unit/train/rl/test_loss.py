@@ -6,6 +6,7 @@ from prime_rl.configs.trainer import (
     CustomLossConfig,
     IcePopLossConfig,
     IPOLossConfig,
+    KLMaskConfig,
     ReinforceLossConfig,
     SamplerKLConfig,
 )
@@ -235,6 +236,52 @@ def test_sampler_kl_coefficient_adapts_toward_target():
     fixed = SamplerKL(SamplerKLConfig(coef=0.1))
     fixed.adapt(1.0)
     assert fixed.coef == 0.1
+
+
+def test_kl_mask_drops_far_positions_from_both_terms():
+    """Two rl tokens with complete replayed supports: the one whose sampler is far from the trainer
+    loses its policy gradient and its sampler KL, the other trains exactly as without the mask."""
+    logits = torch.tensor([[0.2, -0.3, 0.1], [0.4, 0.1, -0.6]], requires_grad=True)
+    logp = logits.log_softmax(-1)
+    q = torch.tensor([[0.4, 0.25, 0.35], [0.05, 0.05, 0.9]])
+    positions, sampled = torch.arange(2), torch.tensor([0, 2])
+    inputs = LossInputs(
+        logp[positions, sampled],
+        q.log()[positions, sampled],
+        None,
+        torch.tensor([0.8, -0.5]),
+        torch.ones(2, dtype=torch.bool),
+        trainer_support_logprobs=logp.flatten(),
+        sampler_support_logprobs=q.log().flatten(),
+        support_rows=positions.repeat_interleave(3),
+        support_replayed=torch.ones(2, dtype=torch.bool),
+        staleness=torch.ones(2, dtype=torch.long),
+    )
+    kl = (q * (q.log() - logp.detach())).sum(-1)
+    assert kl[0] < 0.1 < kl[1]
+    config = ReinforceLossConfig(score_centering=True, sampler_kl=SamplerKLConfig(coef=0.3))
+    masked = setup_rl_loss_fn(config.model_copy(update={"kl_mask": KLMaskConfig(threshold=0.1)})).loss(inputs)
+    unmasked = setup_rl_loss_fn(config).loss(inputs)
+    masked_gradient = torch.autograd.grad(masked.loss, logits, retain_graph=True)[0]
+    unmasked_gradient = torch.autograd.grad(unmasked.loss, logits)[0]
+    torch.testing.assert_close(masked_gradient[1], torch.zeros(3))
+    torch.testing.assert_close(masked_gradient[0], unmasked_gradient[0])
+    assert unmasked_gradient[1].abs().sum() > 0
+    torch.testing.assert_close(masked.metrics["kl_mask/kl"], kl)
+    torch.testing.assert_close(masked.metrics["kl_mask/masked"], torch.tensor([0.0, 1.0]))
+
+
+def test_kl_mask_k1_thresholds_the_sampled_token_log_ratio():
+    trainer_logprobs = torch.tensor([-0.1, -1.0], requires_grad=True)
+    inputs = LossInputs(
+        trainer_logprobs, torch.tensor([-0.2, -0.1]), None, torch.tensor([1.0, 1.0]), torch.ones(2, dtype=torch.bool)
+    )
+    config = ReinforceLossConfig(kl_mask=KLMaskConfig(threshold=0.2, estimator="k1"))
+    result = setup_rl_loss_fn(config).loss(inputs)
+    torch.testing.assert_close(torch.autograd.grad(result.loss, trainer_logprobs)[0], torch.tensor([-1.0, 0.0]))
+    torch.testing.assert_close(result.metrics["kl_mask/kl"], torch.tensor([-0.1, 0.9]))
+    assert not config.captures_sampler_head
+    assert ReinforceLossConfig(kl_mask=KLMaskConfig(threshold=0.2)).captures_sampler_head
 
 
 def test_grpo_loss():
