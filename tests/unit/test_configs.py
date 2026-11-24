@@ -1578,7 +1578,7 @@ def test_pd_spill_to_store_runs_the_store_connector_in_capacity_only_mode():
         assert mooncake == {
             "kv_connector": "MooncakeStoreConnector",
             "kv_role": "kv_consumer",
-            "kv_connector_extra_config": {"enable_lookup": False},
+            "kv_connector_extra_config": {"lookup_async": True, "enable_lookup": False},
         }
 
     with pytest.raises(ValidationError, match="needs a Mooncake kv_cache_offload"):
@@ -1600,7 +1600,8 @@ def test_pd_spill_to_store_runs_the_store_connector_in_capacity_only_mode():
         slurm={},
     )
     mooncake = plain.for_pd_role("decode").build_kv_transfer_config()["kv_connector_extra_config"]["connectors"][1]
-    assert mooncake["kv_role"] == "kv_both" and mooncake["kv_connector_extra_config"] == {"save_decode_cache": True}
+    assert mooncake["kv_role"] == "kv_both" and mooncake["kv_connector_extra_config"]["save_decode_cache"] is True
+    assert "enable_lookup" not in mooncake["kv_connector_extra_config"]
 
 
 CUSTOM_RENDERER_SOURCE = """
