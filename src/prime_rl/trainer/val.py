@@ -214,12 +214,13 @@ def score(
     model: nn.Module, requests: list[Request], micro_batch_tokens: int, parallel_dims: ParallelDims
 ) -> tuple[np.ndarray, np.ndarray] | None:
     """Summed log-prob and greedy hits of every request's scored tokens, on rank 0 (None on the others). Every rank
-    scores its rows (`rank_rows`), and the sums are gathered on rank 0."""
+    scores its rows (`rank_rows`), and the sums are reduced onto rank 0."""
     world = get_world()
     dp = parallel_dims.get_mesh("dp")
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if parallel_dims.cp_enabled else 0
     rows = rank_rows(requests, micro_batch_tokens, dp.get_local_rank(), dp.size(), cp_rank, parallel_dims.cp)
-    indices, logprob_sums, hit_sums = [], [], []
+    # Every request's summed log-prob and greedy hits on this rank (hits are counts, exact in float64).
+    sums = np.zeros((2, len(requests)))
     for inputs, positions, labels, lengths, owners in rows:
         out = forward(
             model,
@@ -235,19 +236,14 @@ def score(
         # The scored tokens of a request are contiguous in the output: one run per request.
         starts = np.flatnonzero(np.diff(owners, prepend=-1))
         for start, end in zip(starts, [*starts[1:], len(owners)]):
-            indices.append(owners[start])
-            logprob_sums.append(logprobs[start:end].sum())
-            hit_sums.append(int(hits[start:end].sum()))
-    gathered = [None] * world.world_size if world.is_master else None
-    sums = (np.array(indices, dtype=np.int64), np.array(logprob_sums), np.array(hit_sums, dtype=np.int64))
-    dist.gather_object(sums, gathered, dst=0)
+            sums[0, owners[start]] += logprobs[start:end].sum()
+            sums[1, owners[start]] += hits[start:end].sum()
+    total = torch.from_numpy(sums).cuda()
+    dist.reduce(total, dst=0)
     if not world.is_master:
         return None
-    logprobs, hits = np.zeros(len(requests)), np.zeros(len(requests), dtype=np.int64)
-    for rank_indices, rank_logprobs, rank_hits in gathered:
-        np.add.at(logprobs, rank_indices, rank_logprobs)
-        np.add.at(hits, rank_indices, rank_hits)
-    return logprobs, hits
+    logprobs, hits = total.cpu().numpy()
+    return logprobs, hits.astype(np.int64)
 
 
 def length_label(seq_len: int) -> str:

@@ -52,6 +52,7 @@ def _sft_config(overrides: dict | None = None) -> SFTConfig:
         "model": {"name": "PrimeIntellect/Qwen3-0.6B"},
         "data": {"fake": {}, "batch_size": 8, "seq_len": 64},
         "max_steps": 10,
+        "monitors": {"prime": {}},
     }
     if overrides:
         config.update(overrides)
@@ -226,6 +227,17 @@ def test_launch_registers_no_run_it_does_not_own(sdk_runs, monkeypatch, env):
     with launch_run(config, config.monitors.prime):
         pass
     assert sdk_runs == [] and os.environ["PRL_RUN_ID"] == "local-uuid"
+
+
+def test_a_platform_launch_turns_the_monitor_on(sdk_runs, tmp_path, monkeypatch, clear_monitors):
+    """A platform launch builds its components' configs with the monitor off; they still
+    log to the run it created."""
+    monkeypatch.setenv("RUN_ID", "hosted-1")
+
+    asyncio.run(monitors.setup(prime=None, output_dir=tmp_path, run_config=_sft_config({"monitors": {}})))
+
+    monitor = monitors.get(PrimeMonitor)
+    assert monitor is not None and monitor.run.attached and monitor.run.id == "hosted-1"
 
 
 def test_platform_record_lock_keeps_a_stable_inode(tmp_path):
