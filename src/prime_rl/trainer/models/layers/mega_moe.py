@@ -422,21 +422,10 @@ def mega_moe_backward_fp8(dy, x, topk_idx, topk_weights, gate_up_proj, down_proj
 # NVFP4 (SM100): vLLM's online `nvfp4_per_token` MoE numerics forward, MXFP8 backward on the forward's NVFP4 operands
 
 
-@dataclass
-class _NVFP4Stash:
-    """The forward call whose stash a buffer holds (`nvfp4_mega_moe(stash_tag=...)`), named by its inputs: the backward
-    of that call reads the stash, any other backward first runs its forward again (bitwise the same)."""
-
-    tag: int = 0
-    inputs: tuple = ()
-
-
-_NVFP4_STASHES: dict[int, _NVFP4Stash] = {}
-
-
-def _nvfp4_call(*tensors: torch.Tensor) -> tuple:
-    # Autograd keeps the inputs alive and unmodified until the backward, so their storage and version name the call
-    return tuple((t.data_ptr(), t._version) for t in tensors)
+# The tag of the forward call whose stash each buffer holds (`nvfp4_mega_moe(stash_tag=...)`): the count of forward calls
+# on the buffer, the same on every rank. The backward of that call reads the stash; any other backward first runs its
+# forward again (bitwise the same), which every rank then does.
+_NVFP4_STASH_TAGS: dict[int, int] = {}
 
 
 def _nvfp4_weights(gate_up_proj: torch.Tensor, down_proj: torch.Tensor):
@@ -453,9 +442,8 @@ def mega_moe_forward_nvfp4(x, topk_idx, topk_weights, gate_up_proj, down_proj, b
     l1, l2, weight_scales = _nvfp4_weights(gate_up_proj, down_proj)
     deep_gemm.nvfp4_quantize_tokens(x, buffer, four_over_six)
     _stage_routing(buffer, x.shape[0], topk_idx, topk_weights)
-    stash = _NVFP4_STASHES.setdefault(id(buffer), _NVFP4Stash())
-    stash.tag += 1
-    stash.inputs = _nvfp4_call(x, topk_idx, topk_weights, gate_up_proj, down_proj)
+    stash_tag = _NVFP4_STASH_TAGS.get(id(buffer), 0) + 1
+    _NVFP4_STASH_TAGS[id(buffer)] = stash_tag
     y = torch.empty_like(x)
     deep_gemm.nvfp4_mega_moe(
         y,
@@ -465,22 +453,20 @@ def mega_moe_forward_nvfp4(x, topk_idx, topk_weights, gate_up_proj, down_proj, b
         buffer,
         activation_clamp=activation_clamp,
         four_over_six=four_over_six,
-        stash_tag=stash.tag,
+        stash_tag=stash_tag,
     )
     return y
 
 
 def mega_moe_backward_nvfp4(
-    dy, x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, dw_dtype, activation_clamp, four_over_six
+    dy, x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, dw_dtype, activation_clamp, four_over_six, stash_tag
 ):
     import deep_gemm
 
-    stash = _NVFP4_STASHES.get(id(buffer))
-    if stash is None or stash.inputs != _nvfp4_call(x, topk_idx, topk_weights, gate_up_proj, down_proj):
+    if _NVFP4_STASH_TAGS.get(id(buffer)) != stash_tag:
         mega_moe_forward_nvfp4(
             x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, activation_clamp, four_over_six
         )
-        stash = _NVFP4_STASHES[id(buffer)]
     l1_t, l2_t = deep_gemm.nvfp4_weights_to_mxfp8_rows(*_nvfp4_weights(gate_up_proj, down_proj))
     # The kernel writes dW1 in the natural [gate | up] row order
     dx, dw1, dw2, dtopk = _grad_buffers(x, buffer, gate_up_proj.shape, down_proj.shape, dw_dtype)
@@ -494,7 +480,7 @@ def mega_moe_backward_nvfp4(
         l1_t,
         l2_t,
         buffer,
-        stash.tag,
+        _NVFP4_STASH_TAGS[id(buffer)],
         activation_clamp=activation_clamp,
         four_over_six=four_over_six,
     )
@@ -524,7 +510,7 @@ def mega_moe_forward_op(
     down_proj: torch.Tensor,
     buffer_key: int,
     activation_clamp: float | None = None,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
     precision, buffers, num_sms, options = _BUFFER_REGISTRY[buffer_key]
     forward, _ = MEGA_MOE_IMPLS[precision]
     with _deep_gemm_num_sms(num_sms):
@@ -538,7 +524,9 @@ def mega_moe_forward_op(
             activation_clamp,
             **options,
         )
-    return y.to(x.dtype)
+    # The call's NVFP4 stash tag (0 otherwise), for its backward
+    stash_tag = _NVFP4_STASH_TAGS[id(buffers.forward)] if precision == "nvfp4" else 0
+    return y.to(x.dtype), torch.tensor(stash_tag, dtype=torch.int64)
 
 
 @mega_moe_forward_op.register_fake
@@ -550,8 +538,8 @@ def _mega_moe_forward_fake(
     down_proj: torch.Tensor,
     buffer_key: int,
     activation_clamp: float | None = None,
-) -> torch.Tensor:
-    return torch.empty_like(x)
+) -> tuple[torch.Tensor, torch.Tensor]:
+    return torch.empty_like(x), torch.empty((), dtype=torch.int64)
 
 
 @torch.library.custom_op("prime_rl::mega_moe_backward", mutates_args=())
@@ -562,11 +550,14 @@ def mega_moe_backward_op(
     topk_weights: torch.Tensor,
     gate_up_proj: torch.Tensor,
     down_proj: torch.Tensor,
+    stash_tag: torch.Tensor,
     buffer_key: int,
     activation_clamp: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     precision, buffers, num_sms, options = _BUFFER_REGISTRY[buffer_key]
     _, backward = MEGA_MOE_IMPLS[precision]
+    if precision == "nvfp4":
+        options = {**options, "stash_tag": int(stash_tag)}
     with _deep_gemm_num_sms(num_sms):
         dx, dw1, dw2, dtopk = backward(
             dy.to(torch.bfloat16).contiguous(),
@@ -591,6 +582,7 @@ def _mega_moe_backward_fake(
     topk_weights: torch.Tensor,
     gate_up_proj: torch.Tensor,
     down_proj: torch.Tensor,
+    stash_tag: torch.Tensor,
     buffer_key: int,
     activation_clamp: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -604,15 +596,17 @@ def _mega_moe_backward_fake(
 
 def _mega_moe_setup_context(ctx, inputs, output) -> None:
     x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer_key, activation_clamp = inputs
-    ctx.save_for_backward(x, topk_idx, topk_weights, gate_up_proj, down_proj)
+    stash_tag = output[1]
+    ctx.mark_non_differentiable(stash_tag)
+    ctx.save_for_backward(x, topk_idx, topk_weights, gate_up_proj, down_proj, stash_tag)
     ctx.buffer_key = buffer_key
     ctx.activation_clamp = activation_clamp
 
 
-def _mega_moe_backward(ctx, grad_y: torch.Tensor):
-    x, topk_idx, topk_weights, gate_up_proj, down_proj = ctx.saved_tensors
+def _mega_moe_backward(ctx, grad_y: torch.Tensor, _grad_stash_tag: torch.Tensor | None):
+    x, topk_idx, topk_weights, gate_up_proj, down_proj, stash_tag = ctx.saved_tensors
     dx, dw1, dw2, dtopk = torch.ops.prime_rl.mega_moe_backward(
-        grad_y, x, topk_idx, topk_weights, gate_up_proj, down_proj, ctx.buffer_key, ctx.activation_clamp
+        grad_y, x, topk_idx, topk_weights, gate_up_proj, down_proj, stash_tag, ctx.buffer_key, ctx.activation_clamp
     )
     return dx, None, dtopk, dw1, dw2, None, None
 
@@ -708,7 +702,7 @@ class MegaMoEExpertCompute:
             gate_up_proj = to_local(experts.gate_up_proj)
         else:
             gate_up_proj = torch.cat([to_local(experts.gate_proj), to_local(experts.up_proj)], dim=1)
-        return torch.ops.prime_rl.mega_moe_forward(
+        y, _ = torch.ops.prime_rl.mega_moe_forward(
             x,
             selected_experts_indices.to(torch.int64),
             top_scores.to(torch.float32),
@@ -717,3 +711,4 @@ class MegaMoEExpertCompute:
             self.buffer_key,
             _activation_clamp(experts.activation),
         )
+        return y
