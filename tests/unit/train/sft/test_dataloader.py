@@ -1,4 +1,5 @@
 import gc
+import json
 
 import pytest
 import torch
@@ -300,7 +301,11 @@ def test_resume_starts_every_worker_at_the_same_draw(
             )
         )
         after.append((dataset, dataloader))
-    views = [dataset.saved_view(dl, directory, gpu, gpus_after) for gpu, (dataset, dl) in enumerate(after)]
+    # Through JSON, as the trainer gathers the views.
+    views = [
+        json.loads(json.dumps(dataset.saved_view(dl, directory, gpu, gpus_after)))
+        for gpu, (dataset, dl) in enumerate(after)
+    ]
     starts = {dataset.start_together(dl, views) for dataset, dl in after}
     iterators = [iter(dl) for _, dl in after]
     furthest = max(state["step"] for state in saved)
