@@ -172,7 +172,7 @@ def run_step(config: ModelConfig, parallel_dims: ParallelDims, rows: list[dict],
     with maybe_activation_offloading(config.ac_offloading, model):
         loss, _ = compute_loss(model, row, cp_rank, parallel_dims.cp)
     loss.backward()
-    grad_norm = clip_grad_norm_(None, model, max_norm=math.inf)
+    grad_norm, _ = clip_grad_norm_(None, model, max_norm=math.inf)
     return {"loss_sum": loss.item(), "grad_norm": grad_norm.item()}
 
 
