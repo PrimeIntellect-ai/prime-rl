@@ -50,7 +50,7 @@ Real weights, `data/scaleswe.toml` (batch 128, group 8), steady steps after warm
 | Muse Glimmer 30B | 1 (cp 4) + 2 (TP2 × DP4) | ~7 min (3-16) | 0-60% | 14k tok/s | 60 GiB | 0.0003 |
 | GLM-5.3 Flash | 6 (cp 8) + 6 (DEP8), 600 episodes in flight | 12.5-17 min | ~80% | 1.2-1.5k tok/s | 91 GiB | 0.006 |
 | Qwen3.8 Flash Next | 3 (cp 8) + 3 (DEP8) | 1.5 h (step 1 only) | 93% | 2-3.5k tok/s | 102 GiB | 0.0036 |
-| Nemotron 3 Super | 2 (cp 8, no AC offload) + 2 (TP8) | 40 min (step 1 only) | 85% | 4.4k tok/s | 114 GiB | – |
+| Nemotron 3 Super | 2 (cp 8, no AC offload) + 4 (DEP8) | 5-6.5 min | ~75% | 3.5k tok/s | 105 GiB | 0.0005 |
 | Qwen3.8 27B | 1 (cp 8, no AC offload) + 1 (TP2 × DP4) | 1-2.5 h | 85-90% | 3k tok/s | 52 GiB | 0.0001 |
 
 The hybrid linear-attention and Mamba models decode several times slower per inference node than
