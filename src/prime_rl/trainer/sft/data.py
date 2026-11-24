@@ -13,7 +13,8 @@ from torch import Tensor
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.sft import LossMaskConfig, SFTColumnsConfig, SFTDataConfig
+from prime_rl.configs.sft import HFDatasetSourceConfig, SFTDataConfig
+from prime_rl.configs.supervised import ChatValSourceConfig, LossMaskConfig, SFTColumnsConfig
 from prime_rl.trainer.data import (
     Sample,
     StatefulIterableDataset,
@@ -215,10 +216,10 @@ class HFSource:
         self.multimodal = multimodal
         if max_examples is not None:
             self.size = min(self.size, max_examples)
-            self.dataset = self.dataset.take(max_examples)
+            self.dataset = self.dataset.take(self.size)
         self.order, self.order_pass = self.dataset, None
 
-    def _process(self, example: dict) -> dict | None:
+    def process(self, example: dict) -> dict | None:
         def resolve_messages(example: dict) -> list[dict]:
             # `messages` takes precedence over explicit split fields and is interpreted
             # as a whole-chat training sample with an empty prompt. Null-check rather
@@ -356,7 +357,7 @@ class HFSource:
             self.order = self.dataset.shuffle(seed=self.seed + pass_) if self.shuffle else self.dataset
             self.order_pass = pass_
         example = cast(dict, self.order[index])
-        sample = self._process(example)
+        sample = self.process(example)
         if sample is not None:
             self.logger.debug(
                 f"Yield example {example.get('__index', '')} from {self.name} with {len(sample['input_ids'])} tokens "
@@ -379,7 +380,6 @@ class SFTDataset(StatefulIterableDataset):
         self,
         sources: list[HFSource | FakeSource],
         weights: list[float] | None = None,
-        max_epochs: int | None = None,
         dp_rank: int = 0,
         dp_size: int = 1,
     ):
@@ -390,8 +390,6 @@ class SFTDataset(StatefulIterableDataset):
         assert len(weights) == len(sources) and sum(weights) > 0
         self.weights = weights
         self.num_rows = sum(source.size for source in sources if source.size is not None)
-        assert max_epochs is None or self.num_rows > 0, "max_epochs needs a source with rows"
-        self.max_epochs = max_epochs
         self.mixture = {
             source.name: {"weight": weight, "rows": source.size} for source, weight in zip(sources, weights)
         }
@@ -502,7 +500,7 @@ class SFTDataset(StatefulIterableDataset):
 
     def __iter__(self):
         self._setup_world_info()
-        while self.max_epochs is None or self.step < self.max_epochs * self.num_rows:
+        while True:
             index = self.next_source()
             source, k = self.sources[index], self.draws[index]
             self.draws[index] += 1
@@ -537,13 +535,30 @@ def load_sft_dataset(config: SFTDataConfig) -> dict[str, Dataset]:
     return datasets
 
 
+def source_renderers(
+    tokenizer: PreTrainedTokenizer,
+    config: RendererConfig,
+    source: HFDatasetSourceConfig | ChatValSourceConfig,
+    processor: Any | None = None,
+) -> RendererResolver:
+    """The renderers of a source's rows: ``config`` with the source's chat-template kwargs (``source.renderer``) and
+    its rows' ``columns.renderer`` values."""
+    if source.renderer:
+        if isinstance(config, AutoRendererConfig):
+            raise ValueError(
+                f"Source {source.name!r} sets renderer arguments, which require a typed renderer config "
+                "(e.g. [renderer] name = 'qwen3.8'), not renderer.name = 'auto'"
+            )
+        config = merge_chat_template_kwargs(config, source.renderer)
+    return RendererResolver(tokenizer, config, processor=processor, columns=source.columns.renderer)
+
+
 def setup_sft_dataset(
     tokenizer: PreTrainedTokenizer,
     config: SFTDataConfig,
     *,
     dp_rank: int,
     dp_size: int,
-    max_epochs: int | None = None,
     raw_datasets: dict[str, Dataset] | None = None,
     renderer_config: RendererConfig | None = None,
     processor: Any | None = None,
@@ -564,21 +579,10 @@ def setup_sft_dataset(
         raw_datasets = load_sft_dataset(config)
     sources = []
     for source in config.source:
-        source_renderer_config = renderer_config
-        if source.renderer:
-            if isinstance(renderer_config, AutoRendererConfig):
-                raise ValueError(
-                    f"data.source {source.name!r} sets renderer arguments, which require a typed renderer config "
-                    "(e.g. [renderer] name = 'qwen3.8'), not renderer.name = 'auto'"
-                )
-            source_renderer_config = merge_chat_template_kwargs(renderer_config, source.renderer)
-        renderers = RendererResolver(
-            tokenizer, source_renderer_config, processor=processor, columns=source.columns.renderer
-        )
         sources.append(
             HFSource(
                 raw_datasets[source.name],
-                renderers,
+                source_renderers(tokenizer, renderer_config, source, processor),
                 name=source.name,
                 shuffle=config.shuffle,
                 seed=config.seed,
@@ -592,7 +596,6 @@ def setup_sft_dataset(
     return SFTDataset(
         sources,
         weights=None if None in weights else weights,
-        max_epochs=max_epochs,
         dp_rank=dp_rank,
         dp_size=dp_size,
     )

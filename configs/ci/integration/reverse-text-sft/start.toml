@@ -12,3 +12,12 @@ seq_len = 1024
 [[data.source]]
 name = "reverse-text"
 dataset = "PrimeIntellect/Reverse-Text-SFT"
+
+[val]
+interval = 5
+num_samples = 64
+
+[[val.source]]
+type = "chat"
+name = "reverse-text"
+dataset = "PrimeIntellect/Reverse-Text-SFT"

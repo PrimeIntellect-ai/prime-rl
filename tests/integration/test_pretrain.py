@@ -1,4 +1,6 @@
+import json
 import re
+import tomllib
 from pathlib import Path
 from typing import Callable
 
@@ -45,6 +47,15 @@ def token_dir(output_dir: Path) -> Path:
     return path
 
 
+def val_sources(token_dir: Path) -> list[dict]:
+    """The config's [[val.source]], the documents source scoring the shards the test wrote."""
+    config = tomllib.loads(Path("configs/ci/integration/pretrain/start.toml").read_text())
+    return [
+        {**val_source, "path": token_dir.as_posix()} if val_source["type"] == "documents" else val_source
+        for val_source in config["val"]["source"]
+    ]
+
+
 def pretrain_command(
     configs: list[str], token_dir: Path, wandb_project: str, wandb_name: str, output_dir: Path
 ) -> list[str]:
@@ -55,8 +66,8 @@ def pretrain_command(
         *[arg for config in configs for arg in ("@", f"configs/ci/integration/pretrain/{config}")],
         "--data.source",
         f'[{{"name": "reverse-text", "path": "{token_dir.as_posix()}"}}]',
-        "--val.set",
-        f'[{{"type": "documents", "name": "reverse-text", "path": "{token_dir.as_posix()}"}}]',
+        "--val.source",
+        json.dumps(val_sources(token_dir)),
         "--deployment.num-train-gpus",
         "2",
         "--monitors.wandb.project",
@@ -110,7 +121,9 @@ def test_loss_goes_down(pretrain_process: ProcessResult, run_dir: Path):
 
 
 def test_validation(pretrain_process: ProcessResult, run_dir: Path):
-    assert any("Validation | Step 10 | reverse-text@1k | loss" in line for line in trainer_log(run_dir))
+    lines = trainer_log(run_dir)
+    for label in ("reverse-text@1k", "reverse-text-chat@1k"):
+        assert any(f"Validation | Step 10 | {label} | loss" in line for line in lines), label
 
 
 def test_no_error_resume(pretrain_resume_process: ProcessResult):

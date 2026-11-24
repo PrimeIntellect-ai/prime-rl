@@ -6,7 +6,7 @@ from pathlib import Path
 from huggingface_hub import snapshot_download
 
 from prime_rl.configs.sft import SFTDataConfig
-from prime_rl.configs.supervised import BaseDataConfig
+from prime_rl.configs.supervised import BaseDataConfig, HFDatasetConfig
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import has_step_dir_name
 
@@ -35,11 +35,14 @@ def pre_download_model(model_name: str, *, skip_weights: bool = False) -> None:
 
 
 def pre_download_data(data: BaseDataConfig, env_vars: dict[str, str]) -> None:
-    """Download every HF source's dataset into the HF cache and point the source at the snapshot."""
-    if not isinstance(data, SFTDataConfig) or data.fake is not None:
-        return
+    if isinstance(data, SFTDataConfig) and data.fake is None:
+        pre_download_sources(data.source, env_vars)
+
+
+def pre_download_sources(sources: list[HFDatasetConfig], env_vars: dict[str, str]) -> None:
+    """Download every source's HF dataset into the HF cache and point the source at the snapshot."""
     snapshots: dict[tuple[str, str | None], str] = {}
-    for source in data.source:
+    for source in sources:
         if Path(source.dataset).exists():
             continue
         key = (source.dataset, source.revision)

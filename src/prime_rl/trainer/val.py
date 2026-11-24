@@ -1,6 +1,6 @@
-"""Validation sets (``[[val.set]]``), scored on the training model. Every set is read once at startup into requests
-(`documents_set`). Every validation scores the requests of all sets together (`score`, with the model's LM head swapped
-for `scoring_head`) and summarizes each set (`ValSet.summarize`)."""
+"""Validation sources (``[[val.source]]``), scored on the training model. Every source is tokenized once at startup
+into requests (`prepare_source`). Every validation scores the requests of all sources together (`score`, with the
+model's LM head swapped for `scoring_head`) and summarizes each source (`ValSource.summarize`)."""
 
 import json
 import math
@@ -14,15 +14,18 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.distributed as dist
+from datasets import load_dataset
+from renderers import RendererConfig
 from torch import nn
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.supervised import DocumentsValSetConfig, ValConfig
+from prime_rl.configs.supervised import ChatValSourceConfig, DocumentsValSourceConfig, ValConfig, ValSourceConfig
 from prime_rl.trainer.model import forward
 from prime_rl.trainer.models.layers.fp32_linear import fp32_output_mm
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.pretrain.data import TokenShards, special_token_ids
+from prime_rl.trainer.sft.data import HFSource, source_renderers
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -39,8 +42,8 @@ def loss_and_bpb(nll: np.ndarray, tokens: np.ndarray, num_bytes: np.ndarray | No
 
 
 @dataclass
-class ValSet:
-    """A set's requests and the item (document) every request belongs to."""
+class ValSource:
+    """A source's requests and the item (document, row) every request belongs to."""
 
     name: str
     seq_len: int
@@ -88,7 +91,7 @@ def document_windows(shards: TokenShards, seq_len: int, num_documents: int | Non
     return documents
 
 
-def documents_set(config: DocumentsValSetConfig, num_samples: int | None) -> ValSet:
+def documents_source(config: DocumentsValSourceConfig, num_samples: int | None) -> ValSource:
     """Every document (or the first ``num_samples``) in windows of ``seq_len`` scored tokens, as stored."""
     shards = TokenShards([config.path])
     documents = document_windows(shards, config.seq_len, num_samples)
@@ -98,7 +101,43 @@ def documents_set(config: DocumentsValSetConfig, num_samples: int | None) -> Val
             ids = shards.tokens(file_index)[start:end].astype(np.int32)
             requests.append((ids[:-1], ids[1:]))
             items.append(item)
-    return ValSet(config.name, config.seq_len, requests, np.array(items, dtype=np.int64), len(documents))
+    return ValSource(config.name, config.seq_len, requests, np.array(items, dtype=np.int64), len(documents))
+
+
+def chat_source(
+    config: ChatValSourceConfig, num_samples: int | None, tokenizer: PreTrainedTokenizer, renderer: RendererConfig
+) -> ValSource:
+    """The rows of the split (or the first ``num_samples``), rendered as SFT renders them, with the tokens SFT trains
+    on scored and every row cut after ``seq_len`` input tokens. A row with no scored token in that window scores
+    nothing, as SFT skips it."""
+    source = HFSource(
+        load_dataset(config.dataset, config.subset, split=config.split, revision=config.revision),
+        source_renderers(tokenizer, renderer, config),
+        name=config.name,
+        shuffle=False,
+        seq_len=config.seq_len,
+        loss_mask_config=config.loss_mask,
+        max_examples=num_samples,
+        columns=config.columns,
+    )
+    requests, items = [], []
+    for item, example in enumerate(source.dataset):
+        sample = source.process(example)
+        if sample is None:
+            continue
+        inputs = np.array(sample["input_ids"][: config.seq_len], dtype=np.int32)
+        labels = np.where(sample["loss_mask"], sample["target_ids"], IGNORE_INDEX)[: config.seq_len].astype(np.int32)
+        requests.append((inputs, labels))
+        items.append(item)
+    return ValSource(config.name, config.seq_len, requests, np.array(items, dtype=np.int64), source.size)
+
+
+def prepare_source(
+    config: ValSourceConfig, num_samples: int | None, tokenizer: PreTrainedTokenizer, renderer: RendererConfig
+) -> ValSource:
+    if config.type == "documents":
+        return documents_source(config, num_samples)
+    return chat_source(config, num_samples, tokenizer, renderer)
 
 
 # The 256 characters byte-level BPE tokenizers (GPT-2, Llama 3, Qwen, DeepSeek) write the bytes as.
@@ -148,7 +187,9 @@ def scoring_head(self, hidden_states, labels, temperature=None, support=None):
     precision = torch.get_float32_matmul_precision()
     torch.set_float32_matmul_precision("highest")
     try:
-        logprobs, hits = head_logprobs(hidden[keep], self.weight, labels[keep], softcap=getattr(self, "softcap", None))
+        logprobs, hits = head_logprobs(
+            hidden[keep], self.projection_weight(), labels[keep], softcap=getattr(self, "softcap", None)
+        )
     finally:
         torch.set_float32_matmul_precision(precision)
     return {"logprobs": logprobs, "entropy": hits}
@@ -255,18 +296,27 @@ def length_label(seq_len: int) -> str:
 
 
 class Validation:
-    """The ``[[val.set]]``, read once at startup and scored on the training model at every validation."""
+    """The ``[[val.source]]``, tokenized once at startup and scored on the training model at every validation."""
 
-    def __init__(self, config: ValConfig, tokenizer: PreTrainedTokenizer, parallel_dims: ParallelDims, run_dir: Path):
+    def __init__(
+        self,
+        config: ValConfig,
+        tokenizer: PreTrainedTokenizer,
+        renderer: RendererConfig,
+        parallel_dims: ParallelDims,
+        run_dir: Path,
+    ):
         start_time = time.perf_counter()
         self.config = config
         self.parallel_dims = parallel_dims
         self.run_dir = run_dir
-        self.sets = [documents_set(val_set, config.num_samples) for val_set in config.set]
-        for val_set in self.sets:
-            if not val_set.requests:
-                raise ValueError(f"Validation set {val_set.name} has nothing to score")
-        self.requests = [request for val_set in self.sets for request in val_set.requests]
+        self.sources = [
+            prepare_source(val_source, config.num_samples, tokenizer, renderer) for val_source in config.source
+        ]
+        for val_source in self.sources:
+            if not val_source.requests:
+                raise ValueError(f"Validation source {val_source.name} has nothing to score")
+        self.requests = [request for val_source in self.sources for request in val_source.requests]
         byte_lengths = token_byte_lengths(tokenizer)
         if byte_lengths is None:
             get_logger().warning("The tokenizer is not byte-level BPE: validation logs no bits per byte")
@@ -279,27 +329,27 @@ class Validation:
         self.tokens = np.array(tokens)
         self.bytes = np.array(num_bytes) if byte_lengths is not None else None
         get_logger().info(
-            f"Prepared {len(self.sets)} validation sets ({len(self.requests)} requests, {self.tokens.sum()} scored "
-            f"tokens) in {time.perf_counter() - start_time:.0f}s"
+            f"Prepared {len(self.sources)} validation sources ({len(self.requests)} requests, "
+            f"{self.tokens.sum()} scored tokens) in {time.perf_counter() - start_time:.0f}s"
         )
 
     @torch.no_grad()
     def run(self, model: nn.Module, step: int) -> dict[str, float]:
-        """Score every set at step ``step``. The metrics are on rank 0 only."""
+        """Score every source at step ``step``. The metrics are on rank 0 only."""
         with scoring_head_active(model):
             scored = score(model, self.requests, self.config.micro_batch_tokens, self.parallel_dims)
         if scored is None:
             return {}
         logprobs, hits = scored
         metrics, offset = {}, 0
-        for val_set in self.sets:
-            window = slice(offset, offset + len(val_set.requests))
+        for val_source in self.sources:
+            window = slice(offset, offset + len(val_source.requests))
             offset = window.stop
             num_bytes = self.bytes[window] if self.bytes is not None else None
-            summary, arrays = val_set.summarize(logprobs[window], hits[window], self.tokens[window], num_bytes)
-            length = length_label(val_set.seq_len)
-            label = f"{val_set.name}@{length}"
-            metrics |= {f"val/{val_set.name}/{key}@{length}": float(value) for key, value in summary.items()}
+            summary, arrays = val_source.summarize(logprobs[window], hits[window], self.tokens[window], num_bytes)
+            length = length_label(val_source.seq_len)
+            label = f"{val_source.name}@{length}"
+            metrics |= {f"val/{val_source.name}/{key}@{length}": float(value) for key, value in summary.items()}
             get_logger().success(
                 f"Validation | Step {step} | {label} | "
                 + " | ".join(f"{key} {value:.4f}" for key, value in summary.items())

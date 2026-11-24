@@ -177,6 +177,12 @@ def test_loss_goes_down(sft_process: ProcessResult, run_dir: Path):
     check_loss_goes_down(trainer_stdout)
 
 
+def test_validation(sft_process: ProcessResult, run_dir: Path):
+    with open(run_dir / "logs" / "latest" / "trainer.log") as f:
+        lines = strip_escape_codes(f.read()).splitlines()
+    assert any("Validation | Step 5 | reverse-text@1k | loss" in line for line in lines)
+
+
 def test_rl_from_checkpoint_starts_from_the_sft_weights(
     rl_from_checkpoint_process: ProcessResult, output_dir: Path, run_dir: Path, tmp_path: Path
 ):

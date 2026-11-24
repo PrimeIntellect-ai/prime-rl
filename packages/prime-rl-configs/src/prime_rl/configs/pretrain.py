@@ -3,13 +3,7 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
-from prime_rl.configs.supervised import (
-    BaseDataConfig,
-    BaseSourceConfig,
-    SupervisedTrainerConfig,
-    ValConfig,
-    check_sources,
-)
+from prime_rl.configs.supervised import BaseDataConfig, BaseSourceConfig, SupervisedTrainerConfig, check_sources
 from prime_rl.configs.trainer import (
     AdamWConfig,
     ConstantSchedulerConfig,
@@ -100,9 +94,6 @@ class PretrainConfig(SupervisedTrainerConfig):
     "pretrain" (or no mode)."""
 
     data: PretrainDataConfig
-
-    val: ValConfig | None = None
-    """Validation on held-out document sets. If None, no validation runs."""
 
     optim: PretrainOptimizerConfig = PretrainAdamWConfig()
 
