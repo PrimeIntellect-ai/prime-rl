@@ -179,3 +179,6 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # (None if it has none). The trainer fetches them into ``routed_experts`` and
     # ``sampler_support``; None if no sequence has arrays.
     payloads: list[PayloadSlice | None] | None = None
+    # Set on every micro batch of a step at which the orchestrator plans validation: the trainer scores the
+    # validation sources on the weights the step starts from.
+    validate: bool = False

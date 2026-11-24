@@ -856,4 +856,10 @@ class RLConfig(BaseConfig):
                     self.slurm.template_path = templates_dir / "multi_node_rl.sbatch.j2"
         return self
 
+    @model_validator(mode="after")
+    def sync_val(self):
+        """``orchestrator.val`` holds what the trainer resolved, so a written config re-parses."""
+        self.orchestrator.val = self.trainer.val
+        return self
+
     ### Warnings

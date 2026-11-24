@@ -278,6 +278,30 @@ def test_val_due(eval_on_start: bool, start_step: int, step: int, due: bool):
     assert val.due(step, start_step) == due
 
 
+def test_rl_orchestrator_val_fills_the_trainer_val(tmp_path):
+    """An rl config's [orchestrator.val] gives the trainer its validation sources (with RL's model.seq_len defaults),
+    which are not set directly, and chat sources render like the policy's rollouts."""
+    base = ["@", "configs/ci/integration/reverse-text/start.toml", "--output-dir", str(tmp_path)]
+    val = {"source": [{"type": "documents", "name": "held-out", "path": str(tmp_path)}]}
+    write_toml(tmp_path / "val.toml", {"orchestrator": {"val": val}})
+    config = cli(RLConfig, args=[*base, "@", str(tmp_path / "val.toml")])
+    assert config.trainer.val.source[0].seq_len == config.trainer.val.micro_batch_tokens == 2048
+    assert config.orchestrator.val == config.trainer.val
+    assert config.trainer.renderer == config.orchestrator.renderer
+    (tmp_path / "rl.json").write_text(json.dumps(dump_resolved_config(config)))
+    assert cli(RLConfig, args=["@", str(tmp_path / "rl.json")]) == config
+
+    # A config written without validation holds nulls for both; an [orchestrator.val] overlay still fills the trainer.
+    written = dump_resolved_config(config)
+    written["orchestrator"]["val"] = written["trainer"]["val"] = None
+    (tmp_path / "no-val.json").write_text(json.dumps(written))
+    overlaid = cli(RLConfig, args=["@", str(tmp_path / "no-val.json"), "@", str(tmp_path / "val.toml")])
+    assert overlaid.trainer.val.source == config.trainer.val.source
+
+    write_toml(tmp_path / "direct.toml", {"trainer": {"val": val}})
+    assert not can_parse(RLConfig, [*base, "@", str(tmp_path / "direct.toml")])
+
+
 def test_chat_val_sources_score_the_training_loss_mask():
     """A chat validation source scores what SFT trains on: unset, its loss_mask is data.loss_mask; set, its own."""
     sources = [
