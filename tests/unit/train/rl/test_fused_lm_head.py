@@ -419,7 +419,7 @@ def test_inject_prime_lm_head_vanilla():
     )
 
     with torch.device("cuda"), default_dtype(torch.bfloat16):
-        model = Qwen3ForCausalLM._from_config(config)
+        model = Qwen3ForCausalLM.from_config(config)
 
     # Wrap with VanillaOutputLinear (chunk_size=None)
     inject_prime_lm_head(model, chunk_size=None)
@@ -472,7 +472,7 @@ def test_inject_prime_lm_head_fused():
     )
 
     with torch.device("cuda"), default_dtype(torch.bfloat16):
-        model = Qwen3ForCausalLM._from_config(config)
+        model = Qwen3ForCausalLM.from_config(config)
 
     # Wrap with FusedOutputLinear
     inject_prime_lm_head(model, chunk_size=512)

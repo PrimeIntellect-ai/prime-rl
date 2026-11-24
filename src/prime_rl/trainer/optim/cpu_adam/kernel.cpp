@@ -173,10 +173,10 @@ void adamw_span(
   const Vec eps_vec(eps);
   const Vec gradient_scale_vec(gradient_scale);
 
-  auto update = [&](int64_t offset, const Vec& grad_vec) {
-    Vec param_vec = Vec::loadu(param + offset) * weight_decay_vec;
-    Vec exp_avg_vec = Vec::loadu(exp_avg + offset);
-    Vec exp_avg_sq_vec = Vec::loadu(exp_avg_sq + offset);
+  auto update = [&](int64_t offset, const Vec& grad_vec, int64_t count) {
+    Vec param_vec = Vec::loadu(param + offset, count) * weight_decay_vec;
+    Vec exp_avg_vec = Vec::loadu(exp_avg + offset, count);
+    Vec exp_avg_sq_vec = Vec::loadu(exp_avg_sq + offset, count);
     const Vec scaled_grad = grad_vec * gradient_scale_vec;
 
     exp_avg_vec = exp_avg_vec * beta1_vec + scaled_grad * one_minus_beta1;
@@ -184,52 +184,43 @@ void adamw_span(
     const Vec denominator = exp_avg_sq_vec.sqrt() / bias_correction2_sqrt_vec + eps_vec;
     param_vec = param_vec - step_size_vec * exp_avg_vec / denominator;
 
-    param_vec.store(param + offset);
-    exp_avg_vec.store(exp_avg + offset);
-    exp_avg_sq_vec.store(exp_avg_sq + offset);
+    param_vec.store(param + offset, count);
+    exp_avg_vec.store(exp_avg + offset, count);
+    exp_avg_sq_vec.store(exp_avg_sq + offset, count);
     return param_vec;
   };
 
-  int64_t i = 0;
-  constexpr int64_t block_size = 2 * Vec::size();
-  for (; i <= size - block_size; i += block_size) {
+  auto block = [&](int64_t i, int64_t count) {
+    const int64_t count0 = std::min<int64_t>(count, Vec::size());
+    const int64_t count1 = count - count0;
     Vec grad0;
     Vec grad1;
     if (span.grad_bfloat16) {
-      const BVec grad_bvec = BVec::loadu(bfloat16_grad + i);
+      const BVec grad_bvec = BVec::loadu(bfloat16_grad + i, count);
       std::tie(grad0, grad1) = at::vec::convert_to_float<at::BFloat16>(grad_bvec);
     } else {
-      grad0 = Vec::loadu(float_grad + i);
-      grad1 = Vec::loadu(float_grad + i + Vec::size());
+      grad0 = Vec::loadu(float_grad + i, count0);
+      grad1 = Vec::loadu(float_grad + i + Vec::size(), count1);
     }
-    const Vec param0 = update(i, grad0);
-    const Vec param1 = update(i + Vec::size(), grad1);
+    const Vec param0 = update(i, grad0, count0);
+    const Vec param1 = update(i + Vec::size(), grad1, count1);
     if (bfloat16_compute_param != nullptr) {
-      at::vec::convert_from_float<at::BFloat16>(param0, param1).store(bfloat16_compute_param + i);
+      at::vec::convert_from_float<at::BFloat16>(param0, param1).store(bfloat16_compute_param + i, count);
     } else if (float_compute_param != nullptr) {
-      param0.store(float_compute_param + i);
-      param1.store(float_compute_param + i + Vec::size());
+      param0.store(float_compute_param + i, count0);
+      param1.store(float_compute_param + i + Vec::size(), count1);
     }
+  };
+
+  // The last block may be partial. It runs the same vector code as full blocks, so results don't depend on where
+  // at::parallel_for splits the range, which depends on the thread count.
+  constexpr int64_t block_size = 2 * Vec::size();
+  int64_t i = 0;
+  for (; i + block_size <= size; i += block_size) {
+    block(i, block_size);
   }
-
-  for (; i < size; ++i) {
-    float param_value = param[i] * weight_decay_factor;
-    const float grad_value =
-        (span.grad_bfloat16 ? static_cast<float>(bfloat16_grad[i]) : float_grad[i]) * gradient_scale;
-    const float exp_avg_value = beta1 * exp_avg[i] + (1.0f - beta1) * grad_value;
-    const float exp_avg_sq_value =
-        beta2 * exp_avg_sq[i] + (1.0f - beta2) * grad_value * grad_value;
-    const float denominator = std::sqrt(exp_avg_sq_value) / span.bias_correction2_sqrt + eps;
-
-    param_value -= span.step_size * exp_avg_value / denominator;
-    param[i] = param_value;
-    exp_avg[i] = exp_avg_value;
-    exp_avg_sq[i] = exp_avg_sq_value;
-    if (bfloat16_compute_param != nullptr) {
-      bfloat16_compute_param[i] = at::BFloat16(param_value);
-    } else if (float_compute_param != nullptr) {
-      float_compute_param[i] = param_value;
-    }
+  if (i < size) {
+    block(i, size - i);
   }
 }
 
@@ -482,9 +473,22 @@ void sign_sgd_step(
   });
 }
 
+void set_num_threads(int num_threads) {
+  // A thread copies the process-wide default thread count at its first parallel call: once in libtorch (here through
+  // at::get_num_threads) and once in this extension, which inlines its own at::internal::lazy_init_num_threads. Torch's
+  // DataLoader pin-memory thread lowers that default to 1, so run both initializations before setting the count.
+  at::get_num_threads();
+  at::internal::lazy_init_num_threads();
+  at::set_num_threads(num_threads);
+}
+
 }  // namespace
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
+  module.def(
+      "set_num_threads",
+      &set_num_threads,
+      "Set the calling thread's intra-op thread count, for these kernels and libtorch's operators");
   module.def(
       "add_bfloat16_",
       &add_bfloat16_,

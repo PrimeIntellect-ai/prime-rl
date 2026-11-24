@@ -133,29 +133,8 @@ CASES = [
 ]
 
 
-FLA_CONV_IS_COMPILER_DISABLED = "FLA wraps causal_conv1d_fwd in torch.compiler.disable"
-CP_CONTEXT_IS_COMPILER_DISABLED = "build_cp_context runs under torch.compiler.disable with context parallelism"
-FA4_SINK_CALL_IS_UNTRACEABLE = "GPT-OSS calls FA4 with learnable sinks directly, which Dynamo cannot trace"
 INKLING2_LAYER_KINDS_UNCOUNTED = "layer_kinds counts 2 kinds for Inkling 2's 4 distinct decoder layer graphs"
-KNOWN_FAILURES = {
-    **dict.fromkeys(
-        [
-            "qwen3_5-dp2",
-            "qwen3_5_moe-dp2",
-            "qwen3_8_flash_next-dp2",
-            "glm5_next-dp2",
-            "nemotron_h-dp2",
-            "nemotron_h-dp2-token_chunk",
-            "nemotron_h-cp2",
-        ],
-        FLA_CONV_IS_COMPILER_DISABLED,
-    ),
-    **dict.fromkeys(
-        ["qwen3_5-cp2", "qwen3_5_moe-cp2", "qwen3_8_flash_next-cp2", "glm5_next-cp2"], CP_CONTEXT_IS_COMPILER_DISABLED
-    ),
-    **dict.fromkeys(["gpt_oss-dp2", "gpt_oss-cp2"], FA4_SINK_CALL_IS_UNTRACEABLE),
-    "inkling2-dp2": INKLING2_LAYER_KINDS_UNCOUNTED,
-}
+KNOWN_FAILURES = {"inkling2-dp2": INKLING2_LAYER_KINDS_UNCOUNTED}
 
 
 def isolated(run, *args) -> dict:

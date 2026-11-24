@@ -54,7 +54,7 @@ class PositionLearningEnhancement(nn.Module):
         self,
         expanded_states: torch.Tensor,
         embeddings: torch.Tensor,
-        cu_seqlens: torch.LongTensor,
+        document_starts: torch.Tensor,
     ) -> torch.Tensor:
         embeddings = embeddings.to(expanded_states.dtype)
         keys = self.norm_key(self.key_proj(embeddings))
@@ -78,8 +78,7 @@ class PositionLearningEnhancement(nn.Module):
         positions = torch.arange(
             local_start, local_start + local_shape[0] * local_token_count, device=packed_input.device
         )
-        sequence_indices = torch.searchsorted(cu_seqlens[1:], positions, right=True)
-        sequence_starts = cu_seqlens[:-1][sequence_indices].long()
+        sequence_starts = document_starts[positions].long()
         convolution_output = torch.zeros(
             (positions.shape[0], packed_input.shape[-1]), device=packed_input.device, dtype=torch.float32
         )

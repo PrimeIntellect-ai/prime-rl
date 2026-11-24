@@ -9,11 +9,9 @@ the checkpoint are not modelled.
 
 import torch
 from torch import Tensor, nn
-from transformers.modeling_layers import GradientCheckpointingLayer
-from transformers.modeling_outputs import BaseModelOutput
 
 from prime_rl.configs.trainer import DSABackend
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, TextModelOutput
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection
 from prime_rl.trainer.models.glm5_next.configuration_glm5_next import Glm5NextConfig, Glm5NextTextConfig
 from prime_rl.trainer.models.glm5_next.converting_glm5_next import (
@@ -24,6 +22,7 @@ from prime_rl.trainer.models.glm5_next.converting_glm5_next import (
 from prime_rl.trainer.models.glm5_next.linear_attention import KimiDeltaAttention
 from prime_rl.trainer.models.glm5_next.sparse_attention import KPoolIndexer, PoolLayout, SparseMlaAttention
 from prime_rl.trainer.models.layers.activations import ClampedSilu
+from prime_rl.trainer.models.layers.fla_ops import FlaVarlen, prepare_fla_varlen
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
@@ -40,7 +39,7 @@ def _check_supported(config: Glm5NextTextConfig) -> None:
     assert all(indexer_type == "full" for indexer_type in config.indexer_types), "shared indexers are not supported"
 
 
-class Glm5NextDecoderLayer(GradientCheckpointingLayer):
+class Glm5NextDecoderLayer(nn.Module):
     def __init__(self, config: Glm5NextTextConfig, layer_idx: int, dsa_backend: DSABackend) -> None:
         super().__init__()
         # Token mixer: Kimi Delta Attention (linear) in three of every four layers, sparse MLA in the rest.
@@ -120,7 +119,7 @@ class Glm5NextDecoderLayer(GradientCheckpointingLayer):
     def forward(
         self,
         mhc_states: torch.Tensor,
-        cu_seqlens: torch.LongTensor,
+        fla_varlen: FlaVarlen,
         pool_layout: PoolLayout,
         routed_experts: torch.LongTensor | None = None,
     ) -> torch.Tensor:
@@ -130,7 +129,7 @@ class Glm5NextDecoderLayer(GradientCheckpointingLayer):
         attention_input = self.input_layernorm(collapsed)
         if self.layer_type == "linear_attention":
             # KDA resets its recurrent state at each packed-document boundary.
-            attn_output = self.self_attn(attention_input, cu_seqlens)
+            attn_output = self.self_attn(attention_input, fla_varlen)
         else:
             # Sparse MLA attends to the pools the indexer selects within the query's own document.
             attn_output = self.self_attn(attention_input, pool_layout)
@@ -142,9 +141,6 @@ class Glm5NextDecoderLayer(GradientCheckpointingLayer):
 
 
 class Glm5NextPreTrainedModel(PreTrainedModelPrimeRL):
-    config_class = Glm5NextConfig
-    base_model_prefix = "model"
-
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:
         # KDA, the indexer and sparse MLA all-gather what they need over the CP group themselves.
@@ -182,8 +178,6 @@ class Glm5NextPreTrainedModel(PreTrainedModelPrimeRL):
 
 
 class Glm5NextTextModel(Glm5NextPreTrainedModel):
-    config_class = Glm5NextTextConfig
-
     def __init__(self, config: Glm5NextTextConfig, dsa_backend: DSABackend = "tilelang") -> None:
         super().__init__(config)
         _check_supported(config)
@@ -192,7 +186,6 @@ class Glm5NextTextModel(Glm5NextPreTrainedModel):
             Glm5NextDecoderLayer(config, layer_idx, dsa_backend) for layer_idx in range(config.num_hidden_layers)
         )
         self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
-        self.gradient_checkpointing = False
         self.post_init()
 
     def get_input_embeddings(self) -> nn.Embedding:
@@ -209,7 +202,7 @@ class Glm5NextTextModel(Glm5NextPreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> BaseModelOutput:
+    ) -> TextModelOutput:
         """
         position_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Unused: the model has no positional encoding, and document boundaries come from `seq_lens`.
@@ -227,8 +220,7 @@ class Glm5NextTextModel(Glm5NextPreTrainedModel):
             seq_lens.to(inputs_embeds.device),
             total_tokens=inputs_embeds.shape[1] * self.cp_context.cp_world_size,
         )
-        # A hint, not a constraint: a one-document row (2-entry cu_seqlens) gets its own graph.
-        torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
+        fla_varlen = prepare_fla_varlen(cu_seqlens, self.cp_context)
         pool_layout = PoolLayout.build(
             cu_seqlens,
             inputs_embeds.shape[1],
@@ -242,11 +234,11 @@ class Glm5NextTextModel(Glm5NextPreTrainedModel):
             layer_routed_experts = routed_experts[:, :, layer_idx].contiguous() if routed_experts is not None else None
             mhc_states = decoder_layer(
                 mhc_states=mhc_states,
-                cu_seqlens=cu_seqlens,
+                fla_varlen=fla_varlen,
                 pool_layout=pool_layout,
                 routed_experts=layer_routed_experts,
             )
-        return BaseModelOutput(last_hidden_state=self.norm(mhc_states.mean(dim=2)))
+        return TextModelOutput(last_hidden_state=self.norm(mhc_states.mean(dim=2)))
 
 
 class Glm5NextModel(nn.Module):
@@ -268,7 +260,7 @@ class Glm5NextModel(nn.Module):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> BaseModelOutput:
+    ) -> TextModelOutput:
         return self.language_model(
             input_ids=input_ids,
             position_ids=position_ids,
