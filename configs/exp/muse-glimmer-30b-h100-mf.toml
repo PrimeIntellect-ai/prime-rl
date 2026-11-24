@@ -1,0 +1,78 @@
+# Muse Glimmer 30B math RL smoke run on Model Factory, 2x 8xH100 nodes (1 trainer + 1 inference).
+# Flattened from examples/advanced/muse-glimmer-30b/{rl.toml,gpu/h200_1node.toml} + examples/advanced/data/math.toml,
+# with full CPU offload for the 80 GB H100s. Weights come from the sami-muse-glimmer-sft volume.
+#
+#   prime train run configs/exp/muse-glimmer-30b-h100-mf.toml --gpu-type H100_80GB --volume sami-muse-glimmer-sft --ref <sha>
+
+mode = "rl"
+name = "muse-glimmer-30b-h100-math-smoke"
+max_steps = 10
+seq_len = 262144
+
+[model]
+name = "/volume/models/muse-glimmer-30b"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+num_infer_replicas = 1
+
+[weight_broadcast]
+type = "nccl"
+
+[ckpt]
+interval = 5
+keep_last = 1
+
+[trainer.model]
+cp = 4
+# Full offload: FP32 masters, optimizer state and gradients in CPU RAM. Supports AdamW / SignSGD only.
+offload = "full"
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+# Full offload disables gradient clipping.
+max_norm = "None"
+
+[orchestrator]
+batch_size = 128
+max_staleness = 8
+
+[orchestrator.renderer]
+name = "muse-glimmer"
+
+[orchestrator.train]
+group_size = 8
+
+[orchestrator.train.algo]
+type = "grpo"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 65536
+
+[[orchestrator.train.source]]
+name = "math"
+env.taskset.id = "i3_math"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[orchestrator.eval]
+interval = 25
+
+[[orchestrator.eval.source]]
+name = "aime2025"
+env.taskset.id = "aime25"
+env.agent.harness.id = "null"
+group_size = 8
+
+[inference.vllm]
+max_model_len = 131072
+enable_prefix_caching = true
+language_model_only = true
+# A /volume path does not match the parser patterns for meta-models/Muse-Glimmer.
+tool_call_parser = "muse_glimmer"
+reasoning_parser = "muse_glimmer"
+tensor_parallel_size = 2
+data_parallel_size = 4
