@@ -72,8 +72,8 @@ SKIP_DATALOADER = (
 
 
 def due(read: np.ndarray, start: np.ndarray, weights: np.ndarray) -> np.ndarray:
-    """When the sources of a mixture are due (weighted fair queuing): what a source read (tokens in pretraining, draws
-    in SFT) since the mixture last changed (``start``), over its weight; never for a source without weight."""
+    """When the sources of a mixture are due (weighted fair queuing): what a source read (tokens of documents, draws of
+    chat data) since the mixture last changed (``start``), over its weight; never for a source without weight."""
     with np.errstate(divide="ignore"):
         return np.where(weights > 0, (read - start) / weights, np.inf)
 

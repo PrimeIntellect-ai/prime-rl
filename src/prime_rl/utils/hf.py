@@ -5,8 +5,7 @@ from pathlib import Path
 
 from huggingface_hub import snapshot_download
 
-from prime_rl.configs.sft import SFTDataConfig
-from prime_rl.configs.supervised import BaseDataConfig
+from prime_rl.configs.supervised import DataConfig
 from prime_rl.configs.val import HFDatasetConfig
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import has_step_dir_name
@@ -35,8 +34,8 @@ def pre_download_model(model_name: str, *, skip_weights: bool = False) -> None:
     )
 
 
-def pre_download_data(data: BaseDataConfig, env_vars: dict[str, str]) -> None:
-    if isinstance(data, SFTDataConfig) and data.fake is None:
+def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
+    if data.type == "chat" and data.fake is None:
         pre_download_sources(data.source, env_vars)
 
 

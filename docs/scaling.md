@@ -339,7 +339,7 @@ To benchmark a parallelism config before committing a multi-day run, run a short
 
 ```bash
 # SFT trainer alone
-uv run sft @ sft.toml --data.fake --max-steps 4
+uv run sft @ sft.toml --data.fake.length fixed --max-steps 4
 
 # RL trainer alone (no inference involved) -- launch it under torchrun, like the `rl` launcher does
 uv run torchrun --nproc-per-node=8 src/prime_rl/trainer/rl/train.py @ train.toml --data.fake --max-steps 4

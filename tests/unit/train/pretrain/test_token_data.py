@@ -8,7 +8,7 @@ import pytest
 import torch
 
 import prime_rl.trainer.pretrain.data as pretrain_data
-from prime_rl.configs.pretrain import PretrainDataConfig
+from prime_rl.configs.supervised import DocumentsDataConfig
 from prime_rl.trainer.data import setup_dataloader, with_workers
 from prime_rl.trainer.pretrain.data import (
     TokenShards,
@@ -36,9 +36,9 @@ def consecutive_documents(lengths: list[int], first: int = 0) -> list[list[int]]
     return [list(range(start, start + length)) for start, length in zip(starts, lengths)]
 
 
-def data_config(tmp_path: Path, sources: dict[str, dict], **data) -> PretrainDataConfig:
+def data_config(tmp_path: Path, sources: dict[str, dict], **data) -> DocumentsDataConfig:
     """Sources of the folders ``tmp_path / name``, with their settings (weight, repetitions)."""
-    return PretrainDataConfig(
+    return DocumentsDataConfig(
         source=[{"name": name, "path": tmp_path / name, **settings} for name, settings in sources.items()],
         **{"seq_len": 16, "batch_size": 4, **data},
     )
@@ -191,7 +191,7 @@ def data_state(states: list[dict]) -> dict:
 
 
 def global_rows(
-    config: PretrainDataConfig, gpus: int, steps: int, states=None, max_steps: int | None = None, steps_done: int = 0
+    config: DocumentsDataConfig, gpus: int, steps: int, states=None, max_steps: int | None = None, steps_done: int = 0
 ) -> tuple[list[list], list[dict]]:
     """Every step's rows over all GPUs (sorted), and every GPU's dataloader state after the last step; resumed from
     ``states`` after ``steps_done`` steps."""
@@ -343,7 +343,7 @@ def test_resume_sizes_the_subset_by_the_run(tmp_path, change, factor):
     write_source(tmp_path / "a", LENGTHS * 5)
     write_source(tmp_path / "b", [6, 30, 9, 2, 18, 4] * 40, 10**6)
 
-    def config(weights: tuple[float, float], batch_size: int, seed: int) -> PretrainDataConfig:
+    def config(weights: tuple[float, float], batch_size: int, seed: int) -> DocumentsDataConfig:
         sources = {"a": {"weight": weights[0], "repetitions": 2.0}, "b": {"weight": weights[1]}}
         return data_config(tmp_path, sources, micro_batch_size=1, num_workers=2, batch_size=batch_size, seed=seed)
 

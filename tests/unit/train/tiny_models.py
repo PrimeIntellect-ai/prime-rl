@@ -8,7 +8,7 @@ import torch
 from renderers import AutoRendererConfig
 from transformers import AutoModelForCausalLM, Glm4MoeConfig, LlamaConfig, PretrainedConfig, Qwen3Config, Qwen3MoeConfig
 
-from prime_rl.configs.sft import SFTDataConfig
+from prime_rl.configs.supervised import ChatDataConfig
 from prime_rl.configs.trainer import CompileConfig, ModelConfig
 from prime_rl.trainer.data import setup_dataloader
 from prime_rl.trainer.model import forward, resolve_auto_attn
@@ -361,7 +361,7 @@ def init_weights(model: torch.nn.Module) -> None:
 def load_rows(tokenizer, num_rows: int = NUM_ROWS) -> list[dict]:
     """The first rows of Reverse-Text-SFT, packed as the SFT trainer packs them, identical on every rank. Rows of one
     length keep torch.compile from recompiling for a second shape."""
-    config = SFTDataConfig(
+    config = ChatDataConfig(
         source=[{"name": "reverse-text", "dataset": "PrimeIntellect/Reverse-Text-SFT"}],
         seq_len=ROW_LEN,
         shuffle=False,
