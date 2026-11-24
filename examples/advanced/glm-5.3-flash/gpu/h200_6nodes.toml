@@ -24,5 +24,8 @@ data_parallel_size = 8
 enable_expert_parallel = true
 # vLLM sizes this hybrid model's pages at 640 tokens; DeepGEMM's k-pool indexer on SM90 needs a multiple of 256.
 block_size = 768
-# Higher values OOM on the first weight update while receiving an MoE layer.
-gpu_memory_utilization = 0.75
+# At 0.75, DEP8 leaves too little KV cache for one 262144-token request. 0.85 still fits the
+# weight update (ScaleSWE RL run, 6 + 6 nodes).
+gpu_memory_utilization = 0.85
+# Each sequence holds one linear-attention state block; 0.85 leaves ~300 per DP rank.
+max_num_seqs = 256
