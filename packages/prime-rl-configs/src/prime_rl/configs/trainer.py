@@ -263,10 +263,16 @@ class LLEPConfig(BaseConfig):
 
 class MegaMoeMoEDispatchConfig(BaseConfig):
     type: Literal["mega_moe"] = "mega_moe"
-    precision: Literal["bf16", "mxfp8", "mxfp8_qat", "fp8", "fp8_bwd"] = "bf16"
+    precision: Literal["bf16", "mxfp8", "mxfp8_qat", "fp8", "fp8_bwd", "nvfp4"] = "bf16"
     """Expert GEMM precision. ``mxfp8``: forward and backward in MXFP8 (SM100). ``mxfp8_qat``: MXFP8 forward, BF16
     backward on the forward's dequantized weights, as MXFP8 quantization-aware training computes (SM100). ``fp8``:
-    forward and backward in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90)."""
+    forward and backward in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90).
+    ``nvfp4``: NVFP4 forward as vLLM's online ``nvfp4_per_token`` MoE computes it (per-token activation and per-expert
+    weight scales), MXFP8 backward on the forward's NVFP4 operands (SM100). In ``rl`` the engines must run that MoE
+    quantization with the same ``four_over_six``."""
+
+    four_over_six: bool = False
+    """``nvfp4`` only: choose each activation block's scale with 4/6, as FlashInfer's ``FLASHINFER_NVFP4_4OVER6``."""
 
     max_tokens_per_rank: int | None = Field(None, ge=1)
     """Tokens per rank per MoE call that the symmetric buffer is sized for. Defaults to the rank's share of the
@@ -282,14 +288,20 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
 
     llep: LLEPConfig | None = None
     """Balance imbalanced routing with least-loaded expert parallelism. Requires ``precision = "bf16"`` (SM90),
-    ``"mxfp8"`` or ``"mxfp8_qat"`` (SM100)."""
+    ``"mxfp8"``, ``"mxfp8_qat"`` or ``"nvfp4"`` (SM100)."""
 
     @model_validator(mode="after")
     def validate_llep_precision(self):
-        if self.llep is not None and self.precision not in ("bf16", "mxfp8", "mxfp8_qat"):
+        if self.llep is not None and self.precision not in ("bf16", "mxfp8", "mxfp8_qat", "nvfp4"):
             raise ValueError(
-                "model.moe.dispatch.llep requires model.moe.dispatch.precision 'bf16', 'mxfp8' or 'mxfp8_qat'."
+                "model.moe.dispatch.llep requires model.moe.dispatch.precision 'bf16', 'mxfp8', 'mxfp8_qat' or 'nvfp4'."
             )
+        return self
+
+    @model_validator(mode="after")
+    def validate_four_over_six(self):
+        if self.four_over_six and self.precision != "nvfp4":
+            raise ValueError("model.moe.dispatch.four_over_six requires model.moe.dispatch.precision 'nvfp4'.")
         return self
 
     @model_validator(mode="after")
