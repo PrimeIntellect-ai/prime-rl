@@ -1,5 +1,4 @@
 import torch
-import torch.nn.functional as F
 from torch import nn
 
 from prime_rl.trainer.models.layers.norms import ZeroCenteredRMSNorm
@@ -49,7 +48,8 @@ class SparseAttentionIndexer(nn.Module):
         self,
         hidden_states: torch.Tensor,
         full_position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        cu_seqlens: torch.LongTensor,
+        document_starts: torch.Tensor,
+        document_ends: torch.Tensor,
     ) -> torch.Tensor:
         local_tokens = hidden_states.shape[1]
         projected_query_key = self.index_qk_proj(hidden_states[0])
@@ -65,21 +65,19 @@ class SparseAttentionIndexer(nn.Module):
             raw_key = gather_for_cp(local_raw_key.unsqueeze(0), self.cp_context.cp_group)[0]
         total_tokens = raw_key.shape[0]
 
-        token_indices = torch.arange(total_tokens, dtype=cu_seqlens.dtype, device=hidden_states.device)
+        token_indices = torch.arange(total_tokens, dtype=document_starts.dtype, device=hidden_states.device)
         query_start = self.cp_context.cp_rank * local_tokens
         query_token_indices = token_indices[query_start : query_start + local_tokens]
-        sequence_indices = torch.searchsorted(cu_seqlens[1:], query_token_indices, right=True)
-        sequence_starts = cu_seqlens[:-1][sequence_indices]
+        sequence_starts = document_starts[query_start : query_start + local_tokens]
         sequence_positions = query_token_indices - sequence_starts
 
-        all_sequence_indices = torch.searchsorted(cu_seqlens[1:], token_indices, right=True)
-        all_sequence_ends = cu_seqlens[1:][all_sequence_indices]
-        all_sequence_positions = token_indices - cu_seqlens[:-1][all_sequence_indices]
+        all_sequence_positions = token_indices - document_starts
         is_block_start = (all_sequence_positions.remainder(self.compression_ratio) == 0) & (
-            token_indices + self.compression_ratio <= all_sequence_ends
+            token_indices + self.compression_ratio <= document_ends
         )
         max_blocks = total_tokens // self.compression_ratio
-        block_slots = is_block_start.cumsum(0) - 1
+        blocks_through_token = is_block_start.cumsum(0)
+        block_slots = blocks_through_token - 1
         block_slots = block_slots.masked_fill(~is_block_start, max_blocks)
         block_start_tokens = torch.zeros(
             max_blocks + 1,
@@ -104,12 +102,8 @@ class SparseAttentionIndexer(nn.Module):
             sin.index_select(1, block_start_tokens),
         )[0, :, 0]
 
-        blocks_per_sequence = (cu_seqlens[1:] - cu_seqlens[:-1]).div(
-            self.compression_ratio,
-            rounding_mode="floor",
-        )
-        cumulative_blocks = F.pad(blocks_per_sequence.cumsum(0), (1, 0))
-        sequence_block_start = cumulative_blocks[sequence_indices]
+        blocks_before_token = blocks_through_token - is_block_start.long()
+        sequence_block_start = blocks_before_token[sequence_starts.long()]
         causal_block_end = sequence_block_start + (sequence_positions + 1).div(
             self.compression_ratio,
             rounding_mode="floor",
@@ -124,7 +118,8 @@ class SparseAttentionIndexer(nn.Module):
 
         num_blocks = block_start_tokens.shape[0]
         sentinel = total_tokens
-        block_start_tokens = F.pad(block_start_tokens, (0, 1), value=sentinel)
+        # cat, not F.pad: pad's scalar value would pin the token count and recompile per length.
+        block_start_tokens = torch.cat((block_start_tokens, block_start_tokens.new_full((1,), sentinel)))
         selected_block_starts = block_start_tokens[selected_blocks.long()]
         selected_tokens = selected_block_starts[:, :, None] + offsets
         selected_tokens = selected_tokens.masked_fill(selected_blocks[:, :, None] == num_blocks, sentinel)
