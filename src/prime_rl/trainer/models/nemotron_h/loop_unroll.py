@@ -56,9 +56,20 @@ def unroll_looped_state_dict(
     Merges per-loop LoRA deltas, swaps in per-loop norms/routers, and folds ``loop_gammas`` row-wise
     into each looped layer's output projection(s). Works on both ``torch.Tensor`` and ``numpy.ndarray``.
     """
-    pattern = config_dict.get("hybrid_override_pattern")
+    _BLOCK_TO_CHAR = {
+        "mamba": "M",
+        "linear_attention": "M",
+        "attention": "*",
+        "full_attention": "*",
+        "moe": "E",
+        "mlp": "-",
+    }
+    lbt = config_dict.get("layers_block_type")
+    pattern = config_dict.get("hybrid_override_pattern") or ""
+    if lbt:
+        pattern = "".join(_BLOCK_TO_CHAR[b] for b in lbt)
     if not pattern:
-        raise ValueError("config_dict must define hybrid_override_pattern to unroll NemotronH")
+        raise ValueError("config_dict must define layers_block_type or hybrid_override_pattern to unroll NemotronH")
     num_layers = len(pattern)
     num_loops = int(loop_config["num_loops"])
     start, end = resolve_loop_bounds(loop_config, num_layers)
@@ -167,7 +178,10 @@ def unroll_looped_state_dict(
 
     new_pattern = pattern[:start] + pattern[start:end] * num_loops + pattern[end:]
     new_cfg = dict(config_dict)
-    new_cfg["hybrid_override_pattern"] = new_pattern
+    if lbt:
+        new_cfg["layers_block_type"] = list(lbt[:start]) + list(lbt[start:end]) * num_loops + list(lbt[end:])
+    if config_dict.get("hybrid_override_pattern"):
+        new_cfg["hybrid_override_pattern"] = new_pattern
     new_cfg["num_hidden_layers"] = len(new_pattern)
     new_cfg.pop("loop_config", None)
     return out_sd, new_cfg

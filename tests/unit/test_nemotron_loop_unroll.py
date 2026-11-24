@@ -210,3 +210,14 @@ def test_unroll_exact_equivalence_latent_and_non_latent_moe():
 
         max_diff = float(np.max(np.abs(h_loop - h_seq)))
         assert max_diff < 1e-5, f"latent_moe={latent_moe}: max_diff={max_diff}"
+
+
+def test_unroll_supports_layers_block_type():
+    lbt = ["mamba", "attention", "moe", "mamba", "attention", "moe"]
+    loop_cfg = {"num_loops": 2, "start_layer": 1, "end_layer": 5, "lora_rank": 4, "lora_alpha": 8.0}
+    cfg = {"layers_block_type": lbt, "hybrid_override_pattern": "", "num_hidden_layers": 6, "loop_config": loop_cfg}
+    sd, _ = _make_synthetic_looped("M*EM*E", 1, 5, 2, 4, gamma_scale=0.3, latent_moe=False)
+    unrolled_sd, new_cfg = LU.unroll_looped_state_dict(sd, cfg, loop_cfg)
+    assert new_cfg["num_hidden_layers"] == 10
+    assert new_cfg["layers_block_type"] == ["mamba"] + ["attention", "moe", "mamba", "attention"] * 2 + ["moe"]
+    assert all(not LU.is_loop_param_name(k) for k in unrolled_sd)
