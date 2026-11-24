@@ -19,6 +19,7 @@ import verifiers.v1 as vf
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.control.types import ConfigUpdate, Reconfigurable
 from prime_rl.orchestrator.algo.base import iter_trainable_traces
+from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.algo.routing import stamp_loss_routing
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import RolloutWindow, TrainEpisodes
@@ -363,11 +364,15 @@ class TrainSink(Reconfigurable):
             return
 
         samples_by_trace: dict[str, list[TrainingSample]] = {}
+        algorithm = env.algorithm
+        prompt_mean = isinstance(algorithm, GRPOAlgorithm) and algorithm.loss_aggregation == "prompt"
         # The temperature the group sampled with, which a live update may have changed since.
         temperature = env.sampling_at(train_work(group[0]).step).temperature
         for trace in survivors:
             samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
             for sample in samples:
+                if prompt_mean:
+                    sample.prompt_group_id = group_id
                 sample.temperatures = np.full(len(sample.token_ids), temperature, dtype=np.float32)
                 if env.requires_sampling_masks and not _kept(sample, "sampler_support_replayed"):
                     # Rollout logprobs are mask-renormalized; training without the masks
@@ -382,7 +387,7 @@ class TrainSink(Reconfigurable):
                     raise RuntimeError(
                         f"env {env_name!r} requested sampler logprobs but returned none. {_KEEP_ARRAYS_HINT}"
                     )
-                stamp_loss_routing(sample, env.algorithm.action_loss_type)
+                stamp_loss_routing(sample, algorithm.action_loss_type)
             if self.config.constant_trainer_batch_size:
                 samples = [sample for sample in samples if _prune_zero_advantages(sample)]
             if samples:

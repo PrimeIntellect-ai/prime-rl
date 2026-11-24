@@ -383,6 +383,47 @@ def test_prepare_sample_uniform_rl_keeps_streams_none(make_training_example):
     assert micro_batch.ref_kl_weights is None
 
 
+def test_prepare_batch_normalizes_prompt_weights_after_filtering_and_truncation():
+    def rollout(group, trace, mask, weights):
+        return _sample(
+            token_ids=list(range(len(mask))),
+            mask=mask,
+            logprobs=[-0.1] * len(mask),
+            temperatures=[1.0] * len(mask),
+            advantages=[1.0] * len(mask),
+            env_name="test",
+            trace_id=trace,
+            prompt_group_id=group,
+            rl_weights=weights,
+        )
+
+    rollouts = [
+        rollout("a", "a1", [False, False, True, True], [0.0, 0.0, 0.2, 0.2]),
+        rollout("a", "a2", [False, True, True], [0.0, 0.2, 0.0]),
+        rollout("b", "b1", [False, True], [0.0, 0.5]),
+        rollout("c", "c1", [False, False], [0.0, 0.0]),
+    ]
+
+    def packed_weights(samples):
+        weights = {}
+        for batch in _flatten_batches(prepare_batch(samples, seq_len=3, num_train_workers=2, bin_cost=sum)):
+            if batch.trace_ids is not None:
+                offset = 0
+                for trace_id, length in zip(batch.trace_ids, batch.sequence_lengths, strict=True):
+                    weights[trace_id] = batch.rl_weights[offset : offset + length].tolist()
+                    offset += length
+        return weights
+
+    assert packed_weights(rollouts) == {
+        "a1": [0.0, 0.0, 0.5],
+        "a2": [0.0, 0.5, 0.0],
+        "b1": [0.0, 1.0],
+        "c1": [0.0, 0.0],
+    }
+    assert packed_weights(rollouts[:1]) == {"a1": [0.0, 0.0, 1.0]}
+    assert rollouts[0].rl_weights.tolist() == pytest.approx([0.0, 0.0, 0.2, 0.2])
+
+
 @pytest.mark.parametrize("streams_on_longer", [True, False])
 def test_prepare_batch_packs_mixed_components(make_training_example, streams_on_longer):
     """Component membership is per token, so samples feeding different

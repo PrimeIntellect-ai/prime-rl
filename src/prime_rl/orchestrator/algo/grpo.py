@@ -114,8 +114,7 @@ class GRPOAlgorithm(Algorithm):
             assign_advantages(trace, advantage)
         nodes = [node for trace in traces for node in trainable_nodes(trace)]
         if self.loss_aggregation == "prompt" and nodes:
-            # rl weight 1/T_q per token: each group's weights sum to 1, and the trainer divides the
-            # rl loss by the sum of rl weights, i.e. the number of groups.
+            # The packer renormalizes these weights over the group's RL tokens in each training step.
             weight = 1.0 / sum(int(np.count_nonzero(node.mask)) for node in nodes)
             for node in nodes:
                 rl = np.where(np.asarray(node.mask, dtype=bool), weight, 0.0).astype(np.float32)

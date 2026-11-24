@@ -109,6 +109,8 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # The branch's training arrays (routing rows, sampling mask, top-k head), kept by an
     # env worker; None when the branch has none.
     payload: PayloadSlice | None = None
+    # Set for prompt-mean RL so the packer can normalize the prompt within this step.
+    prompt_group_id: str | None = None
 
 
 # Per-token streams of a MicroBatch and the dtype each travels as. The orchestrator holds them as

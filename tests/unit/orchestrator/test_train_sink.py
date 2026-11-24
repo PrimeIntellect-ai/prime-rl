@@ -15,6 +15,7 @@ from prime_rl.configs.algorithm import GRPOAlgoConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.control.types import ConfigUpdate
 from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.train_sink import TrainSink, mask_stale_tokens
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress
@@ -199,6 +200,29 @@ def test_partially_stale_trace_ships_fresh_tokens():
         # Batch 4 trains on v3: the unlabelled token took dispatch version v1.
         assert batch.samples[0].staleness.tolist() == [-1, -1, 2, 0]
         assert s.take_rollout_window(force=True).metrics.to_dict()["staleness/token/masked"] == 0.5
+
+    asyncio.run(run())
+
+
+def test_prompt_mean_samples_keep_group_identity_after_staleness_masking():
+    async def run():
+        s = sink(batch_size=2)
+        s.train_envs.get("test").algorithm = GRPOAlgorithm(GRPOAlgoConfig(loss_aggregation="prompt"), None)
+        s.progress.step = 4
+        stale, fresh = trace(), trace()
+        fresh.rewards["correct"] = vf.Reward(score=0.0)
+        fresh.nodes[2].weight_versions = [WeightVersionSpan(version="3", start=0, end=2)]
+        assert await s.add(episode([stale, fresh], group="a", version=1)) is None
+
+        winner, loser = trace(), trace()
+        loser.rewards["correct"] = vf.Reward(score=0.0)
+        batch = await s.add(episode([winner, loser], group="b", version=3))
+        assert [(sample.trace_id, sample.prompt_group_id) for sample in batch.samples] == [
+            (fresh.id, "a"),
+            (winner.id, "b"),
+        ]
+        assert batch.samples[0].rl_weights.sum() == pytest.approx(0.5)
+        assert s.pending_batch[loser.id][0].prompt_group_id == "b"
 
     asyncio.run(run())
 
