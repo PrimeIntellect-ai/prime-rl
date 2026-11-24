@@ -547,7 +547,7 @@ class OrchestratorConfig(BaseConfig):
 
     prune_zero_advantages: bool = True
     """Remove zero-advantage RL tokens before packing. Disable for advantage-independent
-    RL penalties such as sampler KL; the rl entrypoint does this automatically."""
+    RL penalties such as sampler KL; the rl entrypoint does this automatically unless this is set."""
 
     constant_trainer_batch_size: bool = True
     """Require each batch to reach its effective sample target."""

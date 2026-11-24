@@ -374,8 +374,9 @@ numerical bias; `min_staleness = 1` leaves those tokens unpenalized. Stale token
 contain numerical mismatch; this gate does not isolate it.
 
 The rl entrypoint disables `orchestrator.prune_zero_advantages` when the sampler KL
-can be nonzero: zero-advantage tokens still have a KL gradient. Set this explicitly
-when launching components separately. Explicit curriculum admission gates still apply;
+can be nonzero: zero-advantage tokens still have a KL gradient. Set it explicitly to keep
+your choice: `true` prunes zero-advantage rollouts as without the KL, so the KL trains only
+on rollouts with an advantage. Set it explicitly when launching components separately. Explicit curriculum admission gates still apply;
 an advantage-range gate restricts the population on which the KL is trained. For matched
 ablations, use the same pruning and admission settings in all arms.
 
