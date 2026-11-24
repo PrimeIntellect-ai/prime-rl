@@ -1,6 +1,7 @@
-# H200 overlay for rl.toml: 1 trainer node and 1 one-node inference
-# replica (inference not fitted yet). Trainer fit on fake 256k samples:
-# 1 node, cp 8: 8.7k tok/s (1,084 per GPU), 73.2 GiB peak reserved.
+# H200 overlay for rl.toml: 1 trainer node and 1 one-node inference replica. ScaleSWE RL with this
+# shape took 1-2.5 h per step with the trainer waiting 85-90% of it: inference decodes ~3-6k tok/s per
+# node, so add replicas with `--deployment.num-infer-replicas`. Trainer fit on fake 256k samples:
+# 1 node, cp 8, no activation offload: 8.5k tok/s (1,060 per GPU), 59.7 GiB peak allocated.
 #
 #   uv run rl @ recipes/qwen3.8-27b/rl.toml @ recipes/qwen3.8-27b/gpu/h200.toml @ recipes/fake.toml
 
@@ -8,11 +9,18 @@
 type = "multi_node"
 num_train_nodes = 1
 num_infer_nodes = 1
-# As many inference nodes as trainer nodes.
 num_infer_replicas = 1
 
 [trainer.model]
 cp = 8
+# Activation offloading cost 3% throughput (8.2k vs 8.5k tok/s at 256k).
+ac_offloading = "None"
 
+# TP2 x DP4 decoded fastest under a synthetic agentic load (5.7k tok/s per node at 256 sessions; TP4
+# x DP2 5.6k, TP8 3.1k). Its 2.7M KV tokens per engine fill at ~512 sessions, so cap episodes in flight.
 [inference.vllm]
-tensor_parallel_size = 8
+tensor_parallel_size = 2
+data_parallel_size = 4
+
+[orchestrator.concurrency]
+max_inflight = 256
