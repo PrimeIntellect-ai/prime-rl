@@ -1,5 +1,6 @@
-# H200 overlay for rl.toml: 3 trainer nodes and 3 one-node inference
-# replicas (inference not fitted yet). Trainer fit on fake 256k samples:
+# H200 overlay for rl.toml: 3 trainer nodes and 3 one-node DEP8 inference replicas. ScaleSWE RL:
+# steps of 15-35 min, the trainer waits ~85% of each step (more inference replicas would help),
+# mismatch KL 0.0035, 98 GiB peak allocated. Trainer fit on fake 256k samples:
 # 3 nodes, ep 8, cp 8: 39.1k tok/s (1,629 per GPU), 109.3 GiB peak allocated. 2 nodes OOM.
 #
 #   uv run rl @ examples/advanced/qwen3.8-flash-next/rl.toml @ examples/advanced/qwen3.8-flash-next/gpu/h200_3nodes.toml @ examples/advanced/fake.toml --trainer.model.debug.force-balanced-routing --trainer.data.fake.batch-size 3
@@ -19,3 +20,8 @@ ep = 8
 [inference.vllm]
 tensor_parallel_size = 1
 data_parallel_size = 8
+
+# At 1,536 ScaleSWE episodes in flight the KV cache filled and step 3 took 35 min; contexts grow
+# with turns, so cap it.
+[orchestrator.concurrency]
+max_inflight = 768
