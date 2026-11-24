@@ -13,6 +13,14 @@ group_size = 8
 [orchestrator.train.algo]
 type = "grpo"
 
+# A small pass-rate-scaled penalty on length: groups whose rollouts all pass still differ in
+# reward, so they train (prefer shorter episodes) instead of being dropped for having no signal.
+[orchestrator.train.algo.length_penalty]
+type = "linear"
+num_output_tokens_weight = 0.01
+num_input_tokens_weight = 0.01
+num_turns_weight = 0.01
+
 [[orchestrator.train.source]]
 name = "scaleswe"
 env.taskset.id = "scaleswe"
