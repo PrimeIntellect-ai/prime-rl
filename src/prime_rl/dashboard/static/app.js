@@ -296,7 +296,7 @@ function renderPlatformLink(meta) {
     button.hidden = true;
     link.classList.add("disabled");
     link.removeAttribute("href");
-    link.title = "the prime monitor was off for this run (--no-monitors.prime)";
+    link.title = "the prime monitor was off for this run (enable it with --monitors.prime)";
     return;
   }
   const targets =
@@ -1994,7 +1994,11 @@ function renderPanelCard(grid, panel, lazy = false) {
   const entry = { card, u: null, series };
   state.metrics.charts.push(entry);
   if (!series.length) {
-    card.insertAdjacentHTML("beforeend", `<div class="chart-empty" style="height:${chartHeight()}px">no data yet</div>`);
+    const empty = document.createElement("div");
+    empty.className = "chart-empty";
+    empty.style.height = `${chartHeight()}px`;
+    empty.textContent = "no data yet";
+    card.append(empty);
     return;
   }
   if (lazy) {

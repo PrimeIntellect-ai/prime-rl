@@ -1291,7 +1291,7 @@ def test_shared_monitor_disable_and_prime_propagate():
 
 @pytest.mark.parametrize(
     "monitor,trainer,orchestrator",
-    [("wandb", {"wandb": {"project": "p"}}, {}), ("prime", {}, {"prime": "None"})],
+    [("wandb", {"wandb": {"project": "p"}}, {}), ("prime", {"prime": {}}, {})],
 )
 def test_monitor_on_in_one_component_only_is_rejected(monitor, trainer, orchestrator):
     """The components log to one run per monitor, so a monitor is on in all or none."""
@@ -1500,6 +1500,8 @@ def test_pd_role_connectors():
     decode = config.for_pd_role("decode").build_kv_transfer_config()["kv_connector_extra_config"]["connectors"]
     assert [c["kv_connector"] for c in prefill] == ["NixlConnector", "MooncakeStoreConnector"]
     assert [c["kv_connector"] for c in decode] == ["NixlConnector", "MooncakeStoreConnector"]
+    # The store lookup runs off the scheduler thread.
+    assert prefill[1]["kv_connector_extra_config"]["lookup_async"] is True
     assert decode[1]["kv_connector_extra_config"]["save_decode_cache"]
 
     with pytest.raises(ValidationError, match="decode_kv_cache_offload"):
@@ -1516,6 +1518,40 @@ def test_pd_role_connectors():
         InferenceConfig(
             kv_cache_offload={"type": "native", "cpu": {"num_bytes": 1000}}, hisparse={"host_pool_gib": 160}
         )
+
+
+def test_pd_bidirectional_kv_transfer():
+    deployment = {"type": "disaggregated", "bidirectional_kv_transfer": {"decode_blocks_ttl_s": 600}}
+    config = InferenceConfig(deployment=deployment, slurm={})
+    assert config.deployment.bidirectional_kv_transfer.effective_router_ttl_s == 570
+
+    for role in ("prefill", "decode"):
+        connector = config.for_pd_role(role).build_kv_transfer_config()
+        assert connector["kv_connector"] == "NixlConnector"
+        assert connector["kv_connector_extra_config"] == {
+            "num_threads": 1,
+            "bidirectional_kv_xfer": True,
+            "decoder_kv_blocks_ttl": 600,
+        }
+
+    # The per-role engine configs drop `deployment`; bidirectional transfer survives through the persisted TTL.
+    role = InferenceConfig(**dump_resolved_config(config.for_pd_role("decode"), exclude={"deployment", "slurm"}))
+    assert role.build_kv_transfer_config()["kv_connector_extra_config"]["decoder_kv_blocks_ttl"] == 600
+
+    with pytest.raises(ValidationError, match="shorter than decode_blocks_ttl_s"):
+        InferenceConfig(
+            deployment={**deployment, "bidirectional_kv_transfer": {"decode_blocks_ttl_s": 60, "router_ttl_s": 60}},
+            slurm={},
+        )
+    with pytest.raises(ValidationError, match="requires the vllm-router"):
+        InferenceConfig(deployment=deployment, slurm={}, router={"type": "llm-d"})
+    with pytest.raises(ValidationError, match="HiSparse"):
+        InferenceConfig(deployment=deployment, slurm={}, hisparse={"host_pool_gib": 160})
+
+    # One-way P/D is unchanged: no bidirectional flags.
+    config = InferenceConfig(deployment={"type": "disaggregated"}, slurm={})
+    decode = config.for_pd_role("decode").build_kv_transfer_config()
+    assert decode["kv_connector_extra_config"] == {"num_threads": 1}
 
 
 CUSTOM_RENDERER_SOURCE = """

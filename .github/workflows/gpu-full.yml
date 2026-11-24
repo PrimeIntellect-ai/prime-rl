@@ -11,7 +11,7 @@ jobs:
   group:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       # The Modal workspace runs about 10 GPUs at once, so two groups at a time (at most 4 GPUs) leave room for Tiny
@@ -23,10 +23,12 @@ jobs:
           - {group: reverse_text, name: Integration / Reverse Text}
           - {group: reverse_text_sft, name: Integration / Reverse Text SFT}
           - {group: reverse_text_lora, name: Integration / Reverse Text LoRA}
+          - {group: offload, name: Unit (GPU) / Offload and checkpoint}
           - {group: reverse_text_rl_opd, name: Integration / Reverse Text RL OPD}
           - {group: reverse_text_rl_sft, name: Integration / Reverse Text RL SFT}
           - {group: alphabet_sort, name: Integration / Alphabet Sort}
           - {group: reverse_text_moe, name: Integration / Reverse Text MoE}
+          - {group: compile, name: Unit (GPU) / Fullgraph compile}
           - {group: rest, name: Unit (GPU) / rest}
           - {group: invariance, name: Unit (GPU) / Distributed invariance}
           - {group: reverse_text_sft_lora, name: Integration / Reverse Text SFT LoRA}

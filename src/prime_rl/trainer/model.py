@@ -1,4 +1,5 @@
-import logging
+import importlib.metadata
+import importlib.util
 import os
 import shutil
 import sys
@@ -28,7 +29,6 @@ from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
 from torch.distributed.tensor import DTensor, Shard
 from transformers import AutoConfig, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
-from transformers.utils.import_utils import is_flash_attn_3_available
 
 from prime_rl.configs.trainer import (
     MODULE_TARGET_SEPARATOR,
@@ -46,9 +46,9 @@ from prime_rl.trainer.activation_checkpointing import (
 )
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
-    AutoModelForCausalLMPrimeRL,
     PrimeLmOutput,
     cast_float_and_contiguous,
+    custom_causal_lm_from_config,
     get_custom_causal_lm_cls,
     get_custom_vlm_cls,
     supports_custom_impl,
@@ -78,37 +78,6 @@ from prime_rl.utils.weights import (
     load_state_dict,
     load_state_dict_keys,
     save_state_dict,
-)
-
-
-def pre_download_model(model_name: str, *, skip_weights: bool = False) -> None:
-    """Pre-download model from HuggingFace Hub so all nodes have cached weights before training.
-
-    With ``skip_weights`` (weights that do not come from the HF model), only config and tokenizer files are fetched.
-    """
-    # A checkpoint step directory (gone by a resume, which reads the run's own copies of its files) is never on the Hub.
-    if Path(model_name).exists() or has_step_dir_name(model_name):
-        get_logger().info(f"Model {model_name} is a local path, skipping download")
-        return
-    t0 = time.perf_counter()
-    if skip_weights:
-        get_logger().info(f"Pre-downloading config and tokenizer for {model_name} (skipping weights)")
-        path = snapshot_download(
-            repo_id=model_name, repo_type="model", allow_patterns=["*.json", "*.txt", "tokenizer*", "*.jinja"]
-        )
-    else:
-        get_logger().info(f"Pre-downloading model {model_name}")
-        path = snapshot_download(repo_id=model_name, repo_type="model")
-    get_logger().debug(
-        f"Finished pre-downloading model {model_name} to {path} in {format_time(time.perf_counter() - t0)}"
-    )
-
-
-# Add filter to the standard logging module for transformers.modeling_utils to supress the
-# flash attention dtype warnings since FSDP is used to handle mixed precision.
-transformers_modeling_utils_logger = logging.getLogger("transformers.modeling_utils")
-transformers_modeling_utils_logger.addFilter(
-    lambda record: "Flash Attention 2 only supports torch.float16 and torch.bfloat16 dtypes" not in record.getMessage()
 )
 
 DTYPE_MAP = {
@@ -352,9 +321,7 @@ def get_expert_load_stats(tokens_per_expert: Tensor, group: dist.ProcessGroup) -
     return {name: value.item() for name, value in compute_expert_load_stats(tokens_per_expert).items()}
 
 
-def get_model(
-    config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
-) -> nn.Module:
+def get_model(config: ModelConfig, dtype: torch.dtype = torch.bfloat16) -> nn.Module:
     logger = get_logger()
     logger.debug(
         f"Loading model config (name={config.name}, attn={config.attn}, trust_remote_code={config.trust_remote_code})"
@@ -450,21 +417,15 @@ def get_model(
             f"VLM training requires a registered PrimeRL VLM implementation; {model_config.model_type!r} has none."
         )
 
-    with device:
-        model_cls = custom_vlm_cls or AutoModelForCausalLMPrimeRL
+    with torch.device("meta"):
+        model_cls = custom_vlm_cls or get_custom_causal_lm_cls(model_config)
 
         load_model_start_time = time.perf_counter()
-        if device == torch.device("meta"):
-            logger.info(f"Loading model {config.name} using {model_cls.__name__} to meta device")
-            model = model_cls.from_config(model_config, trust_remote_code=config.trust_remote_code, dtype=dtype)
+        logger.info(f"Loading model {config.name} using {model_cls.__name__} to meta device")
+        if custom_vlm_cls is not None:
+            model = custom_vlm_cls.from_config(model_config, dtype=dtype)
         else:
-            logger.info(f"Loading model {config.name} using {model_cls.__name__} to CPU")
-            model = model_cls.from_pretrained(
-                pretrained_model_name_or_path=config.name,
-                config=model_config,
-                trust_remote_code=config.trust_remote_code,
-                dtype=dtype,
-            )
+            model = custom_causal_lm_from_config(model_config, dtype=dtype)
         logger.debug(f"Loaded model {config.name} in {format_time(time.perf_counter() - load_model_start_time)}")
 
     assert model.lm_head.weight.dtype == dtype, (
@@ -880,6 +841,26 @@ DYNAMIC_INT_ARGS = (
 DYNAMIC_TENSOR_ARG_DIMS = (
     # DeepSeek V4, GLM5-next: decoder layer input, (batch, seq, hc_mult, hidden). seq follows this rank's row length.
     ("mhc_states", 1),
+    # Decoder layer input, (batch, seq, ...), and its rotary (cos, sin), each (batch, seq, rotary_dim), for every model
+    # that passes them to its layers by keyword.
+    ("hidden_states", 1),
+    ("position_embeddings", 1),
+    # Qwen3.8: per-layer n-gram embedding, (batch, seq, ngram_dim).
+    ("ngram_embedding", 1),
+    # GLM5-next: PoolLayout tensors, one entry per pool slot or per local query, so they follow the row length too.
+    ("pool_start_tokens", 0),
+    ("query_tokens", 0),
+    ("query_positions", 0),
+    ("first_pool", 0),
+    ("visible_pools", 0),
+    # GLM5-next, Qwen3.5, Qwen3.8 (FlaVarlen fields) and Nemotron-H (by keyword): FLA chunk indices, (chunks, 2), one
+    # entry per 64-token chunk of each document of this rank.
+    ("chunk_indices", 0),
+    # GLM5-next, Qwen3.5, Qwen3.8: FlaVarlen's document boundaries on this rank, (documents + 1,).
+    ("local_cu_seqlens", 0),
+    # Qwen3.8: each token's document start and end, one entry per token of the full row across CP ranks.
+    ("document_starts", 0),
+    ("document_ends", 0),
 )
 
 
@@ -892,8 +873,9 @@ def mark_dynamic_args() -> None:
         # or as an attribute of an arg (L['kwargs']['packed'].compression_layouts[4].max_entries_per_doc).
         patterns.append(rf".*(\['{arg}'\]|\.{arg}$)")
     for arg, dim in DYNAMIC_TENSOR_ARG_DIMS:
+        # Matches the arg (L['kwargs']['mhc_states']) or an attribute of an arg (L['kwargs']['pool_layout'].query_tokens).
         # Unanchored, so it also matches the FSDP view's base (L['kwargs']['mhc_states']._base), which is guarded too.
-        patterns.append(rf".*\['{arg}'\]:{dim}")
+        patterns.append(rf".*(\['{arg}'\]|\.{arg}):{dim}")
     for pattern in patterns:
         if pattern not in sources:
             sources.append(pattern)
@@ -983,6 +965,16 @@ def _reset_runtime_moe_buffers(model: nn.Module) -> None:
             module.routing_confidence_sum.zero_()
 
 
+def _is_flash_attn_3_available() -> bool:
+    if importlib.util.find_spec("flash_attn_interface") is None or not torch.cuda.is_available():
+        return False
+    try:
+        importlib.metadata.distribution("flash-attn-3")
+    except importlib.metadata.PackageNotFoundError:
+        return False
+    return True
+
+
 def _validate_flash_attn_4_installed() -> None:
     """Validate that flash-attn-cute is installed and not overwritten by flash-attn.
 
@@ -1031,7 +1023,7 @@ def setup_model(
 ) -> nn.Module:
     resolve_auto_attn(config)
 
-    if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
+    if config.attn == "flash_attention_3" and not _is_flash_attn_3_available():
         raise ValueError(
             "Flash attention 3 is only supported if the flash_attn_3 package is installed. Install with `uv pip install 'flash-attn-3 @ git+https://github.com/Dao-AILab/flash-attention.git@main#subdirectory=hopper' --no-build-isolation`"
         )
@@ -1042,7 +1034,7 @@ def setup_model(
     logger = get_logger()
 
     # Build on the meta device; weights are materialized after FSDP sharding.
-    model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
+    model = get_model(config, dtype=DTYPE_MAP[config.optimization_dtype])
 
     if config.fusions.enabled and config.lora is not None:
         logger.warning("Skipping runtime model fusions because LoRA targets the unfused projections")

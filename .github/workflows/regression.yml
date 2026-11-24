@@ -195,7 +195,7 @@ jobs:
               run: |
                   start=$(date +%s)
                   uv run eval @ "tests/regression/configs/eval/$CONFIG.toml" ${MODEL:+-m "$MODEL"} \
-                      --no-monitors.prime --run.name "$CONFIG-$REPEAT" --output-dir outputs
+                      --run.name "$CONFIG-$REPEAT" --output-dir outputs
                   mkdir -p "results/$CONFIG"
                   python3 tests/regression/scripts/eval.py collect "outputs/$CONFIG-$REPEAT" \
                       --repeat "$REPEAT" --wall-s "$(( $(date +%s) - start ))" --out "results/$CONFIG/$REPEAT.json"

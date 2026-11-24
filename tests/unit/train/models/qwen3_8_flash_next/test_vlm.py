@@ -3,7 +3,7 @@ import torch
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import resolve_auto_attn
-from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
+from prime_rl.trainer.models import custom_causal_lm_from_config
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.qwen3_8_flash_next import (
     Qwen3_8FlashNextConfig,
@@ -69,9 +69,7 @@ def get_model(config, device="cuda"):
     runtime_config = ModelConfig()
     resolve_auto_attn(runtime_config)
     with torch.device(device):
-        model = AutoModelForCausalLMPrimeRL.from_config(
-            config, attn_implementation=runtime_config.attn, dtype=torch.bfloat16
-        )
+        model = custom_causal_lm_from_config(config, attn_implementation=runtime_config.attn, dtype=torch.bfloat16)
     inject_prime_lm_head(model)
     return model
 

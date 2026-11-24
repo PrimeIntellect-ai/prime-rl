@@ -123,7 +123,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 |---|---|
 | `log.level` | Process log level for trainer + orchestrator (`info` default; falls back to `$PRIME_LOG_LEVEL`). Set per-process via `trainer.log.level` / `orchestrator.log.level`, or globally on the `rl` entrypoint to propagate to both. The orchestrator's env servers and its [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) logs use the same level. |
 | `--monitors.wandb` (+ `--monitors.wandb.project`, `--monitors.wandb.name`) | Enable Weights & Biases logging. See [Weights & Biases](#weights--biases). |
-| `--no-monitors.prime` | Stop streaming metrics and episodes to the Prime Intellect platform (Prime Lab), on by default. See [Prime](#prime). |
+| `--monitors.prime` | Stream metrics and episodes to the Prime Intellect platform (Prime Lab), off by default. See [Prime](#prime). |
 
 **Run management:**
 
@@ -454,7 +454,7 @@ path = "data/fineweb-edu-val"
 
 **Rows.** Documents longer than `seq_len` are cut into `seq_len` pieces. A step's documents fill `batch_size` rows of exactly `seq_len` tokens, without padding and without losing a prediction within a document. Attention and positions restart at every document and piece (`data.document_masking = false` makes a row one sequence). With `data.eod_mask_loss` (on by default), positions whose input is the separator have no loss: their target is the first token of another document.
 
-**Resume.** A resume is exact, also on another number of GPUs or dataloader workers (`num_workers`). The sources, their weights and `batch_size` may change. Sources match by name: a kept source reads on where it stopped, in the same order; an added one (also a renamed one) starts at its beginning; a removed one stops (weight 0 pauses a source without `repetitions` and keeps its place). A source may move to another folder. From the change on, the sources take turns by their tokens since the change, so every step holds the new mixture at once, and the `progress/<name>/*` metrics count on. `seq_len` and `seed` may change too, and so may the subset of a source with `repetitions`: it holds `share * max_steps * batch_size * seq_len / repetitions` tokens, sized as if the whole run used the settings of the resume, so a change of `max_steps`, `batch_size`, a weight or the sources changes it. Then every source (`seq_len`, `seed`) or that source (subset) starts a new pass at the change, without the rest of the unit cut at the step's end. That breaks the passes once: the units the interrupted pass had not read come back in the next pass, and the ones it had read can come back sooner; a source with `repetitions` is read a mix of the old and the new number of times. A resume stops with an error if the files of a kept source (their tokens and documents) change. With `ckpt.skip_dataloader`, the run resumes without the data state: the data starts over from step 0, in the same order as at the run's start (a different `data.seed` gives a different order). `data.batch_size` must be a multiple of dp × `num_workers` × `micro_batch_size`.
+**Resume.** A resume is exact, also on another number of GPUs or dataloader workers (`num_workers`). The sources, their weights and `batch_size` may change. Sources match by name: a kept source reads on where it stopped, in the same order; an added one (also a renamed one) starts at its beginning; a removed one stops (weight 0 pauses a source and keeps its place). A source may move to another folder. From the change on, the sources take turns by their tokens since the change, so every step holds the new mixture at once, and the `progress/<name>/*` metrics count on. `seq_len` and `seed` may change too. A source with `repetitions` keeps its subset unless `max_steps`, `batch_size`, `seq_len`, `seed`, its share (its weight or the other sources) or its `repetitions` change; then its subset holds the tokens the source reads over the whole run, the ones already read and its share of the remaining steps at the new settings, over its `repetitions`, so the run still reads it that many times on average (the units of the old subset more often, the new ones less). Every source (`seq_len`, `seed`) or a source whose subset changed starts a new pass at the change, without the rest of the unit cut at the step's end. That breaks the passes once: the units the interrupted pass had not read come back in the next pass, and the ones it had read can come back sooner. A resume stops with an error if the files of a kept source (their tokens and documents) change. With `ckpt.skip_dataloader`, the run resumes without the data state: the data starts over from step 0, in the same order as at the run's start (a different `data.seed` gives a different order). `data.batch_size` must be a multiple of dp × `num_workers` × `micro_batch_size`.
 
 **Validation.** `[val]` scores named held-out document sets every `val.interval` steps (also before the first step with `val.eval_on_start`). Each `[[val.set]]` table has `type = "documents"`, a unique `name`, a `path` (a folder of datatrove tokenized shards) and an optional `seq_len` (default: `data.seq_len`). Every document is scored on its own, from its first token, with the tokens as stored, in non-overlapping windows of `seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it. Every set logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and with a byte-level BPE tokenizer `val/<name>/bpb@<seq_len>`, the bits per UTF-8 byte of the scored tokens (special tokens count 0 bytes), e.g. `val/fineweb-edu/bpb@2k`. With another tokenizer (e.g. SentencePiece), the trainer logs one warning and only the loss. The sets are read once at startup. At every validation, the windows of all sets are packed longest first into rows of `val.micro_batch_tokens` tokens (default: the training micro-batch, `data.seq_len * data.micro_batch_size`, or the longest set `seq_len` if that is longer, rounded up to a multiple of `model.cp`), with attention and positions restarting at every window and the rest of a row padded, and the rows are shared out over the data-parallel ranks. The log-probs are computed in fp32. `val.num_samples` limits every validation to the first documents of each set, the same ones every time. `val.save_arrays` writes the per-document arrays of every set (summed loss, scored tokens, greedy hits and bytes) to `<run_dir>/val/step_N/`.
 
@@ -700,11 +700,13 @@ A coding agent on the same machine can drive the open dashboard: `POST /api/view
 
 ## Monitors
 
-Monitors receive the run's metrics and episodes. The file and Prime monitors are on by default; W&B is opt-in.
+Monitors receive the run's metrics and episodes. The file monitor is on by default; W&B and Prime are opt-in.
 
 ### File
 
 The file monitor writes the run's metrics (`metrics.jsonl`) and trace stream under `<run_dir>/monitors/file/`, and feeds the local [dashboard](#dashboard). Turn it off with `--no-monitors.file`.
+
+On a large run the traces dominate what the monitor writes. `--monitors.file.trace-sample 0.1` keeps the traces (episodes, live traces, and the orchestrator's annotations) of one train group in ten, chosen by group id so each written group is complete; metrics and eval episodes are always written. `--no-monitors.file.live` stops the live traces: one file per in-flight trace under `traces/live/`, appended on every turn, which feed the dashboard's live view. Episodes are then written once, when they finish.
 
 ### Weights & Biases
 
@@ -721,23 +723,23 @@ prime-rl deliberately logs a **large number of metrics** for maximum observabili
 
 ### Prime
 
-Every `rl` and `sft` run registers on the Prime Intellect platform (Prime Lab) and streams training metrics and episodes to the platform dashboard. The launcher prints the Prime run's link next to the local dashboard link (and the W&B run's, with `--monitors.wandb`) once the run registers. Turn it off with `--no-monitors.prime`:
+The Prime monitor is off by default. With `--monitors.prime`, an `rl` or `sft` run registers on the Prime Intellect platform (Prime Lab) and streams training metrics and episodes to the platform dashboard. The launcher prints the Prime run's link next to the local dashboard link (and the W&B run's, with `--monitors.wandb`) once the run registers:
 
 ```bash
-uv run rl @ rl.toml --no-monitors.prime
-uv run sft @ sft.toml --no-monitors.prime   # same flag on the SFT trainer
+uv run rl @ rl.toml --monitors.prime
+uv run sft @ sft.toml --monitors.prime   # same flag on the SFT trainer
 ```
 
-Name the Prime run in TOML:
+Or turn it on with a `[monitors.prime]` table, which can also name the Prime run:
 
 ```toml
 [monitors.prime]
 name = "my-experiment"
 ```
 
-The process that supervises the launch registers the run before the components start, and every component logs to it. That is the `rl` or `sft` launcher, also inside a single-node SLURM job, or the run owner that wraps a multi-node SLURM job's step. The run's id is also the run identity (`PRL_RUN_ID`) and the W&B run id. On `rl` the orchestrator uploads the episodes and its metrics, and the trainer uploads its per-step metrics. A trainer started without the `rl` launcher needs `--no-monitors.prime`. On `sft` the run carries the dataset-batched training fields (`max_steps`, `batch_size`, `seq_len`) and the trainer's per-step metrics and validation losses. Online evals log to the same run, like an `rl` run's: the online-eval process uploads its eval metrics and every eval episode. The components only flush their uploads; the process that registered the run finishes it once every component exited. A launch that fails marks the run failed, and so does a SLURM job that SLURM cancels or stops at its time limit.
+The process that supervises the launch registers the run before the components start, and every component logs to it. That is the `rl` or `sft` launcher, also inside a single-node SLURM job, or the run owner that wraps a multi-node SLURM job's step. The run's id is also the run identity (`PRL_RUN_ID`) and the W&B run id. On `rl` the orchestrator uploads the episodes and its metrics, and the trainer uploads its per-step metrics. A trainer started without the `rl` launcher has no Prime run to log to, so it fails with the monitor on. On `sft` the run carries the dataset-batched training fields (`max_steps`, `batch_size`, `seq_len`) and the trainer's per-step metrics and validation losses. Online evals log to the same run, like an `rl` run's: the online-eval process uploads its eval metrics and every eval episode. The components only flush their uploads; the process that registered the run finishes it once every component exited. A launch that fails marks the run failed, and so does a SLURM job that SLURM cancels or stops at its time limit.
 
-The platform run needs `PRIME_API_KEY` (`prime login` or the env var) and a team (`PRIME_TEAM_ID`, or the team selected with `prime login`) enabled for external runs. Like the W&B monitor, a run without a key, or one whose registration fails (no team, a team outside the allowlist), fails at launch: authenticate, select a team with `prime switch`, or pass `--no-monitors.prime`. `PRIME_RUNS_MODE=disabled` keeps the monitor configured but opens no platform run; `RUN_ID=<id>` attaches to an external run a launcher already created instead of registering a new one. Currently internal-only.
+The platform run needs `PRIME_API_KEY` (`prime login` or the env var) and a team (`PRIME_TEAM_ID`, or the team selected with `prime login`) enabled for external runs. Like the W&B monitor, an enabled monitor without a key, or one whose registration fails (no team, a team outside the allowlist), fails the launch: authenticate, select a team with `prime switch`, or leave the monitor off. `PRIME_RUNS_MODE=disabled` keeps the monitor configured but opens no platform run; `RUN_ID=<id>` attaches to an external run a launcher already created instead of registering a new one. Hosted runs log to their platform run without `--monitors.prime`: `RUN_ID`, or `PRIME_RUNS_EVAL_ID` for a hosted eval, turns the monitor on. `PRIME_RUNS_MODE=disabled` turns that off too. Currently internal-only.
 
 ## Rules of Thumb
 

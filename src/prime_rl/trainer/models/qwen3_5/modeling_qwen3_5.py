@@ -1,8 +1,8 @@
 import torch
 from torch import Tensor, nn
-from transformers.modeling_outputs import BaseModelOutput
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, count_active_params
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, TextModelOutput, count_active_params
+from prime_rl.trainer.models.layers.fla_ops import FlaVarlen, prepare_fla_varlen
 from prime_rl.trainer.models.layers.gated_delta_net import GatedDeltaNet
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward, SigmoidGatedFeedForward
@@ -90,16 +90,14 @@ class Qwen3_5DecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor,
+        fla_varlen: FlaVarlen,
         max_seqlen: int,
         routed_experts: torch.LongTensor | None = None,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         if self.layer_type == "linear_attention":
-            hidden_states = self.linear_attn(
-                hidden_states,
-                cu_seqlens,
-            )
+            hidden_states = self.linear_attn(hidden_states, fla_varlen)
         else:
             hidden_states, _ = self.self_attn(
                 hidden_states,
@@ -115,11 +113,11 @@ class Qwen3_5DecoderLayer(nn.Module):
 
 
 class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL):
-    config_class = Qwen3_5TextConfig
-
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
-        return name.endswith(("linear_attn.A_log", "linear_attn.norm.weight"))
+        # vLLM allocates A_log in fp32 but the gated norm in the model dtype, so an fp32 norm
+        # would only be narrowed (with a warning) on every load.
+        return name.endswith("linear_attn.A_log")
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
@@ -164,7 +162,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> BaseModelOutput:
+    ) -> TextModelOutput:
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
         if position_ids is None:
@@ -175,19 +173,21 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
             total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        fla_varlen = prepare_fla_varlen(cu_seqlens, self.cp_context)
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
 
         hidden_states = inputs_embeds
         for layer_index, decoder_layer in enumerate(self.layers):
             layer_routed_experts = routed_experts[:, :, layer_index] if routed_experts is not None else None
             hidden_states = decoder_layer(
-                hidden_states,
-                position_embeddings,
-                cu_seqlens,
-                max_seqlen,
+                hidden_states=hidden_states,
+                position_embeddings=position_embeddings,
+                cu_seqlens=cu_seqlens,
+                fla_varlen=fla_varlen,
+                max_seqlen=max_seqlen,
                 routed_experts=layer_routed_experts,
             )
-        return BaseModelOutput(last_hidden_state=self.norm(hidden_states))
+        return TextModelOutput(last_hidden_state=self.norm(hidden_states))
 
 
 class Qwen3_5VLMModel(nn.Module):
@@ -264,7 +264,7 @@ class Qwen3_5VLMModel(nn.Module):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> BaseModelOutput:
+    ) -> TextModelOutput:
         if self.visual is None:
             return self.language_model(
                 input_ids=input_ids,

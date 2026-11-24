@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from prime_rl.trainer.models import _CUSTOM_CAUSAL_LM_MODELS, AutoModelForCausalLMPrimeRL
+from prime_rl.trainer.models import _CUSTOM_CAUSAL_LM_MODELS, custom_causal_lm_from_config
 
 # Narrow widths and few experts; the layer count stays the default so every layer type is built.
 TINY = dict(
@@ -78,9 +78,7 @@ def tiny_config(config_cls):
 def test_scratch_init_writes_every_weight(config_cls):
     """The from-scratch init (``initialize_from_scratch``) writes every parameter and buffer."""
     with torch.device("meta"):
-        model = AutoModelForCausalLMPrimeRL.from_config(
-            tiny_config(config_cls), attn_implementation="flash_attention_3"
-        )
+        model = custom_causal_lm_from_config(tiny_config(config_cls), attn_implementation="flash_attention_3")
     model.to_empty(device="cpu")
     for tensor in [*model.parameters(), *model.buffers()]:
         tensor.data.fill_(float("nan") if tensor.is_floating_point() else -1)

@@ -63,7 +63,6 @@ def pretrain_command(
         wandb_project,
         "--monitors.wandb.name",
         wandb_name,
-        "--no-monitors.prime",
         "--output-dir",
         output_dir.as_posix(),
         "--run.name",

@@ -29,8 +29,10 @@ from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 from vllm import LLM, ModelRegistry, SamplingParams
 from vllm.distributed.parallel_state import cleanup_dist_env_and_memory
 from vllm.inputs import TokensPrompt
+from vllm.plugins import load_general_plugins
 
 from prime_rl.configs.trainer import ModelConfig
+from prime_rl.inference.vllm.models.inkling2.configs import Inkling2MMConfig
 from prime_rl.inference.vllm.worker.weight_transfer import get_weight_model, load_weights_checkpoint_layerwise
 from prime_rl.trainer.model import forward, get_model, resolve_auto_attn
 from prime_rl.trainer.models.afmoe import AfmoeConfig
@@ -139,6 +141,23 @@ def weigh_sinks(model: torch.nn.Module) -> None:
             param.normal_(0.0, 0.02)
         elif name.endswith("self_attn.sinks"):
             param.uniform_(2.0, 4.0)
+
+
+@torch.no_grad()
+def shape_inkling2(model: torch.nn.Module) -> None:
+    """At std 0.02, Inkling 2's attention sinks, relative bias, short-conv taps and multi-query block-residual queries
+    barely move the output. Draw them large enough to matter, and the relative projection large enough to clip."""
+    for name, param in model.named_parameters():
+        if name.endswith("sink_proj.weight"):
+            param.normal_(0.0, 0.2)
+        elif name.endswith("r_proj.weight"):
+            param.normal_(0.0, 0.15)
+        elif name.endswith("rel_logits_proj"):
+            param.normal_(0.0, 0.25)
+        elif name.endswith(("conv1d.weight", "static_weight")):
+            param.normal_(0.0, 0.5)
+        elif name.startswith("model.attn_res.") and param.ndim == 2:
+            param.normal_(0.0, 1.0)
 
 
 def qwen3_8_flash_next_config() -> Qwen3_8FlashNextTextConfig:
@@ -511,6 +530,34 @@ CASES = [
         mismatch_kl=1e-5,
     ),
     Case(
+        "inkling2",
+        # Layers 0 and 2 are sliding-window attention with static short convs, layer 1 global attention with dynamic
+        # ones and log scaling. Layer 2 starts the second block of attention residuals. The relative attention kernels
+        # take an extent that is a power of 2 and a multiple of 128, so the window and the relative extent are 128.
+        Inkling2MMConfig(
+            text_config=dict(
+                vocab_size=151936,
+                hidden_size=256,
+                num_hidden_layers=3,
+                num_attention_heads=4,
+                num_key_value_heads=2,
+                head_dim=64,
+                d_rel=16,
+                rel_extent=128,
+                sliding_window_size=128,
+                n_layers_per_attn_res_block=2,
+                log_scaling_n_floor=64,
+                n_routed_experts=8,
+                num_experts_per_tok=2,
+                intermediate_size=128,
+            ),
+            architectures=["Inkling2ForConditionalGeneration"],
+        ),
+        max_abs=0.05,
+        mismatch_kl=2e-5,
+        post_init=shape_inkling2,
+    ),
+    Case(
         "gpt_oss",
         # Layer 0 is sliding-window attention, layer 1 full attention, both with sinks
         GptOssConfig(
@@ -548,7 +595,7 @@ def build_trainer_model(model_dir: Path, case: Case) -> torch.nn.Module:
     """The trainer's model, unsharded on one GPU, with fp32 master weights."""
     config = ModelConfig(name=model_dir.as_posix(), compile=None, ac=None, **case.model)
     resolve_auto_attn(config)
-    model = get_model(config, device=torch.device("meta"), dtype=torch.float32)
+    model = get_model(config, dtype=torch.float32)
     apply_model_fusions(model, config.fusions.enabled)
     inject_prime_lm_head(model, chunk_size=config.fused_lm_head_token_chunk_size)
     model.to_empty(device="cuda")
@@ -628,17 +675,39 @@ def route_agreement(routes: dict[int, torch.Tensor], vllm_routes: torch.Tensor) 
     return torch.cat(same).float().mean().item()
 
 
-@contextmanager
-def stock_configs() -> Iterator[None]:
-    """Parse configs with the classes transformers ships, as a vLLM server does. Importing the trainer's models
-    registers its own config classes over them, and those lack attributes that vLLM reads."""
-    trainer_configs = {
+def trainer_config_classes() -> dict[str, type[PretrainedConfig]]:
+    return {
         model_type: config_class
         for model_type, config_class in CONFIG_MAPPING._extra_content.items()
-        if config_class.__module__.startswith("prime_rl.")
+        if config_class.__module__.startswith("prime_rl.trainer.")
     }
+
+
+@pytest.fixture(scope="module")
+def plugin_configs() -> dict[str, type[PretrainedConfig]]:
+    """Loads vLLM's general plugins, which register out-of-tree models such as Inkling 2, and returns the config
+    classes they register. vLLM loads them once per process, and their config classes can share a model type with the
+    trainer's, which stay registered outside `stock_configs`."""
+    configs = trainer_config_classes()
+    load_general_plugins()
+    plugin_configs = {
+        model_type: config_class
+        for model_type, config_class in CONFIG_MAPPING._extra_content.items()
+        if config_class.__module__.startswith("prime_rl.inference.")
+    }
+    CONFIG_MAPPING._extra_content.update(configs)
+    return plugin_configs
+
+
+@contextmanager
+def stock_configs(plugin_configs: dict[str, type[PretrainedConfig]]) -> Iterator[None]:
+    """Parse configs with the classes transformers ships and vLLM's plugins register, as a vLLM server does.
+    Importing the trainer's models registers its own config classes over them, and those lack attributes that vLLM
+    reads."""
+    trainer_configs = trainer_config_classes()
     for model_type in trainer_configs:
         del CONFIG_MAPPING._extra_content[model_type]
+    CONFIG_MAPPING._extra_content.update(plugin_configs)
     try:
         yield
     finally:
@@ -654,7 +723,12 @@ def load_weights(worker, state_dict: dict[str, torch.Tensor]) -> None:
 
 
 def vllm_logprobs(
-    model_dir: Path, case: Case, state_dict: dict[str, torch.Tensor], rows: list[list[int]], moe: bool
+    model_dir: Path,
+    case: Case,
+    state_dict: dict[str, torch.Tensor],
+    rows: list[list[int]],
+    moe: bool,
+    plugin_configs: dict[str, type[PretrainedConfig]],
 ) -> tuple[list[torch.Tensor], torch.Tensor | None]:
     """vLLM's prompt logprobs of the rows from the trainer's weights, and for MoE models the experts it routed every
     token to, as [tokens, layers, top_k]."""
@@ -665,7 +739,7 @@ def vllm_logprobs(
     # vLLM runs a dozen full garbage collections while it starts, each about 0.6 s over this process's heap. Frozen
     # objects are skipped; cleanup_dist_env_and_memory unfreezes them.
     gc.freeze()
-    with stock_configs():
+    with stock_configs(plugin_configs):
         llm = LLM(model=model_dir.as_posix(), **{**ENGINE_ARGS, "enable_return_routed_experts": moe, **case.engine})
     try:
         llm.collective_rpc(load_weights, args=(state_dict,))
@@ -708,7 +782,13 @@ def case_param(case: Case):
 
 
 @pytest.mark.parametrize("case", [case_param(case) for case in CASES])
-def test_matches_vllm(case: Case, rows: list[list[int]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_matches_vllm(
+    case: Case,
+    rows: list[list[int]],
+    plugin_configs: dict[str, type[PretrainedConfig]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
     # Keep the engine in this process, so the trainer's weights reach it through a function call
     monkeypatch.setenv("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
     monkeypatch.setenv("VLLM_NO_USAGE_STATS", "1")
@@ -719,7 +799,7 @@ def test_matches_vllm(case: Case, rows: list[list[int]], tmp_path: Path, monkeyp
     for param in model.parameters():
         param.data = param.data.bfloat16()
     moe = bool(moe_routers(model))
-    vllm, vllm_routes = vllm_logprobs(tmp_path, case, state_dict, rows, moe)
+    vllm, vllm_routes = vllm_logprobs(tmp_path, case, state_dict, rows, moe, plugin_configs)
 
     if moe:
         agreement = route_agreement(trainer_routing(model, rows), vllm_routes)

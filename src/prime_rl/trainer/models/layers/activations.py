@@ -31,6 +31,24 @@ class ClampedSilu(Activation):
         return F.silu(gate) * up
 
 
+class SoftcappedSwiglu(Activation):
+    """SwiGLU whose sigmoid sees the raw gate while softcaps bound the linear gate factor and ``up``
+    (Inkling 2: ``tanh(g/4)*4 * sigmoid(g) * tanh(u/25)*25``, computed in fp32)."""
+
+    gate_softcap: float = 4.0
+    up_softcap: float = 25.0
+
+    @classmethod
+    def apply(cls, gate: torch.Tensor | None, up: torch.Tensor) -> torch.Tensor:
+        assert gate is not None
+        dtype = gate.dtype
+        gate = gate.float()
+        up = up.float()
+        out = torch.tanh(gate / cls.gate_softcap) * cls.gate_softcap * torch.sigmoid(gate)
+        out = out * (torch.tanh(up / cls.up_softcap) * cls.up_softcap)
+        return out.to(dtype)
+
+
 class Relu2(Activation):
     @staticmethod
     def apply(gate: torch.Tensor | None, up: torch.Tensor) -> torch.Tensor:
@@ -47,10 +65,11 @@ class Silu(Activation):
         return F.silu(gate) * up
 
 
-ActivationType = Literal["silu", "relu2", "clamped_swiglu"]
+ActivationType = Literal["silu", "relu2", "clamped_swiglu", "softcapped_swiglu"]
 
 ActivationDispatch: dict[ActivationType, type[Activation]] = {
     "clamped_swiglu": ClampedSwiglu,
     "silu": Silu,
     "relu2": Relu2,
+    "softcapped_swiglu": SoftcappedSwiglu,
 }
