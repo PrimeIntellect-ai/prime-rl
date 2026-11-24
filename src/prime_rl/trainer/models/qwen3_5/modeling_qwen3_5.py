@@ -178,7 +178,9 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
 
         hidden_states = inputs_embeds
         for layer_index, decoder_layer in enumerate(self.layers):
-            layer_routed_experts = routed_experts[:, :, layer_index].contiguous() if routed_experts is not None else None
+            layer_routed_experts = (
+                routed_experts[:, :, layer_index].contiguous() if routed_experts is not None else None
+            )
             hidden_states = decoder_layer(
                 hidden_states=hidden_states,
                 position_embeddings=position_embeddings,
