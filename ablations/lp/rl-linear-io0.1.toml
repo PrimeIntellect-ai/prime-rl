@@ -1,0 +1,91 @@
+# Length penalty ablations, arm `linear-io0.1`: rl.toml plus main's linear GRPO length penalty with
+# 0.1 on the output- and input-token terms (turns term at its default, 0.1).
+#
+# Base config: Qwen3.6-35B-A3B under
+# the rlm harness without subagents (max_depth 0), on BrowseComp-Plus without its 30 held-out
+# tasks. Eval is the held-out tasks (bcplus_eval_idx.txt), avg@4. Penalty arms override
+# orchestrator.train.source[*].algo.length_penalty on top of this file.
+#
+# 1 trainer node + 1 inference node (tp1 dp8, no expert parallelism) on H200. The held-out
+# indices are inlined from bcplus_eval_idx.txt so the config needs no local files at launch.
+#
+#   prime train run ablations/lp/rl-linear-io0.1.toml --ref <commit> --gpu-type H200_141GB -e WANDB_API_KEY
+#   uv run rl @ ablations/lp/rl-linear-io0.1.toml --slurm.job-name lp-linear-io0.1
+
+mode = "rl"
+seq_len = 131072
+max_steps = 500
+
+[run]
+name = "lp-linear-io0.1"
+
+[model]
+name = "Qwen/Qwen3.6-35B-A3B"
+
+[weight_broadcast]
+type = "nccl"
+
+[ckpt]
+interval = 20
+keep_last = 2
+
+[monitors.wandb]
+project = "lp-ablations"
+name = "linear-io0.1"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+num_infer_replicas = 1
+
+# --- Trainer: the qwen3.6 example fits one 262144-token sample with cp 4, so 131072 fits with cp 2 ---
+
+[trainer.model]
+ep = 8
+cp = 2
+ac_offloading = "None"
+
+# --- Orchestrator ---
+
+[orchestrator]
+batch_size = 64
+max_staleness = 16
+
+[orchestrator.train]
+group_size = 8
+
+[[orchestrator.train.source]]
+name = "bcplus"
+algo.length_penalty = { type = "linear", num_output_tokens_weight = 0.1, num_input_tokens_weight = 0.1 }
+env.taskset.id = "browsecomp-plus"
+select.exclude.idx = [41, 97, 101, 142, 143, 150, 223, 256, 265, 288, 310, 317, 366, 394, 414, 430, 488, 497, 516, 523, 545, 597, 616, 633, 722, 773, 776, 802, 818, 829]
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 3600
+env.agent.harness.max_depth = 0
+
+[orchestrator.eval]
+interval = 20
+group_size = 4
+
+[[orchestrator.eval.source]]
+name = "bcplus-heldout"
+env.taskset.id = "browsecomp-plus"
+select.include.idx = [41, 97, 101, 142, 143, 150, 223, 256, 265, 288, 310, 317, 366, 394, 414, 430, 488, 497, 516, 523, 545, 597, 616, 633, 722, 773, 776, 802, 818, 829]
+env.agent.harness.id = "rlm"
+env.agent.timeout.rollout = 3600
+env.agent.harness.max_depth = 0
+
+# --- Inference ---
+
+[inference.vllm]
+max_model_len = 131072
+enable_prefix_caching = true
+tensor_parallel_size = 1
+data_parallel_size = 8
+gpu_memory_utilization = 0.85
+
+# Text-only RL: skip the vision encoder.
+[inference.vllm.limit_mm_per_prompt]
+image = 0
+video = 0
