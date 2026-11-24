@@ -16,7 +16,7 @@ from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.delta import DeltaStreamer, dump
 from verifiers.v1.env import RunSlot
 from verifiers.v1.episode import Episode
-from verifiers.v1.restore import release_all, restore_entry, save_all
+from verifiers.v1.restore import arm_hold_watchdogs, release_all, restore_entry, save_all
 from verifiers.v1.runtimes import PrimeBackend, Snapshot
 from verifiers.v1.task import Task
 from verifiers.v1.utils.loaders import load_environment
@@ -231,6 +231,15 @@ class EnvWorker:
         )
 
     async def _save(self, req: SaveRequest) -> SaveResponse:
+        try:
+            return await self._save_and_write(req)
+        finally:
+            # The holds end by themselves only from here: saving thousands of rollouts
+            # and writing their files takes minutes, and a rollout must not go on
+            # before the client has its restore point.
+            arm_hold_watchdogs()
+
+    async def _save_and_write(self, req: SaveRequest) -> SaveResponse:
         """Take a memory checkpoint of every running rollout and write the restore point
         of each run with a single trace. Every other snapshot taken is deleted here: a
         multi-trace episode cannot continue from one trace, and a run that ended while
@@ -238,7 +247,7 @@ class EnvWorker:
         reasons: dict[str, int] = {}
         # Held at their restore points until the client's `release`: a saved rollout
         # must still run when the client records what is in flight.
-        traces = await save_all(reasons, hold=True)
+        traces = await save_all(reasons, hold=True, watchdog=False)
         slots = {
             slot.traces[0].id: (request_id, slot) for request_id, slot in self._slots.items() if len(slot.traces) == 1
         }

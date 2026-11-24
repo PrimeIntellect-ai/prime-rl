@@ -31,13 +31,15 @@ def test_save_maps_restore_points_to_runs_and_deletes_the_snapshots_of_the_rest(
             discarded.extend(snapshot.id for snapshot in snapshots)
             return [snapshot.id for snapshot in snapshots]
 
-    async def save_all(skipped: dict[str, int], *, hold: bool) -> list[dict]:
+    async def save_all(skipped: dict[str, int], *, hold: bool, watchdog: bool) -> list[dict]:
         # t9's run ended while the checkpoints were taken; t2 is one trace of a multi-agent episode.
-        assert hold
+        assert hold and not watchdog
         skipped["the 'subprocess' runtime takes no memory snapshots"] = 2
         return [point("t1"), point("t2"), point("t9"), point("../t4")]
 
     monkeypatch.setattr(worker, "save_all", save_all)
+    armed: list[bool] = []
+    monkeypatch.setattr(worker, "arm_hold_watchdogs", lambda: armed.append(True))
     monkeypatch.setattr(worker, "PrimeBackend", Backend)
     monkeypatch.setattr(pathing, "_save_root", str(tmp_path.resolve()))
     env_worker = EnvWorker.__new__(EnvWorker)
@@ -54,6 +56,8 @@ def test_save_maps_restore_points_to_runs_and_deletes_the_snapshots_of_the_rest(
     response = asyncio.run(env_worker._save(SaveRequest(dir=str(directory))))
 
     assert set(response.restores) == {"r1"}
+    # The holds end by themselves only once the restore files are written.
+    assert armed == [True]
     ref = response.restores["r1"]
     assert ref.trace_id == "t1" and ref.snapshot == {"id": "s-t1"}
     assert ref.path == str(directory / "t1.restore")
