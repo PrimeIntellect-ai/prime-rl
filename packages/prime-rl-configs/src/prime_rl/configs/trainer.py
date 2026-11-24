@@ -491,6 +491,9 @@ class TokenizerConfig(BaseConfig):
 class ConstantSchedulerConfig(BaseConfig):
     type: Literal["constant"] = "constant"
 
+    start_step: int = Field(0, ge=0)
+    """The step the schedule starts at. A constant schedule is the same at every step."""
+
 
 class LinearSchedulerConfig(BaseConfig):
     type: Literal["linear"] = "linear"
@@ -504,6 +507,10 @@ class LinearSchedulerConfig(BaseConfig):
     min_lr: float = Field(0.0, ge=0)
     """Minimum learning rate to converge to."""
 
+    start_step: int = Field(0, ge=0)
+    """The step the schedule starts at: its warmup and decay span the ``max_steps - start_step`` steps after it. Set
+    it to a resume step to start a fresh schedule there."""
+
 
 class CosineSchedulerConfig(BaseConfig):
     type: Literal["cosine"] = "cosine"
@@ -514,6 +521,10 @@ class CosineSchedulerConfig(BaseConfig):
     min_lr: float = Field(0.0, ge=0)
     """Minimum learning rate to converge to."""
 
+    start_step: int = Field(0, ge=0)
+    """The step the schedule starts at: its warmup and decay span the ``max_steps - start_step`` steps after it. Set
+    it to a resume step to start a fresh schedule there."""
+
 
 SchedulerConfig: TypeAlias = Annotated[
     ConstantSchedulerConfig | LinearSchedulerConfig | CosineSchedulerConfig, Field(discriminator="type")
@@ -522,24 +533,30 @@ SchedulerConfig: TypeAlias = Annotated[
 
 def validate_scheduler(scheduler: SchedulerConfig, max_steps: int | None) -> None:
     """Check scheduler phases against max_steps so misconfigurations fail at config time."""
+    if max_steps is not None and scheduler.start_step >= max_steps:
+        raise ValueError(f"start_step ({scheduler.start_step}) must be less than max_steps ({max_steps})")
+    # The steps the schedule spans
+    horizon = max_steps - scheduler.start_step if max_steps is not None else None
     if isinstance(scheduler, LinearSchedulerConfig):
         if scheduler.warmup_steps == 0 and scheduler.decay_steps == 0:
             raise ValueError(
                 "Linear scheduler requires warmup_steps > 0 or decay_steps > 0 (use the constant scheduler instead)"
             )
         if scheduler.decay_steps > 0:
-            if max_steps is None:
+            if horizon is None:
                 raise ValueError("Must specify max_steps when using a linear scheduler with decay_steps > 0")
-            if scheduler.warmup_steps + scheduler.decay_steps > max_steps:
+            if scheduler.warmup_steps + scheduler.decay_steps > horizon:
                 raise ValueError(
                     f"warmup_steps ({scheduler.warmup_steps}) + decay_steps ({scheduler.decay_steps}) "
-                    f"must not exceed max_steps ({max_steps})"
+                    f"must not exceed max_steps - start_step ({horizon})"
                 )
     if isinstance(scheduler, CosineSchedulerConfig):
-        if max_steps is None:
+        if horizon is None:
             raise ValueError("Must specify max_steps when using a cosine scheduler")
-        if scheduler.warmup_steps >= max_steps:
-            raise ValueError(f"warmup_steps ({scheduler.warmup_steps}) must be less than max_steps ({max_steps})")
+        if scheduler.warmup_steps >= horizon:
+            raise ValueError(
+                f"warmup_steps ({scheduler.warmup_steps}) must be less than max_steps - start_step ({horizon})"
+            )
 
 
 class BaseOptimizerConfig(BaseConfig):
@@ -605,15 +622,11 @@ class CheckpointConfig(BaseConfig):
     keep_interval: int | None = Field(None, ge=1)
     """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
 
-    skip_scheduler: bool = False
-    """Skip loading the scheduler from checkpoint: start the configured schedule over the remaining steps."""
-
     skip_dataloader: bool = False
     """Skip loading the dataloader from checkpoint."""
 
     skip_optimizer: bool = False
-    """Skip loading the optimizer state from checkpoint. The learning rates still continue the checkpoint's schedule
-    (scaled to the configured ``optim.lr``), unless ``skip_scheduler`` is set."""
+    """Skip loading the optimizer state from checkpoint: start with fresh moments and step counts."""
 
     async_save: bool = False
     """Write checkpoints in the background. A save copies this rank's model and optimizer state into pinned host
@@ -821,7 +834,7 @@ class TrainerConfig(BaseTrainerConfig):
     """Loss config for the rl loss component (see ``setup_rl_loss_fn``). The ce / ref_kl components are fixed and do not read this."""
 
     resume: ResumeConfig | None = None
-    """Resume training from a checkpoint. None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step, ``resume.dir`` from an external checkpoint step directory. Without ``ckpt`` the run loads but saves no new checkpoints. The learning rate schedule continues from the checkpoint's step, scaled to the configured ``optim.lr``."""
+    """Resume training from a checkpoint. None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step, ``resume.dir`` from an external checkpoint step directory. Without ``ckpt`` the run loads but saves no new checkpoints. The checkpoint supplies the training state; the hyperparameters and the learning rate schedule come from this config."""
 
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
     """Transport used to broadcast updated weights from trainer to inference."""

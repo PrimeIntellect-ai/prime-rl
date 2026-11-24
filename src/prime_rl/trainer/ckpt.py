@@ -2,6 +2,7 @@ import bisect
 import copy
 import gc
 import json
+import math
 import shutil
 import time
 from collections import defaultdict
@@ -24,7 +25,6 @@ from torch.distributed.checkpoint.state_dict_saver import save as dcp_save
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.distributed.tensor import DTensor, Shard
 from torch.nn import Module
-from torch.optim.lr_scheduler import LRScheduler
 from torch.optim.optimizer import Optimizer
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers import AutoConfig, GenerationConfig, PretrainedConfig, PreTrainedTokenizerBase, ProcessorMixin
@@ -42,7 +42,6 @@ from prime_rl.trainer.models.fusions import (
     write_back_loaded_packed_optimizer_state,
 )
 from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
-from prime_rl.trainer.scheduler import load_scheduler_state
 from prime_rl.trainer.utils import DCP_TIMEOUT, empty_pinned, get_dcp_group
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
@@ -235,19 +234,43 @@ def _copy_cpu_state_split_on_sharded_dim_to_gpu(
     return {**optimizer_state_dict, "state": state}
 
 
-# Param group entries that belong to this run, not to the checkpoint: how its optimizer computes (AdamW's kernel
-# choice; optimizer offload keeps the step counters on the CPU, which the fused kernel rejects) and its layout (dion's
-# Muon names a mesh of this run's layout). A checkpoint saved with other offloading or another layout restores the
-# hyperparameters only.
+# Param group entries that are training state: dion's Muon keeps its step count there. A load takes these from the
+# checkpoint and every other entry (the hyperparameters, the scheduled lr) from this run's optimizer.
+STATE_PARAM_GROUP_KEYS = ("step",)
+# Param group entries that follow this run's offloading and layout, which the warning skips: AdamW's kernel choice
+# (optimizer offload keeps the step counters on the CPU, which the fused kernel rejects) and the mesh that dion's Muon
+# names.
 RUN_PARAM_GROUP_KEYS = ("fused", "foreach", "capturable", "differentiable", "distributed_mesh_name")
 
 
-def _with_run_param_group_keys(loaded_groups: list[dict], live_groups: list[dict]) -> list[dict]:
-    """The loaded param groups, with this run's entries for `RUN_PARAM_GROUP_KEYS`."""
-    return [
-        {**loaded, **{key: live[key] for key in RUN_PARAM_GROUP_KEYS if key in live}}
-        for loaded, live in zip(loaded_groups, live_groups, strict=True)
+def _same_param_group_value(old: Any, new: Any) -> bool:
+    if isinstance(old, (tuple, list)) and isinstance(new, (tuple, list)):
+        return len(old) == len(new) and all(map(_same_param_group_value, old, new))
+    if isinstance(old, float) or isinstance(new, float):
+        numbers = isinstance(old, (int, float)) and isinstance(new, (int, float))
+        return numbers and math.isclose(old, new, rel_tol=1e-6)
+    return old == new
+
+
+def _warn_changed_param_groups(loaded_groups: list[dict], live_groups: list[dict]) -> None:
+    """Warn once of every param group entry of this run that differs from the checkpoint's, other than the parameters,
+    the state and the run's entries, as ``group {index}: {key} {old} -> {new}``."""
+    ignored = ("params", *STATE_PARAM_GROUP_KEYS, *RUN_PARAM_GROUP_KEYS)
+    changes = [
+        f"group {index}: {key} {loaded.get(key)} -> {live.get(key)}"
+        for index, (loaded, live) in enumerate(zip(loaded_groups, live_groups, strict=True))
+        for key in sorted(loaded.keys() | live.keys())
+        if key not in ignored and not _same_param_group_value(loaded.get(key), live.get(key))
     ]
+    if changes and get_world().is_master:
+        get_logger().warning(
+            "The optimizer's param groups differ from the checkpoint's; training goes on with this run's:\n"
+            + "\n".join(changes)
+        )
+
+
+def _loaded_state_entries(loaded_group: dict) -> dict:
+    return {key: loaded_group[key] for key in STATE_PARAM_GROUP_KEYS if key in loaded_group}
 
 
 def _store_weights_in_model_state(
@@ -301,13 +324,11 @@ class AppState(Stateful):
         self,
         model: Module,
         optimizers: list[OptimizerLike],
-        scheduler: LRScheduler | None,
         progress: Progress | None,
         optimizer_state: bool = True,
         masters_in_optimizer_state: bool = False,
     ):
         self.model = model
-        self.scheduler = scheduler
         self.progress = progress
         self.optimizer_state = optimizer_state
         """False leaves the optimizer state out (``ckpt.skip_optimizer``, ``model.init`` from a step directory). The
@@ -346,9 +367,6 @@ class AppState(Stateful):
         state_dict = {"model": model_state_dict}
         if self.optimizer_state:
             state_dict["optimizers"] = optimizer_state_dict
-        if self.scheduler is not None:
-            scheduler_state_dict = self.scheduler.state_dict()
-            state_dict["scheduler"] = scheduler_state_dict
         if self.progress is not None:
             progress_state_dict = asdict(self.progress)
             state_dict["progress"] = progress_state_dict
@@ -405,13 +423,13 @@ class AppState(Stateful):
             # The template only aliases a packed parameter's state where the packing
             # dimension is unsharded, so the loaded logical entries are packed back in.
             write_back_loaded_packed_optimizer_state(self.model, checkpoint_optimizers, optimizer_state_dict)
-            # The in-place load reaches tensors only: restore the param groups' values too (lr, and dion's Muon keeps
-            # its step count there), in the live groups, since full offload's checkpoint optimizer holds copies.
+            # The in-place load reaches tensors only: restore the param groups' state too (dion's Muon keeps its step
+            # count there), in the live groups, since full offload's checkpoint optimizer holds copies.
             live_groups = [group for optimizer in self.optimizers for group in optimizer.param_groups]
-            for group, loaded in zip(live_groups, optimizer_state_dict["param_groups"], strict=True):
-                group.update(
-                    {key: value for key, value in loaded.items() if key not in ("params", *RUN_PARAM_GROUP_KEYS)}
-                )
+            loaded_groups = optimizer_state_dict["param_groups"]
+            _warn_changed_param_groups(loaded_groups, live_groups)
+            for group, loaded in zip(live_groups, loaded_groups, strict=True):
+                group.update(_loaded_state_entries(loaded))
             for optimizer in self.optimizers:
                 if isinstance(optimizer, OffloadOptimizer):
                     optimizer.finish_checkpoint_load()
@@ -419,22 +437,25 @@ class AppState(Stateful):
             # The runtime state dict read back here keys the fused parameters' state by their
             # physical names; the loaded logical entries are packed into it.
             _, runtime_optimizer_state_dict = get_state_dict(self.model, checkpoint_optimizers)
+            loaded_groups = optimizer_state_dict.get("param_groups", [])
+            live_groups = runtime_optimizer_state_dict.get("param_groups", [])
+            _warn_changed_param_groups(loaded_groups, live_groups)
+            optimizer_state_dict = join_loaded_optimizer_state_for_runtime(
+                self.model, optimizer_state_dict, runtime_optimizer_state_dict
+            )
             if optimizer_state_dict:
-                live_groups = [group for optimizer in checkpoint_optimizers for group in optimizer.param_groups]
-                optimizer_state_dict["param_groups"] = _with_run_param_group_keys(
-                    optimizer_state_dict["param_groups"], live_groups
-                )
+                # Optimizer.load_state_dict replaces each live group with the loaded one: hand it the live groups
+                optimizer_state_dict["param_groups"] = [
+                    {**live, **_loaded_state_entries(loaded)}
+                    for live, loaded in zip(live_groups, loaded_groups, strict=True)
+                ]
             set_state_dict(
                 self.model,
                 checkpoint_optimizers,
                 model_state_dict=state_dict["model"],
-                optim_state_dict=join_loaded_optimizer_state_for_runtime(
-                    self.model, optimizer_state_dict, runtime_optimizer_state_dict
-                ),
+                optim_state_dict=optimizer_state_dict,
             )
 
-        if self.scheduler is not None:
-            load_scheduler_state(self.scheduler, state_dict["scheduler"], self.optimizer_state)
         if self.progress is not None:
             for key, value in state_dict["progress"].items():
                 setattr(self.progress, key, value)
@@ -483,7 +504,6 @@ class CheckpointManager:
         path: Path,
         model: nn.Module,
         optimizers: list[OptimizerLike],
-        scheduler: LRScheduler,
         progress: Progress,
         dataloader: StatefulDataLoader | None = None,
     ) -> tuple[Staging | None, Future] | None:
@@ -491,7 +511,7 @@ class CheckpointManager:
         self.logger.debug(f"Saving training checkpoint to {path}")
         start_time = time.perf_counter()
 
-        app_state = AppState(model, optimizers, scheduler, progress)
+        app_state = AppState(model, optimizers, progress)
 
         # Checkpoint the local dataloader
         if dataloader is not None:
@@ -565,7 +585,6 @@ class CheckpointManager:
         path: Path,
         model: nn.Module,
         optimizers: list[OptimizerLike],
-        scheduler: LRScheduler | None,
         progress: Progress | None,
         dataloader: StatefulDataLoader | None = None,
     ):
@@ -573,7 +592,7 @@ class CheckpointManager:
         self.logger.debug(f"Loading training checkpoint from {path}")
         start_time = time.perf_counter()
 
-        _load_app_state(path, model, optimizers, scheduler, progress, model_only=self.skip_optimizer)
+        _load_app_state(path, model, optimizers, progress, model_only=self.skip_optimizer)
 
         # Load the dataloader
         if dataloader is not None:
@@ -599,7 +618,7 @@ class CheckpointManager:
             raise FileNotFoundError(f"No trainer checkpoint at {path}")
         self.logger.info(f"Initializing weights from {path}")
         start_time = time.perf_counter()
-        _load_app_state(path, model, optimizers, scheduler=None, progress=None, model_only=True)
+        _load_app_state(path, model, optimizers, progress=None, model_only=True)
         self.logger.debug(f"Loaded weights in {format_time(time.perf_counter() - start_time)}")
 
     def load(
@@ -607,7 +626,6 @@ class CheckpointManager:
         step: int,
         model: nn.Module,
         optimizers: list[OptimizerLike],
-        scheduler: LRScheduler | None,
         progress: Progress | None,
         dataloader: StatefulDataLoader | None = None,
         path: Path | None = None,
@@ -618,14 +636,18 @@ class CheckpointManager:
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
         check_model_config(self.model_files.config, ckpt_path.parent)
-        self.load_from_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
+        self.load_from_path(ckpt_path, model, optimizers, progress, dataloader)
+        if progress is not None and progress.step != step:
+            raise RuntimeError(
+                f"The checkpoint at {ckpt_path} finished step {progress.step}, not the resume step {step} (with "
+                "resume.dir, the step comes from the directory name): the learning rate schedule would be out of step"
+            )
 
     def save(
         self,
         step: int,
         model: nn.Module,
         optimizers: list[OptimizerLike],
-        scheduler: LRScheduler,
         progress: Progress,
         dataloader: StatefulDataLoader | None = None,
     ) -> None:
@@ -642,7 +664,7 @@ class CheckpointManager:
             self.model_files.save(ckpt_path.parent)
         torch.distributed.barrier(group=get_dcp_group())
 
-        futures = self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
+        futures = self.save_to_path(ckpt_path, model, optimizers, progress, dataloader)
         if futures is None:
             self._register(step)
         else:
@@ -752,7 +774,6 @@ def _load_app_state(
     path: Path,
     model: nn.Module,
     optimizers: list[OptimizerLike],
-    scheduler: LRScheduler | None,
     progress: Progress | None,
     *,
     model_only: bool,
@@ -761,7 +782,6 @@ def _load_app_state(
     app_state = AppState(
         model,
         optimizers,
-        scheduler,
         progress,
         optimizer_state=not model_only,
         masters_in_optimizer_state=masters_in_optimizer_state,

@@ -20,7 +20,7 @@ import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, ckpt_output_dir, setup_ckpt_manager, setup_model_files
 from prime_rl.trainer.optim import setup_optimizer
-from prime_rl.trainer.scheduler import restore_configured_lrs, setup_scheduler
+from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.data import (
     DataLoader,
@@ -252,16 +252,8 @@ def train(config: TrainerConfig):
     )
     logger.debug(f"Initialized optimizer in {format_time(time.perf_counter() - t0)}")
 
-    # skip_scheduler rebuilds a fresh schedule over the remaining steps
-    skip_scheduler = config.ckpt is not None and config.ckpt.skip_scheduler
-    scheduler_steps = (
-        config.max_steps - checkpoint_step
-        if config.max_steps is not None and skip_scheduler and checkpoint_step is not None
-        else config.max_steps
-    )
-    logger.info(f"Initializing scheduler with {scheduler_steps} steps ({config.scheduler})")
-    configured_lrs = [group["lr"] for group in optimizer.param_groups]
-    scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
+    logger.info(f"Initializing scheduler ({config.scheduler})")
+    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr, checkpoint_step)
 
     # Set up weight broadcast (skip when using fake data since there's no inference server)
     if config.data.fake:
@@ -299,15 +291,11 @@ def train(config: TrainerConfig):
             checkpoint_step,
             model,
             [optimizer],
-            scheduler if not skip_scheduler else None,
             progress,
             path=resume_dir / "trainer" if resume_dir is not None else None,
         )
         # The checkpoint finished step ``checkpoint_step``; resume training at the next step.
         progress.step += 1
-        if skip_scheduler:
-            restore_configured_lrs(optimizer, configured_lrs)
-            scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
         logger.info(
             f"Resuming from step {checkpoint_step} "
             f"(total_tokens={progress.total_tokens}, total_samples={progress.total_samples})"
@@ -810,7 +798,7 @@ def train(config: TrainerConfig):
         if (is_ckpt_step or step_action == "checkpoint") and not is_last_step:
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
-            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+            ckpt_manager.save(progress.step, model, [optimizer], progress)
             if step_action == "checkpoint" or config.rollout_transport.retain:
                 # The action and the release of retained rollouts both need the checkpoint on storage
                 ckpt_manager.wait()
@@ -935,7 +923,7 @@ def train(config: TrainerConfig):
     # Write final checkpoint
     if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
-        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+        ckpt_manager.save(progress.step, model, [optimizer], progress)
         ckpt_manager.wait()
         dataloader.commit(progress.step, release=is_data_master)
         if step_action is not None:
