@@ -13,7 +13,7 @@ from torch import Tensor
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.sft import HFDatasetSourceConfig, SFTDataConfig
+from prime_rl.configs.supervised import ChatDataConfig, HFDatasetSourceConfig
 from prime_rl.configs.val import ChatValSourceConfig, LossMaskConfig, SFTColumnsConfig
 from prime_rl.trainer.data import (
     Sample,
@@ -423,7 +423,7 @@ class SFTDataset(StatefulIterableDataset):
         draws, start = state_dict["draws"], state_dict.get("start", {})
         if draws.keys() != saved.keys():
             raise ValueError(
-                f"The checkpoint's SFT data state has the sources {list(draws)}, not the configured {list(saved)}: "
+                f"The checkpoint's chat data state has the sources {list(draws)}, not the configured {list(saved)}: "
                 "resume once with the sources it was saved with"
             )
         self._setup_world_info()
@@ -526,7 +526,7 @@ class SFTDataset(StatefulIterableDataset):
             yield sample
 
 
-def load_sft_dataset(config: SFTDataConfig) -> dict[str, Dataset]:
+def load_sft_dataset(config: ChatDataConfig) -> dict[str, Dataset]:
     """Load the rows of every HF source, by source name. This is the expensive I/O step."""
     datasets = {}
     for source in config.source:
@@ -560,7 +560,7 @@ def source_renderers(
 
 def setup_sft_dataset(
     tokenizer: PreTrainedTokenizer,
-    config: SFTDataConfig,
+    config: ChatDataConfig,
     *,
     dp_rank: int,
     dp_size: int,
@@ -579,7 +579,7 @@ def setup_sft_dataset(
         )
         return SFTDataset([fake], dp_rank=dp_rank, dp_size=dp_size)
     if renderer_config is None:
-        raise ValueError("SFT data requires a renderer config.")
+        raise ValueError("Chat data requires a renderer config.")
     if raw_datasets is None:
         raw_datasets = load_sft_dataset(config)
     sources = []

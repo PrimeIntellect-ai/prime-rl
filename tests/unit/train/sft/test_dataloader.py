@@ -5,16 +5,16 @@ import pytest
 import torch
 from datasets import Dataset
 
-from prime_rl.configs.sft import SFTDataConfig
+from prime_rl.configs.supervised import ChatDataConfig
 from prime_rl.trainer.data import get_dataset_progress, get_dataset_state, setup_dataloader, with_workers
 from prime_rl.trainer.sft.data import FakeSource, HFSource, SFTDataset
 
 
-def fake_config(length: str = "fixed", input_ids: str = "increasing", **kwargs) -> SFTDataConfig:
-    return SFTDataConfig(fake={"length": length, "input_ids": input_ids}, **kwargs)
+def fake_config(length: str = "fixed", input_ids: str = "increasing", **kwargs) -> ChatDataConfig:
+    return ChatDataConfig(fake={"length": length, "input_ids": input_ids}, **kwargs)
 
 
-def setup_fake_dataloader(config: SFTDataConfig, dp_rank: int = 0, dp_size: int = 1):
+def setup_fake_dataloader(config: ChatDataConfig, dp_rank: int = 0, dp_size: int = 1):
     fake = FakeSource(vocab_size=32, seq_len=config.seq_len, length=config.fake.length, input_ids=config.fake.input_ids)
     dataset = SFTDataset([fake], dp_rank=dp_rank, dp_size=dp_size)
     return dataset, setup_dataloader(dataset, config, cp=1)
@@ -143,7 +143,7 @@ def test_dataloader_shards_across_ranks_and_workers(num_workers: int, dp_size: i
     samples_by_rank = []
 
     for dp_rank in range(dp_size):
-        config = SFTDataConfig(
+        config = ChatDataConfig(
             source=[{"name": "fake", "dataset": "unused"}],
             batch_size=1,
             micro_batch_size=1,
@@ -251,7 +251,7 @@ def test_resume_starts_every_worker_at_the_same_draw(
     }
 
     def loader(weights: dict[str, float], dp_rank: int, dp_size: int, num_workers: int):
-        config = SFTDataConfig(
+        config = ChatDataConfig(
             source=[{"name": name, "dataset": "unused"} for name in weights],
             batch_size=1,
             micro_batch_size=1,

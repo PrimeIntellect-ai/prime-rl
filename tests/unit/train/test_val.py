@@ -7,7 +7,7 @@ import pytest
 from renderers import AutoRendererConfig
 from transformers import AutoTokenizer
 
-from prime_rl.configs.sft import SFTDataConfig
+from prime_rl.configs.supervised import ChatDataConfig
 from prime_rl.configs.val import ChatValSourceConfig, DocumentsValSourceConfig
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.sft.data import setup_sft_dataset
@@ -85,7 +85,7 @@ def test_chat_source_scores_the_tokens_sft_trains_on(tmp_path: Path):
     (tmp_path / "train.jsonl").write_text(json.dumps({"messages": messages}) + "\n")
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
     renderer = AutoRendererConfig()
-    data = SFTDataConfig(source=[{"name": "chat", "dataset": str(tmp_path)}], seq_len=1024, shuffle=False)
+    data = ChatDataConfig(source=[{"name": "chat", "dataset": str(tmp_path)}], seq_len=1024, shuffle=False)
     (sample,) = islice(setup_sft_dataset(tokenizer, data, dp_rank=0, dp_size=1, renderer_config=renderer), 1)
 
     config = ChatValSourceConfig(name="chat", dataset=str(tmp_path), seq_len=1024, loss_mask=data.loss_mask)

@@ -65,10 +65,10 @@ def test_fake_dataset_random_resume(length: str, data_world_size: int):
 def test_data_fake_replaces_the_sources_and_needs_no_renderer():
     from types import SimpleNamespace
 
-    from prime_rl.configs.sft import SFTDataConfig
+    from prime_rl.configs.supervised import ChatDataConfig
     from prime_rl.trainer.sft.data import setup_sft_dataset
 
-    config = SFTDataConfig(fake={"input_ids": "increasing"}, seq_len=16)
+    config = ChatDataConfig(fake={"input_ids": "increasing"}, seq_len=16)
     dataset = setup_sft_dataset(SimpleNamespace(vocab_size=32), config, dp_rank=0, dp_size=1)
     sample = next(iter(dataset))
     assert sample["input_ids"].tolist() == [0] * 16

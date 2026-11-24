@@ -729,7 +729,7 @@ class BaseTrainerConfig(BaseConfig):
     tokenizer: TokenizerConfig = TokenizerConfig()
 
     renderer: RendererConfig = AutoRendererConfig()
-    """Renderer config, for SFT data and ``chat`` validation sources. Defaults to auto-selecting from the tokenizer
+    """Renderer config, for ``chat`` data and ``chat`` validation sources. Defaults to auto-selecting from the tokenizer
     model name; an ``rl`` config fills it from ``orchestrator.renderer``."""
 
     optim: OptimizerConfig = AdamWConfig()
@@ -832,7 +832,7 @@ class BaseTrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_typed_renderer(self):
-        """Require a typed renderer whenever the trainer renders conversations: SFT data or a ``chat`` validation
+        """Require a typed renderer whenever the trainer renders conversations: ``chat`` data or a ``chat`` validation
         source."""
         if not self.renders_conversations():
             return self
@@ -848,7 +848,7 @@ class BaseTrainerConfig(BaseConfig):
             return self
 
         raise ValueError(
-            f"Rendering SFT data or chat validation sources requires a typed renderer with sampled-token and content "
+            f"Rendering chat data or chat validation sources requires a typed renderer with sampled-token and content "
             f"attribution, but {reason}. "
             "Implement and register the renderer in the renderers package, or explicitly select an existing "
             "typed renderer ([renderer], or [orchestrator.renderer] in an rl config) only when its template is verified "

@@ -1,7 +1,7 @@
 import uuid
 import warnings
 from pathlib import Path
-from typing import Annotated, TypeAlias
+from typing import Annotated, Literal, TypeAlias
 from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
@@ -21,7 +21,7 @@ from prime_rl.configs.shared import (
     WeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import BaseTrainerConfig, mega_moe_max_tokens_per_rank
-from prime_rl.configs.val import LossMaskConfig, SFTColumnsConfig, ValConfig
+from prime_rl.configs.val import HFDatasetConfig, LossMaskConfig, SFTColumnsConfig, ValConfig
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 
 
@@ -53,15 +53,15 @@ class BaseDataConfig(BaseConfig):
 
 
 class BaseSourceConfig(BaseConfig):
-    """One named source of the training data (``[[data.source]]``), in pretraining and SFT."""
+    """One named source of the training data (``[[data.source]]``)."""
 
     name: str = Field(pattern=r"^[^/]+$")
     """Names the source in the ``progress/<name>/*`` metrics."""
 
     weight: float | None = Field(None, ge=0)
-    """The source's relative weight: its share of the training data (tokens in pretraining, samples in SFT) is its
-    weight over the sum of all weights. If None on every source, the share is the source's share of all sources' data
-    (tokens in pretraining, rows in SFT)."""
+    """The source's relative weight: its share of the training data (tokens of ``documents``, samples of ``chat``
+    data) is its weight over the sum of all weights. If None on every source, the share is the source's share of all
+    sources' data (tokens of ``documents``, rows of ``chat`` data)."""
 
 
 def check_sources(sources: list[BaseSourceConfig]) -> None:
@@ -74,6 +74,94 @@ def check_sources(sources: list[BaseSourceConfig]) -> None:
         raise ValueError("data.source: set weight on every source or on none (natural shares)")
     if None not in weights and sum(weights) <= 0:
         raise ValueError("data.source: the weights must sum to more than 0")
+
+
+class TokenSourceConfig(BaseSourceConfig):
+    """A folder of datatrove tokenized shards, one source of ``documents`` data."""
+
+    path: Path
+    """Folder of ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``."""
+
+    repetitions: float | None = Field(None, ge=1)
+    """How often every token of a fixed subset of the source is seen over the run (needs ``max_steps``). If None, the
+    whole source is read."""
+
+
+class DocumentsDataConfig(BaseDataConfig):
+    """Tokenized documents, sampled from one or more sources into rows of ``seq_len`` tokens."""
+
+    type: Literal["documents"] = "documents"
+
+    source: list[TokenSourceConfig] = Field(min_length=1)
+    """The folders to sample documents from (``[[data.source]]``)."""
+
+    seed: int = Field(0, ge=0)
+    """Seed for the order of the documents, within rows too, and for the subsets."""
+
+    document_masking: bool = True
+    """Attention and positions restart at every document and piece. If False, a row is one sequence."""
+
+    eod_mask_loss: bool = True
+    """Don't train the model to predict the first token of the next, unrelated document: no loss where the input is
+    the document separator. The separator is the special token the training shards' documents end with, detected at
+    startup; startup fails if they don't all end with one, unless they start with BOS (then there is nothing to
+    mask)."""
+
+    @model_validator(mode="after")
+    def validate_sources(self):
+        check_sources(self.source)
+        return self
+
+
+class HFDatasetSourceConfig(HFDatasetConfig, BaseSourceConfig):
+    """One ``(dataset, subset, split)`` of a Hugging Face dataset, one source of ``chat`` data."""
+
+
+class FakeDataConfig(BaseConfig):
+    """Synthetic token sequences of up to ``data.seq_len`` tokens, for throughput and plumbing tests."""
+
+    length: Literal["fixed", "variable"] = "fixed"
+    """Use fixed-length samples or variable-length samples."""
+
+    input_ids: Literal["increasing", "random"] = "increasing"
+    """Token id generator: ``increasing`` for deterministic sequences, ``random`` for random ids."""
+
+
+class ChatDataConfig(BaseDataConfig):
+    """Conversations from one or more sources, rendered with ``renderer`` into packed rows of ``seq_len`` tokens."""
+
+    type: Literal["chat"] = "chat"
+
+    source: list[HFDatasetSourceConfig] = Field(
+        default_factory=lambda: [HFDatasetSourceConfig(name="reverse-text", dataset="PrimeIntellect/Reverse-Text-SFT")],
+        min_length=1,
+    )
+    """The sources to draw samples from (``[[data.source]]``)."""
+
+    fake: FakeDataConfig | None = None
+    """Train on synthetic token sequences instead of the sources. Needs no renderer."""
+
+    shuffle: bool = True
+    """Shuffle every source at the start of each of its passes."""
+
+    seed: int = 0
+    """Seed for the order of every source, re-shuffled per pass by adding the pass count, and for fake tokens."""
+
+    columns: SFTColumnsConfig = SFTColumnsConfig()
+    """Columns of every source. A source's ``columns`` override single fields."""
+
+    loss_mask: LossMaskConfig = LossMaskConfig()
+    """Which message types contribute to the loss."""
+
+    @model_validator(mode="after")
+    def validate_sources(self):
+        check_sources(self.source)
+        for source in self.source:
+            source.resolve_columns(self.columns)
+        return self
+
+
+DataConfig: TypeAlias = Annotated[DocumentsDataConfig | ChatDataConfig, Field(discriminator="type")]
 
 
 class SingleNodeDeploymentConfig(BaseSingleNodeDeploymentConfig):
@@ -102,7 +190,7 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     # Standard L2 regularization for supervised training.
     auto_weight_decay = 0.01
 
-    data: BaseDataConfig
+    data: DataConfig
 
     val: ValConfig | None = None
     """Validation configuration. If None, no validation runs."""
@@ -372,14 +460,28 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_vlm_val(self):
-        if self.model.vlm is not None and self.val is not None:
+    def validate_vlm(self):
+        if self.model.vlm is None:
+            return self
+        if self.val is not None:
             raise ValueError("Validation scores text only: [val] does not support VLM models ([model.vlm]).")
+        if self.data.type == "documents":
+            raise ValueError("[model.vlm] trains on chat data, not documents: set data.type = 'chat'.")
+        if self.data.micro_batch_size != 1:
+            raise ValueError("VLM training requires data.micro_batch_size = 1.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_repetitions(self):
+        repetitions = self.data.type == "documents" and any(source.repetitions for source in self.data.source)
+        if repetitions and self.max_steps is None:
+            raise ValueError("data.source: repetitions size a subset by the run's tokens; that needs max_steps")
         return self
 
     def renders_conversations(self) -> bool:
-        """Whether the trainer renders conversations with ``renderer``: SFT data or a ``chat`` validation source."""
-        return self.val is not None and any(val_source.type == "chat" for val_source in self.val.source)
+        """Whether the trainer renders conversations: chat data (not fake) or a ``chat`` validation source."""
+        chat_val = self.val is not None and any(val_source.type == "chat" for val_source in self.val.source)
+        return (self.data.type == "chat" and self.data.fake is None) or chat_val
 
     ### Auto-setup and validate shared configs
 
