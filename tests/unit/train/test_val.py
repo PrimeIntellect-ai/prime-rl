@@ -1,20 +1,25 @@
+import json
+from itertools import islice
 from pathlib import Path
 
 import numpy as np
 import pytest
+from renderers import AutoRendererConfig
 from transformers import AutoTokenizer
 
-from prime_rl.configs.supervised import DocumentsValSetConfig
+from prime_rl.configs.sft import SFTDataConfig
+from prime_rl.configs.supervised import ChatValSourceConfig, DocumentsValSourceConfig
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
-from prime_rl.trainer.val import documents_set, rank_rows, token_byte_lengths
+from prime_rl.trainer.sft.data import setup_sft_dataset
+from prime_rl.trainer.val import chat_source, documents_source, rank_rows, token_byte_lengths
 
 # Documents in two files of one folder, with an empty one. A token's id is its position in the folder.
 DOCUMENTS = [[range(0, 10), range(10, 30), range(30, 30), range(30, 60)], [range(60, 103)]]
 
 
 @pytest.mark.parametrize("num_documents", [None, 4])
-def test_documents_set_scores_every_document_on_its_own(tmp_path: Path, num_documents: int | None):
-    """A documents set scores every document (or the first num_documents) as if it were alone: windows of seq_len
+def test_documents_source_scores_every_document_on_its_own(tmp_path: Path, num_documents: int | None):
+    """A documents source scores every document (or the first num_documents) as if it were alone: windows of seq_len
     scored tokens, none with a token before its own first one, and every token after the document's first scored
     once."""
     for index, documents in enumerate(DOCUMENTS):
@@ -31,10 +36,12 @@ def test_documents_set_scores_every_document_on_its_own(tmp_path: Path, num_docu
             expected.append((window[:-1], window[1:]))
             items.append(item)
 
-    val_set = documents_set(DocumentsValSetConfig(name="held-out", path=tmp_path, seq_len=seq_len), num_documents)
-    assert [(inputs.tolist(), labels.tolist()) for inputs, labels in val_set.requests] == expected
-    assert val_set.items.tolist() == items
-    assert val_set.num_items == len(documents)
+    val_source = documents_source(
+        DocumentsValSourceConfig(name="held-out", path=tmp_path, seq_len=seq_len), num_documents
+    )
+    assert [(inputs.tolist(), labels.tolist()) for inputs, labels in val_source.requests] == expected
+    assert val_source.items.tolist() == items
+    assert val_source.num_items == len(documents)
 
 
 @pytest.mark.parametrize(("data_world_size", "cp_size"), [(1, 1), (3, 1), (2, 2)])
@@ -64,6 +71,30 @@ def test_ranks_score_every_token_once_in_equal_rows(data_world_size: int, cp_siz
         for label in labels[labels != IGNORE_INDEX].tolist()
     ]
     assert sorted(scored) == sorted(expected)
+
+
+def test_chat_source_scores_the_tokens_sft_trains_on(tmp_path: Path):
+    """A chat source scores exactly the tokens SFT trains on in the same row, and none of the role scaffolding."""
+    messages = [
+        {"role": "system", "content": "Reverse the text."},
+        {"role": "user", "content": "abc def"},
+        {"role": "assistant", "content": "fed cba"},
+        {"role": "user", "content": "ghi"},
+        {"role": "assistant", "content": "ihg"},
+    ]
+    (tmp_path / "train.jsonl").write_text(json.dumps({"messages": messages}) + "\n")
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
+    renderer = AutoRendererConfig()
+    data = SFTDataConfig(source=[{"name": "chat", "dataset": str(tmp_path)}], seq_len=1024, shuffle=False)
+    (sample,) = islice(setup_sft_dataset(tokenizer, data, dp_rank=0, dp_size=1, renderer_config=renderer), 1)
+
+    config = ChatValSourceConfig(name="chat", dataset=str(tmp_path), seq_len=1024, loss_mask=data.loss_mask)
+    config.resolve_columns(data.columns)
+    # num_samples above the split's size scores every row.
+    ((inputs, labels),) = chat_source(config, 5, tokenizer, renderer).requests
+    assert inputs.tolist() == sample["input_ids"].tolist()
+    assert labels.tolist() == np.where(sample["loss_mask"], sample["target_ids"], IGNORE_INDEX).tolist()
+    assert tokenizer.convert_tokens_to_ids("<|im_start|>") not in labels
 
 
 def test_token_byte_lengths_add_up_to_the_text_bytes():

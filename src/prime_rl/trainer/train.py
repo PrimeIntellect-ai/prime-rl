@@ -49,7 +49,7 @@ from prime_rl.trainer.pretrain.data import (
     setup_token_dataset,
     warn_if_no_document_separator,
 )
-from prime_rl.trainer.sft.data import SFTDataset, load_sft_dataset, setup_sft_dataset
+from prime_rl.trainer.sft.data import SFTDataset, setup_sft_dataset
 from prime_rl.trainer.val import Validation
 from prime_rl.trainer.utils import (
     GarbageCollection,
@@ -256,13 +256,9 @@ def train(config: SFTConfig | PretrainConfig):
         )
     dataloader = setup_dataloader(dataset, config.data, config.model.cp)
 
-    val_raw_datasets = None
-    if config.val is not None and isinstance(config, SFTConfig):
-        logger.info(f"Loading validation dataset ({config.val.data})")
-        val_raw_datasets = load_sft_dataset(config.val.data)
     validation = None
-    if config.val is not None and isinstance(config, PretrainConfig):
-        validation = Validation(config.val, tokenizer, parallel_dims, config.run_dir)
+    if config.val is not None:
+        validation = Validation(config.val, tokenizer, config.renderer, parallel_dims, config.run_dir)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -363,64 +359,9 @@ def train(config: SFTConfig | PretrainConfig):
         del out
         return loss_sum, token_count
 
-    def run_eval_loop(data_iter):
-        """Validation forward loop. Returns token-weighted global mean loss."""
-        total_loss_sum = torch.tensor(0.0, device="cuda")
-        total_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
-        nan_count = torch.tensor(0, device="cuda")
-
-        # Variable-length packing yields different per-rank batch counts. Under FSDP
-        # every forward is a collective, so all ranks must agree on when to stop —
-        # otherwise the first rank to exit deadlocks the rest in the next all-gather.
-        # Sync per batch and exit together as soon as any rank exhausts its iterator.
-        data_iter = iter(data_iter)
-
-        with torch.no_grad():
-            while True:
-                micro_batch = next(data_iter, None)
-                has_data = torch.tensor(micro_batch is not None, dtype=torch.int32, device="cuda")
-                dist.all_reduce(has_data, op=dist.ReduceOp.MIN)
-                if has_data.item() == 0:
-                    break
-                loss_sum, token_count = compute_loss(micro_batch)
-                if not torch.isnan(loss_sum.detach()):
-                    total_loss_sum += loss_sum.detach()
-                    total_token_count += token_count
-                else:
-                    nan_count += 1
-
-        dist.all_reduce(total_loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        dist.all_reduce(total_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        dist.all_reduce(nan_count, op=dist.ReduceOp.SUM)
-
-        mean_loss = (total_loss_sum / total_token_count).item() if total_token_count.item() > 0 else float("nan")
-        return mean_loss, nan_count.item()
-
-    def run_sft_validation(step: int) -> dict[str, float]:
-        val_dataset = setup_sft_dataset(
-            tokenizer,
-            config.val.data,
-            dp_rank=dp_rank,
-            dp_size=dp_size,
-            max_epochs=1,
-            raw_datasets=val_raw_datasets,
-            renderer_config=config.renderer,
-            processor=processor,
-            multimodal=multimodal,
-        )
-        val_dataloader = setup_dataloader(val_dataset, config.val.data, config.model.cp)
-        mean_loss, nan_count = run_eval_loop(val_dataloader)
-        if nan_count > 0:
-            logger.warning(f"Validation at step {step}: {nan_count} batches had NaN loss")
-        if mean_loss != mean_loss:
-            logger.warning(f"Validation at step {step} had no valid tokens")
-        else:
-            logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
-        return {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20))}
-
     def run_validation(step: int) -> None:
         # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
-        metrics = validation.run(model, step) if validation is not None else run_sft_validation(step)
+        metrics = validation.run(model, step)
         if is_tt_moe_model(model):
             # Keep validation routing out of the next training step's statistics.
             take_moe_routing_stats(model)
