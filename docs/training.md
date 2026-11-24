@@ -202,11 +202,10 @@ The trainer warns when batch wait time exceeds active trainer time. Add inferenc
 
 `uv run sft` runs supervised fine-tuning from a HF dataset. It shares model loaders, FSDP setup, checkpointing, and the chat-template plumbing with the RL trainer, so a typical workflow is _SFT → RL → SFT → …_ without any reformatting.
 
-`uv run sft` and `uv run pretrain` ([Pretraining](#pretraining)) are one supervised trainer. Both take both data types: `[data] type = "chat"` (conversations from HF datasets, below) or `type = "documents"` (tokenized shards, see [Pretraining](#pretraining)). They differ only in their defaults:
+`uv run sft` and `uv run pretrain` are one trainer. Both take `[data] type = "chat"` (below) or `type = "documents"` ([Pretraining](#pretraining)), and differ only in their defaults:
 
 | Default | `sft` | `pretrain` |
 |---|---|---|
-| accepted `mode` | `sft` | `pretrain` |
 | `data` | `chat`, with the `reverse-text` source | required; `type` defaults to `documents` |
 | `model.init` | `pretrained` | `scratch` |
 | `optim.lr` | `1e-6` | `1e-3` for AdamW and Muon (SignSGD `1e-6`) |
@@ -462,7 +461,7 @@ max_steps = 1000
 [model]
 name = "Qwen/Qwen3-0.6B"   # only the architecture is read
 
-[data]                     # type = "documents" is the pretrain default
+[data]
 seq_len = 2048
 batch_size = 256
 

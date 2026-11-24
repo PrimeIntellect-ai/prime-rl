@@ -128,8 +128,7 @@ class FakeDataConfig(BaseConfig):
 
 
 class ChatDataConfig(BaseDataConfig):
-    """Conversations rendered with ``renderer``: samples drawn from one or more sources into packed rows of
-    ``seq_len`` tokens."""
+    """Conversations from one or more sources, rendered with ``renderer`` into packed rows of ``seq_len`` tokens."""
 
     type: Literal["chat"] = "chat"
 
@@ -185,15 +184,13 @@ SupervisedDeploymentConfig: TypeAlias = Annotated[
 
 
 class SupervisedTrainerConfig(BaseTrainerConfig):
-    """SFT and pretraining: next-token loss on a fixed dataset, as opposed to RL. ``uv run sft`` (``SFTConfig``) and
-    ``uv run pretrain`` (``PretrainConfig``) differ only in their defaults."""
+    """SFT and pretraining: next-token loss on a fixed dataset, as opposed to RL."""
 
     auto_freeze_moe_router = False
     # Standard L2 regularization for supervised training.
     auto_weight_decay = 0.01
 
     data: DataConfig
-    """Training data: tokenized ``documents`` or ``chat`` conversations rendered with ``renderer``."""
 
     val: ValConfig | None = None
     """Validation configuration. If None, no validation runs."""
@@ -236,9 +233,8 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
         one) when unset and default the run directory, W&B run name and platform run name to it when not set
         explicitly."""
         if self.run.name is None:
-            sources = self.data.source
-            fake = self.data.type == "chat" and self.data.fake is not None
-            dataset = "fake" if fake else sources[0].name if len(sources) == 1 else ""
+            sources = getattr(self.data, "source", [])
+            dataset = "fake" if getattr(self.data, "fake", None) else sources[0].name if len(sources) == 1 else ""
             model = self.model.name.split("/")[-1]
             parts = [part for part in (dataset, model) if part]
             self.run.name = "--".join([*parts, uuid.uuid4().hex[:8]]).lower()
@@ -430,9 +426,8 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     @model_validator(mode="after")
     def auto_setup_val(self):
         if self.val is not None:
-            chat = self.data.type == "chat"
-            columns = self.data.columns if chat else SFTColumnsConfig()
-            loss_mask = self.data.loss_mask if chat else LossMaskConfig()
+            columns = getattr(self.data, "columns", SFTColumnsConfig())
+            loss_mask = getattr(self.data, "loss_mask", LossMaskConfig())
             row_len = self.data.seq_len * self.data.micro_batch_size
             self.val.resolve(self.data.seq_len, row_len, self.model.cp, columns, loss_mask)
         return self
@@ -465,37 +460,28 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_vlm_val(self):
-        if self.model.vlm is not None and self.val is not None:
-            raise ValueError("Validation scores text only: [val] does not support VLM models ([model.vlm]).")
-        return self
-
-    @model_validator(mode="after")
-    def validate_repetitions(self):
-        if self.data.type != "documents" or self.max_steps is not None:
-            return self
-        if any(source.repetitions is not None for source in self.data.source):
-            raise ValueError(
-                "data.source: repetitions sizes a source's subset by the run's tokens, so it needs max_steps"
-            )
-        return self
-
-    @model_validator(mode="after")
-    def validate_vlm_constraints(self):
+    def validate_vlm(self):
         if self.model.vlm is None:
             return self
+        if self.val is not None:
+            raise ValueError("Validation scores text only: [val] does not support VLM models ([model.vlm]).")
         if self.data.type == "documents":
             raise ValueError("[model.vlm] trains on chat data, not documents: set data.type = 'chat'.")
         if self.data.micro_batch_size != 1:
             raise ValueError("VLM training requires data.micro_batch_size = 1.")
         return self
 
+    @model_validator(mode="after")
+    def validate_repetitions(self):
+        repetitions = self.data.type == "documents" and any(source.repetitions for source in self.data.source)
+        if repetitions and self.max_steps is None:
+            raise ValueError("data.source: repetitions size a subset by the run's tokens; that needs max_steps")
+        return self
+
     def renders_conversations(self) -> bool:
-        """Whether the trainer renders conversations with ``renderer``: ``chat`` data without ``fake``, or a ``chat``
-        validation source."""
-        if self.data.type == "chat" and self.data.fake is None:
-            return True
-        return self.val is not None and any(val_source.type == "chat" for val_source in self.val.source)
+        """Whether the trainer renders conversations: chat data (not fake) or a ``chat`` validation source."""
+        chat_val = self.val is not None and any(val_source.type == "chat" for val_source in self.val.source)
+        return (self.data.type == "chat" and self.data.fake is None) or chat_val
 
     ### Auto-setup and validate shared configs
 

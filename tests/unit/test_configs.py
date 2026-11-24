@@ -228,13 +228,9 @@ def test_sft_and_pretrain_differ_only_in_defaults(tmp_path, data: dict):
     the optimizer and the schedule."""
     write_toml(tmp_path / "data.toml", {"data": data})
     args = ["@", str(tmp_path / "data.toml"), "--output-dir", str(tmp_path), "--run.name", "presets"]
-    sft = cli(SFTConfig, args=args)
-    pretrain = cli(PretrainConfig, args=args)
-    assert {name for name in SFTConfig.model_fields if getattr(sft, name) != getattr(pretrain, name)} == {
-        "model",
-        "optim",
-        "scheduler",
-    }
+    sft, pretrain = cli(SFTConfig, args=args), cli(PretrainConfig, args=args)
+    differ = {name for name in SFTConfig.model_fields if getattr(sft, name) != getattr(pretrain, name)}
+    assert differ == {"model", "optim", "scheduler"}
 
 
 @pytest.mark.parametrize(

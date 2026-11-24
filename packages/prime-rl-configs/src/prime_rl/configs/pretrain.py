@@ -47,8 +47,7 @@ class PretrainModelConfig(ModelConfig):
 
 
 class PretrainConfig(SupervisedTrainerConfig):
-    """``uv run pretrain``: the supervised trainer with pretraining defaults: ``documents`` data, a scratch init and a
-    learning rate of 1e-3 after a linear warmup."""
+    """Pretraining: next-token loss on tokenized shards, with the weights initialized from scratch by default."""
 
     model: PretrainModelConfig = PretrainModelConfig()
 
@@ -65,7 +64,6 @@ class PretrainConfig(SupervisedTrainerConfig):
     @model_validator(mode="before")
     @classmethod
     def default_data_type(cls, values: Any) -> Any:
-        """A ``[data]`` table without ``type`` is ``documents`` data."""
         if isinstance(values, dict) and isinstance(values.get("data"), dict):
             values["data"].setdefault("type", "documents")
         return values

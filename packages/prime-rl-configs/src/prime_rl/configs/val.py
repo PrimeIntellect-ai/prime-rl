@@ -90,8 +90,7 @@ class DocumentsValSourceConfig(BaseValSourceConfig):
     type: Literal["documents"] = "documents"
 
     path: Path
-    """Folder of datatrove tokenized shards, as a ``documents`` data source's ``path``. The tokens are scored as
-    stored."""
+    """Folder of datatrove tokenized shards, as a ``documents`` source's ``path``. The tokens are scored as stored."""
 
 
 class ChatValSourceConfig(HFDatasetConfig, BaseValSourceConfig):
