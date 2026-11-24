@@ -51,6 +51,13 @@ ac_offloading = "None"
 [orchestrator]
 batch_size = 64
 max_staleness = 16
+# Count zero-advantage groups toward the batch; they are still pruned before the trainer.
+constant_trainer_batch_size = false
+
+# Fixed concurrency: the same load on the one inference node in every arm.
+[orchestrator.concurrency]
+min_inflight = 512
+max_inflight = 512
 
 [orchestrator.train]
 group_size = 8
@@ -61,7 +68,7 @@ algo.length_penalty = { type = "linear", num_output_tokens_weight = 0.1, num_inp
 env.taskset.id = "browsecomp-plus"
 select.exclude.idx = [41, 97, 101, 142, 143, 150, 223, 256, 265, 288, 310, 317, 366, 394, 414, 430, 488, 497, 516, 523, 545, 597, 616, 633, 722, 773, 776, 802, 818, 829]
 env.agent.harness.id = "rlm"
-env.agent.timeout.rollout = 3600
+env.agent.timeout.rollout = 10800
 env.agent.harness.max_depth = 0
 
 [orchestrator.eval]
@@ -73,7 +80,7 @@ name = "bcplus-heldout"
 env.taskset.id = "browsecomp-plus"
 select.include.idx = [41, 97, 101, 142, 143, 150, 223, 256, 265, 288, 310, 317, 366, 394, 414, 430, 488, 497, 516, 523, 545, 597, 616, 633, 722, 773, 776, 802, 818, 829]
 env.agent.harness.id = "rlm"
-env.agent.timeout.rollout = 3600
+env.agent.timeout.rollout = 10800
 env.agent.harness.max_depth = 0
 
 # --- Inference ---
