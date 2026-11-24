@@ -1,9 +1,10 @@
 """Every model compiles each decoder layer as one graph (`fullgraph=True`) under the trainer's setup on 2 GPUs.
 
 Each case builds a tiny seeded model with `setup_model` on its layout (activation checkpointing with offloading, then
-torch.compile per layer, then FSDP, CP or EP) and runs one forward and backward. A case passes when the loss and grad
-norm are finite, Dynamo counted no graph break, and Dynamo compiled exactly one graph per kind of decoder layer, so no
-kind of layer runs eagerly or compiles twice (as PR #4609 fixed for layers whose inputs differed in their view base).
+torch.compile per layer, then FSDP, CP or EP) and runs one forward and backward. Each MoE model also runs a case that
+replays its routing, as RL's router replay does. A case passes when the loss and grad norm are finite, Dynamo counted no
+graph break, and Dynamo compiled exactly one graph per kind of decoder layer, so no kind of layer runs eagerly or
+compiles twice (as PR #4609 fixed for layers whose inputs differed in their view base).
 The layers of a loop core take two graphs: they run without a message in the first pass and with one after it.
 One `torchrun` launch runs every selected case, and each case reports as its own test. A case that crashes or hangs the
 launch fails, and a relaunch runs the cases it did not reach.
@@ -44,6 +45,7 @@ import prime_rl._compat  # noqa: F401
 from prime_rl.configs.trainer import ModelConfig, TokenizerConfig
 from prime_rl.trainer.model import setup_model, setup_tokenizer
 from prime_rl.trainer.parallel_dims import ParallelDims, get_parallel_dims
+from prime_rl.trainer.rl.warmup import warmup_routed_experts
 from prime_rl.trainer.utils import clip_grad_norm_, setup_torch_distributed
 from prime_rl.trainer.vlm import get_language_model
 from prime_rl.trainer.world import get_world
@@ -72,6 +74,8 @@ def needs_deepgemm_gpu() -> str | None:
 class CompileCase(Case):
     compile: bool = True
     fullgraph: bool = True
+    router_replay: bool = False
+    """Replays random routing in RL's router replay layout, so each MoE layer takes its routed experts as an input."""
     requirement: Callable[[], str | None] | None = None
     """Returns why this GPU or environment cannot run the case, or None if it can."""
 
@@ -91,8 +95,11 @@ CP_MODELS = [
     "nemotron_h",
     "afmoe",
 ]
+# MoE models, whose routers pick `num_experts_per_tok` experts per token
+MOE_MODELS = [model for model, config in TINY_CONFIGS.items() if hasattr(config, "num_experts_per_tok")]
 CASES = [
     *(CompileCase(f"{model}-dp2", model) for model in TINY_CONFIGS),
+    *(CompileCase(f"{model}-dp2-router_replay", model, router_replay=True) for model in MOE_MODELS),
     CompileCase("nemotron_h-dp2-token_chunk", "nemotron_h", overrides={"ac": {"token_chunk_size": 64}}),
     *(CompileCase(f"{model}-cp2", model, cp=2) for model in CP_MODELS),
     CompileCase("qwen3_moe-ep2-torch-bf16", "qwen3_moe", ep=2),
@@ -174,7 +181,9 @@ def num_layer_graphs(model: torch.nn.Module) -> int:
     return len(set(kinds)) + (len(core_kinds) if getattr(config, "loop_num_passes", 1) > 1 else 0)
 
 
-def run_step(config: ModelConfig, parallel_dims: ParallelDims, rows: list[dict], progress: dict) -> dict:
+def run_step(
+    config: ModelConfig, parallel_dims: ParallelDims, rows: list[dict], router_replay: bool, progress: dict
+) -> dict:
     """One forward and backward of this rank's row through the trainer's model, with its summed loss and grad norm.
     `progress` holds the stage reached and the number of graphs the decoder layers compile to, also when the step
     raises."""
@@ -186,8 +195,11 @@ def run_step(config: ModelConfig, parallel_dims: ParallelDims, rows: list[dict],
     progress["stage"] = "step"
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if parallel_dims.cp_enabled else 0
     row = rows[parallel_dims.get_mesh("dp").get_local_rank()]
+    routed_experts = None
+    if router_replay:
+        routed_experts = warmup_routed_experts(model, row["input_ids"].shape[1], torch.Generator().manual_seed(0))
     with maybe_activation_offloading(config.ac_offloading, model):
-        loss, _ = compute_loss(model, row, cp_rank, parallel_dims.cp)
+        loss, _ = compute_loss(model, row, cp_rank, parallel_dims.cp, routed_experts=routed_experts)
     loss.backward()
     grad_norm, _ = clip_grad_norm_(None, model, max_norm=math.inf)
     return {"loss_sum": loss.item(), "grad_norm": grad_norm.item()}
@@ -208,13 +220,13 @@ def failures(result: dict) -> list[str]:
     return found
 
 
-def compile_case(config: ModelConfig, parallel_dims: ParallelDims, rows: list[dict]) -> dict:
+def compile_case(config: ModelConfig, parallel_dims: ParallelDims, rows: list[dict], router_replay: bool) -> dict:
     torch._dynamo.reset()
     counters.clear()
     clear_compilation_metrics()
     start = time.perf_counter()
     progress = {}
-    result = isolated(run_step, config, parallel_dims, rows, progress)
+    result = isolated(run_step, config, parallel_dims, rows, router_replay, progress)
     result.update(progress)
     result["seconds"] = time.perf_counter() - start
     result["graph_breaks"] = dict(counters["graph_break"])
@@ -277,7 +289,7 @@ def main(output_dir: Path, cases: list[CompileCase]) -> None:
         else:
             if (case.cp, case.ep) not in layouts:
                 layouts[case.cp, case.ep] = get_parallel_dims(configs[case.name])
-            result = compile_case(configs[case.name], layouts[case.cp, case.ep], rows)
+            result = compile_case(configs[case.name], layouts[case.cp, case.ep], rows, case.router_replay)
         result["failures"] = failures(result)
         status = "SKIP" if "skipped" in result else "FAIL" if result["failures"] else "PASS"
         print(f"[rank {get_world().rank}] {status} {case.name}: {json.dumps(result)}", flush=True)
