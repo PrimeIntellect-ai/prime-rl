@@ -1,7 +1,6 @@
 # Length penalty ablations: base RL config and the no-penalty baseline. Qwen3.6-35B-A3B under
 # the rlm harness without subagents (max_depth 0), on BrowseComp-Plus without its 30 held-out
-# tasks. The system prompt names the corpus search tool, so the model skips MCP tool discovery.
-# Eval is the held-out tasks (bcplus_eval_idx.txt), avg@4. Penalty arms override
+# tasks. Eval is the held-out tasks (bcplus_eval_idx.txt), avg@4. Penalty arms override
 # orchestrator.train.source[*].algo.length_penalty on top of this file.
 #
 # 1 trainer node + 1 inference node (tp1 dp8, no expert parallelism) on H200. The held-out
@@ -62,9 +61,6 @@ env.taskset.task.stops.unknown_native_tool = { fn = "ablations/lp/hooks.py:unkno
 env.agent.harness.id = "rlm"
 env.agent.timeout.rollout = 3600
 env.agent.harness.max_depth = 0
-env.agent.harness.append_to_system_prompt = '''
-## Corpus search
-Search the document corpus with the `browsecomp_plus_search` MCP tool. Load it once in an `ipython` cell with `search = await rlm.tools.get("browsecomp_plus_search")`, then call `result = await search(query="...")`. You do not need `rlm.tools.search` or `rlm.tools.servers` to find it.'''
 
 [orchestrator.eval]
 interval = 20
@@ -77,9 +73,6 @@ select.include.idx = [41, 97, 101, 142, 143, 150, 223, 256, 265, 288, 310, 317, 
 env.agent.harness.id = "rlm"
 env.agent.timeout.rollout = 3600
 env.agent.harness.max_depth = 0
-env.agent.harness.append_to_system_prompt = '''
-## Corpus search
-Search the document corpus with the `browsecomp_plus_search` MCP tool. Load it once in an `ipython` cell with `search = await rlm.tools.get("browsecomp_plus_search")`, then call `result = await search(query="...")`. You do not need `rlm.tools.search` or `rlm.tools.servers` to find it.'''
 
 # --- Inference ---
 
