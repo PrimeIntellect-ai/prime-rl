@@ -1,6 +1,7 @@
 import socket
 from contextlib import nullcontext
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -9,7 +10,7 @@ from torch import nn
 
 from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.entrypoints.rl import validate_remote_resume
-from prime_rl.trainer.ckpt import CheckpointManager, Progress
+from prime_rl.trainer.ckpt import CheckpointManager, ModelFiles, Progress
 from prime_rl.trainer.utils import get_dcp_group
 
 
@@ -46,8 +47,8 @@ def save(manager: CheckpointManager, model: nn.Module, optimizer: torch.optim.Op
 
 def test_resumes_from_remote_when_disk_is_empty(tmp_path: Path, config: CheckpointConfig) -> None:
     model, optimizer = make_trained(seed=0)
-    save(CheckpointManager(tmp_path / "run", config), model, optimizer)
-    manager = CheckpointManager(tmp_path / "fresh", config)
+    save(CheckpointManager(tmp_path / "run", config, Mock(spec=ModelFiles)), model, optimizer)
+    manager = CheckpointManager(tmp_path / "fresh", config, Mock(spec=ModelFiles))
     resumed_model, resumed_optimizer = make_trained(seed=1)
 
     step = manager.resolve_latest_step(None)
@@ -60,7 +61,7 @@ def test_resumes_from_remote_when_disk_is_empty(tmp_path: Path, config: Checkpoi
 
 def test_save_raises_once_the_sync_process_died(tmp_path: Path, config: CheckpointConfig) -> None:
     model, optimizer = make_trained(seed=0)
-    manager = CheckpointManager(tmp_path / "run", config)
+    manager = CheckpointManager(tmp_path / "run", config, Mock(spec=ModelFiles))
     manager.sync.kill()
     manager.sync.wait()
 
@@ -70,8 +71,8 @@ def test_save_raises_once_the_sync_process_died(tmp_path: Path, config: Checkpoi
 
 def test_resume_takes_the_later_of_the_disk_step_and_the_remote(tmp_path: Path, config: CheckpointConfig) -> None:
     model, optimizer = make_trained(seed=0)
-    save(CheckpointManager(tmp_path / "run", config), model, optimizer)
-    manager = CheckpointManager(tmp_path / "run", config)
+    save(CheckpointManager(tmp_path / "run", config, Mock(spec=ModelFiles)), model, optimizer)
+    manager = CheckpointManager(tmp_path / "run", config, Mock(spec=ModelFiles))
 
     steps = (manager.resolve_latest_step(None), manager.resolve_latest_step(2), manager.resolve_latest_step(8))
     manager.close()
@@ -87,7 +88,7 @@ def test_rl_resume_fails_fast_when_remote_is_ahead_of_disk(
     tmp_path: Path, config: CheckpointConfig, disk_step: int | None, expectation
 ) -> None:
     model, optimizer = make_trained(seed=0)
-    save(CheckpointManager(tmp_path / "run", config), model, optimizer)
+    save(CheckpointManager(tmp_path / "run", config, Mock(spec=ModelFiles)), model, optimizer)
 
     with expectation:
         validate_remote_resume(config, disk_step)
