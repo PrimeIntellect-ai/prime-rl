@@ -32,6 +32,7 @@ from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig, SFTDataConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
+from prime_rl.configs.val import ValConfig
 from prime_rl.utils.config import MODES, BaseConfig, check_mode, cli, dump_resolved_config
 
 # All config config classes
@@ -265,6 +266,40 @@ def test_val_source_defaults(tmp_path):
     odd_source = json.dumps([{**val_sources[1], "seq_len": 4097}])
     cp_args = [*args, "--model.cp", "2", "--data.micro-batch-size", "1", "--val.source", odd_source]
     assert cli(PretrainConfig, args=cp_args).val.micro_batch_tokens == 4098
+
+
+@pytest.mark.parametrize(
+    ("eval_on_start", "start_step", "step", "due"),
+    [(True, 1, 1, True), (False, 1, 1, False), (False, 10, 10, False), (False, 1, 10, True), (True, 11, 15, False)],
+)
+def test_val_due(eval_on_start: bool, start_step: int, step: int, due: bool):
+    """Validation runs every val.interval steps, and at the trainer's first step only with eval_on_start."""
+    val = ValConfig(interval=10, eval_on_start=eval_on_start, source=[{"type": "documents", "name": "d", "path": "d"}])
+    assert val.due(step, start_step) == due
+
+
+def test_rl_orchestrator_val_fills_the_trainer_val(tmp_path):
+    """An rl config's [orchestrator.val] gives the trainer its validation sources (with RL's model.seq_len defaults),
+    which are not set directly, and chat sources render like the policy's rollouts."""
+    base = ["@", "configs/ci/integration/reverse-text/start.toml", "--output-dir", str(tmp_path)]
+    val = {"source": [{"type": "documents", "name": "held-out", "path": str(tmp_path)}]}
+    write_toml(tmp_path / "val.toml", {"orchestrator": {"val": val}})
+    config = cli(RLConfig, args=[*base, "@", str(tmp_path / "val.toml")])
+    assert config.trainer.val.source[0].seq_len == config.trainer.val.micro_batch_tokens == 2048
+    assert config.orchestrator.val == config.trainer.val
+    assert config.trainer.renderer == config.orchestrator.renderer
+    (tmp_path / "rl.json").write_text(json.dumps(dump_resolved_config(config)))
+    assert cli(RLConfig, args=["@", str(tmp_path / "rl.json")]) == config
+
+    # A config written without validation holds nulls for both; an [orchestrator.val] overlay still fills the trainer.
+    written = dump_resolved_config(config)
+    written["orchestrator"]["val"] = written["trainer"]["val"] = None
+    (tmp_path / "no-val.json").write_text(json.dumps(written))
+    overlaid = cli(RLConfig, args=["@", str(tmp_path / "no-val.json"), "@", str(tmp_path / "val.toml")])
+    assert overlaid.trainer.val.source == config.trainer.val.source
+
+    write_toml(tmp_path / "direct.toml", {"trainer": {"val": val}})
+    assert not can_parse(RLConfig, [*base, "@", str(tmp_path / "direct.toml")])
 
 
 def test_chat_val_sources_score_the_training_loss_mask():

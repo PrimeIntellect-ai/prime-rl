@@ -29,12 +29,9 @@ from prime_rl.trainer.micro_batches import run_micro_batches, step_result, to_ho
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
-    is_tt_moe_model,
-    reshard_module,
     check_ckpt_dir,
     setup_tokenizer,
     setup_model,
-    take_moe_routing_stats,
     use_resumed_model_files,
 )
 from prime_rl.trainer.moe_runtime import setup_moe_comm_env
@@ -359,14 +356,6 @@ def train(config: SFTConfig | PretrainConfig):
         del out
         return loss_sum, token_count
 
-    def run_validation(step: int) -> None:
-        # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
-        metrics = validation.run(model, step)
-        if is_tt_moe_model(model):
-            # Keep validation routing out of the next training step's statistics.
-            take_moe_routing_stats(model)
-        asyncio.run(monitors.log({**metrics, "step": step}, step=step))
-
     def logged_micro_batches(micro_batches):
         for micro_batch in micro_batches:
             print_sample(
@@ -405,7 +394,7 @@ def train(config: SFTConfig | PretrainConfig):
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
-    is_first_step = True
+    start_step = progress.step
     if config.trace_path:
         logger.info(f"Tracing to {config.trace_path}")
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
@@ -429,10 +418,7 @@ def train(config: SFTConfig | PretrainConfig):
 
         step_start_time = time.perf_counter()
 
-        run_validation_this_step = config.val is not None and (
-            (is_first_step and config.val.eval_on_start)
-            or (not is_first_step and progress.step % config.val.interval == 0)
-        )
+        run_validation_this_step = config.val is not None and config.val.due(progress.step, start_step)
         if gradient_manager is None:
             micro_batches = (next(dataiter) for _ in range(grad_accum_steps))
         else:
@@ -485,11 +471,9 @@ def train(config: SFTConfig | PretrainConfig):
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
         # optimizer step (so eval_on_start evaluates untrained weights)
         if run_validation_this_step:
-            run_validation(progress.step)
-            # The no-grad validation forward leaves the [lm_head, norm] FSDP2 group unsharded (it
-            # opts out of reshard_after_forward), so clip_grad_norm_ below would skip its grad-less
-            # unsharded parameters. Reshard so clipping sees every gradient.
-            reshard_module(model)
+            asyncio.run(
+                monitors.log({**validation.run(model, progress.step), "step": progress.step}, step=progress.step)
+            )
 
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
@@ -646,8 +630,6 @@ def train(config: SFTConfig | PretrainConfig):
 
         if result.metrics:
             asyncio.run(monitors.log({**result.metrics, "step": progress.step}, step=progress.step))
-
-        is_first_step = False
 
         # Send heartbeat if configured
         if heart is not None:

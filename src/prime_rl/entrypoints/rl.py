@@ -614,9 +614,12 @@ def rl(config: RLConfig):
         clean_future_steps(config.run_dir, -1)
 
     if not config.dry_run:
-        from prime_rl.utils.hf import pre_download_model
+        from prime_rl.utils.hf import pre_download_model, pre_download_sources
 
         pre_download_model(config.trainer.model.name, skip_weights=config.trainer.model.init.type == "scratch")
+        if config.trainer.val is not None:
+            chat_sources = [val_source for val_source in config.trainer.val.source if val_source.type == "chat"]
+            pre_download_sources(chat_sources, {**config.env_vars, **config.trainer.env_vars})
 
     from prime_rl.monitors.prime import launch_run
 

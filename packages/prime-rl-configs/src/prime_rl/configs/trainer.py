@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
 from pydantic import Field, field_validator, model_validator
+from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
+from renderers.base import MODEL_RENDERER_MAP
 
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
@@ -20,6 +22,7 @@ from prime_rl.configs.shared import (
     WeightBroadcastConfig,
     ZMQTransportConfig,
 )
+from prime_rl.configs.val import LossMaskConfig, SFTColumnsConfig, ValConfig
 from prime_rl.utils.config import BaseConfig, default_output_dir
 
 # -- Shared trainer configs (used by both SFT and RL trainers) --
@@ -725,6 +728,10 @@ class BaseTrainerConfig(BaseConfig):
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
+    renderer: RendererConfig = AutoRendererConfig()
+    """Renderer config, for SFT data and ``chat`` validation sources. Defaults to auto-selecting from the tokenizer
+    model name; an ``rl`` config fills it from ``orchestrator.renderer``."""
+
     optim: OptimizerConfig = AdamWConfig()
 
     scheduler: SchedulerConfig = ConstantSchedulerConfig()
@@ -819,6 +826,35 @@ class BaseTrainerConfig(BaseConfig):
             self.tokenizer.trust_remote_code = self.model.trust_remote_code
         return self
 
+    def renders_conversations(self) -> bool:
+        """Whether the trainer renders conversations with ``renderer``."""
+        return False
+
+    @model_validator(mode="after")
+    def validate_typed_renderer(self):
+        """Require a typed renderer whenever the trainer renders conversations: SFT data or a ``chat`` validation
+        source."""
+        if not self.renders_conversations():
+            return self
+
+        model_id = self.tokenizer.name or self.model.name
+        if isinstance(self.renderer, AutoRendererConfig):
+            if model_id in MODEL_RENDERER_MAP:
+                return self
+            reason = f"no typed renderer is registered for {model_id!r}"
+        elif isinstance(self.renderer, DefaultRendererConfig):
+            reason = "renderer.name='default' selects DefaultRenderer"
+        else:
+            return self
+
+        raise ValueError(
+            f"Rendering SFT data or chat validation sources requires a typed renderer with sampled-token and content "
+            f"attribution, but {reason}. "
+            "Implement and register the renderer in the renderers package, or explicitly select an existing "
+            "typed renderer ([renderer], or [orchestrator.renderer] in an rl config) only when its template is verified "
+            "to match."
+        )
+
 
 class TrainerConfig(BaseTrainerConfig):
     # RL keeps the pretrained router.
@@ -860,6 +896,10 @@ class TrainerConfig(BaseTrainerConfig):
     enable_router_replay: bool = False
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""
 
+    val: ValConfig | None = None
+    """Validation sources, scored at the steps the orchestrator marks in the step's batch. An ``rl`` config fills it
+    from ``orchestrator.val``; it is not set directly. If None, no validation runs."""
+
     @model_validator(mode="after")
     def validate_lora_broadcast(self):
         if self.model.lora is not None and self.weight_broadcast.type in ("nccl", "nixl", "modelexpress"):
@@ -884,13 +924,40 @@ class TrainerConfig(BaseTrainerConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_val(self):
+        if self.val is not None:
+            self.val.resolve(
+                self.model.seq_len, self.model.seq_len, self.model.cp, SFTColumnsConfig(), LossMaskConfig()
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_fake_data_val(self):
+        if self.data.fake is not None and self.val is not None:
+            raise ValueError("Fake data has no orchestrator to plan validation: remove [orchestrator.val].")
+        return self
+
+    @model_validator(mode="after")
+    def validate_vlm_val(self):
+        if self.model.vlm is not None and self.val is not None:
+            raise ValueError(
+                "Validation scores text only: [orchestrator.val] does not support VLM models ([model.vlm])."
+            )
+        return self
+
+    def renders_conversations(self) -> bool:
+        return self.val is not None and any(val_source.type == "chat" for val_source in self.val.source)
+
+    @model_validator(mode="after")
     def resolve_mega_moe_max_tokens_per_rank(self):
         """RL micro batches are one packed sequence of up to ``model.seq_len`` tokens, padded to
-        ``rl_micro_batch_multiple`` and split over the CP ranks."""
+        ``rl_micro_batch_multiple`` and split over the CP ranks; validation rows have ``val.micro_batch_tokens``."""
         dispatch = self.model.moe.dispatch
         if dispatch.type == "mega_moe":
             multiple = rl_micro_batch_multiple(self.model)
             micro_batch_tokens = -(-self.model.seq_len // multiple) * multiple
+            if self.val is not None:
+                micro_batch_tokens = max(micro_batch_tokens, self.val.micro_batch_tokens)
             dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
                 dispatch.max_tokens_per_rank, micro_batch_tokens, self.model.cp
             )
