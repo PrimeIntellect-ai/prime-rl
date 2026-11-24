@@ -2,7 +2,7 @@
 # replicas (inference not fitted yet). Trainer fit on fake 256k samples:
 # 6 nodes, ep 8, cp 8: 61.0k tok/s (1,270 per GPU), 94.6 GiB peak allocated. 4 and 5 nodes OOM.
 #
-#   uv run rl @ recipes/glm-5.3-flash/rl.toml @ recipes/glm-5.3-flash/gpu/h200_6nodes.toml @ recipes/fake.toml --trainer.model.debug.force-balanced-routing --trainer.data.fake.batch-size 6
+#   uv run rl @ recipes/glm-5.3-flash/rl.toml @ recipes/glm-5.3-flash/gpu/h200.toml @ recipes/fake.toml --trainer.model.debug.force-balanced-routing --trainer.data.fake.batch-size 6
 
 [deployment]
 type = "multi_node"

@@ -2,7 +2,7 @@
 # this layout: the settings and numbers come from this example's earlier `gpu/h200.toml` (#4559),
 # measured with AdamW, the trainer default, on fake 256k samples and a 5-step ScaleSWE run.
 #
-#   uv run rl @ recipes/qwen3.6-35b-a3b/rl.toml @ recipes/qwen3.6-35b-a3b/gpu/h200_1node.toml @ recipes/fake.toml --trainer.model.debug.force-balanced-routing --trainer.data.fake.batch-size 2
+#   uv run rl @ recipes/qwen3.6-35b-a3b/rl.toml @ recipes/qwen3.6-35b-a3b/gpu/h200.toml @ recipes/fake.toml --trainer.model.debug.force-balanced-routing --trainer.data.fake.batch-size 2
 
 [deployment]
 type = "multi_node"

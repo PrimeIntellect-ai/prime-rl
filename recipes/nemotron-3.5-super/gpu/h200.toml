@@ -1,9 +1,9 @@
 # H200 overlay for rl.toml: 4 trainer nodes and 4 one-node inference replicas. Not tested in this
 # layout: the trainer parallelism and the TP8 + EP inference come from research-prod #412 (4 trainer
 # nodes, cp 8, ep 8, at 131k). Nemotron 3 Super, the same 120B-A12B language model, fit 256k at cp 8
-# on 2 nodes (recipes/nemotron-3-super/gpu/h200_2nodes.toml).
+# on 2 nodes (recipes/nemotron-3-super/gpu/h200.toml).
 #
-#   uv run rl @ recipes/nemotron-3.5-super/rl.toml @ recipes/nemotron-3.5-super/gpu/h200_4nodes.toml @ recipes/fake.toml --trainer.model.debug.force-balanced-routing --trainer.data.fake.batch-size 4
+#   uv run rl @ recipes/nemotron-3.5-super/rl.toml @ recipes/nemotron-3.5-super/gpu/h200.toml @ recipes/fake.toml --trainer.model.debug.force-balanced-routing --trainer.data.fake.batch-size 4
 
 [deployment]
 type = "multi_node"

@@ -2,9 +2,8 @@
 # Model settings only: compose it with a compute overlay from `gpu/` and a data config from
 # `recipes/data/`:
 #
-#   uv run rl @ recipes/nemotron-3-super/rl.toml @ recipes/nemotron-3-super/gpu/h200_2nodes.toml @ recipes/data/scaleswe.toml
-#   uv run rl @ recipes/nemotron-3-super/rl.toml @ recipes/nemotron-3-super/gpu/h200_2nodes.toml @ recipes/data/scaleswe-short.toml
-#   uv run rl @ recipes/nemotron-3-super/rl.toml @ recipes/nemotron-3-super/gpu/h200_2nodes.toml @ recipes/data/math.toml
+#   uv run rl @ recipes/nemotron-3-super/rl.toml @ recipes/nemotron-3-super/gpu/h200.toml @ recipes/data/swe.toml
+#   uv run rl @ recipes/nemotron-3-super/rl.toml @ recipes/nemotron-3-super/gpu/h200.toml @ recipes/data/math.toml
 
 seq_len = 262144
 

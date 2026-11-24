@@ -6,8 +6,6 @@ New here? Follow [`basic/reverse-text/`](basic/reverse-text/README.md) first —
 
 ## advanced/ — frontier models, multi-node
 
-Per-model RL recipes at 256k context (model, H200 compute overlay, ScaleSWE or math data), with measured trainer fits and RL runs, live in [`recipes/`](../recipes/README.md).
-
 Larger runs on frontier models, one folder per model, each with a launch README covering requirements, credentials, launch, monitoring, and resume:
 
 - [`qwen3-30b-a3b/`](advanced/qwen3-30b-a3b/README.md) — `Qwen3-30B-A3B` RL on math (`i3_math`), SWE (`r2e-gym`), and agentic tool use (general-agent on Modal). 2 train + 2 infer nodes; the SWE config runs at 131k context with `ep = 8` + `cp = 2`.

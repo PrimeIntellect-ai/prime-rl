@@ -154,12 +154,6 @@ override-dependencies = [
     # Shared by vLLM, TileLang, and the pinned FlashAttention 4 runtime.
     "apache-tvm-ffi==0.1.11",
     "nvidia-cudnn-cu13>=9.15 ; sys_platform == 'linux'",
-    # humming-kernels' cu13 extra leaves the CUDA compiler unpinned, so it resolves past torch's
-    # CUDA runtime (13.0). TileLang JIT then fails: CCCL refuses nvcc newer than the runtime
-    # headers, and ptxas rejects the PTX of a newer cicc (nvvm).
-    "nvidia-cuda-nvcc==13.0.* ; sys_platform == 'linux'",
-    "nvidia-cuda-crt==13.0.* ; sys_platform == 'linux'",
-    "nvidia-nvvm==13.0.* ; sys_platform == 'linux'",
     # vLLM 0.34.0 requires this exact CUTLASS DSL version and quack-kernels 0.6.5.
     # Keep this pin aligned with quack-kernels and the flash-attn-4 revision below.
     "nvidia-cutlass-dsl==4.8.0",

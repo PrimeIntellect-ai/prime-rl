@@ -2,7 +2,7 @@
 # replica. ScaleSWE RL (batch 128): steady steps of 12-14 min, the trainer waits ~65% of each step,
 # so a second inference replica would roughly halve the step time.
 #
-#   uv run rl @ recipes/muse-glimmer-30b/rl.toml @ recipes/muse-glimmer-30b/gpu/h200_1node.toml @ recipes/fake.toml --trainer.data.fake.batch-size 2
+#   uv run rl @ recipes/muse-glimmer-30b/rl.toml @ recipes/muse-glimmer-30b/gpu/h200.toml @ recipes/fake.toml --trainer.data.fake.batch-size 2
 
 [deployment]
 type = "multi_node"

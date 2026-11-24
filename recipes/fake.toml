@@ -3,7 +3,7 @@
 # Every micro batch is one full-length sample, the worst case a real run can send. Read tok/s and
 # `perf/peak_allocated_memory` of steps 2 and 3 (step 1 includes torch.compile).
 #
-#   uv run rl @ recipes/qwen3.8-flash-next/rl.toml @ recipes/qwen3.8-flash-next/gpu/h200_3nodes.toml @ recipes/fake.toml --trainer.model.debug.force-balanced-routing
+#   uv run rl @ recipes/qwen3.8-flash-next/rl.toml @ recipes/qwen3.8-flash-next/gpu/h200.toml @ recipes/fake.toml --trainer.model.debug.force-balanced-routing
 
 max_steps = 3
 # Drop the inference server of the model config.
@@ -18,13 +18,6 @@ num_infer_nodes = 0
 # Router replay needs the inference engine's routed experts.
 [trainer]
 enable_router_replay = false
-
-# Fit runs are throwaway: do not register a Prime run.
-[trainer.monitors]
-prime = "None"
-
-[orchestrator.monitors]
-prime = "None"
 
 # Without inference there is nothing to broadcast to; NCCL needs an inference world.
 [weight_broadcast]

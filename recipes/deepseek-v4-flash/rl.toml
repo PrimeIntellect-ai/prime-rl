@@ -2,10 +2,9 @@
 # Model settings only: compose it with a compute overlay from `gpu/` and a data config from
 # `recipes/data/`:
 #
-#   uv run rl @ recipes/deepseek-v4-flash/rl.toml @ recipes/deepseek-v4-flash/gpu/h200_4nodes.toml @ recipes/data/scaleswe.toml
-#   uv run rl @ recipes/deepseek-v4-flash/rl.toml @ recipes/deepseek-v4-flash/gpu/h200_4nodes.toml @ recipes/data/scaleswe-short.toml
-#   uv run rl @ recipes/deepseek-v4-flash/rl.toml @ recipes/deepseek-v4-flash/gpu/h200_4nodes.toml @ recipes/data/math.toml
-#   uv run rl @ recipes/deepseek-v4-flash/rl.toml @ recipes/deepseek-v4-flash/gpu/b300_4nodes.toml @ recipes/data/scaleswe.toml
+#   uv run rl @ recipes/deepseek-v4-flash/rl.toml @ recipes/deepseek-v4-flash/gpu/h200.toml @ recipes/data/swe.toml
+#   uv run rl @ recipes/deepseek-v4-flash/rl.toml @ recipes/deepseek-v4-flash/gpu/h200.toml @ recipes/data/math.toml
+#   uv run rl @ recipes/deepseek-v4-flash/rl.toml @ recipes/deepseek-v4-flash/gpu/b300.toml @ recipes/data/swe.toml
 #
 # DeepSeek V4 needs bf16 weights (below), an fp8 KV cache in vLLM, ring context parallelism in the
 # trainer (the only kind it supports; the overlays set cp), and an explicit renderer and parsers.

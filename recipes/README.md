@@ -4,15 +4,15 @@ RL recipes per model at 256k context, in three layers:
 
 1. `<model>/rl.toml`: the model definition: the model, its optimizer, and its inference engine
    settings that do not depend on hardware (context length, parsers, prefix caching, router replay).
-2. `<model>/gpu/h200_<N>nodes.toml`: a compute overlay for N trainer nodes (a model can have several; `b300_<N>nodes.toml` for B300): trainer nodes and parallelism, fit to one
+2. `<model>/gpu/h200.toml`: the compute overlay (`b300.toml` for B300; its header gives the node counts): trainer nodes and parallelism, fit to one
    262144-token sample per micro batch, and one inference node per trainer node. The trainer keeps
    the defaults: optimizer offload, full activation checkpointing and activation offloading.
-3. `data/`: the data overlay: `scaleswe.toml` (ScaleSWE with the bash harness, bash + edit tools,
-   eval on SWE-bench Verified), `scaleswe-short.toml` (the same, 20-turn cap), `math.toml`
-   (INTELLECT-3 math, eval on AIME 2025).
+3. `data/`: one representative data overlay per domain, updated as models get stronger: `swe.toml`
+   (ScaleSWE with the bash harness, bash + edit tools, eval on SWE-bench Verified) and `math.toml`
+   (INTELLECT-3 math, eval on AIME 2025, for functional tests).
 
 ```bash
-uv run rl @ recipes/<model>/rl.toml @ recipes/<model>/gpu/h200_<N>nodes.toml @ recipes/data/scaleswe.toml \
+uv run rl @ recipes/<model>/rl.toml @ recipes/<model>/gpu/h200.toml @ recipes/data/swe.toml \
     --slurm.partition <partition> --output-dir <shared-dir>
 ```
 
@@ -42,7 +42,7 @@ headers.
 
 ## ScaleSWE RL
 
-Real weights, `data/scaleswe.toml` (batch 128, group 8), steady steps after warm-up:
+Real weights, `data/swe.toml` (batch 128, group 8), steady steps after warm-up:
 
 | Model | Trainer + inference | Step time | Trainer waiting | Decode per inference node | Peak allocated | Mismatch KL |
 |---|---|---|---|---|---|---|
@@ -78,7 +78,7 @@ many requests in flight decode much faster per GPU.
 `fake.toml` runs the trainer alone on fake 256k samples with random weights and balanced routing:
 
 ```bash
-uv run rl @ recipes/<model>/rl.toml @ recipes/<model>/gpu/h200_<N>nodes.toml @ recipes/fake.toml \
+uv run rl @ recipes/<model>/rl.toml @ recipes/<model>/gpu/h200.toml @ recipes/fake.toml \
     --slurm.partition <partition> --output-dir <shared-dir>
 ```
 

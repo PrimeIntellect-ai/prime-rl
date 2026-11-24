@@ -3,7 +3,7 @@
 # mismatch KL 0.0035, 98 GiB peak allocated. Trainer fit on fake 256k samples:
 # 3 nodes, ep 8, cp 8: 39.1k tok/s (1,629 per GPU), 109.3 GiB peak allocated. 2 nodes OOM.
 #
-#   uv run rl @ recipes/qwen3.8-flash-next/rl.toml @ recipes/qwen3.8-flash-next/gpu/h200_3nodes.toml @ recipes/fake.toml --trainer.model.debug.force-balanced-routing --trainer.data.fake.batch-size 3
+#   uv run rl @ recipes/qwen3.8-flash-next/rl.toml @ recipes/qwen3.8-flash-next/gpu/h200.toml @ recipes/fake.toml --trainer.model.debug.force-balanced-routing --trainer.data.fake.batch-size 3
 
 [deployment]
 type = "multi_node"

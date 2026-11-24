@@ -3,7 +3,7 @@
 # this example's earlier `gpu/b300.toml` (#4525) at 131k with cp 4. Its MXFP8 settings ran on B300 at
 # 131k in research-prod #295 (4 + 4 nodes, cp 8, AdamW).
 #
-#   uv run rl @ recipes/deepseek-v4-flash/rl.toml @ recipes/deepseek-v4-flash/gpu/b300_4nodes.toml @ recipes/fake.toml --trainer.model.debug.force-balanced-routing --trainer.data.fake.batch-size 4
+#   uv run rl @ recipes/deepseek-v4-flash/rl.toml @ recipes/deepseek-v4-flash/gpu/b300.toml @ recipes/fake.toml --trainer.model.debug.force-balanced-routing --trainer.data.fake.batch-size 4
 
 [deployment]
 type = "multi_node"

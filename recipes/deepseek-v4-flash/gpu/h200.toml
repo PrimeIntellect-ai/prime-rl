@@ -3,7 +3,7 @@
 # `gpu/h200.toml` (#4525), which ran 5 RL steps at 131k with cp 4 (32k tokens per rank, 118-122 GiB
 # peak) and 2 inference replicas.
 #
-#   uv run rl @ recipes/deepseek-v4-flash/rl.toml @ recipes/deepseek-v4-flash/gpu/h200_4nodes.toml @ recipes/fake.toml --trainer.model.debug.force-balanced-routing --trainer.data.fake.batch-size 4
+#   uv run rl @ recipes/deepseek-v4-flash/rl.toml @ recipes/deepseek-v4-flash/gpu/h200.toml @ recipes/fake.toml --trainer.model.debug.force-balanced-routing --trainer.data.fake.batch-size 4
 
 [deployment]
 type = "multi_node"

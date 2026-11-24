@@ -1,6 +1,8 @@
-# scaleswe.toml with episodes capped at 20 turns: shorter rollouts, faster steps.
+# Representative SWE agent RL: ScaleSWE with the bash harness (bash + edit tools) in prime
+# sandboxes, evaluated on SWE-bench Verified. Update the tasksets as models get stronger.
+# Compose it after a model's rl.toml and compute overlay:
 #
-#   uv run rl @ recipes/qwen3.8-flash-next/rl.toml @ recipes/qwen3.8-flash-next/gpu/h200_3nodes.toml @ recipes/data/scaleswe-short.toml
+#   uv run rl @ recipes/qwen3.8-flash-next/rl.toml @ recipes/qwen3.8-flash-next/gpu/h200.toml @ recipes/data/swe.toml
 
 [orchestrator]
 batch_size = 128
@@ -25,7 +27,6 @@ num_turns_weight = 0.01
 name = "scaleswe"
 env.taskset.id = "scaleswe"
 env.agent.harness.id = "bash"
-env.agent.max_turns = 20
 
 [orchestrator.eval]
 interval = 25
@@ -34,6 +35,5 @@ interval = 25
 name = "swebench-verified"
 env.taskset.id = "swebench-verified"
 env.agent.harness.id = "bash"
-env.agent.max_turns = 20
 env.agent.timeout.rollout = 3600
 group_size = 1

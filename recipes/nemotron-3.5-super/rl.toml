@@ -2,9 +2,8 @@
 # checkpoint) RL at 256k context. Model settings only: compose it with a compute overlay from `gpu/`
 # and a data config from `recipes/data/`:
 #
-#   uv run rl @ recipes/nemotron-3.5-super/rl.toml @ recipes/nemotron-3.5-super/gpu/h200_4nodes.toml @ recipes/data/scaleswe.toml
-#   uv run rl @ recipes/nemotron-3.5-super/rl.toml @ recipes/nemotron-3.5-super/gpu/h200_4nodes.toml @ recipes/data/scaleswe-short.toml
-#   uv run rl @ recipes/nemotron-3.5-super/rl.toml @ recipes/nemotron-3.5-super/gpu/h200_4nodes.toml @ recipes/data/math.toml
+#   uv run rl @ recipes/nemotron-3.5-super/rl.toml @ recipes/nemotron-3.5-super/gpu/h200.toml @ recipes/data/swe.toml
+#   uv run rl @ recipes/nemotron-3.5-super/rl.toml @ recipes/nemotron-3.5-super/gpu/h200.toml @ recipes/data/math.toml
 #
 # Not tested in this layout. The settings come from research-prod #412 (RCA RL at 131k on Model
 # Factory, from a text-only export of this checkpoint).

@@ -2,9 +2,8 @@
 # convolutions) RL at 16k context. Model settings only: compose it with a compute overlay from `gpu/`
 # and a data config from `recipes/data/`:
 #
-#   uv run rl @ recipes/inkling2/rl.toml @ recipes/inkling2/gpu/h200_6nodes.toml @ recipes/data/scaleswe.toml
-#   uv run rl @ recipes/inkling2/rl.toml @ recipes/inkling2/gpu/h200_6nodes.toml @ recipes/data/scaleswe-short.toml
-#   uv run rl @ recipes/inkling2/rl.toml @ recipes/inkling2/gpu/h200_6nodes.toml @ recipes/data/math.toml
+#   uv run rl @ recipes/inkling2/rl.toml @ recipes/inkling2/gpu/h200.toml @ recipes/data/swe.toml
+#   uv run rl @ recipes/inkling2/rl.toml @ recipes/inkling2/gpu/h200.toml @ recipes/data/math.toml
 #
 # Not tested in this layout. The settings come from math-rl.toml and swe-rl.toml in this directory,
 # which ran end to end at 8k and 16k (#4551).
