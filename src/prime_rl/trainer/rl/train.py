@@ -54,6 +54,7 @@ from prime_rl.trainer.rl.loss import (
 )
 from prime_rl.trainer.models.layers.lm_head import TokenSupport, support_replay_mask
 from prime_rl.trainer.rl.annotations import AnnotationWriter
+from prime_rl.trainer.val import Validation
 from prime_rl.trainer.rl.warmup import warmup
 from prime_rl.trainer.model import (
     forward,
@@ -319,6 +320,10 @@ def train(config: TrainerConfig):
             config.rollout_transport,
         )
     logger.debug(f"Initialized data loader in {format_time(time.perf_counter() - t0)}")
+
+    validation = None
+    if config.val is not None:
+        validation = Validation(config.val, tokenizer, config.renderer, parallel_dims, config.output_dir)
 
     # Only the file monitor stores annotations, so without it there is nothing to write.
     annotation_writer = (
@@ -738,8 +743,11 @@ def train(config: TrainerConfig):
         forward_backward_start_time = time.perf_counter()
         perf_counter = get_perf_counter(model)
 
+        # The orchestrator plans validation; it scores the weights the step starts from, so the optimizer must not
+        # overlap the backward on those steps.
+        validate = validation is not None and dataloader.validate
         tensor_stats, routing_stats, step_local_num_tokens, step_local_flops, grad_scale = forward_backward(
-            micro_batches
+            micro_batches, overlap_optimizer=not validate
         )
         # Free this batch before the next one is received and converted
         del micro_batches
@@ -748,6 +756,16 @@ def train(config: TrainerConfig):
         # gradient is the true per-token mean over the global batch.
         if gradient_manager is None:
             scale_gradients_(None, model, grad_scale)
+
+        # Run validation after forward-backward (so torch.compile sees training graph first) but before
+        # optimizer step (so eval_on_start evaluates untrained weights)
+        validation_time = 0.0
+        if validate:
+            torch.cuda.synchronize()
+            validation_start_time = time.perf_counter()
+            metrics = validation.run(model, progress.step)
+            validation_time = time.perf_counter() - validation_start_time
+            asyncio.run(monitors.log({**metrics, "step": progress.step}, step=progress.step))
 
         # Optionally, clip the gradients
         grad_norm: torch.Tensor | None = None
@@ -765,7 +783,7 @@ def train(config: TrainerConfig):
         scheduler.step()
 
         current_lr = optimizer.param_groups[0]["lr"]
-        forward_backward_time = time.perf_counter() - forward_backward_start_time
+        forward_backward_time = time.perf_counter() - forward_backward_start_time - validation_time
 
         # Broadcast the model just produced (policy v{progress.step}). The final
         # broadcast keeps inference synchronized with the completed trainer.

@@ -320,6 +320,8 @@ class Orchestrator:
                 self.progress, self.train_source, step=self.resume_step, path=resume_path(self.config)
             )
             self.progress.step = self.resume_step + 1
+        # The first step this orchestrator ships: validation with ``eval_on_start`` is planned at it.
+        self.start_step = self.progress.step
 
         get_logger().info("Waiting for policy inference pool to be ready")
         t0 = time.perf_counter()
@@ -746,6 +748,10 @@ class Orchestrator:
         pack_start_time = time.perf_counter()
         micro_batch_grid = await asyncio.to_thread(self.packer.pack, batch.samples)
         pack_time = time.perf_counter() - pack_start_time
+        if config.val is not None and config.val.due(step, self.start_step):
+            for micro_batches in micro_batch_grid:
+                for micro_batch in micro_batches:
+                    micro_batch.validate = True
         # Sending blocks until every trainer rank requested the batch, so the wait is the time
         # the orchestrator spent waiting on the trainer for the next policy.
         send_start_time = time.perf_counter()

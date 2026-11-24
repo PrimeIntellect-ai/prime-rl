@@ -6,7 +6,8 @@ from pathlib import Path
 from huggingface_hub import snapshot_download
 
 from prime_rl.configs.sft import SFTDataConfig
-from prime_rl.configs.supervised import BaseDataConfig, HFDatasetConfig
+from prime_rl.configs.supervised import BaseDataConfig
+from prime_rl.configs.val import HFDatasetConfig
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import has_step_dir_name
 
