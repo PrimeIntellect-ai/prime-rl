@@ -3,9 +3,13 @@
 # and a data config from `recipes/data/`:
 #
 #   uv run rl @ recipes/inkling2/rl.toml @ recipes/inkling2/gpu/h200.toml @ recipes/data/swe.toml
-#   uv run rl @ recipes/inkling2/rl.toml @ recipes/inkling2/gpu/h200.toml @ recipes/data/math.toml
+#   uv run rl @ recipes/inkling2/rl.toml @ recipes/inkling2/gpu/h200.toml @ recipes/data/math.toml --orchestrator.train.sampling.max-completion-tokens 8192
 #
-# Not tested in this layout. The settings come from math-rl.toml and swe-rl.toml in this directory,
+# The data overlays target 256k models. At 16k, set `env.agent.harness.compaction.summarize_at_tokens
+# = 12000` on the SWE source so the harness compacts before the trainer cap, and give math a completion
+# budget that fits the window, as the tested recipes do.
+#
+# RL not tested in this layout. The settings come from examples/advanced/inkling2/{math-rl,swe-rl}.toml,
 # which ran end to end at 8k and 16k (#4551).
 
 # The model takes 1M tokens, but the trainer has no context parallelism for Inkling 2, so each sample
@@ -44,9 +48,12 @@ pad_to_seq_len = true
 # defaults to high.
 name = "inkling-2"
 reasoning_effort = "low"
+# Envs that pass tools (the SWE bash harness) need a renderer-side tool parser.
+tool_parser = "inkling2"
 
 [inference.vllm]
-max_model_len = 16384
+# Server window above the trainer seq_len so the harness can compact before the cap.
+max_model_len = 32768
 enable_prefix_caching = true
 # The plugin pads the short-convolution state to the attention page; 128-token pages raised
 # concurrency 1.7-6x (#4551).
