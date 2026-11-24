@@ -1649,6 +1649,20 @@ def test_sampler_kl_configures_head_capture_and_pruning(loss, captures_head):
     assert RLConfig.model_validate_json(config.model_dump_json()) == config
 
 
+def test_sampler_kl_keeps_configured_pruning():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {"loss": {"type": "reinforce", "sampler_kl": {"coef": 0.05}}},
+            "orchestrator": {
+                "prune_zero_advantages": True,
+                "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
+            },
+            "inference": {},
+        }
+    )
+    assert config.orchestrator.prune_zero_advantages
+
+
 @pytest.mark.parametrize("top_k", [32, 256])
 @pytest.mark.parametrize("top_p", [0.9, 1.0])
 def test_score_centering_captures_complete_bounded_support(top_k, top_p):
