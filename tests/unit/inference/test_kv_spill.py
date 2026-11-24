@@ -180,3 +180,35 @@ def test_request_read_back_during_its_put_keeps_its_blocks_until_the_put_is_done
     del state.putting["turn-1"]  # the put has finished
     kv_spill.hold_back_while_spilling(state, done_sending)
     assert done_sending == {"other", "turn-1"} and not state.read_back
+
+
+def _engine(**overrides):
+    worker = SimpleNamespace(
+        _has_mamba=False, region_mem_types=["VRAM"], use_host_buffer=False, world_size=1, dcp_size=1, pp_size=1
+    )
+    worker.__dict__.update(overrides)
+    return worker
+
+
+def test_spill_is_off_on_engines_whose_ranks_would_share_store_keys():
+    """Keys name a block by content or request, not by parallel rank."""
+    assert kv_spill.unsupported(_engine()) is None
+    for parallelism in ("world_size", "dcp_size", "pp_size"):
+        assert "parallelism" in kv_spill.unsupported(_engine(**{parallelism: 2}))
+    assert kv_spill.unsupported(_engine(_has_mamba=True)) == "unsupported KV layout"
+
+
+def test_read_that_cannot_happen_gets_one_store_fetch():
+    """Decode restarted or unreachable: a spilled turn does not need it. The fetch is started once, so a turn the
+    store does not have fails over to the recompute instead of looping."""
+    state = _state()
+    worker = _worker()
+    worker._prime_rl_spill_fetch_keys = {"turn-2": (["a", "b", "c"], ["d"])}
+    meta = SimpleNamespace(local_block_ids=[[20, 21], [30]], remote=SimpleNamespace(block_ids=[[4, 5, 6], [9]]))
+
+    assert kv_spill.start_fetch(worker, state, "turn-2", meta, 0.0)
+    ((name, args),) = state.pool.submitted
+    assert name == "_fetch" and args[2][0] == ["b", "c", "d"] and args[3] == 0.0
+    assert not kv_spill.start_fetch(worker, state, "turn-2", meta, 0.0)
+    # A request the scheduler sent no keys for (no handle, or the spill is off for it) is left to NIXL.
+    assert not kv_spill.start_fetch(worker, state, "turn-3", meta, 0.0)

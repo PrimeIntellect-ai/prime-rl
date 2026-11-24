@@ -58,6 +58,8 @@ class _State:
         self.read_back: set[str] = set()
         # prefill: requests reported as failed by NIXL while their fetch was still writing
         self.failed_while_fetching: set[str] = set()
+        # prefill: requests whose store fetch was started; each gets one
+        self.tried: set[str] = set()
         self.calls = 0
 
 
@@ -69,6 +71,17 @@ def _state(worker) -> _State | None:
     settings = spill_settings(worker)
     worker._prime_rl_spill = state = _make_state(worker, *settings) if settings is not None else None
     return state
+
+
+def unsupported(worker) -> str | None:
+    """Why this engine cannot spill, or None."""
+    if worker._has_mamba or "DRAM" in worker.region_mem_types or worker.use_host_buffer:
+        return "unsupported KV layout"
+    if worker.world_size != 1 or worker.dcp_size != 1 or worker.pp_size != 1:
+        # Store keys name a block by content or by request, not by parallel rank: with tensor, decode-context or
+        # pipeline parallelism every rank would write its own shard under the same key.
+        return "tensor, decode-context and pipeline parallelism are not supported"
+    return None
 
 
 def _make_state(worker, lead_s: float, wait_s: float) -> _State | None:
@@ -86,8 +99,8 @@ def _make_state(worker, lead_s: float, wait_s: float) -> _State | None:
     if not store_workers:
         logger.warning("KV spill: no Mooncake store worker in this process, spill is off")
         return None
-    if worker._has_mamba or "DRAM" in worker.region_mem_types or worker.use_host_buffer:
-        logger.warning("KV spill: unsupported KV layout, spill is off")
+    if reason := unsupported(worker):
+        logger.warning("KV spill: %s, spill is off", reason)
         return None
     store_worker = store_workers[0]
     bases = worker.kv_caches_base_addr[worker.engine_id][worker.tp_rank]
@@ -289,6 +302,19 @@ def start_due_spills(worker, state: _State, now: float) -> None:
         state.spilled.intersection_update(leases)
 
 
+def start_fetch(worker, state: _State, request_id: str, meta, wait_s: float) -> bool:
+    """Prefill: start the one store fetch a request gets, if its blocks can be paired with the handle's."""
+    group_keys = worker.__dict__.get("_prime_rl_spill_fetch_keys", {}).get(request_id)
+    if group_keys is None or request_id in state.tried:
+        return False
+    plan = fetch_plan(worker, meta, group_keys)
+    if plan is None:
+        return False
+    state.tried.add(request_id)
+    state.fetches[request_id] = state.pool.submit(_fetch, state, request_id, plan, wait_s)
+    return True
+
+
 def hold_back_while_spilling(state: _State, done_sending: set[str]) -> None:
     """Decode: a request that finished sending while its put is still copying is not reported yet.
 
@@ -395,36 +421,50 @@ def monkey_patch_nixl_spill_expiring_kv_to_store():
             hold_back_while_spilling(state, done_sending)
 
     def _handle_failed_transfer(self, req_id, handle, failed_req_ids=None, record_failed_transfer=True):
-        state = getattr(self, "_prime_rl_spill", None)
-        if state and handle is None and req_id in state.fetches:
-            # Something else failed this request (its peer went away, say) while the fetch is still writing into
-            # its blocks. Reporting it now would let the scheduler free them under the fetch: report when it is done.
-            state.failed_while_fetching.add(req_id)
-            return True
+        if handle is None and failed_req_ids is self._recv_failures:
+            state = _state(self)
+            if state is not None and req_id in state.fetches:
+                # Something else failed this request (its peer went away, say) while the fetch is still writing
+                # into its blocks. Reporting it now would let the scheduler free them under the fetch: report
+                # when it is done.
+                state.failed_while_fetching.add(req_id)
+                return True
+            meta = self._recving_metadata.get(req_id)
+            if state is not None and meta is not None and meta.remote is not None:
+                # A read that cannot happen (decode restarted, its handshake failed) does not need decode if the
+                # turn was spilled: try the store once before the request is recomputed.
+                if start_fetch(self, state, req_id, meta, 0.0):
+                    return True
         return original_failed(self, req_id, handle, failed_req_ids, record_failed_transfer)
 
     def _read_blocks_for_req(self, req_id, meta):
         remote = meta.remote
         if remote.engine_id in self._invalid_remote_engines or remote.engine_id not in self._remote_agents:
-            # Fails, or comes back here once the handshake is done.
+            # Fails (and then tries the store, see `_handle_failed_transfer`), or comes back here once the
+            # handshake is done.
             return original_read(self, req_id, meta)
-        group_keys = self.__dict__.get("_prime_rl_spill_fetch_keys", {}).pop(req_id, None)
         if self._bidirectional_kv_xfer_enabled and self._is_turn2_read_expired(meta):
             state = _state(self)
-            if state is not None and req_id in state.fetches:
-                return
-            plan = fetch_plan(self, meta, group_keys) if state is not None and group_keys is not None else None
-            if plan is not None:
+            if state is not None:
+                if req_id in state.fetches:
+                    return
                 # Only a turn that returns right at its deadline can find its put still in flight; later the
                 # objects are either there or evicted, and waiting would only delay the recompute.
                 deadline = remote.blocks_expiry_time - self._engine_clock_offset[remote.engine_id]
                 wait_s = state.wait_s if time.perf_counter() < deadline + PUT_GRACE_S else 0.0
-                state.fetches[req_id] = state.pool.submit(_fetch, state, req_id, plan, wait_s)
-                return
+                if start_fetch(self, state, req_id, meta, wait_s):
+                    return
         return original_read(self, req_id, meta)
 
     def get_transfer_results(self):
         state = getattr(self, "_prime_rl_spill", None)
+        fetch_keys = self.__dict__.get("_prime_rl_spill_fetch_keys")
+        if fetch_keys:
+            # Keys are kept while the request's load is open, so a failed read can still turn to the store.
+            for req_id in [r for r in fetch_keys if r not in self._recving_metadata]:
+                del fetch_keys[req_id]
+                if state:
+                    state.tried.discard(req_id)
         if state and state.fetches:
             for req_id, fetch in list(state.fetches.items()):
                 if not fetch.done():
