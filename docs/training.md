@@ -470,7 +470,7 @@ Checkpointing is split across processes because the orchestrator and trainer can
 
 | Process | What's saved | Where |
 |---|---|---|
-| Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<run_dir>/checkpoints/step_{n}/trainer/` |
+| Trainer | FSDP-sharded model (DCP), optimizer, progress | `<run_dir>/checkpoints/step_{n}/trainer/` |
 | Orchestrator | Progress, per-env data state | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
 | Trainer, orchestrator, inference | The model's `config.json` and `generation_config.json`, the tokenizer files and a VLM's processor files | `<run_dir>/checkpoints/step_{n}/` |
@@ -530,6 +530,14 @@ A resume checks that the checkpoint's `config.json` describes the same architect
 
 A fork continues the other run, so both runs must be of the same kind. To start a new stage from another run's weights, such as RL from an SFT checkpoint, set `model.name` to the checkpoint's step directory instead (see [Model Initialization](#model-initialization)).
 
+#### The trainer's hyperparameters on resume
+
+A trainer resume loads only state from the checkpoint: the weights, the optimizer's moments and step counts, the training step and the data position. Every hyperparameter and the learning rate schedule come from the resumed run's config, so a changed `optim.lr`, weight decay, betas, eps, `max_steps` or `scheduler.decay_steps` applies from the first resumed step. When the loaded optimizer settings differ from the config's, the trainer logs one warning listing each change as `group <index>: <key> <old> -> <new>`; with `ckpt.skip_optimizer`, which loads no optimizer state, there is nothing to compare and no warning.
+
+A resume that loads the optimizer state stops with an error when the number of param groups or a group's algorithm changed since the checkpoint, since the saved optimizer state no longer fits. Resume such a run with `ckpt.skip_optimizer`.
+
+To start a fresh schedule at a resume, set `scheduler.start_step` to the resume step and keep it in later resumes: the warmup and decay then span the `max_steps - start_step` steps after it. With a bare `--resume`, that is the latest checkpoint's step; with `--resume.dir`, the step in the directory name. The trainer stops at startup if `start_step` is after the resume step or nonzero without a resume, and if the checkpoint's step differs from the resume step (for example, a renamed `--resume.dir`).
+
 #### What a resume restores
 
 - The curriculum of each train source, and the live config (see [Updating the Config Live](#updating-the-config-live)).
@@ -557,7 +565,7 @@ A resume can add, remove or change train and eval sources.
 | `scratch` | The model's own random init, seeded with `model.init.seed` | `model.name` | `uv run pretrain` |
 | `pretrained` | The weights stored at `model.name`: an HF model (Hub id or local directory), or the trainer checkpoint in a step directory (`.../step_<N>`) of another run | `model.name`; for a step directory, its `config.json` and tokenizer files | `uv run sft`, `uv run rl` |
 
-Both types work with every entrypoint, and a `[model.init]` table without `type` keeps the entrypoint's default. In RL, set `name` and `init` in the shared `[model]`. The trainer recognizes a step directory by its `trainer/` directory when it loads the weights. A step directory supplies only the weights: the run starts at step 0 with a fresh optimizer, scheduler and data. To continue a run with its optimizer, scheduler and data state, use `[resume]` instead, or `--resume.dir` to fork another run of the same kind (see [Resuming a Run](#resuming-a-run)). A model without a from-scratch init fails at startup with `scratch`, naming the parameters its init does not reach. The renderer cannot be picked from a step directory, so a run from one sets it explicitly; inference's `"auto"` tool-call and reasoning parsers try `tokenizer.name` first, so setting it to the HF model name keeps them. A resumed trainer and the export read the `config.json` and tokenizer from the run's own checkpoint, which holds copies; the RL orchestrator and the inference servers still read `model.name`, so to resume once the source step directory is gone, set `model.name` to one of the run's own step directories.
+Both types work with every entrypoint, and a `[model.init]` table without `type` keeps the entrypoint's default. In RL, set `name` and `init` in the shared `[model]`. The trainer recognizes a step directory by its `trainer/` directory when it loads the weights. A step directory supplies only the weights: the run starts at step 0 with a fresh optimizer, scheduler and data. To continue a run with its optimizer state, step and data position, use `[resume]` instead, or `--resume.dir` to fork another run of the same kind (see [Resuming a Run](#resuming-a-run)). A model without a from-scratch init fails at startup with `scratch`, naming the parameters its init does not reach. The renderer cannot be picked from a step directory, so a run from one sets it explicitly; inference's `"auto"` tool-call and reasoning parsers try `tokenizer.name` first, so setting it to the HF model name keeps them. A resumed trainer and the export read the `config.json` and tokenizer from the run's own checkpoint, which holds copies; the RL orchestrator and the inference servers still read `model.name`, so to resume once the source step directory is gone, set `model.name` to one of the run's own step directories.
 
 The trainer sends its weights to inference (RL, SFT online evals) at startup. When those weights are not HF weights stored at `model.name` (`scratch`, or a checkpoint step directory as `model.name`, which the inference server recognizes when it starts), the inference server starts with placeholder weights (`inference.vllm.load_format = "dummy"`) instead of loading them from disk.
 

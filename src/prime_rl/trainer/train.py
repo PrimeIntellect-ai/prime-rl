@@ -183,15 +183,8 @@ def train(config: SFTConfig | PretrainConfig):
     )
 
     # Set up the learning rate scheduler
-    # skip_scheduler rebuilds a fresh schedule over the remaining steps: size it from the
-    # resolved checkpoint step (bare --resume and --resume.dir carry no explicit step).
-    scheduler_steps = (
-        config.max_steps - checkpoint_step
-        if config.max_steps is not None and (config.ckpt and config.ckpt.skip_scheduler and checkpoint_step is not None)
-        else config.max_steps
-    )
-    logger.info(f"Initializing scheduler with {scheduler_steps} steps ({config.scheduler})")
-    scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
+    logger.info(f"Initializing scheduler with {config.max_steps} steps ({config.scheduler})")
+    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr, checkpoint_step)
 
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
@@ -274,16 +267,12 @@ def train(config: SFTConfig | PretrainConfig):
             checkpoint_step,
             model,
             [optimizer],
-            scheduler if not skip.skip_scheduler else None,
             progress,
             dataloader=dataloader if not skip.skip_dataloader else None,
             path=resume_dir / "trainer" if resume_dir is not None else None,
         )
         # The checkpoint finished step ``checkpoint_step``; resume training at the next step.
         progress.step += 1
-        # This redundant setup is necessary because loading the optimizer's state has side effects on the scheduler state dict
-        if skip.skip_scheduler:
-            scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
         if isinstance(dataset, SFTDataset) and not skip.skip_dataloader:
             path = resume_dir / "trainer" if resume_dir is not None else ckpt_manager.get_ckpt_path(checkpoint_step)
             view = dataset.saved_view(dataloader, path / "dataloader", world.rank, world.world_size)
@@ -585,7 +574,7 @@ def train(config: SFTConfig | PretrainConfig):
         if (is_ckpt_step or step_action == "checkpoint") and not is_last_step:
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
-            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
+            ckpt_manager.save(progress.step, model, [optimizer], progress, dataloader=dataloader)
             if step_action == "checkpoint":
                 # The action commits once the checkpoint is on storage
                 ckpt_manager.wait()
@@ -727,7 +716,7 @@ def train(config: SFTConfig | PretrainConfig):
     # Write final checkpoint
     if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
-        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
+        ckpt_manager.save(progress.step, model, [optimizer], progress, dataloader=dataloader)
         ckpt_manager.wait()
         if step_action is not None:
             controller.mark_saved(progress.step)
