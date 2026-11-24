@@ -65,6 +65,11 @@ from prime_rl.trainer.models.layers.lm_head import TokenSupport, inject_prime_lm
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
 from prime_rl.trainer.models.layers.ngram import NGramTable
+from prime_rl.trainer.models.nemotron_h.loop import (
+    freeze_all_except_loop,
+    init_loop_params_from_base,
+    strip_loop_from_state_dict,
+)
 from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIndexer
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.ngram_runtime import configure_ngram_runtime
@@ -417,6 +422,20 @@ def get_model(config: ModelConfig, dtype: torch.dtype = torch.bfloat16) -> nn.Mo
             f"VLM training requires a registered PrimeRL VLM implementation; {model_config.model_type!r} has none."
         )
 
+    if config.loop is not None:
+        if model_config.model_type not in ("nemotron_h", "nemotron_h_omni"):
+            raise ValueError(
+                f"model.loop is currently supported only for NemotronH models, got model_type={model_config.model_type!r}"
+            )
+        target_config = getattr(model_config, "text_config", model_config)
+        start, end = config.loop.resolve_bounds(target_config.num_hidden_layers)
+        target_config.loop_config = config.loop.model_dump()
+        logger.info(
+            f"Enabled NemotronH layer looping: layers [{start}, {end}) x {config.loop.num_loops} "
+            f"(lora_rank={config.loop.lora_rank}, separate_moe_router={config.loop.separate_moe_router}, "
+            f"freeze_base={config.loop.freeze_base})"
+        )
+
     with torch.device("meta"):
         model_cls = custom_vlm_cls or get_custom_causal_lm_cls(model_config)
 
@@ -765,6 +784,8 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     load_dcp_start_time = time.perf_counter()
     state_dict = model.state_dict()
     state_dict = strip_lora_from_state_dict(state_dict)
+    if config.loop is not None:
+        state_dict = strip_loop_from_state_dict(state_dict)
     if model.config.tie_word_embeddings:
         # Tied checkpoints ship no lm_head weight: the head loads through the input embedding it shares.
         assert model.lm_head.weight is model.get_input_embeddings().weight, (
@@ -777,6 +798,8 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
         process_group=get_dcp_group(),
     )
     write_back_loaded_packed_parameters(model, state_dict)
+    if config.loop is not None:
+        init_loop_params_from_base(model)
 
     logger.debug(f"Loaded weights using HF DCP in {format_time(time.perf_counter() - load_dcp_start_time)}")
 
@@ -1036,8 +1059,8 @@ def setup_model(
     # Build on the meta device; weights are materialized after FSDP sharding.
     model = get_model(config, dtype=DTYPE_MAP[config.optimization_dtype])
 
-    if config.fusions.enabled and config.lora is not None:
-        logger.warning("Skipping runtime model fusions because LoRA targets the unfused projections")
+    if config.fusions.enabled and (config.lora is not None or (config.loop is not None and config.loop.lora_rank > 0)):
+        logger.warning("Skipping runtime model fusions because LoRA/loop-LoRA targets the unfused projections")
     elif config.fusions.enabled:
         applied = apply_model_fusions(model, config.fusions.enabled)
         logger.info(f"Applied runtime model fusions: {applied}")
@@ -1065,11 +1088,16 @@ def setup_model(
 
     configure_moe_runtime(model, config, parallel_dims)
     configure_ngram_runtime(model, parallel_dims)
+    if config.loop is not None and config.loop.freeze_base:
+        freeze_all_except_loop(model)
+
     if parallel_dims.ep_enabled:
         # EP replaces params with DTensors that default to requires_grad=True,
-        # re-freeze base params that LoRA froze earlier.
+        # re-freeze base params that LoRA / loop warmup froze earlier.
         if config.lora is not None:
             freeze_all_except_lora(model)
+        if config.loop is not None and config.loop.freeze_base:
+            freeze_all_except_loop(model)
 
     if frozen_vision_encoder is not None:
         freeze_vision_encoder(frozen_vision_encoder)
@@ -1098,6 +1126,8 @@ def setup_model(
         model.init_buffers_post_meta()
     elif config.init.type == "scratch":
         initialize_from_scratch(model, config.init.seed)
+        if config.loop is not None:
+            init_loop_params_from_base(model)
     else:
         load_dcp_from_hf(model, config)
 

@@ -26,7 +26,13 @@ class FeedForward(nn.Module):
         self.down_proj = nn.Linear(hidden_dim, dim, bias=bias)
         self.activation = ActivationDispatch[activation] if isinstance(activation, str) else activation
 
-    def forward(self, x: torch.Tensor, routed_experts: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, routed_experts: torch.Tensor | None = None, loop_idx: int = 0
+    ) -> torch.Tensor:
+        if loop_idx > 0 and hasattr(self.up_proj, "loop_lora_A"):
+            gate = self.gate_proj(x, loop_idx) if self.gate_proj is not None else None
+            up = self.up_proj(x, loop_idx)
+            return self.down_proj(self.activation.apply(gate, up), loop_idx)
         gate = self.gate_proj(x) if self.gate_proj is not None else None
         up = self.up_proj(x)
         return self.down_proj(self.activation.apply(gate, up))

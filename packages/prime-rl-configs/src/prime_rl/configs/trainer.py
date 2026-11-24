@@ -82,6 +82,57 @@ class FusionsConfig(BaseConfig):
     """Experimental. Shard fused 2-D weights along dim 1 under FSDP so that weight loading and checkpointing are zero-copy: the checkpoint reads and writes the fused weights and their optimizer state in place, instead of assembling a full copy of every fused weight on each rank first. Requires the hidden size to be divisible by the FSDP shard mesh size."""
 
 
+class LoopConfig(BaseConfig):
+    """Loop a contiguous core block of decoder layers with per-loop adapters and zero-init residual gates."""
+
+    num_loops: Annotated[
+        int,
+        Field(ge=2, description="Total passes through the looped block (2 = one extra pass)."),
+    ] = 2
+
+    start_layer: Annotated[
+        int,
+        Field(ge=0, description="First layer index (inclusive) in the looped block."),
+    ] = 6
+
+    end_layer: Annotated[
+        int | None,
+        Field(
+            description="Last layer index (exclusive) in the looped block. Negative values count from num_hidden_layers; None defaults to num_hidden_layers - 4."
+        ),
+    ] = None
+
+    lora_rank: Annotated[
+        int,
+        Field(ge=0, description="Per-loop LoRA rank on linear projections inside looped layers (0 disables)."),
+    ] = 16
+
+    lora_alpha: Annotated[
+        float,
+        Field(gt=0, description="Per-loop LoRA scaling alpha."),
+    ] = 32.0
+
+    freeze_base: Annotated[
+        bool,
+        Field(description="Freeze all non-loop base parameters (Stage 1 loop warmup)."),
+    ] = True
+
+    separate_moe_router: Annotated[
+        bool,
+        Field(description="Give each extra loop pass its own MoE router (cloned from pass 1 at init)."),
+    ] = True
+
+    def resolve_bounds(self, num_hidden_layers: int) -> tuple[int, int]:
+        end = num_hidden_layers - 4 if self.end_layer is None else (
+            num_hidden_layers + self.end_layer if self.end_layer < 0 else self.end_layer
+        )
+        if not (0 <= self.start_layer < end <= num_hidden_layers):
+            raise ValueError(
+                f"Invalid loop bounds [{self.start_layer}, {end}) for num_hidden_layers={num_hidden_layers}"
+            )
+        return self.start_layer, end
+
+
 class LoRAConfig(BaseConfig):
     rank: int = Field(16, ge=1)
     """Rank of the low-rank decomposition matrices."""
@@ -429,6 +480,9 @@ class ModelConfig(BaseModelConfig):
     lora: LoRAConfig | None = None
     """LoRA configuration. If None, LoRA is disabled."""
 
+    loop: LoopConfig | None = None
+    """Recurrent layer-looping configuration (NemotronH). If None, standard 1-pass forward is used."""
+
     debug: DebugModelConfig = DebugModelConfig()
     """Debugging knobs for the model and distributed training."""
 
@@ -439,6 +493,14 @@ class ModelConfig(BaseModelConfig):
     def validate_scratch_lora(self):
         if self.init.type == "scratch" and self.lora is not None:
             raise ValueError('model.lora adapts pretrained weights, which model.init.type = "scratch" does not load')
+        return self
+
+    @model_validator(mode="after")
+    def validate_loop(self):
+        if self.loop is not None and self.lora is not None:
+            raise ValueError("model.loop and model.lora cannot both be set; use model.loop.lora_rank for per-loop LoRA")
+        if self.loop is not None and self.init.type == "scratch" and self.loop.freeze_base:
+            raise ValueError('model.loop.freeze_base=true requires pretrained weights, not model.init.type="scratch"')
         return self
 
     @model_validator(mode="after")

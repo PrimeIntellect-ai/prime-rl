@@ -138,10 +138,18 @@ class NemotronHMamba2(nn.Module):
         return 6 * 2 * self.num_heads * self.head_dim * self.state_size * seq_len
 
     def forward(
-        self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor, chunk_indices: torch.Tensor
+        self,
+        hidden_states: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        chunk_indices: torch.Tensor,
+        loop_idx: int = 0,
     ) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape
-        projected_states = self.in_proj(hidden_states)
+        projected_states = (
+            self.in_proj(hidden_states, loop_idx)
+            if loop_idx > 0 and hasattr(self.in_proj, "loop_lora_A")
+            else self.in_proj(hidden_states)
+        )
         gate, convolution_input, time_step = torch.split(
             projected_states,
             [self.intermediate_size, self.conv_size, self.num_heads],
@@ -247,7 +255,11 @@ class NemotronHMamba2(nn.Module):
                 self.cp_context.cp_group,
                 self.cp_context.cp_world_size,
             )
-        return self.out_proj(hidden_states)
+        return (
+            self.out_proj(hidden_states, loop_idx)
+            if loop_idx > 0 and hasattr(self.out_proj, "loop_lora_A")
+            else self.out_proj(hidden_states)
+        )
 
 
 __all__ = [

@@ -14,6 +14,11 @@ from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import (
     is_hf_state_dict,
     is_prime_state_dict,
 )
+from prime_rl.trainer.models.nemotron_h.loop import (
+    call_loop_linear,
+    resolve_loop_bounds,
+    wrap_linear_with_loop_lora,
+)
 from prime_rl.trainer.models.nemotron_h.mamba import NemotronHMamba2
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
@@ -31,11 +36,11 @@ class NemotronHMoE(MoE):
         self.fc1_latent_proj = nn.Linear(hidden_size, latent_size, bias=projection_bias)
         self.fc2_latent_proj = nn.Linear(latent_size, hidden_size, bias=projection_bias)
 
-    def prepare_expert_input(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        return self.fc1_latent_proj(hidden_states)
+    def prepare_expert_input(self, hidden_states: torch.Tensor, loop_idx: int = 0) -> torch.Tensor:
+        return call_loop_linear(self.fc1_latent_proj, hidden_states, loop_idx)
 
-    def prepare_expert_output(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        return self.fc2_latent_proj(hidden_states)
+    def prepare_expert_output(self, hidden_states: torch.Tensor, loop_idx: int = 0) -> torch.Tensor:
+        return call_loop_linear(self.fc2_latent_proj, hidden_states, loop_idx)
 
 
 class NemotronHDecoderLayer(nn.Module):
@@ -105,6 +110,58 @@ class NemotronHDecoderLayer(nn.Module):
                     **moe_kwargs,
                 )
 
+        self.loop_norms: nn.ModuleList | None = None
+        self.loop_gammas: nn.ParameterList | None = None
+        self.loop_routers: nn.ModuleList | None = None
+        loop_cfg = getattr(config, "loop_config", None)
+        if loop_cfg is not None:
+            start, end = resolve_loop_bounds(loop_cfg, config.num_hidden_layers)
+            num_extra = int(loop_cfg["num_loops"]) - 1
+            if start <= layer_idx < end and num_extra > 0:
+                self.loop_norms = nn.ModuleList(
+                    RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.layer_norm_epsilon))
+                    for _ in range(num_extra)
+                )
+                self.loop_gammas = nn.ParameterList(
+                    nn.Parameter(
+                        torch.zeros(
+                            config.hidden_size,
+                            device=self.norm.weight.device,
+                            dtype=self.norm.weight.dtype,
+                        )
+                    )
+                    for _ in range(num_extra)
+                )
+                if self.layer_type == "moe" and loop_cfg.get("separate_moe_router", True):
+                    self.loop_routers = nn.ModuleList(
+                        TokenChoiceTopKRouter(
+                            dim=config.hidden_size,
+                            num_experts=config.n_routed_experts,
+                            top_k=config.num_experts_per_tok,
+                            score_func="sigmoid",
+                            route_norm=config.norm_topk_prob,
+                            route_scale=config.routed_scaling_factor,
+                            selection_bias=True,
+                            topk_sorted=False,
+                        )
+                        for _ in range(num_extra)
+                    )
+                rank = int(loop_cfg.get("lora_rank", 0))
+                alpha = float(loop_cfg.get("lora_alpha", 32.0))
+                if rank > 0:
+                    if self.layer_type == "linear_attention":
+                        for attr in ("in_proj", "out_proj"):
+                            wrap_linear_with_loop_lora(self.mamba, attr, num_extra, rank, alpha)
+                    elif self.layer_type == "full_attention":
+                        for attr in ("q_proj", "k_proj", "v_proj", "o_proj"):
+                            wrap_linear_with_loop_lora(self.self_attn, attr, num_extra, rank, alpha)
+                    elif self.layer_type == "moe":
+                        for attr in ("fc1_latent_proj", "fc2_latent_proj"):
+                            wrap_linear_with_loop_lora(self.mlp, attr, num_extra, rank, alpha)
+                        if self.mlp.shared_expert is not None:
+                            for attr in ("up_proj", "down_proj"):
+                                wrap_linear_with_loop_lora(self.mlp.shared_expert, attr, num_extra, rank, alpha)
+
     @property
     def is_token_local(self) -> bool:
         """Every op in the block is independent per position, so each token's output depends on that token alone
@@ -118,20 +175,31 @@ class NemotronHDecoderLayer(nn.Module):
         chunk_indices: torch.Tensor,
         max_seqlen: int,
         routed_experts: torch.Tensor | None = None,
+        loop_idx: int = 0,
     ) -> torch.Tensor:
         residual = hidden_states
-        hidden_states = self.norm(hidden_states)
+        norm = self.norm if loop_idx == 0 else self.loop_norms[loop_idx - 1]
+        hidden_states = norm(hidden_states)
 
         if self.layer_type == "linear_attention":
-            hidden_states = self.mamba(hidden_states, cu_seqlens, chunk_indices)
+            hidden_states = self.mamba(hidden_states, cu_seqlens, chunk_indices, loop_idx=loop_idx)
         elif self.layer_type == "full_attention":
             hidden_states, _ = self.self_attn(
                 hidden_states=hidden_states,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
+                loop_idx=loop_idx,
             )
         else:
-            hidden_states = self.mlp(hidden_states, routed_experts=routed_experts)
+            router = None if (loop_idx == 0 or self.loop_routers is None) else self.loop_routers[loop_idx - 1]
+            hidden_states = self.mlp(
+                hidden_states,
+                routed_experts=routed_experts if loop_idx == 0 else None,
+                router=router,
+                loop_idx=loop_idx,
+            )
+        if loop_idx > 0:
+            hidden_states = hidden_states * self.loop_gammas[loop_idx - 1]
         return residual + hidden_states
 
 
@@ -140,7 +208,7 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
-        return name.endswith(("mamba.A_log", "mamba.D", "mlp.router.selection_bias"))
+        return name.endswith(("mamba.A_log", "mamba.D", "selection_bias"))
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
@@ -197,15 +265,44 @@ class NemotronHModel(NemotronHPreTrainedModel):
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
         chunk_indices = prepare_chunk_indices(cu_seqlens)
 
-        for layer_idx, decoder_layer in enumerate(self.layers):
-            layer_routed_experts = routed_experts[:, :, layer_idx].contiguous() if routed_experts is not None else None
-            hidden_states = decoder_layer(
-                hidden_states=hidden_states,
-                cu_seqlens=cu_seqlens,
-                chunk_indices=chunk_indices,
-                max_seqlen=max_seqlen,
-                routed_experts=layer_routed_experts,
-            )
+        loop_cfg = getattr(self.config, "loop_config", None)
+        if loop_cfg is None:
+            for layer_idx, decoder_layer in enumerate(self.layers):
+                layer_routed_experts = (
+                    routed_experts[:, :, layer_idx].contiguous() if routed_experts is not None else None
+                )
+                hidden_states = decoder_layer(
+                    hidden_states=hidden_states,
+                    cu_seqlens=cu_seqlens,
+                    chunk_indices=chunk_indices,
+                    max_seqlen=max_seqlen,
+                    routed_experts=layer_routed_experts,
+                )
+        else:
+            start, end = resolve_loop_bounds(loop_cfg, len(self.layers))
+            num_loops = int(loop_cfg["num_loops"])
+
+            def _run_range(lo: int, hi: int, loop_idx: int) -> None:
+                nonlocal hidden_states
+                for layer_idx in range(lo, hi):
+                    layer_routed_experts = (
+                        routed_experts[:, :, layer_idx].contiguous()
+                        if (routed_experts is not None and loop_idx == 0)
+                        else None
+                    )
+                    hidden_states = self.layers[layer_idx](
+                        hidden_states=hidden_states,
+                        cu_seqlens=cu_seqlens,
+                        chunk_indices=chunk_indices,
+                        max_seqlen=max_seqlen,
+                        routed_experts=layer_routed_experts,
+                        loop_idx=loop_idx,
+                    )
+
+            _run_range(0, start, loop_idx=0)
+            for loop_idx in range(num_loops):
+                _run_range(start, end, loop_idx=loop_idx)
+            _run_range(end, len(self.layers), loop_idx=0)
         return TextModelOutput(last_hidden_state=self.norm(hidden_states))
 
 

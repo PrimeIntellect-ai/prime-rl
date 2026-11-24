@@ -336,16 +336,18 @@ class MoE(nn.Module):
     def set_token_dispatcher(self, token_dispatcher: TokenDispatcher) -> None:
         self.token_dispatcher = token_dispatcher
 
-    def prepare_expert_input(self, x: torch.Tensor) -> torch.Tensor:
+    def prepare_expert_input(self, x: torch.Tensor, loop_idx: int = 0) -> torch.Tensor:
         return x
 
-    def prepare_expert_output(self, x: torch.Tensor) -> torch.Tensor:
+    def prepare_expert_output(self, x: torch.Tensor, loop_idx: int = 0) -> torch.Tensor:
         return x
 
     def forward(
         self,
         x: torch.Tensor,
         routed_experts: torch.Tensor | None = None,
+        router: TokenChoiceTopKRouter | None = None,
+        loop_idx: int = 0,
     ) -> torch.Tensor:
         """
         Args:
@@ -371,7 +373,7 @@ class MoE(nn.Module):
             selected_experts_indices,
             num_tokens_per_expert,
             routing_confidence_sum,
-        ) = self.router(x, routed_experts=routed_experts)
+        ) = (self.router if router is None else router)(x, routed_experts=routed_experts)
 
         # Accumulate expert usage for selection-bias updates and metrics.
         with torch.no_grad():
@@ -383,7 +385,7 @@ class MoE(nn.Module):
             )
 
         routed_output = self.token_dispatcher.run(
-            self.prepare_expert_input(x),
+            self.prepare_expert_input(x, loop_idx=loop_idx),
             top_scores,
             selected_experts_indices,
             self.experts,
@@ -392,9 +394,9 @@ class MoE(nn.Module):
 
         shared_output = None
         if self.shared_expert is not None:
-            shared_output = self.shared_expert(x)
+            shared_output = self.shared_expert(x, loop_idx=loop_idx) if loop_idx > 0 else self.shared_expert(x)
 
-        routed_output = self.prepare_expert_output(routed_output)
+        routed_output = self.prepare_expert_output(routed_output, loop_idx=loop_idx)
 
         if shared_output is not None:
             routed_output = routed_output + shared_output

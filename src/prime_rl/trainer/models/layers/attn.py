@@ -544,9 +544,17 @@ class FlashAttention(nn.Module):
             attended_tokens=min(seq_len, getattr(self, "sliding_window", None) or seq_len),
         )
 
-    def project_qkv(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def project_qkv(
+        self, hidden_states: torch.Tensor, loop_idx: int = 0
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Query, key and value projections, from one packed GEMM when qkv is fused."""
         if self.qkv_proj is None:
+            if loop_idx > 0 and hasattr(self.q_proj, "loop_lora_A"):
+                return (
+                    self.q_proj(hidden_states, loop_idx),
+                    self.k_proj(hidden_states, loop_idx),
+                    self.v_proj(hidden_states, loop_idx),
+                )
             return self.q_proj(hidden_states), self.k_proj(hidden_states), self.v_proj(hidden_states)
         return self.qkv_proj(hidden_states).split(self.qkv_sizes, dim=-1)
 
@@ -574,11 +582,12 @@ class FlashAttention(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
+        loop_idx: int = 0,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states, key_states, value_states = self.project_qkv(hidden_states)
+        query_states, key_states, value_states = self.project_qkv(hidden_states, loop_idx=loop_idx)
 
         if self.use_qk_norm and self.qk_norm_type == "per_layer":
             query_states = self.q_norm(query_states)
@@ -607,7 +616,11 @@ class FlashAttention(nn.Module):
 
         out = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
         attn_output = out.contiguous().view(1, out.shape[0], -1)
-        attn_output = self.o_proj(attn_output)
+        attn_output = (
+            self.o_proj(attn_output, loop_idx)
+            if loop_idx > 0 and hasattr(self.o_proj, "loop_lora_A")
+            else self.o_proj(attn_output)
+        )
         return attn_output, None
 
 
