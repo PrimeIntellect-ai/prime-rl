@@ -2,6 +2,8 @@ import bisect
 import copy
 import gc
 import json
+import math
+import queue
 import shutil
 import time
 from collections import defaultdict
@@ -13,6 +15,8 @@ from typing import Any
 import torch
 from torch import nn
 from torch.distributed.checkpoint import FileSystemReader, FileSystemWriter
+from torch.distributed.checkpoint.filesystem import DEFAULT_SUFFIX
+from torch.distributed.checkpoint.planner import SavePlan, SavePlanner, WriteItem
 from torch.distributed.checkpoint.state_dict import (
     get_model_state_dict,
     get_state_dict,
@@ -74,6 +78,46 @@ class ModelFiles:
         if self.processor is not None:
             self.processor.save_pretrained(directory)
         self.tokenizer.save_pretrained(directory)
+
+
+MAX_CHECKPOINT_FILE_BYTES = 2 * 1024**3
+
+
+class CheckpointWriter(FileSystemWriter):
+    """DCP's file writer, with each rank's shard split into files of at most ``max_file_bytes``.
+
+    The stock writer puts a rank's whole shard in one file and keeps every tensor it wrote to a file until the file
+    is done. A CPU tensor that is a view into a larger storage is copied before it is written: full offload's masters
+    are views into one slab per rank, and fused parameters (``gate_up_proj``) split into strided views. One file per
+    rank therefore holds a second copy of the rank's shard in host memory until the save ends, about 400 GiB more on a
+    node training GLM-4.5-Air with full offload. With bounded files that copy is at most about two files per writer thread."""
+
+    def __init__(self, path: Path, max_file_bytes: int = MAX_CHECKPOINT_FILE_BYTES, **kwargs: Any):
+        super().__init__(path, **kwargs)
+        self.max_file_bytes = max_file_bytes
+
+    def write_data(self, plan: SavePlan, planner: SavePlanner) -> Future:
+        files: list[list[WriteItem]] = []
+        file_bytes = 0
+        for item in plan.items:
+            item_bytes = _write_item_bytes(item)
+            if not files or (files[-1] and file_bytes + item_bytes > self.max_file_bytes):
+                files.append([])
+                file_bytes = 0
+            files[-1].append(item)
+            file_bytes += item_bytes
+        file_queue: queue.Queue = queue.Queue()
+        for index, items in enumerate(files):
+            file_name = f"{plan.storage_data.prefix}{index}{DEFAULT_SUFFIX}"
+            file_queue.put((self.fs.concat_path(self.path, file_name), file_name, items))
+        return self._write_data(planner, file_queue)
+
+
+def _write_item_bytes(item: WriteItem) -> int:
+    """The bytes this rank writes for `item`: its shard (`chunk`), not the global tensor (`size`)."""
+    if item.tensor_data is None:
+        return 0
+    return math.prod(item.tensor_data.chunk.sizes) * item.tensor_data.properties.dtype.itemsize
 
 
 def load_generation_config(model_name: str) -> GenerationConfig | None:
@@ -506,7 +550,7 @@ class CheckpointManager:
         # Before the sharded state, so the mapping is in place once .metadata appears
         self._save_mapping(path, model)
         if not self.config.async_save:
-            dcp_save({"app": app_state}, checkpoint_id=path, process_group=get_dcp_group())
+            dcp_save({"app": app_state}, storage_writer=CheckpointWriter(path), process_group=get_dcp_group())
             self.logger.debug(f"Saved training checkpoint in {format_time(time.perf_counter() - start_time)}")
             return None
         return self._async_save(app_state, path, start_time)
@@ -541,7 +585,7 @@ class CheckpointManager:
     def _write(self, staging: Staging, path: Path) -> None:
         # The default writer's copy-ahead loader syncs the thread's current stream, which is the default
         # stream training runs on, about once per tensor. The staged tensors are already in pinned host memory.
-        writer = FileSystemWriter(path, per_thread_copy_ahead=0)
+        writer = CheckpointWriter(path, per_thread_copy_ahead=0)
         dcp_save(staging.wait(), storage_writer=writer, process_group=self.write_group)
 
     def _save_mapping(self, path: Path, model: nn.Module) -> None:

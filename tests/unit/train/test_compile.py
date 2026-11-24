@@ -75,8 +75,6 @@ class CompileCase(Case):
     """Returns why this GPU or environment cannot run the case, or None if it can."""
 
     def skip_reason(self) -> str | None:
-        if self.name in KNOWN_FAILURES:
-            return f"fails fullgraph today: {KNOWN_FAILURES[self.name]}"
         return None if self.requirement is None else self.requirement()
 
 
@@ -133,10 +131,6 @@ CASES = [
 ]
 
 
-INKLING2_LAYER_KINDS_UNCOUNTED = "layer_kinds counts 2 kinds for Inkling 2's 4 distinct decoder layer graphs"
-KNOWN_FAILURES = {"inkling2-dp2": INKLING2_LAYER_KINDS_UNCOUNTED}
-
-
 def isolated(run, *args) -> dict:
     """The result of `run`, or the error it raised, so that one failing case does not hide the others."""
     try:
@@ -146,14 +140,26 @@ def isolated(run, *args) -> dict:
         return {"error": "".join(traceback.format_exception_only(error)).strip()}
 
 
-def layer_kinds(model: torch.nn.Module) -> set[tuple[tuple[str, ...], str | None]]:
-    """The decoder layers' distinct pairs of module classes and config layer type. Layers of different kinds cannot
-    share a compiled graph."""
+def layer_kinds(
+    model: torch.nn.Module,
+) -> set[tuple[str | None, tuple[tuple[str, str], ...], tuple[tuple[str, bool], ...]]]:
+    """The decoder layers' distinct triples of config layer type, named submodule classes and bool flags. Layers of
+    different kinds cannot share a compiled graph."""
     language_model = get_language_model(model)
     layers = [getattr(layer, "_checkpoint_wrapped_module", layer) for layer in language_model.layers]
     layer_types = getattr(language_model.config, "layer_types", None) or [None] * len(layers)
     return {
-        (tuple(sorted({type(module).__name__ for module in layer.modules()})), layer_type)
+        (
+            layer_type,
+            tuple(sorted((name, type(module).__name__) for name, module in layer.named_modules())),
+            tuple(
+                sorted(
+                    (key, value)
+                    for key, value in vars(layer).items()
+                    if isinstance(value, bool) and not key.startswith("_") and key != "training"
+                )
+            ),
+        )
         for layer, layer_type in zip(layers, layer_types, strict=True)
     }
 
