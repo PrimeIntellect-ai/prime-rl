@@ -343,6 +343,9 @@ def train(config: SFTConfig | PretrainConfig):
         input_ids = micro_batch["input_ids"].to("cuda", non_blocking=True)
         position_ids = micro_batch["position_ids"].to("cuda", non_blocking=True)
         seq_lens = micro_batch["seq_lens"].to("cuda", non_blocking=True)
+        prefix_lens = micro_batch["prefix_lens"]
+        if prefix_lens is not None:
+            prefix_lens = prefix_lens.to("cuda", non_blocking=True)
         inputs = micro_batch["decision_loss_inputs"].to("cuda")
         # Filled on the device: copying a host int would sync
         count = torch.full((), inputs.num_labelled, dtype=torch.int64, device="cuda")
@@ -357,7 +360,14 @@ def train(config: SFTConfig | PretrainConfig):
         )
 
         with maybe_activation_offloading(config.model.ac_offloading, model):
-            out = forward(model, input_ids, position_ids, seq_lens=seq_lens, hidden_states_fn=loss_fn)
+            out = forward(
+                model,
+                input_ids,
+                position_ids,
+                seq_lens=seq_lens,
+                hidden_states_fn=loss_fn,
+                prefix_lens=prefix_lens,
+            )
 
         # Leave a NaN micro-batch out of the metrics, as out of the loss
         keep = ~torch.isnan(out["loss"].detach())

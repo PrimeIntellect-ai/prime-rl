@@ -36,6 +36,7 @@ from prime_rl.trainer.sft.system_one.loss import (
     DecisionLossInputs,
     SystemOneBatch,
     build_decision_loss_inputs,
+    build_prefix_lens,
     decision_loss,
     system_one_collate,
 )
@@ -275,6 +276,23 @@ def test_check_rendered_request_rejects_broken_renderings(input_ids, seq_lens, r
         check_rendered_request(rendered, request, vocab_size=32)
 
 
+class TwoBlockStrategy(StubStrategy):
+    """StubStrategy with a prefix in each segment; the second segment is all prefix."""
+
+    prefix_lens = [1, 6]
+
+    def render_request(self, request, max_tokens):
+        return {**super().render_request(request, max_tokens), "prefix_lens": self.prefix_lens}
+
+
+@pytest.mark.parametrize("prefix_lens", [[1], [0, 6], [5, 6], [True, 6], (1, 6), [1, 6, 1]])
+def test_check_rendered_request_rejects_broken_prefix_lens(monkeypatch, prefix_lens):
+    monkeypatch.setattr(TwoBlockStrategy, "prefix_lens", prefix_lens)
+    source = SystemOneSource(Dataset.from_list([ROW]), TwoBlockStrategy(None, CONFIG, READ_SPANS))
+    with pytest.raises(ValueError, match="prefix_lens must hold an int from 1 to its length per segment of"):
+        source._process(ROW)
+
+
 def test_process_skips_record_without_labels():
     assert _source()._process(row()) is None
 
@@ -316,7 +334,7 @@ def test_get_system_one_strategy_cls_looks_up_the_architecture(monkeypatch):
         get_system_one_strategy_cls(PretrainedConfig(architectures=["Qwen3ForCausalLM", "StubDecisionModel"]))
     with pytest.raises(ValueError, match=r"architectures \[\] do not start with one"):
         get_system_one_strategy_cls(PretrainedConfig())
-    # A class selected by an extra config file is looked up by its name
+    # A class selected by an extra config file or key is looked up by its name
     stock = PretrainedConfig(architectures=["Qwen3ForCausalLM"])
     selection = ExtraConfigSelection(type("StubDecisionModel", (), {}), {})
     assert get_system_one_strategy_cls(stock, selection) is StubStrategy
@@ -346,6 +364,17 @@ def _micro_batch(source: SystemOneSource, rows: list[dict]) -> SystemOneBatch:
 
 def _decision_loss_inputs(rows: list[dict] = [ROW, SECOND]) -> DecisionLossInputs:
     return _micro_batch(_source(), rows)["decision_loss_inputs"].to("cpu")
+
+
+def test_a_row_has_a_prefix_per_segment_and_its_padding_is_one_block():
+    source = SystemOneSource(Dataset.from_list([ROW]), TwoBlockStrategy(None, CONFIG, READ_SPANS))
+    batch = _micro_batch(source, [ROW, SECOND])
+    assert batch["seq_lens"].tolist() == [4, 6, 4, 6, 4]
+    assert batch["prefix_lens"].tolist() == [1, 6, 1, 6, 4]
+    # Without prefixes, attention is the model's own
+    assert _micro_batch(_source(), [ROW, SECOND])["prefix_lens"] is None
+    with pytest.raises(ValueError, match="for every request or for none"):
+        build_prefix_lens([4, 6, 4, 6], [{"prefix_lens": [1, 6]}, {}])
 
 
 def test_build_decision_loss_inputs_maps_reads_into_the_row():

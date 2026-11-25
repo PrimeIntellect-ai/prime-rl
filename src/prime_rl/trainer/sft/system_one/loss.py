@@ -1,6 +1,7 @@
 """The decision loss (``[loss] type = "decision"``)."""
 
 from dataclasses import dataclass, replace
+from itertools import chain
 from typing import TypedDict
 
 import torch
@@ -75,15 +76,30 @@ def build_decision_loss_inputs(sample_lens: list[int], sample_data: list[dict]) 
     )
 
 
+def build_prefix_lens(seq_lens: list[int], sample_data: list[dict]) -> Int[Tensor, "segments"] | None:
+    """The ``prefix_lens`` of one packed row's segments, which ``forward`` takes, or None without them. The padding
+    segment, which no record has, is one block."""
+    records = [record.get("prefix_lens") for record in sample_data]
+    if all(prefix_lens is None for prefix_lens in records):
+        return None
+    if any(prefix_lens is None for prefix_lens in records):
+        raise ValueError("a strategy must give prefix_lens for every request or for none")
+    prefix_lens = list(chain.from_iterable(records))
+    return torch.tensor(prefix_lens + seq_lens[len(prefix_lens) :], dtype=torch.long)
+
+
 class SystemOneBatch(Batch):
     decision_loss_inputs: DecisionLossInputs
+    prefix_lens: Int[Tensor, "packed"] | None
 
 
 def system_one_collate(samples: list[Sample]) -> SystemOneBatch:
-    """``cat_collate``, plus the micro-batch's decision-loss inputs, which replace its ``sample_data``."""
+    """``cat_collate``, plus the micro-batch's decision-loss inputs and prefix lengths, which replace its
+    ``sample_data``."""
     batch = cat_collate(samples)
     inputs = build_decision_loss_inputs(batch["sample_lens"].tolist(), batch["sample_data"])
-    return SystemOneBatch(**{**batch, "sample_data": None}, decision_loss_inputs=inputs)
+    prefix_lens = build_prefix_lens(batch["seq_lens"].tolist(), batch["sample_data"])
+    return SystemOneBatch(**{**batch, "sample_data": None}, decision_loss_inputs=inputs, prefix_lens=prefix_lens)
 
 
 def checked_option_logits(
