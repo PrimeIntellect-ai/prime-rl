@@ -89,14 +89,12 @@ def head_weights() -> dict[str, torch.Tensor]:
     return {name: tensor.to(torch.bfloat16) for name, tensor in head.items()}
 
 
-def write_release(directory: Path) -> dict[str, torch.Tensor]:
-    """Cloudflare/clef-flash's layout: a stock Qwen3.5 config.json with an untied LM head, the backbone (language model,
-    vision encoder and LM head, no MTP weights) in shards with an index, joint_head_config.json and
-    joint_head.safetensors. Returns the weights as stored."""
+def write_backbone(directory: Path) -> dict[str, torch.Tensor]:
+    """A stock Qwen3.5 config.json with an untied LM head, and the backbone (language model, vision encoder and LM
+    head, no MTP weights) in shards with an index. Returns the weights as stored."""
     directory.mkdir(parents=True, exist_ok=True)
     config = tiny_config()
     config.save_pretrained(directory)
-    (directory / "joint_head_config.json").write_text(json.dumps(JOINT_HEAD_CONFIG))
     torch.manual_seed(0)
     model = hf_modeling.Qwen3_5ForConditionalGeneration(hf_configuration.Qwen3_5Config(**config.to_dict()))
     backbone = {name: tensor.detach().to(torch.bfloat16).clone() for name, tensor in model.state_dict().items()}
@@ -107,6 +105,14 @@ def write_release(directory: Path) -> dict[str, torch.Tensor]:
         save_file(tensors, directory / file, metadata={"format": "pt"})
     index = {"metadata": {}, "weight_map": {name: file for file, tensors in shards.items() for name in tensors}}
     (directory / "model.safetensors.index.json").write_text(json.dumps(index))
+    return backbone
+
+
+def write_release(directory: Path) -> dict[str, torch.Tensor]:
+    """Cloudflare/clef-flash's layout: the backbone of a stock Qwen3.5, joint_head_config.json and
+    joint_head.safetensors. Returns the weights as stored."""
+    backbone = write_backbone(directory)
+    (directory / "joint_head_config.json").write_text(json.dumps(JOINT_HEAD_CONFIG))
     head = head_weights()
     save_file(head, directory / "joint_head.safetensors", metadata={"format": "pt"})
     tokenizer().save_pretrained(directory)

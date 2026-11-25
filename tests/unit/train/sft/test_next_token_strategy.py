@@ -10,7 +10,7 @@ import pytest
 import torch
 from datasets import Dataset
 from torch import nn
-from transformers import PretrainedConfig, PreTrainedTokenizerFast
+from transformers import PretrainedConfig
 
 from prime_rl.configs.sft import SystemOneColumnsConfig
 from prime_rl.trainer.model import ExtraConfigSelection
@@ -22,7 +22,8 @@ from prime_rl.trainer.sft.system_one.loss import build_decision_loss_inputs
 from prime_rl.trainer.sft.system_one.next_token import NextTokenStrategy
 from prime_rl.trainer.sft.system_one.record import parse_record
 from prime_rl.trainer.sft.system_one.strategies import get_system_one_strategy_cls
-from tests.unit.train.models.qwen3_5.clef_flash_release import HIDDEN, VOCAB, tiny_config, tokenizer
+from tests.unit.train.models.qwen3_5.clef_flash_release import HIDDEN, VOCAB, tiny_config
+from tests.unit.train.models.qwen3_5.lm_head_release import chat_tokenizer
 
 QUESTIONS = {
     "outage": {"type": "noul", "instructions": "Is a service down?", "criteria": {"true": "A service is down."}},
@@ -38,32 +39,11 @@ CONTENTS = [
     "Answer with the letter of one option only.",
     "Checkout fails.\n\n0: Can wait\n1: Today\nAnswer with the number of one level only.",
 ]
-# ChatML turns. With thinking off the prompt ends with an empty think block, as Qwen3.5's does in vLLM's tests
-# (tests/entrypoints/generate/structured_decisions/test_slot_strategy.py).
-CHAT_TEMPLATE = (
-    "{%- for message in messages %}"
-    "{{- '<|im_start|>' + message.role + '\\n' + message.content + '<|im_end|>\\n' }}"
-    "{%- endfor %}"
-    "{%- if add_generation_prompt %}"
-    "{{- '<|im_start|>assistant\\n' }}"
-    "{%- if enable_thinking is defined and enable_thinking is false %}"
-    "{{- '<think>\\n\\n</think>\\n\\n' }}"
-    "{%- endif %}"
-    "{%- endif %}"
-)
-# "yes" and "no" as one token each, as a noul's labels must be
-MERGES = (("y", "e"), ("ye", "s"), ("n", "o"))
 
 
 def chat(content: str) -> str:
-    """CHAT_TEMPLATE's prompt for a user turn, with thinking off."""
+    """The chat template's prompt for a user turn, with thinking off."""
     return f"<|im_start|>user\n{content}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
-
-
-def chat_tokenizer(merges: tuple[tuple[str, str], ...] = MERGES) -> PreTrainedTokenizerFast:
-    tokens = tokenizer(merges)
-    tokens.chat_template = CHAT_TEMPLATE
-    return tokens
 
 
 def row(state=STATE, questions=QUESTIONS, label=None) -> dict:
