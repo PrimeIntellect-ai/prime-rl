@@ -24,13 +24,21 @@ offload = "full"
 [trainer.model.moe.compute]
 type = "deepgemm_fp8"
 
+# TP8: DEP8 needs ~100 GiB of KV per rank for one 32k request. The plugin supports only a bf16 KV
+# cache (~0.9 MB per token), so KV room is the limit: max_num_seqs and the step budget reserve memory
+# that comes out of the KV cache. Under a synthetic agentic load (one node), these settings decode
+# ~2.5k tok/s from 128 to 192 sessions (KV 201k tokens); swe-rl.toml's 32 seqs / 2048 tokens at 0.72
+# peaked at 1.4k, and 256 seqs / 8192 tokens collapsed above 128 sessions. 0.85 is untested with the
+# RL weight update; lower it if the first update runs out of memory.
 [inference.vllm]
 tensor_parallel_size = 8
 enable_expert_parallel = true
 dtype = "bfloat16"
 quantization = "fp8_per_block"
-gpu_memory_utilization = 0.72
-# swe-rl.toml's limits for long SWE prefills. math-rl.toml runs 64 sequences with 1024-token chunks
-# and async scheduling for short math prompts.
-max_num_seqs = 32
-max_num_batched_tokens = 2048
+gpu_memory_utilization = 0.85
+max_num_seqs = 128
+max_num_batched_tokens = 4096
+
+# ~160 sessions per inference node before turn latency climbs.
+[orchestrator.concurrency]
+max_inflight = 960

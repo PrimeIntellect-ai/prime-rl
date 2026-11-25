@@ -73,6 +73,15 @@ Decode reads every sequence's KV cache each step, and Muse has 2 KV heads: TP ab
 GPUs read the same heads, and TP8 adds two 8-way all-reduces per layer. More, smaller engines with
 many requests in flight decode much faster per GPU.
 
+
+Inkling 2 Small (TP8 + EP, online FP8 experts, 32k window, one node, synthetic agentic load):
+
+| max_num_seqs / batched tokens / GPU memory | KV cache | 128 sessions | 192 sessions |
+|---|---|---|---|
+| 32 / 2,048 / 0.72 (source config) | 242k tokens | 1.4k tok/s, 23 s | – |
+| 256 / 8,192 / 0.85 | 97k tokens | 2.4k tok/s, 10 s | collapses (1.0k at 256) |
+| **128 / 4,096 / 0.85** | 201k tokens | 2.5k tok/s, 10 s | 2.5k tok/s, 16 s |
+
 ## Fit a trainer
 
 `fake.toml` runs the trainer alone on fake 256k samples with random weights and balanced routing:
