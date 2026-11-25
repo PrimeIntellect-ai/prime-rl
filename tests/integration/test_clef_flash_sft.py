@@ -1,18 +1,20 @@
+import base64
 import json
 import re
+from io import BytesIO
 from pathlib import Path
 from typing import Callable
 
 import pytest
+from PIL import Image
 from safetensors.torch import load_file
 
 from tests.conftest import ProcessResult
-from tests.unit.train.models.qwen3_5.clef_flash_release import write_release
+from tests.unit.train.models.qwen3_5.clef_flash_release import write_processor, write_release
 from tests.utils import convert_checkpoint, strip_escape_codes
 
 pytestmark = [pytest.mark.slow, pytest.mark.gpu]
 
-RUN_NAME = "clef-flash-sft"
 TIMEOUT = 600  # 10 minutes
 QUESTIONS = {
     "outage": {"type": "noul", "instructions": "Is a service down?", "criteria": {"true": "A service is down."}},
@@ -21,14 +23,31 @@ QUESTIONS = {
 }
 
 
-@pytest.fixture(scope="module")
-def run_dir(output_dir: Path) -> Path:
-    return output_dir / RUN_NAME
+def image(i: int) -> str:
+    """A small image as a data URL."""
+    buffer = BytesIO()
+    Image.new("RGB", (64, 64 + 32 * (i % 3)), (i % 256, 128, 0)).save(buffer, "PNG")
+    return f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode()}"
+
+
+@pytest.fixture(scope="module", params=["text", "images"])
+def images(request: pytest.FixtureRequest) -> bool:
+    return request.param == "images"
 
 
 @pytest.fixture(scope="module")
-def wandb_name(branch_name: str) -> str:
-    return f"test-clef-flash-sft:{branch_name}"
+def run_name(images: bool) -> str:
+    return "clef-flash-sft-images" if images else "clef-flash-sft"
+
+
+@pytest.fixture(scope="module")
+def run_dir(output_dir: Path, run_name: str) -> Path:
+    return output_dir / run_name
+
+
+@pytest.fixture(scope="module")
+def wandb_name(branch_name: str, run_name: str) -> str:
+    return f"test-{run_name}:{branch_name}"
 
 
 @pytest.fixture(scope="module")
@@ -36,13 +55,15 @@ def release(output_dir: Path) -> Path:
     """A tiny Clef-Flash release, laid out as Cloudflare/clef-flash is."""
     path = output_dir / "clef-flash-release"
     write_release(path)
+    write_processor(path)
     return path
 
 
 @pytest.fixture(scope="module")
-def records(output_dir: Path) -> Path:
-    """System One records, some questions labelled hard, some soft, some not at all."""
-    path = output_dir / "clef-flash-records"
+def records(output_dir: Path, images: bool) -> Path:
+    """System One records, some questions labelled hard, some soft, some not at all. With ``images``, half of them have
+    one or two images."""
+    path = output_dir / f"clef-flash-records-{'images' if images else 'text'}"
     path.mkdir(parents=True, exist_ok=True)
     rows = [
         {
@@ -51,6 +72,7 @@ def records(output_dir: Path) -> Path:
             "questions": json.dumps(QUESTIONS),
             "label": json.dumps({"outage": i % 2 == 0, "urgency": i % 3}),
             "soft_label": json.dumps({"team": {"technical": 0.75, "billing": 0.25}} if i % 4 else {}),
+            **({"images": json.dumps([image(i)] * (i % 4 % 3))} if images else {}),
         }
         for i in range(64)
     ]
@@ -63,6 +85,8 @@ def sft_process(
     run_process: Callable[..., ProcessResult],
     release: Path,
     records: Path,
+    images: bool,
+    run_name: str,
     wandb_project: str,
     wandb_name: str,
     output_dir: Path,
@@ -74,6 +98,7 @@ def sft_process(
         "sft",
         "@",
         "configs/ci/integration/clef-flash-sft/start.toml",
+        *(["@", "configs/ci/integration/clef-flash-sft/images.toml"] if images else []),
         "--model.name",
         release.as_posix(),
         "--data.source",
@@ -90,7 +115,7 @@ def sft_process(
         "--output-dir",
         output_dir.as_posix(),
         "--run.name",
-        RUN_NAME,
+        run_name,
     ]
     return run_process(cmd, timeout=TIMEOUT)
 

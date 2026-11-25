@@ -1,0 +1,3 @@
+# The same run on records with images:
+#   uv run sft @ configs/ci/integration/clef-flash-sft/start.toml @ configs/ci/integration/clef-flash-sft/images.toml
+[model.vlm]
