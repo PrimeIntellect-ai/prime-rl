@@ -595,7 +595,7 @@ def build_trainer_model(model_dir: Path, case: Case) -> torch.nn.Module:
     """The trainer's model, unsharded on one GPU, with fp32 master weights."""
     config = ModelConfig(name=model_dir.as_posix(), compile=None, ac=None, **case.model)
     resolve_auto_attn(config)
-    model = get_model(config, device=torch.device("meta"), dtype=torch.float32)
+    model = get_model(config, dtype=torch.float32)
     apply_model_fusions(model, config.fusions.enabled)
     inject_prime_lm_head(model, chunk_size=config.fused_lm_head_token_chunk_size)
     model.to_empty(device="cuda")
@@ -795,9 +795,11 @@ def test_matches_vllm(
     case.config.save_pretrained(tmp_path)
     model = build_trainer_model(tmp_path, case)
     state_dict = broadcast_state_dict(model)
-    # FSDP computes in bf16 from the fp32 master weights
+    # FSDP computes in bf16 from the fp32 master weights, except in the model's fp32 modules
+    fp32_params = {param for module in model.fp32_modules() for param in module.parameters()}
     for param in model.parameters():
-        param.data = param.data.bfloat16()
+        if param not in fp32_params:
+            param.data = param.data.bfloat16()
     moe = bool(moe_routers(model))
     vllm, vllm_routes = vllm_logprobs(tmp_path, case, state_dict, rows, moe, plugin_configs)
 
