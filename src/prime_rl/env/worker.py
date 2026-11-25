@@ -16,6 +16,7 @@ from verifiers.v1.episode import Episode
 from verifiers.v1.task import Task
 from verifiers.v1.utils.loaders import load_environment
 
+from prime_rl.env.algorithm import ScoreClient
 from prime_rl.env.encoding import pack
 from prime_rl.env.heads import episode_head
 from prime_rl.env.types import (
@@ -25,8 +26,12 @@ from prime_rl.env.types import (
     HealthResponse,
     RunRequest,
     RunResponse,
+    SampleToScore,
+    ScoreRequest,
 )
 from prime_rl.monitors.file.traces.index import index_record
+from prime_rl.orchestrator.algo.base import iter_trainable_traces
+from prime_rl.transports.batch.types import PAYLOAD_INFO_KEY
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -48,6 +53,7 @@ class EpisodeHook(Protocol):
 
 
 _episode_hook: EpisodeHook | None = None
+_algorithm_worker: str | None = None
 
 LATE_CANCEL_SECONDS = 10.0
 """How long a delivered episode stays discardable: a client whose caller cancels the run
@@ -55,6 +61,13 @@ after the reply left drops the reply and sends a cancel right away."""
 
 _SHUTDOWN_DRAIN_SECONDS = 5.0
 """Leave time for shared-resource teardown before the pool's 10-second kill deadline."""
+
+
+def set_algorithm_worker(address: str | None) -> None:
+    """The address of the replica's algorithm worker, which scores the samples the episode
+    hook keeps (`prime_rl.env.algorithm`)."""
+    global _algorithm_worker
+    _algorithm_worker = address
 
 
 def set_episode_hook(hook: EpisodeHook | None) -> None:
@@ -148,8 +161,9 @@ class EnvWorker:
         self._running: dict[str, asyncio.Task] = {}
         # Episodes the hook kept, by run request, until their reply is sent.
         self._kept: dict[bytes, tuple[EpisodeHook, Episode]] = {}
-        # Train sources' algorithms by config and policy endpoint, bound to this worker.
+        # Train sources' algorithms by config, for their rollout-local work on episodes.
         self._algorithms: dict[str, Algorithm] = {}
+        self._scorer = ScoreClient(_algorithm_worker) if _algorithm_worker is not None else None
         self._delivered: dict[str, tuple[float, EpisodeHook, Episode]] = {}
         """Recently delivered kept episodes, oldest first, for a cancel that arrives late."""
         self.ctx = zmq.asyncio.Context()
@@ -173,18 +187,33 @@ class EnvWorker:
         return self.task_cls(data, self.env.config.taskset.task)
 
     def _algorithm(self, req: RunRequest) -> Algorithm:
-        """The train source's algorithm, built and bound once per config and policy endpoint."""
+        """The train source's algorithm, built once per config."""
         from pydantic import TypeAdapter
 
         from prime_rl.configs.algorithm import AlgoConfig
         from prime_rl.orchestrator.algo import build_algorithm
 
-        key = json.dumps([req.train.algo, req.client.model_dump(mode="json"), req.model], sort_keys=True)
+        key = json.dumps(req.train.algo, sort_keys=True)
         if key not in self._algorithms:
-            algorithm = build_algorithm(TypeAdapter(AlgoConfig).validate_python(req.train.algo), clients=None)
-            algorithm.bind(req.client, req.model)
-            self._algorithms[key] = algorithm
+            config = TypeAdapter(AlgoConfig).validate_python(req.train.algo)
+            self._algorithms[key] = build_algorithm(config, clients=None)
         return self._algorithms[key]
+
+    async def _score(self, req: RunRequest, algorithm: Algorithm, episode: Episode) -> None:
+        """Have the replica's algorithm worker score the samples kept for the episode."""
+        if self._scorer is None:
+            raise RuntimeError(
+                f"{type(algorithm).__name__} scores samples in the replica's algorithm worker: "
+                "serve the env with prime-rl's `env-worker-pool` entrypoint"
+            )
+        samples = [
+            SampleToScore(key=reference["id"], context=algorithm.sample_context(episode, trace))
+            for _, trace in iter_trainable_traces([episode])
+            for reference in trace.info[PAYLOAD_INFO_KEY]["branches"].values()
+        ]
+        if samples:
+            request = ScoreRequest(train=req.train, client=req.client, model=req.model, samples=samples)
+            await self._scorer.score(request)
 
     async def _run(self, req: RunRequest, client_id: bytes, request_id: bytes) -> RunResponse:
         # No client is built or cached here — each rollout constructs its own from
@@ -204,7 +233,7 @@ class EnvWorker:
             episode = await self.env.run_slot(slot, ctx, self._gate, on_trace=streamer.watch)
             if hook is not None and req.train is not None:
                 algorithm = self._algorithm(req)
-                # Rollout-local scoring (reference logprobs, observation weights) annotates the
+                # Rollout-local work on the trace graph (observation weights) annotates the
                 # nodes the hook keeps.
                 await algorithm.finalize_episode(episode)
                 # Before the final flush, so what the hook writes to the traces streams.
@@ -215,7 +244,10 @@ class EnvWorker:
                 except asyncio.CancelledError:
                     keeping.abandon()
                     raise
+                # From here, a failed or cancelled run discards what the hook kept.
                 self._kept[request_id] = (hook, episode)
+                if algorithm.scores_samples:
+                    await self._score(req, algorithm, episode)
         if req.run is not None:
             episode.record_run(req.run)
             for trace in episode.traces:

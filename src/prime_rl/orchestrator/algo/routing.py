@@ -33,22 +33,6 @@ def assign_rl_weight(trace: TraceHead, value: float) -> None:
     trace.info[RL_WEIGHT_KEY] = float(value)
 
 
-def assign_reference_logprobs(branch: vf.Branch, values: list[float] | np.ndarray) -> None:
-    """Project branch-aligned reference logprobs onto sampled graph nodes."""
-    if len(values) != len(branch.token_ids):
-        raise ValueError(
-            f"reference logprobs must align with branch tokens: got {len(values)}, expected {len(branch.token_ids)}"
-        )
-    values = np.asarray(values, dtype=np.float32)
-    offset = 0
-    for node in branch.nodes:
-        end = offset + len(node.token_ids)
-        mask = np.asarray(node.mask, dtype=bool)
-        if mask.any() and node.reference_logprobs is None:
-            node.reference_logprobs = values[offset:end][mask]
-        offset = end
-
-
 def is_trainable(trace: TraceHead) -> bool:
     """Whether the trace's sampled tokens carry nonzero RL credit."""
     return bool(trace_advantage(trace))

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
-from prime_rl.env.heads import EpisodeHead, TraceHead
 from prime_rl.orchestrator.clients import InferenceClient, connect_frozen_client
+
+if TYPE_CHECKING:
+    from prime_rl.env.heads import EpisodeHead, TraceHead
 
 
 def has_sampled_tokens(trace: vf.Trace | TraceHead) -> bool:
@@ -35,11 +39,13 @@ def iter_trainable_traces(episodes: list[vf.Episode] | list[EpisodeHead]):
 
 
 class Algorithm:
-    """Assign training annotations directly to verifier episodes.
+    """An algorithm's training signal, computed where each part's data lives.
 
-    Override :meth:`score_episode` for rollout-local, per-token work (it runs in the env
-    worker that ran the rollout, before the worker keeps the rollout's training samples) and
-    :meth:`score_group` for cohort-relative credit (on the orchestrator, one advantage per trace).
+    - :meth:`score_episode`: rollout-local work on the trace graph (loss weights), in the env
+      worker that ran the rollout, before it keeps the rollout's training samples.
+    - :meth:`score_sample`: model-calling work on a kept sample (reference logprobs), in the
+      replica's algorithm worker, with :meth:`sample_context` gathered in the env worker.
+    - :meth:`score_group`: cohort-relative credit on the orchestrator, one advantage per trace.
     """
 
     def __init__(self, config: AlgoConfig, clients: InferenceClient):
@@ -51,8 +57,21 @@ class Algorithm:
         """Connect resources owned by the algorithm, on the orchestrator."""
 
     def bind(self, client: vf.ClientConfig, model: str) -> None:
-        """Connect what :meth:`score_episode` needs in an env worker, given the client and model
-        the worker's rollouts sample from."""
+        """Connect what :meth:`score_sample` needs in an algorithm worker, given the client and
+        model the replica's rollouts sample from."""
+
+    def sample_context(self, episode: vf.Episode, trace: vf.Trace) -> dict:
+        """What :meth:`score_sample` needs of a trace beyond its samples' tokens."""
+        return {}
+
+    async def score_sample(self, token_ids: np.ndarray, sampled: np.ndarray, context: dict) -> np.ndarray | None:
+        """Reference logprobs of a kept sample's tokens (0.0 on tokens the policy did not
+        sample), or None for an algorithm that scores no samples."""
+        return None
+
+    @property
+    def scores_samples(self) -> bool:
+        return type(self).score_sample is not Algorithm.score_sample
 
     async def connect(self, reference: FrozenModelConfig) -> InferenceClient:
         """Connect and track the frozen model pool owned by this algorithm."""
@@ -60,8 +79,8 @@ class Algorithm:
         return self.connected
 
     async def score_episode(self, episode: vf.Episode) -> None:
-        """Assign rollout-local, per-token annotations (reference logprobs, loss weights) to the
-        nodes of one finalized episode, in the env worker that ran it."""
+        """Assign rollout-local, per-token annotations (loss weights) to the nodes of one
+        finalized episode, in the env worker that ran it."""
 
     async def score_group(self, episodes: list[EpisodeHead]) -> None:
         """Credit a finalized cohort: one advantage (``assign_advantage``) and optionally one rl

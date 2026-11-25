@@ -1,6 +1,6 @@
 from typing import ClassVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.trace import RunInfo
@@ -44,6 +44,25 @@ class TrainRequest(BaseModel):
 
     algo: dict
     """The source's dumped `AlgoConfig`."""
+
+
+class SampleToScore(BaseModel):
+    key: str
+    """The sample's id in the replica's store."""
+    context: dict = Field(default_factory=dict)
+    """What the algorithm's scoring needs beyond the sample's tokens (`Algorithm.sample_context`)."""
+
+
+class ScoreRequest(BaseRequest):
+    """Score kept samples with the source's algorithm (`Algorithm.score_sample`): sent by an
+    env worker to its replica's algorithm worker, with the client and model its rollout
+    sampled from."""
+
+    method: ClassVar[str] = "score"
+    train: TrainRequest
+    client: ClientConfig
+    model: str
+    samples: list[SampleToScore]
 
 
 class RecordRequest(BaseModel):

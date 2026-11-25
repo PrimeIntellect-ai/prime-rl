@@ -148,16 +148,17 @@ At runtime, each env's `TrainEnv` (`prime_rl.orchestrator.envs`) resolves the al
 | `max_rl` | `MaxRLAlgorithm` | `score_group`: mean-normalized group credit |
 | `rae` | `RAEAlgorithm` | `score_group`: per-agent EMA-baseline credit |
 | `hierarchical_grpo` | `HierarchicalGRPOAlgorithm` | `score_group`: GRPO baseline per episode for solvers, per group for the proposer |
-| `opd` | `OPDAlgorithm` | `score_episode`: own-context prefill under the teacher |
-| `opsd` | `OPSDAlgorithm` | `score_episode`: demo-conditioned prefill under the live policy |
+| `opd` | `OPDAlgorithm` | `score_sample`: own-context prefill under the teacher |
+| `opsd` | `OPSDAlgorithm` | `score_sample`: demo-conditioned prefill under the live policy |
 | `sft` | `SFTDistillAlgorithm` | no credit assignment; CE on sampled tokens |
 
 Algorithms operate on native verifier artifacts and annotate their message graphs directly:
 
-- `async score_episode(episode)` — rollout-local, per-token scoring (reference logprobs, loss weights), in the env worker that ran the episode, before it keeps the episode's training samples. `bind(client, model)` connects what it needs there.
+- `async score_episode(episode)` — rollout-local, per-token work on the trace graph (loss weights), in the env worker that ran the episode, before it keeps the episode's training samples.
+- `async score_sample(token_ids, sampled, context)` — model-calling scoring of one kept sample (reference logprobs), in the replica's algorithm worker, retried and bounded by `[serve.scoring]`. `sample_context(episode, trace)` gathers what it needs of the trace in the env worker; `bind(client, model)` connects its models in the algorithm worker.
 - `async score_group(episodes)` — group-relative scoring after the cohort completes.
 
-The env worker calls `score_episode` through `finalize_episode`, which skips episodes with no trainable sampled tokens, then keeps each trainable branch's per-token columns (tokens, masks, logprobs, policy versions, loss weights, reference logprobs) as a sample. The orchestrator only references the samples: it calls `score_group` once a group completes. Credit is one advantage per trace (`assign_advantage`), plus an optional rl loss weight (`assign_rl_weight`), both kept in `trace.info`. The trainer fetches each admitted sample and spreads the advantage and rl weight over its sampled tokens.
+The env worker calls `score_episode` through `finalize_episode`, which skips episodes with no trainable sampled tokens, then keeps each trainable branch's per-token columns (tokens, masks, logprobs, policy versions, loss weights) as a sample in its replica's algorithm worker, which runs `score_sample` on it. The orchestrator only references the samples: it calls `score_group` once a group completes. Credit is one advantage per trace (`assign_advantage`), plus an optional rl loss weight (`assign_rl_weight`), both kept in `trace.info`. The trainer fetches each admitted sample and spreads the advantage and rl weight over its sampled tokens.
 
 The algorithm config states which loss component its action tokens feed (`action_loss_type`, a class variable on each config class). Every class is constructed with its algorithm config plus the one host-owned resource it can't rebuild — the live policy clients (`self.clients`). Everything else an algorithm needs it builds from its own config in `setup()`: `opd` connects its frozen `teacher`; `opsd` builds the renderer for its demonstration hint from the policy's renderer config and tokenizer. Writing your own algorithm is subclassing `Algorithm` and overriding the hooks its signal needs (see [Authoring an Algorithm](#authoring-an-algorithm)).
 
@@ -497,13 +498,13 @@ class MyAlgorithm(Algorithm):
             assign_advantage(trace, advantage)
 ```
 
-Add a typed `MyAlgoConfig` to `prime_rl.configs.algorithm` and its discriminated union, then register `"my_algo": MyAlgorithm` in `ALGORITHM_CLASSES`. Pick `score_episode` for rollout-local work or model calls, and `score_group` for group-relative credit. `assign_advantage` credits every sampled token on the trace's trainable branches with one value.
+Add a typed `MyAlgoConfig` to `prime_rl.configs.algorithm` and its discriminated union, then register `"my_algo": MyAlgorithm` in `ALGORITHM_CLASSES`. Pick `score_episode` for rollout-local work on the trace graph, `score_sample` for model calls on a rollout's samples, and `score_group` for group-relative credit. `assign_advantage` credits every sampled token on the trace's trainable branches with one value.
 
 Curriculum admission and metrics read each trace's advantage after group scoring.
 
 ### Reference Scoring
 
-`OPDAlgorithm` / `OPSDAlgorithm` do their model I/O in `score_episode`: as each episode finishes, the env worker that ran it queries a reference and attaches sampled-token reference logprobs to its graph nodes, which it keeps with the episode's samples:
+`OPDAlgorithm` / `OPSDAlgorithm` do their model I/O in `score_sample`: as each episode finishes, its replica's algorithm worker queries a reference for each kept sample and keeps the sampled-token reference logprobs with it:
 
 - `opd` — score each sample's own context under the `teacher` (a frozen [model reference](#model-references)) via prefill; fills `ref_logprobs` for the `ref_kl` loss component (on-policy distillation). The `teacher` is typed `FrozenModelConfig`, so `"policy"` isn't representable (the KL would be identically zero).
 - `opsd` — SDFT: prepend an expert demonstration as a leading system message (`template`, with a `{demonstration}` placeholder) and score the sample under that demo-conditioned context. The sample is scored verbatim (`hint_block + token_ids`, slicing the hint's logprobs back off), so the join is BPE-clean and it's robust to tool/multimodal prompts and any number of turns. The scoring reference *is* the live policy — self-distillation names no teacher. opsd tokenizes the hint block with the policy's renderer (`orchestrator.renderer`) and tokenizer. The demonstration is read from the example's `info[demo_key]`, falling back to a top-level rollout field of the same name (e.g. `answer`).
