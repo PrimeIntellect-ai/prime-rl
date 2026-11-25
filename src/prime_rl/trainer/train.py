@@ -5,7 +5,6 @@ import math
 import time
 import asyncio
 from datetime import timedelta
-from functools import partial
 from pathlib import Path
 
 # Import environment before any other imports
@@ -52,7 +51,8 @@ from prime_rl.trainer.pretrain.data import (
 )
 from prime_rl.trainer.sft.data import SFTDataset, load_sft_dataset, setup_sft_dataset
 from prime_rl.trainer.sft.system_one.data import check_records
-from prime_rl.trainer.sft.system_one.loss import DECISION_METRICS, decision_loss, system_one_collate
+from prime_rl.trainer.sft.system_one.forward import decision_forward
+from prime_rl.trainer.sft.system_one.loss import DECISION_METRICS, system_one_collate
 from prime_rl.trainer.sft.system_one.strategies import get_system_one_strategy_cls
 from prime_rl.trainer.val import Validation
 from prime_rl.trainer.utils import (
@@ -176,6 +176,8 @@ def train(config: SFTConfig | PretrainConfig):
     strategy_cls = raw_datasets = val_raw_datasets = None
     if system_one:
         strategy_cls = get_system_one_strategy_cls(model_files.config, model_files.selection)
+        if config.model.vlm is not None and "image" not in strategy_cls.modalities:
+            raise ValueError(f"[model.vlm] is set, but {strategy_cls.__name__} reads no images. Remove [model.vlm].")
         raw_datasets = load_sft_dataset(config.data)
         record_sources = [(raw_datasets, source) for source in config.data.source]
         if config.val is not None:
@@ -185,7 +187,13 @@ def train(config: SFTConfig | PretrainConfig):
         # Each rank parses its share of every source's records
         for datasets, source in record_sources:
             check_records(
-                datasets[source.name], source.columns, world.rank, world.world_size, source.name, source.split
+                datasets[source.name],
+                source.columns,
+                world.rank,
+                world.world_size,
+                source.name,
+                source.split,
+                takes_images=config.model.vlm is not None,
             )
         logger.info(f"Checked the System One records in {format_time(time.perf_counter() - check_start)}")
 
@@ -194,7 +202,11 @@ def train(config: SFTConfig | PretrainConfig):
     from_checkpoint = config.model.init.type == "pretrained" and is_checkpoint_step_dir(config.model.name)
     loading_from_ckpt_later = checkpoint_step is not None or from_checkpoint
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
-    strategy = strategy_cls(tokenizer, model.config) if strategy_cls is not None else None
+    strategy = None
+    if strategy_cls is not None:
+        # Only a strategy that reads images gets the processor
+        processors = () if config.model.vlm is None else (processor,)
+        strategy = strategy_cls(tokenizer, model.config, *processors)
 
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
@@ -339,24 +351,12 @@ def train(config: SFTConfig | PretrainConfig):
     def compute_decision_loss(micro_batch: dict, stats: TensorStats) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass returning (loss_sum, labelled_count). Metrics go to ``stats``."""
         assert stats is not None, "the decision loss logs its metrics"
-        input_ids = micro_batch["input_ids"].to("cuda", non_blocking=True)
-        position_ids = micro_batch["position_ids"].to("cuda", non_blocking=True)
-        seq_lens = micro_batch["seq_lens"].to("cuda", non_blocking=True)
-        inputs = micro_batch["decision_loss_inputs"].to("cuda")
         # Filled on the device: copying a host int would sync
-        count = torch.full((), inputs.num_labelled, dtype=torch.int64, device="cuda")
-        # Bound in a partial, so FSDP does not cast the float32 targets to bf16 as it does forward inputs
-        loss_fn = partial(
-            decision_loss,
-            model,
-            strategy=strategy,
-            inputs=inputs,
-            input_ids=input_ids,
-            brier_weight=config.loss.brier_weight,
-        )
-
+        count = torch.full((), micro_batch["decision_loss_inputs"].num_labelled, dtype=torch.int64, device="cuda")
         with maybe_activation_offloading(config.model.ac_offloading, model):
-            out = forward(model, input_ids, position_ids, seq_lens=seq_lens, hidden_states_fn=loss_fn)
+            out = decision_forward(
+                model, micro_batch, strategy=strategy, brier_weight=config.loss.brier_weight, device="cuda"
+            )
 
         # Leave a NaN micro-batch out of the metrics, as out of the loss
         keep = ~torch.isnan(out["loss"].detach())

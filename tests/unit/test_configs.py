@@ -1465,7 +1465,6 @@ def test_decision_loss_needs_system_one_data(data):
         ({"model": {"lora": {}}}, r"not supported with \[model.lora\]"),
         ({"eval": {"source": [{"env": {"taskset": {"id": "harbor"}}}]}}, r"not supported with \[eval\]"),
         ({"model": {"cp": 2}}, r"context parallelism \(model.cp > 1\) yet: it is a planned follow-up"),
-        ({"model": {"vlm": {}}}, r"\[model.vlm\] yet: it is a planned follow-up"),
         ({"renderer": {"name": "default"}}, r"\[renderer\] is not used"),
     ],
 )
@@ -1473,6 +1472,11 @@ def test_system_one_data_refuses_what_decision_models_do_not_support(config, mat
     data = {"type": "system_one", **SYSTEM_ONE_DATA}
     with pytest.raises(ValidationError, match=match):
         SFTConfig.model_validate({"data": data, **config})
+
+
+def test_system_one_data_takes_images_with_a_vlm():
+    data = {"type": "system_one", **SYSTEM_ONE_DATA, "micro_batch_size": 1}
+    assert SFTConfig.model_validate({"data": data, "model": {"vlm": {}}}).model.vlm is not None
 
 
 def test_chat_val_data_without_type_stays_chat(tmp_path):

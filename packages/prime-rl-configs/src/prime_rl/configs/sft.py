@@ -156,6 +156,10 @@ class SystemOneColumnsConfig(BaseConfig):
     soft_label: str = "soft_label"
     """Column with soft labels as JSON text: question id -> option id -> probability. Used over the hard label."""
 
+    images: str = "images"
+    """Column with the images shown with the state, as JSON text: a list of base64 data URLs. They need ``[model.vlm]``
+    and a model whose strategy reads images."""
+
 
 class SystemOneSourceConfig(HFSourceConfig):
     """One ``(dataset, subset, split)`` of System One records."""
@@ -283,11 +287,6 @@ class SFTConfig(SupervisedTrainerConfig):
             raise ValueError(
                 'data.type = "system_one" does not support context parallelism (model.cp > 1) yet: it is a planned '
                 "follow-up. Set model.cp = 1."
-            )
-        if self.model.vlm is not None:
-            raise ValueError(
-                'data.type = "system_one" does not support [model.vlm] yet: it is a planned follow-up. Remove '
-                "[model.vlm]."
             )
         # Compare with the default: a resolved config writes it out
         if self.renderer != AutoRendererConfig():
