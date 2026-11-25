@@ -65,14 +65,15 @@ class Progress:
 class ModelFiles:
     """What a checkpoint step directory holds besides the weights, so that it loads as a model name: the model's
     config.json, the tokenizer, a VLM's processor, the generation config and an extra config file that selects its
-    class."""
+    class. A key that selects its class is part of config.json."""
 
     config: PretrainedConfig
     tokenizer: PreTrainedTokenizerBase
     processor: ProcessorMixin | None
     generation_config: GenerationConfig | None
     selection: ExtraConfigSelection | None = None
-    """The class an extra config file next to config.json selects, with the file's content, if any."""
+    """The class an extra config file next to config.json or one of its keys selects, with the file's content or the
+    key's value, if any."""
 
     def save(self, directory: Path) -> None:
         directory.mkdir(parents=True, exist_ok=True)
@@ -83,7 +84,7 @@ class ModelFiles:
         if self.processor is not None:
             self.processor.save_pretrained(directory)
         self.tokenizer.save_pretrained(directory)
-        if self.selection is not None:
+        if self.selection is not None and self.selection.cls.extra_config_file is not None:
             path = directory / self.selection.cls.extra_config_file
             path.write_text(json.dumps(self.selection.content, indent=2) + "\n")
 
@@ -140,7 +141,7 @@ def setup_model_files(
 ) -> ModelFiles:
     generation_config = load_generation_config(config.name)
     model_config = AutoConfig.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
-    selection = select_by_extra_config(model_config.model_type, model_config.architectures, config.name)
+    selection = select_by_extra_config(model_config.to_dict(), config.name)
     return ModelFiles(model_config, tokenizer, processor, generation_config, selection)
 
 

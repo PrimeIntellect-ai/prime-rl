@@ -7,9 +7,9 @@ import shutil
 import sys
 import time
 import types
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
-from typing import NamedTuple, cast
+from typing import Any, NamedTuple, cast
 
 # Disable transformers hub kernel interception. Installed hub kernels can otherwise replace
 # modules with implementations that have incompatible CUDA requirements.
@@ -371,29 +371,38 @@ def read_extra_config(model_name: str, file: str) -> dict | None:
 
 
 class ExtraConfigSelection(NamedTuple):
-    """A class an extra config file selects, and the file's content."""
+    """A class an extra config file or a config.json key selects, and the file's content or the key's value."""
 
     cls: type[PreTrainedModelPrimeRL]
-    content: dict
+    content: Any
 
 
-def select_by_extra_config(
-    model_type: str | None, architectures: list[str] | None, model_name: str
-) -> ExtraConfigSelection | None:
-    """The listed class that an extra config file next to ``model_name``'s config.json (``model_type``,
-    ``architectures``) selects, with the file's content, or None."""
+def select_by_extra_config(config_dict: Mapping[str, Any], model_name: str) -> ExtraConfigSelection | None:
+    """The listed class that the config.json of ``model_name`` (``config_dict``) selects, by an extra config file next
+    to it or by one of its keys that is not null, with the file's content or the key's value, or None."""
     classes = get_selected_by_extra_config()
-    architectures = architectures or []
+    architectures = config_dict.get("architectures") or []
     for cls in classes:
         if cls.__name__ in architectures:
+            by_file = cls.extra_config_file is not None
+            selector = f"{cls.extra_config_file} next to" if by_file else f"the key {cls.extra_config_key} of"
             raise ValueError(
-                f"The config.json of {model_name} names {cls.__name__}, which is selected by {cls.extra_config_file} "
-                f"next to a config.json with the architecture {cls.stock_architecture}"
+                f"The config.json of {model_name} names {cls.__name__}, which is selected by {selector} a config.json "
+                f"with the architecture {cls.stock_architecture}"
             )
-    for cls in classes:
-        if cls.stock_model_type == model_type and architectures == [cls.stock_architecture]:
+    stock = [
+        cls
+        for cls in classes
+        if cls.stock_model_type == config_dict.get("model_type") and architectures == [cls.stock_architecture]
+    ]
+    # A file selects before a key, as in vLLM
+    for cls in sorted(stock, key=lambda cls: cls.extra_config_file is None):
+        if cls.extra_config_file is not None:
             content = read_extra_config(model_name, cls.extra_config_file)
-            return None if content is None else ExtraConfigSelection(cls, content)
+        else:
+            content = config_dict.get(cls.extra_config_key)
+        if content is not None:
+            return ExtraConfigSelection(cls, content)
     return None
 
 
@@ -474,8 +483,9 @@ def get_model(config: ModelConfig, dtype: torch.dtype = torch.bfloat16) -> nn.Mo
         if getattr(target_config, "layer_types", None) is not None:
             target_config.layer_types = target_config.layer_types[:num_hidden_layers]
 
-    selection = select_by_extra_config(model_config.model_type, model_config.architectures, config.name)
-    if selection is not None:
+    selection = select_by_extra_config(model_config.to_dict(), config.name)
+    # The config already holds a key's value
+    if selection is not None and selection.cls.extra_config_file is not None:
         setattr(model_config, selection.cls.extra_config_attr, selection.content)
 
     custom_vlm_cls = get_custom_vlm_cls(model_config)

@@ -25,9 +25,13 @@ from tests.unit.train.models.extra_config_stub import (
     EXTRA_CONFIG,
     EXTRA_CONFIG_ATTR,
     EXTRA_CONFIG_FILE,
+    EXTRA_CONFIG_KEY,
+    KEY_VALUE,
     HeadStub,
+    KeyStub,
     load_like_the_trainer,
     register,
+    write_config_key,
     write_stub,
 )
 
@@ -419,15 +423,18 @@ def test_convert_exports_a_run_checkpoint_end_to_end(tmp_path, exporter, monkeyp
     assert quantized.keys() - {f"{name}.weight_scale_inv" for name in scaled} == tensors.keys()
 
 
-def save_stub_run(tmp_path) -> tuple[Path, dict[str, torch.Tensor]]:
-    """A run of the registered stub from ``tmp_path / "model"``: its step directory and its weights."""
+def save_stub_run(tmp_path, by_key: bool = False) -> tuple[Path, dict[str, torch.Tensor]]:
+    """A run of the registered stub from ``tmp_path / "model"``, ``KeyStub`` with ``by_key``: its step directory and
+    its weights."""
     model_dir = tmp_path / "model"
-    write_stub(model_dir)
+    write_stub(model_dir, extra_config=None if by_key else EXTRA_CONFIG)
+    if by_key:
+        write_config_key(model_dir)
     config_dir = tmp_path / "run" / "configs" / "latest" / "resolved"
     config_dir.mkdir(parents=True)
     (config_dir / "sft.json").write_text(json.dumps({"model": {"name": str(model_dir)}, "tokenizer": {}}))
     model = get_model(ModelConfig(name=str(model_dir), attn="flash_attention_2"))
-    assert isinstance(model, HeadStub)
+    assert isinstance(model, KeyStub if by_key else HeadStub)
     torch.manual_seed(0)
     state = {name: torch.randn(tensor.shape) for name, tensor in model.state_dict().items()}
     step_dir = tmp_path / "run" / "checkpoints" / "step_1"
@@ -462,6 +469,25 @@ def test_the_export_writes_export_files_and_the_extra_config_file(tmp_path, expo
     exporter.save_model_assets(checkpoint.model, checkpoint.model_config, checkpoint.tokenizer_config, tmp_path / "x")
     assert getattr(checkpoint.model.config, EXTRA_CONFIG_ATTR) == EXTRA_CONFIG
     assert (tmp_path / "x" / "config.json").read_text() == (output / "config.json").read_text()
+
+
+def test_the_export_of_a_class_selected_by_a_config_key_selects_it_again(tmp_path, exporter, monkeypatch):
+    """A key that selects a class is part of config.json, which the export keeps: it selects the class again."""
+    monkeypatch.delenv("PRL_ATTEMPT_CONFIG_DIR", raising=False)
+    register(monkeypatch, KeyStub)
+    step_dir, state = save_stub_run(tmp_path, by_key=True)
+    output = exporter.convert(step_dir)
+
+    config = json.loads((output / "config.json").read_text())
+    assert config[EXTRA_CONFIG_KEY] == KEY_VALUE and config["architectures"] == ["Qwen3ForCausalLM"]
+    index = json.loads((output / "model.safetensors.index.json").read_text())["weight_map"]
+    assert set(index) == set(state)
+
+    model = get_model(ModelConfig(name=str(output), attn="flash_attention_2"))
+    assert type(model) is KeyStub
+    load_like_the_trainer(model, output, monkeypatch)
+    for name, tensor in model.state_dict().items():
+        assert torch.equal(tensor, state[name].bfloat16()), name
 
 
 def test_both_fp8_tools_refuse_a_model_with_export_files(tmp_path, exporter, monkeypatch):
