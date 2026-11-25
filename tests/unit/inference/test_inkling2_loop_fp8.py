@@ -1,12 +1,16 @@
 """FP8 routed experts of the looped Inkling 2 (Inkling 2 Mini) server, as far as a CPU and the pinned vLLM go.
 
-``Inkling2LoopForRL`` builds on vLLM's looped Inkling 2 model, which the vLLM release prime-rl pins does not have.
-The ``serving`` fixture runs the serving module on stand-ins for those vLLM modules, so these tests cover the
-module's own logic: which experts the constructor builds, and that ``load_weights`` rounds the expert tensors of
-every layer and reports their scales. The FP8 experts have a module of their own, which needs none of those vLLM
-modules and is imported as it is: where ``load_bf16_weight`` puts the rows of a checkpoint tensor. vLLM's
-``per_block_cast_to_fp8`` is not replaced: it is plain torch code, and it runs here as written, without being
-compiled, on weights that lie on the FP8 grid, so that the codes it must give are known.
+Three parts of the serving code run here as they are, with no stand-in for a vLLM module: the function that hands
+``vllm.quantization`` to the model, ``Inkling2FP8Experts`` (its module needs none of ``vllm.models.inkling2``, which
+the vLLM release prime-rl pins does not have), and the count of non-zero FP8 values in the weight fingerprint.
+vLLM's ``per_block_cast_to_fp8`` is not replaced either: it is plain torch code, and it runs here as written, without
+being compiled, on weights that lie on the FP8 grid, so that the codes it must give are known.
+
+Not covered here: the model class. ``Inkling2LoopForRL`` builds on vLLM's looped Inkling 2 model and imports only on
+a vLLM that has it. So no case shows which experts its constructor builds for a format, that it refuses an unknown
+format before the model is built, that ``load_weights`` sends both expert tensors of every layer to the rounding and
+reports their scales as loaded, or that the BF16 experts say ``supports_lora = False``. These need a vLLM that has
+the model (on a machine without a GPU it imports with ``CUDA_VISIBLE_DEVICES=""``).
 
 Left to GPU checks: the forward of ``Inkling2FP8Experts`` (vLLM's FP8 kernels and its activation op exist only in
 a process with a GPU), what the rounding gives on the serving GPU for trained weights and whether those bytes are
@@ -14,10 +18,8 @@ the trainer's, the server against the trainer on one layer and on the whole mode
 setting and takes a weight update, and a training run.
 """
 
-import importlib.util
-import sys
 from argparse import Namespace
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -30,8 +32,7 @@ from prime_rl.inference.vllm.models.inkling2_loop.fp8_experts import Inkling2FP8
 from prime_rl.inference.vllm.worker import weight_transfer
 
 ARCHITECTURE = "Inkling2LoopForConditionalGeneration"
-LOOPED_VLLM = "vllm.models.inkling2.nvidia"
-HIDDEN, INTERMEDIATE, EXPERTS, LAYERS = 256, 384, 2, 2
+HIDDEN, INTERMEDIATE, EXPERTS = 256, 384, 2
 
 # E4M3 bytes that are neither a zero (0x00, 0x80) nor a NaN (0x7F, 0xFF).
 ORDINARY_CODES = torch.tensor([code for code in range(256) if code not in (0x00, 0x80, 0x7F, 0xFF)], dtype=torch.uint8)
@@ -39,90 +40,23 @@ ORDINARY_CODES = torch.tensor([code for code in range(256) if code not in (0x00,
 BLOCK_SCALES = torch.tensor([0.75, 1.25, 1.5, 1.75]) / 64
 
 
-class Attention(nn.Module):
-    """Stands in for ``Inkling2Attention``. It has no ``rel_proj_shifted``, as before vLLM's post-load step, so
-    ``load_weights`` leaves the derived tensors alone."""
-
-
-class Layer(nn.Module):
-    def __init__(self) -> None:
-        super().__init__()
-        self.attn = Attention()
-        self.mlp = nn.Identity()
-
-
-class LoopedModel(nn.Module):
-    """Stands in for vLLM's ``Inkling2LoopForConditionalGeneration``: what ``Inkling2LoopForRL`` reads of it."""
-
-    _renames = (("model.llm.", "model."),)
-    _shards: dict = {}
-
-    def __init__(self, *, vllm_config, prefix: str = "") -> None:
-        super().__init__()
-        self.text_config = vllm_config.model_config.hf_config.text_config
-        self.visual = None
-        self.model = nn.Module()
-        self.model.layers = nn.ModuleList(Layer() for _ in range(self.text_config.num_hidden_layers))
-
-
-def not_on_a_cpu(*args, **kwargs):
-    pytest.fail("called a vLLM kernel")
-
-
-LOOPED_VLLM_STAND_INS = {
-    "attention": {"Inkling2Attention": Attention},
-    "loop": {"Inkling2LoopForConditionalGeneration": LoopedModel},
-    "moe": {
-        "Inkling2Gate": lambda config: nn.Identity(),
-        "Inkling2MoE": type("Inkling2MoE", (nn.Module,), {}),
-        "Inkling2RoutingCapture": lambda visit: nn.Identity(),
-    },
-    "ops.grouped_gemm": {"grouped_gemm": not_on_a_cpu},
-    "ops.moe": {"combine": not_on_a_cpu},
-    "ops.moe_sm90": {"select_experts": not_on_a_cpu, "swiglu": not_on_a_cpu},
-    "ops.sconv": {"shift_rel_proj": not_on_a_cpu},
-}
-
-
 @pytest.fixture
-def serving(monkeypatch):
-    """The serving module, run with stand-ins for vLLM's looped Inkling 2 modules. It is not entered into
-    ``sys.modules``: it is built on the stand-ins, and no other test should meet it."""
-    for name, attributes in LOOPED_VLLM_STAND_INS.items():
-        stand_in = ModuleType(f"{LOOPED_VLLM}.{name}")
-        vars(stand_in).update(attributes)
-        monkeypatch.setitem(sys.modules, stand_in.__name__, stand_in)
-    spec = importlib.util.find_spec("prime_rl.inference.vllm.models.inkling2_loop.model")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    # vLLM's parallel state is set up by its workers.
-    monkeypatch.setattr(module, "get_tensor_model_parallel_world_size", lambda: 1)
-    # vLLM compiles `per_block_cast_to_fp8` at its first call. Here it runs as written.
+def uncompiled():
+    """vLLM compiles ``per_block_cast_to_fp8`` at its first call. Here it runs as written."""
     with torch.compiler.set_stance("force_eager"):
-        yield module
+        yield
 
 
 def text_config(**overrides) -> SimpleNamespace:
+    """What ``Inkling2FP8Experts`` reads of the model's text config."""
     values = dict(
-        num_hidden_layers=LAYERS,
         n_routed_experts=EXPERTS,
-        num_experts_per_tok=2,
         hidden_size=HIDDEN,
         intermediate_size=INTERMEDIATE,
         mlp_gate_softcap=4.0,
         mlp_up_softcap=25.0,
-        layer_visit_ids=lambda layer_id: (layer_id,),
     )
     return SimpleNamespace(**{**values, **overrides})
-
-
-def vllm_config(expert_format: str | None = None) -> SimpleNamespace:
-    """The part of vLLM's config that ``Inkling2LoopForRL`` reads, with the expert format where vLLM puts an HF
-    override: on the HF config."""
-    hf_config = SimpleNamespace(text_config=text_config())
-    if expert_format is not None:
-        setattr(hf_config, patches.INKLING2_LOOP_EXPERT_FORMAT_ATTRIBUTE, expert_format)
-    return SimpleNamespace(model_config=SimpleNamespace(hf_config=hf_config))
 
 
 def on_the_fp8_grid(rows: int, columns: int, seed: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -236,30 +170,10 @@ def test_a_looped_model_without_quantization_is_left_alone(monkeypatch, tmp_path
     assert vars(args) == {"model": str(tmp_path), "hf_overrides": {"head_dtype": "float32"}}
 
 
-def test_the_expert_format_selects_the_experts_of_every_layer(serving):
-    bf16 = serving.Inkling2LoopForRL(vllm_config=vllm_config())
-    fp8 = serving.Inkling2LoopForRL(vllm_config=vllm_config("fp8_per_block"))
-    assert [type(layer.mlp.experts) for layer in bf16.model.layers] == [serving.Inkling2BF16Experts] * LAYERS
-    assert [type(layer.mlp.experts) for layer in fp8.model.layers] == [Inkling2FP8Experts] * LAYERS
-
-
-def test_neither_experts_class_takes_lora_adapters(serving):
-    # vLLM's `_expert_lora_capable` reads this attribute and takes an experts module without it as a LoRA target.
-    assert serving.Inkling2BF16Experts.supports_lora is False
-    assert Inkling2FP8Experts.supports_lora is False
-
-
-def test_an_unknown_expert_format_is_refused_before_the_model_is_built(serving, monkeypatch):
-    monkeypatch.setattr(LoopedModel, "__init__", lambda *args, **kwargs: pytest.fail("built the model"))
-    # The config accepts `mxfp8` for other models; this one rounds to `fp8_per_block` only.
-    with pytest.raises(ValueError, match="mxfp8"):
-        serving.Inkling2LoopForRL(vllm_config=vllm_config("mxfp8"))
-
-
 # --- the experts ---
 
 
-def test_fp8_experts_round_the_gate_rows_then_the_up_rows(serving):
+def test_fp8_experts_round_the_gate_rows_then_the_up_rows(uncompiled):
     experts = Inkling2FP8Experts(text_config())
     served = experts.w13_weight.data_ptr(), experts.w13_weight_scale.data_ptr()
     codes, scales, gate_then_up = on_the_fp8_grid(2 * INTERMEDIATE, HIDDEN, seed=0)
@@ -275,7 +189,7 @@ def test_fp8_experts_round_the_gate_rows_then_the_up_rows(serving):
     assert (experts.w13_weight.data_ptr(), experts.w13_weight_scale.data_ptr()) == served
 
 
-def test_fp8_experts_round_the_down_projection_in_the_checkpoints_layout(serving):
+def test_fp8_experts_round_the_down_projection_in_the_checkpoints_layout(uncompiled):
     experts = Inkling2FP8Experts(text_config())
     codes, scales, weight = on_the_fp8_grid(HIDDEN, INTERMEDIATE, seed=1)
 
@@ -292,49 +206,23 @@ def test_fp8_experts_round_the_down_projection_in_the_checkpoints_layout(serving
         torch.zeros(EXPERTS, 2 * INTERMEDIATE, HIDDEN, dtype=torch.float8_e4m3fn),
         torch.zeros(EXPERTS, INTERMEDIATE, HIDDEN, dtype=torch.bfloat16),
     ],
-    ids=["fp32", "fp8", "half the rows"],
+    ids=["fp32", "fp8", "half_the_rows"],
 )
-def test_fp8_experts_refuse_a_weight_that_is_not_the_checkpoints_bf16_tensor(serving, weight):
+def test_fp8_experts_refuse_a_weight_that_is_not_the_checkpoints_bf16_tensor(weight):
     experts = Inkling2FP8Experts(text_config())
     with pytest.raises(ValueError, match="w13_weight: expected BF16"):
         experts.load_bf16_weight("w13_weight", weight)
 
 
-def test_fp8_experts_need_sizes_in_whole_blocks(serving):
+@pytest.mark.parametrize("size", ["hidden_size", "intermediate_size"])
+def test_fp8_experts_need_sizes_in_whole_blocks(size):
     with pytest.raises(ValueError, match="multiples of"):
-        Inkling2FP8Experts(text_config(intermediate_size=192))
+        Inkling2FP8Experts(text_config(**{size: 192}))
 
 
-# --- the model's loader ---
-
-
-def test_load_weights_rounds_both_expert_tensors_of_every_layer_and_reports_their_scales(serving):
-    model = serving.Inkling2LoopForRL(vllm_config=vllm_config("fp8_per_block"))
-    checkpoint, codes = {}, {}
-    for layer in range(LAYERS):
-        experts = f"layers.{layer}.mlp.experts"
-        codes[f"model.{experts}.w13_weight"], _, gate_then_up = on_the_fp8_grid(2 * INTERMEDIATE, HIDDEN, seed=layer)
-        codes[f"model.{experts}.w2_weight"], _, down = on_the_fp8_grid(HIDDEN, INTERMEDIATE, seed=LAYERS + layer)
-        checkpoint[f"model.llm.{experts}.w13_weight"] = interleaved(gate_then_up)
-        checkpoint[f"model.llm.{experts}.w2_weight"] = down
-
-    loaded = model.load_weights(iter(checkpoint.items()))
-
-    # The scales come from no checkpoint tensor, and the loader still has to report every parameter as loaded.
-    assert loaded == {
-        f"model.layers.{layer}.mlp.experts.{name}"
-        for layer in range(LAYERS)
-        for name in ("w13_weight", "w13_weight_scale", "w2_weight", "w2_weight_scale")
-    }
-    for name, expected in codes.items():
-        assert torch.equal(model.get_parameter(name).view(torch.uint8), expected), name
-
-
-def test_an_fp8_server_takes_no_packed_experts(serving):
-    model = serving.Inkling2LoopForRL(vllm_config=vllm_config("fp8_per_block"))
-    packed = torch.zeros(EXPERTS, 2 * INTERMEDIATE, HIDDEN, dtype=torch.float8_e4m3fn)
-    with pytest.raises(ValueError, match="RL serving needs them in BF16"):
-        model.load_weights(iter([("model.llm.layers.0.mlp.experts.w13_weight", packed)]))
+def test_fp8_experts_take_no_lora_adapters():
+    # vLLM's `_expert_lora_capable` reads this attribute and takes an experts module without it as a LoRA target.
+    assert Inkling2FP8Experts.supports_lora is False
 
 
 # --- the weight fingerprint ---
@@ -347,7 +235,7 @@ def test_count_nonzero_counts_fp8_values_by_their_bytes():
         count = weight_transfer.count_nonzero(codes.view(fp8))
         assert type(count) is int
         assert count == 4 == codes.view(fp8).float().count_nonzero().item()
-    # Other dtypes are counted as before: a byte with only its top bit set is a value of its own there.
+    # Other dtypes go to torch's own count: a byte with only its top bit set is a value of its own there.
     assert weight_transfer.count_nonzero(codes) == 5
     assert weight_transfer.count_nonzero(torch.tensor([0.0, -0.0, 1.5], dtype=torch.bfloat16)) == 1
 
