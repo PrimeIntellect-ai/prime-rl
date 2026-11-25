@@ -1,0 +1,9 @@
+# No staleness cap with the policy broadcast every step: rollouts of any age train in full and the dispatcher never
+# pauses, so staleness is whatever in-flight and queued rollouts accumulate (stale-nocap.toml also holds the weights
+# back for 32 steps).
+#
+#   uv run rl @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/base.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/nocap.toml
+
+[orchestrator]
+max_staleness = 1_000_000
+max_policy_lag = 1_000_000
