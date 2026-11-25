@@ -365,6 +365,7 @@ target = 1e-3
 | `coef` | 0.01 | KL coefficient $\beta$; the initial value when adaptive. |
 | `estimator` | `exact` | `exact` sums the captured head and one aggregate tail bin. It is a lower bound on full-vocabulary KL, exact under the proportional-tail assumption or on complete replay support. It misses redistribution within the uncaptured tail; prefix sampling still introduces noise. `k1` uses $\log\mu(y_t) - \log\pi(y_t)$ on the sampled token and needs no captured head. |
 | `min_staleness` | 1 | Only tokens at least this many policy versions stale train the KL. |
+| `staleness_decay` | None | Weight each penalized token's KL by $\gamma^{s - s_{\min}}$ ($\gamma$ = `staleness_decay`, $s$ its staleness, $s_{\min}$ = `min_staleness`), so the pull is strongest toward the most recent sampler. |
 | `adaptive.target` | — | Mean per-token KL to hold: after each step the coefficient doubles above $1.5\times$ target and halves below target$/1.5$. |
 | `adaptive.min_coef`, `adaptive.max_coef` | 1e-4, 10 | Bounds of the adapted coefficient. |
 
@@ -385,8 +386,8 @@ checkpoint.
 
 Metrics report `sampler_kl/kl` (the per-token KL of the penalized tokens, which the
 adaptive coefficient tracks), `sampler_kl/k1` (the sampled-token log-ratio estimate on
-the same tokens, useful for checking the tail approximation), `sampler_kl/active` (the share of rl tokens penalized), and
-`sampler_kl/coef`.
+the same tokens, useful for checking the tail approximation), `sampler_kl/active` (the share of rl tokens penalized), `sampler_kl/coef`, and with
+`staleness_decay` set, `sampler_kl/weight` (the decay weight of the penalized tokens).
 
 ### Custom Loss
 

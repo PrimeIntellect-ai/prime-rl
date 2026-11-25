@@ -221,6 +221,11 @@ def test_sampler_kl_trains_only_stale_tokens():
     result = loss_fn.loss(inputs)
     torch.testing.assert_close(torch.autograd.grad(result.loss, trainer_logprobs)[0], torch.tensor([0.0, -0.5, -0.5]))
     torch.testing.assert_close(result.metrics["sampler_kl/kl"], torch.tensor([0.0, 0.1]))
+    decayed = ReinforceLoss(
+        ReinforceLossConfig(sampler_kl=SamplerKLConfig(coef=0.5, estimator="k1", staleness_decay=0.5))
+    )
+    result = decayed.loss(inputs)
+    torch.testing.assert_close(torch.autograd.grad(result.loss, trainer_logprobs)[0], torch.tensor([0.0, -0.5, -0.125]))
     inputs.staleness = None
     with pytest.raises(ValueError, match="per-token staleness"):
         loss_fn.loss(inputs)

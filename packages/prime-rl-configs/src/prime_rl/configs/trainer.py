@@ -689,6 +689,10 @@ class SamplerKLConfig(BaseConfig):
     tokens sampled by the trained policy itself, whose mismatch is purely numerical,
     unpenalized. Stale tokens still include numerical mismatch. ``0`` applies the KL to every rl token."""
 
+    staleness_decay: float | None = Field(None, gt=0, le=1, allow_inf_nan=False)
+    """Weight each penalized token's KL by ``staleness_decay ** (staleness - min_staleness)``, so the pull is
+    strongest toward the most recent sampler and fades for older ones. None weights every penalized token alike."""
+
     adaptive: AdaptiveKLCoefConfig | None = None
     """Adapt the coefficient toward a target KL. If None, the coefficient is fixed."""
 
