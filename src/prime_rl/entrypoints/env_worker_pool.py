@@ -65,19 +65,28 @@ def start_sample_server(config: EnvWorkerPoolConfig, store_dir: Path | None) -> 
     ready_write.close()
     if not ready_read.poll(SAMPLE_SERVER_STARTUP_TIMEOUT_S):
         process.terminate()
+        process.join()
         raise TimeoutError(f"The sample server did not start within {SAMPLE_SERVER_STARTUP_TIMEOUT_S}s")
-    store_url, address = ready_read.recv()
+    try:
+        store_url, address = ready_read.recv()
+    except EOFError:  # it exited without reporting ready
+        process.join()
+        raise RuntimeError(f"The sample server exited (code {process.exitcode}) before it started") from None
     return process, death_write, store_url, address
 
 
-def stop_pool_with(process: mp.Process, stopping: threading.Event) -> None:
-    """Stop the pool if its sample server dies: its env workers can keep no samples."""
+def stop_pool_with(process: mp.Process, stopping: threading.Event, crashed: threading.Event) -> None:
+    """Stop the pool if its sample server dies: its env workers can keep no samples. A crash
+    sets ``crashed``, so the pool exits with an error once it has stopped."""
     process.join()
     if stopping.is_set():
         return
     # Exit code 0: it was told to stop (a launcher stopping the whole run signals every process).
-    log = get_logger().info if process.exitcode == 0 else get_logger().error
-    log(f"The sample server exited (code {process.exitcode}); stopping the env worker pool")
+    if process.exitcode == 0:
+        get_logger().info("The sample server stopped; stopping the env worker pool")
+    else:
+        get_logger().error(f"The sample server exited (code {process.exitcode}); stopping the env worker pool")
+        crashed.set()
     os.kill(os.getpid(), signal.SIGTERM)
 
 
@@ -117,12 +126,12 @@ def run_pool(config: EnvWorkerPoolConfig):
             prefix = f"{socket.gethostname()}-{os.getpid()}-"
             directory = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix=prefix, dir=config.store_dir)))
         sample_server, death_pipe, store_url, sample_server_address = start_sample_server(config, directory)
-        stopping = threading.Event()
+        stopping, crashed = threading.Event(), threading.Event()
         # Unwound last to first: mark the stop, then end the worker.
         stack.callback(sample_server.join, 10)
         stack.callback(death_pipe.close)
         stack.callback(stopping.set)
-        threading.Thread(target=stop_pool_with, args=(sample_server, stopping), daemon=True).start()
+        threading.Thread(target=stop_pool_with, args=(sample_server, stopping, crashed), daemon=True).start()
         store = StoreWriter(directory, store_url) if directory is not None else StoreClient(store_url)
         # Apply logging, sandbox labels, the payload hook and the sample server's address in
         # the broker and every env worker.
@@ -141,6 +150,9 @@ def run_pool(config: EnvWorkerPoolConfig):
             config_data=config.env.model_dump(mode="json"),
             max_concurrent=config.serve.max_concurrent,
         )
+        # The pool stops on the SIGTERM a crash sends, as on a clean shutdown; only this tells them apart.
+        if crashed.is_set():
+            raise RuntimeError(f"The sample server crashed (exit code {sample_server.exitcode})")
 
 
 def main():

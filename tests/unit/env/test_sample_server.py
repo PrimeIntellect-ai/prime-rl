@@ -1,11 +1,17 @@
 import asyncio
+import signal
+import subprocess
+import sys
+import time
 from types import SimpleNamespace
 
 import msgspec
 import numpy as np
+import psutil
 import pytest
 
-from prime_rl.configs.env_worker_pool import ScoringConfig
+from prime_rl.configs.env_worker_pool import EnvWorkerPoolConfig, ScoringConfig
+from prime_rl.entrypoints.env_worker_pool import start_sample_server
 from prime_rl.env.sample_server import SampleServer
 from prime_rl.env.types import SampleToScore
 from prime_rl.transports.batch.types import SampleBody
@@ -43,3 +49,41 @@ def test_a_sample_freed_while_it_is_scored_stays_freed(tmp_path, retained):
     scored = msgspec.msgpack.decode(store.get("kept"), type=SampleBody)
     assert np.frombuffer(scored.ref_logprobs, np.float32).tolist() == [-1.0, -2.0]
     assert store.get("cancelled") is None
+
+
+ENV = {"taskset": {"id": "reverse-text"}, "agent": {"harness": {"id": "null"}, "runtime": {"type": "subprocess"}}}
+
+
+def test_a_sample_server_that_dies_starting_says_so():
+    # Not an address of this host: the sample server cannot bind its store there.
+    config = EnvWorkerPoolConfig(env=ENV, serve={"address": "tcp://203.0.113.7:5555"})
+    with pytest.raises(RuntimeError, match=r"exited \(code 1\) before it started"):
+        start_sample_server(config, None)
+
+
+@pytest.mark.slow
+def test_a_pool_whose_sample_server_crashes_exits_with_an_error(tmp_path):
+    address_file = tmp_path / "pool.address"
+    args = ["--env.taskset.id", "reverse-text", "--env.agent.harness.id", "null"]
+    args += [
+        "--env.agent.runtime.type",
+        "subprocess",
+        "--address-file",
+        str(address_file),
+        "--output-dir",
+        str(tmp_path),
+    ]
+    pool = subprocess.Popen([sys.executable, "-m", "prime_rl.entrypoints.env_worker_pool", *args])
+    try:
+        deadline = time.monotonic() + 120
+        while not address_file.exists():
+            assert pool.poll() is None and time.monotonic() < deadline, "the pool did not start"
+            time.sleep(0.5)
+        (sample_server,) = [
+            child for child in psutil.Process(pool.pid).children() if "SampleServer" in " ".join(child.cmdline())
+        ]
+        sample_server.send_signal(signal.SIGKILL)
+        assert pool.wait(timeout=60) != 0
+    finally:
+        if pool.poll() is None:
+            pool.kill()
