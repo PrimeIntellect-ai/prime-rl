@@ -18,6 +18,7 @@ from tests.unit.train.models.extra_config_stub import (
 
 FIELDS = {"hidden_size": 64, "intermediate_size": 128, "num_hidden_layers": 2, "num_attention_heads": 4}
 CHAT_TEMPLATE = "{% for message in messages %}{{ message['content'] }}{% endfor %}"
+MODELING_OVERRIDES = {"attention": {"full_attention": "block_bidirectional"}, "readout": "slot_lm"}
 
 
 @pytest.fixture(scope="module")
@@ -71,6 +72,27 @@ def test_a_checkpoint_with_another_architecture_does_not_load(tmp_path, tokenize
     (tmp_path / "config.json").write_text(json.dumps(saved))
     with pytest.raises(ValueError, match=r"has another architecture: layer_types \(differs from index 1\)$"):
         check_model_config(config, tmp_path)
+
+
+def test_a_step_dir_keeps_a_config_key_the_config_class_does_not_define(tmp_path, tokenizer):
+    """A config.json key the config class does not define survives a step directory and counts as architecture: the
+    inference server may read it. vLLM serves a Qwen3.5 checkpoint with ``modeling_overrides`` as another class."""
+    release, step_dir = tmp_path / "release", tmp_path / "run" / "checkpoints" / "step_5"
+    Qwen3Config(**FIELDS).save_pretrained(release)
+    saved = json.loads((release / "config.json").read_text())
+    (release / "config.json").write_text(json.dumps({**saved, "modeling_overrides": MODELING_OVERRIDES}))
+    setup_model_files(ModelConfig(name=str(release), attn="flash_attention_2"), tokenizer, None).save(step_dir)
+
+    assert json.loads((step_dir / "config.json").read_text())["modeling_overrides"] == MODELING_OVERRIDES
+    config = AutoConfig.from_pretrained(step_dir)
+    assert config.modeling_overrides == MODELING_OVERRIDES
+    check_model_config(config, step_dir)
+    config.modeling_overrides = {"readout": "slot_lm"}
+    with pytest.raises(ValueError, match=r"has another architecture: modeling_overrides$"):
+        check_model_config(config, step_dir)
+    del config.modeling_overrides
+    with pytest.raises(ValueError, match=r"has another architecture: modeling_overrides$"):
+        check_model_config(config, step_dir)
 
 
 def test_a_vlm_checkpoint_compares_its_sub_configs_by_architecture(tmp_path):
