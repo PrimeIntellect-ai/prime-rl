@@ -1,0 +1,25 @@
+# Overlay for swe.toml: the routed experts in FP8 on both sides, in vLLM's online `fp8_per_block` format (E4M3
+# weights with one FP32 scale per 128 x 128 block, E4M3 inputs with one scale per token per 128 channels). The
+# servers round the BF16 expert weights as they load them, at start-up and at every weight update, and the
+# trainer's forward pass rounds its expert weights and inputs the same way. Everything else is computed as without
+# this overlay, and both sides still load the BF16 copy of the checkpoint. Set the two tables together: nothing
+# checks that the two sides agree. The pairing is for H100 (SM90) GPUs: on SM100 the trainer rounds its FP8 scales
+# up to powers of two and the servers do not. This combination has not been run on R2E-Gym, and no run shows that
+# an FP8 run reaches the final result of a BF16 run: the README says what was measured, and on what. Launch with
+# the template copy that the README describes for swe.toml:
+#
+#   uv run rl @ examples/advanced/inkling2-mini/swe.toml @ examples/advanced/inkling2-mini/swe-fp8.toml
+
+# --- Trainer ---
+
+# The expert products run on FP8-rounded weights and inputs, in the DeepGEMM that comes with the pinned vLLM.
+# The FP32 master weights and the BF16 weights sent to the servers are as without this overlay.
+[trainer.model.moe.compute]
+type = "deepgemm_fp8"
+
+# --- Inference ---
+
+# For this model the setting goes to prime-rl's serving class, which rounds the experts itself. vLLM's own
+# quantization does not see it.
+[inference.vllm]
+quantization = "fp8_per_block"

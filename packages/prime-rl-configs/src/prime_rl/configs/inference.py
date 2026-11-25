@@ -95,7 +95,7 @@ class VllmConfig(BaseConfig):
     """Enable prefix caching."""
 
     quantization: QuantizationType | None = None
-    """Online inference quantization method. If None, vLLM infers it from the checkpoint."""
+    """Online inference quantization method. If None, vLLM infers it from the checkpoint. For a looped Inkling 2 checkpoint (Inkling 2 Mini) the value goes to ``Inkling2LoopForRL`` instead of vLLM and selects the format of its routed experts: ``fp8_per_block``, or BF16 if None."""
 
     enable_lora: bool = False
     """Enable LoRA."""

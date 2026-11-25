@@ -1,4 +1,4 @@
-"""Looped Inkling 2 (Inkling 2 Mini) for RL rollouts: BF16 routed experts and weight updates loaded in place.
+"""Looped Inkling 2 (Inkling 2 Mini) for RL rollouts: routed experts in BF16 or FP8, weight updates loaded in place.
 
 vLLM serves the release's NVFP4 / MXFP8 experts, takes a checkpoint with exactly the release's dtypes, and after
 loading derives further tensors from the weights. The trainer holds the experts in BF16 and pushes BF16 weights
@@ -6,6 +6,11 @@ while the server runs. ``Inkling2LoopForRL`` is vLLM's model with what that take
 
 - BF16 routed experts (``Inkling2BF16Experts``), built from vLLM's own kernels: its Hopper router, activation and
   top-k combine, and the grouped GEMM of its expert LoRA path.
+- FP8 routed experts (``Inkling2FP8Experts`` in ``fp8_experts.py``), selected with
+  ``inference.vllm.quantization = "fp8_per_block"``: the format and the kernels of vLLM's online ``fp8_per_block``
+  experts, with the routing weights applied after the second product and summed in FP32, as the trainer's
+  ``model.moe.compute.type = "deepgemm_fp8"`` computes them. They take BF16 weights and round them as they load.
+  Their module is imported only when they are selected, so a BF16 server does not depend on vLLM's FP8 kernels.
 - A ``load_weights`` that serves both the cold start and every weight update. It writes into the tensors the
   model already serves and refreshes the derived ones in place, since captured CUDA graphs hold their addresses.
 - The trainer's values for the depth-mix and loop-message queries. The checkpoint stores them in FP32; the
@@ -16,6 +21,14 @@ vLLM plugin developed for SkyRL (Apache-2.0):
 https://github.com/erictang000/SkyRL/blob/faae9039fb0f4b6be27c02dc0045c1de63e3b888/skyrl/backends/skyrl_train/patches/vllm/inkling2/model.py
 ``load_weights`` is adapted from ``Inkling2ForConditionalGeneration.load_weights`` of vLLM (Apache-2.0; added by
 vllm-project/vllm#67325, read at commit b426b46e6).
+The FP8 experts (``fp8_experts.py``) follow vLLM as well (Apache-2.0, read at the same commit).
+``Inkling2FP8Experts.load_bf16_weight`` rounds with the call of
+``Fp8PerBlockOnlineMoEMethod.process_weights_after_loading``
+(``vllm/model_executor/layers/quantization/online/fp8.py``). ``Inkling2FP8Experts.forward`` runs the kernels of
+``fused_experts_impl`` (``vllm/model_executor/layers/fused_moe/fused_moe.py``) in the order of steps of
+``TritonExperts.apply`` for block-wise FP8 (``vllm/model_executor/layers/fused_moe/experts/triton_moe.py``), with
+the routing weights applied in the final sum. Rounding each expert in place as it loads, at the cold start and on
+every weight update, follows ``Inkling2MXFP8Experts`` of the same SkyRL plugin.
 """
 
 import re
@@ -35,15 +48,21 @@ from vllm.models.inkling2.nvidia.ops.moe import combine
 from vllm.models.inkling2.nvidia.ops.moe_sm90 import select_experts, swiglu
 from vllm.models.inkling2.nvidia.ops.sconv import shift_rel_proj
 
+from prime_rl.inference.patches import INKLING2_LOOP_EXPERT_FORMAT_ATTRIBUTE
+
 # Depth-mix and loop-message queries: FP32 in the checkpoint, parameters of the trainer.
 TRAINED_FP32_TENSOR_RE = re.compile(r"\.attn_res\.|\.middle_cycle_cross_pass_(kv_)?queries$")
 PACKED_EXPERT_DTYPES = (torch.uint8, torch.float8_e4m3fn)
+EXPERT_FORMATS = ("bf16", "fp8_per_block")
 _LAYER_INDEX_RE = re.compile(r"\.(layers|attn_queries|mlp_queries)\.(\d+)(?:\.|$)")
 
 
 class Inkling2BF16Experts(nn.Module):
     """One layer's routed experts with BF16 weights in the checkpoint's layout: ``w13_weight [E, 2I, H]`` holds the
     gate projection in its even rows and the up projection in its odd rows, ``w2_weight [E, H, I]`` projects down."""
+
+    # vLLM puts LoRA adapters on an MoE's experts unless they say otherwise. These take none.
+    supports_lora = False
 
     def __init__(self, config) -> None:
         super().__init__()
@@ -83,14 +102,15 @@ class Inkling2BF16Experts(nn.Module):
         return combine(down, torch.where(flat_ids >= 0, row_of_slot, -1), self.topk, x.dtype)
 
 
-class Inkling2BF16MoE(Inkling2MoE):
-    """vLLM's Inkling 2 MoE (its gate and its routed-experts capture rows) on ``Inkling2BF16Experts``."""
+class Inkling2RLMoE(Inkling2MoE):
+    """vLLM's Inkling 2 MoE (its gate and its routed-experts capture rows) on experts that take BF16 weight
+    updates: ``Inkling2BF16Experts`` or ``Inkling2FP8Experts``."""
 
-    def __init__(self, config, visit_ids: Sequence[int]) -> None:
+    def __init__(self, config, visit_ids: Sequence[int], experts: nn.Module) -> None:
         # Not Inkling2MoE.__init__: it builds the packed experts.
         nn.Module.__init__(self)
         self.gate = Inkling2Gate(config)
-        self.experts = Inkling2BF16Experts(config)
+        self.experts = experts
         self.routing_captures = nn.ModuleList(Inkling2RoutingCapture(visit) for visit in visit_ids)
         self.register_buffer(
             "all_experts", torch.tensor([0, config.n_routed_experts], dtype=torch.int32), persistent=False
@@ -98,7 +118,7 @@ class Inkling2BF16MoE(Inkling2MoE):
 
     def forward(self, x: torch.Tensor, reduce: bool = True, push=None, lora=None, pass_idx: int = 0) -> torch.Tensor:
         if not reduce or push is not None or lora is not None:
-            raise NotImplementedError("The BF16 Inkling 2 experts run on one GPU, without LoRA")
+            raise NotImplementedError("The RL Inkling 2 experts run on one GPU, without LoRA")
         x = x.contiguous()
         gate = self.gate
         ids, weights, _ = select_experts(x, gate.weight, gate.bias, gate.topk, gate.route_scale, self.all_experts)
@@ -119,19 +139,34 @@ class Inkling2LoopForRL(Inkling2LoopForConditionalGeneration):
     def __init__(self, *, vllm_config, prefix: str = "") -> None:
         if get_tensor_model_parallel_world_size() != 1:
             raise NotImplementedError(
-                "Inkling 2 with BF16 experts runs one replica per GPU: use data_parallel_size instead of "
-                "tensor_parallel_size"
+                "Inkling 2 for RL runs one replica per GPU: use data_parallel_size instead of tensor_parallel_size"
             )
+        expert_format = getattr(vllm_config.model_config.hf_config, INKLING2_LOOP_EXPERT_FORMAT_ATTRIBUTE, "bf16")
+        if expert_format not in EXPERT_FORMATS:
+            raise ValueError(f"Inkling 2 for RL serves its experts as one of {EXPERT_FORMATS}, not {expert_format!r}")
         super().__init__(vllm_config=vllm_config, prefix=prefix)
         text_config = self.text_config
+        experts_cls: type[nn.Module] = Inkling2BF16Experts
+        if expert_format == "fp8_per_block":
+            # Imported on demand: a BF16 server needs none of vLLM's FP8 kernels.
+            from prime_rl.inference.vllm.models.inkling2_loop.fp8_experts import Inkling2FP8Experts
+
+            experts_cls = Inkling2FP8Experts
         for layer_id, layer in enumerate(self.model.layers):
-            layer.mlp = Inkling2BF16MoE(text_config, text_config.layer_visit_ids(layer_id))
+            layer.mlp = Inkling2RLMoE(text_config, text_config.layer_visit_ids(layer_id), experts_cls(text_config))
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         """Load a checkpoint, or a weight update, in checkpoint names. Every tensor of the language model must be
         there, with the checkpoint's dtypes and BF16 experts. The vision tower may be left out: the trainer does
-        not hold it."""
+        not hold it. FP8 experts round their BF16 weights as they load."""
         params = dict(self.named_parameters())
+        # FP8 experts are told by their rounding loader, not by their class: a BF16 server never imports their module.
+        fp8_weights = {
+            f"{prefix}.{attribute}": (module, attribute)
+            for prefix, module in self.named_modules()
+            if hasattr(module, "load_bf16_weight")
+            for attribute in ("w13_weight", "w2_weight")
+        }
         num_layers = self.text_config.num_hidden_layers
         layer_limits = {"layers": num_layers, "attn_queries": num_layers - 1, "mlp_queries": num_layers}
         loaded: set[str] = set()
@@ -154,6 +189,11 @@ class Inkling2LoopForRL(Inkling2LoopForConditionalGeneration):
                 if index is not None and int(index.group(2)) >= layer_limits[index.group(1)]:
                     continue  # a model truncated to fewer layers
                 raise ValueError(f"Unexpected checkpoint tensor: {name}")
+            if name in fp8_weights:
+                experts, attribute = fp8_weights[name]
+                experts.load_bf16_weight(attribute, weight)
+                loaded.update((name, f"{name}_scale"))
+                continue
             param = params[name]
             if param.dtype != weight.dtype:
                 raise ValueError(f"{name}: checkpoint dtype {weight.dtype} != {param.dtype}")
