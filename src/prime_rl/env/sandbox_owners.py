@@ -45,17 +45,27 @@ async def reap_previous_sandbox_pools(config_dir: Path) -> None:
 
     from prime_sandboxes import AsyncSandboxClient
 
+    # A failed reap must not stop the resume: stranded sandboxes still end at their
+    # idle timeout. The marker stays, so the next resume tries again.
     async with AsyncSandboxClient() as client:
         for marker in markers:
             # Even an older attempt can still be serving. Only a dead pool releases its lock.
+            # A lock held on another node may not be visible here; after a requeue the
+            # earlier attempt's processes are gone anyway.
             with marker.open() as owner:
                 try:
                     fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError as error:
-                    raise RuntimeError(f"Previous sandbox pool is still active: {marker}") from error
-                result = await client.bulk_delete(labels=[_label(marker)])
+                except BlockingIOError:
+                    get_logger().warning(f"Not reaping the sandboxes of {marker}: its pool is still serving")
+                    continue
+                try:
+                    result = await client.bulk_delete(labels=[_label(marker)])
+                except Exception as e:  # noqa: BLE001 - cleanup is best-effort, see above
+                    get_logger().warning(f"Failed to terminate the sandboxes of {marker} - {e!r}")
+                    continue
                 if result.failed:
-                    raise RuntimeError(f"Failed to terminate sandboxes from {marker}: {result.failed}")
+                    get_logger().warning(f"Failed to terminate sandboxes of {marker}: {result.failed}")
+                    continue
                 if result.succeeded:
                     get_logger().info(
                         f"Requested termination of {len(result.succeeded)} sandboxes from {marker.parent.parent.parent.name}"
