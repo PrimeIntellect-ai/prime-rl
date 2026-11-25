@@ -110,6 +110,8 @@ uv sync --all-extras
 
 > *NOTE*: Environments are opt-in uv workspace members — `uv sync --all-extras` does not install them. To train on them, install all with `uv sync --all-extras --all-packages`, or a subset with `uv sync --package prime-rl --package <env>`.
 
+> *NOTE*: The `gpu` extra is the union of `train` (the trainer stack) and `inference` (vLLM and the transports that broadcast weights to it). SFT and pretraining without online evals only need `uv sync --extra train`; RL and online evals need both. FP8 training, MegaMoE and the `cudnn_flashmla` sparse-attention backend use kernels bundled in the vLLM wheel, so they need `inference` as well.
+
 </details>
 
 <details>

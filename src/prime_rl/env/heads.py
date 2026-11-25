@@ -140,6 +140,23 @@ class EpisodeHead(BaseModel):
         record, self._record = self._record, None
         return record
 
+    def to_checkpoint(self) -> dict[str, Any]:
+        """The head as a rollout checkpoint holds it: with the record it still holds and its
+        traces' token advantages, which its serialized form leaves out."""
+        return {
+            "head": self.model_dump(mode="python"),
+            "record": self._record,
+            "advantages": [trace.branch_advantages for trace in self.traces],
+        }
+
+    @classmethod
+    def from_checkpoint(cls, dumped: dict[str, Any]) -> EpisodeHead:
+        head = cls.model_validate(dumped["head"])
+        head._record = dumped["record"]
+        for trace, advantages in zip(head.traces, dumped["advantages"], strict=True):
+            trace.branch_advantages = advantages
+        return head
+
 
 def clip_error(error: Error) -> Error:
     def clip(text: str | None) -> str | None:

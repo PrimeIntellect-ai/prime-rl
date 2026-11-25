@@ -12,16 +12,19 @@ from functools import partial
 from multiprocessing.connection import Connection
 from pathlib import Path
 
+from verifiers.v1.configs.agent import agent_config_fields
 from verifiers.v1.runtimes import set_base_sandbox_labels
 
 from prime_rl.configs.env_worker_pool import EnvWorkerPoolConfig
 from prime_rl.env import run_env_worker_pool, set_episode_hook
 from prime_rl.env.sample_server import run_sample_server
+from prime_rl.env.sandbox_owners import register_sandbox_pool
 from prime_rl.env.worker import set_sample_server
 from prime_rl.orchestrator.utils import setup_env_worker_pool_logging
 from prime_rl.transports.payload import PayloadHook, StoreClient, StoreWriter, payload_host
 from prime_rl.utils.config import check_mode, cli
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.pathing import set_save_root
 from prime_rl.utils.utils import clean_exit
 
 SAMPLE_SERVER_STARTUP_TIMEOUT_S = 120
@@ -33,12 +36,20 @@ def setup_worker(
     sandbox_labels: list[str],
     store: StoreWriter | StoreClient,
     sample_server: str,
+    output_dir: Path,
 ) -> None:
     setup_env_worker_pool_logging(log_level, json_logging)
     set_base_sandbox_labels(sandbox_labels)
+    set_save_root(output_dir)
     # Episode streams never carry training arrays; the hook keeps them in the replica's store.
     set_episode_hook(PayloadHook(store=store))
     set_sample_server(sample_server)
+
+
+def setup_sample_server(log_level: str, json_logging: bool, output_dir: Path) -> None:
+    setup_env_worker_pool_logging(log_level, json_logging)
+    # Its store writes a rollout checkpoint's samples (`persist`), only under the run's directory.
+    set_save_root(output_dir)
 
 
 def start_sample_server(config: EnvWorkerPoolConfig, store_dir: Path | None) -> tuple[mp.Process, Connection, str, str]:
@@ -54,7 +65,7 @@ def start_sample_server(config: EnvWorkerPoolConfig, store_dir: Path | None) -> 
             store_dir=store_dir,
             hosts=payload_host(config.serve.address),
             scoring=config.serve.scoring.model_dump(),
-            setup=partial(setup_env_worker_pool_logging, config.log.level, config.log.json_logging),
+            setup=partial(setup_sample_server, config.log.level, config.log.json_logging, config.output_dir),
             ready=ready_write,
             death_pipe=death_read,
         ),
@@ -128,6 +139,13 @@ def run_pool(config: EnvWorkerPoolConfig):
         addresses = queue.SimpleQueue()
         threading.Thread(target=publish_address, args=(addresses, config.address_file), daemon=True).start()
     with ExitStack() as stack:
+        attempt_dir = os.environ.get("PRL_ATTEMPT_CONFIG_DIR")
+        if (
+            attempt_dir
+            and config.address_file
+            and any(agent.runtime.type == "prime" for agent in agent_config_fields(config.env).values())
+        ):
+            sandbox_labels.append(stack.enter_context(register_sandbox_pool(Path(attempt_dir))))
         directory = None
         if config.store_dir is not None:
             # The sample server serves the samples the env workers write, so they outlive
@@ -157,6 +175,7 @@ def run_pool(config: EnvWorkerPoolConfig):
                 sandbox_labels,
                 store,
                 sample_server_address,
+                config.output_dir,
             ),
             config_data=config.env.model_dump(mode="json"),
             max_concurrent=config.serve.max_concurrent,

@@ -48,7 +48,14 @@ from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
 from prime_rl.trainer.utils import DCP_TIMEOUT, empty_pinned, get_dcp_group
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
-from prime_rl.utils.pathing import get_all_ckpt_steps, get_ckpt_dir, get_step_path, is_ckpt_step_complete
+from prime_rl.utils.pathing import (
+    ckpt_output_dir,
+    get_all_ckpt_steps,
+    get_ckpt_dir,
+    get_step_path,
+    is_ckpt_step_complete,
+    kept_ckpt_steps,
+)
 
 
 @dataclass
@@ -802,18 +809,7 @@ class CheckpointManager:
         # Get all the checkpoint steps to delete
         assert list(self.ckpt_steps) == sorted(self.ckpt_steps)
 
-        # Determine which steps to keep
-        steps_to_keep = set()
-
-        # Keep the most recent keep_last steps
-        if self.config.keep_last is not None:
-            steps_to_keep.update(self.ckpt_steps[-self.config.keep_last :])
-
-        # Keep steps at keep_interval intervals
-        if self.config.keep_interval is not None:
-            for step in self.ckpt_steps:
-                if step % self.config.keep_interval == 0:
-                    steps_to_keep.add(step)
+        steps_to_keep = kept_ckpt_steps(self.ckpt_steps, self.config.keep_last, self.config.keep_interval)
 
         # Delete steps not in steps_to_keep (only master rank deletes to avoid race condition)
         ckpt_steps_to_delete = [step for step in self.ckpt_steps if step not in steps_to_keep]
@@ -840,10 +836,6 @@ def setup_ckpt_manager(
     return CheckpointManager(
         ckpt_output_dir(output_dir, ckpt_config), ckpt_config or CheckpointConfig(), model_files, resume
     )
-
-
-def ckpt_output_dir(output_dir: Path, ckpt_config: CheckpointConfig | None) -> Path:
-    return (ckpt_config.output_dir if ckpt_config else None) or output_dir
 
 
 # Compat, remove once no run resumes from such a checkpoint. Full offload used to save the BF16 GPU weights as the model
