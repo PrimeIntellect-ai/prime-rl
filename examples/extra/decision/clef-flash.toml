@@ -1,0 +1,36 @@
+# Clef-Flash on typed-decisions, two GPUs. Make the records first:
+#   uv run python scripts/decision_parity.py data --dataset typed-decisions --out data/typed-decisions
+mode = "sft"
+max_steps = 100
+
+[ckpt] # Checkpoint at the end of training
+
+[model]
+name = "Cloudflare/clef-flash"
+
+[data]
+type = "system_one"
+seq_len = 16384
+batch_size = 2 # one packed row of records per GPU
+
+[[data.source]]
+name = "typed-decisions"
+dataset = "data/typed-decisions"
+
+[val]
+interval = 25
+eval_on_start = true
+
+[[val.data.source]]
+name = "typed-decisions"
+dataset = "data/typed-decisions"
+split = "validation"
+
+[optim]
+lr = 1e-5
+
+[scheduler]
+type = "cosine"
+
+[deployment]
+num_train_gpus = 2
