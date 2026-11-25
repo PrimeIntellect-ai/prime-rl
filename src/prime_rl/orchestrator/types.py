@@ -95,6 +95,9 @@ class LiveTrace:
     prev_input: int | None = None
     """Input tokens of the trace's last model call that reported cached tokens; None
     before the first one or after a call that did not report them."""
+    tokens: int = 0
+    """Input plus output tokens of the trace's last model call that reported usage: about
+    the tokens of the trace its stream has delivered so far."""
 
 
 @dataclass
@@ -117,6 +120,11 @@ class InflightEpisode:
     told: which phase each is in and how many turns it has committed."""
     calls: int = 0
     """Model calls the episode's traces streamed so far."""
+
+    @property
+    def tokens(self) -> int:
+        """Tokens of the episode's traces as far as their streams have told."""
+        return sum(trace.tokens for trace in self.live.values())
 
 
 @dataclass

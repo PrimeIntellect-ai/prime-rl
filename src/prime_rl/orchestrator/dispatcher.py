@@ -966,4 +966,6 @@ class Dispatcher:
             "dispatcher/trainer_target": self.trainer_target or 0.0,
             "dispatcher/queued/eval": float(self.queued_eval_examples),
             "dispatcher/mode": float(self.mode == DispatcherMode.PREFER_EVAL),
+            "memory/held_rollouts/inflight": float(len(self.inflight)),
+            "memory/held_tokens/inflight": float(sum(meta.tokens for meta in self.inflight.values())),
         }

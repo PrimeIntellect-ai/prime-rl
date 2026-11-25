@@ -28,6 +28,7 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import psutil
 import verifiers.v1 as vf
 from pydantic import ValidationError
 from verifiers.v1.runtimes import set_base_sandbox_labels
@@ -190,8 +191,10 @@ class Orchestrator:
         self.eval_triggered_steps: set[int] = set()
         self.component_tasks = []
         self.release_future: asyncio.Future | None = None
-        # Rollouts of the batch cut and waiting for the trainer to request it
+        # Rollouts and tokens of the batch cut and waiting for the trainer to request it
         self.unsent_rollouts = 0
+        self.unsent_tokens = 0
+        self.process = psutil.Process()
         # Batches shipped by this process, when the last one shipped, and the rollouts per second the trainer took
         # over the step before it if that batch waited for the trainer (the trainer is the bottleneck), else None
         self.ships = 0
@@ -750,8 +753,9 @@ class Orchestrator:
         # the orchestrator spent waiting on the trainer for the next policy.
         send_start_time = time.perf_counter()
         self.unsent_rollouts = batch.cohort.num_traces
+        self.unsent_tokens = sum(len(sample.token_ids) for sample in batch.samples)
         send_batch_time = await self.sender.send(micro_batch_grid)
-        self.unsent_rollouts = 0
+        self.unsent_rollouts = self.unsent_tokens = 0
         shipped_at = time.perf_counter()
         # The trainer's first step in a process includes its warmup, so its pace counts from the second one
         self.ships += 1
@@ -934,7 +938,8 @@ class Orchestrator:
             inflight_part += " | " + ", ".join(f"{n}={v}" for n, v in env_pairs)
         inflight_part += ")"
 
-        body = train_batch_part + eval_batch_part + "; " + inflight_part
+        rss = self.process.memory_info().rss / 2**30
+        body = train_batch_part + eval_batch_part + "; " + inflight_part + f" | RSS {rss:.1f} GiB"
 
         payload: dict[str, float] = {
             **disp_gauges,
@@ -943,7 +948,13 @@ class Orchestrator:
             **self.concurrency.gauges(),
             **self.trainer_capacity.gauges(),
             **self.clients.session_release_gauges(),
+            **self.train_sink.gauges(),
+            "memory/rss_gib": rss,
+            "memory/held_rollouts/shipping": float(self.unsent_rollouts),
+            "memory/held_tokens/shipping": float(self.unsent_tokens),
         }
+        if self.eval_sink is not None:
+            payload |= self.eval_sink.gauges()
         if self.draft_loader is not None:
             payload |= self.draft_loader.gauges()
         if self.gc is not None:
