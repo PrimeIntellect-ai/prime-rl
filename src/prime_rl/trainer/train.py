@@ -213,6 +213,7 @@ def train(config: SFTConfig | PretrainConfig):
         # A resume sizes the subsets from the checkpoint's data state.
         resume = None
         if checkpoint_step is not None and not (config.ckpt and config.ckpt.skip_dataloader):
+            ckpt_manager.finish_pull()
             path = config.resume.dir / "trainer" if config.resume.dir else ckpt_manager.get_ckpt_path(checkpoint_step)
             # Without the files, loading the checkpoint fails with its own error.
             if (path / "dataloader" / "rank_0.pt").exists():
@@ -739,11 +740,12 @@ def train(config: SFTConfig | PretrainConfig):
     if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], progress, dataloader=dataloader)
-        ckpt_manager.close()
+        ckpt_manager.wait()
         if step_action is not None:
             controller.mark_saved(progress.step)
         if not paused:
             ckpt_manager.maybe_clean()
+        ckpt_manager.close()
 
     # Broadcast the final weights so the evals process can run its forced final epoch. A paused
     # run has no final epoch.

@@ -85,7 +85,7 @@ def propagate_shared_fields(data: Any) -> Any:
     propagate("ckpt.rollouts", "orchestrator.ckpt.rollouts")
     propagate("ckpt.rollouts_save_timeout", "orchestrator.ckpt.rollouts_save_timeout")
     propagate("ckpt.async_save", "trainer.ckpt.async_save")
-    propagate("ckpt.remote_dir", "trainer.ckpt.remote_dir")
+    propagate("ckpt.remote", "trainer.ckpt.remote")
 
     # [monitors.wandb] leaves. (Bare empty ``[monitors.wandb]`` block enablement is at the end.)
     # ``monitors.wandb.name`` flows verbatim to both sub-configs: the rl entrypoint

@@ -638,17 +638,17 @@ def rl(config: RLConfig):
 def validate_remote_resume(ckpt: CheckpointConfig | None, resume_step: int | None) -> None:
     """The orchestrator checkpoint is only on disk, so a trainer resuming from a later step in its remote would
     wait for an orchestrator that started from the disk's step."""
-    if ckpt is None or ckpt.remote_dir is None:
+    if ckpt is None or ckpt.remote is None:
         return
     from obstore.store import from_url
 
     from prime_rl.trainer.ckpt_sync import get_remote_steps
 
-    _, committed = get_remote_steps(from_url(ckpt.remote_dir))
+    _, committed = get_remote_steps(from_url(ckpt.remote.dir))
     remote_step = max(committed, default=None)
     if remote_step is not None and (resume_step is None or remote_step > resume_step):
         raise ValueError(
-            f"The trainer's 'ckpt.remote_dir' ({ckpt.remote_dir}) has step {remote_step}, but the latest checkpoint"
+            f"The trainer's 'ckpt.remote.dir' ({ckpt.remote.dir}) has step {remote_step}, but the latest checkpoint"
             f" in the run directory is {resume_step}. RL resumes from the run directory, since the orchestrator"
             " checkpoint is not uploaded: restore it there, or pass '--resume.step' with a step on disk."
         )

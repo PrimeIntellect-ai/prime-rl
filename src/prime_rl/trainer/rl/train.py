@@ -959,12 +959,13 @@ def train(config: TrainerConfig):
     if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], progress)
-        ckpt_manager.close()
+        ckpt_manager.wait()
         dataloader.commit(progress.step, release=is_data_master)
         if step_action is not None:
             controller.mark_saved(progress.step)
         if not paused:
             ckpt_manager.maybe_clean()
+        ckpt_manager.close()
 
     if gradient_manager is not None:
         gradient_manager.close()
