@@ -1,0 +1,8 @@
+# Over reinforce-kl.toml: decay the sampler KL with staleness. Each penalized token's KL weighs
+# staleness_decay ** (staleness - min_staleness), so the pull is strongest toward the most recent sampler (0.9: a token
+# 10 versions stale weighs 0.39, 30 versions 0.05).
+#
+#   uv run rl @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/base.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/reinforce-kl.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/reinforce-kl-decay.toml
+
+[trainer.loss.sampler_kl]
+staleness_decay = 0.9

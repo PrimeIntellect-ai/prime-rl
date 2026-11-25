@@ -1,0 +1,21 @@
+# Smooth length pressure in place of base.toml's solved-only linear penalty: 256K total tokens per rollout (reward 0
+# past it), with the power length penalty calibrated to that budget. A solved rollout's reward is scaled by
+# 1 - (num_total_tokens / 256K) ** 1.5, so it falls smoothly to 0 at the budget (64K: 0.88, 128K: 0.65, 192K: 0.35);
+# failed rollouts are not penalized. Later config files replace source lists wholesale, so this repeats base.toml's
+# source; stack it before format-stop.toml only if that file's source gets the same changes.
+#
+#   uv run rl @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/base.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/length-budget.toml
+
+[[orchestrator.train.source]]
+name = "scaleswe"
+env.taskset.id = "scaleswe"
+env.agent.harness = { id = "rlm", version = "8ca926cdd64fd7725b78cf95a4e1667315d3b1f6", allow_git = false, max_depth = 0, compaction = { max_attempts = 1 }, max_total_tokens = 0 }
+# scale-swe repos keep their upstream remote and the sandbox network is open: block the code hosts so rollouts can't
+# fetch the upstream fix.
+env.agent.runtime = { type = "prime", block = ["github.com", "githubusercontent.com", "gitlab.com", "bitbucket.org", "codeberg.org", "sourceforge.net", "googlesource.com"] }
+env.agent.max_turn_tokens = 32768
+env.agent.max_total_tokens = 262_144
+env.agent.timeout.rollout = 21600
+env.agent.scoring.skip_on_truncated = true
+env.agent.scoring.skip_on_timeout = true
+algo.length_penalty = { type = "power", alpha = 1.5, weight = 1.0, budget = 262_144 }
