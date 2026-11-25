@@ -133,8 +133,14 @@ def load_weights_checkpoint_layerwise(
     *,
     preserve_tensor_attributes: bool = False,
 ) -> None:
-    logger.info("Reloading checkpoint-format weights with vLLM layerwise processing")
     device = next(model.parameters()).device
+    if getattr(model, "loads_weights_in_place", False):
+        # The model's own load_weights writes into the served tensors and refreshes what it derives from them.
+        logger.info("Loading checkpoint-format weights in place")
+        with torch.device(device), set_current_vllm_config(vllm_config):
+            model.load_weights(state_iter)  # type: ignore
+        return
+    logger.info("Reloading checkpoint-format weights with vLLM layerwise processing")
     # Compiled draft forwards can retain tensor attributes such as fused KV projections.
     tensor_attributes = [
         (module, name, value)
