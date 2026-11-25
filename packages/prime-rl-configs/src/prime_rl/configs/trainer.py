@@ -706,6 +706,20 @@ class SamplerKLConfig(BaseConfig):
     """Adapt the coefficient toward a target KL. If None, the coefficient is fixed."""
 
 
+class KLMaskConfig(BaseConfig):
+    """Token-level KL mask: drop a token from the loss, its policy gradient and its sampler KL alike,
+    when KL(sampler || trainer) at its position exceeds ``threshold``. It keeps updates away from
+    positions where trainer and sampler disagree too much, without importance weights."""
+
+    threshold: float = Field(gt=0, allow_inf_nan=False)
+    """Largest KL(sampler || trainer) a token may have and still train."""
+
+    estimator: Literal["exact", "k1"] = "exact"
+    """``exact`` is the KL over the captured sampler head plus one tail bin at the token's position,
+    as for the sampler KL. It does not depend on the sampled token, so a masked score stays centered.
+    ``k1`` is ``log q(y) - log p(y)`` on the sampled token and needs no captured head."""
+
+
 class ReinforceLossConfig(BaseConfig):
     """REINFORCE without importance weights. Off-policy, the update carries a drift toward the
     sampler scaled by the mean advantage at each prefix unless the score is centered."""
@@ -726,9 +740,16 @@ class ReinforceLossConfig(BaseConfig):
     sampler_kl: SamplerKLConfig | None = None
     """KL(sampler || trainer) penalty. If None, no penalty."""
 
+    kl_mask: KLMaskConfig | None = None
+    """Token-level KL mask on the policy gradient and the sampler KL. If None, every rl token trains."""
+
     @property
     def captures_sampler_head(self) -> bool:
-        return self.score_centering or (self.sampler_kl is not None and self.sampler_kl.estimator == "exact")
+        return (
+            self.score_centering
+            or (self.sampler_kl is not None and self.sampler_kl.estimator == "exact")
+            or (self.kl_mask is not None and self.kl_mask.estimator == "exact")
+        )
 
 
 class IcePopLossConfig(BaseConfig):

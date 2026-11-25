@@ -201,6 +201,27 @@ def _sampler_support_distribution(
     return head, p, q, rho, row_sum
 
 
+def _support_kl(
+    inputs: LossInputs, head: Tensor, q: Tensor, rho: Tensor, row_sum: Callable[[Tensor], Tensor]
+) -> Tensor:
+    """Per-token KL(q_hat || p) = sum_support q (log q - log p) + q_tail log(q_tail / p_tail); a
+    replayed support has no tail."""
+    q_tail = (1.0 - row_sum(q)).clamp_min(1e-6)
+    support_kl = row_sum(torch.where(q > 0, q * (inputs.sampler_support_logprobs - head), 0.0))
+    return support_kl + torch.where(rho > 0, q_tail * rho.clamp_min(1e-30).log(), 0.0)
+
+
+@torch.no_grad()
+def _token_sampler_kl(inputs: LossInputs, estimator: str) -> Tensor:
+    """KL(sampler || trainer) of each rl token: ``exact`` over the support at its position, ``k1``
+    on the sampled token."""
+    mask = inputs.loss_mask
+    if estimator == "k1":
+        return inputs.inference_logprobs[mask] - inputs.trainer_logprobs[mask]
+    head, _, q, rho, row_sum = _sampler_support_distribution(inputs)
+    return _support_kl(inputs, head, q, rho, row_sum)[mask]
+
+
 def _logit_correction_l1(mass: Tensor, p: Tensor, rows: Tensor, row_sum: Callable[[Tensor], Tensor]) -> Tensor:
     """Per-token L1 norm over the full vocabulary of ``sum_v mass_v * (e_v - p)``, the logit gradient of
     ``sum_v mass_v * log p_v``; the support-only ``p`` puts its remaining mass on the tail."""
@@ -232,11 +253,8 @@ class SamplerKL:
             head, p, q, rho, row_sum = _sampler_support_distribution(inputs)
             rows = inputs.support_rows.long()
             with torch.no_grad():
-                # KL(q_hat || p) = sum_support q (log q - log p) + q_tail log(q_tail / p_tail), and
-                # its gradient is -sum_support (q - rho * p) grad log p.
-                q_tail = (1.0 - row_sum(q)).clamp_min(1e-6)
-                support_kl = row_sum(torch.where(q > 0, q * (inputs.sampler_support_logprobs - head), 0.0))
-                kl = (support_kl + torch.where(rho > 0, q_tail * rho.clamp_min(1e-30).log(), 0.0))[mask]
+                # The gradient of KL(q_hat || p) is -sum_support (q - rho * p) grad log p.
+                kl = _support_kl(inputs, head, q, rho, row_sum)[mask]
                 coefficients = q - rho[rows] * p
             surrogate = -row_sum(coefficients * head)[mask]
         per_token_loss = self.coef * surrogate * active
@@ -392,7 +410,7 @@ class IcePopLoss:
 
 class ReinforceLoss:
     """Reinforce loss type: policy gradient without importance weights, optionally centered
-    under the sampler and regularized toward it."""
+    under the sampler, regularized toward it, and masked where the two disagree too much."""
 
     def __init__(self, config: ReinforceLossConfig):
         self.config = config
@@ -406,6 +424,13 @@ class ReinforceLoss:
 
         per_token_loss = -loss_config.adv_tau * advantages * trainer_logprobs
         metrics = {}
+        keep = None
+        if loss_config.kl_mask is not None and trainer_logprobs.numel():
+            kl = _token_sampler_kl(inputs, loss_config.kl_mask.estimator)
+            keep = kl <= loss_config.kl_mask.threshold
+            metrics["kl_mask/kl"] = kl
+            metrics["kl_mask/masked"] = (~keep).to(kl.dtype)
+            weights = keep.to(trainer_logprobs.dtype) if weights is None else weights * keep
         if loss_config.score_centering and trainer_logprobs.numel():
             head, p, q, rho, row_sum = _sampler_support_distribution(inputs)
             rows = inputs.support_rows.long()

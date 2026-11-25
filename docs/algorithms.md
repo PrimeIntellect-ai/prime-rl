@@ -16,6 +16,7 @@ This page covers the math and the configurable algorithmic components: the algor
   - [IPO Loss](#ipo-loss)
   - [REINFORCE Loss](#reinforce-loss)
   - [Sampler KL](#sampler-kl)
+  - [KL Mask](#kl-mask)
   - [Custom Loss](#custom-loss)
 - [Advantage](#advantage)
   - [Default Advantage](#default-advantage)
@@ -333,6 +334,7 @@ score_centering = true
 | `score_centering` | false | Center the score under the sampler. |
 | `score_centering_topk` | 128 | Captured head size for untruncated sampling. |
 | `sampler_kl` | None | KL(sampler ‖ trainer) penalty, see [Sampler KL](#sampler-kl). |
+| `kl_mask` | None | Token-level KL mask, see [KL Mask](#kl-mask). |
 
 Score-centering metrics are those of IcePop; `score_centering/tail_scale` reports the
 sampler-to-trainer tail mass ratio.
@@ -387,6 +389,45 @@ Metrics report `sampler_kl/kl` (the per-token KL of the penalized tokens, which 
 adaptive coefficient tracks), `sampler_kl/k1` (the sampled-token log-ratio estimate on
 the same tokens, useful for checking the tail approximation), `sampler_kl/active` (the share of rl tokens penalized), and
 `sampler_kl/coef`.
+
+### KL Mask
+
+`kl_mask` drops an rl token of the `reinforce` loss, its policy gradient (with score
+centering) and its sampler KL alike, when $\mathrm{KL}(\mu\,\|\,\pi)$ at its position exceeds
+`threshold`:
+
+$$
+\mathcal{L}(\theta) = \frac{1}{N}\sum_t \mathbb{1}\big[d_t \le \tau\big]\,\big(\mathcal{L}^{\mathrm{PG}}_t + \beta\,\mathrm{KL}_t\big),
+\qquad d_t = \mathrm{KL}\big(\mu(\cdot \mid s_t)\,\|\,\pi(\cdot \mid s_t)\big).
+$$
+
+It keeps updates away from positions where trainer and sampler disagree too much, as the
+IcePop and IPO trust regions do, without importance weights. With the `exact` estimator,
+$d_t$ is the KL over the captured head plus one tail bin at the position, so the mask does not
+depend on the sampled token and a masked score stays centered. `k1` thresholds
+$\log\mu(y_t) - \log\pi(y_t)$ instead, which needs no captured head but depends on the token.
+The mask applies to every rl token, whatever its staleness. Masked tokens still count in the
+loss normalization.
+
+```toml
+[trainer.loss]
+type = "reinforce"
+score_centering = true
+
+[trainer.loss.sampler_kl]
+coef = 0.05
+
+[trainer.loss.kl_mask]
+threshold = 0.3
+```
+
+| Knob | Default | What it does |
+|---|---|---|
+| `threshold` | — | Largest per-token KL that still trains. |
+| `estimator` | `exact` | `exact` over the captured head and tail bin, or `k1` on the sampled token. |
+
+Metrics report `kl_mask/kl` (the per-token KL the mask thresholds) and `kl_mask/masked` (the
+share of rl tokens masked).
 
 ### Custom Loss
 
