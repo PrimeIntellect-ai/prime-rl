@@ -39,7 +39,7 @@ class RIMEAlchemyTaskset(vf.Taskset[StreamTask, RIMEAlchemyTasksetConfig]):
 
 class RIMEAlchemyEnv(vf.Env[RIMEAlchemyEnvConfig]):
     async def setup(self, agents: vf.Agents):
-        agents.actor.trainable = True
+        agents.actor.trainable = not self.config.actor_frozen
         agents.writer.trainable = not self.config.writer_frozen and self.config.memory_mode == "written"
         if self.config.writer_frozen:
             client = agents.actor.config.client
@@ -58,6 +58,25 @@ class RIMEAlchemyEnv(vf.Env[RIMEAlchemyEnvConfig]):
                 update={"client": writer_client, "sampling": sampling}
             )
             agents.writer.ctx = replace(agents.writer.ctx, client=writer_client, sampling=sampling)
+        if self.config.actor_frozen:
+            client = agents.writer.config.client
+            if client is None:
+                raise ValueError("Frozen actor needs the resolved policy client")
+            # Reuse the independent frozen-model sidecar. Its legacy route name
+            # is writer, but the supplied ACT prompt selects the actor role.
+            actor_client = EvalClientConfig(
+                base_url=client.base_url.rstrip("/") + "/rime/writer",
+                api_key_var=client.api_key_var,
+                headers=client.headers,
+                headers_from_env=client.headers_from_env,
+            )
+            sampling = agents.actor.config.sampling.model_copy(
+                update={"chat_template_kwargs": {"enable_thinking": True}},
+            )
+            agents.actor.config = agents.actor.config.model_copy(
+                update={"client": actor_client, "sampling": sampling}
+            )
+            agents.actor.ctx = replace(agents.actor.ctx, client=actor_client, sampling=sampling)
         judge_config = self.config.exploration_judge
         if self.config.judge_local and self.config.score_exploration:
             client = agents.actor.config.client

@@ -264,6 +264,8 @@ class RIMEAlgoConfig(BaseAlgoConfig):
     expected_group_size: int = Field(4, ge=2)
     max_sequence_tokens: int = Field(16384, ge=1)
     train_writer: bool = True
+    train_actor: bool = True
+    mask_invalid_writer_pg: bool = False
 
 
 class HierarchicalGRPOAlgoConfig(BaseAlgoConfig):

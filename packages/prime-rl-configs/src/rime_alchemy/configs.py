@@ -38,6 +38,7 @@ class RIMEAlchemyEnvConfig(vf.EnvConfig):
     memory_chars: int = Field(4096, ge=1)
     carry_memory: bool = True
     writer_frozen: bool = False
+    actor_frozen: bool = False
     score_exploration: bool = True
     memory_mode: Literal["written", "history", "shuffled"] = "written"
     judge_max_concurrent: int = Field(1, ge=1)
@@ -47,6 +48,8 @@ class RIMEAlchemyEnvConfig(vf.EnvConfig):
 
     @model_validator(mode="after")
     def require_shared_policy(self):
+        if self.actor_frozen and self.writer_frozen:
+            raise ValueError("At least one RIME role must remain trainable")
         if any(agent.model is not None or agent.client is not None for agent in (self.actor, self.writer)):
             raise ValueError("ACT and WRITE must inherit the same trainable run policy")
         return self
