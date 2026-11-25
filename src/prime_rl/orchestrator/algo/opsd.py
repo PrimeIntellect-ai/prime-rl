@@ -8,6 +8,7 @@ import verifiers.v1 as vf
 from prime_rl.configs.algorithm import OPSDAlgoConfig
 from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import assign_reference_logprobs
+from prime_rl.orchestrator.clients import ModelScorer
 from prime_rl.orchestrator.trajectories import iter_trainable_branches
 from prime_rl.orchestrator.utils import episode_env_name
 
@@ -36,17 +37,18 @@ class OPSDAlgorithm(Algorithm):
         self.demo_key = config.demo_key
         self.template = config.template
         self.renderer: Renderer | None = None
-        # Self-distillation: the teacher *is* the live policy. Scoring against
-        # the shared policy pool tracks its current weights, model name, and
-        # endpoint churn for free.
-        self.teacher_clients = self.clients
+        self.teacher_clients: ModelScorer | None = None
 
-    async def setup(self) -> None:
-        """Build the hint-block renderer with the policy's renderer config and
-        tokenizer, so the hint tokenizes identically to the policy's own prompts."""
+    def bind(self, client: vf.ClientConfig, model: str) -> None:
+        """Self-distillation: the teacher *is* the live policy, scored on the endpoint the
+        rollouts sample from. The hint block is rendered with the policy's renderer config and
+        tokenizer, so it tokenizes identically to the policy's own prompts."""
         from renderers.base import create_renderer, load_tokenizer
 
-        self.renderer = create_renderer(load_tokenizer(self.clients.model_name), self.clients.train_client.renderer)
+        self.teacher_clients = ModelScorer(client, model)
+        self.renderer = create_renderer(
+            load_tokenizer(getattr(client, "renderer_model_name", None) or model), getattr(client, "renderer", None)
+        )
 
     def _demonstration(self, episode: vf.Episode, trace: vf.Trace) -> str:
         demonstration = trace.info.get(self.demo_key)
@@ -63,7 +65,7 @@ class OPSDAlgorithm(Algorithm):
     async def score_episode(self, episode: vf.Episode) -> None:
         teacher = self.teacher_clients
         renderer = self.renderer
-        assert renderer is not None, "renderer not built — Algorithm.setup() must run first"
+        assert teacher is not None and renderer is not None, "not bound — Algorithm.bind() must run first"
         for _, trace in iter_trainable_traces([episode]):
             hint = self.template.format(demonstration=self._demonstration(episode, trace))
             hint_block = renderer.render_ids([{"role": "system", "content": hint}], add_generation_prompt=False)

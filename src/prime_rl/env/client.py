@@ -37,6 +37,7 @@ from prime_rl.env.types import (
     RunRequest,
     RunResponse,
     TraceSummary,
+    TrainRequest,
 )
 from prime_rl.utils.logger import get_logger
 
@@ -265,6 +266,7 @@ class EnvClient:
         sampling: SamplingConfig,
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
+        train: TrainRequest | None = None,
     ) -> WireEpisode:
         """Run one rollout; return its episode record — flat traces (typed
         `Trace[WireTaskData]`) plus the shared stamp. The worker takes the task
@@ -286,6 +288,7 @@ class EnvClient:
                 client=client,
                 model=model,
                 sampling=sampling,
+                train=train,
             ),
             RunResponse,
             on_delta=apply,

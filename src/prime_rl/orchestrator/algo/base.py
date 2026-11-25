@@ -28,9 +28,9 @@ def iter_trainable_traces(episodes: list[vf.Episode]):
 class Algorithm:
     """Assign training annotations directly to verifier episodes.
 
-    Override :meth:`score_episode` for rollout-local work and
-    :meth:`score_group` for cohort-relative work. The train sink compiles the
-    annotated traces into transport samples only after admission.
+    Override :meth:`score_episode` for rollout-local, per-token work (it runs in the env
+    worker that ran the rollout, before the worker keeps the rollout's training samples) and
+    :meth:`score_group` for cohort-relative credit (on the orchestrator, one advantage per trace).
     """
 
     def __init__(self, config: AlgoConfig, clients: InferenceClient):
@@ -39,7 +39,11 @@ class Algorithm:
         self.connected: InferenceClient | None = None
 
     async def setup(self) -> None:
-        """Connect resources owned by the algorithm."""
+        """Connect resources owned by the algorithm, on the orchestrator."""
+
+    def bind(self, client: vf.ClientConfig, model: str) -> None:
+        """Connect what :meth:`score_episode` needs in an env worker, given the client and model
+        the worker's rollouts sample from."""
 
     async def connect(self, reference: FrozenModelConfig) -> InferenceClient:
         """Connect and track the frozen model pool owned by this algorithm."""
@@ -47,10 +51,12 @@ class Algorithm:
         return self.connected
 
     async def score_episode(self, episode: vf.Episode) -> None:
-        """Assign rollout-local annotations to one finalized episode."""
+        """Assign rollout-local, per-token annotations (reference logprobs, loss weights) to the
+        nodes of one finalized episode, in the env worker that ran it."""
 
     async def score_group(self, episodes: list[vf.Episode]) -> None:
-        """Assign group-relative annotations to a finalized cohort."""
+        """Credit a finalized cohort: one advantage (``assign_advantage``) and optionally one rl
+        weight (``assign_rl_weight``) per trace."""
 
     def reconfigure(self, config: AlgoConfig) -> None:
         """Adopt a live config update, in which only fields marked LIVE can differ."""

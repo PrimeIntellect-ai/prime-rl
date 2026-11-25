@@ -13,7 +13,7 @@ from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm, _length_penalty_token
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.algo.routing import assign_advantage
 from prime_rl.orchestrator.credit import trace_advantage
-from prime_rl.orchestrator.trajectories import trace_to_samples
+from tests.unit.orchestrator.test_train_sink import train_trace
 
 
 def _build_episode(
@@ -220,7 +220,7 @@ def test_grpo_prompt_loss_aggregation_weights_sum_to_one_per_group():
     for lengths in ([10, 30], [100, 300]):
         group = _make_group(rewards=[1.0, 0.0], completion_lengths=lengths)
         asyncio.run(algo.score_group(group))
-        weights = [w for episode in group for sample in trace_to_samples(episode.traces[0]) for w in sample.rl_weights]
+        weights = [w for episode in group for sample in train_trace(episode.traces[0]) for w in sample.rl_weights]
         assert sorted(set(weights)) == pytest.approx([0.0, 1.0 / sum(lengths)])
         assert sum(weights) == pytest.approx(1.0)
 
@@ -448,7 +448,7 @@ def test_assign_advantage_broadcasts_scalar():
     trace = episode.traces[0]
     # one user prompt token (masked) + 2 sampled tokens (trainable)
     assign_advantage(trace, 0.7)
-    assert trace_to_samples(trace)[0].advantages == pytest.approx([0.0, 0.7, 0.7])
+    assert train_trace(trace)[0].advantages == pytest.approx([0.0, 0.7, 0.7])
 
 
 def test_assign_advantage_zeros_non_trainable():
@@ -457,4 +457,4 @@ def test_assign_advantage_zeros_non_trainable():
     episode = _build_episode(0.0, sampled_lengths=[1], obs_lengths=[1])
     trace = episode.traces[0]
     assign_advantage(trace, 0.7)
-    assert trace_to_samples(trace)[0].advantages == pytest.approx([0.0, 0.7, 0.0])
+    assert train_trace(trace)[0].advantages == pytest.approx([0.0, 0.7, 0.0])

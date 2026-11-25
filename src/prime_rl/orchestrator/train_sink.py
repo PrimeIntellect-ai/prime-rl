@@ -5,122 +5,127 @@ episode, and ``cancel()`` a dropped group's ``GroupCancellation``. Before every
 readiness check the sink sweeps ``pending_batch`` for traces past
 ``max_staleness`` — this sweep is what guarantees no stale token trains. Completed groups become numeric
 observations; only queued traces retain verifier objects. The consumer drains
-``take_rollout_window(force=True)`` before shipping a batch."""
+``take_rollout_window(force=True)`` before shipping a batch.
+
+The sink never holds a sample's tokens: an env worker keeps each sample, and the trace's
+info names it with a summary (``prime_rl.transports.payload``). The sink queues references
+(``QueuedSample``) and decides from the summaries which samples still train; the trainer
+applies the same decisions to the tokens."""
 
 from __future__ import annotations
 
-import asyncio
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 
-import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.control.types import ConfigUpdate, Reconfigurable
 from prime_rl.orchestrator.algo.base import iter_trainable_traces
-from prime_rl.orchestrator.algo.routing import stamp_loss_routing
+from prime_rl.orchestrator.credit import trace_advantage, trace_rl_weight
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import RolloutWindow, TrainEpisodes
-from prime_rl.orchestrator.trajectories import iter_trainable_branches, trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TrainBatch
 from prime_rl.orchestrator.utils import (
     episode_env_name,
     episode_group_id,
     episode_tokens,
     min_fresh_version,
-    node_policy_versions,
     train_work,
 )
-from prime_rl.transports.batch import TrainingSample
+from prime_rl.transports.batch.materialize import mm_cut
+from prime_rl.transports.batch.types import PAYLOAD_INFO_KEY, UNLABELED, UNVERSIONED, SampleRef
 from prime_rl.transports.payload import delete_payloads, sample_payload_urls, trace_payload_urls
 from prime_rl.utils.logger import get_logger
 
-
-def _kept(sample: TrainingSample, field: str) -> bool:
-    """Whether an env worker keeps this array of the sample (see `prime_rl.transports.payload`)."""
-    return sample.payload is not None and field in sample.payload.fields
-
-
-# Training arrays reach the trainer only through env workers that keep them.
-_KEEP_ARRAYS_HINT = (
+# Training samples reach the trainer only through env workers that keep them.
+_KEEP_SAMPLES_HINT = (
     "Serve the env with prime-rl's `env-worker-pool` entrypoint, which keeps them for the trainer, "
     "and check its log for arrays it could not keep."
 )
 
 
-def _prune_zero_advantages(sample: TrainingSample) -> bool:
-    """Remove zero-advantage tokens from the RL component."""
-    if sample.advantages is None:
-        return True
+@dataclass
+class QueuedSample:
+    """A sample by reference, with how many of its tokens each policy version sampled: its
+    trainable tokens, and the tokens of each loss component (``rl``, ``ce``, ``ref_kl``)."""
 
-    mask = np.asarray(sample.mask, dtype=bool)
-    advantages = np.asarray(sample.advantages)
-    if sample.rl_weights is None:
-        rl_weights = mask.astype(np.float32)
-    else:
-        rl_weights = np.array(sample.rl_weights, dtype=np.float32)
-    if not len(mask) == len(advantages) == len(rl_weights):
-        raise ValueError(
-            f"mask, advantages and rl_weights must align: {len(mask)}, {len(advantages)}, {len(rl_weights)}"
+    ref: SampleRef
+    trainable: dict[int, int]
+    loss: dict[str, dict[int, int]]
+    pruned: bool = False
+    """Zero-advantage tokens are out of its rl component."""
+
+    def is_fresh(self, version: int, min_version: int | None) -> bool:
+        """Whether this sample's tokens of ``version`` train in a batch whose oldest policy is
+        ``min_version`` (None: no version is too old)."""
+        if min_version is None or version == UNVERSIONED or self.ref.policy_start is None:
+            return True
+        return (self.ref.policy_start if version == UNLABELED else version) >= min_version
+
+    def has_loss(self, min_version: int | None) -> bool:
+        """Whether any of its tokens still trains once tokens older than ``min_version`` are out."""
+        for component, counts in self.loss.items():
+            if component == "rl":
+                if self.pruned and self.ref.advantage == 0.0:
+                    continue
+                if self.ref.rl_weight is not None:
+                    counts = self.trainable
+            if any(count and self.is_fresh(version, min_version) for version, count in counts.items()):
+                return True
+        return False
+
+    def stale_tokens(self, min_version: int) -> int:
+        """Trainable tokens older than ``min_version``."""
+        return sum(count for version, count in self.trainable.items() if not self.is_fresh(version, min_version))
+
+    @property
+    def num_trainable(self) -> int:
+        return sum(self.trainable.values())
+
+
+def _counts(counts: dict[str, int]) -> dict[int, int]:
+    return {int(version): count for version, count in counts.items()}
+
+
+def queued_samples(
+    trace: vf.Trace, *, env_name: str, temperature: float, policy_start: int | None, seq_len: int
+) -> list[QueuedSample]:
+    """References to the samples an env worker kept for the trace, credited with its advantage
+    and rl weight and cut to ``seq_len`` tokens."""
+    payload = trace.info.get(PAYLOAD_INFO_KEY)
+    if payload is None:
+        raise RuntimeError(f"env '{env_name}' kept no training samples for trace {trace.id}. {_KEEP_SAMPLES_HINT}")
+    advantage, rl_weight = trace_advantage(trace), trace_rl_weight(trace)
+    samples = []
+    for index, summary in payload["branches"].items():
+        num_tokens = mm_cut(summary.get("images") or [], summary["num_tokens"], seq_len)
+        images = [image for image in summary.get("images") or [] if image[0] + image[1] <= num_tokens]
+        loss = {component: _counts(counts) for component, counts in summary["loss"].items()}
+        if advantage is None and any(loss.get("rl", {}).values()):
+            raise ValueError(
+                f"sample from env '{env_name}' has rl member tokens but no advantages — "
+                "the algorithm must credit its trace"
+            )
+        ref = SampleRef(
+            url=payload["url"],
+            id=summary["id"],
+            num_tokens=num_tokens,
+            env_name=env_name,
+            trace_id=trace.id,
+            branch_index=int(index),
+            temperature=temperature,
+            advantage=advantage,
+            rl_weight=rl_weight,
+            policy_start=policy_start,
+            fields=summary["fields"],
+            routed_shape=summary.get("routed_shape"),
+            routed_dtype=summary.get("routed_dtype"),
+            images=images or None,
         )
-
-    pruned = mask & (advantages == 0.0) & (rl_weights != 0.0)
-    if not pruned.any():
-        return True
-
-    rl_weights[pruned] = 0.0
-    sample.rl_weights = rl_weights
-    return _has_loss(sample)
-
-
-def _has_loss(sample: TrainingSample) -> bool:
-    mask = np.asarray(sample.mask, dtype=bool)
-    if sample.rl_weights is not None:
-        mask = mask & (np.asarray(sample.rl_weights) != 0.0)
-    has_rl = bool(mask.any())
-    has_ce = sample.ce_weights is not None and bool(np.any(np.asarray(sample.ce_weights) != 0.0))
-    has_ref_kl = sample.ref_kl_weights is not None and bool(np.any(np.asarray(sample.ref_kl_weights) != 0.0))
-    return has_rl or has_ce or has_ref_kl
-
-
-def stale_token_runs(branch: vf.Branch, fallback: int, min_version: int) -> Iterator[tuple[int, int]]:
-    """``[start, end)`` runs of the branch's sampled tokens whose policy
-    version is older than ``min_version`` (see ``node_policy_versions``)."""
-    offset = 0
-    for node in branch.nodes:
-        for start, end, version in node_policy_versions(node, fallback):
-            if version < min_version:
-                yield offset + start, offset + end
-        offset += len(node.token_ids)
-
-
-def token_staleness(branch: vf.Branch, fallback: int, trained_version: int) -> np.ndarray:
-    """Per-token staleness of the branch when it trains on ``trained_version``
-    (see ``node_policy_versions``); -1 on tokens the policy did not sample."""
-    lengths = [len(node.token_ids) for node in branch.nodes]
-    staleness = np.full(sum(lengths), -1, dtype=np.int16)
-    offset = 0
-    for node, length in zip(branch.nodes, lengths):
-        if node.sampled:
-            for start, end, version in node_policy_versions(node, fallback):
-                staleness[offset + start : offset + end] = max(0, trained_version - version)
-        offset += length
-    return staleness
-
-
-def mask_stale_tokens(sample: TrainingSample, branch: vf.Branch, fallback: int, min_version: int) -> int:
-    """Remove the sample's stale tokens from every loss component and return
-    how many trainable tokens this newly masked; fresher tokens keep training
-    with their own inference logprobs and the sample's advantage."""
-    masked = 0
-    for start, end in stale_token_runs(branch, fallback, min_version):
-        masked += int(sample.mask[start:end].sum())
-        sample.mask[start:end] = False
-        for weights in (sample.rl_weights, sample.ce_weights, sample.ref_kl_weights):
-            if weights is not None:
-                weights[start:end] = 0.0
-    return masked
+        samples.append(QueuedSample(ref, _counts(summary["trainable"]), loss))
+    return samples
 
 
 class TrainSink(Reconfigurable):
@@ -159,7 +164,7 @@ class TrainSink(Reconfigurable):
         # A dropped group's terminal marker; its ``count`` fills in for the
         # episodes the group will never deliver.
         self.pending_group_cancellations: dict[str, GroupCancellation] = {}
-        self.pending_batch: dict[str, list[TrainingSample]] = {}
+        self.pending_batch: dict[str, list[QueuedSample]] = {}
         self.episode_by_trace: dict[str, vf.Episode] = {}
         # Step of the last full staleness sweep — queued traces only age when
         # ``progress.step`` advances, so one full sweep per step suffices.
@@ -180,8 +185,8 @@ class TrainSink(Reconfigurable):
         sample and trace it drops without shipping."""
         delete_payloads(urls)
 
-    def release_samples(self, samples: Iterable[TrainingSample]) -> None:
-        """Delete the env workers' arrays of samples that will never ship."""
+    def release_samples(self, samples: Iterable[SampleRef]) -> None:
+        """Delete the env workers' samples that will never ship."""
         self._release(sample_payload_urls(samples))
 
     def group_size_for(self, group_id: str, env_name: str) -> int:
@@ -204,7 +209,7 @@ class TrainSink(Reconfigurable):
             "memory/held_tokens/grouping": float(sum(self.group_tokens.values())),
             "memory/held_rollouts/queued": float(len(self.pending_batch)),
             "memory/held_tokens/queued": float(
-                sum(len(sample.token_ids) for samples in self.pending_batch.values() for sample in samples)
+                sum(sample.ref.num_tokens for samples in self.pending_batch.values() for sample in samples)
             ),
         }
 
@@ -221,7 +226,6 @@ class TrainSink(Reconfigurable):
 
     async def add(self, episode: vf.Episode) -> TrainBatch | None:
         """Process one completed episode and return a batch when ready."""
-        await self.process_episode(episode)
         group_id = episode_group_id(episode)
         env_name = episode_env_name(episode)
         self.pending_groups[group_id].append(episode)
@@ -274,7 +278,8 @@ class TrainSink(Reconfigurable):
         episode predates. Queued tokens only age when ``progress.step``
         advances, so the full sweep runs once per step; ``trace_ids`` scopes
         the check to a freshly inserted group. Frozen-sourced episodes (no
-        policy span) never go stale.
+        policy span) never go stale. The trainer masks the same tokens when it
+        builds the batch.
 
         Queue outcomes are counted separately from completed groups; observing
         the episode again here would double-count rollout statistics."""
@@ -293,14 +298,9 @@ class TrainSink(Reconfigurable):
             policy = train_work(episode).policy
             if policy is None or policy.start >= min_version:
                 continue
-            branches = episode.traces[0].branches
             samples = self.pending_batch[trace_id]
-            masked = [
-                mask_stale_tokens(sample, branches[sample.branch_index], policy.start, min_version)
-                for sample in samples
-            ]
-            trainable = [not n or _has_loss(sample) for sample, n in zip(samples, masked)]
-            self.release_samples(sample for sample, keep in zip(samples, trainable) if not keep)
+            trainable = [not sample.stale_tokens(min_version) or sample.has_loss(min_version) for sample in samples]
+            self.release_samples(sample.ref for sample, keep in zip(samples, trainable) if not keep)
             if samples := [sample for sample, keep in zip(samples, trainable) if keep]:
                 self.pending_batch[trace_id] = samples
                 continue
@@ -316,11 +316,6 @@ class TrainSink(Reconfigurable):
                 f"max_staleness={self.config.max_staleness}. Consider increasing it to avoid this."
             )
 
-    async def process_episode(self, episode: vf.Episode) -> None:
-        """Run rollout-local algorithm work on one native episode."""
-        env_name = episode_env_name(episode)
-        await self.train_envs.get(env_name).algorithm.finalize_episode(episode)
-
     async def process_group(self, group_id: str) -> None:
         traces = [trace for episode in self.pending_groups.get(group_id, []) for trace in episode.traces]
         try:
@@ -328,7 +323,7 @@ class TrainSink(Reconfigurable):
         finally:
             # Every delivered trace's arrays are either queued for a batch or deleted here.
             for trace in traces:
-                queued = set(sample_payload_urls(self.pending_batch.get(trace.id, [])))
+                queued = set(sample_payload_urls(sample.ref for sample in self.pending_batch.get(trace.id, [])))
                 self._release(url for url in trace_payload_urls(trace) if url not in queued)
 
     async def _process_group(self, group_id: str) -> None:
@@ -379,29 +374,34 @@ class TrainSink(Reconfigurable):
             )
             return
 
-        samples_by_trace: dict[str, list[TrainingSample]] = {}
+        samples_by_trace: dict[str, list[QueuedSample]] = {}
         # The temperature the group sampled with, which a live update may have changed since.
         temperature = env.sampling_at(train_work(group[0]).step).temperature
-        for trace in survivors:
-            samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
+        for episode, trace in iter_trainable_traces(group):
+            policy = train_work(episode).policy
+            samples = queued_samples(
+                trace,
+                env_name=env_name,
+                temperature=temperature,
+                policy_start=policy.start if policy is not None else None,
+                seq_len=self.config.seq_len,
+            )
             for sample in samples:
-                sample.temperatures = np.full(len(sample.token_ids), temperature, dtype=np.float32)
-                if env.requires_sampling_masks and not _kept(sample, "sampler_support_replayed"):
+                if env.requires_sampling_masks and "sampler_support_replayed" not in sample.ref.fields:
                     # Rollout logprobs are mask-renormalized; training without the masks
                     # silently biases every importance ratio.
                     raise RuntimeError(
                         f"env '{env_name}' samples with truncation (top_p/top_k) but its rollouts "
                         "carry no sampling masks. Set `enable_return_sampling_mask = true` on "
                         "the inference server config (the rl entrypoint does this automatically) - "
-                        f"it requires vLLM's native sampling-mask capture (>= 0.28). {_KEEP_ARRAYS_HINT}"
+                        f"it requires vLLM's native sampling-mask capture (>= 0.28). {_KEEP_SAMPLES_HINT}"
                     )
-                if env.requires_sampler_logprobs and not _kept(sample, "sampler_support_logprobs"):
+                if env.requires_sampler_logprobs and "sampler_support_logprobs" not in sample.ref.fields:
                     raise RuntimeError(
-                        f"env {env_name!r} requested sampler logprobs but returned none. {_KEEP_ARRAYS_HINT}"
+                        f"env {env_name!r} requested sampler logprobs but returned none. {_KEEP_SAMPLES_HINT}"
                     )
-                stamp_loss_routing(sample, env.algorithm.action_loss_type)
             if self.config.constant_trainer_batch_size:
-                samples = [sample for sample in samples if _prune_zero_advantages(sample)]
+                samples = self._prune(samples)
             if samples:
                 samples_by_trace[trace.id] = samples
 
@@ -464,7 +464,7 @@ class TrainSink(Reconfigurable):
         """Release accepted traces that cannot ship after training stops."""
         if self.pending_batch:
             self.rollout_window.metrics.count("rollout/queued/cancelled", float(len(self.pending_batch)))
-        self.release_samples(sample for samples in self.pending_batch.values() for sample in samples)
+        self.release_samples(sample.ref for samples in self.pending_batch.values() for sample in samples)
         self._release(
             url
             for group in self.pending_groups.values()
@@ -517,6 +517,14 @@ class TrainSink(Reconfigurable):
             + ", ".join(f"{reason}={count}" for reason, count in self.zero_output_units.most_common())
         )
 
+    @staticmethod
+    def _prune(samples: list[QueuedSample], min_version: int | None = None) -> list[QueuedSample]:
+        """Take zero-advantage tokens out of the samples' rl component, and the samples left
+        with nothing to train (tokens older than ``min_version`` already out) out of the queue."""
+        for sample in samples:
+            sample.pruned = True
+        return [sample for sample in samples if sample.has_loss(min_version)]
+
     async def process_batch(self) -> TrainBatch:
         selected = list(self.pending_batch.items())[: self.batch_size]
 
@@ -525,50 +533,22 @@ class TrainSink(Reconfigurable):
         for trace_id in selected_ids:
             del self.pending_batch[trace_id]
 
+        min_version = min_fresh_version(self.progress.step, self.config.max_staleness)
         if not self.config.constant_trainer_batch_size:
-
-            def prune_selected() -> dict[str, list[TrainingSample]]:
-                pruned = {
-                    trace_id: [sample for sample in samples if _prune_zero_advantages(sample)]
-                    for trace_id, samples in selected
-                }
-                return {trace_id: samples for trace_id, samples in pruned.items() if samples}
-
-            selected_by_trace = await asyncio.to_thread(prune_selected)
+            pruned = {trace_id: self._prune(samples, min_version) for trace_id, samples in selected}
+            selected_by_trace = {trace_id: samples for trace_id, samples in pruned.items() if samples}
         samples = [sample for trace_samples in selected_by_trace.values() for sample in trace_samples]
-        shipped = set(sample_payload_urls(samples))
+        shipped = set(sample_payload_urls(sample.ref for sample in samples))
         self._release(
-            url for _, trace_samples in selected for url in sample_payload_urls(trace_samples) if url not in shipped
+            url
+            for _, trace_samples in selected
+            for url in sample_payload_urls(sample.ref for sample in trace_samples)
+            if url not in shipped
         )
 
-        trained_version = self.progress.step - 1
-
-        def stamp_staleness() -> None:
-            for trace_id, trace_samples in selected_by_trace.items():
-                episode = self.episode_by_trace[trace_id]
-                if (policy := train_work(episode).policy) is None:
-                    continue
-                branches = episode.traces[0].branches
-                for sample in trace_samples:
-                    sample.staleness = token_staleness(branches[sample.branch_index], policy.start, trained_version)
-
-        await asyncio.to_thread(stamp_staleness)
-
-        min_version = min_fresh_version(self.progress.step, self.config.max_staleness)
-        kept = masked = 0
-        for trace_id, trace_samples in selected_by_trace.items():
-            episode = self.episode_by_trace[trace_id]
-            policy = train_work(episode).policy
-            if policy is None or policy.start >= min_version:
-                kept += sum(int(sample.mask.sum()) for sample in trace_samples)
-                continue
-            # Shared fork prefixes train only in their first branch; count each stale token once.
-            trainable = {branch.index: (branch, mask) for branch, mask in iter_trainable_branches(episode.traces[0])}
-            for sample in trace_samples:
-                kept += int(sample.mask.sum())
-                branch, mask = trainable[sample.branch_index]
-                runs = stale_token_runs(branch, policy.start, min_version)
-                masked += sum(int(mask[start:end].sum()) for start, end in runs)
+        # Shared fork prefixes train only in their first branch, so each trainable token counts once.
+        masked = sum(sample.stale_tokens(min_version) for sample in samples)
+        kept = sum(sample.num_trainable for sample in samples) - masked
         self.rollout_window.metrics.rate("staleness/token/masked", {"": float(masked)}, kept + masked)
 
         shipped_ids = set(selected_by_trace)
@@ -592,4 +572,4 @@ class TrainSink(Reconfigurable):
         ]
         cohort = TrainEpisodes(cohort_episodes, sampled_trace_ids=shipped_ids)
 
-        return TrainBatch(cohort=cohort, samples=samples)
+        return TrainBatch(cohort=cohort, samples=[sample.ref for sample in samples])

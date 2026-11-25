@@ -708,24 +708,24 @@ def train(config: TrainerConfig):
             # rank makes only after its fetch: without this, a data master that finished
             # fetching first deleted the arrays while its CP peers were still fetching them.
             failed = failed.cpu()
-            # Every rank has fetched its arrays now, so one rank per data rank frees them
+            # Every rank has fetched its samples now, so one rank per data rank frees them
             # (dummy micro batches may reuse another data rank's, hence after the world
             # all-reduce).
             if is_data_master:
                 dataloader.release_payloads()
-            # A step where no micro batch's arrays could be fetched anywhere is not a
+            # A step where no micro batch's samples could be fetched anywhere is not a
             # transient failure (unreachable or mismatched env worker pools): stop instead of
             # training on nothing.
             if failed.numel() and bool(failed.all()):
                 raise RuntimeError(
-                    "Could not fetch the training arrays of any micro batch this step; check that "
+                    "Could not fetch the training samples of any micro batch this step; check that "
                     "trainer ranks reach the env worker pools' payload URLs (see the trainer and env-worker-pool logs)"
                 )
             dropped = failed[dataloader.dp_rank].nonzero().flatten().tolist()
             drop_micro_batches(micro_batches, dropped)
             dropped_micro_batches = int(failed.sum().item())
             if dropped:
-                logger.warning(f"Dropped {len(dropped)} micro batches whose payloads could not be fetched")
+                logger.warning(f"Dropped {len(dropped)} micro batches whose samples could not be fetched")
         load_data_time = time.perf_counter() - load_data_start_time
         logger.debug(f"Loaded batch in {format_time(load_data_time)}")
 

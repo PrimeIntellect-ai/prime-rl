@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import ActionLossType
 from prime_rl.orchestrator.credit import ADVANTAGE_KEY, RL_WEIGHT_KEY, trace_advantage
-from prime_rl.transports.batch import TrainingSample
+
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.trajectories import BranchSample
 
 
 def trainable_nodes(trace: vf.Trace) -> list[vf.MessageNode]:
@@ -49,7 +53,7 @@ def is_trainable(trace: vf.Trace) -> bool:
     return bool(trace_advantage(trace))
 
 
-def stamp_loss_routing(sample: TrainingSample, action_loss_type: ActionLossType) -> None:
+def stamp_loss_routing(sample: BranchSample, action_loss_type: ActionLossType) -> None:
     """Route action tokens into the algorithm's declared loss component."""
     if action_loss_type == "rl":
         return

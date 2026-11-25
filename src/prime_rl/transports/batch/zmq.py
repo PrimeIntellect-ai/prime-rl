@@ -8,7 +8,7 @@ import zmq.asyncio
 
 from prime_rl.configs.shared import ZMQTransportConfig
 from prime_rl.transports.batch.base import BatchReceiver, BatchRequest, BatchSender, last_requested_at
-from prime_rl.transports.batch.types import MicroBatch
+from prime_rl.transports.batch.types import MicroBatchPlan
 
 LOG_POLL_INTERVAL_MS = 1000
 
@@ -28,7 +28,7 @@ class ZMQBatchSender(BatchSender):
         self.current_step = current_step
         self.logger.debug(f"Initialized ZMQ micro batch sender (endpoint=tcp://{transport.host}:{transport.port})")
 
-    async def send(self, micro_batch_grid: list[list[MicroBatch]]) -> float:
+    async def send(self, micro_batch_grid: list[list[MicroBatchPlan]]) -> float:
         """Send grid of micro batches to the trainers. Encoding happens before the wait, so only the
         hand-off sits between the last request and the batch."""
         assert len(micro_batch_grid) == self.data_world_size, "Number of micro batch lists must match data world size"
@@ -135,9 +135,9 @@ class ZMQBatchReceiver(BatchReceiver):
                     self.payload = payload
                     return
 
-    def receive(self) -> list[MicroBatch]:
+    def receive(self) -> list[MicroBatchPlan]:
         """The micro batches ``wait`` got from the orchestrator or the log."""
-        micro_batches: list[MicroBatch] = self.decoder.decode(self.payload)
+        micro_batches: list[MicroBatchPlan] = self.decoder.decode(self.payload)
         self.payload = None
         self.logger.debug(f"Received {len(micro_batches)} micro batches for step {self.current_step}")
         self.current_step += 1

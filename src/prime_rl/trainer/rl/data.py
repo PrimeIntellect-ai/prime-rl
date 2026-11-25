@@ -19,7 +19,12 @@ from prime_rl.transports.batch import (
     setup_batch_receiver,
 )
 from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES, SamplerSupport
-from prime_rl.transports.payload import delete_payloads, mark_trained, require_rollout_store, resolve_payloads
+from prime_rl.transports.payload import (
+    delete_payloads,
+    mark_trained,
+    materialize_micro_batches,
+    require_rollout_store,
+)
 from prime_rl.utils.logger import format_time, get_logger
 
 
@@ -231,7 +236,8 @@ def drop_micro_batches(micro_batches: list[TensorMicroBatch], indices: list[int]
 
 
 class DataLoader:
-    """Receives packed micro batches from the orchestrator, one stream per DP rank."""
+    """Receives the orchestrator's micro batch plans, one stream per DP rank, and builds the
+    micro batches from the samples the env worker pools keep."""
 
     def __init__(
         self,
@@ -248,9 +254,9 @@ class DataLoader:
         self.dp_world_size = dp_world_size
         self.payload_pool = ThreadPoolExecutor(32, thread_name_prefix="payload")
         self.failed_micro_batches: list[int] = []
-        """Micro batches of the last batch whose arrays could not be fetched on this rank."""
+        """Micro batches of the last batch with a sample this rank could not fetch."""
         self.payload_urls: list[str] = []
-        """The last batch's fetched arrays, for `release_payloads`."""
+        """The last batch's fetched samples, for `release_payloads`."""
 
         self.receiver: BatchReceiver = setup_batch_receiver(
             output_dir,
@@ -270,16 +276,18 @@ class DataLoader:
 
     def get_batch(self) -> list[TensorMicroBatch]:
         self.step = self.receiver.current_step
-        micro_batches = self.receiver.receive()
+        plans = self.receiver.receive()
         start = time.perf_counter()
-        self.failed_micro_batches, self.payload_urls = resolve_payloads(micro_batches, self.payload_pool)
+        micro_batches, self.failed_micro_batches, self.payload_urls = materialize_micro_batches(
+            plans, self.payload_pool
+        )
         get_logger().debug(
-            f"Fetched payloads of {len(micro_batches)} micro batches in {format_time(time.perf_counter() - start)}"
+            f"Fetched the samples of {len(micro_batches)} micro batches in {format_time(time.perf_counter() - start)}"
         )
         return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
 
     def release_payloads(self) -> None:
-        """Free the last batch's arrays on the env workers. Call once every rank that may
+        """Free the last batch's samples on the env workers. Call once every rank that may
         read them has fetched them. A retaining run's rollout stores keep them until
         `commit`: a restarted trainer fetches them again."""
         if self.retain:

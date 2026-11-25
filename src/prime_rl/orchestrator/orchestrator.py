@@ -75,6 +75,7 @@ from prime_rl.orchestrator.utils import (
     eval_work,
     intercept_vf_logging,
     max_rollout_staleness,
+    min_fresh_version,
     release_and_trim,
     rollout_staleness,
     set_default_executor,
@@ -747,13 +748,19 @@ class Orchestrator:
         await monitors.log_annotations(annotations)
 
         pack_start_time = time.perf_counter()
-        micro_batch_grid = await asyncio.to_thread(self.packer.pack, batch.samples)
+        micro_batch_grid = await asyncio.to_thread(
+            lambda: self.packer.pack(
+                batch.samples,
+                trained_version=step - 1,
+                min_version=min_fresh_version(step, config.max_staleness),
+            )
+        )
         pack_time = time.perf_counter() - pack_start_time
         # Sending blocks until every trainer rank requested the batch, so the wait is the time
         # the orchestrator spent waiting on the trainer for the next policy.
         send_start_time = time.perf_counter()
         self.unsent_rollouts = batch.cohort.num_traces
-        self.unsent_tokens = sum(len(sample.token_ids) for sample in batch.samples)
+        self.unsent_tokens = sum(sample.num_tokens for sample in batch.samples)
         send_batch_time = await self.sender.send(micro_batch_grid)
         self.unsent_rollouts = self.unsent_tokens = 0
         shipped_at = time.perf_counter()

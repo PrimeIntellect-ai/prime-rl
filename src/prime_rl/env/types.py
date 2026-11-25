@@ -37,6 +37,14 @@ class CancelResponse(BaseResponse):
     """Whether a live run was found and aborted."""
 
 
+class TrainRequest(BaseModel):
+    """What a train rollout needs beyond the rollout itself: the source's algorithm, whose
+    rollout-local scoring runs in the worker before it keeps the episode's samples."""
+
+    algo: dict
+    """The source's dumped `AlgoConfig`."""
+
+
 class RunRequest(BaseRequest):
     """One env-rollout, shipping the task itself: `task_data` is the dumped
     `TaskData` the worker validates into the taskset's declared type."""
@@ -46,6 +54,8 @@ class RunRequest(BaseRequest):
     client: ClientConfig
     model: str
     sampling: SamplingConfig
+    train: TrainRequest | None = None
+    """Set on train rollouts: the worker keeps their training samples. None for eval."""
 
 
 class TraceSummary(BaseModel):
