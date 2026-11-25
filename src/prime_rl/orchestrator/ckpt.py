@@ -102,7 +102,13 @@ class CheckpointManager:
         with warnings.catch_warnings():
             # The child runs no other thread, logs nothing, and leaves with os._exit.
             warnings.simplefilter("ignore", DeprecationWarning)
-            pid = os.fork()
+            try:
+                pid = os.fork()
+            except BaseException:
+                # No writer will finish, so nothing else unfreezes.
+                if freeze:
+                    gc.unfreeze()
+                raise
         if pid == 0:
             code = 1
             try:

@@ -1240,6 +1240,10 @@ class Orchestrator:
         start = time.perf_counter()
         try:
             restores = await self.save_inflight(rollouts)
+            # In the ledger from the moment this run owns them: if the orchestrator dies
+            # before the writer finishes, this step has no progress.pt, and a resume
+            # deletes its snapshots.
+            self.ckpt_manager.snapshots.record(step, [restore.snapshot for restore in restores.values()])
             saved = time.perf_counter()
             async with self.sink_lock:
                 locked = time.perf_counter()
@@ -1332,10 +1336,9 @@ class Orchestrator:
         """Wait for the forked writer of ``step``'s rollout checkpoint, which completes
         the checkpoint, then report it and delete the snapshots nothing restores from
         anymore. ``unused`` are restore points the checkpoint does not reference."""
-        ledger = self.ckpt_manager.snapshots
-        # Before the wait: a snapshot is in the ledger from the moment this run owns it.
-        ledger.record(step, owned_snapshots(work))
-        ledger.orphan([restore.snapshot for restore in unused])
+        # The snapshots of ``unused`` were recorded for this step at the save; recording
+        # only those the checkpoint references orphans them.
+        self.ckpt_manager.snapshots.record(step, owned_snapshots(work))
         counts = count_open_work(work)
         start = time.perf_counter()
         try:

@@ -398,7 +398,7 @@ def test_open_work_holds_the_open_groups_and_the_inflight_episodes():
     # Writing the checkpoint moves or drops a restore point: the waiting episode keeps its own.
     episodes[0].restore.path = "/elsewhere"
     episodes[0].restore = None
-    assert d.resumed == [waiting] and waiting.restore.path == restore_ref("t0").path
+    assert list(d.resumed) == [waiting] and waiting.restore.path == restore_ref("t0").path
     # The dispatcher's own groups are untouched.
     assert a.episodes_to_schedule == 2 and a.group_id is None
 
