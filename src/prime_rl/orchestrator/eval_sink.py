@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.metrics import EvalEpisodes
 from prime_rl.orchestrator.types import DispatchFailure, EvalBatch, GroupCancellation
-from prime_rl.orchestrator.utils import episode_env_name, episode_tokens, eval_work
+from prime_rl.orchestrator.utils import episode_env_name, eval_work
 from prime_rl.transports.payload import delete_payloads, trace_payload_urls
 
 if TYPE_CHECKING:
@@ -23,15 +23,12 @@ class EvalSink:
         self.pending_batches: dict[tuple[str, int], list[vf.Episode]] = defaultdict(list)
         self.pending_batch_failures: dict[tuple[str, int], list[DispatchFailure]] = defaultdict(list)
         self.pending_batch_cancellations: dict[tuple[str, int], int] = defaultdict(int)
-        self.pending_tokens: dict[tuple[str, int], int] = defaultdict(int)
-        """Tokens of each epoch's arrived episodes."""
 
     def add(self, episode: vf.Episode) -> EvalBatch | None:
         # Env workers keep every episode's training arrays; eval never trains on them.
         delete_payloads(url for trace in episode.traces for url in trace_payload_urls(trace))
         key = (episode_env_name(episode), eval_work(episode).step)
         self.pending_batches[key].append(episode)
-        self.pending_tokens[key] += episode_tokens(episode)
         return self._complete(key)
 
     def fail(self, failure: DispatchFailure) -> EvalBatch | None:
@@ -71,13 +68,6 @@ class EvalSink:
         env = self.eval_envs.get(env_name)
         return len(env.examples) * env.config.group_size
 
-    def gauges(self) -> dict[str, float]:
-        """Rollouts and tokens of the eval epochs in progress."""
-        return {
-            "memory/held_rollouts/eval": float(sum(len(episodes) for episodes in self.pending_batches.values())),
-            "memory/held_tokens/eval": float(sum(self.pending_tokens.values())),
-        }
-
     def batch_progress(self) -> list[tuple[str, int, int, int]]:
         """``(env, step, arrived, expected)`` per epoch in progress."""
         keys = set(self.pending_batches) | set(self.pending_batch_failures) | set(self.pending_batch_cancellations)
@@ -88,7 +78,6 @@ class EvalSink:
 
     def process_batch(self, key: tuple[str, int]) -> EvalBatch:
         env_name, step = key
-        self.pending_tokens.pop(key, None)
         return EvalBatch(
             env_name=env_name,
             step=step,

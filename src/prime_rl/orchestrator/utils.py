@@ -27,11 +27,6 @@ def episode_group_id(episode: vf.Episode[Any, Any, Any]) -> str:
     return group.id
 
 
-def episode_tokens(episode: vf.Episode[Any, Any, Any]) -> int:
-    """The tokens an episode holds: every node's token ids, once each."""
-    return sum(len(node.token_ids) for trace in episode.traces for node in trace.nodes)
-
-
 def train_work(episode: vf.Episode[Any, Any, Any]) -> vf.TrainWorkInfo:
     run = episode.run
     if not isinstance(run, vf.TrainRunInfo) or not isinstance(run.work, vf.TrainWorkInfo):
