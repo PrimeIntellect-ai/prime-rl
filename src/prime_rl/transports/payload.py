@@ -24,6 +24,7 @@ Nothing here imports torch: every env worker imports this module.
 
 from __future__ import annotations
 
+import os
 import queue
 import shutil
 import socket
@@ -190,6 +191,14 @@ class PayloadServer:
         with self.lock:
             self.blobs[key] = blob
 
+    def replace(self, key: str, blob: bytes) -> bool:
+        """Rewrite a kept blob; one freed meanwhile stays freed. Whether it was still kept."""
+        with self.lock:
+            if key not in self.blobs:
+                return False
+            self.blobs[key] = blob
+            return True
+
     def delete(self, key: str) -> None:
         with self.lock:
             self.blobs.pop(key, None)
@@ -248,6 +257,16 @@ class RolloutStore(PayloadServer):
         tmp = path.with_name(f".{key}.tmp")
         tmp.write_bytes(blob)
         tmp.rename(path)
+
+    def replace(self, key: str, blob: bytes) -> bool:
+        # In place, never created: a blob unlinked after the open takes the write with it.
+        try:
+            fd = os.open(self.path(key), os.O_WRONLY | os.O_TRUNC)
+        except FileNotFoundError:
+            return False
+        with os.fdopen(fd, "wb") as f:
+            f.write(blob)
+        return True
 
     def delete(self, key: str) -> None:
         """Free a blob that will never ship. A trained blob stays until its step is committed."""

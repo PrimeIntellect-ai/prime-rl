@@ -105,7 +105,9 @@ class SampleServer:
         if len(ref_logprobs) != len(token_ids):
             raise ValueError(f"Scores of sample {sample.key} must align with its {len(token_ids)} tokens")
         body = msgspec.structs.replace(body, ref_logprobs=np.ascontiguousarray(ref_logprobs, np.float32).tobytes())
-        await asyncio.to_thread(self.store.put, sample.key, _encoder.encode(body))
+        # A cancelled run's worker frees its samples without waiting for their scoring.
+        if not await asyncio.to_thread(self.store.replace, sample.key, _encoder.encode(body)):
+            get_logger().debug(f"Sample {sample.key} was freed while it was scored")
 
     async def handle(self, identity: bytes, request_id: bytes, method: bytes, payload: bytes) -> None:
         try:
