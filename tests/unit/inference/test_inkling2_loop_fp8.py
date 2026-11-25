@@ -156,13 +156,14 @@ def interleaved(gate_then_up: torch.Tensor) -> torch.Tensor:
 # --- the setting, from the server's arguments to the model ---
 
 
-def test_quantization_goes_to_the_looped_model_as_an_hf_override(monkeypatch, tmp_path):
+@pytest.mark.parametrize("quantization", ["fp8_per_block", "mxfp8"])
+def test_quantization_goes_to_the_looped_model_as_an_hf_override(monkeypatch, tmp_path, quantization):
     PretrainedConfig(architectures=[ARCHITECTURE]).save_pretrained(tmp_path)
     monkeypatch.setattr(patches, "_missing_in_vllm", lambda name: False)
     config = InferenceConfig(
         vllm={
             "model": str(tmp_path),
-            "quantization": "fp8_per_block",
+            "quantization": quantization,
             # No parser is detected for a local folder, so the server's config names them.
             "reasoning_parser": "inkling",
             "tool_call_parser": "inkling",
@@ -172,39 +173,67 @@ def test_quantization_goes_to_the_looped_model_as_an_hf_override(monkeypatch, tm
     # The server's namespace already carries HF overrides: the dtypes of the router and of the LM head.
     overrides = dict(namespace.hf_overrides)
     assert overrides
-    assert namespace.quantization == "fp8_per_block"
+    assert namespace.quantization == quantization
 
     patches.select_inkling2_loop_expert_format(namespace)
 
     # vLLM's own Inkling 2 model takes no quantization method but the release's, so vLLM must not see the setting.
     assert not hasattr(namespace, "quantization")
-    assert namespace.hf_overrides == {**overrides, patches.INKLING2_LOOP_EXPERT_FORMAT_ATTRIBUTE: "fp8_per_block"}
+    # The value goes over as it was set: the model is what refuses a format it does not serve, such as `mxfp8`.
+    assert namespace.hf_overrides == {**overrides, patches.INKLING2_LOOP_EXPERT_FORMAT_ATTRIBUTE: quantization}
 
 
-@pytest.mark.parametrize(
-    ("vllm_lacks_the_looped_model", "architectures"),
-    [(True, [ARCHITECTURE]), (False, ["Qwen3ForCausalLM"]), (False, None)],
-    ids=["a vLLM without the looped model", "another model", "a config that names no architecture"],
-)
-def test_quantization_stays_with_vllm(monkeypatch, tmp_path, vllm_lacks_the_looped_model, architectures):
-    PretrainedConfig(architectures=architectures).save_pretrained(tmp_path)
-    monkeypatch.setattr(patches, "_missing_in_vllm", lambda name: vllm_lacks_the_looped_model)
-    args = Namespace(model=str(tmp_path), quantization="fp8_per_block", hf_overrides={"head_dtype": "float32"})
+def test_the_architecture_is_read_from_the_config_vllm_builds_the_model_from(monkeypatch, tmp_path):
+    # With `hf_config_path` set, vLLM reads the model's config from there, and the model's own folder may have none.
+    weights, config = tmp_path / "weights", tmp_path / "config"
+    weights.mkdir()
+    PretrainedConfig(architectures=[ARCHITECTURE]).save_pretrained(config)
+    monkeypatch.setattr(patches, "_missing_in_vllm", lambda name: False)
+    # A namespace without HF overrides, as the server's is with the FP32 router logits and LM head switched off.
+    args = Namespace(model=str(weights), hf_config_path=str(config), quantization="fp8_per_block")
 
     patches.select_inkling2_loop_expert_format(args)
 
     assert vars(args) == {
-        "model": str(tmp_path),
-        "quantization": "fp8_per_block",
-        "hf_overrides": {"head_dtype": "float32"},
+        "model": str(weights),
+        "hf_config_path": str(config),
+        "hf_overrides": {patches.INKLING2_LOOP_EXPERT_FORMAT_ATTRIBUTE: "fp8_per_block"},
     }
 
 
-def test_a_server_without_quantization_reads_no_checkpoint_config(monkeypatch):
-    monkeypatch.setattr(patches, "_missing_in_vllm", lambda name: False)
-    args = Namespace(model="no/such-checkpoint")
+@pytest.mark.parametrize(
+    ("vllm_lacks_the_looped_model", "config"),
+    [
+        (True, {"architectures": [ARCHITECTURE]}),
+        # The Inkling 2 without a loop: its servers take this setting through vLLM.
+        (False, {"architectures": ["Inkling2ForConditionalGeneration"]}),
+        (False, {}),
+        (False, None),
+    ],
+    ids=["vllm_without_looped_model", "another_model", "no_architectures", "unresolvable_model"],
+)
+def test_quantization_stays_with_vllm(monkeypatch, tmp_path, vllm_lacks_the_looped_model, config):
+    model = str(tmp_path / "model")
+    # Without a config the folder is not made: transformers cannot resolve such a model, and vLLM is left to say so.
+    if config is not None:
+        PretrainedConfig(**config).save_pretrained(model)
+    monkeypatch.setattr(patches, "_missing_in_vllm", lambda name: vllm_lacks_the_looped_model)
+    args = Namespace(model=model, quantization="fp8_per_block", hf_overrides={"head_dtype": "float32"})
+
     patches.select_inkling2_loop_expert_format(args)
-    assert vars(args) == {"model": "no/such-checkpoint"}
+
+    assert vars(args) == {"model": model, "quantization": "fp8_per_block", "hf_overrides": {"head_dtype": "float32"}}
+
+
+def test_a_looped_model_without_quantization_is_left_alone(monkeypatch, tmp_path):
+    # The default server of this model: its namespace has no `quantization`, and its experts are BF16.
+    PretrainedConfig(architectures=[ARCHITECTURE]).save_pretrained(tmp_path)
+    monkeypatch.setattr(patches, "_missing_in_vllm", lambda name: False)
+    args = Namespace(model=str(tmp_path), hf_overrides={"head_dtype": "float32"})
+
+    patches.select_inkling2_loop_expert_format(args)
+
+    assert vars(args) == {"model": str(tmp_path), "hf_overrides": {"head_dtype": "float32"}}
 
 
 def test_the_expert_format_selects_the_experts_of_every_layer(serving):

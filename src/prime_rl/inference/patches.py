@@ -119,14 +119,24 @@ def select_inkling2_loop_expert_format(args) -> None:
 
     The experts of that model are its own modules, so vLLM's online quantization does not reach them, and vLLM's
     Inkling 2 model accepts no quantization method but the release's. The setting reaches the model as an HF
-    config override and selects the format the model rounds its BF16 expert weights to."""
+    config override and selects the format the model rounds its BF16 expert weights to.
+
+    The architecture is read from the config vLLM builds the model from: ``hf_config_path`` if set, else the model,
+    at ``revision``. For every other model the setting stays with vLLM."""
     quantization = getattr(args, "quantization", None)
     if quantization is None or _missing_in_vllm("vllm.models.inkling2.nvidia.loop"):
         return
     from transformers import PretrainedConfig
 
-    architectures = PretrainedConfig.get_config_dict(args.model)[0].get("architectures") or []
-    if INKLING2_LOOP_ARCHITECTURE not in architectures:
+    try:
+        config, _ = PretrainedConfig.get_config_dict(
+            getattr(args, "hf_config_path", None) or args.model, revision=getattr(args, "revision", None)
+        )
+    except OSError:
+        # Intended: a model that transformers cannot resolve here is not this function's to refuse. vLLM resolves the
+        # model itself right after and reports what it cannot load.
+        return
+    if INKLING2_LOOP_ARCHITECTURE not in (config.get("architectures") or []):
         return
     del args.quantization
     args.hf_overrides = {
