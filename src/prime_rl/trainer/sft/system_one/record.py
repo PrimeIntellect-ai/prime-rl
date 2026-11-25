@@ -77,7 +77,10 @@ def _decode_images(row: Mapping, column: str) -> tuple[str, ...]:
     if not isinstance(images, list) or not all(
         isinstance(url, str) and url.startswith("data:image/") and ";base64," in url for url in images
     ):
-        raise ValueError(f"column {column!r} must hold a list of base64 data URLs (data:image/...;base64,...)")
+        raise ValueError(
+            f"column {column!r} must hold a list of base64 data URLs (data:image/...;base64,...); drop or rename the "
+            "column if it is not for the model"
+        )
     return tuple(images)
 
 

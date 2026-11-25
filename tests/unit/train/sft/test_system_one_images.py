@@ -74,6 +74,7 @@ class ImageStrategy(SystemOneStrategy):
         return rendered
 
     def option_logits(self, model, hidden_states, input_ids, questions):
+        model.read_ids = input_ids
         return torch.zeros(sum(len(question.options) for question in questions))
 
 
@@ -98,6 +99,7 @@ def test_a_run_without_images_refuses_records_with_them():
         "data:image/png;base64,AAAA",
         ["https://example.com/cat.png"],
         ["data:video/mp4;base64,AAAA"],
+        ["data:image/png,AAAA"],
         [1],
         {"a": 1},
     ],
@@ -113,6 +115,24 @@ def test_the_images_column_holds_json_text():
         check_records(dataset, COLUMNS, takes_images=True)
 
 
+def test_images_are_not_labels():
+    with pytest.raises(ValueError, match="needs a label column"):
+        check_records(Dataset.from_list([{**row(IMAGES), "label": None}]), COLUMNS, takes_images=True)
+
+
+def test_warns_of_a_source_without_the_images_column(monkeypatch):
+    warnings = []
+    monkeypatch.setattr(system_one_data, "get_logger", lambda: SimpleNamespace(warning=warnings.append))
+    without = {key: value for key, value in row().items() if key != "images"}
+    dataset = Dataset.from_list([{**without, "pictures": json.dumps(IMAGES)}] * 2)
+    check_records(dataset, COLUMNS, source="records", split="test", takes_images=True)
+    assert len(warnings) == 1 and warnings[0].startswith("Source 'records', split 'test' has no 'images' column")
+    check_records(dataset, COLUMNS)  # a text-only run
+    check_records(dataset, COLUMNS, rank=1, world_size=2, takes_images=True)
+    check_records(Dataset.from_list([row()]), COLUMNS, takes_images=True)
+    assert len(warnings) == 1
+
+
 def test_a_renamed_images_column_must_exist():
     renamed = SystemOneColumnsConfig(images="pictures")
     with pytest.raises(ValueError, match="data.columns.images is 'pictures'"):
@@ -126,7 +146,7 @@ def test_a_rendering_with_broken_image_inputs_is_refused(strategy):
     check_rendered_request(rendered, request(IMAGES), 32, IMAGE_TOKEN)
     without = {key: value for key, value in rendered.items() if not key.startswith("mm_")}
     video = {**rendered, "mm_kwargs": {"pixel_values_videos": rendered["mm_kwargs"]["pixel_values"]}}
-    types = rendered["mm_token_type_ids"]
+    types, grids = rendered["mm_token_type_ids"], rendered["mm_kwargs"]["image_grid_thw"]
     other = {**rendered, "input_ids": [12 if token == IMAGE_TOKEN else token for token in rendered["input_ids"]]}
     for broken, asked, error in [
         ({**without, "mm_kwargs": rendered["mm_kwargs"]}, IMAGES, "go together"),
@@ -134,7 +154,9 @@ def test_a_rendering_with_broken_image_inputs_is_refused(strategy):
         (without, IMAGES, "must be given for a request with images"),
         (rendered, None, "must be given for a request with images"),
         (video, IMAGES, "video inputs are not supported"),
-        ({**rendered, "mm_kwargs": {}}, IMAGES, "mm_kwargs is empty"),
+        ({**rendered, "mm_kwargs": {}}, IMAGES, r"mm_kwargs lacks \['image_grid_thw', 'pixel_values'\]"),
+        ({**rendered, "mm_kwargs": {"image_grid_thw": grids}}, IMAGES, r"mm_kwargs lacks \['pixel_values'\]"),
+        (strategy.render_request(request(IMAGES[:1]), 4096), IMAGES, "1 images rendered of the record's 2"),
         ({**rendered, "mm_token_type_ids": [0] * len(types)}, IMAGES, "must be 1 at the images' tokens"),
         ({**rendered, "mm_token_type_ids": [2 * t for t in types]}, IMAGES, "must be 1 at the images' tokens"),
         ({**rendered, "mm_token_type_ids": [0, *types[:-1]]}, IMAGES, "must be the model's image token 9, got"),
@@ -142,6 +164,8 @@ def test_a_rendering_with_broken_image_inputs_is_refused(strategy):
     ]:
         with pytest.raises(ValueError, match=error):
             check_rendered_request(broken, request(asked), 32, IMAGE_TOKEN)
+    # A strategy with a prompt per question shows the images in each
+    check_rendered_request(rendered, request(IMAGES[:1]), 32, IMAGE_TOKEN)
 
 
 @pytest.mark.parametrize("images", [None, IMAGES])
@@ -150,7 +174,8 @@ def test_skips_a_record_whose_text_holds_the_image_token(strategy, images, monke
     monkeypatch.setattr(system_one_data, "get_logger", lambda: SimpleNamespace(warning=warnings.append))
     assert render_sample(strategy, request(images), 4096) is not None
     assert render_sample(strategy, request(images, state=(10, IMAGE_TOKEN)), 4096) is None
-    assert warnings == ["Skipping record 'r': its text holds the model's image token"]
+    assert len(warnings) == 1
+    assert warnings[0].startswith("Skipping record 'r': its rendering has the model's image token outside its images")
     # A run without images puts no image features anywhere
     assert render_sample(ImageStrategy(None, CONFIG), request(None, state=(10, IMAGE_TOKEN)), 4096) is not None
 
@@ -172,7 +197,7 @@ def test_a_row_of_records_with_and_without_images_reaches_the_model(strategy):
 
     class Backbone(nn.Module):
         def forward(self, input_ids, position_ids, **kwargs):
-            self.kwargs = kwargs
+            self.kwargs = {**kwargs, "input_ids": input_ids, "position_ids": position_ids}
             return SimpleNamespace(last_hidden_state=torch.zeros(1, input_ids.shape[1], 4))
 
     model = nn.Module()
@@ -184,7 +209,9 @@ def test_a_row_of_records_with_and_without_images_reaches_the_model(strategy):
     torch.testing.assert_close(out["loss"], 3 * (torch.tensor(2.0).log() + 0.1 * 0.5))
     for key in ("pixel_values", "image_grid_thw"):
         assert torch.equal(model.model.kwargs[key], batch["mm_kwargs"][key])
-    assert torch.equal(model.model.kwargs["mm_token_type_ids"], batch["mm_token_type_ids"])
+    for key in ("input_ids", "position_ids", "seq_lens", "mm_token_type_ids"):
+        assert torch.equal(model.model.kwargs[key], batch[key])
+    assert torch.equal(model.read_ids, batch["input_ids"][0])
 
     (packed,) = CatDataset(samples[:1], seq_len=4096, pad_to_multiple_of=1)
     decision_forward(model, system_one_collate([packed]), strategy=strategy, brier_weight=0.1, device="cpu")
@@ -219,3 +246,12 @@ def test_an_image_that_does_not_load_raises(strategy, url, error):
         load_image(url)
     with pytest.raises(ValueError, match="record 'r': Failed to load image"):
         render_sample(strategy, request([url]), 4096)
+
+
+def test_any_decoder_error_is_a_value_error(monkeypatch):
+    def broken(*args, **kwargs):
+        raise ZeroDivisionError("division by zero")
+
+    monkeypatch.setattr(Image, "open", broken)
+    with pytest.raises(ValueError, match="Failed to load image: division by zero"):
+        load_image(IMAGES[0])
