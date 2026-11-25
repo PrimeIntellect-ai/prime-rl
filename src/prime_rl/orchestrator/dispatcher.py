@@ -733,13 +733,23 @@ class Dispatcher:
             return
         episode: vf.WireEpisode = task.result()
 
+        zero_on_timeout = bool(
+            meta.kind == "train"
+            and self.train_envs is not None
+            and meta.env_name in self.train_envs
+            and getattr(self.train_envs[meta.env_name].config.algo, "zero_on_timeout", False)
+        )
         for trace in episode.traces:
             if trace.is_timeout and not trace.has_error and meta.kind == "train":
-                # Training keeps a timed-out rollout out of the batch: an error,
-                # like any other failure. Eval keeps it as a scored outcome.
-                trace.errors.append(vf.Error(type="Timeout", message=f"Trace stopped by {trace.stop_condition}"))
-                trace.ok = False
-                episode.ok = False
+                if zero_on_timeout:
+                    trace.rewards.clear()
+                    trace.record_reward("reward", 0.0, weight=1.0)
+                else:
+                    # Training keeps a timed-out rollout out of the batch: an error,
+                    # like any other failure. Eval keeps it as a scored outcome.
+                    trace.errors.append(vf.Error(type="Timeout", message=f"Trace stopped by {trace.stop_condition}"))
+                    trace.ok = False
+                    episode.ok = False
             if trace.is_dropped:
                 get_logger().info(f"Trace dropped in group {meta.group_id} ({meta.env_name}) — {trace.dropped}")
             if trace.has_error:

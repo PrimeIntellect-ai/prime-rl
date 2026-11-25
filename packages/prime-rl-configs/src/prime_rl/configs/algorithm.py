@@ -157,10 +157,31 @@ class FallbackRewardConfig(BaseConfig):
     """Scalar key in ``trace.metrics`` to fall back to (e.g. ``"criteria_score"``). Missing or ``None`` values score ``0.0``."""
 
     weight: float = Field(0.5, gt=0, allow_inf_nan=False)
-    """Multiplier on the fallback metric. Keeping this below 1 bounds all-fail updates relative to binary-pass groups."""
+    """Base multiplier on the fallback score. Keeping this below 1 bounds all-fail updates relative to binary-pass groups."""
 
     threshold: float = Field(1.0, allow_inf_nan=False)
     """Primary reward threshold that counts as a solve: if any trainable trace in the group reaches it, the group uses primary reward only."""
+
+    floor: float = Field(0.0, ge=0.0, lt=1.0, allow_inf_nan=False)
+    """Zero out low-score boilerplate below this threshold before rescaling ``(c - floor) / (1 - floor)``."""
+
+    exponent: float = Field(1.0, ge=1.0, allow_inf_nan=False)
+    """Convexity exponent on the rescaled fallback score (e.g. ``2.0`` concentrates positive credit on near-misses)."""
+
+    min_max_score: float = Field(0.0, ge=0.0, le=1.0, allow_inf_nan=False)
+    """SNR gate: skip the fallback group (zero advantage) if no rollout reaches this raw metric value."""
+
+    min_spread: float = Field(0.0, ge=0.0, le=1.0, allow_inf_nan=False)
+    """SNR gate: skip the fallback group (zero advantage) if ``max(c) - min(c)`` is below this spread."""
+
+    disable_length_penalty: bool = False
+    """Skip relative length penalty on fallback groups so length shaping never fights or inverts partial credit."""
+
+    anneal_power: float = Field(0.0, ge=0.0, allow_inf_nan=False)
+    """Self-annealing exponent on ``(1 - p_bin_ema) ** anneal_power`` where ``p_bin_ema`` tracks the binary-active group fraction (``0.0`` disables annealing)."""
+
+    anneal_ema_decay: float = Field(0.95, ge=0.0, lt=1.0, allow_inf_nan=False)
+    """EMA decay for the binary-active group fraction used when ``anneal_power > 0``."""
 
 
 class EchoRoleConfig(BaseConfig):
@@ -258,6 +279,9 @@ class GRPOAlgoConfig(BaseAlgoConfig):
 
     fallback_reward: Annotated[FallbackRewardConfig | None, Live()] = None
     """Optional per-group fallback reward from ``trace.metrics`` when no rollout in the group reaches ``fallback_reward.threshold`` on the primary reward. None disables fallback."""
+
+    zero_on_timeout: bool = False
+    """Keep timed-out train rollouts in the batch with reward ``0.0`` instead of dropping them as timeout errors."""
 
     length_weighted_baseline: bool = False
     """Use the token-length-weighted group mean reward ``sum_i(L_i * r_i) / sum_i(L_i)`` as the baseline instead of the plain mean, where ``L_i`` is the number of trainable (mask-True, policy-sampled) tokens of rollout ``i`` summed across all its turns."""

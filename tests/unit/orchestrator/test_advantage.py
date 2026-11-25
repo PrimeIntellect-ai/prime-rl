@@ -597,3 +597,97 @@ def test_grpo_length_penalty_records_metrics():
     _grpo(group, length_penalty=lp)
     assert [ep.traces[0].metrics["length_penalty_scale"] for ep in group] == pytest.approx([1.0, 1.0])
     assert [ep.traces[0].metrics["length_penalty"] for ep in group] == pytest.approx([0.25, 0.5])
+
+
+def test_grpo_fallback_convex_threshold_and_snr_gate():
+    """Convex floor transform zeros low-score boilerplate and SNR gate skips hopeless/flat groups."""
+    fb = FallbackRewardConfig(
+        metric="criteria_score", weight=0.5, floor=0.35, exponent=2.0, min_max_score=0.45, min_spread=0.10
+    )
+    # Hopeless group (max < 0.45) -> zero advantage
+    hopeless = [
+        _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 0.10}),
+        _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 0.40}),
+    ]
+    assert _grpo(hopeless, fallback_reward=fb) == pytest.approx([0.0, 0.0])
+
+    # Flat group (spread < 0.10) -> zero advantage
+    flat = [
+        _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 0.55}),
+        _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 0.63}),
+    ]
+    assert _grpo(flat, fallback_reward=fb) == pytest.approx([0.0, 0.0])
+
+    # Near-miss group: 0.20 & 0.35 map to 0.0; 1.00 maps to 0.5 * 1.0^2 = 0.5
+    near_miss = [
+        _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 0.20}),
+        _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 0.35}),
+        _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 1.00}),
+    ]
+    advs = _grpo(near_miss, fallback_reward=fb)
+    mean_r = 0.5 / 3.0
+    assert advs == pytest.approx([-mean_r, -mean_r, 0.5 - mean_r])
+
+
+def test_grpo_fallback_disable_length_penalty_only_in_fallback():
+    """disable_length_penalty skips LP in all-fail fallback groups while keeping it in binary groups."""
+    fb = FallbackRewardConfig(metric="criteria_score", weight=0.5, disable_length_penalty=True)
+    lp = LinearLengthPenaltyConfig(num_output_tokens_weight=0.5, num_input_tokens_weight=0.0, num_turns_weight=0.0)
+
+    # All-fail fallback: longer rollout has higher criteria_score and must NOT be penalized by LP
+    all_fail = [
+        _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 0.2}),
+        _build_episode(0.0, sampled_lengths=[8], metrics={"criteria_score": 0.8}),
+    ]
+    adv_fb = _grpo(all_fail, length_penalty=lp, fallback_reward=fb)
+    assert adv_fb == pytest.approx([-0.15, 0.15])
+    assert "length_penalty" not in all_fail[0].traces[0].metrics
+
+    # Binary group: LP still applies so shorter pass beats longer pass
+    binary = [
+        _build_episode(1.0, sampled_lengths=[2], metrics={"criteria_score": 1.0}),
+        _build_episode(1.0, sampled_lengths=[8], metrics={"criteria_score": 1.0}),
+    ]
+    adv_bin = _grpo(binary, length_penalty=lp, fallback_reward=fb)
+    assert adv_bin[0] > adv_bin[1]
+    assert "length_penalty" in binary[0].traces[0].metrics
+
+
+def test_grpo_fallback_self_annealing_ema():
+    """Fallback weight shrinks via (1 - p_bin_ema) ** anneal_power as binary groups arrive."""
+    fb = FallbackRewardConfig(metric="criteria_score", weight=0.5, anneal_power=2.0, anneal_ema_decay=0.5)
+    algo = GRPOAlgorithm(GRPOAlgoConfig(fallback_reward=fb), clients=None)
+
+    # First group is binary-active -> ema = 1.0
+    g_bin = [
+        _build_episode(1.0, sampled_lengths=[2], metrics={"criteria_score": 1.0}),
+        _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 0.0}),
+    ]
+    asyncio.run(algo.score_group(g_bin))
+    assert g_bin[0].traces[0].metrics["fallback_binary_group_ema"] == pytest.approx(1.0)
+
+    # Next group is all-fail -> ema = 0.5 * 1.0 + 0.5 * 0.0 = 0.5 -> w_eff = 0.5 * (1 - 0.5)^2 = 0.125
+    g_fb = [
+        _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 0.0}),
+        _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 1.0}),
+    ]
+    asyncio.run(algo.score_group(g_fb))
+    assert g_fb[0].traces[0].metrics["fallback_binary_group_ema"] == pytest.approx(0.5)
+    assert g_fb[0].traces[0].metrics["fallback_reward_weight"] == pytest.approx(0.125)
+    assert [_scalar(ep) for ep in g_fb] == pytest.approx([-0.0625, 0.0625])
+
+
+def test_grpo_zero_on_timeout():
+    """Timed-out traces get reward=0.0 (and criteria_score=0.0 in fallback) when zero_on_timeout=True."""
+    fb = FallbackRewardConfig(metric="criteria_score", weight=0.5)
+    algo = GRPOAlgorithm(GRPOAlgoConfig(fallback_reward=fb, zero_on_timeout=True), clients=None)
+
+    g = [
+        _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 0.8}),
+        _build_episode(0.0, sampled_lengths=[8], metrics={"criteria_score": 0.9}),
+    ]
+    g[1].traces[0].is_timeout = True
+    assert g[1].traces[0].is_timeout
+    asyncio.run(algo.score_group(g))
+    assert [ep.traces[0].reward for ep in g] == pytest.approx([0.4, 0.0])
+    assert [_scalar(ep) for ep in g] == pytest.approx([0.2, -0.2])

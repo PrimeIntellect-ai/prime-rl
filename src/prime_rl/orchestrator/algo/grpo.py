@@ -72,8 +72,11 @@ class GRPOAlgorithm(Algorithm):
         super().__init__(config, clients)
         self.length_penalty = config.length_penalty
         self.fallback_reward = config.fallback_reward
+        self.zero_on_timeout = config.zero_on_timeout
         self.length_weighted_baseline = config.length_weighted_baseline
         self.loss_aggregation = config.loss_aggregation
+        self._binary_group_ema: float = 0.0
+        self._binary_group_count: int = 0
 
     def reconfigure(self, config: GRPOAlgoConfig) -> None:
         self.length_penalty = config.length_penalty
@@ -83,21 +86,55 @@ class GRPOAlgorithm(Algorithm):
         import torch  # only the trainer-side extras ship torch; an eval process never scores a group
 
         traces = [trace for _, trace in iter_trainable_traces(episodes)]
+        if self.zero_on_timeout:
+            for trace in traces:
+                if trace.is_timeout:
+                    trace.rewards.clear()
+                    trace.record_reward("reward", 0.0, weight=1.0)
         rewards = torch.tensor([trace.reward for trace in traces], dtype=torch.float32)
         fallback = self.fallback_reward
-        if fallback is not None:
-            use_fallback = bool(traces) and not any(trace.reward >= fallback.threshold for trace in traces)
-            for trace in traces:
+        use_fallback = False
+        if fallback is not None and traces:
+            use_fallback = not any(trace.reward >= fallback.threshold for trace in traces)
+            is_binary_group = 0.0 if use_fallback else 1.0
+            if self._binary_group_count == 0:
+                self._binary_group_ema = is_binary_group
+            else:
+                decay = fallback.anneal_ema_decay
+                self._binary_group_ema = decay * self._binary_group_ema + (1.0 - decay) * is_binary_group
+            self._binary_group_count += 1
+            effective_weight = fallback.weight * ((1.0 - self._binary_group_ema) ** fallback.anneal_power)
+
+            raw_scores = [
+                0.0
+                if (self.zero_on_timeout and trace.is_timeout) or trace.metrics.get(fallback.metric) is None
+                else float(trace.metrics[fallback.metric])
+                for trace in traces
+            ]
+            snr_pass = (
+                max(raw_scores) >= fallback.min_max_score
+                and (max(raw_scores) - min(raw_scores)) >= fallback.min_spread
+            )
+            for trace, raw in zip(traces, raw_scores, strict=True):
                 trace.record_metric("binary_reward", trace.reward)
                 trace.record_metric("fallback_reward_active", 1.0 if use_fallback else 0.0)
+                trace.record_metric("fallback_reward_weight", effective_weight)
+                trace.record_metric("fallback_binary_group_ema", self._binary_group_ema)
                 if use_fallback:
-                    value = trace.metrics.get(fallback.metric)
-                    score = 0.0 if value is None else float(value)
+                    if snr_pass:
+                        rescaled = max(0.0, (raw - fallback.floor) / (1.0 - fallback.floor))
+                        score = rescaled ** fallback.exponent
+                    else:
+                        score = 0.0
                     trace.rewards.clear()
-                    trace.record_reward("reward", score, weight=fallback.weight)
+                    trace.record_reward("reward", score, weight=effective_weight)
             if use_fallback:
                 rewards = torch.tensor([trace.reward for trace in traces], dtype=torch.float32)
-        length_penalty = self.length_penalty
+        length_penalty = (
+            None
+            if (use_fallback and fallback is not None and fallback.disable_length_penalty)
+            else self.length_penalty
+        )
         if length_penalty is None:
             shaped_rewards = rewards
         else:
