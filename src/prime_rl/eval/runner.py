@@ -28,7 +28,7 @@ from prime_rl.control.server import serve
 from prime_rl.env.heads import EpisodeHead, recorded_head
 from prime_rl.eval.control import create_app
 from prime_rl.orchestrator import live
-from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
+from prime_rl.orchestrator.annotations import log_arrival, stamp_batch
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
@@ -256,11 +256,7 @@ class EvalRunner:
         """One episode of the epoch, arrived or restored: through the monitors and into
         its env's batch, which is finalized once the epoch is complete."""
         step = eval_work(episode).step
-        record = episode.take_record()
-        await monitors.log_annotations(stamp_arrival(episode, record, "eval", step))
-        if record is not None:
-            await monitors.log_records([(episode, record)], step, "eval")
-        del record
+        await log_arrival(episode, "eval", step)
         eval_batch = self.eval_sink.add(episode)
         if eval_batch is not None:
             await self.finalize_eval_batch(eval_batch)

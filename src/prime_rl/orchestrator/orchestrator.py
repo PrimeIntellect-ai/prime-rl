@@ -46,7 +46,7 @@ from prime_rl.control.controller import Controller, validate_update
 from prime_rl.control.server import ControlServer
 from prime_rl.control.types import ConfigUpdate, InvalidConfigError, Reconfigurable
 from prime_rl.orchestrator.algo.routing import is_trainable
-from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
+from prime_rl.orchestrator.annotations import log_arrival, stamp_batch
 from prime_rl.orchestrator.batch import BatchPacker
 from prime_rl.orchestrator.ckpt import build_state, setup_ckpt_manager
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
@@ -619,11 +619,7 @@ class Orchestrator:
                 raise ValueError("Orchestrated episode is missing training-run provenance")
             kind = episode.run.work.type
             step = episode.run.work.step if kind == "eval" else self.progress.step
-            record = episode.take_record()
-            await monitors.log_annotations(stamp_arrival(episode, record, kind, step))
-            if record is not None:
-                await monitors.log_records([(episode, record)], step, kind)
-            del record
+            await log_arrival(episode, kind, step)
 
             if kind == "eval":
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured

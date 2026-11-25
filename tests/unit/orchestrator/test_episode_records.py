@@ -11,10 +11,11 @@ from prime_runs.sinks.traces import names_run
 from prime_traces.traces import _encode_record
 from verifiers.v1.delta import DeltaStreamer
 
+from prime_rl import monitors
 from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.env.encoding import pack, unpack
 from prime_rl.env.heads import EpisodeHead, recorded_head
-from prime_rl.monitors.file.monitor import FileMonitor
+from prime_rl.monitors.file.monitor import FileMonitor, in_trace_sample
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import chunk_path
 from prime_rl.monitors.file.traces.index import index_record, index_row
@@ -22,7 +23,7 @@ from prime_rl.monitors.file.traces.live import get_live_dir, read_live
 from prime_rl.monitors.file.traces.update import fold_trace_updates
 from prime_rl.monitors.prime import RecordUpload
 from prime_rl.orchestrator.algo.routing import assign_advantage
-from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
+from prime_rl.orchestrator.annotations import log_arrival, stamp_arrival, stamp_batch
 from tests.unit.orchestrator.test_train_sink import trace, whole_episode
 
 
@@ -151,3 +152,19 @@ def test_a_folded_advantage_credits_only_trainable_branches():
     assign_advantage(received.traces[0], 0.5)
     fold_trace_updates(record["traces"][0], stamp_batch([received], step=1))
     assert [node.get("advantages") for node in record["traces"][0]["nodes"]] == [None, [0.5, 0.5], None]
+
+
+def test_sampled_episodes_keep_their_arrival_under_a_trace_sample(tmp_path, monkeypatch):
+    group = next(f"g{i}" for i in range(100) if in_trace_sample(f"g{i}", 0.5))
+    monitor = FileMonitor(FileMonitorConfig(trace_sample=0.5))
+    asyncio.run(monitor.init(tmp_path))
+    monkeypatch.setattr(monitors, "MONITORS", [monitor])
+
+    arrived = [recorded_head(whole_episode([trace()], group=group), float_decimals=4) for _ in range(2)]
+    for episode in arrived:
+        asyncio.run(log_arrival(episode, "train", step=1))
+
+    stream = get_annotations_dir(tmp_path) / "unknown"
+    updates = [orjson.loads(line) for line in chunk_path(stream, 0).read_bytes().splitlines()]
+    assert [update["trace_id"] for update in updates] == [episode.traces[0].id for episode in arrived]
+    assert all(update["info"]["arrival"]["step"] == 1 for update in updates)

@@ -11,6 +11,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any
 
+from prime_rl import monitors
 from prime_rl.monitors.base import Kind
 from prime_rl.monitors.file.traces.update import make_update
 from prime_rl.orchestrator.credit import trace_advantage
@@ -27,6 +28,18 @@ def stamp_arrival(episode: EpisodeHead, record: EpisodeRecord | None, kind: Kind
         for trace in record.index.get("traces") or []:
             trace["info"] = {**(trace.get("info") or {}), **arrival}
     return [make_update(trace.id, info={"kind": kind, **arrival}) for trace in episode.traces]
+
+
+async def log_arrival(episode: EpisodeHead, kind: Kind, step: int) -> None:
+    """Log an arrived episode's record, stamped with its arrival, then the arrival's updates
+    over it. The record goes first: under a trace sample, the file monitor annotates only the
+    traces it wrote. An episode no monitor keeps a record of has nothing to annotate."""
+    record = episode.take_record()
+    if record is None:
+        return
+    updates = stamp_arrival(episode, record, kind, step)
+    await monitors.log_records([(episode, record)], step, kind)
+    await monitors.log_annotations(updates)
 
 
 def stamp_batch(episodes: list[EpisodeHead], step: int) -> list[dict[str, Any]]:
