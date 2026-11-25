@@ -31,11 +31,16 @@ from prime_rl.env.types import (
     BaseRequest,
     BaseResponse,
     CancelRequest,
+    DiscardRequest,
+    DiscardResponse,
     HealthRequest,
     HealthResponse,
     RecordRequest,
+    ReleaseRequest,
     RunRequest,
     RunResponse,
+    SaveRequest,
+    SaveResponse,
     TrainRequest,
 )
 from prime_rl.utils.logger import get_logger
@@ -162,10 +167,12 @@ class EnvClient:
         timeout: float | None = None,
         on_delta: Callable[[dict], None] | None = None,
         request_id: str | None = None,
+        check: bool = True,
     ) -> ResponseT:
-        """Send a typed request and validate the reply into `response_type`. A
-        `timeout` is only used for health polling — rollouts run untimed. `on_delta`
-        receives each decoded `delta` the request streams before its reply."""
+        """Send a typed request and validate the reply into `response_type`. Rollouts
+        run untimed; a reply that lands after a `timeout` is dropped. `on_delta`
+        receives each decoded `delta` the request streams before its reply. With
+        `check`, a reply that reports a failure raises."""
         self._ensure_receiver()
         request_id = request_id or uuid.uuid4().hex
         future: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
@@ -187,7 +194,7 @@ class EnvClient:
         finally:
             self._deltas.pop(request_id, None)
         response = response_type.model_validate(unpack(data))
-        if not response.success:
+        if check and not response.success:
             raise RuntimeError(response.error or "env worker pool request failed")
         return response
 
@@ -236,13 +243,17 @@ class EnvClient:
         live: bool = True,
         env_name: str | None = None,
         group_id: str | None = None,
+        restore: str | None = None,
+        request_id: str | None = None,
     ) -> EpisodeHead:
         """Run one rollout; return the head of its episode, holding the episode's record
         (`EpisodeHead.take_record`) when ``record`` asks for it. The worker takes the task
         itself (`task_data`, its dumped `TaskData`). The traces stream as the rollout runs,
         one delta per turn or phase change (`verifiers.v1.delta`), or only their progress
-        without ``live``; `on_delta` sees each as it lands."""
-        request_id = uuid.uuid4().hex
+        without ``live``; `on_delta` sees each as it lands. `restore` is the path of a restore
+        file (`save`): the run continues that rollout. `request_id` names the run on the wire,
+        which is how `save` tells the caller whose restore point is whose."""
+        request_id = request_id or uuid.uuid4().hex
         response = await self._request(
             RunRequest(
                 task_data=task_data,
@@ -255,6 +266,7 @@ class EnvClient:
                 live=live,
                 env_name=env_name,
                 group_id=group_id,
+                restore=restore,
             ),
             RunResponse,
             on_delta=on_delta,
@@ -271,6 +283,30 @@ class EnvClient:
         if response.record is not None:
             head._record = EpisodeRecord(json=response.record, index=response.index or {})
         return head
+
+    async def save(self, directory: str, timeout: float | None = None) -> SaveResponse:
+        """Take a memory checkpoint of every rollout running on the pool's workers, each
+        written as a restore file under `directory`. The caller owns the snapshots of
+        the restore points it gets back. Each saved rollout then waits at its restore
+        point until `release`: one that finished and shipped meanwhile would be both in a
+        trained batch and in the checkpoint as in flight, and a resume would train on it
+        twice. A save that failed on some workers still returns what the others saved:
+        the caller owns their snapshots either way."""
+        response = await self._request(SaveRequest(dir=directory), SaveResponse, timeout=timeout, check=False)
+        if not response.success:
+            get_logger().warning(f"Saving the running rollouts failed on some env workers: {response.error}")
+        return response
+
+    async def release(self, timeout: float | None = 30.0) -> None:
+        """Let the rollouts the last `save` holds at their restore points go on, once the
+        caller recorded them. A worker that never gets the release ends the hold itself
+        after two minutes."""
+        await self._request(ReleaseRequest(), BaseResponse, timeout=timeout)
+
+    async def discard(self, snapshots: list[dict], timeout: float | None = 120.0) -> list[str]:
+        """Delete box snapshots; returns the ids of the deleted."""
+        response = await self._request(DiscardRequest(snapshots=snapshots), DiscardResponse, timeout=timeout)
+        return response.deleted
 
     async def close(self) -> None:
         if self._receiver is not None:

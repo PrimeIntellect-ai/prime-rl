@@ -3,6 +3,7 @@
 import asyncio
 from types import SimpleNamespace
 
+from prime_rl.env.types import RestoreRef, SaveResponse
 from prime_rl.orchestrator.envs import Env
 
 
@@ -34,5 +35,40 @@ def test_runs_go_to_the_least_loaded_replica():
         env._env_clients[1].release.set()
         await asyncio.gather(*tasks)
         assert env._in_flight == [0, 0]
+
+    asyncio.run(run())
+
+
+class SaveClient:
+    def __init__(self, request_id: str, *, fails: bool = False, waits: bool = False):
+        self.restore = RestoreRef(trace_id=f"t-{request_id}", path=f"/ckpt/t-{request_id}.restore", snapshot={})
+        self.request_id = request_id
+        self.fails = fails
+        self.release = asyncio.Event()
+        if not waits:
+            self.release.set()
+
+    async def save(self, directory: str) -> SaveResponse:
+        await self.release.wait()
+        if self.fails:
+            raise RuntimeError("worker failed")
+        return SaveResponse(restores={self.request_id: self.restore}, orphans=[{"id": f"unused-{self.request_id}"}])
+
+
+def test_save_merges_the_replicas_that_answer_in_time():
+    async def run():
+        env = Env(SimpleNamespace(resolved_name="test"), None, [])
+        fast, failing, slow = SaveClient("r1"), SaveClient("r2", fails=True), SaveClient("r3", waits=True)
+        env._env_clients = [fast, failing, slow]
+        restores = await env.save("/ckpt", timeout=0.05)
+        assert restores == {"r1": fast.restore}
+        assert env.orphan_snapshots == [{"id": "unused-r1"}]
+        assert env.late_restores == []
+        # What a slow replica saved after all is kept apart, for its owner to delete.
+        slow.release.set()
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert env.late_restores == [slow.restore]
+        assert env.orphan_snapshots == [{"id": "unused-r1"}, {"id": "unused-r3"}]
 
     asyncio.run(run())

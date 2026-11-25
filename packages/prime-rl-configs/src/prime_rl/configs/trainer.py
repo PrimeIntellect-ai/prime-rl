@@ -7,6 +7,7 @@ from pydantic import Field, field_validator, model_validator
 
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
+    BaseCheckpointConfig,
     BaseModelConfig,
     ControlConfig,
     EnvVars,
@@ -626,19 +627,7 @@ class SignSGDConfig(BaseOptimizerConfig):
 OptimizerConfig: TypeAlias = Annotated[AdamWConfig | MuonConfig | SignSGDConfig, Field(discriminator="type")]
 
 
-class CheckpointConfig(BaseConfig):
-    output_dir: Path | None = None
-    """Override directory for checkpoints. If set, checkpoints are written here instead of under the trainer ``output_dir`` — useful for writing large checkpoints to a separate storage volume."""
-
-    interval: int | None = Field(None, ge=1)
-    """Interval at which to save the training checkpoint. If None, only checkpoints at the end of training."""
-
-    keep_last: int | None = Field(None, ge=1)
-    """Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency."""
-
-    keep_interval: int | None = Field(None, ge=1)
-    """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
-
+class CheckpointConfig(BaseCheckpointConfig):
     skip_dataloader: bool = False
     """Skip loading the dataloader from checkpoint."""
 
