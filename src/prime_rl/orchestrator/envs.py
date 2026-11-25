@@ -77,6 +77,7 @@ class Env:
         self._env_clients: list[EnvClient] = []
         self._in_flight: list[int] = []
         """Runs in flight per replica, to route each run to the least loaded one."""
+        self.orphan_snapshots: list[dict] = []
         self.late_restores: list[RestoreRef] = []
         self.save_skipped: Counter[str] = Counter()
         """Why running rollouts took no restore point at the last ``save``, counted."""
@@ -175,6 +176,7 @@ class Env:
             if save.exception() is not None:
                 get_logger().warning(f"Saving the running rollouts of {self.name} failed: {save.exception()!r}")
             else:
+                self.orphan_snapshots.extend(save.result().orphans)
                 restores |= save.result().restores
                 self.save_skipped.update(save.result().skipped)
         for save in pending:
@@ -201,6 +203,7 @@ class Env:
     def _collect_late_save(self, save: asyncio.Task) -> None:
         self._late_saves.discard(save)
         if not save.cancelled() and save.exception() is None:
+            self.orphan_snapshots.extend(save.result().orphans)
             self.late_restores.extend(save.result().restores.values())
 
     async def discard(self, snapshots: list[dict]) -> list[str]:

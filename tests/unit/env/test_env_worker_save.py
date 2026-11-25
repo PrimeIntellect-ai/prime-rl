@@ -30,7 +30,7 @@ def test_save_maps_restore_points_to_runs_and_deletes_the_snapshots_of_the_rest(
         @staticmethod
         async def discard(snapshots) -> list[str]:
             discarded.extend(snapshot.id for snapshot in snapshots)
-            return [snapshot.id for snapshot in snapshots]
+            return [snapshot.id for snapshot in snapshots if snapshot.id != "s-failed"]
 
     async def save_all(skipped: dict[str, int], *, hold: bool, watchdog: bool) -> list[dict]:
         # t9's run ended while the checkpoints were taken; t2 is one trace of a multi-agent episode.
@@ -76,6 +76,7 @@ def test_save_maps_restore_points_to_runs_and_deletes_the_snapshots_of_the_rest(
     directory = tmp_path / "rollouts"
     response = asyncio.run(env_worker._save(SaveRequest(dir=str(directory))))
 
+    assert response.orphans == [{"id": "s-failed"}]
     assert set(response.restores) == {"r1", "rd"}
     # The holds end by themselves only once the restore files are written.
     assert armed == [True]
