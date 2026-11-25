@@ -24,6 +24,9 @@ def apply_shared_vllm_patches():
     monkey_patch_clamp_kv_offload_loads_for_routed_experts()
     monkey_patch_routed_experts_cut_loaded_prefix_hits()
     monkey_patch_kv_xfer_finished_tolerate_freed()
+    from prime_rl.inference.vllm.nvfp4_dispatch import patch_nvfp4_per_token_dispatch
+
+    patch_nvfp4_per_token_dispatch()
     monkey_patch_strip_routed_experts_from_chat()
     monkey_patch_skip_prompt_routing_for_chat()
     monkey_patch_dp_coordinator_startup_timeout()
