@@ -53,7 +53,9 @@ class SampleBody(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     context here), ``sampled`` every model-sampled token (the trace's advantage spreads over
     them). ``versions`` is the int32 policy version that sampled each token (``UNLABELED``,
     ``UNVERSIONED``). The weight streams hold the env's and the algorithm's per-token loss
-    routing, before the orchestrator's credit and staleness."""
+    routing, before the orchestrator's credit and staleness. ``advantages`` holds the credit of
+    a trace credited per token, which the orchestrator writes in once the trace's group is
+    scored."""
 
     token_ids: bytes  # int32
     mask: bytes  # bool
@@ -68,6 +70,7 @@ class SampleBody(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     mm_refs: MMRefs | None = None
     routed_experts: RoutedExperts | None = None
     sampler_support: SamplerSupport | None = None
+    advantages: bytes | None = None  # float32
 
 
 class SampleRef(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
@@ -82,7 +85,8 @@ class SampleRef(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     branch_index: int
     temperature: float
     advantage: float | None = None
-    """Spread over the sample's sampled tokens; None when the trace has no credit."""
+    """Spread over the sample's sampled tokens; None when the trace has no credit or is
+    credited per token (the body's ``advantages``)."""
     rl_weight: float | None = None
     """The rl weight of every trainable token; None keeps the body's."""
     policy_start: int | None = None

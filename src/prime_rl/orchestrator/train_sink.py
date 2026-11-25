@@ -14,6 +14,7 @@ applies the same decisions to the tokens."""
 
 from __future__ import annotations
 
+import asyncio
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -23,7 +24,8 @@ import verifiers.v1 as vf
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.control.types import ConfigUpdate, Reconfigurable
 from prime_rl.orchestrator.algo.base import iter_trainable_traces
-from prime_rl.orchestrator.credit import trace_advantage, trace_rl_weight
+from prime_rl.orchestrator.algo.routing import branch_token_advantages
+from prime_rl.orchestrator.credit import token_advantages, trace_advantage, trace_rl_weight
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import RolloutWindow, TrainEpisodes
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TrainBatch
@@ -36,7 +38,7 @@ from prime_rl.orchestrator.utils import (
 )
 from prime_rl.transports.batch.materialize import mm_cut
 from prime_rl.transports.batch.types import PAYLOAD_INFO_KEY, UNLABELED, UNVERSIONED, SampleRef
-from prime_rl.transports.payload import delete_payloads, sample_payload_urls, trace_payload_urls
+from prime_rl.transports.payload import delete_payloads, sample_payload_urls, trace_payload_urls, write_advantages
 from prime_rl.utils.logger import get_logger
 
 # Training samples reach the trainer only through env workers that keep them.
@@ -56,6 +58,8 @@ class QueuedSample:
     loss: dict[str, dict[int, int]]
     pruned: bool = False
     """Zero-advantage tokens are out of its rl component."""
+    zero_advantage: bool = False
+    """Its every token has advantage 0.0, so pruning takes it out of the rl component whole."""
 
     def is_fresh(self, version: int, min_version: int | None) -> bool:
         """Whether this sample's tokens of ``version`` train in a batch whose oldest policy is
@@ -68,7 +72,7 @@ class QueuedSample:
         """Whether any of its tokens still trains once tokens older than ``min_version`` are out."""
         for component, counts in self.loss.items():
             if component == "rl":
-                if self.pruned and self.ref.advantage == 0.0:
+                if self.pruned and self.zero_advantage:
                     continue
                 if self.ref.rl_weight is not None:
                     counts = self.trainable
@@ -93,17 +97,20 @@ def queued_samples(
     trace: vf.Trace, *, env_name: str, temperature: float, policy_start: int | None, seq_len: int
 ) -> list[QueuedSample]:
     """References to the samples an env worker kept for the trace, credited with its advantage
-    and rl weight and cut to ``seq_len`` tokens."""
+    and rl weight and cut to ``seq_len`` tokens. A trace credited per token has its advantages
+    written into its samples (`write_token_advantages`) instead."""
     payload = trace.info.get(PAYLOAD_INFO_KEY)
     if payload is None:
         raise RuntimeError(f"env '{env_name}' kept no training samples for trace {trace.id}. {_KEEP_SAMPLES_HINT}")
-    advantage, rl_weight = trace_advantage(trace), trace_rl_weight(trace)
+    token_values = branch_token_advantages(trace)
+    advantage = None if token_values is not None else trace_advantage(trace)
+    rl_weight = trace_rl_weight(trace)
     samples = []
     for index, summary in payload["branches"].items():
         num_tokens = mm_cut(summary.get("images") or [], summary["num_tokens"], seq_len)
         images = [image for image in summary.get("images") or [] if image[0] + image[1] <= num_tokens]
         loss = {component: _counts(counts) for component, counts in summary["loss"].items()}
-        if advantage is None and any(loss.get("rl", {}).values()):
+        if advantage is None and token_values is None and any(loss.get("rl", {}).values()):
             raise ValueError(
                 f"sample from env '{env_name}' has rl member tokens but no advantages — "
                 "the algorithm must credit its trace"
@@ -124,8 +131,25 @@ def queued_samples(
             routed_dtype=summary.get("routed_dtype"),
             images=images or None,
         )
-        samples.append(QueuedSample(ref, _counts(summary["trainable"]), loss))
+        zero = advantage == 0.0 if token_values is None else not token_values[int(index)].any()
+        samples.append(QueuedSample(ref, _counts(summary["trainable"]), loss, zero_advantage=zero))
     return samples
+
+
+def write_token_advantages(traces: Iterable[vf.Trace]) -> list[vf.Trace]:
+    """Write the advantages of traces credited per token into the samples their env workers
+    kept. The traces whose samples are no longer all kept."""
+    lost = []
+    for trace in traces:
+        values = branch_token_advantages(trace)
+        payload = trace.info.get(PAYLOAD_INFO_KEY)
+        if values is None or payload is None:
+            continue
+        for index, summary in payload["branches"].items():
+            if not write_advantages(f"{payload['url']}/{summary['id']}", values[int(index)]):
+                lost.append(trace)
+                break
+    return lost
 
 
 class TrainSink(Reconfigurable):
@@ -374,10 +398,19 @@ class TrainSink(Reconfigurable):
             )
             return
 
+        per_token = [trace for trace in survivors if token_advantages(trace) is not None]
+        lost = (
+            {trace.id for trace in await asyncio.to_thread(write_token_advantages, per_token)} if per_token else set()
+        )
+        if lost:
+            get_logger().warning(f"Dropped {len(lost)} traces whose env workers no longer keep their samples")
+            self._release(url for trace in survivors if trace.id in lost for url in trace_payload_urls(trace))
         samples_by_trace: dict[str, list[QueuedSample]] = {}
         # The temperature the group sampled with, which a live update may have changed since.
         temperature = env.sampling_at(train_work(group[0]).step).temperature
         for episode, trace in iter_trainable_traces(group):
+            if trace.id in lost:
+                continue
             policy = train_work(episode).policy
             samples = queued_samples(
                 trace,
