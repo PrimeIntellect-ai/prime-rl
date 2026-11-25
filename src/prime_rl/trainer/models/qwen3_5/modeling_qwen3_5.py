@@ -1,8 +1,7 @@
 import torch
 from torch import Tensor, nn
-from transformers.modeling_outputs import BaseModelOutput
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, count_active_params
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, TextModelOutput, count_active_params
 from prime_rl.trainer.models.layers.fla_ops import FlaVarlen, prepare_fla_varlen
 from prime_rl.trainer.models.layers.gated_delta_net import GatedDeltaNet
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, VanillaOutputLinear
@@ -114,11 +113,11 @@ class Qwen3_5DecoderLayer(nn.Module):
 
 
 class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL):
-    config_class = Qwen3_5TextConfig
-
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
-        return name.endswith(("linear_attn.A_log", "linear_attn.norm.weight"))
+        # vLLM allocates A_log in fp32 but the gated norm in the model dtype, so an fp32 norm
+        # would only be narrowed (with a warning) on every load.
+        return name.endswith("linear_attn.A_log")
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
@@ -163,7 +162,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> BaseModelOutput:
+    ) -> TextModelOutput:
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
         if position_ids is None:
@@ -188,7 +187,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
                 max_seqlen=max_seqlen,
                 routed_experts=layer_routed_experts,
             )
-        return BaseModelOutput(last_hidden_state=self.norm(hidden_states))
+        return TextModelOutput(last_hidden_state=self.norm(hidden_states))
 
 
 class Qwen3_5VLMModel(nn.Module):
@@ -265,7 +264,7 @@ class Qwen3_5VLMModel(nn.Module):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> BaseModelOutput:
+    ) -> TextModelOutput:
         if self.visual is None:
             return self.language_model(
                 input_ids=input_ids,

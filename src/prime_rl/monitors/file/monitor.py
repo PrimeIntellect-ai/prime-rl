@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import shutil
 import time
@@ -42,6 +43,31 @@ def _live_value(value: Any) -> Any:
     return value
 
 
+def _group_id(episode: vf.Episode) -> str | None:
+    group = getattr(episode, "group", None)
+    return getattr(group, "id", None)
+
+
+def _forget(written: set[str] | None, key: str) -> bool:
+    """Whether a file for ``key`` may exist, dropping it from ``written``: always when
+    nothing is tracked (every trace is written), else only for a file this process made."""
+    if written is None:
+        return True
+    if key in written:
+        written.discard(key)
+        return True
+    return False
+
+
+def in_trace_sample(group_id: str, fraction: float) -> bool:
+    """Whether a group's traces are written at ``fraction``: a stable hash of its id, so the
+    episode, live and annotation writers - and every process - make the same call."""
+    if fraction >= 1:
+        return True
+    digest = hashlib.blake2b(group_id.encode(), digest_size=8).digest()
+    return int.from_bytes(digest, "big") < fraction * 2**64
+
+
 def _write_streams(branch: dict[str, Any], value_stream: ChunkedJsonl) -> dict[str, Any]:
     """The branch with each per-token stream replaced by its ``{bin, offset, count}`` ref,
     the float32 values appended to ``value_stream``."""
@@ -75,7 +101,20 @@ class FileMonitor(Monitor):
         self.file = open(self.path, "a", buffering=1)  # noqa: SIM115
         self._streams: dict[Path, tuple[ChunkedJsonl, BinaryIO]] = {}
         self._value_streams: dict[Path, ChunkedJsonl] = {}
+        # Under a trace sample, what this process wrote: annotations follow its episodes, and
+        # only files it created are removed. Unused (None) when every trace is written.
+        sampled = self.config.trace_sample < 1
+        self._written_traces: set[str] | None = set() if sampled else None
+        self._live_traces: set[str] | None = set() if sampled else None
+        self._pending: set[str] | None = set() if sampled else None
+        self._logs_episodes = False
         self.logger.info(f"Logging metrics and episodes to the local filesystem ({output_dir})")
+
+    def _samples(self, kind: str | None, group_id: Any) -> bool:
+        """Whether a train group's traces are written; eval work and groupless episodes always are."""
+        if kind != "train" or group_id is None:
+            return True
+        return in_trace_sample(str(group_id), self.config.trace_sample)
 
     async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
         """``step=None`` logs a time-keyed row (e.g. inference metrics, which are
@@ -111,6 +150,11 @@ class FileMonitor(Monitor):
         # the process that streams clears them - every process of a run shares this monitor.
         clear = not self._live_cleared
         self._live_cleared = True
+        if not self.config.live:
+            # nothing streams to disk; only a previous attempt's live traces are cleared
+            if clear:
+                await asyncio.to_thread(lambda: shutil.rmtree(live_dir, ignore_errors=True))
+            return
 
         def write() -> None:
             if clear:
@@ -120,23 +164,36 @@ class FileMonitor(Monitor):
             for event in events:
                 if "done" in event:
                     appends.pop(live_dir / f"{event['done']}.jsonl", None)
-                    (live_dir / f"{event['done']}.jsonl").unlink(missing_ok=True)
+                    if _forget(self._live_traces, event["done"]):
+                        (live_dir / f"{event['done']}.jsonl").unlink(missing_ok=True)
                     continue
                 if "pending" in event:
+                    dispatch = event["dispatch"]
+                    if not self._samples(dispatch.get("kind"), dispatch.get("group")):
+                        continue
+                    if self._pending is not None:
+                        self._pending.add(event["pending"])
                     path = pending_dir / f"{event['pending']}.json"
                     tmp = path.with_suffix(".json.tmp")
-                    tmp.write_bytes(orjson.dumps(event["dispatch"]))
+                    tmp.write_bytes(orjson.dumps(dispatch))
                     tmp.replace(path)
                     continue
                 if "dispatched" in event:
-                    (pending_dir / f"{event['dispatched']}.json").unlink(missing_ok=True)
+                    if _forget(self._pending, event["dispatched"]):
+                        (pending_dir / f"{event['dispatched']}.json").unlink(missing_ok=True)
                     continue
                 delta = event["delta"]
+                dispatch = event.get("dispatch") or {}
+                if not self._samples(dispatch.get("kind"), dispatch.get("group")):
+                    continue
                 path = live_dir / f"{delta['trace']}.jsonl"
                 if delta.get("discard"):
                     appends.pop(path, None)
-                    path.unlink(missing_ok=True)
+                    if _forget(self._live_traces, delta["trace"]):
+                        path.unlink(missing_ok=True)
                     continue
+                if self._live_traces is not None:
+                    self._live_traces.add(delta["trace"])
                 line = dict(delta)
                 if "nodes" in line:
                     line["nodes"] = [
@@ -181,6 +238,12 @@ class FileMonitor(Monitor):
         annotations that readers fold back onto the stream."""
         if subset == "effective":
             return
+        self._logs_episodes = True
+        if self._written_traces is not None:
+            episodes = [episode for episode in episodes if self._samples(kind, _group_id(episode))]
+            self._written_traces.update(trace.id for episode in episodes for trace in episode.traces)
+            if not episodes:
+                return
 
         def write() -> None:
             stream, index = self._stream(get_trace_stream(self.output_dir))
@@ -204,7 +267,10 @@ class FileMonitor(Monitor):
 
     async def log_annotations(self, updates: list[dict[str, Any]]) -> None:
         """Append trace updates to this producer's annotation stream — one writer per
-        stream, so producers never interleave."""
+        stream, so producers never interleave. Under a trace sample, a producer that logs
+        episodes annotates only the traces it wrote."""
+        if self._written_traces is not None and self._logs_episodes:
+            updates = [update for update in updates if update["trace_id"] in self._written_traces]
         if not updates:
             return
 

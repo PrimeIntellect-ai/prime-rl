@@ -4,8 +4,8 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 from torch import nn
-from transformers.modeling_outputs import BaseModelOutputWithPooling
 
+from prime_rl.trainer.models.base import VisionModelOutput
 from prime_rl.trainer.models.layers.attn import (
     flash_attn_2_varlen_op,
     flash_attn_3_varlen_op,
@@ -257,7 +257,7 @@ class Qwen3_8FlashNextVisionModel(nn.Module):
             embeddings.append(position_embedding)
         return torch.cat(embeddings)
 
-    def forward(self, pixel_values: torch.Tensor, grid_thw: torch.Tensor) -> BaseModelOutputWithPooling:
+    def forward(self, pixel_values: torch.Tensor, grid_thw: torch.Tensor) -> VisionModelOutput:
         hidden_states = self.patch_embed(pixel_values)
         hidden_states = hidden_states + self.interpolated_position_embeddings(grid_thw)
         rotary = self.rotary_embeddings(grid_thw)
@@ -268,7 +268,7 @@ class Qwen3_8FlashNextVisionModel(nn.Module):
         max_seqlen = int(sequence_lengths.max())
         for block in self.blocks:
             hidden_states = block(hidden_states, cu_seqlens, max_seqlen, position_embeddings)
-        return BaseModelOutputWithPooling(
+        return VisionModelOutput(
             last_hidden_state=hidden_states,
             pooler_output=self.merger(hidden_states),
         )

@@ -1,8 +1,7 @@
 import torch
 from torch import Tensor, nn
-from transformers.modeling_outputs import BaseModelOutput
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, TextModelOutput
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.fla_ops import prepare_chunk_indices
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, VanillaOutputLinear
@@ -188,7 +187,7 @@ class NemotronHModel(NemotronHPreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> BaseModelOutput:
+    ) -> TextModelOutput:
         hidden_states = self.embed_tokens(input_ids)
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
@@ -207,7 +206,7 @@ class NemotronHModel(NemotronHPreTrainedModel):
                 max_seqlen=max_seqlen,
                 routed_experts=layer_routed_experts,
             )
-        return BaseModelOutput(last_hidden_state=self.norm(hidden_states))
+        return TextModelOutput(last_hidden_state=self.norm(hidden_states))
 
 
 class NemotronHForCausalLM(NemotronHPreTrainedModel):

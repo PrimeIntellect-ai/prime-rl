@@ -1,8 +1,7 @@
 import torch
 from torch import Tensor, nn
-from transformers.modeling_outputs import BaseModelOutput
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, TextModelOutput
 from prime_rl.trainer.models.gpt_oss.attention import GptOssAttention
 from prime_rl.trainer.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from prime_rl.trainer.models.gpt_oss.converting_gpt_oss import (
@@ -84,8 +83,6 @@ class GptOssDecoderLayer(nn.Module):
 
 class GptOssPreTrainedModel(PreTrainedModelPrimeRL):
     config: GptOssConfig
-    base_model_prefix = "model"
-    _keep_in_fp32_modules = ["post_attention_layernorm", "input_layernorm", "norm"]
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
@@ -124,7 +121,6 @@ class GptOssModel(GptOssPreTrainedModel):
                 model_config=config,
             )
         )
-        self.gradient_checkpointing = False
         self.post_init()
 
     def forward(
@@ -136,7 +132,7 @@ class GptOssModel(GptOssPreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> BaseModelOutput:
+    ) -> TextModelOutput:
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
@@ -157,11 +153,11 @@ class GptOssModel(GptOssPreTrainedModel):
                 max_seqlen=max_seqlen,
                 routed_experts=layer_routed_experts,
             )
-        return BaseModelOutput(last_hidden_state=self.norm(hidden_states))
+        return TextModelOutput(last_hidden_state=self.norm(hidden_states))
 
 
 class GptOssForCausalLM(GptOssPreTrainedModel):
-    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
+    supports_tied_word_embeddings = True
 
     def __init__(self, config: GptOssConfig) -> None:
         super().__init__(config)

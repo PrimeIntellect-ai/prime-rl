@@ -1,9 +1,7 @@
 import torch
 from torch import Tensor, nn
-from transformers.modeling_outputs import BaseModelOutput
-from transformers.utils import torch_compilable_check
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, count_active_params
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, TextModelOutput, count_active_params
 from prime_rl.trainer.models.layers.fla_ops import FlaVarlen, prepare_fla_varlen
 from prime_rl.trainer.models.layers.gated_delta_net import GatedDeltaNet
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, VanillaOutputLinear
@@ -125,9 +123,6 @@ class Qwen3_8FlashNextDecoderLayer(nn.Module):
 
 
 class Qwen3_8FlashNextPreTrainedModel(PreTrainedModelPrimeRL):
-    config_class = Qwen3_8FlashNextConfig
-    base_model_prefix = "model"
-
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return is_hf_state_dict(state_dict)
@@ -149,8 +144,6 @@ class Qwen3_8FlashNextPreTrainedModel(PreTrainedModelPrimeRL):
 
 
 class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
-    config_class = Qwen3_8FlashNextTextConfig
-
     def __init__(self, config: Qwen3_8FlashNextTextConfig) -> None:
         super().__init__(config)
         self.vocab_size = config.vocab_size
@@ -181,7 +174,6 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
             partial_rotary_factor=config.partial_rotary_factor,
             mrope_section=config.mrope_section,
         )
-        self.gradient_checkpointing = False
         self.post_init()
 
     def get_input_embeddings(self) -> nn.Embedding:
@@ -199,7 +191,7 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> BaseModelOutput:
+    ) -> TextModelOutput:
         """``input_ids`` are always required, image placeholders included: PLE hashes their n-grams even when
         ``inputs_embeds`` carries the image embeddings. ``position_ids`` is ``[batch, seq]`` or ``[3, batch, seq]``
         MRoPE positions."""
@@ -232,7 +224,7 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
                 routed_experts=layer_routed_experts,
             )
         hidden_states, _ = self.hyper_connection_mixer(hidden_states)
-        return BaseModelOutput(last_hidden_state=hidden_states)
+        return TextModelOutput(last_hidden_state=hidden_states)
 
 
 class Qwen3_8FlashNextVLMModel(nn.Module):
@@ -276,9 +268,10 @@ class Qwen3_8FlashNextVLMModel(nn.Module):
         image_embeds = self.visual(pixel_values, vision_grid).pooler_output.to(inputs_embeds.dtype)
         if has_images:
             image_mask = input_ids == self.config.image_token_id
-            torch_compilable_check(
+            torch._check_tensor_all_with(
+                ValueError,
                 image_mask.sum() * inputs_embeds.shape[-1] == image_embeds.numel(),
-                "Image features and image tokens do not match",
+                lambda: "Image features and image tokens do not match",
             )
             inputs_embeds = inputs_embeds.masked_scatter(
                 image_mask.unsqueeze(-1).expand_as(inputs_embeds), image_embeds
@@ -309,7 +302,7 @@ class Qwen3_8FlashNextVLMModel(nn.Module):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> BaseModelOutput:
+    ) -> TextModelOutput:
         if self.visual is None:
             return self.language_model(
                 input_ids=input_ids,

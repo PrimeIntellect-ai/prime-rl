@@ -9,11 +9,9 @@ the checkpoint are not modelled.
 
 import torch
 from torch import Tensor, nn
-from transformers.modeling_layers import GradientCheckpointingLayer
-from transformers.modeling_outputs import BaseModelOutput
 
 from prime_rl.configs.trainer import DSABackend
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, TextModelOutput
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection
 from prime_rl.trainer.models.glm5_next.configuration_glm5_next import Glm5NextConfig, Glm5NextTextConfig
 from prime_rl.trainer.models.glm5_next.converting_glm5_next import (
@@ -41,7 +39,7 @@ def _check_supported(config: Glm5NextTextConfig) -> None:
     assert all(indexer_type == "full" for indexer_type in config.indexer_types), "shared indexers are not supported"
 
 
-class Glm5NextDecoderLayer(GradientCheckpointingLayer):
+class Glm5NextDecoderLayer(nn.Module):
     def __init__(self, config: Glm5NextTextConfig, layer_idx: int, dsa_backend: DSABackend) -> None:
         super().__init__()
         # Token mixer: Kimi Delta Attention (linear) in three of every four layers, sparse MLA in the rest.
@@ -143,9 +141,6 @@ class Glm5NextDecoderLayer(GradientCheckpointingLayer):
 
 
 class Glm5NextPreTrainedModel(PreTrainedModelPrimeRL):
-    config_class = Glm5NextConfig
-    base_model_prefix = "model"
-
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:
         # KDA, the indexer and sparse MLA all-gather what they need over the CP group themselves.
@@ -183,8 +178,6 @@ class Glm5NextPreTrainedModel(PreTrainedModelPrimeRL):
 
 
 class Glm5NextTextModel(Glm5NextPreTrainedModel):
-    config_class = Glm5NextTextConfig
-
     def __init__(self, config: Glm5NextTextConfig, dsa_backend: DSABackend = "tilelang") -> None:
         super().__init__(config)
         _check_supported(config)
@@ -193,7 +186,6 @@ class Glm5NextTextModel(Glm5NextPreTrainedModel):
             Glm5NextDecoderLayer(config, layer_idx, dsa_backend) for layer_idx in range(config.num_hidden_layers)
         )
         self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
-        self.gradient_checkpointing = False
         self.post_init()
 
     def get_input_embeddings(self) -> nn.Embedding:
@@ -210,7 +202,7 @@ class Glm5NextTextModel(Glm5NextPreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> BaseModelOutput:
+    ) -> TextModelOutput:
         """
         position_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Unused: the model has no positional encoding, and document boundaries come from `seq_lens`.
@@ -246,7 +238,7 @@ class Glm5NextTextModel(Glm5NextPreTrainedModel):
                 pool_layout=pool_layout,
                 routed_experts=layer_routed_experts,
             )
-        return BaseModelOutput(last_hidden_state=self.norm(mhc_states.mean(dim=2)))
+        return TextModelOutput(last_hidden_state=self.norm(mhc_states.mean(dim=2)))
 
 
 class Glm5NextModel(nn.Module):
@@ -268,7 +260,7 @@ class Glm5NextModel(nn.Module):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> BaseModelOutput:
+    ) -> TextModelOutput:
         return self.language_model(
             input_ids=input_ids,
             position_ids=position_ids,

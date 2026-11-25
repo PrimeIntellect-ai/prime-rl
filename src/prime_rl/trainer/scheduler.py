@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import math
+from functools import partial
+
 from torch.optim import Optimizer
-from torch.optim.lr_scheduler import ConstantLR, CosineAnnealingLR, LinearLR, LRScheduler, SequentialLR
+from torch.optim.lr_scheduler import LambdaLR
 
 from prime_rl.configs.trainer import SchedulerConfig
 from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
@@ -14,75 +17,35 @@ def _get_base_optimizer(optimizer: OptimizerLike) -> Optimizer:
     return optimizer
 
 
-def setup_constant_scheduler(optimizer: Optimizer) -> LRScheduler:
-    """Create a constant learning rate scheduler."""
-    return ConstantLR(optimizer, factor=1.0)
+def _min_lr_factor(min_lr: float, lr: float) -> float:
+    """``min_lr`` relative to ``lr``: the factor a warmup starts at and a linear decay ends at, 1e-8 for 0."""
+    return min_lr / lr if min_lr > 0 else 1e-8
 
 
-def setup_linear_scheduler(
-    optimizer: Optimizer, max_steps: int | None, warmup_steps: int, decay_steps: int, lr: float, min_lr: float
-) -> LRScheduler:
-    """Create a linear (WSD) learning rate scheduler."""
-    # Create schedulers for each phase
-    schedulers, milestones = [], []
-
-    assert warmup_steps > 0 or decay_steps > 0, (
-        "Either warmup steps or decay steps must be specified for a linear scheduler"
-    )
-
-    # Add warmup (if any)
-    min_lr_factor = min_lr / lr if min_lr > 0 else 1e-8
-    if warmup_steps > 0:
-        warmup_scheduler = LinearLR(optimizer, start_factor=min_lr_factor, end_factor=1.0, total_iters=warmup_steps)
-        schedulers.append(warmup_scheduler)
-        milestones.append(warmup_steps)
-
-    # Add decay (if any)
-    if decay_steps > 0:
-        assert max_steps is not None, "max_steps must be specified when specifying decay_steps"
-        decay_start_step = max_steps - decay_steps
-        assert decay_start_step >= warmup_steps, (
-            f"warmup_steps ({warmup_steps}) + decay_steps ({decay_steps}) must not exceed max_steps ({max_steps})"
-        )
-        constant_steps = decay_start_step - warmup_steps
-        constant_scheduler = LinearLR(optimizer, start_factor=1.0, end_factor=1.0, total_iters=constant_steps)
-        decay_scheduler = LinearLR(optimizer, start_factor=1.0, end_factor=min_lr_factor, total_iters=decay_steps - 1)
-        schedulers.append(constant_scheduler)
-        schedulers.append(decay_scheduler)
-        milestones.append(decay_start_step)
-
-    # Return single scheduler if only one phase, otherwise combine with SequentialLR
-    if len(schedulers) == 1:
-        return schedulers[0]
-
-    return SequentialLR(optimizer, schedulers, milestones=milestones)
+def _constant_factor(epoch: int) -> float:
+    return 1.0
 
 
-def setup_cosine_scheduler(
-    optimizer: Optimizer, max_steps: int | None, warmup_steps: int, lr: float, min_lr: float
-) -> LRScheduler:
-    """Create a cosine learning rate scheduler."""
-    # Create schedulers for each phase
-    schedulers, milestones = [], []
+def _linear_factor(epoch: int, horizon: int | None, warmup_steps: int, decay_steps: int, min_factor: float) -> float:
+    """The linear (WSD) schedule's factor of the peak at ``epoch``: a linear warmup from ``min_factor`` over
+    ``warmup_steps``, a constant phase, and a linear decay over the last ``decay_steps`` of ``horizon`` (from the peak at
+    the first decay step to ``min_factor`` at the last one)."""
+    if epoch < warmup_steps:
+        return min_factor + (1 - min_factor) * epoch / warmup_steps
+    if decay_steps == 0:
+        return 1.0
+    decay_epoch = min(max(epoch - (horizon - decay_steps), 0), decay_steps - 1)
+    return min_factor + (1 - min_factor) * (decay_steps - 1 - decay_epoch) / (decay_steps - 1)
 
-    assert max_steps is not None, "max_steps must be specified when specifying decay_steps"
 
-    # Add warmup (if any)
-    if warmup_steps > 0:
-        min_lr_factor = min_lr / lr if min_lr > 0 else 1e-8
-        warmup_scheduler = LinearLR(optimizer, start_factor=min_lr_factor, end_factor=1.0, total_iters=warmup_steps)
-        schedulers.append(warmup_scheduler)
-        milestones.append(warmup_steps)
-
-    decay_steps = max_steps - warmup_steps
-    cosine_scheduler = CosineAnnealingLR(optimizer, T_max=decay_steps, eta_min=min_lr)
-    schedulers.append(cosine_scheduler)
-
-    # Return single scheduler if only one phase, otherwise combine with SequentialLR
-    if len(schedulers) == 1:
-        return schedulers[0]
-
-    return SequentialLR(optimizer, schedulers, milestones=milestones)
+def _cosine_factor(epoch: int, horizon: int, warmup_steps: int, start_factor: float, min_factor: float) -> float:
+    """The cosine schedule's factor of the peak at ``epoch``: a linear warmup from ``start_factor`` over
+    ``warmup_steps``, then a cosine decay from the peak to ``min_factor`` over the rest of ``horizon``."""
+    if epoch < warmup_steps:
+        return start_factor + (1 - start_factor) * epoch / warmup_steps
+    decay_steps = horizon - warmup_steps
+    decay_epoch = min(epoch - warmup_steps, decay_steps)
+    return min_factor + (1 - min_factor) * (1 + math.cos(math.pi * decay_epoch / decay_steps)) / 2
 
 
 def setup_scheduler(
@@ -90,32 +53,46 @@ def setup_scheduler(
     scheduler_config: SchedulerConfig,
     max_steps: int | None,
     lr: float,
-) -> LRScheduler:
-    """Create learning rate scheduler based on config.
+    checkpoint_step: int | None,
+) -> LambdaLR:
+    """Create the learning rate scheduler, positioned at the step after ``checkpoint_step`` (the first step on a fresh
+    start). The learning rate is a function of the step: each param group's lr at setup (its peak, kept as
+    ``initial_lr``) times the schedule's factor. ``min_lr`` is relative to ``lr``, so every group warms up from and
+    decays to the same fraction of its peak.
 
     Handles CPUOffloadOptimizer by extracting the base optimizer for the scheduler.
     """
-    base_optimizer = _get_base_optimizer(optimizer)
+    start_step = scheduler_config.start_step
+    if checkpoint_step is None and start_step > 0:
+        raise ValueError(f"scheduler.start_step ({start_step}) needs a resume from a checkpoint at or after it")
+    if checkpoint_step is not None and checkpoint_step < start_step:
+        raise ValueError(f"Resuming from step {checkpoint_step}, before scheduler.start_step ({start_step})")
+    horizon = max_steps - start_step if max_steps is not None else None
 
     match scheduler_config.type:
         case "constant":
-            return setup_constant_scheduler(base_optimizer)
+            factor = _constant_factor
         case "linear":
-            return setup_linear_scheduler(
-                base_optimizer,
-                max_steps=max_steps,
+            factor = partial(
+                _linear_factor,
+                horizon=horizon,
                 warmup_steps=scheduler_config.warmup_steps,
                 decay_steps=scheduler_config.decay_steps,
-                lr=lr,
-                min_lr=scheduler_config.min_lr,
+                min_factor=_min_lr_factor(scheduler_config.min_lr, lr),
             )
         case "cosine":
-            return setup_cosine_scheduler(
-                base_optimizer,
-                max_steps=max_steps,
+            factor = partial(
+                _cosine_factor,
+                horizon=horizon,
                 warmup_steps=scheduler_config.warmup_steps,
-                lr=lr,
-                min_lr=scheduler_config.min_lr,
+                start_factor=_min_lr_factor(scheduler_config.min_lr, lr),
+                min_factor=scheduler_config.min_lr / lr if scheduler_config.min_lr > 0 else 0.0,
             )
         case _:
             raise ValueError(f"Invalid scheduler type: {scheduler_config.type}")
+
+    base_optimizer = _get_base_optimizer(optimizer)
+    for group in base_optimizer.param_groups:
+        group["initial_lr"] = group["lr"]
+    last_epoch = checkpoint_step - 1 if checkpoint_step is not None else -1
+    return LambdaLR(base_optimizer, lambda epoch: factor(epoch - start_step), last_epoch=last_epoch)
