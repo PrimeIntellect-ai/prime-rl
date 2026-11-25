@@ -700,8 +700,10 @@ def train(config: TrainerConfig):
         if not config.data.fake:
             # Ranks that share a data rank train the same micro batches, so they must drop
             # the same ones even when only one of them failed to fetch.
+            # 1: keep the micro batch out of the loss; 2: no rank can train this step.
             failed = torch.zeros(dataloader.dp_world_size, len(micro_batches), device="cuda")
             failed[dataloader.dp_rank, dataloader.failed_micro_batches] = 1
+            failed[dataloader.dp_rank, dataloader.unbuildable_micro_batches] = 2
             dist.all_reduce(failed, op=dist.ReduceOp.MAX)
             # An NCCL all-reduce returns once it is enqueued, not once every rank joined it.
             # Reading the result on the host waits for every rank's contribution, which each
@@ -716,6 +718,12 @@ def train(config: TrainerConfig):
             # A step where no micro batch's samples could be fetched anywhere is not a
             # transient failure (unreachable or mismatched env worker pools): stop instead of
             # training on nothing.
+            # Every rank raises together, after the all-reduce, so none waits on the others.
+            if bool((failed == 2).any()):
+                raise RuntimeError(
+                    "Could not fetch a multimodal sample, and no other multimodal sample of its rank's step could "
+                    "stand in for it to run the vision encoder; check that trainer ranks reach the env worker pools"
+                )
             if failed.numel() and bool(failed.all()):
                 raise RuntimeError(
                     "Could not fetch the training samples of any micro batch this step; check that "
