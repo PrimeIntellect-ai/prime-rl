@@ -8,7 +8,7 @@ import torch
 from safetensors.torch import load_file, save_file
 from transformers import AutoConfig
 
-from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
+from prime_rl.trainer.models import custom_causal_lm_from_config
 from prime_rl.trainer.models.inkling2 import (
     Inkling2Config,
     Inkling2LoopConfig,
@@ -94,7 +94,7 @@ def build_model(loop_config: dict | None = LOOP_CONFIG):
         config = Inkling2Config(text_config=TEXT_CONFIG)
     else:
         config = Inkling2LoopConfig(text_config=TEXT_CONFIG | {"loop_config": loop_config})
-    model = AutoModelForCausalLMPrimeRL.from_config(config, dtype=torch.float64)
+    model = custom_causal_lm_from_config(config, dtype=torch.float64)
     generator = torch.Generator().manual_seed(0)
     with torch.no_grad():
         for name, tensor in model.state_dict().items():
@@ -459,7 +459,7 @@ def test_loop_config_is_not_dropped():
     # The trainer can drop layers after the config is built.
     config.num_hidden_layers = 4
     with pytest.raises(ValueError, match="loop core"):
-        AutoModelForCausalLMPrimeRL.from_config(config)
+        custom_causal_lm_from_config(config)
     assert Inkling2LoopTextConfig().num_layer_visits == 48
 
 
