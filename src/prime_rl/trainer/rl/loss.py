@@ -218,12 +218,14 @@ class SamplerKL:
 
     def loss(self, inputs: LossInputs, weights: Tensor | None) -> tuple[Tensor, dict[str, Tensor]]:
         mask = inputs.loss_mask
-        if self.config.min_staleness > 0:
+        staleness = None
+        if self.config.min_staleness > 0 or self.config.staleness_decay is not None:
             if inputs.staleness is None:
-                raise ValueError("sampler_kl.min_staleness > 0 needs per-token staleness on the trainer")
-            active = inputs.staleness[mask] >= self.config.min_staleness
-        else:
-            active = torch.ones_like(mask[mask])
+                raise ValueError(
+                    "sampler_kl.min_staleness > 0 or staleness_decay needs per-token staleness on the trainer"
+                )
+            staleness = inputs.staleness[mask]
+        active = staleness >= self.config.min_staleness if staleness is not None else torch.ones_like(mask[mask])
         if self.config.estimator == "k1":
             trainer_logprobs = inputs.trainer_logprobs[mask]
             kl = (inputs.inference_logprobs[mask] - trainer_logprobs).detach()
@@ -239,7 +241,11 @@ class SamplerKL:
                 kl = (support_kl + torch.where(rho > 0, q_tail * rho.clamp_min(1e-30).log(), 0.0))[mask]
                 coefficients = q - rho[rows] * p
             surrogate = -row_sum(coefficients * head)[mask]
-        per_token_loss = self.coef * surrogate * active
+        token_weight = active.to(surrogate.dtype)
+        if self.config.staleness_decay is not None:
+            age = (staleness - self.config.min_staleness).clamp_min(0).to(surrogate.dtype)
+            token_weight = token_weight * self.config.staleness_decay**age
+        per_token_loss = self.coef * surrogate * token_weight
         if weights is not None:
             per_token_loss = per_token_loss * weights
         metrics = {
@@ -248,6 +254,8 @@ class SamplerKL:
             "sampler_kl/active": active.float(),
             "sampler_kl/coef": surrogate.new_tensor(self.coef),
         }
+        if self.config.staleness_decay is not None:
+            metrics["sampler_kl/weight"] = token_weight[active]
         return per_token_loss.sum(), metrics
 
     def adapt(self, kl: float) -> None:
