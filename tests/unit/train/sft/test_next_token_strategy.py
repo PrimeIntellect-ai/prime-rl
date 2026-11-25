@@ -163,8 +163,10 @@ def test_seq_len_skips_a_longer_rendering(strategy):
 def test_option_logits_are_the_lm_heads_at_the_last_token_of_each_prompt(strategy):
     labelled = row(label={"outage": True, "team": "billing", "urgency": 0})
     sample = SystemOneSource(Dataset.from_list([labelled]), strategy, seq_len=4096)._process(labelled)
-    input_ids = torch.from_numpy(sample["input_ids"])
-    questions = build_decision_loss_inputs([len(input_ids)], [sample["sample_data"]]).questions
+    # The record twice in one row: the second's reads are at row positions, after the first
+    num_tokens = len(sample["input_ids"])
+    input_ids = torch.from_numpy(sample["input_ids"]).repeat(2)
+    questions = build_decision_loss_inputs([num_tokens] * 2, [sample["sample_data"]] * 2).questions
     torch.manual_seed(0)
     model = nn.Module()
     model.lm_head = nn.Linear(HIDDEN, VOCAB, bias=False)
@@ -172,14 +174,15 @@ def test_option_logits_are_the_lm_heads_at_the_last_token_of_each_prompt(strateg
 
     logits = strategy.option_logits(model, hidden_states, input_ids, questions)
 
-    last = [end - 1 for end in accumulate(sample["seq_lens"])]
+    last = [start + end - 1 for start in (0, num_tokens) for end in accumulate(sample["seq_lens"])]
     label_ids = [[strategy.label_ids[label] for label in labels] for labels in (["yes", "no"], ["A", "B"], ["0", "1"])]
     with torch.no_grad():
         full = model.lm_head(hidden_states)
     assert logits.dtype == torch.float32
-    torch.testing.assert_close(logits, torch.cat([full[position, ids] for position, ids in zip(last, label_ids)]))
+    expected = torch.cat([full[position, ids] for position, ids in zip(last, label_ids * 2, strict=True)])
+    torch.testing.assert_close(logits, expected)
 
-    # The gradient reaches the LM head's rows of the six labels and the three read tokens, and nothing else
+    # The gradient reaches the LM head's rows of the six labels and the six read tokens, and nothing else
     logits.sum().backward()
     assert model.lm_head.weight.grad.abs().sum(-1).nonzero().flatten().tolist() == sorted(sum(label_ids, []))
     assert hidden_states.grad.abs().sum(-1).nonzero().flatten().tolist() == last
@@ -209,7 +212,8 @@ def test_renders_what_vllm_renders(strategy):
     vllm_strategy = strategies.NextTokenStrategy(context)
     assert strategy._generation_prompt() == vllm_strategy._generation_prompt()
     assert strategy.label_ids == vllm_strategy.label_ids
-    # The chat options of a read whose request sets none: the generation prompt, with thinking off
+    # A server renders a read through its renderer (preprocess_chat). vLLM's prompts here are the tokenizer's template
+    # with the chat options of a read whose request sets none: the generation prompt, with thinking off
     chat_kwargs = strategies.ReadPromptRequest().build_chat_params(None, "auto").get_apply_chat_template_kwargs()
 
     limits = vllm_strategy.limits()
