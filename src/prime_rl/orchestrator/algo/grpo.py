@@ -115,8 +115,12 @@ class GRPOAlgorithm(Algorithm):
             shaped_rewards = rewards
         elif isinstance(length_penalty, PowerLengthPenaltyConfig):
             cost = torch.tensor([_power_length_cost(trace, length_penalty) for trace in traces], dtype=torch.float64)
-            penalty_frac = length_penalty.weight * cost / cost.max().clamp(min=1)
-            shaped_rewards = rewards - rewards.mean() * penalty_frac.to(rewards.dtype)
+            if length_penalty.budget is None:
+                penalty_frac = length_penalty.weight * cost / cost.max().clamp(min=1)
+                shaped_rewards = rewards - rewards.mean() * penalty_frac.to(rewards.dtype)
+            else:
+                used = (cost / float(length_penalty.budget) ** length_penalty.alpha).clamp(max=1)
+                shaped_rewards = rewards * (1 - length_penalty.weight * used.to(rewards.dtype))
         else:
             subagent_weight = (
                 length_penalty.subagent_token_weight
