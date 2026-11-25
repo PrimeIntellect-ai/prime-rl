@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 import torch
+import torch._inductor.config
 import torch.distributed as dist
 from tiny_models import (
     TINY_MODELS,
@@ -203,7 +204,14 @@ def compile_case(config: ModelConfig, parallel_dims: ParallelDims, rows: list[di
     clear_compilation_metrics()
     start = time.perf_counter()
     progress = {}
-    result = isolated(run_step, config, parallel_dims, rows, progress)
+    # A model that names dynamic layer args marks them and changes an Inductor option for the rest of the process.
+    dynamic_sources = torch.compiler.config.dynamic_sources
+    mix_order_reduction = torch._inductor.config.triton.mix_order_reduction
+    try:
+        result = isolated(run_step, config, parallel_dims, rows, progress)
+    finally:
+        torch.compiler.config.dynamic_sources = dynamic_sources
+        torch._inductor.config.triton.mix_order_reduction = mix_order_reduction
     result.update(progress)
     result["seconds"] = time.perf_counter() - start
     result["graph_breaks"] = dict(counters["graph_break"])

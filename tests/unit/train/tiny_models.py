@@ -19,6 +19,7 @@ from prime_rl.trainer.models.glm5_next import Glm5NextTextConfig
 from prime_rl.trainer.models.glm_moe_dsa import GlmMoeDsaConfig
 from prime_rl.trainer.models.gpt_oss import GptOssConfig
 from prime_rl.trainer.models.inkling2 import Inkling2TextConfig
+from prime_rl.trainer.models.inkling2_loop import Inkling2LoopTextConfig
 from prime_rl.trainer.models.laguna import LagunaConfig
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.models.minimax_m2 import MiniMaxM2Config
@@ -293,7 +294,42 @@ TINY_PRIME_RL_MODELS: dict[str, PretrainedConfig] = {
         num_experts_per_tok=2,
         moe_intermediate_size=128,
     ),
+    # Blocks of two layers, a sliding then a full one, with layers 2..5 looped three times. The window, the relative
+    # bias extent and the log-scaling floor are all below the ~90-100 tokens of a packed document. The clip thresholds
+    # and softcaps are sized for these widths, so that the weights of `init_inkling2_loop_weights` reach them
+    "inkling2_loop": Inkling2LoopTextConfig(
+        vocab_size=151936,
+        hidden_size=256,
+        num_hidden_layers=8,
+        n_layers_per_attn_res_block=2,
+        loop_config={"core_start": 2, "core_end": 6, "num_passes": 3, "gate_rank": 16, "is_varloop": False},
+        local_layer_ids=[0, 2, 4, 6],
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=64,
+        swa_num_attention_heads=4,
+        swa_num_key_value_heads=2,
+        swa_head_dim=64,
+        sliding_window_size=32,
+        rel_extent=48,
+        log_scaling_n_floor=32,
+        qk_l2_clip_threshold=8.0,
+        rel_l2_clip_threshold=4.0,
+        n_routed_experts=8,
+        num_experts_per_tok=2,
+        intermediate_size=128,
+        route_scale=2.0,
+        mlp_gate_softcap=0.5,
+        mlp_up_softcap=0.75,
+        final_logit_softcapping=4.0,
+        eos_token_id=151645,
+    ),
 }
+# Second names of TINY_PRIME_RL_MODELS entries, under which `save_tiny_model` builds the entry's config again.
+# `inkling2_loop_generic` is `inkling2_loop` on the generic seeding alone, for the compiled case (see the tolerances
+# in test_distributed_invariance.py). An entry of TINY_PRIME_RL_MODELS gets a compile case in test_compile.py, a
+# second name does not.
+TINY_MODEL_ALIASES = {"inkling2_loop_generic": "inkling2_loop"}
 
 
 @dataclass(frozen=True)
@@ -334,9 +370,11 @@ def save_tiny_model(name: str, models_dir: Path) -> dict:
         if get_world().is_master:
             model.save_pretrained(models_dir / name)
     else:
-        config = TINY_PRIME_RL_MODELS[name]
+        config = TINY_PRIME_RL_MODELS[TINY_MODEL_ALIASES.get(name, name)]
         model = get_custom_causal_lm_cls(config).from_config(config)
         init_weights(model)
+        if name == "inkling2_loop":
+            init_inkling2_loop_weights(model)
         if get_world().is_master:
             save_state_dict(model.convert_to_hf(model.state_dict()), models_dir / name)
             config.save_pretrained(models_dir / name)
@@ -356,6 +394,40 @@ def init_weights(model: torch.nn.Module) -> None:
         if hasattr(module, "tid2eid"):
             experts = torch.rand(module.tid2eid.shape[0], module.num_experts).argsort(dim=1)
             module.tid2eid.copy_(experts[:, : module.top_k])
+
+
+# Std of the Inkling 2 Mini projections in units of `1 / sqrt(fan_in)`, by name fragment; 1 for the others. The key
+# convolutions halve the keys, a sink's logit is compared with the scores on those keys, and the experts and message
+# gates compound over the 16 layer visits.
+INKLING2_LOOP_PROJECTION_SCALES = {
+    ".k_proj.": 2.0,
+    ".sink_proj.": 2.0,
+    "weight_proj": 0.5,
+    ".experts.": 0.5,
+    ".message_gates.": 0.5,
+}
+
+
+@torch.no_grad()
+def init_inkling2_loop_weights(model: torch.nn.Module) -> None:
+    """Inkling 2 Mini weights that make its attention matter. At the generic 0.02 the clip scales and the depth-mix and
+    message queries are near zero: attention and depth mixes are uniform, no clip binds, the softcaps stay linear,
+    and the gradients of the query, key and relative-bias parameters fall far below the invariance test's
+    `MIN_GRAD_SHARE`. Here the clip scales are around 1, the queries and convolution taps are O(1), and the projections
+    are large enough for about half of the query, key and relative-state vectors to be clipped and for the softcaps to
+    bend."""
+    for name, param in model.named_parameters():
+        if name.endswith(("q_scale", "rel_scale")):
+            param.normal_(1.0, 0.1)
+        elif name.endswith(("query", "message_queries")):
+            param.normal_(0.0, 0.5)
+        elif name.endswith(("conv.weight", "static_weight")):
+            param.normal_(0.0, 0.3)
+        elif param.ndim > 1:
+            scale = next(
+                (scale for fragment, scale in INKLING2_LOOP_PROJECTION_SCALES.items() if fragment in name), 1.0
+            )
+            param.normal_(0.0, scale / param.shape[-1] ** 0.5)
 
 
 def load_rows(tokenizer, num_rows: int = NUM_ROWS) -> list[dict]:

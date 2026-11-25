@@ -36,9 +36,22 @@ The trainer only runs `prime-rl`'s own model implementations, selected from the 
 | GLM-4 / GLM-4.5 / INTELLECT-3 | `THUDM/GLM-4-9B-0414`, `zai-org/GLM-4.5`, `PrimeIntellect/INTELLECT-3`, … | ✅ | ✅ |
 | GPT-OSS | `unsloth/gpt-oss-20b-BF16`, … | ✅ | ✅ |
 | DeepSeek V4 | `deepseek-ai/DeepSeek-V4-Flash-0731` | ✅ | ✅ |
+| Inkling 2 Mini (text only) | `thinkingmachines/Inkling-2-Mini` | ✅ | ❌ |
 
 GPT-OSS uses FlashAttention 4 with learned attention sinks. Training requires SM90 or SM100/SM110 GPUs
 and a BF16 checkpoint such as `unsloth/gpt-oss-20b-BF16`; the original MXFP4 checkpoints are not supported.
+
+Inkling 2 Mini trains from the release checkpoint: its NVFP4 and MXFP8 routed experts are dequantized to BF16
+when the trainer first loads it. `tools/convert_inkling2_loop_to_bf16.py` writes the same BF16 weights as a checkpoint.
+The decoder runs layers 6-17 three times with shared weights, so router replay takes one `routed_experts` row per
+layer visit (48), in execution order, and the routing metrics of the looped layers are pooled over their three
+visits. Attention is an exact FP32 kernel that scores the queries in chunks of bounded size, so its time, not its
+score memory, grows with the sequence length times the attention span, which is the 1024-token window on 20 of
+the 24 layers. LoRA is not supported for this family, and neither are the `model.compile` modes that record CUDA
+graphs (`reduce-overhead`, `max-autotune`). Weight broadcast is implemented for the filesystem and NCCL
+transports: the conversion to the checkpoint layout is not expressible as views, so the NIXL and ModelExpress
+transports are not available. Full fine-tuning on eight 80 GB GPUs peaks at 56 GiB per GPU for rows of up to 8k
+tokens and at 73 GiB for 16k, and 24k rows run out of memory.
 
 ### Low-precision training
 
