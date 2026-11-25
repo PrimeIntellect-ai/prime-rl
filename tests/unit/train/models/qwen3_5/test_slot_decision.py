@@ -74,7 +74,7 @@ def test_n_slots_default_to_256():
         {key: value for key, value in OVERRIDES.items() if key != "readout"},
         {**OVERRIDES, "pooling": "last"},
         {**OVERRIDES, "n_slots": 0},
-        {**OVERRIDES, "n_slots": 300},
+        {**OVERRIDES, "n_slots": 257},
         {**OVERRIDES, "n_slots": True},
         {**OVERRIDES, "n_slots": 8.0},
     ],

@@ -115,6 +115,8 @@ def check_selected_by_extra_config(classes: tuple[type[PreTrainedModelPrimeRL], 
         if by_file == (cls.extra_config_key is not None):
             raise TypeError(f"{cls.__name__} must set either extra_config_file or extra_config_key to be selected")
         # The config already holds a key's value, under the key's name
+        if not by_file and cls.extra_config_attr is not None:
+            raise TypeError(f"{cls.__name__} must not set extra_config_attr to be selected by its config.json key")
         attrs = ("extra_config_attr",) if by_file else ()
         missing = [attr for attr in (*attrs, "stock_model_type", "stock_architecture") if getattr(cls, attr) is None]
         if missing:

@@ -46,6 +46,9 @@ def test_a_listed_class_sets_what_selects_it():
     no_attr = type("NoAttrStub", (HeadStub,), {"extra_config_attr": None})
     with pytest.raises(TypeError, match="NoAttrStub must set extra_config_attr to be selected by its extra config"):
         check_selected_by_extra_config((no_attr,))
+    key_attr = type("KeyAttrStub", (KeyStub,), {"extra_config_attr": EXTRA_CONFIG_ATTR})
+    with pytest.raises(TypeError, match="KeyAttrStub must not set extra_config_attr to be selected by its config.json"):
+        check_selected_by_extra_config((key_attr,))
     no_stock = type("NoStockStub", (KeyStub,), {"stock_architecture": None})
     with pytest.raises(TypeError, match="NoStockStub must set stock_architecture to be selected by its config.json"):
         check_selected_by_extra_config((no_stock,))
