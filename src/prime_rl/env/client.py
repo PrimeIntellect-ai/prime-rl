@@ -188,10 +188,12 @@ class EnvClient:
         timeout: float | None = None,
         on_delta: Callable[[dict], None] | None = None,
         request_id: str | None = None,
+        check: bool = True,
     ) -> ResponseT:
         """Send a typed request and validate the reply into `response_type`. Rollouts
         run untimed; a reply that lands after a `timeout` is dropped. `on_delta`
-        receives each decoded `delta` the request streams before its reply."""
+        receives each decoded `delta` the request streams before its reply. With
+        `check`, a reply that reports a failure raises."""
         self._ensure_receiver()
         request_id = request_id or uuid.uuid4().hex
         future: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
@@ -213,7 +215,7 @@ class EnvClient:
         finally:
             self._deltas.pop(request_id, None)
         response = response_type.model_validate(unpack(data))
-        if not response.success:
+        if check and not response.success:
             raise RuntimeError(response.error or "env worker pool request failed")
         return response
 
@@ -320,8 +322,12 @@ class EnvClient:
         the restore points it gets back. Each saved rollout then waits at its restore
         point until `release`: one that finished and shipped meanwhile would be both in a
         trained batch and in the checkpoint as in flight, and a resume would train on it
-        twice."""
-        return await self._request(SaveRequest(dir=directory), SaveResponse, timeout=timeout)
+        twice. A save that failed on some workers still returns what the others saved:
+        the caller owns their snapshots either way."""
+        response = await self._request(SaveRequest(dir=directory), SaveResponse, timeout=timeout, check=False)
+        if not response.success:
+            get_logger().warning(f"Saving the running rollouts failed on some env workers: {response.error}")
+        return response
 
     async def release(self, timeout: float | None = 30.0) -> None:
         """Let the rollouts the last `save` holds at their restore points go on, once the

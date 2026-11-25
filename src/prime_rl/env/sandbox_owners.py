@@ -29,6 +29,16 @@ def register_sandbox_pool(config_dir: Path) -> Iterator[str]:
 
 async def reap_previous_sandbox_pools(config_dir: Path) -> None:
     """Terminate VMs from earlier attempts in this run. Snapshots have a separate ledger."""
+    # A failed reap must not stop the resume: stranded sandboxes still end at their
+    # idle timeout. A marker stays until its sandboxes are gone, so the next resume
+    # tries again.
+    try:
+        await _reap(config_dir)
+    except Exception as e:  # noqa: BLE001 - see above
+        get_logger().warning(f"Failed to reap the sandboxes of earlier attempts - {e!r}")
+
+
+async def _reap(config_dir: Path) -> None:
     attempt = config_dir.resolve().parent
     number = attempt.name.removeprefix("attempt_")
     if not attempt.name.startswith("attempt_") or not number.isdecimal():
@@ -45,18 +55,25 @@ async def reap_previous_sandbox_pools(config_dir: Path) -> None:
 
     from prime_sandboxes import AsyncSandboxClient
 
-    # A failed reap must not stop the resume: stranded sandboxes still end at their
-    # idle timeout. The marker stays, so the next resume tries again.
     async with AsyncSandboxClient() as client:
         for marker in markers:
             # Even an older attempt can still be serving. Only a dead pool releases its lock.
             # A lock held on another node may not be visible here; after a requeue the
             # earlier attempt's processes are gone anyway.
-            with marker.open() as owner:
+            # Opened writable: on NFS an exclusive flock is a POSIX write lock.
+            try:
+                owner = marker.open("r+")
+            except OSError as e:
+                get_logger().warning(f"Not reaping the sandboxes of {marker}: cannot open it - {e!r}")
+                continue
+            with owner:
                 try:
                     fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
                     get_logger().warning(f"Not reaping the sandboxes of {marker}: its pool is still serving")
+                    continue
+                except OSError as e:
+                    get_logger().warning(f"Not reaping the sandboxes of {marker}: cannot lock it - {e!r}")
                     continue
                 try:
                     result = await client.bulk_delete(labels=[_label(marker)])

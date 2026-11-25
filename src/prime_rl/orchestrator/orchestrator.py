@@ -1238,9 +1238,9 @@ class Orchestrator:
         await asyncio.to_thread(self.ckpt_manager.clear, step)
 
         start = time.perf_counter()
-        restores = await self.save_inflight(rollouts)
-        saved = time.perf_counter()
         try:
+            restores = await self.save_inflight(rollouts)
+            saved = time.perf_counter()
             async with self.sink_lock:
                 locked = time.perf_counter()
                 work = self.open_work(restores)
@@ -1535,16 +1535,18 @@ class Orchestrator:
         timeout so a wedged peer can't keep the process alive forever —
         training artifacts are already persisted before this is reached."""
 
-        async def teardown() -> None:
-            get_logger().debug("Closing micro batch sender")
-            self.sender.close()
+        async def finish_ckpt() -> None:
             if self.ckpt_task is not None:
                 try:
                     await self.ckpt_task
                 except Exception as error:  # noqa: BLE001 - the teardown goes on without that checkpoint
                     get_logger().error(f"The rollout checkpoint of step {self.ckpt_step} failed: {error!r}")
-            if clean_exit and self.saves_rollouts:
-                await self.sweep_snapshots(final=True)
+                self.ckpt_task = None
+
+        async def teardown() -> None:
+            get_logger().debug("Closing micro batch sender")
+            self.sender.close()
+            await finish_ckpt()
             if self.release_future is not None:
                 await self.release_future
             if self.dispatcher is not None:
@@ -1553,6 +1555,10 @@ class Orchestrator:
             if self.watcher is not None:
                 get_logger().debug("Stopping weight watcher")
                 await self.watcher.stop()
+                # The stop lets a running pending hook finish, which may start a checkpoint.
+                await finish_ckpt()
+            if clean_exit and self.saves_rollouts:
+                await self.sweep_snapshots(final=True)
             if self.periodic_logger is not None:
                 await self.periodic_logger.stop()
             if self.lag_task is not None:

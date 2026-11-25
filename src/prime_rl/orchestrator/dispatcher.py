@@ -695,7 +695,10 @@ class Dispatcher:
             if episode.group_id in groups:
                 # Counted as still to schedule since ``resume_open_work``.
                 groups[episode.group_id].episodes_to_schedule -= 1
-                episodes.append(episode)
+                # A copy: writing the checkpoint moves or drops its restore point,
+                # which must not change the episode still waiting here.
+                restore = episode.restore.model_copy() if episode.restore is not None else None
+                episodes.append(dataclasses.replace(episode, restore=restore))
         for meta in self.inflight.values():
             if meta.kind == "train" and meta.group_id in groups:
                 episodes.append(OpenEpisode(group_id=meta.group_id, restore=restores.pop(meta.dispatch_id, None)))
