@@ -1,0 +1,28 @@
+# A tiny Qwen3.5 checkpoint, stock or a slot decision model, trained on System One records through its LM head. The test
+# writes both and passes them as --model.name, --data.source and --val.data.source.
+max_steps = 4
+
+[ckpt]
+
+[model]
+name = "set-by-the-test"
+
+[data]
+type = "system_one"
+seq_len = 4096
+batch_size = 4
+micro_batch_size = 1
+
+[[data.source]]
+name = "records"
+dataset = "set-by-the-test"
+
+[val]
+interval = 2
+
+[val.data]
+micro_batch_size = 1
+
+[[val.data.source]]
+name = "records"
+dataset = "set-by-the-test"

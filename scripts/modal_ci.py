@@ -93,6 +93,7 @@ SUITES = {
                     "alphabet_sort",
                     "pretrain",
                     "clef_flash_sft",
+                    "lm_head_sft",
                 )
             ),
         ),
