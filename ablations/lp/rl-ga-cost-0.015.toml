@@ -1,0 +1,115 @@
+# Length penalty ablations on general-agent, arm `cost-0.015`: Cognition SWE-2's penalty
+# R = S - lam * C (no group normalization, failures pay it too) with a length-weighted group
+# baseline. C counts thousands of output-token equivalents (new input tokens at 0.25). lam = 0.015
+# is the baseline run's own exchange rate: +0.078 held-out reward for +5.05k cost from step 0 to
+# 100. Everything else matches rl-ga.toml.
+#
+# Qwen3.6-35B-A3B (thinking on) with the null harness: native tool calls to each task's tool
+# server, colocated in one small Prime sandbox per rollout. Scoring is deterministic (final DB vs
+# the task's verify()); there is no judge. Tasks: tiers 3-4 with a GLM-5.1 pass rate >= 0.05,
+# minus the tasks a grader audit flagged (ga_exclude_names.txt: lenient or date-dependent
+# verifiers, partial credit, gold chains that no longer verify), 1239 in total. 128 of them are
+# held out for eval (ga_eval_idx.txt), avg@4. Both lists are inlined so the config needs no
+# local files at launch.
+#
+# 1 trainer node + 1 inference node (tp1 dp8, no expert parallelism) on H200.
+#
+#   prime train run ablations/lp/rl-ga-cost-0.015.toml --ref <commit> --gpu-type H200_141GB -e WANDB_API_KEY
+#   uv run rl @ ablations/lp/rl-ga-cost-0.015.toml --slurm.job-name lp-ga-cost-0.015
+
+mode = "rl"
+seq_len = 131072
+max_steps = 500
+
+[run]
+name = "lp-ga-cost-0.015"
+
+[model]
+name = "Qwen/Qwen3.6-35B-A3B"
+
+[weight_broadcast]
+type = "nccl"
+
+[ckpt]
+interval = 20
+keep_last = 2
+
+[monitors.wandb]
+project = "lp-ablations"
+name = "ga-cost-0.015"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+num_infer_replicas = 1
+
+# --- Trainer: the qwen3.6 example fits one 262144-token sample with cp 4, so 131072 fits with cp 2 ---
+
+[trainer.model]
+ep = 8
+cp = 2
+ac_offloading = "None"
+
+# --- Orchestrator ---
+
+[orchestrator]
+batch_size = 64
+max_staleness = 16
+
+[orchestrator.concurrency]
+min_inflight = 128
+max_inflight = 512
+
+[orchestrator.train]
+group_size = 8
+
+[[orchestrator.train.source]]
+name = "ga"
+algo.length_penalty = { type = "cost", lam = 0.015, input_token_weight = 0.25 }
+algo.length_weighted_baseline = true
+select.shuffle = true
+select.exclude.idx = [2, 33, 41, 65, 81, 95, 101, 112, 155, 156, 169, 179, 192, 198, 217, 220, 221, 225, 228, 236, 240, 257, 270, 273, 288, 289, 300, 321, 322, 329, 337, 338, 348, 393, 420, 428, 434, 435, 438, 440, 469, 471, 495, 504, 505, 508, 512, 542, 548, 556, 561, 565, 583, 606, 608, 609, 633, 641, 642, 655, 670, 677, 679, 704, 710, 726, 738, 742, 748, 757, 759, 771, 776, 777, 781, 829, 836, 838, 873, 906, 923, 939, 954, 985, 988, 1004, 1021, 1040, 1046, 1055, 1062, 1117, 1128, 1129, 1150, 1151, 1157, 1165, 1167, 1191, 1201, 1211, 1234, 1235, 1242, 1258, 1262, 1276, 1277, 1282, 1290, 1291, 1294, 1299, 1302, 1321, 1337, 1350, 1353, 1365, 1372, 1381, 1382, 1390, 1406, 1417, 1418, 1422]
+select.exclude.names = ["accounting_firm_t3", "accounting_firm_t4", "aesthetic_clinic_t3", "alpaca_ranch_t3", "alpaca_ranch_t4", "aquaponics_farm_t3", "aquaponics_farm_t4", "aquarium_t4", "archaeology_dig_t4", "art_authentication_t3", "art_consignment_t3", "asteroid_defense_t3", "asteroid_defense_t4", "avalanche_safety_t4", "bake_sale_t3", "bake_sale_t4", "banking_t3", "barista_competition_t3", "barista_competition_t4", "bicycle_workshop_t3", "biochar_facility_t4", "bird_watching_t3", "bird_watching_t4", "blood_bank_t3", "book_club_t3", "book_club_t4", "bounty_hunting_t3", "bounty_hunting_t4", "champagne_house_t3", "champagne_house_t4", "chess_academy_t3", "chess_academy_t4", "chili_cookoff_t3", "chili_cookoff_t4", "covert_ops_t3", "covert_ops_t4", "crop_rotation_t3", "crop_rotation_t4", "customs_border_t3", "customs_border_t4", "customs_checkpoint_t3", "customs_checkpoint_t4", "detective_agency_t3", "detective_agency_t4", "election_campaign_t3", "election_campaign_t4", "embassy_t3", "embassy_t4", "engraving_shop_t3", "exoplanet_survey_t3", "exoplanet_survey_t4", "family_reunion_t3", "family_reunion_t4", "festival_scheduling_t3", "festival_scheduling_t4", "film_props_t3", "film_props_t4", "fish_market_t4", "fleet_mgmt_t3", "fleet_mgmt_t4", "food_truck_fleet_t3", "foraging_guide_t3", "foraging_guide_t4", "forensic_lab_t4", "fossil_lab_t3", "fossil_lab_t4", "fraud_detection_t3", "fraud_detection_t4", "frequent_flyer_t3", "frequent_flyer_t4", "game_night_t3", "game_night_t4", "game_show_t4", "game_studio_t3", "game_studio_t4", "geothermal_plant_t3", "greenhouse_t3", "greenhouse_t4", "horse_racing_t3", "horse_racing_t4", "hvac_service_t4", "hydroponics_t3", "hydroponics_t4", "improv_theater_t3", "improv_theater_t4", "insurance_underwriting_t3", "insurance_underwriting_t4", "jewelry_repair_t3", "jewelry_repair_t4", "kennel_t3", "kennel_t4", "lapidary_workshop_t3", "lapidary_workshop_t4", "loyalty_rewards_t3", "loyalty_rewards_t4", "meal_kit_t3", "meal_kit_t4", "meal_planner_t3", "meal_planner_t4", "meteorite_lab_t3", "mixology_contest_t3", "mixology_contest_t4", "model_rocket_t3", "model_rocket_t4", "model_rocketry_t4", "music_festival_t3", "music_festival_t4", "nanny_agency_t4", "nuclear_plant_t3", "nuclear_plant_t4", "nuclear_reactor_t3", "nuclear_reactor_t4", "olive_mill_t3", "olive_mill_t4", "olive_press_t3", "olive_press_t4", "orchid_show_t3", "orchid_show_t4", "paleontology_lab_t3", "paleontology_lab_t4", "parade_planning_t3", "parade_planning_t4", "passport_office_t3", "perfume_workshop_t3", "personal_chef_t3", "pharmacy_t4", "physical_therapy_t3", "poetry_slam_t4", "poker_tournament_t3", "poker_tournament_t4", "pool_hall_t3", "pool_hall_t4", "prop_rental_t3", "prop_rental_t4", "quarry_t4", "race_team_t3", "railway_dispatch_t3", "railway_dispatch_t4", "ranch_mgmt_t3", "realty_t4", "recycling_center_t3", "recycling_center_t4", "repair_dispatch_t4", "restaurant_inspection_t3", "restaurant_inspection_t4", "rodeo_t3", "rodeo_t4", "roommate_matching_t3", "roommate_matching_t4", "sawmill_t3", "sawmill_t4", "school_bus_t3", "school_bus_t4", "self_storage_t3", "self_storage_t4", "skincare_lab_t3", "skincare_lab_t4", "snow_plow_dispatch_t3", "space_debris_t4", "space_salvage_t3", "space_salvage_t4", "speed_dating_t4", "spelling_bee_t3", "spelling_bee_t4", "steel_mill_t3", "steel_mill_t4", "storm_chasing_t3", "submarine_fleet_t4", "telescope_maker_t3", "tennis_club_t3", "tool_library_t3", "transplant_registry_t3", "transplant_registry_t4", "triathlon_t3", "triathlon_t4", "vinyl_restoration_t3", "vinyl_restoration_t4", "volcano_observatory_t3", "watch_repair_t3", "water_utility_t3", "water_utility_t4", "wax_museum_t3", "wax_museum_t4", "wildlife_migration_t3", "wildlife_migration_t4", "zipline_park_t3", "zipline_park_t4"]
+env.taskset.id = "general-agent"
+env.taskset.min_tier = 3
+env.taskset.max_tier = 4
+env.taskset.pass_rate_model = "zai-org/GLM-5.1-FP8"
+env.taskset.pass_rate_solver = "rlm"
+env.taskset.min_pass_rate = 0.05
+env.taskset.task.tools.runtime = { type = "prime", cpu = 1, memory = 2 }
+env.agent.harness.id = "null"
+env.agent.runtime = { type = "prime", cpu = 1, memory = 2 }
+env.agent.timeout.rollout = 3600
+
+[orchestrator.eval]
+interval = 20
+group_size = 4
+
+[[orchestrator.eval.source]]
+name = "ga-heldout"
+select.include.idx = [2, 33, 41, 65, 81, 95, 101, 112, 155, 156, 169, 179, 192, 198, 217, 220, 221, 225, 228, 236, 240, 257, 270, 273, 288, 289, 300, 321, 322, 329, 337, 338, 348, 393, 420, 428, 434, 435, 438, 440, 469, 471, 495, 504, 505, 508, 512, 542, 548, 556, 561, 565, 583, 606, 608, 609, 633, 641, 642, 655, 670, 677, 679, 704, 710, 726, 738, 742, 748, 757, 759, 771, 776, 777, 781, 829, 836, 838, 873, 906, 923, 939, 954, 985, 988, 1004, 1021, 1040, 1046, 1055, 1062, 1117, 1128, 1129, 1150, 1151, 1157, 1165, 1167, 1191, 1201, 1211, 1234, 1235, 1242, 1258, 1262, 1276, 1277, 1282, 1290, 1291, 1294, 1299, 1302, 1321, 1337, 1350, 1353, 1365, 1372, 1381, 1382, 1390, 1406, 1417, 1418, 1422]
+env.taskset.id = "general-agent"
+env.taskset.min_tier = 3
+env.taskset.max_tier = 4
+env.taskset.pass_rate_model = "zai-org/GLM-5.1-FP8"
+env.taskset.pass_rate_solver = "rlm"
+env.taskset.min_pass_rate = 0.05
+env.taskset.task.tools.runtime = { type = "prime", cpu = 1, memory = 2 }
+env.agent.harness.id = "null"
+env.agent.runtime = { type = "prime", cpu = 1, memory = 2 }
+env.agent.timeout.rollout = 3600
+
+# --- Inference ---
+
+[inference.vllm]
+max_model_len = 131072
+enable_prefix_caching = true
+tensor_parallel_size = 1
+data_parallel_size = 8
+gpu_memory_utilization = 0.85
+
+# Text-only RL: skip the vision encoder.
+[inference.vllm.limit_mm_per_prompt]
+image = 0
+video = 0

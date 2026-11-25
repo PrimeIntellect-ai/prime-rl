@@ -96,8 +96,25 @@ class LinearSubagentLengthPenaltyConfig(LinearLengthPenaltyConfig):
     """Multiplier on subagent input and output tokens before group normalization. Uses harness-declared ``subagent_call`` edges and their continuations, compaction attempts, and compacted contexts; unlabelled calls count at full weight. Nested subagents use the same multiplier. 0 excludes subagent tokens, 1 counts them fully. Does not change the turns term or training-token weights."""
 
 
+class CostLengthPenaltyConfig(BaseConfig):
+    """Absolute cost penalty in the form of Cognition's SWE-2 reward ``R = S - lam * C``: each reward
+    is reduced by ``lam`` times the rollout's cost, with no group normalization and no pass-rate
+    scaling, so failed rollouts pay it too. Cost is counted in thousands of output-token
+    equivalents: ``C = (output_tokens + input_token_weight * new_input_tokens) / 1000``."""
+
+    type: Literal["cost"] = "cost"
+
+    lam: float = Field(ge=0, allow_inf_nan=False)
+    """Reward per thousand output-token equivalents. SWE-2 sets it to the slope of the base model's
+    reward-vs-cost Pareto curve, so that moving along that curve leaves the objective unchanged."""
+
+    input_token_weight: float = Field(0.25, ge=0, allow_inf_nan=False)
+    """Cost of one new (uncached) input token relative to one output token, e.g. the ratio of input
+    to output token prices."""
+
+
 LengthPenaltyConfig: TypeAlias = Annotated[
-    LinearLengthPenaltyConfig | LinearSubagentLengthPenaltyConfig,
+    LinearLengthPenaltyConfig | LinearSubagentLengthPenaltyConfig | CostLengthPenaltyConfig,
     Field(discriminator="type"),
 ]
 
