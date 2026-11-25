@@ -63,6 +63,7 @@ CASES = [
     Case("glm4_moe-cp2_ep2", "glm4_moe", cp=2, ep=2),
     Case("inkling2_loop-dp2", "inkling2_loop"),
     Case("inkling2_loop-ep2", "inkling2_loop", ep=2),
+    Case("inkling2_loop-cp2_ep2", "inkling2_loop_generic", cp=2, ep=2),
 ]
 # GatedDeltaNet passes its recurrent state across the CP cut. The document that straddles the cut then differs by up
 # to ~3e-3 per token on the second rank (bf16, measured on the layer alone; the other documents match exactly), which
@@ -82,6 +83,7 @@ FULL_SUITE_CASES = [
     Case("glm_moe_dsa-ep2", "glm_moe_dsa", ep=2),
     Case("glm_moe_dsa-cp2_ep2", "glm_moe_dsa", cp=2, ep=2),
     Case("inkling2_loop-ep2-compile", "inkling2_loop_generic", ep=2, compile=True),
+    Case("inkling2_loop-cp2_ep2-compile", "inkling2_loop_generic", cp=2, ep=2, compile=True),
 ]
 SUITES = {"tiny": CASES, "full": FULL_SUITE_CASES}
 TIMEOUTS = {"tiny": 5 * 60, "full": 20 * 60}
@@ -100,6 +102,10 @@ COMPILE_TOLERANCES = {"loss": 1e-4, "grad_norm": 3e-3, "grad": 1e-1}
 #   it fuses. On those weights the compiled case then passes or fails by the draw (worst gradient 5e-2 to 4.9e-1),
 #   so it runs on the generic seeding, where attention and the depth mixes are near uniform and it measures
 #   3.5e-6 / 1.4e-4 / 1.1e-2 for loss / grad norm / worst gradient. The attention-path gradients stay with dp2 and ep2.
+# - A context-parallel rank runs every projection on a shard of the row, a GEMM of another shape, so its forward
+#   does not equal the reference's bit for bit either (worst gradient 5.4e-2 on those weights). The CP cases run on
+#   the generic seeding too: 1.0e-6 / 1.5e-4 / 6.8e-3, and 9.7e-6 / 1.2e-4 / 1.0e-2 compiled. The CP layout itself
+#   is checked without BF16 rounding in `test_context_parallel_shards_match_the_row` (tests/unit/train/models).
 
 
 def record_routing(model: torch.nn.Module) -> Callable[[], torch.Tensor | None]:

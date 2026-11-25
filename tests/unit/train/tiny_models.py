@@ -326,9 +326,9 @@ TINY_PRIME_RL_MODELS: dict[str, PretrainedConfig] = {
     ),
 }
 # Second names of TINY_PRIME_RL_MODELS entries, under which `save_tiny_model` builds the entry's config again.
-# `inkling2_loop_generic` is `inkling2_loop` on the generic seeding alone, for the compiled case (see the tolerances
-# in test_distributed_invariance.py). An entry of TINY_PRIME_RL_MODELS gets a compile case in test_compile.py, a
-# second name does not.
+# `inkling2_loop_generic` is `inkling2_loop` on the generic seeding alone, for the compiled and the context-parallel
+# cases (see the tolerances in test_distributed_invariance.py). An entry of TINY_PRIME_RL_MODELS gets a compile case in
+# test_compile.py, a second name does not.
 TINY_MODEL_ALIASES = {"inkling2_loop_generic": "inkling2_loop"}
 
 

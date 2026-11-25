@@ -6,11 +6,14 @@ eager execution. A compiled layer keeps FP32 where Inductor fuses two such opera
 them, so its outputs differ from eager's at rounding level.
 
 Activations are ``[1, T, ...]``: one packed row of documents. ``positions [T]`` counts tokens inside each document,
-which is what keeps a convolution from reaching into the previous document.
+which is what keeps a convolution from reaching into the previous document. Under context parallelism each rank
+holds an equal shard of the row, and a convolution reads the tokens before its shard from the rank that holds them.
 """
 
 import torch
 from torch import nn
+
+from prime_rl.utils.cp import CPContext, gather_for_cp
 
 DEPTH_MIX_EPS = 1e-6
 L2_CLIP_EPS = 1e-6
@@ -50,16 +53,34 @@ def log_length_scale(positions: torch.Tensor, n_floor: int, alpha: float) -> tor
     return (1.0 + alpha * torch.log(((positions + 1).float() / n_floor).clamp(min=1.0))).view(-1, 1, 1)
 
 
-def _lagged(x: torch.Tensor, lag: int, positions: torch.Tensor) -> torch.Tensor:
-    """``x[:, t - lag]`` where that token is in ``t``'s document, zero elsewhere."""
+def _tokens_before(x: torch.Tensor, count: int, cp_context: CPContext) -> torch.Tensor | None:
+    """The ``count`` tokens before the context-parallel shard ``x [1, T, ...]``: the end of the previous rank's shard.
+    The first shard gets the end of the last one, the way ``torch.roll`` wraps a whole row, and the document mask
+    drops it there too. ``None`` without context parallelism."""
+    if not cp_context.cp_enabled:
+        return None
+    ends = gather_for_cp(x[:, x.shape[1] - count :], cp_context.cp_group)
+    previous_rank = (cp_context.cp_rank - 1) % cp_context.cp_world_size
+    return ends[:, previous_rank * count : (previous_rank + 1) * count]
+
+
+def _lagged(x: torch.Tensor, lag: int, positions: torch.Tensor, before: torch.Tensor | None) -> torch.Tensor:
+    """``x[:, t - lag]`` where that token is in ``t``'s document, zero elsewhere. ``before`` holds the tokens before
+    ``x`` when ``x`` is a shard of the row (see ``_tokens_before``)."""
     if lag == 0:
         return x
     in_document = (positions >= lag).view(1, -1, *([1] * (x.dim() - 2)))
-    return torch.roll(x, shifts=lag, dims=1) * in_document
+    if before is None:
+        shifted = torch.roll(x, shifts=lag, dims=1)
+    else:
+        shifted = torch.cat([before[:, before.shape[1] - lag :], x[:, : x.shape[1] - lag]], dim=1)
+    return shifted * in_document
 
 
 class StaticShortConv(nn.Module):
     """Causal depthwise convolution with an identity residual, scaled by ``(kernel + 1) ** -0.5``."""
+
+    cp_context: CPContext = CPContext()
 
     def __init__(self, channels: int, kernel_size: int) -> None:
         super().__init__()
@@ -70,15 +91,18 @@ class StaticShortConv(nn.Module):
         weight = self.weight.float().squeeze(1)
         kernel_size = weight.shape[1]
         values = x.float()
+        before = _tokens_before(values, kernel_size - 1, self.cp_context)
         total = values
         for lag in range(kernel_size):
-            total = total + _lagged(values, lag, positions) * weight[:, kernel_size - 1 - lag]
+            total = total + _lagged(values, lag, positions, before) * weight[:, kernel_size - 1 - lag]
         return (total * (kernel_size + 1) ** -0.5).to(x.dtype)
 
 
 class DynamicShortConv(nn.Module):
     """Causal convolution whose taps are static per-channel weights plus per-token weights projected from
     ``source`` and shared within a head. Identity residual, scaled by ``(2 * kernel + 1) ** -0.5``."""
+
+    cp_context: CPContext = CPContext()
 
     def __init__(self, channels: int, source_size: int, num_heads: int, kernel_size: int) -> None:
         super().__init__()
@@ -92,9 +116,10 @@ class DynamicShortConv(nn.Module):
         token_taps = self.weight_proj(source).float().unflatten(-1, (self.num_heads, 1, kernel_size))
         static_taps = self.static_weight.float().unflatten(-1, (self.num_heads, -1))
         values = x.float().unflatten(-1, (self.num_heads, -1))
+        before = _tokens_before(values, kernel_size - 1, self.cp_context)
         total = values
         for lag in range(kernel_size):
-            total = total + _lagged(values, lag, positions) * (static_taps[lag] + token_taps[..., lag])
+            total = total + _lagged(values, lag, positions, before) * (static_taps[lag] + token_taps[..., lag])
         return (total * (2 * kernel_size + 1) ** -0.5).flatten(-2).to(x.dtype)
 
 
