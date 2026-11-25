@@ -1,5 +1,6 @@
-"""Qwen3.5's two-block attention: the layout of its kernel call against the mask's rule, the kernel call against a
-dense masked attention, and the mask's effect on a tiny model through the trainer's forward.
+"""Qwen3.5's two-block attention: the layout of its kernel call against the mask's rule, the model's hand-off of the
+layout to that call, the kernel call against a dense masked attention, a compiled layer on rows of different sizes, and
+the mask's effect on a tiny model through the trainer's forward.
 
 The GPU tests have not been run."""
 
@@ -8,13 +9,16 @@ from types import SimpleNamespace
 import pytest
 import torch
 from torch import nn
+from torch._dynamo.utils import clear_compilation_metrics, get_compilation_metrics
 
-from prime_rl.trainer.model import forward
+from prime_rl.trainer.model import forward, mark_dynamic_args
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
+from prime_rl.trainer.models.qwen3_5 import Qwen3_5Model
 from prime_rl.trainer.models.qwen3_5.attention import Qwen3_5Attention, TwoBlockLayout, prepare_two_block_layout
+from prime_rl.trainer.vlm import get_language_model
 from prime_rl.utils.cp import CPContext
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
-from tests.unit.train.models.qwen3_5.test_model import get_model, get_text_config
+from tests.unit.train.models.qwen3_5.test_model import get_model, get_text_config, get_vlm_config
 from tests.utils import assert_relative
 
 # (seq_lens, prefix_lens) of packed rows
@@ -112,10 +116,44 @@ def test_two_block_attention_refuses_a_sliding_window():
         attention._compute_two_block_attention(*[torch.zeros(5, 1, 8)] * 3, layout_of([5], [2]))
 
 
+def test_the_model_makes_the_two_block_call_only_with_prefix_lens():
+    """The forward of a model of one full-attention layer, up to its two kernel calls, which are recorded."""
+    config = get_text_config()
+    config.num_hidden_layers, config.layer_types = 1, ["full_attention"]
+    model = Qwen3_5Model.from_config(config, attn_implementation="flash_attention_2", dtype=torch.float32)
+    attention = model.layers[0].self_attn
+    calls = []
+
+    def record(call: str):
+        def kernel_call(q, k, v, *layout):
+            calls.append((call, (q, k, v), layout))
+            return torch.zeros_like(q)
+
+        return kernel_call
+
+    attention._compute_attention = record("causal")
+    attention._compute_two_block_attention = record("two_block")
+
+    input_ids, position_ids = torch.arange(8)[None], torch.tensor([[0, 1, 2, 3, 4, 0, 1, 2]])
+    seq_lens = torch.tensor([5, 3])
+    with torch.no_grad():
+        model(input_ids, position_ids, seq_lens=seq_lens)
+        model(input_ids, position_ids, seq_lens=seq_lens, prefix_lens=torch.tensor([2, 3]))
+
+    assert [call for call, _, _ in calls] == ["causal", "two_block"]
+    (_, causal_states, (cu_seqlens, max_seqlen)), (_, states, (layout,)) = calls
+    assert (cu_seqlens.tolist(), max_seqlen) == ([0, 5, 8], 5)
+    assert layout.cu_seqlens_q.tolist() == [0, 2, 5, 8]
+    assert layout.cu_seqlens_k.tolist() == [0, 2, 7, 10]
+    assert layout.key_index.tolist() == [0, 1, *range(0, 5), *range(5, 8)]
+    # Both calls take the row's queries, keys and values after RoPE
+    assert [state.shape for state in states] == [(8, 4, 64), (8, 2, 64), (8, 2, 64)]
+    for causal_state, state in zip(causal_states, states, strict=True):
+        assert torch.equal(causal_state, state)
+
+
 class Backbone(nn.Module):
     """A language model that records the ``prefix_lens`` it is called with."""
-
-    cp_context = CPContext()
 
     def forward(self, input_ids, position_ids, *, seq_lens, seq_lens_are_pre_shard=False, prefix_lens="not passed"):
         self.prefix_lens = prefix_lens
@@ -164,9 +202,15 @@ def test_the_trainer_forward_refuses_prefix_lens_for_a_model_without_two_block_a
         )
 
 
-def test_the_trainer_forward_refuses_prefix_lens_with_context_parallelism():
-    model = get_model(get_text_config(), device="meta", attn="flash_attention_2")
-    model.model.cp_context = CPContext(None, 0, 2)
+@pytest.mark.parametrize("language_model_only", [False, True], ids=["text", "language_model_only"])
+def test_the_trainer_forward_refuses_prefix_lens_with_context_parallelism(language_model_only):
+    config = get_text_config()
+    if language_model_only:
+        # The composite config of a text-only checkpoint: prefix_lens reaches the language model through its wrapper
+        config = get_vlm_config(config)
+        config.language_model_only = True
+    model = get_model(config, device="meta", attn="flash_attention_2")
+    get_language_model(model).cp_context = CPContext(None, 0, 2)
     with pytest.raises(ValueError, match="not supported with context parallelism"):
         forward(
             model,
@@ -266,6 +310,41 @@ def test_two_block_attention_traces_under_torch_compile(version):
             assert_relative(compiled_input.grad, eager_input.grad, 1e-2, label)
 
 
+@pytest.mark.gpu
+def test_a_compiled_full_attention_layer_takes_new_rows_without_recompiling(monkeypatch):
+    """The layout's tensors and ints are dynamic sources of the compiled decoder layers (``mark_dynamic_args``), so the
+    graph of the first row also runs rows whose numbers of tokens, segments, batch elements and gathered keys differ.
+    The model's forward calls the compiled layer by keyword, as in training, forward and backward."""
+    # The sources are process-wide: restored after the test
+    monkeypatch.setattr(torch.compiler.config, "dynamic_sources", torch.compiler.config.dynamic_sources)
+    mark_dynamic_args()
+    torch._dynamo.reset()
+    clear_compilation_metrics()
+    torch.manual_seed(0)
+    model = get_model(get_text_config())
+    model.model.layers[-1].compile(fullgraph=True)
+
+    # The first and the last row hold a segment of one block
+    for seq_lens, prefix_lens in (([40, 26], [28, 26]), ([33, 50, 21], [9, 20, 6]), ([70, 18], [70, 5])):
+        out = forward(
+            model,
+            torch.randint(0, model.config.vocab_size, (1, sum(seq_lens)), device="cuda"),
+            torch.cat([torch.arange(seq_len, device="cuda") for seq_len in seq_lens])[None],
+            seq_lens=torch.tensor(seq_lens, device="cuda"),
+            prefix_lens=torch.tensor(prefix_lens, device="cuda"),
+            hidden_states_fn=read,
+        )
+        out["hidden_states"].float().sum().backward()
+
+    # As test_compile.py counts the graphs of a model's decoder layers
+    graphs = [
+        metrics
+        for metrics in get_compilation_metrics()
+        if metrics.co_name is not None and metrics.is_forward is not False and metrics.graph_op_count
+    ]
+    assert len(graphs) == 1, [metrics.recompile_reason for metrics in graphs]
+
+
 SEQ_LENS, PREFIX_LENS = [40, 24], [28, 24]
 """A row of a segment with a prefix of 28 tokens and a second block of 12, and a segment of one block."""
 UNCHANGED = dict(atol=0.03, rtol=0.01)
@@ -290,14 +369,18 @@ def final_hidden_states(
     return out["hidden_states"][0].float()
 
 
-def model_and_row() -> tuple[nn.Module, torch.Tensor]:
+def model_and_row(vlm: bool = False) -> tuple[nn.Module, torch.Tensor]:
+    """A tiny text model, or with ``vlm`` the model of the composite config, whose wrapper runs the language model
+    on the embeddings it prepares; and a row of text tokens."""
     torch.manual_seed(0)
-    model = get_model(get_text_config())
+    config = get_text_config()
+    model = get_model(get_vlm_config(config) if vlm else config)
+    language_model = get_language_model(model)
     # The full attention of a random model adds little to its output. Raised, what a token attends shows in the
     # final hidden states
     with torch.no_grad():
-        model.model.layers[-1].self_attn.o_proj.weight.mul_(8)
-    return model, torch.randint(0, model.config.vocab_size, (1, sum(SEQ_LENS)), device="cuda")
+        language_model.layers[-1].self_attn.o_proj.weight.mul_(8)
+    return model, torch.randint(0, config.vocab_size, (1, sum(SEQ_LENS)), device="cuda")
 
 
 def with_other_tokens(input_ids: torch.Tensor, start: int, end: int) -> torch.Tensor:
@@ -308,8 +391,9 @@ def with_other_tokens(input_ids: torch.Tensor, start: int, end: int) -> torch.Te
 
 
 @pytest.mark.gpu
-def test_the_prefix_does_not_see_the_second_block():
-    model, input_ids = model_and_row()
+@pytest.mark.parametrize("vlm", [False, True], ids=["text", "vlm"])
+def test_the_prefix_does_not_see_the_second_block(vlm):
+    model, input_ids = model_and_row(vlm)
     states = final_hidden_states(model, input_ids, PREFIX_LENS)
     changed = final_hidden_states(model, with_other_tokens(input_ids, 28, 40), PREFIX_LENS)
 
