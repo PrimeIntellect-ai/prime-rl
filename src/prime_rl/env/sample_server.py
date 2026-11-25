@@ -135,6 +135,8 @@ class SampleServer:
         finally:
             for task in tasks:
                 task.cancel()
+            # Before the socket closes: a cancelled request may still be replying on it.
+            await asyncio.gather(*tasks, return_exceptions=True)
             self.socket.close()
             self.ctx.term()
 

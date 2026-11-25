@@ -75,6 +75,17 @@ def start_sample_server(config: EnvWorkerPoolConfig, store_dir: Path | None) -> 
     return process, death_write, store_url, address
 
 
+def stop_sample_server(process: mp.Process, timeout: float = 10) -> None:
+    """End the sample server once its death pipe is closed. It stops on its own then (its
+    pipe watcher sends it SIGTERM); one still running after ``timeout`` is stuck, and is killed
+    so it never outlives the pool and its store."""
+    process.join(timeout)
+    if process.is_alive():
+        get_logger().warning(f"The sample server did not stop within {timeout}s; killing it")
+        process.kill()
+        process.join()
+
+
 def stop_pool_with(process: mp.Process, stopping: threading.Event, crashed: threading.Event) -> None:
     """Stop the pool if its sample server dies: its env workers can keep no samples. A crash
     sets ``crashed``, so the pool exits with an error once it has stopped."""
@@ -128,7 +139,7 @@ def run_pool(config: EnvWorkerPoolConfig):
         sample_server, death_pipe, store_url, sample_server_address = start_sample_server(config, directory)
         stopping, crashed = threading.Event(), threading.Event()
         # Unwound last to first: mark the stop, then end the worker.
-        stack.callback(sample_server.join, 10)
+        stack.callback(stop_sample_server, sample_server)
         stack.callback(death_pipe.close)
         stack.callback(stopping.set)
         threading.Thread(target=stop_pool_with, args=(sample_server, stopping, crashed), daemon=True).start()

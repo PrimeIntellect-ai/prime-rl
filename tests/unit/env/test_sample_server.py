@@ -1,4 +1,5 @@
 import asyncio
+import os
 import signal
 import subprocess
 import sys
@@ -11,7 +12,7 @@ import psutil
 import pytest
 
 from prime_rl.configs.env_worker_pool import EnvWorkerPoolConfig, ScoringConfig
-from prime_rl.entrypoints.env_worker_pool import start_sample_server
+from prime_rl.entrypoints.env_worker_pool import start_sample_server, stop_sample_server
 from prime_rl.env.sample_server import SampleServer
 from prime_rl.env.types import SampleToScore
 from prime_rl.transports.batch.types import SampleBody
@@ -59,6 +60,18 @@ def test_a_sample_server_that_dies_starting_says_so():
     config = EnvWorkerPoolConfig(env=ENV, serve={"address": "tcp://203.0.113.7:5555"})
     with pytest.raises(RuntimeError, match=r"exited \(code 1\) before it started"):
         start_sample_server(config, None)
+
+
+def test_a_stuck_sample_server_does_not_outlive_its_pool():
+    process, death_pipe, _, _ = start_sample_server(EnvWorkerPoolConfig(env=ENV), None)
+    try:
+        os.kill(process.pid, signal.SIGSTOP)  # stuck: it cannot stop when its pool goes
+        death_pipe.close()
+        stop_sample_server(process, timeout=1)
+        assert not process.is_alive()
+    finally:
+        if process.is_alive():
+            process.kill()
 
 
 @pytest.mark.slow
