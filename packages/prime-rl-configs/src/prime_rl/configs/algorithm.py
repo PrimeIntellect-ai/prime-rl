@@ -99,8 +99,38 @@ class LinearSubagentLengthPenaltyConfig(LinearLengthPenaltyConfig):
     """Multiplier on subagent input and output tokens before group normalization. Uses harness-declared ``subagent_call`` edges and their continuations, compaction attempts, and compacted contexts; unlabelled calls count at full weight. Nested subagents use the same multiplier. 0 excludes subagent tokens, 1 counts them fully. Does not change the turns term or training-token weights."""
 
 
+class PowerLengthPenaltyConfig(BaseConfig):
+    """Superlinear per-agent penalty subtracted from each reward before the GRPO baseline. Each agent's lifetime tokens ``L`` (output plus new input, across its compactions, on trainable branches) cost ``L ** alpha``, summed over the rollout's agents; each reward is reduced by ``weight * pass_rate * cost / group's max cost``. With ``alpha > 1`` one long context costs more than the same tokens split across agents (an even k-way split costs ``k ** (1 - alpha)`` of one context); ``alpha = 2`` follows attention cost. Agents follow the same semantic edges as ``linear-subagent``."""
+
+    type: Literal["power"] = "power"
+
+    weight: float = Field(0.2, ge=0, allow_inf_nan=False)
+    """Scale on the normalized cost: the longest rollout of a group loses ``weight * pass_rate``. 0 disables the penalty."""
+
+    alpha: float = Field(1.5, gt=0, allow_inf_nan=False)
+    """Exponent on each agent's lifetime tokens. 1 is linear in total tokens; above 1, long single contexts cost more than parallel agents."""
+
+    subagent_weight: float = Field(1.0, ge=0, le=1, allow_inf_nan=False)
+    """Multiplier on spawned agents' costs. 1 charges every agent alike, so spawning pays off only by shortening contexts."""
+
+    budget: int | None = Field(None, gt=0)
+    """Calibrate the penalty to a token budget instead of the group: each reward is scaled by
+    ``1 - weight * min(1, num_total_tokens / budget) ** alpha``. It measures the rollout's total tokens, the count
+    ``env.agent.max_total_tokens`` limits (compaction calls included), so per-agent lifetimes and
+    ``subagent_weight`` don't apply. A zero-reward rollout is never penalized, the penalty does not depend on the
+    rest of the group, and with ``weight = 1`` a solved rollout's reward falls smoothly to 0 at the budget,
+    meeting the reward 0 of a rollout that hits a token limit of the same size. None normalizes by the group's
+    max cost and scales by its pass rate."""
+
+    @model_validator(mode="after")
+    def budget_ignores_agents(self):
+        if self.budget is not None and self.subagent_weight != 1.0:
+            raise ValueError("length_penalty.budget measures total tokens, so subagent_weight does not apply")
+        return self
+
+
 LengthPenaltyConfig: TypeAlias = Annotated[
-    LinearLengthPenaltyConfig | LinearSubagentLengthPenaltyConfig,
+    LinearLengthPenaltyConfig | LinearSubagentLengthPenaltyConfig | PowerLengthPenaltyConfig,
     Field(discriminator="type"),
 ]
 
@@ -189,7 +219,7 @@ class GRPOAlgoConfig(BaseAlgoConfig):
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
     length_penalty: Annotated[LengthPenaltyConfig | None, Live()] = None
-    """Length penalty subtracted from each reward before the GRPO baseline: a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max. ``linear`` uses trace token counts; opt-in ``linear-subagent`` discounts semantic subagent tokens. None disables it. The only live field of an algorithm: a config update may change it, or turn it on or off, while the run is going."""
+    """Length penalty subtracted from each reward before the GRPO baseline: a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max. ``linear`` uses trace token counts; opt-in ``linear-subagent`` discounts semantic subagent tokens; ``power`` charges each agent's lifetime tokens to the power ``alpha`` instead. None disables it. The only live field of an algorithm: a config update may change it, or turn it on or off, while the run is going."""
 
     @field_validator("length_penalty", mode="before")
     @classmethod

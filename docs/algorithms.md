@@ -526,6 +526,18 @@ num_turns_weight = 0.0
 
 Subagent membership follows harness-declared `subagent_call`, `continuation`, `compaction_attempt`, and `compaction` edges, including nested subagents at the same weight. Return, cancel, message, and unknown edges do not propagate membership. Calls without subagent attribution count fully. Root coordination tokens still count. The multiplier does not change the turns term, training-token weights, or the length-weighted baseline's token counts; set `num_turns_weight = 0` to disable the turns term, as above.
 
+The `power` penalty charges each agent's lifetime tokens $L_a$ (output plus newly introduced input on trainable branches, across its compactions) as $\sum_a w_a L_a^{\alpha}$, with $w_a$ = `subagent_weight` for spawned agents and 1 otherwise. Each reward is reduced by `weight` $\cdot$ pass_rate $\cdot$ cost / the group's max cost. With $\alpha > 1$ one long context costs more than the same tokens split across agents (an even $k$-way split costs $k^{1-\alpha}$ of one context), so spawning pays off only when it shortens contexts; $\alpha = 2$ follows attention cost. Agents are the branches joined by `continuation`, `compaction_attempt`, and `compaction` edges; a `subagent_call` edge starts a spawned agent.
+
+```toml
+[orchestrator.train.algo.length_penalty]
+type = "power"
+alpha = 1.5
+weight = 0.2
+subagent_weight = 1.0
+```
+
+With `budget` set, the penalty is calibrated to that many tokens instead of to the group: each reward is scaled by $1 - $ `weight` $\cdot \min(1, T / \text{budget})^{\alpha}$, where $T$ is the rollout's `num_total_tokens`, the count `env.agent.max_total_tokens` limits (compaction calls included; per-agent lifetimes and `subagent_weight` don't apply). A zero-reward rollout is never penalized, and with `weight = 1` a solved rollout's reward falls smoothly to 0 at the budget, meeting the reward 0 of a rollout that hits a token limit of the same size (`env.agent.max_total_tokens` with `scoring.skip_on_truncated`).
+
 A **length-weighted baseline** (`length_weighted_baseline = true` on the `grpo`-family algorithms) replaces the plain group mean with $b = \sum_i L_i s_i / \sum_i L_i$, where $L_i$ is the number of trainable (policy-sampled, loss-masked) tokens of rollout $i$, summed across all its turns; it applies after the length penalty. With token-level loss normalization, long rollouts carry more gradient weight, so this baseline makes the per-token advantage zero-mean across the group's tokens rather than across rollouts.
 
 **Prompt-mean loss aggregation** (`loss_aggregation = "prompt"` on `grpo` and `echo`; default `"token"`). By default every `rl` token in the batch weighs the same, so prompts whose groups produce long trajectories dominate the gradient. With `"prompt"`, the loss is MiMo-V2.6's prompt-mean (Eq. 1): the mean over prompt groups $q$ of $\frac{1}{T_q}\sum_{t \in q} \mathcal{L}_{rl,t}$, where $T_q$ is the group's total trainable tokens. MiMo uses it to keep response length from growing too fast. `score_group` gives each trainable token of the group the `rl` weight $1/T_q$, so each group's weights sum to 1 and $N_{rl}$ (the summed weights) is the number of groups in the step. Zero-advantage tokens are still dropped from the `rl` component, so a group with a zero-advantage rollout keeps less than its full weight of 1. All envs with an `rl` loss in a run must use the same `loss_aggregation`.
