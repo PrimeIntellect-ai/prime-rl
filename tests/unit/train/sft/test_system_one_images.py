@@ -123,18 +123,25 @@ def test_a_renamed_images_column_must_exist():
 
 def test_a_rendering_with_broken_image_inputs_is_refused(strategy):
     rendered = strategy.render_request(request(IMAGES), max_tokens=4096)
-    check_rendered_request(rendered, request(IMAGES), vocab_size=32)
+    check_rendered_request(rendered, request(IMAGES), 32, IMAGE_TOKEN)
     without = {key: value for key, value in rendered.items() if not key.startswith("mm_")}
     video = {**rendered, "mm_kwargs": {"pixel_values_videos": rendered["mm_kwargs"]["pixel_values"]}}
+    types = rendered["mm_token_type_ids"]
+    other = {**rendered, "input_ids": [12 if token == IMAGE_TOKEN else token for token in rendered["input_ids"]]}
     for broken, asked, error in [
         ({**without, "mm_kwargs": rendered["mm_kwargs"]}, IMAGES, "go together"),
         ({**rendered, "mm_token_type_ids": [0]}, IMAGES, "1 mm_token_type_ids for"),
         (without, IMAGES, "must be given for a request with images"),
         (rendered, None, "must be given for a request with images"),
         (video, IMAGES, "video inputs are not supported"),
+        ({**rendered, "mm_kwargs": {}}, IMAGES, "mm_kwargs is empty"),
+        ({**rendered, "mm_token_type_ids": [0] * len(types)}, IMAGES, "must be 1 at the images' tokens"),
+        ({**rendered, "mm_token_type_ids": [2 * t for t in types]}, IMAGES, "must be 1 at the images' tokens"),
+        ({**rendered, "mm_token_type_ids": [0, *types[:-1]]}, IMAGES, "must be the model's image token 9, got"),
+        (other, IMAGES, "must be the model's image token 9, got"),
     ]:
         with pytest.raises(ValueError, match=error):
-            check_rendered_request(broken, request(asked), vocab_size=32)
+            check_rendered_request(broken, request(asked), 32, IMAGE_TOKEN)
 
 
 @pytest.mark.parametrize("images", [None, IMAGES])
@@ -199,7 +206,16 @@ def test_transparency_is_white_and_orientation_is_applied():
     assert load_image(images_of_every_kind()["rotated jpeg"]).size == (64, 96)
 
 
-@pytest.mark.parametrize("url", ["data:image/png;base64,AAAA", "data:image/png;base64,!", EPS])
-def test_an_image_that_does_not_load_raises(url):
-    with pytest.raises(ValueError, match="Failed to load image"):
+@pytest.mark.parametrize(
+    "url, error",
+    [
+        ("data:image/png;base64,AAAA", "cannot identify image file"),
+        ("data:image/png;base64,!", ""),
+        (EPS, "cannot identify image file"),  # not one of the formats, so Ghostscript is not looked for
+    ],
+)
+def test_an_image_that_does_not_load_raises(strategy, url, error):
+    with pytest.raises(ValueError, match=f"Failed to load image: .*{error}"):
         load_image(url)
+    with pytest.raises(ValueError, match="record 'r': Failed to load image"):
+        render_sample(strategy, request([url]), 4096)
