@@ -8,7 +8,7 @@ import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import ActionLossType
-from prime_rl.orchestrator.credit import ADVANTAGE_KEY, RL_WEIGHT_KEY, trace_advantage
+from prime_rl.orchestrator.credit import ADVANTAGE_KEY, RL_WEIGHT_KEY, advantage_values
 
 if TYPE_CHECKING:
     from prime_rl.env.heads import TraceHead
@@ -26,6 +26,29 @@ def assign_advantage(trace: TraceHead, value: float) -> None:
     with no such token gets no credit."""
     if trace.trainable_tokens:
         trace.info[ADVANTAGE_KEY] = float(value)
+
+
+def token_layout(trace: TraceHead) -> dict[int, list[int]]:
+    """The trainable tokens of each of the trace's training samples, by branch index: one
+    count per sampled node of the branch that trains in it, in order. A sampled node shared
+    by several branches trains only in the first."""
+    return trace.token_layout
+
+
+def assign_advantages(trace: TraceHead, branch: int, values: list[float] | np.ndarray) -> None:
+    """Credit each trainable token of one of the trace's branches with its own advantage:
+    ``values`` holds one per token, ``sum(token_layout(trace)[branch])`` in order. A trace
+    credited per token uses token advantages on every branch; a branch assigned none gets 0.0."""
+    if branch not in trace.token_layout:
+        raise ValueError(f"trace {trace.id!r} has no training sample for branch {branch}")
+    values = np.asarray(values, dtype=np.float32)
+    expected = sum(trace.token_layout[branch])
+    if len(values) != expected:
+        raise ValueError(
+            f"advantages must align with the trainable tokens of branch {branch} of trace {trace.id!r}: "
+            f"got {len(values)}, expected {expected}"
+        )
+    trace.branch_advantages[branch] = values
 
 
 def assign_rl_weight(trace: TraceHead, value: float) -> None:
@@ -51,7 +74,8 @@ def assign_reference_logprobs(branch: vf.Branch, values: list[float] | np.ndarra
 
 def is_trainable(trace: TraceHead) -> bool:
     """Whether the trace's sampled tokens carry nonzero RL credit."""
-    return bool(trace_advantage(trace))
+    values = advantage_values(trace)
+    return values is not None and bool(np.any(values != 0.0))
 
 
 def stamp_loss_routing(sample: BranchSample, action_loss_type: ActionLossType) -> None:

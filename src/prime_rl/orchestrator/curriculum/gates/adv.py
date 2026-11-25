@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from prime_rl.orchestrator.credit import trace_advantage
+import numpy as np
+
+from prime_rl.orchestrator.credit import advantage_values
 from prime_rl.orchestrator.curriculum.gates.base import AdmissionGate
 
 if TYPE_CHECKING:
@@ -13,7 +15,7 @@ if TYPE_CHECKING:
 
 
 class AdvRangeGate(AdmissionGate):
-    """Reject groups whose trace advantages all fall inside a range.
+    """Reject groups whose advantages (one per trace, or per token) all fall inside a range.
 
     The default ``[0, 0]`` interval filters groups with no online learning
     signal. Groups without advantages are admitted.
@@ -23,13 +25,14 @@ class AdvRangeGate(AdmissionGate):
         self.config = config
 
     def admit(self, group: list[EpisodeHead]) -> bool:
-        advantages = [
-            advantage
+        parts = [
+            values
             for episode in group
             for trace in episode.traces
             if episode.ok and not trace.has_error and trace.agent.trainable
-            if (advantage := trace_advantage(trace)) is not None
+            if (values := advantage_values(trace)) is not None
         ]
-        if not advantages:
+        if not parts:
             return True
-        return not all(self.config.reject_min <= advantage <= self.config.reject_max for advantage in advantages)
+        advantages = np.concatenate(parts)
+        return not bool(((advantages >= self.config.reject_min) & (advantages <= self.config.reject_max)).all())

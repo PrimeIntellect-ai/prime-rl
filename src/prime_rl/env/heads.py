@@ -79,6 +79,12 @@ class TraceHead(BaseModel):
     """Sampled nodes on the trace's trainable branches."""
     trainable_branches: list[int] = Field(default_factory=list)
     """Indices of the trace's trainable branches (`Trace.branches`)."""
+    token_layout: dict[int, list[int]] = Field(default_factory=dict)
+    """The trainable tokens of each training sample, by branch index: one count per sampled
+    node that trains in it, in order (`prime_rl.orchestrator.algo.token_layout`)."""
+    branch_advantages: dict[int, Any] = Field(default_factory=dict, exclude=True)
+    """The orchestrator's advantages of a trace credited per token, by branch index, one
+    float32 per trainable token (`assign_advantages`). Never serialized."""
     length_tokens: LengthTokens = Field(default_factory=LengthTokens)
     versions: dict[int, int] = Field(default_factory=dict)
     """Sampled tokens per policy version that sampled them (``UNLABELED``: the engine reported none)."""
@@ -163,6 +169,7 @@ def _versions(trace: vf.Trace) -> dict[int, int]:
 def trace_head(trace: vf.Trace) -> TraceHead:
     from prime_rl.orchestrator.algo.grpo import length_penalty_tokens
     from prime_rl.orchestrator.algo.routing import trainable_nodes
+    from prime_rl.orchestrator.trajectories import trainable_token_layout
 
     trainable = trainable_nodes(trace)
     on_trainable_branch = {id(node): node for branch in trace.branches if branch.trainable for node in branch.nodes}
@@ -194,6 +201,7 @@ def trace_head(trace: vf.Trace) -> TraceHead:
         trainable_tokens=sum(int(np.count_nonzero(node.mask)) for node in trainable),
         trainable_turns=sum(node.sampled for node in on_trainable_branch.values()),
         trainable_branches=[branch.index for branch in trace.branches if branch.trainable],
+        token_layout=trainable_token_layout(trace),
         length_tokens=LengthTokens(
             output=output, input=input, subagent_output=subagent_output, subagent_input=subagent_input
         ),

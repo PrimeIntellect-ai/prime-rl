@@ -7,7 +7,9 @@ and training arrays (routing rows, sampling masks, top-k heads). It keeps the en
 `SampleBody` and serves it over HTTP; the trace carries only a reference and a small summary per
 branch in `trace.info[PAYLOAD_INFO_KEY]`. The orchestrator decides about samples from the
 summaries and ships `MicroBatchPlan`s of `SampleRef`s, and each trainer rank fetches its micro
-batches' bodies and builds them (`materialize_micro_batches`).
+batches' bodies and builds them (`materialize_micro_batches`). An algorithm that credits tokens
+unevenly has the orchestrator write those advantages into the kept body (`write_advantages`)
+before the sample can ship.
 
 Every kept body is deleted exactly once, by whoever holds it last: the trainer deletes a
 step's bodies once every rank fetched them; the orchestrator deletes the bodies of samples
@@ -24,6 +26,7 @@ Nothing here imports torch: every env worker imports this module.
 
 from __future__ import annotations
 
+import os
 import queue
 import shutil
 import socket
@@ -149,8 +152,8 @@ class _HTTPServer(ThreadingHTTPServer):
 
 
 class PayloadServer:
-    """One env worker's arrays, served at `GET <url>/<id>` and freed by
-    `DELETE <url>/<id>`."""
+    """One env worker's arrays, served at `GET <url>/<id>`, credited per token by
+    `PATCH <url>/<id>` and freed by `DELETE <url>/<id>`."""
 
     def __init__(self, bind_host: str, url_host: str | None = None):
         self.blobs: dict[str, bytes] = {}
@@ -165,6 +168,16 @@ class PayloadServer:
                 self.end_headers()
                 if blob is not None:
                     self.wfile.write(blob)
+
+            def do_PATCH(self) -> None:
+                values = self.rfile.read(int(self.headers["Content-Length"]))
+                try:
+                    kept = server.set_advantages(self.path.lstrip("/"), values)
+                except ValueError as error:
+                    self.send_error(400, str(error))
+                    return
+                self.send_response(204 if kept else 404)
+                self.end_headers()
 
             def do_DELETE(self) -> None:
                 server.delete(self.path.lstrip("/"))
@@ -186,6 +199,31 @@ class PayloadServer:
     def put(self, key: str, blob: bytes) -> None:
         with self.lock:
             self.blobs[key] = blob
+
+    def replace(self, key: str, blob: bytes) -> bool:
+        """Rewrite a kept blob; one freed meanwhile stays freed. Whether it was still kept."""
+        with self.lock:
+            if key not in self.blobs:
+                return False
+            self.blobs[key] = blob
+            return True
+
+    def set_advantages(self, key: str, values: bytes) -> bool:
+        """Credit a kept sample per token: ``values`` (float32) for its trainable tokens in order,
+        kept as its ``advantages`` column (0.0 on the other tokens). Whether it was still kept."""
+        blob = self.get(key)
+        if blob is None:
+            return False
+        body = _decoder.decode(blob)
+        mask = np.frombuffer(body.mask, np.bool_)
+        credit = np.frombuffer(values, np.float32)
+        if len(credit) != np.count_nonzero(mask):
+            raise ValueError(
+                f"sample {key} has {np.count_nonzero(mask)} trainable tokens, got {len(credit)} advantages"
+            )
+        advantages = np.zeros(len(mask), np.float32)
+        advantages[mask] = credit
+        return self.replace(key, _encoder.encode(msgspec.structs.replace(body, advantages=advantages.tobytes())))
 
     def delete(self, key: str) -> None:
         with self.lock:
@@ -239,6 +277,16 @@ class RolloutStore(PayloadServer):
             return self.path(key).read_bytes()
         except FileNotFoundError:
             return None
+
+    def replace(self, key: str, blob: bytes) -> bool:
+        # In place, never created: a blob unlinked after the open takes the write with it.
+        try:
+            fd = os.open(self.path(key), os.O_WRONLY | os.O_TRUNC)
+        except FileNotFoundError:
+            return False
+        with os.fdopen(fd, "wb") as f:
+            f.write(blob)
+        return True
 
     def delete(self, key: str) -> None:
         """Free a blob that will never ship. A trained blob stays until its step is committed."""
@@ -473,6 +521,21 @@ class _Releaser:
 _releaser = _Releaser()
 
 
+def write_advantages(url: str, values: np.ndarray) -> bool:
+    """Credit the sample at ``url`` per token, with one advantage for each of its trainable
+    tokens. Whether its store still kept it."""
+    request = urllib.request.Request(url, data=np.ascontiguousarray(values, np.float32).tobytes(), method="PATCH")
+    try:
+        _opener.open(request, timeout=60).close()
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return False
+        raise
+    except urllib.error.URLError:
+        return False  # its env worker is gone, and the sample with it
+    return True
+
+
 def delete_payloads(urls: Iterable[str]) -> None:
     """Free kept arrays on their env workers, without waiting. Call only once nothing will
     read them again."""
@@ -513,9 +576,10 @@ def wait_for_deletes() -> None:
 
 def build_sample(body: SampleBody, ref: SampleRef, plan: MicroBatchPlan) -> TrainingSample:
     """The first ``ref.num_tokens`` of a kept sample, with the orchestrator's decisions applied:
-    the trace's advantage spread over the sampled tokens and its rl weight over the trainable
-    ones, zero-advantage tokens out of the rl component, and tokens of a policy older than the
-    step's ``min_version`` out of every component."""
+    the trace's advantage spread over the sampled tokens (or the sample's own per-token
+    advantages) and its rl weight over the trainable ones, zero-advantage tokens out of the rl
+    component, and tokens of a policy older than the step's ``min_version`` out of every
+    component."""
     n = ref.num_tokens
     mask = np.frombuffer(body.mask, np.bool_)[:n].copy()
     sampled = np.frombuffer(body.sampled, np.bool_)[:n]
@@ -534,6 +598,9 @@ def build_sample(body: SampleBody, ref: SampleRef, plan: MicroBatchPlan) -> Trai
     advantages = None
     if ref.advantage is not None:
         advantages = np.where(sampled, np.float32(ref.advantage), np.float32(0.0))
+    elif body.advantages is not None:
+        advantages = stream(body.advantages)
+    if advantages is not None:
         pruned = mask & (advantages == 0.0)
         if rl_weights is not None:
             pruned &= rl_weights != 0.0

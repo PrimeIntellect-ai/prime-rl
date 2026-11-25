@@ -15,7 +15,7 @@ from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.control.types import ConfigUpdate
 from prime_rl.env.heads import EpisodeHead, TraceHead, episode_head
 from prime_rl.orchestrator.algo.base import Algorithm
-from prime_rl.orchestrator.train_sink import TrainSink, queued_samples
+from prime_rl.orchestrator.train_sink import TrainSink, queued_samples, write_token_advantages
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TrainBatch
 from prime_rl.orchestrator.utils import episode_group_id, min_fresh_version
 from prime_rl.transports import payload
@@ -97,6 +97,7 @@ def episode(traces, *, group="g", version=0, keep=True) -> EpisodeHead:
 def train_trace(trace: TraceHead) -> list[TrainingSample]:
     """The samples a trainer rank builds from one trace an env worker kept, referenced with
     the trace's credit by the orchestrator."""
+    assert not write_token_advantages([trace])
     refs = [
         sample.ref
         for sample in queued_samples(trace, env_name="test", temperature=1.0, policy_start=None, seq_len=1 << 20)
