@@ -1266,6 +1266,9 @@ class Orchestrator:
         if not self.dispatcher.inflight_train_count:
             return {}
         replies = await asyncio.gather(*(env.save(str(directory), SAVE_TIMEOUT_SECONDS) for env in self.train_envs))
+        for env in self.train_envs:
+            self.ckpt_manager.snapshots.orphan(env.orphan_snapshots)
+            env.orphan_snapshots.clear()
         return {request_id: restore for reply in replies for request_id, restore in reply.items()}
 
     def open_work(self, restores: dict[str, RestoreRef]) -> dict:
@@ -1376,7 +1379,8 @@ class Orchestrator:
 
         for env in self.train_envs:
             late, env.late_restores = env.late_restores, []
-            ledger.orphan([restore.snapshot for restore in late])
+            ledger.orphan([*env.orphan_snapshots, *(restore.snapshot for restore in late)])
+            env.orphan_snapshots.clear()
             for restore in late:
                 Path(restore.path).unlink(missing_ok=True)
         try:

@@ -29,7 +29,8 @@ def test_save_maps_restore_points_to_runs_and_deletes_the_snapshots_of_the_rest(
         @staticmethod
         async def discard(snapshots) -> list[str]:
             discarded.extend(snapshot.id for snapshot in snapshots)
-            return [snapshot.id for snapshot in snapshots]
+            # Prime refuses the newest snapshot of a box that still runs: t2's episode goes on.
+            return [snapshot.id for snapshot in snapshots if snapshot.id != "s-t2"]
 
     async def save_all(skipped: dict[str, int], *, hold: bool, watchdog: bool) -> list[dict]:
         # t9's run ended while the checkpoints were taken; t2 is one trace of a multi-agent episode.
@@ -56,6 +57,8 @@ def test_save_maps_restore_points_to_runs_and_deletes_the_snapshots_of_the_rest(
     response = asyncio.run(env_worker._save(SaveRequest(dir=str(directory))))
 
     assert set(response.restores) == {"r1"}
+    # A snapshot the worker could not delete goes to the owner, which retries.
+    assert response.orphans == [{"id": "s-t2"}]
     # The holds end by themselves only once the restore files are written.
     assert armed == [True]
     ref = response.restores["r1"]

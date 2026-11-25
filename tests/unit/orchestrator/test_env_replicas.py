@@ -52,7 +52,7 @@ class SaveClient:
         await self.release.wait()
         if self.fails:
             raise RuntimeError("worker failed")
-        return SaveResponse(restores={self.request_id: self.restore})
+        return SaveResponse(restores={self.request_id: self.restore}, orphans=[{"id": f"unused-{self.request_id}"}])
 
 
 def test_save_merges_the_replicas_that_answer_in_time():
@@ -62,11 +62,13 @@ def test_save_merges_the_replicas_that_answer_in_time():
         env._env_clients = [fast, failing, slow]
         restores = await env.save("/ckpt", timeout=0.05)
         assert restores == {"r1": fast.restore}
+        assert env.orphan_snapshots == [{"id": "unused-r1"}]
         assert env.late_restores == []
         # What a slow replica saved after all is kept apart, for its owner to delete.
         slow.release.set()
         for _ in range(3):
             await asyncio.sleep(0)
         assert env.late_restores == [slow.restore]
+        assert env.orphan_snapshots == [{"id": "unused-r1"}, {"id": "unused-r3"}]
 
     asyncio.run(run())

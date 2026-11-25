@@ -272,7 +272,8 @@ class EnvWorker:
             saved, paths = [], []
         if orphans:
             try:
-                await PrimeBackend.discard([Snapshot.model_validate(snapshot) for snapshot in orphans])
+                deleted = set(await PrimeBackend.discard([Snapshot.model_validate(snapshot) for snapshot in orphans]))
+                orphans = [snapshot for snapshot in orphans if snapshot["id"] not in deleted]
             except Exception as e:  # noqa: BLE001 - the restore points written must still be reported
                 get_logger().warning(f"Failed to delete {len(orphans)} unused snapshots {orphans} - {e!r}")
         for reason, count in reasons.items():
@@ -284,6 +285,7 @@ class EnvWorker:
                     f"resume: {reason}"
                 )
         return SaveResponse(
+            orphans=orphans,
             skipped=[reason for reason, count in reasons.items() for _ in range(count)],
             restores={
                 slots[trace["id"]][0]: RestoreRef(
