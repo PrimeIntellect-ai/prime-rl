@@ -8,9 +8,11 @@
 #   Question, whose port leaves them and Question.labels out. The rest of that file and parse_questions are
 #   clef_flash.py's.
 # Text only, and a record has no instructions of its own: no image and no system message (vLLM's top-level
-# instructions). Left out, as only a server uses them: read, _question_read, the sampling parameters,
-# _warm_shared_prefix, and _prompts' check that a prompt ends with the tail, which only a request's chat options can
-# break.
+# instructions). Left out, as only a server uses them: read, _question_read, the sampling parameters and
+# _warm_shared_prefix. Left out too: _prompts' check that a prompt ends with the tail. A server renders a read with
+# the request's chat options and its renderer's template, which may differ from the probe's; here _render renders
+# both alike, so the check could only fail with a chat template that puts no added token after the user turn's
+# content, and Qwen3.5's puts <|im_end|> there.
 """A stock Qwen3.5's System One strategy: vLLM's ``NextTokenStrategy`` prompts, read from the LM head."""
 
 import json
