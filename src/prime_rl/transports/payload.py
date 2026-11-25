@@ -33,6 +33,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,7 @@ from prime_rl.transports.batch.materialize import (
     fill_routing,
     make_dummy_batch,
     materialize_bin,
+    mm_cut,
     pad_micro_batch,
     prepare_sample,
     slice_routed_experts,
@@ -576,11 +578,6 @@ def _placeholder(ref: SampleRef, token_ids: np.ndarray) -> TrainingSample:
     """A sample whose body could not be fetched, to keep its micro batch's shapes: tokens
     borrowed from the micro batch's other samples (identical tokens would route to the same
     MoE experts), nothing to train."""
-    if ref.images:
-        raise RuntimeError(
-            f"Could not fetch multimodal sample {ref.id} from {ref.url}: its micro batch cannot run the vision "
-            "encoder the other data ranks run at this step"
-        )
     n = ref.num_tokens
     return TrainingSample(
         token_ids=np.resize(token_ids if len(token_ids) else np.zeros(1, np.int32), n).astype(np.int32),
@@ -591,6 +588,33 @@ def _placeholder(ref: SampleRef, token_ids: np.ndarray) -> TrainingSample:
         trace_id=ref.trace_id,
         branch_index=ref.branch_index,
     )
+
+
+def _multimodal_placeholder(ref: SampleRef, donors: list[TrainingSample]) -> TrainingSample | None:
+    """A placeholder for a multimodal sample whose body could not be fetched: another fetched
+    multimodal sample of this rank's step, cut to the missing sample's length without splitting an
+    image, so the micro batch still runs the vision encoder the other data ranks run at this
+    step. None if no fetched sample keeps an image within that length."""
+    n = ref.num_tokens
+    for donor in donors:
+        images = [[image.offset, image.length] for image in donor.mm_refs.images]
+        cut = mm_cut(images, len(donor.token_ids), n)
+        mm_refs = truncate_mm_refs(donor.mm_refs, cut)
+        if mm_refs is None:
+            continue
+        padding = np.zeros(n - cut, dtype=np.int32)
+        return TrainingSample(
+            token_ids=np.concatenate([donor.token_ids[:cut], padding]),
+            mask=np.zeros(n, dtype=np.bool_),
+            logprobs=np.zeros(n, dtype=np.float32),
+            temperatures=np.ones(n, dtype=np.float32),
+            env_name=ref.env_name,
+            mm_refs=mm_refs,
+            mm_token_type_ids=np.concatenate([donor.mm_token_type_ids[:cut], padding]),
+            trace_id=ref.trace_id,
+            branch_index=ref.branch_index,
+        )
+    return None
 
 
 def _fill_missing_routing(samples: list[TrainingSample], refs: list[SampleRef]) -> None:
@@ -605,36 +629,52 @@ def _fill_missing_routing(samples: list[TrainingSample], refs: list[SampleRef]) 
             sample.routed_experts = fill_routing(len(sample.token_ids), routed.routed_shape, routed.routed_dtype, rows)
 
 
-def materialize_micro_batches(
-    plans: list[MicroBatchPlan], pool: ThreadPoolExecutor
-) -> tuple[list[MicroBatch], list[int], list[str]]:
-    """Fetch the plans' sample bodies and build their micro batches.
+@dataclass
+class Materialized:
+    """A rank's micro batches of one step, built from its plans."""
 
-    Returns the micro batches, the indices of those with a sample that could not be fetched (it
-    holds a placeholder of the right shape, and the caller must keep the micro batch out of the
-    loss), and the fetched URLs, for `delete_payloads`."""
+    micro_batches: list[MicroBatch]
+    failed: list[int]
+    """Micro batches with a sample that could not be fetched: it holds a placeholder of the right
+    shape, and the caller must keep the micro batch out of the loss."""
+    unbuildable: list[int]
+    """Failed multimodal micro batches no fetched sample could stand in for: they cannot run the
+    vision encoder the other data ranks run at this step, so the step cannot train."""
+    urls: list[str]
+    """The fetched samples, for `delete_payloads`."""
+
+
+def materialize_micro_batches(plans: list[MicroBatchPlan], pool: ThreadPoolExecutor) -> Materialized:
+    """Fetch the plans' sample bodies and build their micro batches. Never raises for a sample
+    that could not be fetched: every data rank must reach the step's next collective."""
     urls = sorted({sample_url(ref) for plan in plans for ref in plan.samples})
     bodies = dict(zip(urls, pool.map(_fetch, urls)))
-    micro_batches: list[MicroBatch] = []
-    failed: list[int] = []
-    for index, plan in enumerate(plans):
-        samples = [
+    built = [
+        [
             build_sample(body, ref, plan) if (body := bodies[sample_url(ref)]) is not None else None
             for ref in plan.samples
         ]
+        for plan in plans
+    ]
+    donors = [sample for samples in built for sample in samples if sample is not None and sample.mm_refs is not None]
+    result = Materialized(micro_batches=[], failed=[], unbuildable=[], urls=urls)
+    for index, (plan, samples) in enumerate(zip(plans, built, strict=True)):
         if any(sample is None for sample in samples):
-            failed.append(index)
+            result.failed.append(index)
             token_ids = np.concatenate([s.token_ids for s in samples if s is not None] or [np.zeros(0, np.int32)])
-            samples = [
-                sample if sample is not None else _placeholder(ref, token_ids)
-                for sample, ref in zip(samples, plan.samples, strict=True)
-            ]
+            for position, ref in enumerate(plan.samples):
+                if samples[position] is not None:
+                    continue
+                placeholder = _multimodal_placeholder(ref, donors) if ref.images else None
+                if ref.images and placeholder is None:
+                    result.unbuildable.append(index)
+                samples[position] = placeholder or _placeholder(ref, token_ids)
             _fill_missing_routing(samples, plan.samples)
         micro_batch = pad_micro_batch(materialize_bin([prepare_sample(sample) for sample in samples]), plan.padding)
         if plan.dummy:
             micro_batch = make_dummy_batch(micro_batch)
         assert_token_arrays_aligned(micro_batch)
-        micro_batches.append(micro_batch)
-    if failed:
-        get_logger().warning(f"Could not fetch the samples of {len(failed)} micro batches")
-    return micro_batches, failed, urls
+        result.micro_batches.append(micro_batch)
+    if result.failed:
+        get_logger().warning(f"Could not fetch the samples of {len(result.failed)} micro batches")
+    return result

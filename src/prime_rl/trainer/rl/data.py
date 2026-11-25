@@ -255,6 +255,8 @@ class DataLoader:
         self.payload_pool = ThreadPoolExecutor(32, thread_name_prefix="payload")
         self.failed_micro_batches: list[int] = []
         """Micro batches of the last batch with a sample this rank could not fetch."""
+        self.unbuildable_micro_batches: list[int] = []
+        """Failed multimodal micro batches of the last batch that cannot run the vision encoder."""
         self.payload_urls: list[str] = []
         """The last batch's fetched samples, for `release_payloads`."""
 
@@ -278,9 +280,10 @@ class DataLoader:
         self.step = self.receiver.current_step
         plans = self.receiver.receive()
         start = time.perf_counter()
-        micro_batches, self.failed_micro_batches, self.payload_urls = materialize_micro_batches(
-            plans, self.payload_pool
-        )
+        materialized = materialize_micro_batches(plans, self.payload_pool)
+        micro_batches = materialized.micro_batches
+        self.failed_micro_batches, self.unbuildable_micro_batches = materialized.failed, materialized.unbuildable
+        self.payload_urls = materialized.urls
         get_logger().debug(
             f"Fetched the samples of {len(micro_batches)} micro batches in {format_time(time.perf_counter() - start)}"
         )
