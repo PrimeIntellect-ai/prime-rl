@@ -1,5 +1,6 @@
 # Ported from vLLM v0.34.0 (Apache-2.0, Copyright contributors to the vLLM project), with vLLM's names:
-# - vllm/multimodal/image.py: ALLOWED_IMAGE_FORMATS, open_image, normalize_image, rgba_to_rgb, _has_transparency and convert_image_mode, to RGB on white.
+# - vllm/multimodal/image.py: ALLOWED_IMAGE_FORMATS, open_image, normalize_image, rgba_to_rgb, _has_transparency and
+#   convert_image_mode, to RGB on white.
 # - vllm/multimodal/media/image.py: ImageMediaIO's load_base64 and load_bytes, with its defaults, as load_image.
 # Left out, as they bound a server's work: the limits on pixels and decoded bytes.
 """A record's images as vLLM loads a request's."""
@@ -9,7 +10,6 @@ import contextlib
 from io import BytesIO
 
 from PIL import Image, ImageOps
-
 
 # The still-image formats Pillow decodes in-process. Others may run an external program: EPS runs Ghostscript.
 ALLOWED_IMAGE_FORMATS = (

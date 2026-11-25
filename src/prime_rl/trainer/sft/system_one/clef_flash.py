@@ -4,14 +4,13 @@
 #   NoulQuestion and ScoreQuestion (146-162, 178-199, 219-234).
 # - vllm/entrypoints/generate/structured_decisions/serving.py: parse_questions (lines 27-53).
 # - vllm/entrypoints/openai/decisions/strategies.py: DecisionLimits (lines 83-89); JointSchemaStrategy (841-1068): its
-#   SYSTEM_PROMPT, TYPE_IDS, NOUL_CRITERIA, __init__, limits, _render, _tokens, _options and encode; ClefFlashStrategy (1138-1190): its MAX_LENGTH,
-#   its image placeholder and _render_media for images, with the model's image processor in place of vLLM's renderer.
-#   Videos are not ported.
+#   SYSTEM_PROMPT, TYPE_IDS, NOUL_CRITERIA, __init__, limits, _render, _tokens, _options and encode; ClefFlashStrategy
+#   (1138-1190): its MAX_LENGTH, its image placeholder and _render_media for images, with the model's image processor
+#   in place of vLLM's renderer. Videos are not ported.
 # - vllm/model_executor/models/clef_joint_schema.py: parse_joint_schema's spans (lines 222-229) and
 #   JointSchemaPooler.forward's lexical embeddings (lines 287-297), read from the LM head as
 #   vllm/model_executor/models/clef_flash.py's _embed_lexical reads them (lines 43-44).
-# Left out, as only vLLM's other strategies and its responses use them: Question.labels and
-# DecisionLimits.labeled.
+# Left out, as only vLLM's other strategies and its responses use them: Question.labels and DecisionLimits.labeled.
 """Clef-Flash's System One strategy: vLLM's ``ClefFlashStrategy`` prompt, read by the joint schema head."""
 
 import json
