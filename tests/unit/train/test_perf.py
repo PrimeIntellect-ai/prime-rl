@@ -73,3 +73,11 @@ def test_active_params_count_attention_and_mlp_weights():
     # Per layer: q/o 64x64, k/v 64x32, q/k norms 16, MLP 3x64x128, two norms 64; then final norm and lm_head.
     layer = 2 * 64 * 64 + 2 * 64 * 32 + 2 * 16 + 3 * 64 * 128 + 2 * 64
     assert model.num_active_params() == 2 * layer + 64 + 128 * 64
+
+
+def test_matmul_flops_without_the_lm_head():
+    with torch.device("meta"):
+        model = custom_causal_lm_from_config(MODELS["qwen3"][0], attn_implementation="flash_attention_3")
+    counter, without_lm_head = FlopCounter(model), FlopCounter(model, lm_head=False)
+    assert counter.matmul_flops_per_token - without_lm_head.matmul_flops_per_token == 6 * 128 * 64
+    assert without_lm_head.flops_per_token_6dn == counter.flops_per_token_6dn

@@ -16,6 +16,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [Dataset Format](#dataset-format)
   - [Launch](#launch-1)
   - [SFT-Specific Knobs](#sft-specific-knobs)
+  - [System One Data](#system-one-data)
   - [Important Metrics](#important-metrics-1)
 - [Pretraining](#pretraining)
 - [Checkpointing](#checkpointing)
@@ -235,7 +236,7 @@ columns.messages = "conversation"
 
 ### Dataset Format
 
-Two accepted layouts:
+Two accepted layouts for chat data (for decision models, see [System One Data](#system-one-data)):
 
 - **Prompt-completion**: a HF dataset with `prompt` and `completion` columns ([TRL format](https://huggingface.co/docs/trl/en/dataset_formats#prompt-completion)). The trainer masks out the prompt and computes loss only over the completion.
 - **Messages**: a HF dataset with a single `messages` column containing a list of chat turns. The trainer interprets the whole conversation as one sample, applies role-based loss masking, and trains over all assistant turns.
@@ -283,7 +284,7 @@ clear_thinking = true
 
 The same config selects the renderer for RL under `[orchestrator.renderer]`. The [`renderers` README](https://github.com/PrimeIntellect-ai/renderers#custom-renderers) shows the class behind this example.
 
-**Renderer-backed tokenization.** SFT tokenization is renderer-only. The [`renderers`](algorithms.md#renderers) package owns message-to-token conversion and loss attribution end-to-end, so position-dependent chat templates (for example templates that strip past `<think>` blocks across user turns) do not corrupt the loss mask. `[renderer]` defaults to `name = "auto"`; set a typed renderer config only when you need model-specific template controls. Hand-coded renderers ship for Qwen3, Qwen3.5, Qwen3.8, GLM-5, GLM-4.5, Kimi K2/K2.5, MiniMax M2, DeepSeek V3, Nemotron 3, GPT-OSS, and VLM families such as Qwen3-VL/Qwen3.5/Qwen3.8.
+**Renderer-backed tokenization.** Chat SFT tokenization is renderer-only. The [`renderers`](algorithms.md#renderers) package owns message-to-token conversion and loss attribution end-to-end, so position-dependent chat templates (for example templates that strip past `<think>` blocks across user turns) do not corrupt the loss mask. `[renderer]` defaults to `name = "auto"`; set a typed renderer config only when you need model-specific template controls. Hand-coded renderers ship for Qwen3, Qwen3.5, Qwen3.8, GLM-5, GLM-4.5, Kimi K2/K2.5, MiniMax M2, DeepSeek V3, Nemotron 3, GPT-OSS, and VLM families such as Qwen3-VL/Qwen3.5/Qwen3.8.
 
 **VLM training requires a custom PrimeRL implementation.** Training a model with `[model.vlm]` set (SFT or RL) only works for models with a registered PrimeRL VLM class: Qwen3.5 dense and MoE, and Qwen3.8 Flash Next (`qwen4_exp`, text and images). See the [multimodal examples](../examples/extra/vlm/README.md) for SFT and multi-node image RL configurations.
 
@@ -350,12 +351,129 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 
 | Knob | What it controls |
 |---|---|
+| `data.type` | What a row is: `"sft"` (chat rows, the default) or `"system_one"` (records for decision models; see [System One Data](#system-one-data)) |
 | `data.source` | The sources to draw samples from; see [Sources](#sources) |
 | `data.batch_size` | Tokens per trainer step (packed) |
-| `data.seq_len` | Per-sample sequence length |
+| `data.seq_len` | Per-sample sequence length; with System One data, also the most tokens a record may have |
+| `data.columns.*` | Dataset column names, when they differ from the defaults: chat columns for `"sft"`, record columns for `"system_one"` |
 | `loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |
+| `loss.type` | The loss: `"ce"` (token cross-entropy, the default) or `"decision"` (the decision loss, the default with System One data, which refuses `"ce"`) |
+| `loss.brier_weight` | With `loss.type = "decision"`: the weight of the Brier score added to the soft cross-entropy (default 0) |
 | `val.interval` | Run validation every N steps; `val.data` mirrors `data` |
 | `eval.interval` | Run online evals every N steps; see [Online Evals](#online-evals) |
+
+### System One Data
+
+`[data] type = "system_one"` trains a decision model: a model that answers typed questions about a state with a distribution over each question's options, read from hidden states at chosen tokens rather than generated as text. The model's strategy renders each record into tokens and reads each question's logits, and the decision loss trains those logits on the record's labels. The records come from `[[data.source]]` tables, as chat rows do (see [Sources](#sources)): weights, order, a source's `columns`, packing, resume and validation work as for chat data. System One data has no `[data.fake]`, and its sources take no `renderer` table.
+
+```toml
+[model]
+name = "my-org/my-decision-model"  # an architecture with a strategy in SYSTEM_ONE_STRATEGIES
+
+[data]
+type = "system_one"
+seq_len = 4096
+
+[[data.source]]
+name = "tickets"
+dataset = "my-org/tickets-system-one"
+
+[loss]              # optional: the decision loss is the default with System One data
+brier_weight = 0.1  # default 0
+```
+
+`[val.data]` lists its own sources and takes a missing `type` and `seq_len` from `[data]`; a `seq_len` it sets must equal `data.seq_len`. As with chat data, it does not take `[data.columns]`: rename a column in `[val.data.columns]` too.
+
+**Records.** A row is one record. `state`, `questions`, `label` and `soft_label` are string columns of JSON text (write them with `json.dumps`, so a text state is a JSON string), and `id` (optional) names the record in errors, defaulting to the source's name, its split and the row's index (`records/train/7`). The trainer parses every record once at startup, so a malformed record stops the run before any weights load, naming the record.
+
+```text
+id          r
+state       "Checkout fails."
+questions   {"outage":  {"type": "noul",   "instructions": "Is a service down?", "criteria": {"true": "A service is down."}},
+             "team":    {"type": "choice", "instructions": "Who handles it?",    "criteria": {"technical": "Bugs", "billing": null}},
+             "urgency": {"type": "score",  "instructions": "How urgent?",        "criteria": ["Can wait", "This week", "Today"]}}
+label       {"outage": true, "urgency": 2}
+soft_label  {"team": {"technical": 0.75, "billing": 0.25}}
+```
+
+| `type` | `criteria` | Options, in order | Hard label |
+|---|---|---|---|
+| `noul` (yes or no) | optional descriptions of `true` and/or `false` | `false`, `true` | `true` or `false` |
+| `choice` | option id → description or null, 1 to 255 options | the option ids as given | an option id |
+| `score` | 2 to 10 distinct level descriptions, lowest first | `0` … `n-1` | a level |
+
+`instructions` is optional. A soft label gives every option a probability; one that sums to 1 within 0.005 per option (at least 0.05) is rescaled. A question's target is its soft label, else its hard label one-hot; a question with neither is not trained. A record without a labelled question, or whose rendering is longer than `data.seq_len`, is skipped: the trainer never truncates a rendering.
+
+**Loss and metrics.** The decision loss is soft cross-entropy plus `brier_weight` x Brier score per labelled question, in float32. It runs inside the forward, on the final hidden states, in place of the LM head, and is divided by the step's labelled questions, so `loss/mean` and `val/loss` are means per labelled question. `loss/{ce,brier,accuracy}/{mean,std,min,max}` and `val/{ce,brier,accuracy}/...` hold the per-question metrics; `accuracy` is whether the top logit is at a top option of the target. No perplexity is logged, and MFU leaves out the skipped LM head.
+
+**Not supported.** System One data refuses `loss.type = "ce"`, a non-default `[renderer]` (the strategy owns any template), `model.cp > 1` and `[model.vlm]`. It also refuses `[model.lora]` and `[eval]`, for reasons that hold for a decision model with its own readout: how that readout trains next to adapters is undefined, its LoRA checkpoint can be neither exported nor served, and vLLM serves it as a pooling model, which generates no text for an online eval to score. For now both are refused for all System One data, whatever the readout. Score checkpoints with `[val]` or as below.
+
+With several data ranks, validation stops when one rank runs out of packed rows, so some validation records can go unscored.
+
+**Writing a strategy.** A decision model is a prime-rl model class, registered like any other, and a `SystemOneStrategy` (`src/prime_rl/trainer/sft/system_one/data.py`), registered in `SYSTEM_ONE_STRATEGIES` (`src/prime_rl/trainer/sft/system_one/strategies.py`) under the first architecture name in the checkpoint's `config.json`. The readout is a head of the class's own, whose weights the class holds, or a head it already has, such as the LM head read at the option tokens. The trainer builds the strategy once, as `MyStrategy(tokenizer, model.config)`.
+
+- `render_request(request, max_tokens)` returns the request's tokens, attention segments (`seq_lens`), the token spans each question is read from (`read_spans`) and optionally each question's option order, or `None` to skip the record. It never sees labels and must be deterministic. It may shorten its own content to fit `max_tokens`; a longer rendering is skipped.
+- `option_logits(model, hidden_states, input_ids, questions)` runs once per micro-batch inside the forward, on the packed row's final hidden states. Each `ReadQuestion` gives its option order, its reads and its record's span in row positions. It returns one 1-D tensor: each question's option logits in turn.
+- Under FSDP the readout calls the model's modules, never their weights directly, on the whole micro-batch at once, and the same modules on every micro-batch. The model class freezes parameters the readout never uses, such as an untied LM head: the trainer raises after the first step if a trainable parameter got no gradient (except with `model.offload = "full"`, which gives every parameter optimizer state up front).
+- The fused LM head takes labels and returns their log-probabilities, which differ from logits by a constant per row: `model.lm_head(rows[None], labels=ids[None], temperature=torch.ones_like(ids, dtype=torch.float32)[None])["logprobs"][0]`.
+
+An example for a model class with a `decision_head` of 255 outputs, which freezes its untied LM head:
+
+```python
+class MyStrategy(SystemOneStrategy):
+    """One prompt per question; the decision head reads each prompt's last token."""
+
+    def render_request(self, request: SystemOneRequest, max_tokens: int) -> RenderedRequest | None:
+        input_ids, seq_lens, read_spans = [], [], []
+        for question in request.questions:
+            options = ", ".join(question.options)
+            prompt = f"State: {json.dumps(request.state)}\nQuestion: {question.instructions}\nOptions: {options}\nAnswer:"
+            ids = self.tokenizer.encode(prompt)
+            input_ids += ids
+            seq_lens.append(len(ids))  # one attention segment per prompt
+            read_spans.append([(len(input_ids) - 1, len(input_ids))])
+        return RenderedRequest(input_ids=input_ids, seq_lens=seq_lens, read_spans=read_spans)
+
+    def option_logits(
+        self, model: nn.Module, hidden_states: Tensor, input_ids: Tensor, questions: list[ReadQuestion]
+    ) -> Tensor:
+        head = model.decision_head
+        positions = torch.tensor([question.reads[0][0] for question in questions], device=hidden_states.device)
+        logits = head(hidden_states[positions].to(head.weight.dtype))  # once for the micro-batch
+        return torch.cat([row[: len(question.options)] for row, question in zip(logits, questions)])
+```
+
+**Scoring outside the trainer.** `model` is built by `setup_model` (`src/prime_rl/trainer/model.py`), as in the trainer:
+
+```python
+from prime_rl.trainer.model import forward
+from prime_rl.trainer.sft.system_one.data import render_sample
+from prime_rl.trainer.sft.system_one.loss import build_decision_loss_inputs, checked_option_logits
+from prime_rl.trainer.sft.system_one.record import parse_record
+from prime_rl.trainer.sft.system_one.strategies import get_system_one_strategy_cls
+
+strategy = get_system_one_strategy_cls(model.config)(tokenizer, model.config)
+source = data_config.source[0]  # the source the row is from
+request, _ = parse_record(row, source.columns, source.name, source.split)
+sample = render_sample(strategy, request, data_config.seq_len)  # None when skipped
+input_ids = torch.from_numpy(sample["input_ids"]).to(device)
+inputs = build_decision_loss_inputs([len(input_ids)], [sample["sample_data"]]).to(device)
+
+def read(hidden_states):
+    return {"logits": checked_option_logits(strategy, model, hidden_states[0], input_ids, inputs.questions)}
+
+with torch.no_grad():
+    logits = forward(
+        model,
+        input_ids[None],
+        torch.from_numpy(sample["position_ids"]).to(device)[None],
+        seq_lens=torch.tensor(sample["seq_lens"], device=device),
+        hidden_states_fn=read,
+    )["logits"]
+per_question = logits.split([len(question.options) for question in inputs.questions])
+```
+
+`per_question[i]` follows `inputs.questions[i].options`: the strategy's option order, which can differ from the record's own (`request.questions[i].options`).
 
 ### Important Metrics
 
@@ -365,6 +483,7 @@ Pulled from the console log and mirrored to W&B.
 
 - `loss/mean`, `loss/perplexity` — main signal. Should decrease through the run.
 - `val/loss`, `val/perplexity` — SFT validation metrics when `[val]` is set, logged every `val.interval` steps. Pretraining logs `val/<name>/loss@<seq_len>` and `val/<name>/bpb@<seq_len>` per validation set; see [Pretraining](#pretraining).
+- With the decision loss, see [System One Data](#system-one-data) for what `loss/*` and `val/*` hold.
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
 - `progress/<name>/{num_samples,epoch}` — SFT: a source's drawn samples over all ranks and its passes over its rows. With several sources, `progress/<name>/ratio_{samples,tokens}` is the realized mixture of rank 0's samples and tokens.

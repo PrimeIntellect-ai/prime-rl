@@ -15,12 +15,16 @@ class FlopCounter:
     token attends only within its own document). The model is walked once, at construction.
 
     `flops_per_token_6dn` is the plain 6 * active params estimate (no attention, no LoRA discount), for
-    MFU comparable with the common 6ND convention.
+    MFU comparable with the common 6ND convention. Without `lm_head`, the matmul FLOPs leave out the LM head,
+    for a model whose forward skips it.
     """
 
-    def __init__(self, model: PreTrainedModelPrimeRL):
+    def __init__(self, model: PreTrainedModelPrimeRL, lm_head: bool = True):
         active_params = model.num_active_params()
         self.flops_per_token_6dn = 6 * active_params
+        if not lm_head:
+            # A readout's own parameters still count per token unless its model class overrides num_active_params
+            active_params -= count_active_params(model, model.lm_head.parameters())
         lora_params = [param for name, param in model.named_parameters() if "lora_A" in name or "lora_B" in name]
         if lora_params:
             # Frozen base matmuls cost forward (2x) and dX (2x); adapters cost 6x.
@@ -44,7 +48,7 @@ class PerfCounter:
     with `flops` summed from `flop_counter(seq_lens)`.
     """
 
-    def __init__(self, model: nn.Module):
+    def __init__(self, model: nn.Module, lm_head: bool = True):
         self._world = get_world()
         self._logger = get_logger()
 
@@ -52,7 +56,7 @@ class PerfCounter:
             self.gpu_peak_flops = self._get_peak_flops(torch.cuda.get_device_name(torch.device("cuda")))
         else:
             self.gpu_peak_flops = 0
-        self.flop_counter = FlopCounter(model)
+        self.flop_counter = FlopCounter(model, lm_head=lm_head)
 
     def get_step_tokens_per_second(self, tokens: int, fwd_bwd_time: float) -> float:
         """Single-step throughput from a caller-provided duration."""
@@ -105,9 +109,9 @@ class PerfCounter:
 _PERF_COUNTER: PerfCounter | None = None
 
 
-def get_perf_counter(model: nn.Module) -> PerfCounter:
+def get_perf_counter(model: nn.Module, lm_head: bool = True) -> PerfCounter:
     global _PERF_COUNTER
     if _PERF_COUNTER is None:
-        _PERF_COUNTER = PerfCounter(model)
+        _PERF_COUNTER = PerfCounter(model, lm_head=lm_head)
 
     return _PERF_COUNTER

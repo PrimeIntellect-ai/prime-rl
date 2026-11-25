@@ -128,8 +128,9 @@ def test_fake_dataset_single_rank_state_with_packing():
     torch.random.set_rng_state(rng_state)
     resumed_batch = next(resumed_dataiter)
 
-    for key in ("input_ids", "position_ids", "target_ids", "loss_mask", "seq_lens"):
+    for key in ("input_ids", "position_ids", "target_ids", "loss_mask", "seq_lens", "sample_lens"):
         torch.testing.assert_close(resumed_batch[key], expected_batch[key])
+    assert resumed_batch["sample_data"] is expected_batch["sample_data"] is None
 
 
 @pytest.mark.parametrize("num_workers", [1, 2])

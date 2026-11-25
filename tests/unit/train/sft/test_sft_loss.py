@@ -1,9 +1,18 @@
+from types import SimpleNamespace
+
 import pytest
 import torch
 import torch.nn.functional as F
+from torch import nn
 
+from prime_rl.trainer.model import forward
 from prime_rl.trainer.models.layers import lm_head as lm_head_module
-from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX, FusedOutputLinear, VanillaOutputLinear
+from prime_rl.trainer.models.layers.lm_head import (
+    IGNORE_INDEX,
+    FusedOutputLinear,
+    VanillaOutputLinear,
+    inject_prime_lm_head,
+)
 
 B, S, H, V = 2, 7, 8, 37
 UPSTREAM = 0.25  # stands in for the 1 / grad_accum_steps scaling in the SFT loop
@@ -139,3 +148,35 @@ def test_fused_lm_head_cross_entropy_kernel_matches_eager_math(monkeypatch, voca
     # In bf16 the weight gradient adds up chunk by chunk in bf16, where one rounding difference can grow to a few ulps
     grad_tolerance = {"atol": 1e-4, "rtol": 1.6e-2} if dtype == torch.bfloat16 else {}
     torch.testing.assert_close(fused[2:], eager[2:], **grad_tolerance)
+
+
+class TinyCausalLM(nn.Module):
+    def __init__(self, vocab: int = 11, hidden: int = 4):
+        super().__init__()
+        self.embed = nn.Embedding(vocab, hidden)
+        self.norm = nn.LayerNorm(hidden)
+        self.model = nn.Module()  # inject_prime_lm_head expects a backbone module at model.model
+        self.model.forward = self.backbone
+        self.lm_head = nn.Linear(hidden, vocab, bias=False)
+
+    def backbone(self, input_ids, position_ids, **kwargs):
+        return SimpleNamespace(last_hidden_state=self.norm(self.embed(input_ids)))
+
+
+def test_forward_runs_a_function_on_the_hidden_states():
+    torch.manual_seed(0)
+    model = TinyCausalLM()
+    input_ids, position_ids, seq_lens = torch.tensor([[1, 2, 3]]), torch.tensor([[0, 1, 2]]), torch.tensor([3])
+    with pytest.raises(AssertionError, match="inject_prime_lm_head"):
+        forward(model, input_ids, position_ids, seq_lens=seq_lens, hidden_states_fn=dict)
+
+    inject_prime_lm_head(model, chunk_size=None)
+
+    out = forward(model, input_ids, position_ids, seq_lens=seq_lens, hidden_states_fn=lambda h: {"h": h})
+    torch.testing.assert_close(out["h"], model.backbone(input_ids, position_ids).last_hidden_state)
+
+    out = forward(model, input_ids, position_ids, seq_lens=seq_lens)
+    assert out["logits"].shape == (1, 3, 11)
+
+    with pytest.raises(AssertionError, match="replaces the LM head"):
+        forward(model, input_ids, position_ids, seq_lens=seq_lens, labels=input_ids, hidden_states_fn=dict)

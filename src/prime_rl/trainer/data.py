@@ -1,5 +1,6 @@
 from collections import defaultdict
-from typing import Any, TypedDict
+from collections.abc import Callable
+from typing import Any, NotRequired, TypedDict
 
 import numpy as np
 import torch
@@ -21,6 +22,8 @@ class Sample(TypedDict):
     seq_lens: list[int]
     mm_kwargs: dict[str, Tensor] | None
     mm_token_type_ids: Int[np.ndarray, "seq"] | None
+    sample_data: NotRequired[Any]
+    """Per-sample values a dataset attaches, collected per row. A sample with them is never cut."""
 
 
 class Batch(TypedDict):
@@ -29,8 +32,12 @@ class Batch(TypedDict):
     target_ids: Int[Tensor, "batch seq"]
     loss_mask: Bool[Tensor, "batch seq"]
     seq_lens: Int[Tensor, "packed"]
+    sample_lens: Int[Tensor, "samples"]
+    """Token count of each sample in the row, without padding."""
     mm_kwargs: dict[str, Tensor] | None
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
+    sample_data: list[Any] | None
+    """Each sample's ``sample_data``, or None."""
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
@@ -142,6 +149,7 @@ class CatDataset(StatefulIterableDataset):
         packed_samples = defaultdict(list)
         packed_samples["mm_kwargs"] = None
         packed_samples["mm_token_type_ids"] = None
+        packed_samples["sample_data"] = None
         seq_len = 0
 
         pending_sample = self.pending_sample
@@ -162,11 +170,23 @@ class CatDataset(StatefulIterableDataset):
                 packed_samples = defaultdict(list)
                 packed_samples["mm_kwargs"] = None
                 packed_samples["mm_token_type_ids"] = None
+                packed_samples["sample_data"] = None
                 seq_len = 0
 
+            sample_data = sample.get("sample_data")
+            if seq_len > 0 and (sample_data is None) != (packed_samples["sample_data"] is None):
+                raise ValueError("Cannot pack samples with and without sample_data")
+            if sample_data is not None:
+                assert sample_len <= self.seq_len, (
+                    f"A sample with sample_data has {sample_len} tokens, more than a row's {self.seq_len}"
+                )
+                if packed_samples["sample_data"] is None:
+                    packed_samples["sample_data"] = []
+                packed_samples["sample_data"].append(sample_data)
             for key in ("input_ids", "position_ids", "loss_mask", "target_ids"):
                 packed_samples[key].append(sample[key])
             packed_samples["seq_lens"].extend(sample["seq_lens"])
+            packed_samples["sample_lens"].append(sample_len)
 
             sample_mm_kwargs = sample.get("mm_kwargs")
             sample_mm_type_ids = sample.get("mm_token_type_ids")
@@ -199,6 +219,7 @@ class CatDataset(StatefulIterableDataset):
                 packed_samples = defaultdict(list)
                 packed_samples["mm_kwargs"] = None
                 packed_samples["mm_token_type_ids"] = None
+                packed_samples["sample_data"] = None
                 seq_len = 0
 
         if seq_len > 0:
@@ -208,15 +229,9 @@ class CatDataset(StatefulIterableDataset):
         result: dict[str, Any] = {
             k: np.concatenate(packed[k])[:seq_len] for k in ("input_ids", "position_ids", "loss_mask", "target_ids")
         }
-        result["seq_lens"] = []
-        remaining = len(result["input_ids"])
-        for sample_len in packed["seq_lens"]:
-            if remaining <= 0:
-                break
-            kept = min(sample_len, remaining)
-            if kept > 0:
-                result["seq_lens"].append(kept)
-            remaining -= kept
+        num_tokens = len(result["input_ids"])
+        result["seq_lens"] = _kept_lengths(packed["seq_lens"], num_tokens)
+        result["sample_lens"] = _kept_lengths(packed["sample_lens"], num_tokens)
         pad_len = -len(result["input_ids"]) % self.pad_to_multiple_of
         if pad_len > 0:
             # Identical pad tokens route to the same MoE experts and can overload one EP rank, so text packs pad with
@@ -230,14 +245,29 @@ class CatDataset(StatefulIterableDataset):
             result["position_ids"] = np.concatenate([result["position_ids"], np.arange(pad_len)])
             result["loss_mask"] = np.concatenate([result["loss_mask"], np.zeros(pad_len, dtype=bool)])
             result["target_ids"] = np.concatenate([result["target_ids"], np.zeros(pad_len, dtype=np.int64)])
-            result["seq_lens"][-1] += pad_len
+            # Padding is its own segment, so the last sample does not attend to it
+            result["seq_lens"].append(pad_len)
         result["mm_kwargs"] = packed["mm_kwargs"]
         if packed["mm_token_type_ids"] is not None:
             type_ids = np.concatenate(packed["mm_token_type_ids"])[:seq_len]
             result["mm_token_type_ids"] = np.concatenate([type_ids, np.zeros(pad_len, dtype=np.int64)])
         else:
             result["mm_token_type_ids"] = None
+        result["sample_data"] = packed["sample_data"]
         return result
+
+
+def _kept_lengths(lengths: list[int], num_tokens: int) -> list[int]:
+    """The ``lengths`` of consecutive spans, kept to the first ``num_tokens`` tokens."""
+    kept_lengths = []
+    for length in lengths:
+        if num_tokens <= 0:
+            break
+        kept = min(length, num_tokens)
+        if kept > 0:
+            kept_lengths.append(kept)
+        num_tokens -= kept
+    return kept_lengths
 
 
 def cat_collate(samples: list[Sample]) -> Batch:
@@ -251,14 +281,21 @@ def cat_collate(samples: list[Sample]) -> Batch:
         "loss_mask": torch.from_numpy(sample["loss_mask"]).unsqueeze(0),
         "target_ids": torch.from_numpy(sample["target_ids"]).unsqueeze(0),
         "seq_lens": torch.tensor(sample["seq_lens"], dtype=torch.long),
+        "sample_lens": torch.tensor(sample["sample_lens"], dtype=torch.long),
         "mm_kwargs": dict(mm_kwargs) if mm_kwargs is not None else None,
         "mm_token_type_ids": torch.from_numpy(mm_token_type_ids).unsqueeze(0)
         if mm_token_type_ids is not None
         else None,
+        "sample_data": sample.get("sample_data"),
     }
 
 
-def setup_dataloader(dataset: StatefulIterableDataset, config: BaseDataConfig, cp: int) -> StatefulDataLoader:
+def setup_dataloader(
+    dataset: StatefulIterableDataset,
+    config: BaseDataConfig,
+    cp: int,
+    collate_fn: Callable[[list[Sample]], Batch] = cat_collate,
+) -> StatefulDataLoader:
     row_len = config.seq_len * config.micro_batch_size
     # Rows hold at most `row_len` tokens, so padding to a multiple of it pads every row to exactly `row_len`
     pad_to_multiple_of = row_len if config.pad_to_seq_len else cp
@@ -266,7 +303,7 @@ def setup_dataloader(dataset: StatefulIterableDataset, config: BaseDataConfig, c
     return StatefulDataLoader(
         packing_dataset,
         batch_size=1,
-        collate_fn=cat_collate,
+        collate_fn=collate_fn,
         num_workers=config.num_workers,
         pin_memory=True,
     )
