@@ -234,6 +234,8 @@ class EnvClient:
         run: RunInfo | None = None,
         record: RecordRequest | None = None,
         live: bool = True,
+        env_name: str | None = None,
+        group_id: str | None = None,
     ) -> EpisodeHead:
         """Run one rollout; return the head of its episode, holding the episode's record
         (`EpisodeHead.take_record`) when ``record`` asks for it. The worker takes the task
@@ -251,6 +253,8 @@ class EnvClient:
                 run=run,
                 record=record,
                 live=live,
+                env_name=env_name,
+                group_id=group_id,
             ),
             RunResponse,
             on_delta=on_delta,

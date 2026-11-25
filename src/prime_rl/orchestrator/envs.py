@@ -131,6 +131,7 @@ class Env:
         run: vf.RunInfo | None = None,
         record: RecordRequest | None = None,
         live: bool = True,
+        group_id: str | None = None,
     ) -> EpisodeHead:
         """Run and return the head of the episode, holding its record when ``record`` asks
         for it. ``on_delta`` sees each delta of the env worker pool's stream — a turn or a
@@ -152,6 +153,8 @@ class Env:
                 run=run,
                 record=record,
                 live=live,
+                env_name=self.name,
+                group_id=group_id,
             )
         finally:
             self._in_flight[replica] -= 1
