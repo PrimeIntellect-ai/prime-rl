@@ -16,7 +16,7 @@ import zmq.asyncio
 
 from prime_rl.env.client import EnvClient
 from prime_rl.env.encoding import pack
-from prime_rl.env.types import HealthRequest, HealthResponse
+from prime_rl.env.types import HealthRequest, HealthResponse, RestoreRef, SaveResponse
 from prime_rl.utils.logger import get_logger
 
 # `_request` parks a cancelled run's fire-and-forget cancel in `_cancel_tasks` with a
@@ -200,3 +200,19 @@ async def test_a_deep_backlog_does_not_starve_the_loop():
         ticking.cancel()
         first, last = ticks_at
         assert last - first >= 3
+
+
+@pytest.mark.asyncio
+async def test_a_save_that_failed_on_some_workers_keeps_what_the_others_saved():
+    """The pool merges the workers' save replies and marks the merge failed if any one
+    failed. The client still returns the others' restore points and orphans: their
+    snapshots are the caller's either way."""
+    ref = RestoreRef(trace_id="t1", path="/ckpt/t1.restore", snapshot={"id": "s1"})
+    reply = SaveResponse(success=False, error="worker 2 failed", restores={"r1": ref}, orphans=[{"id": "s2"}])
+    async with fake_server() as (router, client):
+        save = asyncio.create_task(client.save("/ckpt", timeout=10))
+        identity, request_id, *_ = await router.recv_multipart()
+        await router.send_multipart([identity, request_id, b"reply", pack(reply.model_dump(mode="json"))])
+        response = await save
+    assert not response.success
+    assert response.restores == {"r1": ref} and response.orphans == [{"id": "s2"}]

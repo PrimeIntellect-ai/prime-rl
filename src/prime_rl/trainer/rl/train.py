@@ -18,7 +18,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
-from prime_rl.trainer.ckpt import Progress, ckpt_output_dir, setup_ckpt_manager, setup_model_files
+from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager, setup_model_files
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
@@ -99,6 +99,7 @@ from prime_rl.control.server import ControlServer
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
 from prime_rl.utils.pathing import (
+    ckpt_output_dir,
     get_ckpt_dir,
     get_step_path,
     is_checkpoint_step_dir,
@@ -178,7 +179,9 @@ def train(config: TrainerConfig):
                 # A trainer restarted on its own: the orchestrator may be steps ahead.
                 checkpoint_step = resolve_latest_trainer_ckpt_step(ckpt_dir)
             elif checkpoint_step is None:
-                checkpoint_step = resolve_latest_ckpt_step(ckpt_dir)
+                # Fake data runs without an orchestrator, so there is no second half to wait for.
+                orchestrator_ckpt_dir = None if config.data.fake else ckpt_dir
+                checkpoint_step = resolve_latest_ckpt_step(ckpt_dir, orchestrator_ckpt_dir)
     if checkpoint_step is not None:
         resume_step_dir = config.resume.dir or get_step_path(ckpt_dir, checkpoint_step)
         use_resumed_model_files(config.model, config.tokenizer, resume_step_dir)
