@@ -454,12 +454,18 @@ from prime_rl.trainer.sft.system_one.loss import build_decision_loss_inputs, che
 from prime_rl.trainer.sft.system_one.record import parse_record
 from prime_rl.trainer.sft.system_one.strategies import get_system_one_strategy_cls
 
+# With [model.vlm], a strategy that reads images takes the model's processor as a third argument
 strategy = get_system_one_strategy_cls(model.config)(tokenizer, model.config)
 source = data_config.source[0]  # the source the row is from
 request, _ = parse_record(row, source.columns, source.name, source.split)
 sample = render_sample(strategy, request, data_config.seq_len)  # None when skipped
 input_ids = torch.from_numpy(sample["input_ids"]).to(device)
 inputs = build_decision_loss_inputs([len(input_ids)], [sample["sample_data"]]).to(device)
+
+images = {}
+if sample["mm_kwargs"] is not None:
+    images["mm_kwargs"] = {key: value.to(device) for key, value in sample["mm_kwargs"].items()}
+    images["mm_token_type_ids"] = torch.from_numpy(sample["mm_token_type_ids"]).to(device)[None]
 
 def read(hidden_states):
     return {"logits": checked_option_logits(strategy, model, hidden_states[0], input_ids, inputs.questions)}
@@ -470,6 +476,7 @@ with torch.no_grad():
         input_ids[None],
         torch.from_numpy(sample["position_ids"]).to(device)[None],
         seq_lens=torch.tensor(sample["seq_lens"], device=device),
+        **images,
         hidden_states_fn=read,
     )["logits"]
 per_question = logits.split([len(question.options) for question in inputs.questions])

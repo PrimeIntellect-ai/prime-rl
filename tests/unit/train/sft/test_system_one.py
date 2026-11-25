@@ -1,7 +1,6 @@
 import json
 import math
 import os
-from functools import partial
 from types import SimpleNamespace
 
 import numpy as np
@@ -17,7 +16,7 @@ import prime_rl.trainer.parallel_dims as parallel_dims_module
 from prime_rl.configs.sft import SystemOneColumnsConfig
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.data import CatDataset
-from prime_rl.trainer.model import forward, reshard_module, setup_fsdp
+from prime_rl.trainer.model import reshard_module, setup_fsdp
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.parallel_dims import get_parallel_dims
@@ -31,6 +30,7 @@ from prime_rl.trainer.sft.system_one.data import (
     check_records,
     check_rendered_request,
 )
+from prime_rl.trainer.sft.system_one.forward import decision_forward
 from prime_rl.trainer.sft.system_one.loss import (
     DecisionLossInputs,
     SystemOneBatch,
@@ -512,16 +512,12 @@ def test_decision_loss_equals_a_per_record_reference():
     strategy = TokenStrategy(None, CONFIG, READ_SPANS)
     source = SystemOneSource(Dataset.from_list([ROW]), strategy)
     batch = _micro_batch(source, [ROW, SECOND])
-    inputs = batch["decision_loss_inputs"]
     head_calls = []
     model.decision_head.register_forward_hook(lambda *args: head_calls.append(1))
 
     def packed_loss(seq_lens: torch.Tensor) -> torch.Tensor:
-        loss_fn = partial(
-            decision_loss, model, strategy=strategy, inputs=inputs, input_ids=batch["input_ids"], brier_weight=0.1
-        )
-        out = forward(model, batch["input_ids"], batch["position_ids"], seq_lens=seq_lens, hidden_states_fn=loss_fn)
-        return out["loss"]
+        micro_batch = {**batch, "seq_lens": seq_lens}
+        return decision_forward(model, micro_batch, strategy=strategy, brier_weight=0.1, device="cpu")["loss"]
 
     loss = packed_loss(batch["seq_lens"])
     loss.backward()
@@ -630,14 +626,7 @@ def heads_loss(model: nn.Module, rank: int, strategy_cls: type[SystemOneStrategy
     strategy = strategy_cls(None, CONFIG, READ_SPANS)
     rows = [ROW, SECOND] if rank == 0 else [{**SECOND, "id": "r"}, {**ROW, "id": "s"}]
     batch = _micro_batch(SystemOneSource(Dataset.from_list([ROW]), strategy), rows)
-    inputs = batch["decision_loss_inputs"]
-    loss_fn = partial(
-        decision_loss, model, strategy=strategy, inputs=inputs, input_ids=batch["input_ids"], brier_weight=0.1
-    )
-    out = forward(
-        model, batch["input_ids"], batch["position_ids"], seq_lens=batch["seq_lens"], hidden_states_fn=loss_fn
-    )
-    return out["loss"]
+    return decision_forward(model, batch, strategy=strategy, brier_weight=0.1, device="cpu")["loss"]
 
 
 def fsdp_worker(rank: int, world: int, tied: bool, strategy, init_file: str, out_dir: str) -> None:
