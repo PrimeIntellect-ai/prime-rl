@@ -107,6 +107,9 @@ class SFTDataConfig(BaseDataConfig):
     loss_mask: LossMaskConfig = LossMaskConfig()
     """Which message types contribute to the loss."""
 
+    name: str | None = None
+    """Optional legacy volume-path hint kept for Hosted SFT policy validation alongside ``[[data.source]]``."""
+
     @model_validator(mode="after")
     def validate_sources(self):
         check_sources(self.source)
