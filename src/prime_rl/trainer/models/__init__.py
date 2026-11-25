@@ -1,11 +1,8 @@
-## a bit of context here, this basically copy AutoModelForCausalLM from transformers, but use our own model instead
+"""PrimeRL model implementations, registered by the HF config class they are built from."""
 
-from collections import OrderedDict
-
+import torch
 from transformers import AutoConfig
 from transformers.configuration_utils import PretrainedConfig
-from transformers.models.auto.auto_factory import _BaseAutoModelClass, _LazyAutoMapping, auto_class_update
-from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
@@ -73,7 +70,6 @@ AutoConfig.register("qwen3_5_vision", Qwen3_5VisionConfig, exist_ok=True)
 AutoConfig.register("qwen4_exp", Qwen3_8FlashNextConfig, exist_ok=True)
 AutoConfig.register("qwen4_exp_text", Qwen3_8FlashNextTextConfig, exist_ok=True)
 
-_CUSTOM_CAUSAL_LM_MAPPING = _LazyAutoMapping(CONFIG_MAPPING_NAMES, OrderedDict())
 _CUSTOM_CAUSAL_LM_MODELS: tuple[
     tuple[type[PretrainedConfig], type[PreTrainedModelPrimeRL]],
     ...,
@@ -105,19 +101,26 @@ _CUSTOM_CAUSAL_LM_MODELS: tuple[
     (Inkling2LoopTextConfig, Inkling2LoopForCausalLM),
     (Inkling2LoopConfig, Inkling2LoopForCausalLM),
 )
-for config_cls, model_cls in _CUSTOM_CAUSAL_LM_MODELS:
-    _CUSTOM_CAUSAL_LM_MAPPING.register(config_cls, model_cls, exist_ok=True)
+_CUSTOM_CAUSAL_LM_MAPPING: dict[type[PretrainedConfig], type[PreTrainedModelPrimeRL]] = dict(_CUSTOM_CAUSAL_LM_MODELS)
 
 _CUSTOM_CAUSAL_LM_BY_MODEL_TYPE = {
     config_cls.model_type: model_cls for config_cls, model_cls in _CUSTOM_CAUSAL_LM_MODELS
 }
+assert len(_CUSTOM_CAUSAL_LM_BY_MODEL_TYPE) == len(_CUSTOM_CAUSAL_LM_MODELS), (
+    "registered config model types must be unique"
+)
+
+_TEXT_ONLY_COMPOSITE_CONFIGS: frozenset[type[PretrainedConfig]] = frozenset({Qwen3_5Config})
 
 
-class AutoModelForCausalLMPrimeRL(_BaseAutoModelClass):
-    _model_mapping = _CUSTOM_CAUSAL_LM_MAPPING
-
-
-AutoModelForCausalLMPrimeRL = auto_class_update(AutoModelForCausalLMPrimeRL, head_doc="causal language modeling")
+def custom_causal_lm_from_config(
+    config: PretrainedConfig, *, attn_implementation: str | None = None, dtype: torch.dtype | None = None
+) -> PreTrainedModelPrimeRL:
+    """Build the model registered for the config's class, from its text config for a text-only composite config."""
+    model_cls = _CUSTOM_CAUSAL_LM_MAPPING[type(config)]
+    if type(config) in _TEXT_ONLY_COMPOSITE_CONFIGS:
+        config = config.get_text_config()
+    return model_cls.from_config(config, attn_implementation=attn_implementation, dtype=dtype)
 
 
 def get_custom_causal_lm_cls(model_config: PretrainedConfig) -> type[PreTrainedModelPrimeRL]:
@@ -155,8 +158,8 @@ def get_custom_vlm_cls(model_config: PretrainedConfig) -> type | None:
 
 
 __all__ = [
-    "AutoModelForCausalLMPrimeRL",
     "PreTrainedModelPrimeRL",
+    "custom_causal_lm_from_config",
     "get_custom_causal_lm_cls",
     "supports_custom_impl",
     "get_custom_vlm_cls",

@@ -1,5 +1,6 @@
 import prime_rl._compat  # noqa: F401
 
+import json
 import math
 import time
 import asyncio
@@ -67,6 +68,7 @@ from prime_rl.trainer.vlm import setup_processor
 from prime_rl.trainer.world import get_world
 from prime_rl.control.controller import Controller
 from prime_rl.control.server import ControlServer
+from prime_rl.utils.distributed import all_gather_bytes, broadcast_bytes
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.utils import clean_exit
@@ -181,15 +183,8 @@ def train(config: SFTConfig | PretrainConfig):
     )
 
     # Set up the learning rate scheduler
-    # skip_scheduler rebuilds a fresh schedule over the remaining steps: size it from the
-    # resolved checkpoint step (bare --resume and --resume.dir carry no explicit step).
-    scheduler_steps = (
-        config.max_steps - checkpoint_step
-        if config.max_steps is not None and (config.ckpt and config.ckpt.skip_scheduler and checkpoint_step is not None)
-        else config.max_steps
-    )
-    logger.info(f"Initializing scheduler with {scheduler_steps} steps ({config.scheduler})")
-    scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
+    logger.info(f"Initializing scheduler with {config.max_steps} steps ({config.scheduler})")
+    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr, checkpoint_step)
 
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
@@ -222,18 +217,19 @@ def train(config: SFTConfig | PretrainConfig):
 
         # Rank 0 writes the table of long documents to the cache, the other ranks then read it. Rank 0's error reaches
         # every rank, so none waits for it.
-        error = None
+        error, message = None, None
         if world.rank == 0:
             try:
                 dataset = setup_dataset()
+                message = b""
             except Exception as e:
                 error = e
-        rank_0_error = [f"{type(error).__name__}: {error}" if error is not None else None]
-        dist.broadcast_object_list(rank_0_error, src=0)
+                message = f"{type(error).__name__}: {error}".encode(errors="backslashreplace")
+        rank_0_error = broadcast_bytes(message).decode()
         if error is not None:
             raise error
-        if rank_0_error[0] is not None:
-            raise RuntimeError(f"Rank 0 failed to set up the data: {rank_0_error[0]}")
+        if rank_0_error:
+            raise RuntimeError(f"Rank 0 failed to set up the data: {rank_0_error}")
         if world.rank != 0:
             dataset = setup_dataset()
         check_ranks_see_same_data(dataset.sampler)
@@ -271,21 +267,16 @@ def train(config: SFTConfig | PretrainConfig):
             checkpoint_step,
             model,
             [optimizer],
-            scheduler if not skip.skip_scheduler else None,
             progress,
             dataloader=dataloader if not skip.skip_dataloader else None,
             path=resume_dir / "trainer" if resume_dir is not None else None,
         )
         # The checkpoint finished step ``checkpoint_step``; resume training at the next step.
         progress.step += 1
-        # This redundant setup is necessary because loading the optimizer's state has side effects on the scheduler state dict
-        if skip.skip_scheduler:
-            scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
         if isinstance(dataset, SFTDataset) and not skip.skip_dataloader:
             path = resume_dir / "trainer" if resume_dir is not None else ckpt_manager.get_ckpt_path(checkpoint_step)
-            views = [None] * world.world_size
             view = dataset.saved_view(dataloader, path / "dataloader", world.rank, world.world_size)
-            dist.all_gather_object(views, view)
+            views = [json.loads(saved) for saved in all_gather_bytes(json.dumps(view).encode())]
             if (start := dataset.start_together(dataloader, views)) is not None:
                 draw, skipped = start
                 logger.info(
@@ -583,7 +574,7 @@ def train(config: SFTConfig | PretrainConfig):
         if (is_ckpt_step or step_action == "checkpoint") and not is_last_step:
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
-            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
+            ckpt_manager.save(progress.step, model, [optimizer], progress, dataloader=dataloader)
             if step_action == "checkpoint":
                 # The action commits once the checkpoint is on storage
                 ckpt_manager.wait()
@@ -725,7 +716,7 @@ def train(config: SFTConfig | PretrainConfig):
     # Write final checkpoint
     if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
-        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
+        ckpt_manager.save(progress.step, model, [optimizer], progress, dataloader=dataloader)
         ckpt_manager.wait()
         if step_action is not None:
             controller.mark_saved(progress.step)

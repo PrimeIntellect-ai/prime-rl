@@ -123,7 +123,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 |---|---|
 | `log.level` | Process log level for trainer + orchestrator (`info` default; falls back to `$PRIME_LOG_LEVEL`). Set per-process via `trainer.log.level` / `orchestrator.log.level`, or globally on the `rl` entrypoint to propagate to both. The orchestrator's env servers and its [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) logs use the same level. |
 | `--monitors.wandb` (+ `--monitors.wandb.project`, `--monitors.wandb.name`) | Enable Weights & Biases logging. See [Weights & Biases](#weights--biases). |
-| `--no-monitors.prime` | Stop streaming metrics and episodes to the Prime Intellect platform (Prime Lab), on by default. See [Prime](#prime). |
+| `--monitors.prime` | Stream metrics and episodes to the Prime Intellect platform (Prime Lab), off by default. See [Prime](#prime). |
 
 **Run management:**
 
@@ -470,7 +470,7 @@ Checkpointing is split across processes because the orchestrator and trainer can
 
 | Process | What's saved | Where |
 |---|---|---|
-| Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<run_dir>/checkpoints/step_{n}/trainer/` |
+| Trainer | FSDP-sharded model (DCP), optimizer, progress | `<run_dir>/checkpoints/step_{n}/trainer/` |
 | Orchestrator | Progress, per-env data state | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
 | Trainer, orchestrator, inference | The model's `config.json` and `generation_config.json`, the tokenizer files and a VLM's processor files | `<run_dir>/checkpoints/step_{n}/` |
@@ -530,6 +530,14 @@ A resume checks that the checkpoint's `config.json` describes the same architect
 
 A fork continues the other run, so both runs must be of the same kind. To start a new stage from another run's weights, such as RL from an SFT checkpoint, set `model.name` to the checkpoint's step directory instead (see [Model Initialization](#model-initialization)).
 
+#### The trainer's hyperparameters on resume
+
+A trainer resume loads only state from the checkpoint: the weights, the optimizer's moments and step counts, the training step and the data position. Every hyperparameter and the learning rate schedule come from the resumed run's config, so a changed `optim.lr`, weight decay, betas, eps, `max_steps` or `scheduler.decay_steps` applies from the first resumed step. When the loaded optimizer settings differ from the config's, the trainer logs one warning listing each change as `group <index>: <key> <old> -> <new>`; with `ckpt.skip_optimizer`, which loads no optimizer state, there is nothing to compare and no warning.
+
+A resume that loads the optimizer state stops with an error when the number of param groups or a group's algorithm changed since the checkpoint, since the saved optimizer state no longer fits. Resume such a run with `ckpt.skip_optimizer`.
+
+To start a fresh schedule at a resume, set `scheduler.start_step` to the resume step and keep it in later resumes: the warmup and decay then span the `max_steps - start_step` steps after it. With a bare `--resume`, that is the latest checkpoint's step; with `--resume.dir`, the step in the directory name. The trainer stops at startup if `start_step` is after the resume step or nonzero without a resume, and if the checkpoint's step differs from the resume step (for example, a renamed `--resume.dir`).
+
 #### What a resume restores
 
 - The curriculum of each train source, and the live config (see [Updating the Config Live](#updating-the-config-live)).
@@ -557,7 +565,7 @@ A resume can add, remove or change train and eval sources.
 | `scratch` | The model's own random init, seeded with `model.init.seed` | `model.name` | `uv run pretrain` |
 | `pretrained` | The weights stored at `model.name`: an HF model (Hub id or local directory), or the trainer checkpoint in a step directory (`.../step_<N>`) of another run | `model.name`; for a step directory, its `config.json` and tokenizer files | `uv run sft`, `uv run rl` |
 
-Both types work with every entrypoint, and a `[model.init]` table without `type` keeps the entrypoint's default. In RL, set `name` and `init` in the shared `[model]`. The trainer recognizes a step directory by its `trainer/` directory when it loads the weights. A step directory supplies only the weights: the run starts at step 0 with a fresh optimizer, scheduler and data. To continue a run with its optimizer, scheduler and data state, use `[resume]` instead, or `--resume.dir` to fork another run of the same kind (see [Resuming a Run](#resuming-a-run)). A model without a from-scratch init fails at startup with `scratch`, naming the parameters its init does not reach. The renderer cannot be picked from a step directory, so a run from one sets it explicitly; inference's `"auto"` tool-call and reasoning parsers try `tokenizer.name` first, so setting it to the HF model name keeps them. A resumed trainer and the export read the `config.json` and tokenizer from the run's own checkpoint, which holds copies; the RL orchestrator and the inference servers still read `model.name`, so to resume once the source step directory is gone, set `model.name` to one of the run's own step directories.
+Both types work with every entrypoint, and a `[model.init]` table without `type` keeps the entrypoint's default. In RL, set `name` and `init` in the shared `[model]`. The trainer recognizes a step directory by its `trainer/` directory when it loads the weights. A step directory supplies only the weights: the run starts at step 0 with a fresh optimizer, scheduler and data. To continue a run with its optimizer state, step and data position, use `[resume]` instead, or `--resume.dir` to fork another run of the same kind (see [Resuming a Run](#resuming-a-run)). A model without a from-scratch init fails at startup with `scratch`, naming the parameters its init does not reach. The renderer cannot be picked from a step directory, so a run from one sets it explicitly; inference's `"auto"` tool-call and reasoning parsers try `tokenizer.name` first, so setting it to the HF model name keeps them. A resumed trainer and the export read the `config.json` and tokenizer from the run's own checkpoint, which holds copies; the RL orchestrator and the inference servers still read `model.name`, so to resume once the source step directory is gone, set `model.name` to one of the run's own step directories.
 
 The trainer sends its weights to inference (RL, SFT online evals) at startup. When those weights are not HF weights stored at `model.name` (`scratch`, or a checkpoint step directory as `model.name`, which the inference server recognizes when it starts), the inference server starts with placeholder weights (`inference.vllm.load_format = "dummy"`) instead of loading them from disk.
 
@@ -700,11 +708,13 @@ A coding agent on the same machine can drive the open dashboard: `POST /api/view
 
 ## Monitors
 
-Monitors receive the run's metrics and episodes. The file and Prime monitors are on by default; W&B is opt-in.
+Monitors receive the run's metrics and episodes. The file monitor is on by default; W&B and Prime are opt-in.
 
 ### File
 
 The file monitor writes the run's metrics (`metrics.jsonl`) and trace stream under `<run_dir>/monitors/file/`, and feeds the local [dashboard](#dashboard). Turn it off with `--no-monitors.file`.
+
+On a large run the traces dominate what the monitor writes. `--monitors.file.trace-sample 0.1` keeps the traces (episodes, live traces, and the orchestrator's annotations) of one train group in ten, chosen by group id so each written group is complete; metrics and eval episodes are always written. `--no-monitors.file.live` stops the live traces: one file per in-flight trace under `traces/live/`, appended on every turn, which feed the dashboard's live view. Episodes are then written once, when they finish.
 
 ### Weights & Biases
 
@@ -721,23 +731,23 @@ prime-rl deliberately logs a **large number of metrics** for maximum observabili
 
 ### Prime
 
-Every `rl` and `sft` run registers on the Prime Intellect platform (Prime Lab) and streams training metrics and episodes to the platform dashboard. The launcher prints the Prime run's link next to the local dashboard link (and the W&B run's, with `--monitors.wandb`) once the run registers. Turn it off with `--no-monitors.prime`:
+The Prime monitor is off by default. With `--monitors.prime`, an `rl` or `sft` run registers on the Prime Intellect platform (Prime Lab) and streams training metrics and episodes to the platform dashboard. The launcher prints the Prime run's link next to the local dashboard link (and the W&B run's, with `--monitors.wandb`) once the run registers:
 
 ```bash
-uv run rl @ rl.toml --no-monitors.prime
-uv run sft @ sft.toml --no-monitors.prime   # same flag on the SFT trainer
+uv run rl @ rl.toml --monitors.prime
+uv run sft @ sft.toml --monitors.prime   # same flag on the SFT trainer
 ```
 
-Name the Prime run in TOML:
+Or turn it on with a `[monitors.prime]` table, which can also name the Prime run:
 
 ```toml
 [monitors.prime]
 name = "my-experiment"
 ```
 
-The process that supervises the launch registers the run before the components start, and every component logs to it. That is the `rl` or `sft` launcher, also inside a single-node SLURM job, or the run owner that wraps a multi-node SLURM job's step. The run's id is also the run identity (`PRL_RUN_ID`) and the W&B run id. On `rl` the orchestrator uploads the episodes and its metrics, and the trainer uploads its per-step metrics. A trainer started without the `rl` launcher needs `--no-monitors.prime`. On `sft` the run carries the dataset-batched training fields (`max_steps`, `batch_size`, `seq_len`) and the trainer's per-step metrics and validation losses. Online evals log to the same run, like an `rl` run's: the online-eval process uploads its eval metrics and every eval episode. The components only flush their uploads; the process that registered the run finishes it once every component exited. A launch that fails marks the run failed, and so does a SLURM job that SLURM cancels or stops at its time limit.
+The process that supervises the launch registers the run before the components start, and every component logs to it. That is the `rl` or `sft` launcher, also inside a single-node SLURM job, or the run owner that wraps a multi-node SLURM job's step. The run's id is also the run identity (`PRL_RUN_ID`) and the W&B run id. On `rl` the orchestrator uploads the episodes and its metrics, and the trainer uploads its per-step metrics. A trainer started without the `rl` launcher has no Prime run to log to, so it fails with the monitor on. On `sft` the run carries the dataset-batched training fields (`max_steps`, `batch_size`, `seq_len`) and the trainer's per-step metrics and validation losses. Online evals log to the same run, like an `rl` run's: the online-eval process uploads its eval metrics and every eval episode. The components only flush their uploads; the process that registered the run finishes it once every component exited. A launch that fails marks the run failed, and so does a SLURM job that SLURM cancels or stops at its time limit.
 
-The platform run needs `PRIME_API_KEY` (`prime login` or the env var) and a team (`PRIME_TEAM_ID`, or the team selected with `prime login`) enabled for external runs. Like the W&B monitor, a run without a key, or one whose registration fails (no team, a team outside the allowlist), fails at launch: authenticate, select a team with `prime switch`, or pass `--no-monitors.prime`. `PRIME_RUNS_MODE=disabled` keeps the monitor configured but opens no platform run; `RUN_ID=<id>` attaches to an external run a launcher already created instead of registering a new one. Currently internal-only.
+The platform run needs `PRIME_API_KEY` (`prime login` or the env var) and a team (`PRIME_TEAM_ID`, or the team selected with `prime login`) enabled for external runs. Like the W&B monitor, an enabled monitor without a key, or one whose registration fails (no team, a team outside the allowlist), fails the launch: authenticate, select a team with `prime switch`, or leave the monitor off. `PRIME_RUNS_MODE=disabled` keeps the monitor configured but opens no platform run; `RUN_ID=<id>` attaches to an external run a launcher already created instead of registering a new one. Hosted runs log to their platform run without `--monitors.prime`: `RUN_ID`, or `PRIME_RUNS_EVAL_ID` for a hosted eval, turns the monitor on. `PRIME_RUNS_MODE=disabled` turns that off too. Currently internal-only.
 
 ## Rules of Thumb
 

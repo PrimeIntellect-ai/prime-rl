@@ -236,3 +236,164 @@ def test_keep_pause_freezes_the_nixl_leases_of_the_engines_workers(monkeypatch, 
     clock[0] = 1300.0
     engine.resume_scheduler()
     assert nixl_worker._reqs_to_send == {"held": 1124.0}
+
+
+def test_request_whose_kv_load_failed_keeps_no_reservation():
+    """A load that failed outright freed its blocks; reserving the request's whole sequence afterwards would, with
+    enough such requests, exceed the pool and stop every later load from being admitted."""
+    from vllm.v1.core.sched.scheduler import Scheduler
+
+    from prime_rl.inference.patches import monkey_patch_drop_reservation_of_failed_kv_load
+
+    monkey_patch_drop_reservation_of_failed_kv_load()
+    scheduler = object.__new__(Scheduler)
+    scheduler.kv_cache_config = SimpleNamespace(hisparse_host_num_blocks=None)
+    scheduler._parked_reservations, scheduler._parked_reserved_blocks = {}, 0
+    scheduler._request_remaining_blocks = lambda request: 400
+
+    class _Request:  # hashable, unlike SimpleNamespace: the scheduler keys its reservations by request
+        num_computed_tokens = 98_304
+
+    loading = _Request()
+    scheduler._reserve_parked(loading)
+    assert scheduler._parked_reserved_blocks == 400
+
+    loading.num_computed_tokens = 0  # the load failed and its blocks were freed
+    scheduler._reserve_parked(loading)
+    assert scheduler._parked_reserved_blocks == 0 and not scheduler._parked_reservations
+
+
+def test_store_lookup_is_skipped_once_another_connector_matched():
+    """With NIXL ahead of the Mooncake store in a MultiConnector, a request NIXL supplies does not ask the store, even
+    while the store's lookup would still be pending; a request NIXL cannot supply is looked up as before."""
+    from vllm.distributed.kv_transfer.kv_connector.v1.mooncake.store.connector import MooncakeStoreConnector
+    from vllm.distributed.kv_transfer.kv_connector.v1.multi_connector import MultiConnector
+
+    from prime_rl.inference.patches import monkey_patch_skip_store_lookup_after_match
+
+    monkey_patch_skip_store_lookup_after_match()
+    asked: list[str] = []
+
+    def connector(name, answer, cls=None):
+        stub = object.__new__(cls) if cls else SimpleNamespace()
+        stub.get_num_new_matched_tokens = lambda request, computed: asked.append(name) or answer[0]
+        return stub
+
+    nixl_answer, store_answer = [(4096, True)], [(None, False)]
+    multi = object.__new__(MultiConnector)
+    multi._requests_to_connector = {}
+    multi._connectors = [
+        connector("nixl", nixl_answer),
+        connector("store", store_answer, MooncakeStoreConnector),
+        connector("other", [(0, False)]),
+    ]
+    request = SimpleNamespace(request_id="turn-2")
+
+    assert multi.get_num_new_matched_tokens(request, 0) == (4096, True)
+    assert asked == ["nixl", "other"] and multi._requests_to_connector == {"turn-2": 0}
+
+    # No decode handle: the store is asked, and a pending lookup defers the request.
+    asked.clear()
+    nixl_answer[0] = (0, False)
+    assert multi.get_num_new_matched_tokens(request, 0) == (None, False)
+    assert asked == ["nixl", "store"]
+    asked.clear()
+    store_answer[0] = (2048, True)
+    assert multi.get_num_new_matched_tokens(request, 0) == (2048, True)
+    assert asked == ["nixl", "store", "other"] and multi._requests_to_connector == {"turn-2": 1}
+
+
+def test_store_lookup_prefetch_is_skipped_for_requests_with_a_decode_handle():
+    from vllm.distributed.kv_transfer.kv_connector.v1.mooncake.store.scheduler import MooncakeStoreScheduler
+
+    from prime_rl.inference.patches import monkey_patch_skip_store_lookup_after_match
+
+    monkey_patch_skip_store_lookup_after_match()
+    prefetched: list[str] = []
+    scheduler = object.__new__(MooncakeStoreScheduler)
+    scheduler.enable_lookup = scheduler.lookup_async = True
+    scheduler.enable_partial_hash_hits = False
+    scheduler._block_size = scheduler._hash_block_size = 256
+    scheduler.client = SimpleNamespace(prefetch=lambda request_id, num_tokens, hashes: prefetched.append(request_id))
+
+    def request(request_id, params):
+        return SimpleNamespace(
+            request_id=request_id,
+            kv_transfer_params=params,
+            skip_reading_external_kv=False,
+            num_tokens=4096,
+            block_hashes=[b"h"] * 16,
+        )
+
+    scheduler.start_lookup_prefetch(request("turn-1", {"do_remote_decode": True}))
+    scheduler.start_lookup_prefetch(request("turn-2", {"do_remote_decode": True, "remote_block_ids": [[1, 2]]}))
+    scheduler.start_lookup_prefetch(request("plain", None))
+    assert prefetched == ["turn-1", "plain"]
+
+
+def test_failed_kv_load_gives_its_blocks_back_before_the_scheduler_reaches_it(monkeypatch):
+    """The waiting loop stops at the first request it cannot allocate for, so a failed load behind it would keep
+    its blocks forever."""
+    from collections import Counter, deque
+
+    from vllm.v1.core.sched.request_queue import FCFSRequestQueue
+    from vllm.v1.core.sched.scheduler import Scheduler
+    from vllm.v1.metrics.stats import KV_FETCH_COMPLETED_WAITING
+    from vllm.v1.request import RequestStatus
+
+    from prime_rl.inference.patches import (
+        monkey_patch_drop_reservation_of_failed_kv_load,
+        monkey_patch_release_failed_kv_loads,
+    )
+
+    # Restored after the test: the patches are applied to stock vLLM here.
+    monkeypatch.setattr(Scheduler, "_update_from_kv_xfer_finished", Scheduler._update_from_kv_xfer_finished)
+    monkeypatch.setattr(Scheduler, "_reserve_parked", Scheduler._reserve_parked)
+    monkey_patch_drop_reservation_of_failed_kv_load()
+    monkey_patch_release_failed_kv_loads()
+    # Nothing underneath tolerates freed requests here, and the wrapper must not claim otherwise.
+    assert Scheduler._update_from_kv_xfer_finished._prime_rl_tolerates_freed is False
+
+    class _Request:
+        def __init__(self, request_id, num_computed_tokens=0):
+            self.request_id, self.num_computed_tokens, self.num_tokens = request_id, num_computed_tokens, 100_000
+            self.status, self.num_preemptions = RequestStatus.WAITING_FOR_REMOTE_KVS, 0
+
+    loading, failed_late, loaded, failed_early = (
+        _Request("loading"),
+        _Request("failed-late"),
+        _Request("loaded", 98_304),
+        _Request("failed-early"),
+    )
+    requests = [loading, failed_early, loaded, failed_late]
+    freed = []
+    scheduler = object.__new__(Scheduler)
+    scheduler.connector = SimpleNamespace(update_connector_output=lambda output: None)
+    scheduler.requests = {request.request_id: request for request in requests}
+    scheduler.kv_holding_waiting = FCFSRequestQueue(requests)
+    scheduler.waiting = FCFSRequestQueue(deque())
+    scheduler.deferred_waiting = set(requests)
+    scheduler.finished_recving_kv_req_ids = set()
+    # `_handle_failed_recving` has run: both failures are recorded and have no computed tokens.
+    scheduler.failed_recving_kv_req_ids = {"failed-early", "failed-late"}
+    scheduler._kv_fetch_stages, scheduler._kv_fetch_counts = {}, Counter()
+    scheduler.kv_cache_manager = SimpleNamespace(free=lambda request: freed.append(request.request_id))
+    scheduler._mark_prefix_replay = lambda request, num_hit_tokens, window_loaded: 0
+    scheduler._parked_reservations = {failed_early: 400, failed_late: 380, loaded: 30}
+    scheduler._parked_reserved_blocks = 810
+
+    scheduler._update_from_kv_xfer_finished(
+        SimpleNamespace(finished_recving=["failed-late", "loaded", "failed-early"], finished_sending=None)
+    )
+
+    # Only the failed loads give their blocks and reservations back.
+    assert sorted(freed) == ["failed-early", "failed-late"]
+    assert scheduler._parked_reservations == {loaded: 30} and scheduler._parked_reserved_blocks == 30
+    assert failed_early.status == failed_late.status == RequestStatus.WAITING
+    # Block holders keep their order; the failed requests wait at the front of the ordinary queue, in theirs.
+    assert list(scheduler.kv_holding_waiting) == [loading, loaded]
+    assert list(scheduler.waiting) == [failed_early, failed_late]
+    assert scheduler.deferred_waiting == {loading, loaded}
+    # A finished load stays pending for the waiting loop; a failed one no longer counts as a load in flight.
+    assert scheduler.finished_recving_kv_req_ids == {"loaded"} and not scheduler.failed_recving_kv_req_ids
+    assert scheduler._kv_fetch_stages == {loaded: KV_FETCH_COMPLETED_WAITING}

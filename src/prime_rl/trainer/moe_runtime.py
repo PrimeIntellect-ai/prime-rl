@@ -96,8 +96,10 @@ def _resolve_mega_moe_compute(
     if dispatch.llep is not None:
         from prime_rl.trainer.models.layers.llep_mega_moe import LLEPMegaMoEExpertCompute
 
-        return LLEPMegaMoEExpertCompute(**kwargs, options=dispatch.llep, precision=dispatch.precision)
-    return MegaMoEExpertCompute(**kwargs, precision=dispatch.precision)
+        return LLEPMegaMoEExpertCompute(
+            **kwargs, options=dispatch.llep, precision=dispatch.precision, four_over_six=dispatch.four_over_six
+        )
+    return MegaMoEExpertCompute(**kwargs, precision=dispatch.precision, four_over_six=dispatch.four_over_six)
 
 
 def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:

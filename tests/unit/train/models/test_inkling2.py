@@ -6,9 +6,10 @@ from pathlib import Path
 import pytest
 import torch
 from safetensors.torch import load_file, save_file
+from torch.nn.attention.flex_attention import AuxOutput
 from transformers import AutoConfig
 
-from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
+from prime_rl.trainer.models import custom_causal_lm_from_config
 from prime_rl.trainer.models.inkling2 import (
     Inkling2Config,
     Inkling2LoopConfig,
@@ -69,8 +70,9 @@ class ExactExpertCompute:
         return torch.cat(outputs)
 
 
-def dense_flex_attention(query, key, value, score_mod, block_mask, scale, enable_gqa, return_lse):
+def dense_flex_attention(query, key, value, score_mod, block_mask, scale, enable_gqa, return_aux):
     """`flex_attention` over the full score matrix: FlexAttention has no CPU backward."""
+    assert return_aux.lse
     batch, heads, seq_len, _ = query.shape
     if enable_gqa:
         key = key.repeat_interleave(heads // key.shape[1], dim=1)
@@ -81,7 +83,7 @@ def dense_flex_attention(query, key, value, score_mod, block_mask, scale, enable
     kv_idx = torch.arange(seq_len)[None, None, None, :]
     scores = score_mod(query @ key.transpose(-1, -2) * scale, b, h, q_idx, kv_idx)
     scores = scores.masked_fill(~block_mask.mask_mod(b, h, q_idx, kv_idx), float("-inf"))
-    return scores.softmax(-1) @ value, scores.logsumexp(-1)
+    return scores.softmax(-1) @ value, AuxOutput(lse=scores.logsumexp(-1))
 
 
 @pytest.fixture(autouse=True)
@@ -94,7 +96,7 @@ def build_model(loop_config: dict | None = LOOP_CONFIG):
         config = Inkling2Config(text_config=TEXT_CONFIG)
     else:
         config = Inkling2LoopConfig(text_config=TEXT_CONFIG | {"loop_config": loop_config})
-    model = AutoModelForCausalLMPrimeRL.from_config(config, dtype=torch.float64)
+    model = custom_causal_lm_from_config(config, dtype=torch.float64)
     generator = torch.Generator().manual_seed(0)
     with torch.no_grad():
         for name, tensor in model.state_dict().items():
@@ -459,7 +461,7 @@ def test_loop_config_is_not_dropped():
     # The trainer can drop layers after the config is built.
     config.num_hidden_layers = 4
     with pytest.raises(ValueError, match="loop core"):
-        AutoModelForCausalLMPrimeRL.from_config(config)
+        custom_causal_lm_from_config(config)
     assert Inkling2LoopTextConfig().num_layer_visits == 48
 
 

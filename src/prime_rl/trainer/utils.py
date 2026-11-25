@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
+import triton
 from rich import print as rich_print
 from rich.text import Text
 from torch import Tensor, nn
@@ -43,7 +44,9 @@ class GarbageCollection:
     In multi-GPU training, Python's automatic GC can trigger unpredictably on one rank
     while others wait at a synchronization point, stalling the entire step. This class
     disables automatic GC and runs deterministic collections every `interval` steps so
-    all ranks collect simultaneously.
+    all ranks collect simultaneously. It also collects right after any uncached Triton autotuning in which a
+    config failed to launch (out of shared memory): each failure leaves a reference cycle pinning the
+    Python stack that autotuned, including any compiled layer backward's buffers.
 
     Based on the approach from torchtitan (https://arxiv.org/abs/2505.05713).
     """
@@ -52,10 +55,15 @@ class GarbageCollection:
         assert interval > 0, "gc interval must be a positive integer"
         self.interval = interval
         gc.disable()
+        triton.knobs.autotuning.listener = self._collect_after_failed_autotune
         self._collect()
 
     def run(self, step: int):
         if step > 0 and step % self.interval == 0:
+            self._collect()
+
+    def _collect_after_failed_autotune(self, *, configs_timings: dict, cache_hit: bool, **_) -> None:
+        if not cache_hit and any(math.inf in timings for timings in configs_timings.values()):
             self._collect()
 
     def _collect(self, generation: int = 1):

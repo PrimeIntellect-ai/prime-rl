@@ -27,14 +27,8 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.nn.attention.flex_attention import AuxRequest, BlockMask, create_block_mask
 from torch.nn.attention.flex_attention import flex_attention as _flex_attention
-from transformers.cache_utils import Cache
-from transformers.generation import GenerationMixin
-from transformers.modeling_layers import GradientCheckpointingLayer
-from transformers.modeling_outputs import MoeModelOutputWithPast
-from transformers.processing_utils import Unpack
-from transformers.utils import TransformersKwargs, can_return_tuple
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, count_active_params
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, TextModelOutput, count_active_params
 from prime_rl.trainer.models.inkling2.configuration_inkling2 import (
     Inkling2Config,
     Inkling2LoopConfig,
@@ -334,7 +328,7 @@ class Inkling2LoopController(nn.Module):
         return (1 - forget) * hidden_states + gain * message
 
 
-class Inkling2DecoderLayer(GradientCheckpointingLayer):
+class Inkling2DecoderLayer(nn.Module):
     def __init__(self, config: Inkling2TextConfig, layer_idx: int):
         super().__init__()
         self.layer_idx = layer_idx
@@ -488,8 +482,6 @@ def _build_block_masks(
 
 class Inkling2PreTrainedModel(PreTrainedModelPrimeRL):
     config: Inkling2Config
-    config_class = Inkling2Config
-    base_model_prefix = "model"
 
     @torch.no_grad()
     def _init_weights(self, module):
@@ -545,6 +537,11 @@ class Inkling2PreTrainedModel(PreTrainedModelPrimeRL):
 class Inkling2Model(Inkling2PreTrainedModel):
     def __init__(self, config: Inkling2TextConfig):
         super().__init__(config)
+        self.build(config)
+        self.post_init()
+
+    def build(self, config: Inkling2TextConfig) -> None:
+        """Create the modules and parameters; `post_init` initializes them right after."""
         self.vocab_size = config.vocab_size
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         self.embed_norm = RMSNorm(RMSNormConfig(config.hidden_size, config.rms_norm_eps))
@@ -552,8 +549,6 @@ class Inkling2Model(Inkling2PreTrainedModel):
         self.norm = RMSNorm(RMSNormConfig(config.hidden_size, config.rms_norm_eps))
         self.attn_res = Inkling2AttnRes(config)
         self.final_input = Inkling2BlockAttentionResidual(config.hidden_size, config.rms_norm_eps)
-        self.gradient_checkpointing = False
-        self.post_init()
 
     def forward(
         self,
@@ -565,8 +560,7 @@ class Inkling2Model(Inkling2PreTrainedModel):
         *,
         seq_lens: Tensor,
         seq_lens_are_pre_shard: bool = False,
-        **kwargs: Unpack[TransformersKwargs],
-    ) -> MoeModelOutputWithPast:
+    ) -> TextModelOutput:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
         if inputs_embeds is None:
@@ -600,7 +594,7 @@ class Inkling2Model(Inkling2PreTrainedModel):
 
         hidden_states = self.final_input(self.attn_res.output_query, block_states, hidden_states)[..., 0, :]
         hidden_states = self.norm(hidden_states).to(inputs_embeds.dtype)
-        return MoeModelOutputWithPast(last_hidden_state=hidden_states)
+        return TextModelOutput(last_hidden_state=hidden_states)
 
     def _run_layer(
         self,
@@ -638,10 +632,10 @@ class Inkling2Model(Inkling2PreTrainedModel):
 
 
 class Inkling2LoopModel(Inkling2Model):
-    def __init__(self, config: Inkling2LoopTextConfig):
+    def build(self, config: Inkling2LoopTextConfig) -> None:
         # The trainer can truncate the layers after the config is built (`debug.num_layers`).
         config.validate_loop()
-        super().__init__(config)
+        super().build(config)
         # Queries of the loop messages, named as in the checkpoint: non-layer weights are broadcast to
         # inference under the trainer's names. Rows 2j and 2j+1 belong to core layer j, as its Q and MoE
         # queries in the first table and its K and V queries in the second. Like the other block-residual
@@ -703,8 +697,7 @@ class SoftcapLinear(nn.Linear):
         self.softcap = softcap
 
 
-class Inkling2ForCausalLM(Inkling2PreTrainedModel, GenerationMixin):
-    _tied_weights_keys = set()
+class Inkling2ForCausalLM(Inkling2PreTrainedModel):
     text_config_class = Inkling2TextConfig
     text_model_class = Inkling2Model
 
@@ -732,30 +725,27 @@ class Inkling2ForCausalLM(Inkling2PreTrainedModel, GenerationMixin):
     def get_decoder(self):
         return self.model
 
-    @can_return_tuple
     def forward(
         self,
         input_ids: Tensor | None = None,
         attention_mask: Tensor | None = None,
         position_ids: Tensor | None = None,
-        past_key_values: Cache | None = None,
         inputs_embeds: Tensor | None = None,
         labels: Tensor | None = None,
-        use_cache: bool | None = None,
-        cache_position: Tensor | None = None,
         logits_to_keep: Union[int, Tensor] = 0,
         temperature: Tensor | None = None,
         routed_experts: Tensor | None = None,
-        **kwargs: Unpack[TransformersKwargs],
+        *,
+        seq_lens: Tensor,
+        seq_lens_are_pre_shard: bool = False,
     ) -> PrimeLmOutput:
-        assert use_cache is None, "use_cache is not supported by the PrimeRL Inkling 2"
-        assert past_key_values is None, "past_key_values is not supported by the PrimeRL Inkling 2"
         outputs = self.model(
             input_ids=input_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
             routed_experts=routed_experts,
-            **kwargs,
+            seq_lens=seq_lens,
+            seq_lens_are_pre_shard=seq_lens_are_pre_shard,
         )
         hidden_states = outputs.last_hidden_state
         slice_indices = (
@@ -779,7 +769,6 @@ class Inkling2ForCausalLM(Inkling2PreTrainedModel, GenerationMixin):
 
 class Inkling2LoopForCausalLM(Inkling2ForCausalLM):
     config: Inkling2LoopConfig
-    config_class = Inkling2LoopConfig
     text_config_class = Inkling2LoopTextConfig
     text_model_class = Inkling2LoopModel
 

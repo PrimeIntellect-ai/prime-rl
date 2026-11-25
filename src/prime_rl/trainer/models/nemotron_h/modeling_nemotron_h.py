@@ -1,9 +1,9 @@
 import torch
 from torch import Tensor, nn
-from transformers.modeling_outputs import BaseModelOutput
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, TextModelOutput
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
+from prime_rl.trainer.models.layers.fla_ops import prepare_chunk_indices
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
@@ -115,6 +115,7 @@ class NemotronHDecoderLayer(nn.Module):
         self,
         hidden_states: torch.Tensor,
         cu_seqlens: torch.Tensor,
+        chunk_indices: torch.Tensor,
         max_seqlen: int,
         routed_experts: torch.Tensor | None = None,
     ) -> torch.Tensor:
@@ -122,7 +123,7 @@ class NemotronHDecoderLayer(nn.Module):
         hidden_states = self.norm(hidden_states)
 
         if self.layer_type == "linear_attention":
-            hidden_states = self.mamba(hidden_states, cu_seqlens)
+            hidden_states = self.mamba(hidden_states, cu_seqlens, chunk_indices)
         elif self.layer_type == "full_attention":
             hidden_states, _ = self.self_attn(
                 hidden_states=hidden_states,
@@ -186,7 +187,7 @@ class NemotronHModel(NemotronHPreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> BaseModelOutput:
+    ) -> TextModelOutput:
         hidden_states = self.embed_tokens(input_ids)
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
@@ -194,16 +195,18 @@ class NemotronHModel(NemotronHPreTrainedModel):
             total_tokens=None if seq_lens_are_pre_shard else hidden_states.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        chunk_indices = prepare_chunk_indices(cu_seqlens)
 
         for layer_idx, decoder_layer in enumerate(self.layers):
             layer_routed_experts = routed_experts[:, :, layer_idx].contiguous() if routed_experts is not None else None
             hidden_states = decoder_layer(
-                hidden_states,
-                cu_seqlens,
-                max_seqlen,
+                hidden_states=hidden_states,
+                cu_seqlens=cu_seqlens,
+                chunk_indices=chunk_indices,
+                max_seqlen=max_seqlen,
                 routed_experts=layer_routed_experts,
             )
-        return BaseModelOutput(last_hidden_state=self.norm(hidden_states))
+        return TextModelOutput(last_hidden_state=self.norm(hidden_states))
 
 
 class NemotronHForCausalLM(NemotronHPreTrainedModel):

@@ -79,9 +79,8 @@ class GatedRMSNorm(nn.Module):
 class NemotronHMamba2(nn.Module):
     def __init__(self, config: NemotronHConfig) -> None:
         super().__init__()
-        from fla.modules.conv import causal_conv1d
-        from fla.ops.utils import prepare_sequence_ids
-        from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
+        from prime_rl.trainer.models.layers.fla_ops import _causal_conv1d
+        from prime_rl.trainer.models.nemotron_h.mamba_ops import mamba_chunk_scan
 
         self.hidden_size = config.hidden_size
         self.state_size = config.ssm_state_size
@@ -92,7 +91,7 @@ class NemotronHMamba2(nn.Module):
         self.group_state_size = self.num_groups * self.state_size
         self.conv_size = self.intermediate_size + 2 * self.group_state_size
         self.chunk_size = config.chunk_size
-        self.time_step_limit = config.time_step_limit
+        self.time_step_limit = config.time_step_limit if config.time_step_limit is not None else (0.0, float("inf"))
         self.activation = config.mamba_hidden_act
 
         projection_size = self.intermediate_size + self.conv_size + self.num_heads
@@ -114,9 +113,8 @@ class NemotronHMamba2(nn.Module):
             eps=config.layer_norm_epsilon,
         )
         self.out_proj = nn.Linear(self.intermediate_size, config.hidden_size, bias=config.use_bias)
-        self.causal_conv1d = causal_conv1d
-        self.prepare_sequence_ids = prepare_sequence_ids
-        self.scan = mamba_chunk_scan_combined
+        self.causal_conv1d = _causal_conv1d
+        self.scan = mamba_chunk_scan
         self.time_step_min = config.time_step_min
         self.time_step_max = config.time_step_max
         self.time_step_floor = config.time_step_floor
@@ -139,7 +137,9 @@ class NemotronHMamba2(nn.Module):
         # `head_dim * state_size` products.
         return 6 * 2 * self.num_heads * self.head_dim * self.state_size * seq_len
 
-    def forward(self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor, chunk_indices: torch.Tensor
+    ) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape
         projected_states = self.in_proj(hidden_states)
         gate, convolution_input, time_step = torch.split(
@@ -210,12 +210,13 @@ class NemotronHMamba2(nn.Module):
                 )
             sequence_length = convolution_input.shape[1]
 
-        convolution_output, _ = self.causal_conv1d(
-            x=convolution_input,
-            weight=conv_weight.squeeze(1),
-            bias=conv_bias,
-            activation=self.activation,
-            cu_seqlens=cu_seqlens,
+        convolution_output = self.causal_conv1d(
+            convolution_input.contiguous(),
+            conv_weight.squeeze(1).contiguous(),
+            None if conv_bias is None else conv_bias.contiguous(),
+            self.activation,
+            cu_seqlens,
+            chunk_indices,
         )
         local_group_state_size = num_groups * self.state_size
         hidden_states, state_input, state_output = torch.split(
@@ -224,23 +225,19 @@ class NemotronHMamba2(nn.Module):
             dim=-1,
         )
 
-        scan_kwargs = {}
-        if self.time_step_limit is not None:
-            scan_kwargs["dt_limit"] = self.time_step_limit
+        token_positions = torch.arange(sequence_length, dtype=cu_seqlens.dtype, device=cu_seqlens.device)
+        sequence_ids = torch.searchsorted(cu_seqlens, token_positions, right=True, out_int32=True) - 1
         hidden_states = self.scan(
             hidden_states.reshape(batch_size, sequence_length, num_heads, self.head_dim),
             time_step,
             state_decay,
             state_input.reshape(batch_size, sequence_length, num_groups, self.state_size),
             state_output.reshape(batch_size, sequence_length, num_groups, self.state_size),
-            chunk_size=self.chunk_size,
-            D=skip,
-            z=None,
-            seq_idx=self.prepare_sequence_ids(cu_seqlens).to(torch.int32).unsqueeze(0),
-            return_final_states=False,
-            dt_bias=dt_bias,
-            dt_softplus=True,
-            **scan_kwargs,
+            skip,
+            dt_bias,
+            sequence_ids.unsqueeze(0),
+            self.chunk_size,
+            self.time_step_limit,
         ).reshape(batch_size, sequence_length, intermediate_size)
         hidden_states = self.norm(hidden_states, gate, weight=norm_weight)
 
