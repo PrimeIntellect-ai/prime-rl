@@ -15,6 +15,10 @@ This page covers workflows for developing on `prime-rl` itself — running the t
   - [Register a Mini Preset](#register-a-mini-preset)
   - [Run the Smoke Test](#run-the-smoke-test)
 - [Adding a Custom VLM Implementation](#adding-a-custom-vlm-implementation)
+- [Adding a Decision Model](#adding-a-decision-model)
+  - [Implement the Model and Its Strategy](#implement-the-model-and-its-strategy)
+  - [Verify It](#verify-it)
+  - [Requirements for merging a decision model](#requirements-for-merging-a-decision-model)
 - [Selecting a Model Class by an Extra Config File](#selecting-a-model-class-by-an-extra-config-file)
 
 ## Test Suite
@@ -162,6 +166,44 @@ VLM training (any run with `[model.vlm]` set, SFT or RL) is custom-implementatio
 5. **Registration.** Register the composite `model_type` in `_CUSTOM_VLM_MAPPING` (`models/__init__.py`) so `get_model` dispatches to the custom class. RL turns raw image refs into vision kwargs with the model class's `materialize_images(refs, processor)`; Qwen3.5 and Qwen3.8 Flash Next each define it in their `vision.py`, and a new family implements its own.
 6. **Context parallelism (optional).** CP-capable VLMs hold a `CPContext` on all modules which need to be CP-aware and shard embeds/positions inside the model after the vision merge; the trainers defer sharding to the model for every batch with images.
 7. **Validation.** Same bar as text models: the KL-mismatch table for the text path, plus an SFT run and an RL run on a real multimodal dataset (the `color-codeword` environment is the reference task).
+
+## Adding a Decision Model
+
+A decision model answers [System One records](training.md#system-one-data): SFT trains it and vLLM serves it at `/v1/systemone`. It generates no tokens and RL does not train it, so in place of the KL mismatch of [a chat model](#requirements-for-merging-a-new-model), its option probabilities are compared with vLLM's.
+
+### Implement the Model and Its Strategy
+
+- **Backbone.** A custom model of prime-rl. A new one comes first, with the bar of [Adding a New Model](#adding-a-new-model) or [Adding a Custom VLM Implementation](#adding-a-custom-vlm-implementation).
+- **Readout.** The LM head, or a head of the class's own, computed as vLLM computes it and in the same dtype.
+- **Strategy.** A `SystemOneStrategy` (see "Writing a strategy" in [System One Data](training.md#system-one-data)) whose prompts are vLLM's. Name the vLLM version and the file it is ported from; do not import vLLM.
+- **Export.** `tools/convert_dcp_to_bf16.py` writes a checkpoint that vLLM serves as it serves the release.
+
+### Verify It
+
+`scripts/decision_parity.py` makes the records of two public datasets, [`typed-decisions`](https://huggingface.co/datasets/LocalLLaMA/typed-decisions) (text) and [`clevr4`](https://huggingface.co/datasets/IamBusy/OpenJev-Vision-Research-v0.1) (images), gets both sides' answers and compares them; its docstring has the commands. Steps 3 to 5 run on the published weights. Their tables go in the PR description, with the commit, the GPU and the vLLM version. The training of steps 4 and 5 runs anywhere; the rest needs a machine with both the trainer and vLLM.
+
+1. **Unit tests** (CPU CI):
+   - the strategy's prompt tokens, read spans and option order equal those of the installed vLLM's strategy. Cover every question type, text and JSON states, keys and options in no sorted order, non-ASCII text, missing instructions and descriptions, the most options the strategy takes and one more, and a prompt that is cut or refused. If the pinned vLLM does not have the strategy, compare with the prompts of vLLM's own tests, or with its source, at a named commit;
+   - if the strategy reads images, the prompt tokens, pixel values and grids of records with two images of different sizes equal those of the release's processor;
+   - the logits of a head of the class's own equal vLLM's code's on the same hidden states;
+   - the readout gives several records packed in a row with padding the logits it gives each alone;
+   - the class built from the published `config.json` has the published checkpoint's tensor names and shapes, and the export of its weights loads back unchanged.
+2. **GPU test** (`gpu-ci`): an integration test trains a tiny, randomly initialised checkpoint for a few steps on two GPUs with validation, and its export has the release's layout.
+3. **Parity with vLLM**, on the test records of `typed-decisions` (2,000 questions of every type, and 500 in reordered copies of the records). Serve with `uv run inference`, without prefix caching, and send the requests to the engine's port. If the pinned vLLM lacks the class, use one that has it, with a float32 LM head (`head_dtype`), and name its commit. Compare the trainer with vLLM on the release and on the export of step 4's run, and the release with that export (`--changed`), which must differ.
+4. **SFT on a real dataset.** Train on the training records of `typed-decisions` with a checked-in config, on at least two GPUs and with `val.eval_on_start = true`, and take the last checkpoint. Score the release and the export on the test records, once. `val/brier/mean` at the first step, which the packed training path gives, must be the Brier score of the release's answers on `validation.jsonl`.
+5. **Images**, if the strategy reads them: the release's parity on `clevr4`, and an SFT run on it, scored as in step 4.
+
+### Requirements for merging a decision model
+
+- Steps 1 and 2 pass in CI.
+- Every comparison of step 3 and 5 passes. Per question type, the mean KL(vLLM || trainer) over a question's options is at most 5e-4; over all questions, the top option is the same for at least 99.8% of the decided ones, where it leads by more than 0.04 on both sides. Both sides answer the same records, with the same number of prompt tokens.
+- The export differs from the release (`compare --changed` passes), and its KL from the labels on the test records is at least 10% below the release's (on `clevr4`, below it). It is also at most 0.24 on `typed-decisions` and 0.76 on `clevr4`, three quarters of what answers that ignore the state get.
+- The validation's Brier score before training is within 0.01 of the script's.
+- Where the dataset's card has the release's scores from vLLM's `/v1/systemone` (for `typed-decisions`, the rows of its discussion #37), accuracy and KL are within 0.02 of them.
+
+As with a chat model, a result outside these limits needs a justification, such as the same comparison between two of vLLM's own runs (one request at a time against 16 at once).
+
+Not required: RL, the `math` KL table (unless the backbone is new), LoRA, context parallelism and a run from scratch. A further size of a class that meets the requirements needs the parity of its release only.
 
 ## Selecting a Model Class by an Extra Config File
 
