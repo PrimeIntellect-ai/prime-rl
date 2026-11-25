@@ -7,6 +7,9 @@ max_steps = 4
 [model]
 name = "set-by-the-test"
 
+[model.compile]
+fullgraph = true
+
 [data]
 type = "system_one"
 seq_len = 4096

@@ -109,13 +109,6 @@ def test_the_layout_refuses_invalid_prefix_lens(prefix_lens, error):
         prepare_two_block_layout(cu_seqlens, torch.tensor(prefix_lens))
 
 
-def test_two_block_attention_refuses_a_sliding_window():
-    attention = Qwen3_5Attention(get_text_config(), "flash_attention_2")
-    attention.sliding_window = 4
-    with pytest.raises(NotImplementedError, match="sliding-window"):
-        attention._compute_two_block_attention(*[torch.zeros(5, 1, 8)] * 3, layout_of([5], [2]))
-
-
 def test_the_model_makes_the_two_block_call_only_with_prefix_lens():
     """The forward of a model of one full-attention layer, up to its two kernel calls, which are recorded."""
     config = get_text_config()

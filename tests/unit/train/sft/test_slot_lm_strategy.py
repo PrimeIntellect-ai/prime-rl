@@ -139,9 +139,9 @@ def test_refuses_a_tokenizer_the_prompt_does_not_fit():
     # No token for AA
     with pytest.raises(ValueError, match="label 'AA' is not one distinct token after this model's chat prompt"):
         SlotLMStrategy(chat_tokenizer(), slot_config(27))
-    # The prefix's last newline and the suffix's Q are one token
+    # The prefix's last newline and the suffix's Qu are one token
     with pytest.raises(ValueError, match="the slot prompt's suffix merges with its prefix"):
-        SlotLMStrategy(chat_tokenizer((*MERGES, ("Ċ", "Q"))), slot_config())
+        SlotLMStrategy(chat_tokenizer((*MERGES, ("Q", "u"), ("Ċ", "Qu"))), slot_config())
 
 
 def test_skips_what_vllm_refuses(strategy, monkeypatch):

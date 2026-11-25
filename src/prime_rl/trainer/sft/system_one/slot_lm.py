@@ -1,10 +1,10 @@
 # Ported from vLLM main at fb159244e6fdd0b2ecd9d62855cae9a2d282ae87 (Apache-2.0, Copyright contributors to the vLLM
-# project), with vLLM's names; v0.34.0 has neither:
+# project), with vLLM's names; v0.34.0 has neither slot_prompt.py nor SlotLMStrategy:
 # - vllm/entrypoints/openai/decisions/slot_prompt.py: all of it (lines 10-68).
 # - vllm/entrypoints/openai/decisions/strategies.py: SlotLMStrategy (lines 1460-1632): its MAX_OPTIONS, the label and
 #   prefix checks of __init__, limits, _generation_prompt, _prompt, _tokens, _prefix_text, and read's prompts and prefix
 #   length (1579-1588).
-# - vllm/entrypoints/generate/structured_decisions/serving.py: parse_questions' limits (lines 32-36), with the
+# - vllm/entrypoints/generate/structured_decisions/serving.py: parse_questions' limit (lines 33-36), with the
 #   max_options check of question_types.py's build_question for unlabelled limits. parse_record makes their other
 #   checks, and at most 10 score levels (MAX_SCORE_LEVELS).
 # vLLM reads the instructions and criteria as a request gives them (Question.raw), as a record holds them. Text only.

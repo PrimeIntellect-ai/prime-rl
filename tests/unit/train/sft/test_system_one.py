@@ -31,6 +31,7 @@ from prime_rl.trainer.sft.system_one.data import (
     check_records,
     check_rendered_request,
 )
+from prime_rl.trainer.sft.system_one.forward import decision_forward
 from prime_rl.trainer.sft.system_one.lm_head import lm_head_logits
 from prime_rl.trainer.sft.system_one.loss import (
     DecisionLossInputs,
@@ -375,6 +376,26 @@ def test_a_row_has_a_prefix_per_segment_and_its_padding_is_one_block():
     assert _micro_batch(_source(), [ROW, SECOND])["prefix_lens"] is None
     with pytest.raises(ValueError, match="for every request or for none"):
         build_prefix_lens([4, 6, 4, 6], [{"prefix_lens": [1, 6]}, {}])
+
+
+def test_decision_forward_hands_the_rows_prefixes_to_the_model():
+    class Backbone(nn.Module):
+        def forward(self, input_ids, position_ids, *, seq_lens, seq_lens_are_pre_shard=False, prefix_lens=None):
+            self.prefix_lens = prefix_lens
+            return SimpleNamespace(last_hidden_state=torch.zeros(1, input_ids.shape[1], 4))
+
+    model = nn.Module()
+    model.model = Backbone()
+    model.lm_head = nn.Linear(4, 8, bias=False)
+    inject_prime_lm_head(model)
+    model.logits, model.seen = torch.zeros(14), []
+    for strategy_cls, prefix_lens in ((TwoBlockStrategy, [1, 6, 1, 6, 4]), (StubStrategy, None)):
+        strategy = strategy_cls(None, CONFIG, READ_SPANS)
+        batch = _micro_batch(SystemOneSource(Dataset.from_list([ROW]), strategy), [ROW, SECOND])
+        out = decision_forward(model, batch, strategy=strategy, brier_weight=0.1, device="cpu")
+        given = model.model.prefix_lens
+        assert (given if given is None else given.tolist()) == prefix_lens
+        assert out["ce"].shape == (batch["decision_loss_inputs"].num_labelled,)
 
 
 def test_build_decision_loss_inputs_maps_reads_into_the_row():

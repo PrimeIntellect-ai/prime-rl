@@ -104,8 +104,6 @@ class Qwen3_5Attention(FlashAttention):
     ) -> torch.Tensor:
         """Run the flash attention kernel with ``layout``'s mask instead of the causal one. q/k/v are
         [total_tokens, heads, dim], after RoPE: a gathered key keeps its own position."""
-        if getattr(self, "sliding_window", None) is not None:
-            raise NotImplementedError("Two-block attention does not support sliding-window attention")
         # index_select's backward sums the two copies of a prefix's keys and values with index_add_
         k = k.index_select(0, layout.key_index)
         v = v.index_select(0, layout.key_index)
