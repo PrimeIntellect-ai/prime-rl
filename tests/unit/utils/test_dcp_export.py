@@ -327,6 +327,20 @@ def test_model_assets_of_a_model_that_cannot_generate(tmp_path, exporter):
     assert not (output / "generation_config.json").exists()
 
 
+def test_model_assets_keep_a_config_key_the_config_class_does_not_define(tmp_path, exporter):
+    """The inference server may read such a key: vLLM serves a Qwen3.5 checkpoint with ``modeling_overrides`` as
+    another class."""
+    model_dir, output = tmp_path / "model", tmp_path / "export"
+    write_stub(model_dir, extra_config=None)
+    overrides = {"attention": {"full_attention": "block_bidirectional"}, "readout": "slot_lm"}
+    saved = json.loads((model_dir / "config.json").read_text())
+    (model_dir / "config.json").write_text(json.dumps({**saved, "modeling_overrides": overrides}))
+    model_config = ModelConfig(name=str(model_dir), attn="flash_attention_2")
+    model = get_model(model_config, device=torch.device("meta"), dtype=torch.float32)
+    exporter.save_model_assets(model, model_config, TokenizerConfig(), output)
+    assert json.loads((output / "config.json").read_text())["modeling_overrides"] == overrides
+
+
 def test_a_run_from_a_checkpoint_exports_without_its_source_step_dir(tmp_path, exporter, monkeypatch):
     monkeypatch.delenv("PRL_ATTEMPT_CONFIG_DIR", raising=False)
     source = (tmp_path / "deleted-run" / "checkpoints" / "step_5").as_posix()
