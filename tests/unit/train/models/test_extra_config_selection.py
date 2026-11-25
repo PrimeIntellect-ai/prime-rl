@@ -25,8 +25,6 @@ from tests.unit.train.models.extra_config_stub import (
     write_stub,
 )
 
-META = torch.device("meta")
-
 
 def model_config(name, **kwargs) -> ModelConfig:
     return ModelConfig(name=str(name), attn="flash_attention_2", **kwargs)
@@ -51,7 +49,7 @@ def test_a_listed_class_sets_what_selects_it():
 
 def test_an_ordinary_model_is_unaffected(tmp_path):
     write_stub(tmp_path)
-    model = get_model(model_config(tmp_path), device=META)
+    model = get_model(model_config(tmp_path))
     assert type(model) is Qwen3ForCausalLM and not hasattr(model.config, EXTRA_CONFIG_ATTR)
     files = setup_model_files(model_config(tmp_path), AutoTokenizer.from_pretrained(tmp_path), None)
     assert files.selection is None
@@ -60,7 +58,7 @@ def test_an_ordinary_model_is_unaffected(tmp_path):
 def test_the_extra_config_file_selects_the_class(tmp_path, monkeypatch):
     register(monkeypatch, HeadStub)
     write_stub(tmp_path / "stub")
-    model = get_model(model_config(tmp_path / "stub"), device=META)
+    model = get_model(model_config(tmp_path / "stub"))
     assert type(model) is HeadStub and model.head.weight.shape == (3, 16)
     assert getattr(model.config, EXTRA_CONFIG_ATTR) == EXTRA_CONFIG
     # No rename: the config keeps the stock architecture
@@ -71,13 +69,13 @@ def test_the_extra_config_file_selects_the_class(tmp_path, monkeypatch):
     assert files.config.architectures == ["Qwen3ForCausalLM"] and not hasattr(files.config, EXTRA_CONFIG_ATTR)
 
     write_stub(tmp_path / "stock", extra_config=None)
-    assert type(get_model(model_config(tmp_path / "stock"), device=META)) is Qwen3ForCausalLM
+    assert type(get_model(model_config(tmp_path / "stock"))) is Qwen3ForCausalLM
 
     # Another architecture next to the file is not the stub's
     write_stub(tmp_path / "other")
     config = json.loads((tmp_path / "other" / "config.json").read_text())
     (tmp_path / "other" / "config.json").write_text(json.dumps(config | {"architectures": ["Qwen3Model"]}))
-    assert type(get_model(model_config(tmp_path / "other"), device=META)) is Qwen3ForCausalLM
+    assert type(get_model(model_config(tmp_path / "other"))) is Qwen3ForCausalLM
 
 
 def test_a_config_that_names_a_listed_class_is_refused(tmp_path, monkeypatch):
@@ -86,7 +84,7 @@ def test_a_config_that_names_a_listed_class_is_refused(tmp_path, monkeypatch):
     config = json.loads((tmp_path / "config.json").read_text())
     (tmp_path / "config.json").write_text(json.dumps({**config, "architectures": ["HeadStub"]}))
     with pytest.raises(ValueError, match="names HeadStub, which is selected by stub_head_config.json next to a"):
-        get_model(model_config(tmp_path), device=META)
+        get_model(model_config(tmp_path))
 
 
 @pytest.mark.parametrize(
@@ -98,21 +96,23 @@ def test_a_malformed_extra_config_file_names_its_path(tmp_path, monkeypatch, con
     write_stub(tmp_path)
     (tmp_path / EXTRA_CONFIG_FILE).write_text(content)
     with pytest.raises(ValueError, match=error):
-        get_model(model_config(tmp_path), device=META)
+        get_model(model_config(tmp_path))
 
 
 @pytest.mark.parametrize("tied", [False, True])
-def test_the_stub_loads_on_cpu(tmp_path, monkeypatch, tied):
+def test_the_stub_loads_its_weights(tmp_path, monkeypatch, tied):
     register(monkeypatch, HeadStub)
     saved = write_stub(tmp_path, tied=tied, weights=True)
-    model = get_model(model_config(tmp_path), device=torch.device("cpu"))
-    assert type(model) is HeadStub and torch.equal(model.head.weight, saved["head.weight"].bfloat16())
+    model = get_model(model_config(tmp_path))
+    assert type(model) is HeadStub
+    load_like_the_trainer(model, tmp_path, monkeypatch)
+    assert torch.equal(model.head.weight, saved["head.weight"].bfloat16())
 
 
 def test_the_class_converts_a_release_lacking_a_tensor(tmp_path, monkeypatch):
     register(monkeypatch, ConvertingStub)
     saved = write_release_layout(tmp_path)
-    model = get_model(model_config(tmp_path), device=META)
+    model = get_model(model_config(tmp_path))
     assert type(model) is ConvertingStub
     load_like_the_trainer(model, tmp_path, monkeypatch)
     assert torch.equal(model.head.weight, saved["head.weight"].bfloat16())

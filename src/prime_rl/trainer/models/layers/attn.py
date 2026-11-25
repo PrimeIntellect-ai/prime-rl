@@ -12,26 +12,20 @@ from .rotary_emb import apply_rotary_pos_emb
 
 # flash-attention-2
 try:
-    from flash_attn import flash_attn_varlen_func
     from flash_attn.flash_attn_interface import _flash_attn_varlen_backward, _flash_attn_varlen_forward
 except ImportError:
-    flash_attn_varlen_func = None  # type: ignore
     _flash_attn_varlen_backward = _flash_attn_varlen_forward = None  # type: ignore
 
 # flash-attention-3
 try:
     from flash_attn_interface import _flash_attn_backward as _flash_attn_3_bwd
     from flash_attn_interface import _flash_attn_forward as _flash_attn_3_fwd
-    from flash_attn_interface import flash_attn_varlen_func as flash_attn_3_varlen_func
 except ImportError:
-    flash_attn_3_varlen_func = None  # type: ignore
     _flash_attn_3_bwd = _flash_attn_3_fwd = None  # type: ignore
 
 try:
-    from flash_attn.cute import flash_attn_varlen_func as flash_attn_4_varlen_func
     from flash_attn.cute.interface import _flash_attn_bwd, _flash_attn_fwd
 except ImportError:
-    flash_attn_4_varlen_func = None  # type: ignore
     _flash_attn_bwd = _flash_attn_fwd = None  # type: ignore
 
 
@@ -52,6 +46,8 @@ def _flash_attn_4_varlen(
     causal: bool,
     window_size_left: int | None,
     window_size_right: int | None,
+    softmax_scale: float | None,
+    learnable_sink: torch.Tensor | None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     out, lse, _, _ = _flash_attn_fwd(
         q,
@@ -61,9 +57,11 @@ def _flash_attn_4_varlen(
         cu_seqlens_k=cu_seqlens_k,
         max_seqlen_q=max_seqlen_q,
         max_seqlen_k=max_seqlen_k,
+        softmax_scale=softmax_scale,
         causal=causal,
         window_size_left=window_size_left,
         window_size_right=window_size_right,
+        learnable_sink=learnable_sink,
         return_lse=True,
     )
     return out, lse
@@ -91,47 +89,78 @@ def _flash_attn_4_varlen_backward(
     causal: bool,
     window_size_left: int | None,
     window_size_right: int | None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    dq, dk, dv = _flash_attn_bwd(
-        q,
-        k,
-        v,
-        out,
-        dout,
-        lse,
-        causal=causal,
-        window_size_left=window_size_left,
-        window_size_right=window_size_right,
-        cu_seqlens_q=cu_seqlens_q,
-        cu_seqlens_k=cu_seqlens_k,
-        max_seqlen_q=max_seqlen_q,
-        max_seqlen_k=max_seqlen_k,
+    softmax_scale: float | None,
+    learnable_sink: torch.Tensor | None,
+) -> list[torch.Tensor]:
+    return list(
+        _flash_attn_bwd(
+            q,
+            k,
+            v,
+            out,
+            dout,
+            lse,
+            softmax_scale=softmax_scale,
+            causal=causal,
+            window_size_left=window_size_left,
+            window_size_right=window_size_right,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_q=max_seqlen_q,
+            max_seqlen_k=max_seqlen_k,
+            learnable_sink=learnable_sink,
+        )
     )
-    return dq, dk, dv
 
 
 @_flash_attn_4_varlen_backward.register_fake
 def _(dout, q, k, v, *args):
-    return torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
+    learnable_sink = args[-1]
+    grads = [torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)]
+    return grads if learnable_sink is None else [*grads, torch.empty_like(learnable_sink)]
 
 
 def _flash_attn_4_varlen_setup_context(ctx, inputs, output) -> None:
-    q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, causal, window_size_left, window_size_right = (
-        inputs
-    )
+    (
+        q,
+        k,
+        v,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        max_seqlen_q,
+        max_seqlen_k,
+        causal,
+        window_size_left,
+        window_size_right,
+        softmax_scale,
+        learnable_sink,
+    ) = inputs
     out, lse = output
-    ctx.save_for_backward(q, k, v, out, lse, cu_seqlens_q, cu_seqlens_k)
+    ctx.save_for_backward(q, k, v, out, lse, cu_seqlens_q, cu_seqlens_k, learnable_sink)
     ctx.max_seqlen = (max_seqlen_q, max_seqlen_k)
     ctx.causal = causal
     ctx.window_size = (window_size_left, window_size_right)
+    ctx.softmax_scale = softmax_scale
 
 
 def _flash_attn_4_varlen_autograd(ctx, dout: torch.Tensor, _dlse: torch.Tensor | None):
-    q, k, v, out, lse, cu_seqlens_q, cu_seqlens_k = ctx.saved_tensors
-    dq, dk, dv = _flash_attn_4_varlen_backward(
-        dout.contiguous(), q, k, v, out, lse, cu_seqlens_q, cu_seqlens_k, *ctx.max_seqlen, ctx.causal, *ctx.window_size
+    q, k, v, out, lse, cu_seqlens_q, cu_seqlens_k, learnable_sink = ctx.saved_tensors
+    dq, dk, dv, *dsink = _flash_attn_4_varlen_backward(
+        dout.contiguous(),
+        q,
+        k,
+        v,
+        out,
+        lse,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        *ctx.max_seqlen,
+        ctx.causal,
+        *ctx.window_size,
+        ctx.softmax_scale,
+        learnable_sink,
     )
-    return dq, dk, dv, None, None, None, None, None, None, None
+    return dq, dk, dv, None, None, None, None, None, None, None, None, dsink[0] if dsink else None
 
 
 _flash_attn_4_varlen.register_autograd(_flash_attn_4_varlen_autograd, setup_context=_flash_attn_4_varlen_setup_context)
@@ -148,10 +177,24 @@ def flash_attn_4_varlen_op(
     max_seqlen_k: int | None = None,
     causal: bool = False,
     window_size: tuple[int | None, int | None] = (None, None),
+    softmax_scale: float | None = None,
+    learnable_sink: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Drop-in for FA4's ``flash_attn_varlen_func`` as called by ``FlashAttention``, routed through the custom op."""
+    """Drop-in for FA4's ``flash_attn_varlen_func`` as called by ``FlashAttention`` and GPT-OSS, routed through the
+    custom op."""
     return _flash_attn_4_varlen(
-        q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, causal, window_size[0], window_size[1]
+        q,
+        k,
+        v,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        max_seqlen_q,
+        max_seqlen_k,
+        causal,
+        window_size[0],
+        window_size[1],
+        softmax_scale,
+        learnable_sink,
     )
 
 

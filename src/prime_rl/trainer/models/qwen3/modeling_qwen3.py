@@ -2,15 +2,9 @@ from typing import Optional, Union
 
 import torch
 from torch import Tensor, nn
-from transformers.cache_utils import Cache
-from transformers.generation import GenerationMixin
-from transformers.modeling_layers import GradientCheckpointingLayer
-from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
-from transformers.processing_utils import Unpack
-from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, TextModelOutput
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -31,7 +25,7 @@ def _get_rope_type(config: Qwen3Config) -> str:
     return "default"
 
 
-class Qwen3DecoderLayer(GradientCheckpointingLayer):
+class Qwen3DecoderLayer(nn.Module):
     def __init__(self, config: Qwen3Config, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -83,10 +77,8 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
         return residual + hidden_states
 
 
-@auto_docstring
 class Qwen3PreTrainedModel(PreTrainedModelPrimeRL):
     config: Qwen3Config
-    base_model_prefix = "model"
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
@@ -111,12 +103,7 @@ class Qwen3PreTrainedModel(PreTrainedModelPrimeRL):
     def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
         return state_dict
 
-    @classmethod
-    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        return state_dict
 
-
-@auto_docstring
 class Qwen3Model(Qwen3PreTrainedModel):
     def __init__(self, config: Qwen3Config):
         super().__init__(config)
@@ -133,11 +120,9 @@ class Qwen3Model(Qwen3PreTrainedModel):
             model_config=config,
         )
         self.rotary_emb = RotaryEmbedding(rotary_config)
-        self.gradient_checkpointing = False
 
         self.post_init()
 
-    @auto_docstring
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -146,7 +131,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> BaseModelOutputWithPast:
+    ) -> TextModelOutput:
         r"""
         seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
             Per-document lengths of the packed row (PrimeRL packed-batch contract).
@@ -179,12 +164,11 @@ class Qwen3Model(Qwen3PreTrainedModel):
             )
 
         hidden_states = self.norm(hidden_states)
-        return BaseModelOutputWithPast(last_hidden_state=hidden_states)
+        return TextModelOutput(last_hidden_state=hidden_states)
 
 
-@auto_docstring
-class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
-    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
+class Qwen3ForCausalLM(Qwen3PreTrainedModel):
+    supports_tied_word_embeddings = True
 
     def __init__(self, config):
         super().__init__(config)
@@ -200,44 +184,31 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
     def get_decoder(self):
         return self.model
 
-    @can_return_tuple
-    @auto_docstring
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Cache] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: Optional[torch.Tensor] = None,
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-        **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
         seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
             Per-document lengths of the packed row (PrimeRL packed-batch contract).
         seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
             Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
-        cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
-            Indices of input tokens in the KV cache. Accepted only for HuggingFace API
-            compatibility; prime-rl asserts `use_cache is None` since training does not
-            perform autoregressive decoding, so this argument is unused.
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels used by PrimeRL's wrapped LM head to optionally compute per-token logprobs/entropy.
             If not provided, the wrapped LM head returns logits only.
         temperature (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
             Per-token temperatures for logprobs/entropy computation when `labels` are provided.
         """
-        assert use_cache is None, "use_cache is not supported for custom qwen3 for now"
-        assert past_key_values is None, "past_key_values is not supported for custom qwen3 for now"
-
-        outputs: BaseModelOutputWithPast = self.model(
+        outputs: TextModelOutput = self.model(
             input_ids=input_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,

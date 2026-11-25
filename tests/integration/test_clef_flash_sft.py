@@ -67,6 +67,7 @@ def sft_process(
     wandb_name: str,
     output_dir: Path,
 ) -> ProcessResult:
+    source = json.dumps([{"name": "records", "dataset": records.as_posix()}])
     cmd = [
         "uv",
         "run",
@@ -75,10 +76,10 @@ def sft_process(
         "configs/ci/integration/clef-flash-sft/start.toml",
         "--model.name",
         release.as_posix(),
-        "--data.name",
-        records.as_posix(),
-        "--val.data.name",
-        records.as_posix(),
+        "--data.source",
+        source,
+        "--val.data.source",
+        source,
         "--deployment.num-train-gpus",
         "2",
         "--clean",
@@ -86,7 +87,6 @@ def sft_process(
         wandb_project,
         "--monitors.wandb.name",
         wandb_name,
-        "--no-monitors.prime",
         "--output-dir",
         output_dir.as_posix(),
         "--run.name",

@@ -17,6 +17,7 @@ from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.utils.cp import CPContext
 from prime_rl.utils.utils import default_dtype
 from tests.unit.train.models.deepseek_v4_markers import requires_datacenter_gpu
+from tests.utils import assert_relative
 
 # Every layer is built through `DeepseekV4Attention.__init__`, which refuses to construct without
 # the kernel it dispatches to, so the whole file needs tilelang.
@@ -138,7 +139,7 @@ def _randomize(module: nn.Module) -> None:
 def get_prime_model(dtype: torch.dtype = torch.bfloat16) -> nn.Module:
     """A prime-rl model with non-degenerate weights and the LM head training code wraps it in."""
     with torch.device("cuda"), default_dtype(dtype):
-        model = DeepseekV4ForCausalLM._from_config(MODEL_CONFIG)
+        model = DeepseekV4ForCausalLM.from_config(MODEL_CONFIG)
     _randomize(model)
     inject_prime_lm_head(model, chunk_size=None)
     return model
@@ -161,14 +162,6 @@ def _single_doc(input_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     batch, seq_len = input_ids.shape
     position_ids = torch.arange(seq_len, device=input_ids.device).unsqueeze(0).expand(batch, -1)
     return position_ids, torch.tensor([seq_len], device=input_ids.device)
-
-
-def _assert_relative(prime: torch.Tensor, reference: torch.Tensor, rtol: float, label: str) -> None:
-    """Bound the largest absolute deviation by `rtol` times the reference's own scale."""
-    prime, reference = prime.float(), reference.float()
-    deviation = (prime - reference).abs().max()
-    scale = reference.abs().max()
-    assert deviation <= rtol * scale, f"{label}: max deviation {deviation} exceeds {rtol} * scale {scale}"
 
 
 def _packed_context(doc_lens: tuple[int, ...], dtype: torch.dtype) -> PackedContext:
@@ -395,7 +388,7 @@ def test_deepseek_v4_on_disk_keys_map_to_the_names_vllm_expects():
     from vllm.models.deepseek_v4.nvidia.model import _make_deepseek_v4_weights_mapper
 
     with torch.device("meta"):
-        model = DeepseekV4ForCausalLM._from_config(MODEL_CONFIG)
+        model = DeepseekV4ForCausalLM.from_config(MODEL_CONFIG)
     on_disk_state_dict = model.convert_to_hf(dict(model.state_dict()))
     assert on_disk_state_dict, "vacuous probe: the model produced no weights to map"
 
@@ -488,7 +481,7 @@ def _compare_accumulated_grads(
             assert param.grad is None, f"{name} received a gradient per document but not packed"
             continue
         assert param.grad is not None, f"{name} received no gradient per document"
-        _assert_relative(param.grad, expected[name], rtol, name)
+        assert_relative(param.grad, expected[name], rtol, name)
 
 
 def _assert_layout_is_consistent(packed: PackedContext, doc_lens: tuple[int, ...], compress_rate: int) -> None:
@@ -792,5 +785,5 @@ def test_halo_attention_matches_one_gpu(cp_process_group, layer_idx, compressor_
             dist.all_reduce(param.grad, group=cp_process_group)
 
     torch.testing.assert_close(actual, expected[:, shard], rtol=0, atol=0)
-    _assert_relative(shard_input.grad, whole_input.grad[:, shard], HALO_LAYER_GRAD_RTOL, "input gradient")
+    assert_relative(shard_input.grad, whole_input.grad[:, shard], HALO_LAYER_GRAD_RTOL, "input gradient")
     _compare_accumulated_grads(attention, expected_grads, rtol=HALO_LAYER_GRAD_RTOL)

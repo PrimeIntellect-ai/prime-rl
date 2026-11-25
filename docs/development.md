@@ -35,6 +35,9 @@ uv run pytest tests/unit -v                                # unit only
 uv run pytest tests/integration -v                         # integration only
 uv run pytest -v -m "not gpu"                              # CPU-only subset (mirrors CPU CI)
 uv run pytest -v -m gpu                                    # GPU-only subset
+uv run pytest tests/unit tests/integration -m tiny -v      # fast GPU subset (mirrors the Tiny (GPU) job)
+uvx modal run scripts/modal_ci.py --suite tiny             # the Tiny (GPU) job itself, on Modal
+uvx modal run scripts/modal_ci.py --suite full --group rest  # one group of the full GPU suite, on Modal
 uv run pytest tests/integration/test_reverse_text.py -vvs  # one specific scenario
 uv run playwright install --only-shell chromium            # browser for the integration dashboard smoke tests
 ```
@@ -44,24 +47,19 @@ uv run playwright install --only-shell chromium            # browser for the int
 | Workflow | Trigger | What runs | Where |
 |---|---|---|---|
 | [`tests.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/tests.yml) | CPU jobs: every PR + push to `main`. `gsm8k_eval`: relevant changes in non-draft PRs, every push to `main`, manual dispatch | CPU: `pytest tests/unit -m "not gpu"`, plus a slim-wheel install check that `prime-rl-configs` imports cleanly without heavy deps (no torch / vllm / transformers / wandb / verifiers / datasets / liger / loguru in `sys.modules`). Separate hosted `gsm8k_eval` job | `ubuntu-latest` |
-| [`gpu.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/gpu.yml) | On a PR: applying the `gpu-ci` label (Triage or higher). Also every merge to `main` and manual dispatch | Full GPU suite: `pytest tests/unit -m gpu`, plus RL/SFT integration scenarios (`reverse_text`, `reverse_text_sft`, `reverse_text_sft_lora`, `reverse_text_lora`, `reverse_text_moe`, `reverse_text_rl_opd`, `reverse_text_rl_sft`, `alphabet_sort`, `clef_flash_sft`) with `max-parallel: 5` | Self-hosted `prime-rl-2xh100` k8s scale set (2xH100); `ubuntu-latest` for the trigger check |
-| [`regression.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/regression.yml) | 03:00 PST daily + manual `workflow_dispatch` (`suite` picks one suite; `eval_config` picks one eval config); `eval` also on PRs that touch it | `parallel`: `tests/regression/test_parallel_invariance.py`. `eval`: every `tests/regression/configs/eval/*.toml` (gsm8k, PI-TerminalBench2.1) against Prime Inference, each compared against its baseline in `tests/regression/baselines/eval/`. Nightly and manual runs post one Slack message per config through the `SLACK_WEBHOOK_URL` secret | `eval`: `ubuntu-latest`. `parallel`: `prime-rl-4xh100` |
+| [`gpu-tiny.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/gpu-tiny.yml) | Every push to a non-draft PR from this repo (opened, synchronized, reopened, marked ready for review). Also manual dispatch | `Tiny (GPU)`: the fast GPU subset, `pytest tests/unit tests/integration -m tiny` (distributed invariance, offloading and checkpointing, GPU loss tests, short RL and SFT runs), split by `scripts/modal_ci.py` into test groups that run in parallel | Modal, one container per test group (2xH100 or 1xH100), started from `ubuntu-latest` |
+| [`gpu.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/gpu.yml) | On a PR: applying the `gpu-ci` label (Triage or higher). Also every merge to `main` and manual dispatch | `Tiny (GPU)` first, then the full GPU suite: every GPU test, `pytest tests/unit tests/integration -m gpu`, as one job per test group of `scripts/modal_ci.py` ([`gpu-full.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/gpu-full.yml)): one per integration test, the slowest unit test files on their own, and the rest | Modal, one container per test group (2xH100 or 1xH100), started from `ubuntu-latest` |
+| [`regression.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/regression.yml) | 03:00 PST daily + manual `workflow_dispatch` (`suite` picks one suite; `eval_config` picks one eval config); `eval` also on PRs that touch it | `parallel`: `tests/regression/test_parallel_invariance.py`. `eval`: every `tests/regression/configs/eval/*.toml` (gsm8k, PI-TerminalBench2.1) against Prime Inference, each compared against its baseline in `tests/regression/baselines/eval/`. Nightly and manual runs post one Slack message per config through the `SLACK_WEBHOOK_URL` secret | `eval`: `ubuntu-latest`. `parallel`: Modal (4xH100), started from `ubuntu-latest` |
 
-GPU jobs run on self-hosted k8s runner scale sets. Each job gets a fresh container. Target one with its label in `runs-on`:
-
-| Label | GPUs |
-|---|---|
-| `prime-rl-2xh100` | 2xH100 |
-| `prime-rl-4xh100` | 4xH100 |
-
-Pushes to a PR do not run GPU jobs. To run the GPU suite on a PR's current commit, apply the `gpu-ci` label (drafts included). The workflow removes the label when it starts, so re-apply it to run again after new pushes or to retry. A new trigger cancels the PR's queued or in-flight GPU run. Fork PRs cannot run GPU CI: a maintainer can push the branch to this repo and label that PR. A PR with merge conflicts cannot run it until the conflicts are resolved.
+Every push to a non-draft PR runs the `Tiny (GPU)` job, and a newer push cancels the PR's queued or in-flight Tiny run. Draft PRs run no GPU jobs. To run the full GPU suite on a PR's current commit, apply the `gpu-ci` label (drafts included). The workflow removes the label when it starts, so re-apply it to run again after new pushes or to retry. A new label trigger cancels the PR's queued or in-flight full-suite run. The full suite starts only when its Tiny job passes, and runs one at a time across PRs and `main`, two test groups at once, so that Tiny runs keep enough GPUs: a run waits for the one in progress, and a newer waiting run replaces an older one (re-apply the label). Fork PRs cannot run GPU CI: a maintainer can push the branch to this repo and label that PR. A PR with merge conflicts cannot run it until the conflicts are resolved.
 
 ### Markers
 
-Two pytest markers are declared in `pyproject.toml` (`addopts = "--strict-markers"`):
+Three pytest markers are declared in `pyproject.toml` (`addopts = "--strict-markers"`):
 
-- `gpu` — gate a test that needs CUDA. CPU CI uses `-m "not gpu"`; the GPU unit job uses `-m gpu`.
+- `gpu` — gate a test that needs CUDA. CPU CI uses `-m "not gpu"`; the `Full (GPU)` job runs every `gpu` test. A GPU test in a file that no group in `scripts/modal_ci.py` lists runs in the full suite's 2-GPU `rest` group, so a test file that takes minutes of its own gets a new group there, and a job in `gpu-full.yml`'s matrix.
 - `slow` — gate a test that's expensive enough you'd usually skip it locally. Deselect with `-m "not slow"`.
+- `tiny` — add a GPU test to the fast subset that the `Tiny (GPU)` job runs on Modal for every push to a non-draft PR: distributed invariance, offloading and checkpointing, the GPU loss tests, and short RL and SFT runs. `scripts/modal_ci.py` runs each test group in its own container, so the job takes as long as its slowest group, the RL run (~2.5 min). A tiny test in a file that no group lists runs in the 1-GPU group, so a test that needs 2 GPUs or minutes of its own gets a new group there. Check the test's time with `--durations=0` before marking it.
 
 ## Pre-Commit Hooks
 
@@ -77,7 +75,14 @@ Bringing up a new model family is three steps: implement the modeling code, regi
 
 ### Implement the Modeling Code
 
-Drop the modeling code under `src/prime_rl/trainer/models/<arch>/` (HF-compatible config, modeling, and weight conversion). Mirror the layout of an existing family — `glm4_moe/` or `qwen3_moe/` are good starting points.
+Drop the modeling code under `src/prime_rl/trainer/models/<arch>/`, mirroring an existing family (`glm4_moe/` or `qwen3_moe/` are good starting points). A model family provides:
+
+- **Config**: a subclass of HF `PretrainedConfig`, so the `config.json` the trainer writes stays loadable by vLLM.
+- **Model**: an inner model and a `*ForCausalLM`, both subclassing `PreTrainedModelPrimeRL` (`models/base.py`, a plain `nn.Module`) and ending `__init__` with `self.post_init()`, which initializes the weights off the meta device and then ties them. The inner model returns the output dataclasses from `models/base.py`.
+- **Tying**: set `supports_tied_word_embeddings = True` on the `*ForCausalLM` if the architecture allows tying `lm_head` to the input embeddings. The config's `tie_word_embeddings` then decides whether a checkpoint ties.
+- **Init**: override `_init_weights` for parameters the default init does not cover, calling `super()._init_weights(module)` first, and `init_buffers_post_meta` for buffers no checkpoint carries.
+- **Conversion**: `conversion_chain`, `is_hf_state_dict` and `is_prime_state_dict`, which map between the HF checkpoint and the training layout.
+- **Registration**: the config class / model class pair in `_CUSTOM_CAUSAL_LM_MODELS` (`models/__init__.py`), and the config class with `AutoConfig.register`. A VLM family also registers its composite `model_type` in `_CUSTOM_VLM_MAPPING`.
 
 ### Register a Mini Preset
 
@@ -115,7 +120,6 @@ Warm up the random-weight mini model with SFT on reverse-text so KL divergence b
 ```bash
 uv run sft \
   --model.name ./mini-glm-moe \
-  --data.name PrimeIntellect/Reverse-Text-SFT \
   --max_steps 200 \
   --optim.lr 1e-4 \
   --ckpt
@@ -142,7 +146,7 @@ Don't expect reward to climb meaningfully in 20 steps on a random model.
 
 Before merging a new model, you need to ensure the following:
 
-- The model is correctly registered and defines and all the required methods - such as `convert_hf_layer_to_tt` and `convert_tt_layer_to_hf`.
+- The model meets the contract in [Implement the Modeling Code](#implement-the-modeling-code).
 - The small smoke test passes.
 
 In the PR that adds the new model, you also need to provide a table covering the KL mismatch across 20 steps on `math` environment with `batch_size=64`. All the entries in the table must lower than 0.015. If this is not met, the PR will not be merged (unless reasonable justification is provided). This is to ensure all our models are consistent and their implementations match the implementations in the inference framework.

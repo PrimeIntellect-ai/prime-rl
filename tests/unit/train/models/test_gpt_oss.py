@@ -45,6 +45,50 @@ def test_gpt_oss_checkpoint_conversion_roundtrip():
         torch.testing.assert_close(tensor, expected_prime[name])
 
 
+@pytest.mark.gpu
+@pytest.mark.parametrize("layer_type", ["sliding_attention", "full_attention"])
+def test_gpt_oss_attention_matches_flash_attention_4(layer_type: str):
+    if torch.cuda.get_device_capability()[0] not in (9, 10, 11):
+        pytest.skip("GPT-OSS learned sinks require SM90 or SM100/SM110")
+    flash_attn_cute = pytest.importorskip("flash_attn.cute")
+
+    torch.manual_seed(0)
+    config = _config()
+    config.head_dim = 64
+    config.layer_types = [layer_type]
+    attention = GptOssAttention(config, layer_idx=0).cuda().to(torch.bfloat16)
+    inputs = [
+        torch.randn(8, heads, 64, device="cuda", dtype=torch.bfloat16)
+        for heads in (config.num_attention_heads, config.num_key_value_heads, config.num_key_value_heads)
+    ]
+    cu_seqlens = torch.tensor([0, 5, 8], device="cuda", dtype=torch.int32)
+    window_size = (attention.sliding_window - 1, 0) if attention.sliding_window is not None else (None, None)
+
+    reference_inputs = [tensor.clone().requires_grad_() for tensor in inputs]
+    reference_sinks = attention.sinks.detach().clone().requires_grad_()
+    reference, _ = flash_attn_cute.flash_attn_varlen_func(
+        *reference_inputs,
+        cu_seqlens_q=cu_seqlens,
+        cu_seqlens_k=cu_seqlens,
+        max_seqlen_q=5,
+        max_seqlen_k=5,
+        softmax_scale=attention.scaling,
+        causal=True,
+        window_size=window_size,
+        learnable_sink=reference_sinks,
+    )
+    reference.float().square().sum().backward()
+
+    actual_inputs = [tensor.clone().requires_grad_() for tensor in inputs]
+    actual = attention.compute_attention(*actual_inputs, cu_seqlens, 5)
+    actual.float().square().sum().backward()
+
+    torch.testing.assert_close(actual, reference)
+    for actual_input, reference_input in zip(actual_inputs, reference_inputs, strict=True):
+        torch.testing.assert_close(actual_input.grad, reference_input.grad)
+    torch.testing.assert_close(attention.sinks.grad, reference_sinks.grad)
+
+
 @pytest.fixture(scope="module")
 def cp_process_group():
     if int(os.environ.get("WORLD_SIZE", 1)) != 2:

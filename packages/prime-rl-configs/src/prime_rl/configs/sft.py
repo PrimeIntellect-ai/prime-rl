@@ -1,24 +1,17 @@
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
 from renderers.base import MODEL_RENDERER_MAP
 
-from prime_rl.configs.supervised import BaseDataConfig, BaseValConfig, SupervisedTrainerConfig
+from prime_rl.configs.supervised import (
+    BaseDataConfig,
+    BaseSourceConfig,
+    BaseValConfig,
+    SupervisedTrainerConfig,
+    check_sources,
+)
 from prime_rl.utils.config import BaseConfig
-
-
-class FakeDataConfig(BaseDataConfig):
-    type: Literal["fake"] = "fake"
-
-    length: Literal["fixed", "variable"] = "fixed"
-    """Use fixed-length samples or variable-length samples."""
-
-    input_ids: Literal["increasing", "random"] = "increasing"
-    """Token id generator: ``increasing`` for deterministic sequences, ``random`` for random ids."""
-
-    seed: int = 0
-    """Seed for the per-rank packing/token generator, combined with the data rank."""
 
 
 class LossMaskConfig(BaseConfig):
@@ -57,64 +50,89 @@ class SFTColumnsConfig(BaseConfig):
     """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``reasoning_effort = "effort"``. A row's non-null value overrides the ``[renderer]`` setting; rows and datasets without the column use it unchanged."""
 
 
-class HFDataConfig(BaseDataConfig):
-    """Rows of a HF dataset, loaded with ``datasets.load_dataset`` and interleaved across subsets and splits."""
+class HFSourceConfig(BaseSourceConfig):
+    """One ``(dataset, subset, split)`` of a Hugging Face dataset."""
 
-    name: str
-    """HF dataset name or path."""
+    dataset: str
+    """HF dataset name or local path."""
 
     revision: str | None = None
     """HF dataset revision to load. Ignored for a local path."""
 
-    subsets: list[str] | None = None
-    """Subsets to load from the HF dataset."""
+    subset: str | None = None
+    """Subset (config name) of the dataset."""
 
-    splits: list[str] | None = None
-    """Splits to load from the HF dataset."""
+    split: str = "train"
+    """Split of the dataset."""
 
-    probabilities: list[float] | None = None
-    """Sampling probabilities for each subset/split."""
 
-    stopping_strategy: Literal["first_exhausted", "all_exhausted"] = "all_exhausted"
-    """Stopping strategy when interleaving multiple subsets/splits."""
+class HFDatasetSourceConfig(HFSourceConfig):
+    """One ``(dataset, subset, split)`` of chat rows."""
+
+    columns: SFTColumnsConfig | None = None
+    """Columns of this source. Unset fields keep ``data.columns``."""
+
+    renderer: dict[str, Any] = {}
+    """Chat-template kwargs for this source's rows, applied over ``[renderer]`` and under a row's ``columns.renderer``
+    values, e.g. ``{ reasoning_effort = "high" }``."""
+
+
+class FakeDataConfig(BaseConfig):
+    """Synthetic token sequences of up to ``data.seq_len`` tokens, for throughput and plumbing tests."""
+
+    length: Literal["fixed", "variable"] = "fixed"
+    """Use fixed-length samples or variable-length samples."""
+
+    input_ids: Literal["increasing", "random"] = "increasing"
+    """Token id generator: ``increasing`` for deterministic sequences, ``random`` for random ids."""
+
+
+class HFDataConfig(BaseDataConfig):
+    """Samples drawn from one or more HF sources into packed rows of ``seq_len`` tokens. The base of the data types,
+    never instantiated itself: a subclass declares the ``source`` list and the ``columns`` of every source, which
+    ``validate_sources`` reads."""
 
     shuffle: bool = True
-    """Shuffle the dataset at the start of each epoch."""
+    """Shuffle every source at the start of each of its passes."""
 
     seed: int = 0
-    """Random seed for shuffling. Re-shuffled per epoch by adding the epoch count to the seed."""
+    """Seed for the order of every source, re-shuffled per pass by adding the pass count."""
 
     @model_validator(mode="after")
-    def validate_subsets_and_splits(self):
-        if self.subsets is not None or self.splits is not None:
-            if self.subsets is not None and self.splits is not None:
-                if len(self.subsets) != len(self.splits):
-                    raise ValueError(
-                        "Number of subsets must be equal to number of splits. Please specify which split to load for each subset."
-                    )
-            if self.subsets is not None and self.probabilities is not None:
-                if len(self.probabilities) != len(self.subsets):
-                    raise ValueError(
-                        "Number of probabilities must be equal to number of subsets. Please specify a probability for each subset."
-                    )
-            if self.splits is not None and self.probabilities is not None:
-                if len(self.probabilities) != len(self.splits):
-                    raise ValueError(
-                        "Number of probabilities must be equal to number of splits. Please specify a probability for each split."
-                    )
+    def validate_sources(self):
+        check_sources(self.source)
+        for source in self.source:
+            overrides = source.columns.model_dump(exclude_unset=True) if source.columns is not None else {}
+            source.columns = type(self.columns).model_validate({**self.columns.model_dump(), **overrides})
         return self
 
 
 class SFTDataConfig(HFDataConfig):
+    """Chat samples: messages, or a prompt and a completion, per row."""
+
     type: Literal["sft"] = "sft"
 
-    name: str = "PrimeIntellect/Reverse-Text-SFT"
-    """HF dataset name or path."""
+    source: list[HFDatasetSourceConfig] = Field(
+        default_factory=lambda: [HFDatasetSourceConfig(name="reverse-text", dataset="PrimeIntellect/Reverse-Text-SFT")],
+        min_length=1,
+    )
+    """The sources to draw samples from (``[[data.source]]``)."""
+
+    fake: FakeDataConfig | None = None
+    """Train on synthetic token sequences instead of the sources, generated from ``seed``. Needs no renderer."""
+
+    @field_validator("fake", mode="before")
+    @classmethod
+    def expand_bare_flag(cls, value: Any) -> Any:
+        """``--data.fake`` and ``--no-data.fake`` arrive as booleans: the CLI expands a bare flag into a table only
+        outside a union, and ``[data]`` is one."""
+        if isinstance(value, bool):
+            return {} if value else None
+        return value
 
     columns: SFTColumnsConfig = SFTColumnsConfig()
-    """Columns that carry per-sample renderer arguments."""
+    """Columns of every source. A source's ``columns`` override single fields."""
 
-    # Configuring
     loss_mask: LossMaskConfig = LossMaskConfig()
     """Which message types contribute to the loss."""
 
@@ -123,7 +141,8 @@ class SystemOneColumnsConfig(BaseConfig):
     """Dataset columns of a System One record. Set a field to read a column under another name."""
 
     id: str = "id"
-    """Column with the record id for warnings and errors. Absent or null, the id is the row's subset/split/index."""
+    """Column with the record id for warnings and errors. Absent or null, the id is the source's name, its split and
+    the row's index."""
 
     state: str = "state"
     """Column with the state to decide on, as JSON text (a text state as a JSON string)."""
@@ -138,13 +157,23 @@ class SystemOneColumnsConfig(BaseConfig):
     """Column with soft labels as JSON text: question id -> option id -> probability. Used over the hard label."""
 
 
+class SystemOneSourceConfig(HFSourceConfig):
+    """One ``(dataset, subset, split)`` of System One records."""
+
+    columns: SystemOneColumnsConfig | None = None
+    """Columns of this source. Unset fields keep ``data.columns``."""
+
+
 class SystemOneDataConfig(HFDataConfig):
     """System One records: a state and typed questions per row, with hard and/or soft labels."""
 
     type: Literal["system_one"] = "system_one"
 
+    source: list[SystemOneSourceConfig] = Field(min_length=1)
+    """The sources to draw records from (``[[data.source]]``)."""
+
     columns: SystemOneColumnsConfig = SystemOneColumnsConfig()
-    """Dataset columns of a record."""
+    """Dataset columns of every source's records. A source's ``columns`` override single fields."""
 
 
 class SFTCrossEntropyLossConfig(BaseConfig):
@@ -165,11 +194,17 @@ class SFTDecisionLossConfig(BaseConfig):
 SFTLossConfig: TypeAlias = Annotated[SFTCrossEntropyLossConfig | SFTDecisionLossConfig, Field(discriminator="type")]
 
 
+DataConfig: TypeAlias = Annotated[SFTDataConfig | SystemOneDataConfig, Field(discriminator="type")]
+
+
 class SFTValConfig(BaseValConfig):
-    data: Annotated[SFTDataConfig | SystemOneDataConfig, Field(discriminator="type")]
+    data: DataConfig
 
-
-DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig | SystemOneDataConfig, Field(discriminator="type")]
+    @model_validator(mode="after")
+    def validate_sources(self):
+        if self.data.type == "sft" and self.data.fake is not None:
+            raise ValueError("val.data.fake: validation scores the rows of its sources, not fake data")
+        return self
 
 
 class SFTConfig(SupervisedTrainerConfig):
@@ -270,10 +305,10 @@ class SFTConfig(SupervisedTrainerConfig):
     @model_validator(mode="after")
     def validate_typed_renderer(self):
         """Require a typed renderer whenever SFT renders real samples."""
-        if self.data.type == "fake" and self.val is None:
-            return self
         # The strategy renders System One data
         if self.data.type == "system_one":
+            return self
+        if self.data.fake is not None and self.val is None:
             return self
 
         model_id = self.tokenizer.name or self.model.name

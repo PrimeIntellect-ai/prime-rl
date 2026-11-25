@@ -18,7 +18,6 @@ from transformers import PretrainedConfig, PreTrainedTokenizerFast
 from prime_rl.configs.trainer import ModelConfig, TokenizerConfig
 from prime_rl.trainer.model import get_model
 from prime_rl.trainer.models.layers.ngram import LAYOUT_BUFFERS
-from prime_rl.trainer.models.nemotron_h import NemotronHConfig
 from prime_rl.trainer.models.qwen3_8_flash_next import Qwen3_8FlashNextForCausalLM, Qwen3_8FlashNextTextConfig
 from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalLM
 from prime_rl.utils.weights import load_state_dict_keys
@@ -87,7 +86,7 @@ def test_layer_export_matches_original_hf_weights(tmp_path, exporter, monkeypatc
     )
     if ngram_parts is None:
         config = Qwen3MoeConfig(**config_kwargs)
-        model = Qwen3MoeForCausalLM._from_config(config)
+        model = Qwen3MoeForCausalLM.from_config(config)
     else:
         config = Qwen3_8FlashNextTextConfig(
             **config_kwargs,
@@ -299,32 +298,35 @@ def test_publish_succeeds_when_the_previous_export_cannot_be_removed(tmp_path, e
     assert (next(tmp_path.glob(".weights-backup-*/export")) / "model.safetensors").read_bytes() == b"old"
 
 
-def test_model_assets_of_a_model_that_cannot_generate(tmp_path, exporter):
-    """NemotronH does not inherit GenerationMixin, so it has no generation config: the export writes the rest."""
+@pytest.mark.parametrize("source_has_generation_config", [False, True])
+def test_model_assets_carry_the_source_generation_config(tmp_path, exporter, source_has_generation_config):
     model_dir = tmp_path / "model"
-    NemotronHConfig(
-        vocab_size=32,
+    Qwen3MoeConfig(
         hidden_size=16,
+        intermediate_size=16,
         num_attention_heads=2,
-        num_key_value_heads=1,
+        num_key_value_heads=2,
         head_dim=8,
-        intermediate_size=32,
-        expand=2,
-        mamba_num_heads=2,
-        mamba_head_dim=16,
-        ssm_state_size=16,
-        n_groups=1,
-        hybrid_override_pattern="M*",
+        num_hidden_layers=2,
+        vocab_size=32,
+        moe_intermediate_size=16,
+        num_experts=2,
+        num_experts_per_tok=1,
     ).save_pretrained(model_dir)
+    if source_has_generation_config:
+        (model_dir / "generation_config.json").write_text(json.dumps({"eos_token_id": [0, 1], "top_p": 0.95}))
     tokenizer = Tokenizer(WordLevel({"<eos>": 0, "a": 1}, unk_token="<eos>"))
     PreTrainedTokenizerFast(tokenizer_object=tokenizer, eos_token="<eos>").save_pretrained(model_dir)
     model_config = ModelConfig(name=str(model_dir), attn="flash_attention_2")
-    model = get_model(model_config, device=torch.device("meta"), dtype=torch.float32)
-    assert not hasattr(model, "generation_config")
+    model = get_model(model_config, dtype=torch.float32)
     output = tmp_path / "export"
     exporter.save_model_assets(model, model_config, TokenizerConfig(), output)
     assert (output / "config.json").is_file() and (output / "tokenizer.json").is_file()
-    assert not (output / "generation_config.json").exists()
+    if source_has_generation_config:
+        exported = json.loads((output / "generation_config.json").read_text())
+        assert (exported["eos_token_id"], exported["top_p"]) == ([0, 1], 0.95)
+    else:
+        assert not (output / "generation_config.json").exists()
 
 
 def test_model_assets_keep_a_config_key_the_config_class_does_not_define(tmp_path, exporter):
@@ -336,7 +338,7 @@ def test_model_assets_keep_a_config_key_the_config_class_does_not_define(tmp_pat
     saved = json.loads((model_dir / "config.json").read_text())
     (model_dir / "config.json").write_text(json.dumps({**saved, "modeling_overrides": overrides}))
     model_config = ModelConfig(name=str(model_dir), attn="flash_attention_2")
-    model = get_model(model_config, device=torch.device("meta"), dtype=torch.float32)
+    model = get_model(model_config, dtype=torch.float32)
     exporter.save_model_assets(model, model_config, TokenizerConfig(), output)
     assert json.loads((output / "config.json").read_text())["modeling_overrides"] == overrides
 
@@ -381,7 +383,7 @@ def test_convert_exports_a_run_checkpoint_end_to_end(tmp_path, exporter, monkeyp
     (config_dir / "trainer.json").write_text(json.dumps(run_config))
     # The run config keeps attn=auto, which the exporter must resolve without a GPU.
     model_config = ModelConfig(**run_config["model"], attn="flash_attention_2")
-    model = get_model(model_config, device=torch.device("meta"), dtype=torch.float32)
+    model = get_model(model_config, dtype=torch.float32)
     state = {
         name: torch.randn(tensor.shape) if tensor.is_floating_point() else torch.zeros(tensor.shape, dtype=tensor.dtype)
         for name, tensor in model.state_dict().items()
@@ -424,7 +426,7 @@ def save_stub_run(tmp_path) -> tuple[Path, dict[str, torch.Tensor]]:
     config_dir = tmp_path / "run" / "configs" / "latest" / "resolved"
     config_dir.mkdir(parents=True)
     (config_dir / "sft.json").write_text(json.dumps({"model": {"name": str(model_dir)}, "tokenizer": {}}))
-    model = get_model(ModelConfig(name=str(model_dir), attn="flash_attention_2"), device=torch.device("meta"))
+    model = get_model(ModelConfig(name=str(model_dir), attn="flash_attention_2"))
     assert isinstance(model, HeadStub)
     torch.manual_seed(0)
     state = {name: torch.randn(tensor.shape) for name, tensor in model.state_dict().items()}
@@ -448,7 +450,7 @@ def test_the_export_writes_export_files_and_the_extra_config_file(tmp_path, expo
     assert EXTRA_CONFIG_ATTR not in config and config["architectures"] == ["Qwen3ForCausalLM"]
 
     # The export loads back as the stub, with every weight under the model's names
-    model = get_model(ModelConfig(name=str(output), attn="flash_attention_2"), device=torch.device("meta"))
+    model = get_model(ModelConfig(name=str(output), attn="flash_attention_2"))
     assert type(model) is HeadStub
     assert set(load_state_dict_keys(output, HeadStub.export_files)) == set(model.state_dict())
     load_like_the_trainer(model, output, monkeypatch)

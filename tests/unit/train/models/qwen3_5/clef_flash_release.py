@@ -123,7 +123,7 @@ def clef_config(tied: bool = False, **head):
 
 def meta_model(directory: Path) -> ClefFlashForJointSchema:
     """The release in ``directory`` built on the meta device, as the trainer builds it."""
-    return get_model(ModelConfig(name=str(directory), attn="flash_attention_2"), device=torch.device("meta"))
+    return get_model(ModelConfig(name=str(directory), attn="flash_attention_2"))
 
 
 def load_release(directory: Path, monkeypatch) -> ClefFlashForJointSchema:

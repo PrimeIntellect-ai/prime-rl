@@ -124,7 +124,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 |---|---|
 | `log.level` | Process log level for trainer + orchestrator (`info` default; falls back to `$PRIME_LOG_LEVEL`). Set per-process via `trainer.log.level` / `orchestrator.log.level`, or globally on the `rl` entrypoint to propagate to both. The orchestrator's env servers and its [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) logs use the same level. |
 | `--monitors.wandb` (+ `--monitors.wandb.project`, `--monitors.wandb.name`) | Enable Weights & Biases logging. See [Weights & Biases](#weights--biases). |
-| `--no-monitors.prime` | Stop streaming metrics and episodes to the Prime Intellect platform (Prime Lab), on by default. See [Prime](#prime). |
+| `--monitors.prime` | Stream metrics and episodes to the Prime Intellect platform (Prime Lab), off by default. See [Prime](#prime). |
 
 **Run management:**
 
@@ -202,6 +202,38 @@ The trainer warns when batch wait time exceeds active trainer time. Add inferenc
 
 `uv run sft` runs supervised fine-tuning from a HF dataset. It shares model loaders, FSDP setup, checkpointing, and the chat-template plumbing with the RL trainer, so a typical workflow is _SFT → RL → SFT → …_ without any reformatting.
 
+### Sources
+
+The run trains on one or more `[[data.source]]` tables, the same shape as [pretraining](#pretraining) sources. A source is one `(dataset, subset, split)` of a HF dataset or local path, with a unique `name` that keys its metrics:
+
+```toml
+[data]
+seq_len = 4096
+batch_size = 32
+
+[[data.source]]
+name = "chat"
+dataset = "org/sft-release"
+subset = "chat"
+weight = 3                 # relative to the other weights; leave it out on every source for natural shares
+
+[[data.source]]
+name = "reasoning"
+dataset = "org/sft-release"
+subset = "reasoning"
+revision = "abc123"
+weight = 1
+renderer.reasoning_effort = "high"
+columns.messages = "conversation"
+```
+
+- **Weights.** A source's share of the drawn samples is its weight over the sum of the weights. Set `weight` on every source or on none. Without weights, a source's share is its share of all rows: every epoch reads each row once.
+- **Order.** The sources take turns by due time (weighted fair queuing), so every stretch of samples holds the mixture. A source reads its rows in passes, each in its own seeded order (`data.shuffle`, `data.seed`), and repeats when the other sources still draw. `max_steps` sets the length of the run.
+- **Columns and renderer.** `data.columns` applies to every source; a source's `columns` overrides single fields. A source's `renderer` table sets chat-template kwargs for its rows, over `[renderer]` and under a row's `[data.columns.renderer]` values. It needs a typed `[renderer]`.
+- **Fake data.** `[data.fake]` replaces the sources with synthetic token sequences of `seq_len` tokens (`length = "variable"` for random lengths, `input_ids = "random"` for random ids), as `[data.fake]` does for the RL trainer. It needs no renderer and is for throughput and plumbing tests.
+- **Resume.** The data state is the count of draws of every source. With the same sources, weights, GPUs, model-parallel layout and `num_workers`, a resume continues the draws exactly; `batch_size` may change, since the draws do not depend on it. The sources, their weights, the number of GPUs, the model-parallel layout (e.g. `model.cp`) and `num_workers` may change too. Sources match by name, as in pretraining: a kept source continues its draws, an added one (also a renamed one) starts at its first, and a removed one stops. From a change of the mixture on, the sources take turns by their draws since the change, so the new shares hold at once. Any of these changes starts every dataloader worker of every rank at the furthest draw that any saved worker had reached: a worker that was behind skips its draws up to there (at most the gap between the workers), every worker drops its sample drawn but not yet packed, and the rows of kept sources among them come back in the next pass. A checkpoint from before the mixture was recorded always starts that way and resumes with the configured weights. A resume stops with an error if a kept source's number of rows changed, or if such an older checkpoint has other sources than the configured ones.
+- **Validation.** `[val.data]` takes sources in the same shape. Every validation reads one epoch: without weights, every row of every source once.
+
 ### Dataset Format
 
 Two accepted layouts for chat data (for decision models, see [System One Data](#system-one-data)):
@@ -209,7 +241,7 @@ Two accepted layouts for chat data (for decision models, see [System One Data](#
 - **Prompt-completion**: a HF dataset with `prompt` and `completion` columns ([TRL format](https://huggingface.co/docs/trl/en/dataset_formats#prompt-completion)). The trainer masks out the prompt and computes loss only over the completion.
 - **Messages**: a HF dataset with a single `messages` column containing a list of chat turns. The trainer interprets the whole conversation as one sample, applies role-based loss masking, and trains over all assistant turns.
 
-If both columns are present, `messages` takes precedence. A dataset that stores these under other names maps them in `[data.columns]`; the trainer renames the columns at load time:
+If both columns are present, `messages` takes precedence. A dataset that stores these under other names maps them in `[data.columns]`, or per source in its `columns`:
 
 ```toml
 [data.columns]
@@ -319,8 +351,8 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 
 | Knob | What it controls |
 |---|---|
-| `data.type` | What a row is: `"sft"` (chat rows, the default), `"system_one"` (records for decision models; see [System One Data](#system-one-data)) or `"fake"` (generated tokens) |
-| `data.name` | HF dataset name or local path |
+| `data.type` | What a row is: `"sft"` (chat rows, the default) or `"system_one"` (records for decision models; see [System One Data](#system-one-data)) |
+| `data.source` | The sources to draw samples from; see [Sources](#sources) |
 | `data.batch_size` | Tokens per trainer step (packed) |
 | `data.seq_len` | Per-sample sequence length; with System One data, also the most tokens a record may have |
 | `data.columns.*` | Dataset column names, when they differ from the defaults: chat columns for `"sft"`, record columns for `"system_one"` |
@@ -332,7 +364,7 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 
 ### System One Data
 
-`[data] type = "system_one"` trains a decision model: a model that answers typed questions about a state with a distribution over each question's options, read from hidden states at chosen tokens rather than generated as text. The model's strategy renders each record into tokens and reads each question's logits, and the decision loss trains those logits on the record's labels. Loading, mixing subsets and splits, shuffling, packing, resuming and validation work as for chat data.
+`[data] type = "system_one"` trains a decision model: a model that answers typed questions about a state with a distribution over each question's options, read from hidden states at chosen tokens rather than generated as text. The model's strategy renders each record into tokens and reads each question's logits, and the decision loss trains those logits on the record's labels. The records come from `[[data.source]]` tables, as chat rows do (see [Sources](#sources)): weights, order, a source's `columns`, packing, resume and validation work as for chat data. System One data has no `[data.fake]`, and its sources take no `renderer` table.
 
 ```toml
 [model]
@@ -340,16 +372,19 @@ name = "my-org/my-decision-model"  # an architecture with a strategy in SYSTEM_O
 
 [data]
 type = "system_one"
-name = "my-org/tickets-system-one"
 seq_len = 4096
+
+[[data.source]]
+name = "tickets"
+dataset = "my-org/tickets-system-one"
 
 [loss]              # optional: the decision loss is the default with System One data
 brier_weight = 0.1  # default 0
 ```
 
-`[val.data]` takes a missing `type` and `seq_len` from `[data]`; a `seq_len` it sets must equal `data.seq_len`. As with chat data, it does not take `[data.columns]`: rename a column in `[val.data.columns]` too.
+`[val.data]` lists its own sources and takes a missing `type` and `seq_len` from `[data]`; a `seq_len` it sets must equal `data.seq_len`. As with chat data, it does not take `[data.columns]`: rename a column in `[val.data.columns]` too.
 
-**Records.** A row is one record. `state`, `questions`, `label` and `soft_label` are string columns of JSON text (write them with `json.dumps`, so a text state is a JSON string), and `id` (optional) names the record in errors, defaulting to the row's subset, split and index. The trainer parses every record once at startup, so a malformed record stops the run before any weights load, naming the record.
+**Records.** A row is one record. `state`, `questions`, `label` and `soft_label` are string columns of JSON text (write them with `json.dumps`, so a text state is a JSON string), and `id` (optional) names the record in errors, defaulting to the source's name, its split and the row's index (`records/train/7`). The trainer parses every record once at startup, so a malformed record stops the run before any weights load, naming the record.
 
 ```text
 id          r
@@ -408,7 +443,7 @@ class MyStrategy(SystemOneStrategy):
         return torch.cat([row[: len(question.options)] for row, question in zip(logits, questions)])
 ```
 
-**Scoring outside the trainer.** `model` is built from `model_name` by `setup_model` (`src/prime_rl/trainer/model.py`), as in the trainer, or by `get_model` followed by `inject_prime_lm_head`:
+**Scoring outside the trainer.** `model` is built from `model_name` by `setup_model` (`src/prime_rl/trainer/model.py`), as in the trainer:
 
 ```python
 from prime_rl.trainer.model import forward, select_by_extra_config
@@ -420,9 +455,10 @@ from prime_rl.trainer.sft.system_one.strategies import get_system_one_strategy_c
 # As the trainer does, a class selected by an extra config file (e.g. Clef-Flash) finds its strategy by its name
 selection = select_by_extra_config(model.config.model_type, model.config.architectures, model_name)
 strategy = get_system_one_strategy_cls(model.config, selection)(tokenizer, model.config)
-request, _ = parse_record(row, data_config.columns)
+source = data_config.source[0]  # the source the row is from
+request, _ = parse_record(row, source.columns, source.name, source.split)
 sample = render_sample(strategy, request, data_config.seq_len)  # None when skipped
-input_ids = torch.tensor(sample["input_ids"], device=device)
+input_ids = torch.from_numpy(sample["input_ids"]).to(device)
 inputs = build_decision_loss_inputs([len(input_ids)], [sample["sample_data"]]).to(device)
 
 def read(hidden_states):
@@ -432,7 +468,7 @@ with torch.no_grad():
     logits = forward(
         model,
         input_ids[None],
-        torch.tensor([sample["position_ids"]], device=device),
+        torch.from_numpy(sample["position_ids"]).to(device)[None],
         seq_lens=torch.tensor(sample["seq_lens"], device=device),
         hidden_states_fn=read,
     )["logits"]
@@ -446,7 +482,7 @@ per_question = logits.split([len(question.options) for question in inputs.questi
 - **Prompt.** Its strategy, `ClefFlashStrategy` (`src/prime_rl/trainer/sft/system_one/clef_flash.py`), renders vLLM's `ClefFlashStrategy` prompt, text only: the state, then every question with its options. As on a vLLM server whose `max_model_len` is at least 16384, a prompt over 16384 tokens has its state cut, here with a warning. `data.seq_len` cuts nothing further: a longer rendering is skipped, so `data.seq_len = 16384` skips none. A record vLLM refuses is skipped with a warning: more than 64 questions, more than 26 choice options, or questions that alone exceed 16384 tokens.
 - **Head.** The joint schema head reads the whole prompt and scores every question's options jointly. It runs once per micro-batch, on all of its records, and computes in bfloat16, as vLLM runs it; `[model.quantization]` leaves it in bfloat16. Its lexical prior reads the option tokens' rows of the LM head, as vLLM does, so the LM head is frozen and the release must be untied; the backbone and the head train.
 - **Export.** `tools/convert_dcp_to_bf16.py` writes a release that vLLM serves as is: the head in `joint_head.safetensors` and `joint_head_config.json` beside a stock `config.json`.
-- `model.init.type = "scratch"` fails: the model's init does not reach the head's three scalars.
+- `model.init.type = "scratch"` fails: the model's init does not reach the head's attention input projections or its three scalars.
 
 ### Important Metrics
 
@@ -455,11 +491,12 @@ Pulled from the console log and mirrored to W&B.
 **Progress and loss:**
 
 - `loss/mean`, `loss/perplexity` — main signal. Should decrease through the run.
-- `val/loss`, `val/perplexity` — validation metrics when `[val]` is set, logged every `val.interval` steps.
+- `val/loss`, `val/perplexity` — SFT validation metrics when `[val]` is set, logged every `val.interval` steps. Pretraining logs `val/<name>/loss@<seq_len>` and `val/<name>/bpb@<seq_len>` per validation set; see [Pretraining](#pretraining).
 - With the decision loss, see [System One Data](#system-one-data) for what `loss/*` and `val/*` hold.
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
-- `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
+- `progress/<name>/{num_samples,epoch}` — SFT: a source's drawn samples over all ranks and its passes over its rows. With several sources, `progress/<name>/ratio_{samples,tokens}` is the realized mixture of rank 0's samples and tokens.
+- `progress/<name>/{num_tokens,unique_tokens,repetitions,mean_segment_length}` — pretraining: a source's tokens read, the unique ones among them (at most its subset's), their ratio, and the mean length of its document pieces in the step's rows; `progress/{unique_tokens,repetitions,mean_segment_length}` over all sources. In pretraining, `progress/epoch` is the tokens read over all sources' tokens.
 
 **Stability and optimization:**
 
@@ -505,7 +542,7 @@ LocalPipelineExecutor(
 ).run()
 ```
 
-**Configure.** Only `data.paths` is required:
+**Configure.** Only `[[data.source]]` (a name and a folder each) is required:
 
 ```toml
 mode = "pretrain"          # optional; lets `uv run launch` run this config
@@ -515,22 +552,39 @@ max_steps = 1000
 name = "Qwen/Qwen3-0.6B"   # only the architecture is read
 
 [data]
-paths = ["data/fineweb-edu"]
 seq_len = 2048
 batch_size = 256
 
+[[data.source]]
+name = "web"
+path = "data/fineweb-edu"
+weight = 7                 # relative to the other weights; leave it out on every source for natural shares
+
+[[data.source]]
+name = "code"
+path = "data/code"
+weight = 3
+repetitions = 4            # optional: every token seen 4 times, so a subset of its share (3/10) x the run's tokens / 4
+
 [val]                      # optional
 interval = 100
-num_samples = 512          # documents per validation; leave out to score every held-out document
+num_samples = 512          # optional: the first 512 documents of each set; default: all of them
 
-[val.data]
-paths = ["data/fineweb-edu-val"]
-seq_len = 2048
+[[val.set]]
+type = "documents"
+name = "fineweb-edu"
+path = "data/fineweb-edu-val"
 ```
 
-All files in `data.paths` (in folder order, then file name order) form one token pool. Each epoch reads every `seq_len` window of the pool once, in a new random order and from a new random offset drawn from `data.seed`. Attention and positions restart at every document; `data.document_masking = false` makes a window one sequence. In training, the model is not trained to predict the next document's first token: there is no loss where the input is the document separator (`data.eod_mask_loss = false` turns this off). The separator is the special token the training shards' documents end with, detected at startup; shards whose documents start with BOS have nothing to mask. A resumed run reads exactly the windows an uninterrupted run would, also on another number of GPUs, as long as `data.num_workers` stays the same.
+**Mixture.** Weights are relative: a source's share of the training tokens is its weight over the sum of all weights, so `7` and `3` give the same mixture as `0.7` and `0.3`. Set `weight` on every source or on none; without weights, a source's share is its share of all sources' tokens. The sources take turns deterministically, so every step holds the mixture up to about one document per source.
 
-Validation scores every document in `val.data.paths` on its own, from its first token, and logs the mean loss over all scored tokens as `val/loss`. A document is cut into non-overlapping windows of `val.data.seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it. Every token after a document's first is scored, and no position predicts a token of another document. The windows are packed into rows of `val.data.seq_len * val.data.micro_batch_size` tokens and shared out over the data-parallel ranks. `val.num_samples` limits every validation to the first documents of the held-out shards, the same ones every time; without it, every validation scores all of them.
+**Repetitions.** `repetitions` is how often every token of a source is seen over the run (`max_steps * batch_size * seq_len` tokens; needs `max_steps`). The source then reads a fixed, seeded subset of `share * run tokens / repetitions` tokens that many times. Without it, a source is read whole, in a new order on every pass.
+
+**Rows.** Documents longer than `seq_len` are cut into `seq_len` pieces. A step's documents fill `batch_size` rows of exactly `seq_len` tokens, without padding and without losing a prediction within a document. Attention and positions restart at every document and piece (`data.document_masking = false` makes a row one sequence). With `data.eod_mask_loss` (on by default), positions whose input is the separator have no loss: their target is the first token of another document.
+
+**Resume.** A resume is exact, also on another number of GPUs or dataloader workers (`num_workers`). The sources, their weights and `batch_size` may change. Sources match by name: a kept source reads on where it stopped, in the same order; an added one (also a renamed one) starts at its beginning; a removed one stops (weight 0 pauses a source and keeps its place). A source may move to another folder. From the change on, the sources take turns by their tokens since the change, so every step holds the new mixture at once, and the `progress/<name>/*` metrics count on. `seq_len` and `seed` may change too. A source with `repetitions` keeps its subset unless `max_steps`, `batch_size`, `seq_len`, `seed`, its share (its weight or the other sources) or its `repetitions` change; then its subset holds the tokens the source reads over the whole run, the ones already read and its share of the remaining steps at the new settings, over its `repetitions`, so the run still reads it that many times on average (the units of the old subset more often, the new ones less). Every source (`seq_len`, `seed`) or a source whose subset changed starts a new pass at the change, without the rest of the unit cut at the step's end. That breaks the passes once: the units the interrupted pass had not read come back in the next pass, and the ones it had read can come back sooner. A resume stops with an error if the files of a kept source (their tokens and documents) change. With `ckpt.skip_dataloader`, the run resumes without the data state: the data starts over from step 0, in the same order as at the run's start (a different `data.seed` gives a different order). `data.batch_size` must be a multiple of dp × `num_workers` × `micro_batch_size`.
+
+**Validation.** `[val]` scores named held-out document sets every `val.interval` steps (also before the first step with `val.eval_on_start`). Each `[[val.set]]` table has `type = "documents"`, a unique `name`, a `path` (a folder of datatrove tokenized shards) and an optional `seq_len` (default: `data.seq_len`). Every document is scored on its own, from its first token, with the tokens as stored, in non-overlapping windows of `seq_len` scored tokens; a longer document continues in the next window, which does not see the tokens before it. Every set logs `val/<name>/loss@<seq_len>`, the mean loss per scored token, and with a byte-level BPE tokenizer `val/<name>/bpb@<seq_len>`, the bits per UTF-8 byte of the scored tokens (special tokens count 0 bytes), e.g. `val/fineweb-edu/bpb@2k`. With another tokenizer (e.g. SentencePiece), the trainer logs one warning and only the loss. The sets are read once at startup. At every validation, the windows of all sets are packed longest first into rows of `val.micro_batch_tokens` tokens (default: the training micro-batch, `data.seq_len * data.micro_batch_size`, or the longest set `seq_len` if that is longer, rounded up to a multiple of `model.cp`), with attention and positions restarting at every window and the rest of a row padded, and the rows are shared out over the data-parallel ranks. The log-probs are computed in fp32. `val.num_samples` limits every validation to the first documents of each set, the same ones every time. `val.save_arrays` writes the per-document arrays of every set (summed loss, scored tokens, greedy hits and bytes) to `<run_dir>/val/step_N/`.
 
 **Launch.**
 
@@ -544,7 +598,7 @@ Checkpointing is split across processes because the orchestrator and trainer can
 
 | Process | What's saved | Where |
 |---|---|---|
-| Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<run_dir>/checkpoints/step_{n}/trainer/` |
+| Trainer | FSDP-sharded model (DCP), optimizer, progress | `<run_dir>/checkpoints/step_{n}/trainer/` |
 | Orchestrator | Progress, per-env data state | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
 | Trainer, orchestrator, inference | The model's `config.json` and `generation_config.json`, the tokenizer files and a VLM's processor files | `<run_dir>/checkpoints/step_{n}/` |
@@ -604,6 +658,14 @@ A resume checks that the checkpoint's `config.json` describes the same architect
 
 A fork continues the other run, so both runs must be of the same kind. To start a new stage from another run's weights, such as RL from an SFT checkpoint, set `model.name` to the checkpoint's step directory instead (see [Model Initialization](#model-initialization)).
 
+#### The trainer's hyperparameters on resume
+
+A trainer resume loads only state from the checkpoint: the weights, the optimizer's moments and step counts, the training step and the data position. Every hyperparameter and the learning rate schedule come from the resumed run's config, so a changed `optim.lr`, weight decay, betas, eps, `max_steps` or `scheduler.decay_steps` applies from the first resumed step. When the loaded optimizer settings differ from the config's, the trainer logs one warning listing each change as `group <index>: <key> <old> -> <new>`; with `ckpt.skip_optimizer`, which loads no optimizer state, there is nothing to compare and no warning.
+
+A resume that loads the optimizer state stops with an error when the number of param groups or a group's algorithm changed since the checkpoint, since the saved optimizer state no longer fits. Resume such a run with `ckpt.skip_optimizer`.
+
+To start a fresh schedule at a resume, set `scheduler.start_step` to the resume step and keep it in later resumes: the warmup and decay then span the `max_steps - start_step` steps after it. With a bare `--resume`, that is the latest checkpoint's step; with `--resume.dir`, the step in the directory name. The trainer stops at startup if `start_step` is after the resume step or nonzero without a resume, and if the checkpoint's step differs from the resume step (for example, a renamed `--resume.dir`).
+
 #### What a resume restores
 
 - The curriculum of each train source, and the live config (see [Updating the Config Live](#updating-the-config-live)).
@@ -631,7 +693,7 @@ A resume can add, remove or change train and eval sources.
 | `scratch` | The model's own random init, seeded with `model.init.seed` | `model.name` | `uv run pretrain` |
 | `pretrained` | The weights stored at `model.name`: an HF model (Hub id or local directory), or the trainer checkpoint in a step directory (`.../step_<N>`) of another run | `model.name`; for a step directory, its `config.json` and tokenizer files | `uv run sft`, `uv run rl` |
 
-Both types work with every entrypoint, and a `[model.init]` table without `type` keeps the entrypoint's default. In RL, set `name` and `init` in the shared `[model]`. The trainer recognizes a step directory by its `trainer/` directory when it loads the weights. A step directory supplies only the weights: the run starts at step 0 with a fresh optimizer, scheduler and data. To continue a run with its optimizer, scheduler and data state, use `[resume]` instead, or `--resume.dir` to fork another run of the same kind (see [Resuming a Run](#resuming-a-run)). A model without a from-scratch init fails at startup with `scratch`, naming the parameters its init does not reach. The renderer cannot be picked from a step directory, so a run from one sets it explicitly; inference's `"auto"` tool-call and reasoning parsers try `tokenizer.name` first, so setting it to the HF model name keeps them. A resumed trainer and the export read the `config.json` and tokenizer from the run's own checkpoint, which holds copies; the RL orchestrator and the inference servers still read `model.name`, so to resume once the source step directory is gone, set `model.name` to one of the run's own step directories.
+Both types work with every entrypoint, and a `[model.init]` table without `type` keeps the entrypoint's default. In RL, set `name` and `init` in the shared `[model]`. The trainer recognizes a step directory by its `trainer/` directory when it loads the weights. A step directory supplies only the weights: the run starts at step 0 with a fresh optimizer, scheduler and data. To continue a run with its optimizer state, step and data position, use `[resume]` instead, or `--resume.dir` to fork another run of the same kind (see [Resuming a Run](#resuming-a-run)). A model without a from-scratch init fails at startup with `scratch`, naming the parameters its init does not reach. The renderer cannot be picked from a step directory, so a run from one sets it explicitly; inference's `"auto"` tool-call and reasoning parsers try `tokenizer.name` first, so setting it to the HF model name keeps them. A resumed trainer and the export read the `config.json` and tokenizer from the run's own checkpoint, which holds copies; the RL orchestrator and the inference servers still read `model.name`, so to resume once the source step directory is gone, set `model.name` to one of the run's own step directories.
 
 The trainer sends its weights to inference (RL, SFT online evals) at startup. When those weights are not HF weights stored at `model.name` (`scratch`, or a checkpoint step directory as `model.name`, which the inference server recognizes when it starts), the inference server starts with placeholder weights (`inference.vllm.load_format = "dummy"`) instead of loading them from disk.
 
@@ -649,16 +711,18 @@ uv run rl @ rl.toml --model.name outputs/my-sft/checkpoints/step_500 --orchestra
 
 ### Pausing or Checkpointing a Live Run
 
-With `--trainer.control` and `--orchestrator.control` (SFT: `--control`), the trainer serves a small control API on port 8040 and the orchestrator on 8041. Each saves only its own state, so a pause asks the trainer first: it accepts the pause at its next step N, trains N, saves it and stops. The orchestrator is then asked to pause at N and saves its state as of shipping N, which it can always do because a paused trainer never requests N + 1. A pause is `committed` on each once that component saved N, and the run continues with `--resume`:
+With `--trainer.control` and `--orchestrator.control` (SFT: `--control`), the trainer serves a small control API on port 8040 and the orchestrator on 8041. Each saves only its own state, so a pause asks the trainer first: it accepts the pause at its next step N, trains N, saves it and stops. The orchestrator is then asked to pause at N and saves its state as of shipping N, which it can always do because a paused trainer never requests N + 1. A pause is `committed` on each once that component saved N, and the run continues with `--resume`. Every request needs the run's admin token in the `X-Prime-Admin-Token` header ([Admin Routes](inference.md#admin-routes)); the launcher generates one per run unless `PRIME_RL_ADMIN_TOKEN` is set, so set it to call the API yourself:
 
 ```bash
+export PRIME_RL_ADMIN_TOKEN=$(openssl rand -hex 32)
 uv run rl @ rl.toml --ckpt --trainer.control --orchestrator.control --run.name my-run
 
-curl -X POST localhost:8040/v1/actions -H 'content-type: application/json' -d '{"type": "pause"}'
+AUTH="X-Prime-Admin-Token: $PRIME_RL_ADMIN_TOKEN"
+curl -X POST localhost:8040/v1/actions -H "$AUTH" -H 'content-type: application/json' -d '{"type": "pause"}'
 # {"id": "3f2a...", "type": "pause", "state": "pending", "step": null, "changes": null}
-curl localhost:8040/v1/actions/3f2a...
+curl localhost:8040/v1/actions/3f2a... -H "$AUTH"
 # {"id": "3f2a...", "type": "pause", "state": "accepted", "step": 12, "changes": null}
-curl -X POST localhost:8041/v1/actions -H 'content-type: application/json' -d '{"type": "pause", "step": 12}'
+curl -X POST localhost:8041/v1/actions -H "$AUTH" -H 'content-type: application/json' -d '{"type": "pause", "step": 12}'
 # {"id": "9c41...", "type": "pause", "state": "pending", "step": 12, "changes": null}
 ```
 
@@ -772,11 +836,13 @@ A coding agent on the same machine can drive the open dashboard: `POST /api/view
 
 ## Monitors
 
-Monitors receive the run's metrics and episodes. The file and Prime monitors are on by default; W&B is opt-in.
+Monitors receive the run's metrics and episodes. The file monitor is on by default; W&B and Prime are opt-in.
 
 ### File
 
 The file monitor writes the run's metrics (`metrics.jsonl`) and trace stream under `<run_dir>/monitors/file/`, and feeds the local [dashboard](#dashboard). Turn it off with `--no-monitors.file`.
+
+On a large run the traces dominate what the monitor writes. `--monitors.file.trace-sample 0.1` keeps the traces (episodes, live traces, and the orchestrator's annotations) of one train group in ten, chosen by group id so each written group is complete; metrics and eval episodes are always written. `--no-monitors.file.live` stops the live traces: one file per in-flight trace under `traces/live/`, appended on every turn, which feed the dashboard's live view. Episodes are then written once, when they finish.
 
 ### Weights & Biases
 
@@ -793,23 +859,23 @@ prime-rl deliberately logs a **large number of metrics** for maximum observabili
 
 ### Prime
 
-Every `rl` and `sft` run registers on the Prime Intellect platform (Prime Lab) and streams training metrics and episodes to the platform dashboard. The launcher prints the Prime run's link next to the local dashboard link (and the W&B run's, with `--monitors.wandb`) once the run registers. Turn it off with `--no-monitors.prime`:
+The Prime monitor is off by default. With `--monitors.prime`, an `rl` or `sft` run registers on the Prime Intellect platform (Prime Lab) and streams training metrics and episodes to the platform dashboard. The launcher prints the Prime run's link next to the local dashboard link (and the W&B run's, with `--monitors.wandb`) once the run registers:
 
 ```bash
-uv run rl @ rl.toml --no-monitors.prime
-uv run sft @ sft.toml --no-monitors.prime   # same flag on the SFT trainer
+uv run rl @ rl.toml --monitors.prime
+uv run sft @ sft.toml --monitors.prime   # same flag on the SFT trainer
 ```
 
-Name the Prime run in TOML:
+Or turn it on with a `[monitors.prime]` table, which can also name the Prime run:
 
 ```toml
 [monitors.prime]
 name = "my-experiment"
 ```
 
-The process that supervises the launch registers the run before the components start, and every component logs to it. That is the `rl` or `sft` launcher, also inside a single-node SLURM job, or the run owner that wraps a multi-node SLURM job's step. The run's id is also the run identity (`PRL_RUN_ID`) and the W&B run id. On `rl` the orchestrator uploads the episodes and its metrics, and the trainer uploads its per-step metrics. A trainer started without the `rl` launcher needs `--no-monitors.prime`. On `sft` the run carries the dataset-batched training fields (`max_steps`, `batch_size`, `seq_len`) and the trainer's per-step metrics and validation losses. Online evals log to the same run, like an `rl` run's: the online-eval process uploads its eval metrics and every eval episode. The components only flush their uploads; the process that registered the run finishes it once every component exited. A launch that fails marks the run failed, and so does a SLURM job that SLURM cancels or stops at its time limit.
+The process that supervises the launch registers the run before the components start, and every component logs to it. That is the `rl` or `sft` launcher, also inside a single-node SLURM job, or the run owner that wraps a multi-node SLURM job's step. The run's id is also the run identity (`PRL_RUN_ID`) and the W&B run id. On `rl` the orchestrator uploads the episodes and its metrics, and the trainer uploads its per-step metrics. A trainer started without the `rl` launcher has no Prime run to log to, so it fails with the monitor on. On `sft` the run carries the dataset-batched training fields (`max_steps`, `batch_size`, `seq_len`) and the trainer's per-step metrics and validation losses. Online evals log to the same run, like an `rl` run's: the online-eval process uploads its eval metrics and every eval episode. The components only flush their uploads; the process that registered the run finishes it once every component exited. A launch that fails marks the run failed, and so does a SLURM job that SLURM cancels or stops at its time limit.
 
-The platform run needs `PRIME_API_KEY` (`prime login` or the env var) and a team (`PRIME_TEAM_ID`, or the team selected with `prime login`) enabled for external runs. Like the W&B monitor, a run without a key, or one whose registration fails (no team, a team outside the allowlist), fails at launch: authenticate, select a team with `prime switch`, or pass `--no-monitors.prime`. `PRIME_RUNS_MODE=disabled` keeps the monitor configured but opens no platform run; `RUN_ID=<id>` attaches to an external run a launcher already created instead of registering a new one. Currently internal-only.
+The platform run needs `PRIME_API_KEY` (`prime login` or the env var) and a team (`PRIME_TEAM_ID`, or the team selected with `prime login`) enabled for external runs. Like the W&B monitor, an enabled monitor without a key, or one whose registration fails (no team, a team outside the allowlist), fails the launch: authenticate, select a team with `prime switch`, or leave the monitor off. `PRIME_RUNS_MODE=disabled` keeps the monitor configured but opens no platform run; `RUN_ID=<id>` attaches to an external run a launcher already created instead of registering a new one. Hosted runs log to their platform run without `--monitors.prime`: `RUN_ID`, or `PRIME_RUNS_EVAL_ID` for a hosted eval, turns the monitor on. `PRIME_RUNS_MODE=disabled` turns that off too. Currently internal-only.
 
 ## Rules of Thumb
 

@@ -9,7 +9,7 @@ from datasets import Dataset
 from prime_rl.configs.sft import SystemOneColumnsConfig
 from prime_rl.trainer.sft.system_one import clef_flash
 from prime_rl.trainer.sft.system_one.clef_flash import ClefFlashStrategy
-from prime_rl.trainer.sft.system_one.data import SystemOneDataset, render_sample
+from prime_rl.trainer.sft.system_one.data import SystemOneSource, render_sample
 from prime_rl.trainer.sft.system_one.record import parse_record
 from tests.unit.train.models.qwen3_5.clef_flash_release import tiny_config, tokenizer
 
@@ -87,7 +87,7 @@ def test_renders_vllms_prompt_with_the_heads_spans(strategy):
 
 def test_targets_follow_the_heads_option_order(strategy):
     labelled = row(label={"outage": True, "team": "technical", "urgency": 0})
-    sample = SystemOneDataset(Dataset.from_list([labelled]), strategy, seq_len=4096)._process(labelled)
+    sample = SystemOneSource(Dataset.from_list([labelled]), strategy, seq_len=4096)._process(labelled)
     questions = sample["sample_data"]["questions"]
     assert [question["options"] for question in questions] == [["true", "false"], ["billing", "technical"], ["0", "1"]]
     assert [question["target"] for question in questions] == [[1.0, 0.0], [0.0, 1.0], [1.0, 0.0]]

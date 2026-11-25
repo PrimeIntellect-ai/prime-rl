@@ -1,19 +1,13 @@
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from typing import Optional, Union
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
-from transformers.cache_utils import Cache
-from transformers.generation import GenerationMixin
-from transformers.modeling_layers import GradientCheckpointingLayer
-from transformers.modeling_outputs import MoeModelOutputWithPast
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
-from transformers.processing_utils import Unpack
-from transformers.utils import TransformersKwargs, can_return_tuple
-from transformers.utils.generic import maybe_autocast
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, TextModelOutput
 from prime_rl.trainer.models.laguna.configuration_laguna import LagunaConfig
 from prime_rl.trainer.models.laguna.converting_laguna import conversion_chain
 from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
@@ -23,6 +17,12 @@ from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
+
+
+def _disable_autocast(device_type: str) -> AbstractContextManager:
+    if device_type != "meta" and torch.is_autocast_enabled(device_type):
+        return torch.autocast(device_type, enabled=False)
+    return nullcontext()
 
 
 class LagunaRotaryEmbedding(nn.Module):
@@ -76,7 +76,7 @@ class LagunaRotaryEmbedding(nn.Module):
         position_ids_expanded = position_ids[:, None, :].float()
 
         device_type = x.device.type if isinstance(x.device.type, str) and x.device.type != "mps" else "cpu"
-        with maybe_autocast(device_type=device_type, enabled=False):
+        with _disable_autocast(device_type):
             freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
             emb = torch.cat((freqs, freqs), dim=-1)
             cos = emb.cos() * attention_scaling
@@ -182,7 +182,7 @@ def _get_laguna_attention(config: LagunaConfig, layer_idx: int):
             raise ValueError(f"Laguna attention does not support '{config._attn_implementation}'.")
 
 
-class LagunaDecoderLayer(GradientCheckpointingLayer):
+class LagunaDecoderLayer(nn.Module):
     def __init__(self, config: LagunaConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -254,8 +254,6 @@ class LagunaDecoderLayer(GradientCheckpointingLayer):
 
 class LagunaPreTrainedModel(PreTrainedModelPrimeRL):
     config: LagunaConfig
-    config_class = LagunaConfig
-    base_model_prefix = "model"
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
@@ -281,7 +279,6 @@ class LagunaModel(LagunaPreTrainedModel):
         self.layers = nn.ModuleList([LagunaDecoderLayer(config, idx) for idx in range(config.num_hidden_layers)])
         self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.rotary_emb = LagunaRotaryEmbedding(config=config)
-        self.gradient_checkpointing = False
         self.post_init()
 
     def forward(
@@ -294,7 +291,7 @@ class LagunaModel(LagunaPreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> MoeModelOutputWithPast:
+    ) -> TextModelOutput:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
@@ -330,11 +327,11 @@ class LagunaModel(LagunaPreTrainedModel):
             )
 
         hidden_states = self.norm(hidden_states)
-        return MoeModelOutputWithPast(last_hidden_state=hidden_states)
+        return TextModelOutput(last_hidden_state=hidden_states)
 
 
-class LagunaForCausalLM(LagunaPreTrainedModel, GenerationMixin):
-    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
+class LagunaForCausalLM(LagunaPreTrainedModel):
+    supports_tied_word_embeddings = True
 
     def __init__(self, config: LagunaConfig):
         super().__init__(config)
@@ -352,29 +349,21 @@ class LagunaForCausalLM(LagunaPreTrainedModel, GenerationMixin):
     def get_decoder(self):
         return self.model
 
-    @can_return_tuple
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,
         attention_mask: torch.Tensor | None = None,
         position_ids: torch.LongTensor | None = None,
-        past_key_values: Cache | None = None,
         inputs_embeds: torch.FloatTensor | None = None,
         labels: torch.LongTensor | None = None,
-        use_cache: bool | None = None,
         output_router_logits: bool | None = None,
-        cache_position: torch.LongTensor | None = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: torch.Tensor | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-        **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
-        assert use_cache is None, "use_cache is not supported for custom Laguna"
-        assert past_key_values is None, "past_key_values is not supported for custom Laguna"
-
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,

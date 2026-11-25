@@ -12,6 +12,7 @@ This page covers the inference configuration and the supported features/deployme
 - [P/D Disaggregation](#pd-disaggregation)
 - [Router](#router)
     - [Routing policies](#routing-policies)
+- [Admin Routes](#admin-routes)
 - [Adaptive Concurrency](#adaptive-concurrency)
 - [Advanced Configuration](#advanced-configuration)
     - [KV Cache Offload](#kv-cache-offload)
@@ -35,7 +36,7 @@ Most of the features are supported for all deployment shapes, with few exception
 
 Every deployment shape has the same client-facing layout: a single global router listens on `inference.server.port` and fronts all vLLM engines, which listen on `inference.backend_port` (+ rank offset). Clients always talk to one URL, regardless of how many engines run behind it.
 
-You can select the deployment shape with `InferenceDeploymentConfig` in your config file. This is a config-field that allows you to set the deployment shape and topology knobs such as `num_nodes` and `num_replicas`.
+You can select the deployment shape with `InferenceDeploymentConfig` in your config file. This is a config-field that allows you to set the deployment shape and topology knobs such as `num_nodes`, `num_prefill_replicas` and `num_decode_replicas`.
 
 ```toml
 [inference.deployment]
@@ -200,6 +201,26 @@ The policies you might want to configure are:
 - `round_robin` - this policy will round-robin the requests between the available replicas. This is useful if you want to balance the load between the replicas. This might give you better results if you don't have enough rollouts to make `consistent_hash` hashing saturated.
 
 
+## Admin Routes
+
+On top of vLLM's API, each engine serves the routes the orchestrator drives it with: `/pause`, `/resume`, `/update_weights`, `/update_weights_from_modelexpress`, `/update_draft_weights`, `/weight_fingerprint/{target}`, `/load_lora_adapter` and `/init_broadcaster`. They sit at the root of the engine port, outside the paths vLLM's `--api-key` protects, so they have their own token. The same token guards the control APIs of the trainer, orchestrator and eval ([Training](training.md), [Eval](eval.md)).
+
+A request to a guarded route must carry the token in the `X-Prime-Admin-Token` header, or it gets a `401`. A process that sends the token reads it from `PRIME_RL_ADMIN_TOKEN`. A process that only checks it can instead be given its SHA-256 digest in `PRIME_RL_ADMIN_TOKEN_SHA256`, so it cannot make the calls it guards. The orchestrator sends the header on its engine admin clients only — never to the router. `/liveness` and vLLM's own health routes stay open for probes.
+
+The `rl` and `sft` launchers handle the token themselves, locally and on SLURM: they generate a fresh one per run (or reuse `PRIME_RL_ADMIN_TOKEN` when the launching environment or `.env` sets it). The process that calls the engines' admin routes gets the token: the orchestrator, or an `sft` run's online evals. The engines, started with `--server.require-admin-token`, and the control APIs get its digest. The env worker pools and the router get neither, and neither is written to a config or to the SLURM script. To call a run's control API yourself, set `PRIME_RL_ADMIN_TOKEN` before launching and send it in the header.
+
+A standalone `eval` generates no token: set `PRIME_RL_ADMIN_TOKEN` yourself to guard its control API. It starts its env worker pools without it.
+
+When you start the pieces yourself — a standalone `inference` server with a separate `orchestrator` — set `PRIME_RL_ADMIN_TOKEN` to the same value on both sides. Without it (or its digest) a standalone server's admin routes, and a control API, accept every request and log a warning at startup. To make the inference server refuse to start instead:
+
+```toml
+[inference.server]              # or [server] for the standalone inference entrypoint
+require_admin_token = true
+```
+
+The variable name is configurable: `inference.server.admin_token_var`, `orchestrator.model.client.admin_token_var`, and `admin_token_var` in each `[control]` block. Only the name lives in the config; the token itself is never written to it.
+
+
 ## Adaptive Concurrency
 
 The orchestrator continuously sizes how many episodes run against the inference engines at once. A static cap cannot be right: too low starves the engines, too high adds staleness and can cross into KV thrash — the engines evict prefix cache, re-prefill the evicted work, and throughput collapses. The optimal value depends on the model, the deployment, and the workload's episode lengths, and it moves as training changes the policy.
@@ -313,7 +334,25 @@ The engine admin routes are `POST /update_draft_weights` with `{"weight_dir": "/
 
 For optimal P/D disaggregation deployment, we automatically set the decode `all2all_backend` to `deepep_low_latency` and the prefill `all2all_backend` to `deepep_high_throughput`. We currently don't support customizing all2all backends for P/D disaggragation out of the box. You can do this by overriding the slurm template only.
 
-For KV cache transfer, we utilize the NIXL connector. This is the default and only currently supported connector. We aim to support more advanced options, such as D->P transfer, or Mooncake Connector in the future.
+For KV cache transfer, we utilize the NIXL connector. This is the default and only currently supported connector.
+
+Each single-GPU engine (DP + EP, `tensor_parallel_size = 1`) sends its NIXL traffic through the RDMA port nearest its GPU in the PCIe tree, on one rail (`UCX_NET_DEVICES`, `UCX_MAX_RMA_RAILS=1`). Spreading GPUDirect RDMA over every NIC routes part of it across CPU sockets, and under sustained transfer load that has stalled GPUs (Xid 119 followed by Xid 154). Set `inference.deployment.nixl_nic_affinity = false` to use every port again.
+
+#### Bidirectional KV transfer
+
+In multi-turn rollouts each turn's prompt is the previous turn's prompt and completion plus new messages. With one-way transfer, prefill recomputes all of it (minus its prefix-cache hits), although decode still holds the KV. Bidirectional transfer (vLLM's `bidirectional_kv_xfer`) reads it back instead:
+
+1. Decode keeps a finished turn's KV blocks for `decode_blocks_ttl_s` and returns their handle with the response.
+2. The router stores the handle per session (`x-session-id`) and sends it with the session's next turn to prefill, which reads those blocks from decode over NIXL and computes only the new tokens.
+3. Prefill sends the full prompt KV to decode as usual. Decode serves the old part from its own prefix cache, since sessions stay on their decode instance.
+
+```toml
+[inference.deployment.bidirectional_kv_transfer]
+decode_blocks_ttl_s = 480   # how long decode keeps a finished turn's blocks
+# router_ttl_s = 450        # how long the router keeps the handle; must be shorter, defaults to TTL - 30 s
+```
+
+A handle is used at most once. Decode frees the blocks after the first read, so reading them a second time (a retried turn, a client retry after an error) would load whatever KV has since been written there, and the model would continue from corrupted context. The router therefore drops the handle when a turn starts, and a retried turn runs a plain prefill. Requires the `vllm-router` router. HiSparse decode instances are not supported.
 
 > **Required:** The pip-wheel NIXL's bundled UCX segfaults on the prefill→decode KV transfer. You must build NIXL against UCX 1.19.x from source — see [Disaggregated Prefill/Decode Inference](advanced.md#disaggregated-prefilldecode-inference) in the Advanced docs for the full setup.
 

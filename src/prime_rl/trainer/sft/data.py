@@ -1,97 +1,73 @@
+import itertools
 import json
-import time
 import uuid
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, cast
 
 import numpy as np
 import torch
-from datasets import Dataset, interleave_datasets, load_dataset
-from huggingface_hub import snapshot_download
+from datasets import Dataset, load_dataset
 from renderers import AutoRendererConfig, RendererConfig, merge_chat_template_kwargs
 from renderers.base import MultiModalData, PlaceholderRange, Renderer, build_training_sample, create_renderer
 from torch import Tensor
+from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.sft import DataConfig, HFDataConfig, LossMaskConfig, SFTColumnsConfig
-from prime_rl.trainer.data import StatefulIterableDataset
+from prime_rl.trainer.data import (
+    Sample,
+    StatefulIterableDataset,
+    due,
+    get_dataset_state,
+    mixture_changed,
+    with_workers,
+)
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import format_time
 
 if TYPE_CHECKING:
     from prime_rl.trainer.sft.system_one.data import SystemOneStrategy
 
 
-class FakeDataset(StatefulIterableDataset):
-    """A dataset of fake tokens"""
+class FakeSource:
+    """Synthetic token sequences. The ``k``-th sample comes from a generator seeded by ``(seed, k)``, so any sample
+    can be drawn on its own."""
+
+    size = None
 
     def __init__(
         self,
         vocab_size: int,
         seq_len: int,
+        name: str = "fake",
         length: Literal["fixed", "variable"] = "fixed",
-        input_ids: Literal["increasing", "random"] = "random",
+        input_ids: Literal["increasing", "random"] = "increasing",
         seed: int = 0,
-        non_dp_size: int = 1,
     ):
-        super().__init__(non_dp_size)
+        self.name = name
         self.vocab_size = vocab_size
         self.seq_len = seq_len
         self.length = length
         self.input_ids = input_ids
         self.seed = seed
 
-    def _draw_sample(self, generator: torch.Generator) -> tuple[int, list[int] | None]:
-        # Consume this samples "randomness" - fast forwarding must replay it to restore the generator state
-        seq_len = (
-            int(torch.randint(1, self.seq_len, (1,), generator=generator).item())
-            if self.length == "variable"
-            else self.seq_len
-        )
-        random_input_ids = (
-            torch.randint(0, self.vocab_size, (seq_len + 1,), generator=generator).long().tolist()
-            if self.input_ids == "random"
-            else None
-        )
-        return seq_len, random_input_ids
-
-    def __iter__(self):
-        self._setup_world_info()
-        # use a rank seeded PRNG instead of torch global default PRNG because with num workers > 0
-        # the data loader reseeds the global PRNG per worker process
-        generator = torch.Generator().manual_seed(self.seed + self.data_rank)
-        if self.fast_forward:
-            # step counts globally emmited samples but this rank is only emitted every data_world_size-TH
-            already_emitted = len(range(self.data_rank, self.step, self.data_world_size))
-            for _ in range(already_emitted):
-                self._draw_sample(generator)
-            self.fast_forward = False
-
-        while True:
-            self.step += 1
-
-            # Skip samples that don't belong to this data rank
-            if (self.step - 1) % self.data_world_size != self.data_rank:
-                continue
-
-            seq_len, random_input_ids = self._draw_sample(generator)
-            input_ids = [self.step - 1] * (seq_len + 1) if random_input_ids is None else random_input_ids
-            position_ids = list(range(seq_len))
-            loss_mask = [True] * seq_len
-            fake_sample = {
-                "input_ids": input_ids[:-1],
-                "target_ids": input_ids[1:],
-                "position_ids": position_ids,
-                "loss_mask": loss_mask,
-                "seq_lens": [seq_len],
-                "mm_kwargs": None,
-                "mm_token_type_ids": None,
-            }
-            self.num_samples["fake"] += 1
-            self.num_tokens["fake"] += seq_len
-            yield fake_sample
+    def sample(self, k: int) -> Sample:
+        rng = np.random.default_rng([self.seed, k])
+        seq_len = int(rng.integers(1, self.seq_len)) if self.length == "variable" else self.seq_len
+        if self.input_ids == "random":
+            input_ids = rng.integers(0, self.vocab_size, seq_len + 1, dtype=np.int64)
+        else:
+            input_ids = np.full(seq_len + 1, k, dtype=np.int64)
+        return {
+            "input_ids": input_ids[:-1],
+            "target_ids": input_ids[1:],
+            "position_ids": np.arange(seq_len),
+            "loss_mask": np.ones(seq_len, dtype=bool),
+            "seq_lens": [seq_len],
+            "mm_kwargs": None,
+            "mm_token_type_ids": None,
+        }
 
 
 def _flatten_mm_items(mm_items: dict[str, list[dict[str, Any]]]) -> dict[str, Tensor]:
@@ -206,115 +182,66 @@ class RendererResolver:
         return renderer
 
 
-class HFDataset(StatefulIterableDataset):
-    """Rows of a HF dataset: shuffled per epoch, sharded across data ranks, processed one at a time."""
+class HFRowSource(ABC):
+    """Rows of a HF dataset, processed into samples one at a time. The ``k``-th sample is row ``k % size`` of pass
+    ``k // size``, each pass in its own seeded order."""
 
     def __init__(
         self,
         dataset: Dataset,
+        name: str = "train",
         shuffle: bool = True,
         seed: int = 0,
-        non_dp_size: int = 1,
         max_examples: int | None = None,
-        max_epochs: int | None = None,
     ):
-        super().__init__(non_dp_size)
         self.logger = get_logger()
+        self.name = name
         self.dataset = dataset
-        self.num_examples = len(self.dataset)
+        self.size = len(self.dataset)
         self.shuffle = shuffle
         self.seed = seed
-        self.max_examples = max_examples
-        self.max_epochs = max_epochs
-
-        # If specified, select a subset of the dataset
-        if self.max_examples is not None:
-            self.num_examples = min(self.num_examples, self.max_examples)
-            self.dataset = self.dataset.take(self.max_examples)
+        if max_examples is not None:
+            self.size = min(self.size, max_examples)
+            self.dataset = self.dataset.take(max_examples)
+        self.order, self.order_pass = self.dataset, None
 
     @abstractmethod
-    def _process(self, example: dict) -> dict | None:
+    def _process(self, example: dict) -> Sample | None:
         """The sample of a row, or None to skip the row."""
 
-    def __iter__(self):
-        self._setup_world_info()
-        dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
-        num_skipped = 0
-        while True:
-            self.step += 1
-
-            # Determine epoch from current step
-            epoch = (self.step - 1) // self.num_examples
-
-            # Break if max epochs is reached
-            if self.max_epochs is not None and epoch >= self.max_epochs:
-                break
-
-            # Update stored epoch if new epoch is reached, optionally shuffle
-            if epoch > self.epoch:
-                self.epoch = epoch
-                dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
-
-            # Skip samples that don't belong to this data rank
-            if (self.step - 1) % self.data_world_size != self.data_rank:
-                continue
-
-            # Get example
-            example = dataset[(self.step - 1) % self.num_examples]
-
-            # Process example
-            processed_example = self._process(cast(dict, example))
-
-            # If processed example is None, skip it (e.g. if tokenized sample exceeds context window)
-            if processed_example is None:
-                num_skipped += 1
-                # Across a reshuffle, two usable rows can be almost two epochs apart
-                if num_skipped > 2 * self.num_examples:
-                    raise RuntimeError(
-                        f"Data rank {self.data_rank} skipped {num_skipped} rows in a row, more than twice the "
-                        f"dataset's {self.num_examples}, without yielding a sample: every row it reads is skipped."
-                    )
-                continue
-            num_skipped = 0
-
-            # Yield the example
-            example = cast(dict, example)
-            subset_or_split = example.get("__subset") or example.get("__split")
+    def sample(self, k: int) -> Sample | None:
+        """The ``k``-th sample, or None if its row is skipped (e.g. no trainable tokens within ``seq_len``)."""
+        pass_, index = divmod(k, self.size)
+        if pass_ != self.order_pass:
+            self.order = self.dataset.shuffle(seed=self.seed + pass_) if self.shuffle else self.dataset
+            self.order_pass = pass_
+        example = cast(dict, self.order[index])
+        sample = self._process(example)
+        if sample is not None:
             self.logger.debug(
-                f"Yield example {example.get('__index', '')}"
-                + (f" from {subset_or_split} " if subset_or_split else " ")
-                + f"with {len(processed_example.get('input_ids', []))} tokens ({sum(processed_example.get('loss_mask', []))} trainable tokens)"
+                f"Yield example {example.get('__index', '')} from {self.name} with {len(sample['input_ids'])} tokens "
+                f"({sample['loss_mask'].sum()} trainable tokens)"
             )
-            self.num_samples[subset_or_split] += 1
-            self.num_tokens[subset_or_split] += len(processed_example.get("input_ids", []))
-            yield processed_example
+        return sample
 
 
-class SFTDataset(HFDataset):
-    """A dataset wrapping a HF SFT dataset with prompt/completion or raw messages format."""
+class HFSource(HFRowSource):
+    """Rows of a HF dataset with prompt/completion or messages columns, rendered into samples."""
 
     def __init__(
         self,
         dataset: Dataset,
         renderers: Callable[[dict], Renderer],
+        name: str = "train",
         shuffle: bool = True,
         seed: int = 0,
         seq_len: int = 128,
-        non_dp_size: int = 1,
         loss_mask_config: LossMaskConfig = LossMaskConfig(),
         max_examples: int | None = None,
-        max_epochs: int | None = None,
         multimodal: bool = False,
         columns: SFTColumnsConfig = SFTColumnsConfig(),
     ):
-        super().__init__(
-            dataset,
-            shuffle=shuffle,
-            seed=seed,
-            non_dp_size=non_dp_size,
-            max_examples=max_examples,
-            max_epochs=max_epochs,
-        )
+        super().__init__(dataset, name=name, shuffle=shuffle, seed=seed, max_examples=max_examples)
         self.renderers = renderers
         self.columns = columns
         # Default names are optional: a dataset carries either messages or
@@ -450,167 +377,288 @@ class SFTDataset(HFDataset):
             assert len(mm_token_type_ids) == len(input_ids)
 
         return {
-            "input_ids": input_ids,
-            "target_ids": target_ids,
-            "loss_mask": loss_mask,
-            "position_ids": list(range(len(input_ids))),
+            "input_ids": np.array(input_ids, dtype=np.int64),
+            "target_ids": np.array(target_ids, dtype=np.int64),
+            "loss_mask": np.array(loss_mask, dtype=bool),
+            "position_ids": np.arange(len(input_ids)),
             "seq_lens": [len(input_ids)],
             "mm_kwargs": mm_kwargs,
-            "mm_token_type_ids": mm_token_type_ids,
+            "mm_token_type_ids": np.array(mm_token_type_ids, dtype=np.int64) if mm_token_type_ids is not None else None,
         }
 
 
-def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
-    if not isinstance(data, HFDataConfig):
-        return
-    if Path(data.name).exists():
-        get_logger().info(f"Data {data.name} found at local path, skipping download")
-        return
+class SFTDataset(StatefulIterableDataset):
+    """Samples drawn from one or more sources by weight.
 
-    dataset_name = data.name
-    t0 = time.perf_counter()
-    get_logger().info(f"Pre-downloading data {dataset_name} at revision {data.revision or 'main'}")
-    snapshot = snapshot_download(
-        repo_id=dataset_name,
-        repo_type="dataset",
-        revision=data.revision,
-        cache_dir=env_vars.get("HF_HUB_CACHE"),
-    )
-    data.name = snapshot
-    get_logger().debug(
-        f"Finished pre-downloading data {dataset_name} to {snapshot} in {format_time(time.perf_counter() - t0)}"
-    )
+    The sources take turns by due time (weighted fair queuing, `due`): the next draw goes to the source with the
+    smallest ``(draws + 1 - start) / weight``, ties to the first, so every stretch of draws holds the mixture; ``start``
+    is every source's draws when the mixture last changed. Without weights, a source's weight is its number of rows,
+    and every ``sum(rows)`` draws read each source exactly once (an epoch). Every data rank walks the same draws and
+    keeps every ``data_world_size``-th one, so the draws are the same on every rank, for any number of ranks, and
+    after a resume."""
+
+    def __init__(
+        self,
+        sources: list[HFRowSource | FakeSource],
+        weights: list[float] | None = None,
+        max_epochs: int | None = None,
+        dp_rank: int = 0,
+        dp_size: int = 1,
+    ):
+        super().__init__(dp_rank, dp_size)
+        self.sources = sources
+        if weights is None:
+            weights = [1.0] if len(sources) == 1 else [float(source.size) for source in sources]
+        assert len(weights) == len(sources) and sum(weights) > 0
+        self.weights = weights
+        self.num_rows = sum(source.size for source in sources if source.size is not None)
+        assert max_epochs is None or self.num_rows > 0, "max_epochs needs a source with rows"
+        self.max_epochs = max_epochs
+        self.mixture = {
+            source.name: {"weight": weight, "rows": source.size} for source, weight in zip(sources, weights)
+        }
+        self.draws, self.start = [0] * len(sources), [0] * len(sources)
+
+    def state_dict(self) -> dict:
+        names = [source.name for source in self.sources]
+        self._setup_world_info()
+        return {
+            "step": self.step,
+            "epoch": self.epoch,
+            "draws": dict(zip(names, self.draws)),
+            "start": dict(zip(names, self.start)),
+            "sources": self.mixture,
+            "layout": [self.data_rank, self.data_world_size],
+        }
+
+    def load_state_dict(self, state_dict: dict):
+        super().load_state_dict(state_dict)
+        if "draws" not in state_dict:
+            # A single-source state from before sources had names: every step was a draw of that source, and its
+            # counters were keyed by split.
+            (source,) = self.sources
+            state_dict = {**state_dict, "draws": {source.name: self.step}}
+            for counts in (self.num_samples, self.num_tokens):
+                total = sum(counts.values())
+                counts.clear()
+                counts[source.name] = total
+        # Sources match by name (`mixture_changed`). A state from before they were recorded has the configured ones.
+        saved = state_dict.get("sources", self.mixture)
+        draws, start = state_dict["draws"], state_dict.get("start", {})
+        if draws.keys() != saved.keys():
+            raise ValueError(
+                f"The checkpoint's SFT data state has the sources {list(draws)}, not the configured {list(saved)}: "
+                "resume once with the sources it was saved with"
+            )
+        self._setup_world_info()
+        # A changed mixture, or one the state does not record, counts the due times from here.
+        if mixture_changed(saved, self.mixture, log=self.data_rank == 0) or "sources" not in state_dict:
+            start = draws
+        names = [source.name for source in self.sources]
+        self.draws = [draws.get(name, 0) for name in names]
+        self.start = [start.get(name, 0) for name in names]
+        for counts in (self.num_samples, self.num_tokens):
+            for name in counts.keys() - set(names):
+                del counts[name]
+
+    def saved_view(self, dataloader: StatefulDataLoader, directory: Path, rank: int, world_size: int) -> list:
+        """What rank ``rank`` of ``world_size`` adds to the decision of a resume (`start_together`), from the saved
+        files ``directory / rank_<rank>.pt``, ``rank_<rank + world_size>.pt``, ... (the ranks read every file between
+        them, also on fewer ranks than the saved run):
+
+        - the draw every saved worker had reached and whether it held a sample drawn but not packed, by its data rank
+          and number of data ranks;
+        - the dataset state of the saved worker that got furthest;
+        - whether something changed for this rank: the mixture, or its workers loaded states that other data ranks
+          saved (another number of GPUs, model-parallel layout or workers, or a state from before the layout was
+          recorded).
+
+        The view is plain JSON data, so the ranks can gather it."""
+        positions, furthest = [], None
+        for saved_rank in itertools.count(rank, world_size):
+            path = directory / f"rank_{saved_rank}.pt"
+            if not path.exists():
+                break
+            for key, worker in torch.load(path, weights_only=False)["_snapshot"]["_worker_snapshots"].items():
+                state = worker["dataset_state"]
+                layout = state["dataset"].get("layout", [[saved_rank, key], None])
+                positions.append([layout, state["dataset"]["step"], "pending_sample" in state])
+                if furthest is None or state["dataset"]["step"] > furthest["step"]:
+                    furthest = state["dataset"]
+        loaded = list(get_dataset_state(dataloader).values())
+        workers = dataloader.num_workers
+        layouts = [[self.dp_rank * workers + worker, self.dp_size * workers] for worker in range(workers)]
+        moved = [state.get("layout") for state in loaded] != layouts
+        changed = moved or mixture_changed(loaded[0].get("sources", self.mixture), self.mixture, log=False)
+        return [positions, furthest, changed]
+
+    def start_together(self, dataloader: StatefulDataLoader, views: list[list]) -> tuple[int, int] | None:
+        """Decide a resume the same way on every rank, from what every rank saw (`saved_view`). If anything changed,
+        every worker reads on from the dataset state of the saved worker that got furthest: at a draw, the state is
+        the same on every data rank. The others' draws up to there and the samples drawn but not packed are not
+        trained on. Returns that draw and the number of those draws (for states from before the layout was recorded,
+        as if every worker's last draw was its own), else None."""
+        if not any(changed for *_, changed in views):
+            return None
+        # The model-parallel ranks of a data rank save the same workers: count every layout once.
+        positions = {
+            json.dumps(layout): (layout, step, pending) for saved, *_ in views for layout, step, pending in saved
+        }
+        furthest = max((state for _, state, _ in views if state is not None), key=lambda state: state["step"])
+        dataloader.load_state_dict(with_workers(dataloader.next_iter_state, dataloader.num_workers, furthest))
+        skipped = 0
+        for (data_rank, data_world), step, pending in positions.values():
+            if data_world is None:
+                data_rank, data_world = (step - 1) % len(positions), len(positions)
+            # The draws of data rank d of W before draw n: those with k % W == d.
+            skipped += (furthest["step"] - data_rank - 1) // data_world - (step - data_rank - 1) // data_world + pending
+        return furthest["step"], skipped
+
+    def next_source(self) -> int:
+        return int(np.argmin(due(np.array(self.draws) + 1, np.array(self.start), np.array(self.weights))))
+
+    def progress(self, state: dict) -> dict[str, float]:
+        """Every source's draws and, for a source with rows, its passes over them (``epoch``) in ``state``."""
+        metrics = {}
+        for source in self.sources:
+            draws = state["draws"].get(source.name, 0)
+            metrics[f"progress/{source.name}/num_samples"] = draws
+            if source.size:
+                metrics[f"progress/{source.name}/epoch"] = draws / source.size
+        return metrics
+
+    def __iter__(self):
+        self._setup_world_info()
+        num_skipped = 0
+        while self.max_epochs is None or self.step < self.max_epochs * self.num_rows:
+            index = self.next_source()
+            source, k = self.sources[index], self.draws[index]
+            self.draws[index] += 1
+            self.step += 1
+            if self.num_rows:
+                rows_drawn = sum(draws for source, draws in zip(self.sources, self.draws) if source.size is not None)
+                self.epoch = max(rows_drawn - 1, 0) // self.num_rows
+
+            # Skip draws that don't belong to this data rank
+            if (self.step - 1) % self.data_world_size != self.data_rank:
+                continue
+
+            sample = source.sample(k)
+            if sample is None:
+                num_skipped += 1
+                # Across a reshuffle, two usable rows can be almost two passes apart
+                if num_skipped > 2 * self.num_rows:
+                    raise RuntimeError(
+                        f"Data rank {self.data_rank} skipped {num_skipped} rows in a row, more than twice the "
+                        f"sources' {self.num_rows}, without yielding a sample: every row it reads is skipped."
+                    )
+                continue
+            num_skipped = 0
+            self.num_samples[source.name] += 1
+            self.num_tokens[source.name] += len(sample["input_ids"])
+            yield sample
 
 
-def setup_and_interleave_datasets(
-    dataset_name: str,
-    subsets_and_splits: list[tuple[str | None, str]],
-    probabilities: list[float] | None,
-    stopping_strategy: Literal["first_exhausted", "all_exhausted"],
-    seed: int = 0,
-    revision: str | None = None,
-) -> Dataset:
-    logger = get_logger()
-    datasets = []
-    for subset, split in subsets_and_splits:
-        logger.debug(f"Loading dataset {dataset_name} with {subset=} and {split=}")
-        dataset = cast(Dataset, load_dataset(dataset_name, subset, split=split, revision=revision))
-        num_examples = len(dataset)
-        dataset = dataset.add_column("__subset", [subset] * num_examples, new_fingerprint=str(uuid.uuid4()))
-        dataset = dataset.add_column("__split", [split] * num_examples, new_fingerprint=str(uuid.uuid4()))
-        dataset = dataset.add_column("__index", list(range(num_examples)), new_fingerprint=str(uuid.uuid4()))
-        datasets.append(dataset)
-    if len(datasets) > 1:
-        logger.debug(f"Interleaving datasets with {probabilities=} and {stopping_strategy=}")
-        dataset = interleave_datasets(
-            datasets,
-            probabilities=probabilities,
-            stopping_strategy=stopping_strategy,
-            seed=seed,
+def load_sft_dataset(config: HFDataConfig) -> dict[str, Dataset]:
+    """Load the rows of every HF source, by source name. This is the expensive I/O step."""
+    datasets = {}
+    for source in config.source:
+        get_logger().debug(f"Loading source {source.name}: {source.dataset} {source.subset=} {source.split=}")
+        dataset = cast(
+            Dataset, load_dataset(source.dataset, source.subset, split=source.split, revision=source.revision)
         )
-    else:
-        dataset = datasets[0]
-
-    return dataset
-
-
-def load_sft_dataset(config: HFDataConfig) -> Dataset:
-    """Load and interleave the raw HF dataset. This is the expensive I/O step."""
-    logger = get_logger()
-    if config.subsets is None and config.splits is None:
-        return setup_and_interleave_datasets(
-            dataset_name=config.name,
-            subsets_and_splits=[(None, "train")],
-            probabilities=config.probabilities,
-            stopping_strategy=config.stopping_strategy,
-            revision=config.revision,
+        datasets[source.name] = dataset.add_column(
+            "__index", list(range(len(dataset))), new_fingerprint=str(uuid.uuid4())
         )
-    elif config.subsets is not None and config.splits is None:
-        logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
-        return setup_and_interleave_datasets(
-            dataset_name=config.name,
-            subsets_and_splits=[(subset, "train") for subset in config.subsets],
-            probabilities=config.probabilities,
-            stopping_strategy=config.stopping_strategy,
-            revision=config.revision,
-        )
-    elif config.subsets is None and config.splits is not None:
-        logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
-        return setup_and_interleave_datasets(
-            dataset_name=config.name,
-            subsets_and_splits=[(None, split) for split in config.splits],
-            probabilities=config.probabilities,
-            stopping_strategy=config.stopping_strategy,
-            revision=config.revision,
-        )
-    else:
-        assert config.subsets is not None and config.splits is not None
-        logger.debug(f"Loading datasets for subsets {config.subsets} with splits {config.splits}")
-        return setup_and_interleave_datasets(
-            dataset_name=config.name,
-            subsets_and_splits=list(zip(config.subsets, config.splits)),
-            probabilities=config.probabilities,
-            stopping_strategy=config.stopping_strategy,
-            revision=config.revision,
-        )
+    return datasets
 
 
 def setup_sft_dataset(
     tokenizer: PreTrainedTokenizer,
     config: DataConfig,
-    non_dp_size: int = 1,
     *,
+    dp_rank: int,
+    dp_size: int,
     max_epochs: int | None = None,
-    raw_dataset: Dataset | None = None,
+    raw_datasets: dict[str, Dataset] | None = None,
     renderer_config: RendererConfig | None = None,
     processor: Any | None = None,
     multimodal: bool = False,
     strategy: "SystemOneStrategy | None" = None,
-) -> StatefulIterableDataset:
-    if config.type == "fake":
-        return FakeDataset(
-            vocab_size=tokenizer.vocab_size,
-            seq_len=config.seq_len,
-            length=config.length,
-            input_ids=config.input_ids,
-            seed=config.seed,
-            non_dp_size=non_dp_size,
-        )
-    elif config.type == "sft":
-        if renderer_config is None:
-            raise ValueError("SFT data requires a renderer config.")
-        if raw_dataset is None:
-            raw_dataset = load_sft_dataset(config)
-        renderers = RendererResolver(tokenizer, renderer_config, processor=processor, columns=config.columns.renderer)
-        return SFTDataset(
-            raw_dataset,
-            renderers,
-            shuffle=config.shuffle,
-            seed=config.seed,
-            seq_len=config.seq_len,
-            loss_mask_config=config.loss_mask,
-            non_dp_size=non_dp_size,
-            max_epochs=max_epochs,
-            multimodal=multimodal,
-            columns=config.columns,
-        )
-    elif config.type == "system_one":
+) -> SFTDataset:
+    if config.type == "system_one":
         # Lazy: system_one.data imports this module
-        from prime_rl.trainer.sft.system_one.data import SystemOneDataset
+        from prime_rl.trainer.sft.system_one.data import SystemOneSource
 
         if strategy is None:
             raise ValueError("System One data requires the model's strategy.")
-        if raw_dataset is None:
-            raw_dataset = load_sft_dataset(config)
-        return SystemOneDataset(
-            raw_dataset,
-            strategy,
-            columns=config.columns,
-            shuffle=config.shuffle,
-            seed=config.seed,
-            seq_len=config.seq_len,
-            non_dp_size=non_dp_size,
+        if raw_datasets is None:
+            raw_datasets = load_sft_dataset(config)
+        sources = [
+            SystemOneSource(
+                raw_datasets[source.name],
+                strategy,
+                name=source.name,
+                split=source.split,
+                columns=source.columns,
+                shuffle=config.shuffle,
+                seed=config.seed,
+                seq_len=config.seq_len,
+            )
+            for source in config.source
+        ]
+        weights = [source.weight for source in config.source]
+        return SFTDataset(
+            sources,
+            weights=None if None in weights else weights,
             max_epochs=max_epochs,
+            dp_rank=dp_rank,
+            dp_size=dp_size,
         )
-    else:
-        raise ValueError(f"Invalid dataset type: {config.type}")
+    if config.fake is not None:
+        fake = FakeSource(
+            tokenizer.vocab_size,
+            config.seq_len,
+            length=config.fake.length,
+            input_ids=config.fake.input_ids,
+            seed=config.seed,
+        )
+        return SFTDataset([fake], dp_rank=dp_rank, dp_size=dp_size)
+    if renderer_config is None:
+        raise ValueError("SFT data requires a renderer config.")
+    if raw_datasets is None:
+        raw_datasets = load_sft_dataset(config)
+    sources = []
+    for source in config.source:
+        source_renderer_config = renderer_config
+        if source.renderer:
+            if isinstance(renderer_config, AutoRendererConfig):
+                raise ValueError(
+                    f"data.source {source.name!r} sets renderer arguments, which require a typed renderer config "
+                    "(e.g. [renderer] name = 'qwen3.8'), not renderer.name = 'auto'"
+                )
+            source_renderer_config = merge_chat_template_kwargs(renderer_config, source.renderer)
+        renderers = RendererResolver(
+            tokenizer, source_renderer_config, processor=processor, columns=source.columns.renderer
+        )
+        sources.append(
+            HFSource(
+                raw_datasets[source.name],
+                renderers,
+                name=source.name,
+                shuffle=config.shuffle,
+                seed=config.seed,
+                seq_len=config.seq_len,
+                loss_mask_config=config.loss_mask,
+                multimodal=multimodal,
+                columns=source.columns,
+            )
+        )
+    weights = [source.weight for source in config.source]
+    return SFTDataset(
+        sources,
+        weights=None if None in weights else weights,
+        max_epochs=max_epochs,
+        dp_rank=dp_rank,
+        dp_size=dp_size,
+    )

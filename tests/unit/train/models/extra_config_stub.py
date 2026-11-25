@@ -116,7 +116,13 @@ def write_release_layout(directory: Path) -> dict[str, torch.Tensor]:
 
 def load_like_the_trainer(model: nn.Module, name: Path, monkeypatch) -> None:
     """Load checkpoint ``name`` into the meta ``model`` with the trainer's loader, on CPU in one process."""
-    monkeypatch.setattr(model, "to_empty", lambda device: nn.Module.to_empty(model, device="cpu"))
+
+    def to_empty(device) -> None:
+        nn.Module.to_empty(model, device="cpu")
+        # Leaving the meta device without FSDP gives each name its own tensor
+        model.tie_weights()
+
+    monkeypatch.setattr(model, "to_empty", to_empty)
     monkeypatch.setattr("torch.distributed.barrier", lambda *args, **kwargs: None)
     monkeypatch.setattr("prime_rl.trainer.model.wait_for_master", lambda *args, **kwargs: None)
     monkeypatch.setattr("prime_rl.trainer.model.get_dcp_group", lambda: None)

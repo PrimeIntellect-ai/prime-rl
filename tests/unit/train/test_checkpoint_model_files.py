@@ -1,7 +1,6 @@
 import json
 
 import pytest
-import torch
 from transformers import AutoConfig, AutoProcessor, AutoTokenizer, GenerationConfig, Qwen3Config, Qwen3VLConfig
 
 from prime_rl.configs.trainer import ModelConfig
@@ -117,7 +116,7 @@ def test_a_step_dir_holds_the_extra_config_file(tmp_path, monkeypatch):
     assert json.loads((step_dir / EXTRA_CONFIG_FILE).read_text()) == EXTRA_CONFIG
     saved = json.loads((step_dir / "config.json").read_text())
     assert EXTRA_CONFIG_ATTR not in saved and saved["architectures"] == ["Qwen3ForCausalLM"]
-    model = get_model(ModelConfig(name=str(step_dir), attn="flash_attention_2"), device=torch.device("meta"))
+    model = get_model(ModelConfig(name=str(step_dir), attn="flash_attention_2"))
     assert type(model) is HeadStub and getattr(model.config, EXTRA_CONFIG_ATTR) == EXTRA_CONFIG
 
     stock = tmp_path / "stock"

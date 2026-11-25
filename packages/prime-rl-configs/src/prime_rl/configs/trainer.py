@@ -264,10 +264,16 @@ class LLEPConfig(BaseConfig):
 
 class MegaMoeMoEDispatchConfig(BaseConfig):
     type: Literal["mega_moe"] = "mega_moe"
-    precision: Literal["bf16", "mxfp8", "mxfp8_qat", "fp8", "fp8_bwd"] = "bf16"
+    precision: Literal["bf16", "mxfp8", "mxfp8_qat", "fp8", "fp8_bwd", "nvfp4"] = "bf16"
     """Expert GEMM precision. ``mxfp8``: forward and backward in MXFP8 (SM100). ``mxfp8_qat``: MXFP8 forward, BF16
     backward on the forward's dequantized weights, as MXFP8 quantization-aware training computes (SM100). ``fp8``:
-    forward and backward in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90)."""
+    forward and backward in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90).
+    ``nvfp4``: NVFP4 forward as vLLM's online ``nvfp4_per_token`` MoE computes it (per-token activation and per-expert
+    weight scales), MXFP8 backward on the forward's NVFP4 operands (SM100). In ``rl`` the engines must run that MoE
+    quantization with the same ``four_over_six``."""
+
+    four_over_six: bool = False
+    """``nvfp4`` only: choose each activation block's scale with 4/6, as FlashInfer's ``FLASHINFER_NVFP4_4OVER6``."""
 
     max_tokens_per_rank: int | None = Field(None, ge=1)
     """Tokens per rank per MoE call that the symmetric buffer is sized for. Defaults to the rank's share of the
@@ -282,13 +288,21 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     ``llep``, whose weight copies run next to the grid."""
 
     llep: LLEPConfig | None = None
-    """Balance imbalanced routing with least-loaded expert parallelism. Requires ``precision = "bf16"`` (SM90) or
-    ``"mxfp8_qat"`` (SM100)."""
+    """Balance imbalanced routing with least-loaded expert parallelism. Requires ``precision = "bf16"`` (SM90),
+    ``"mxfp8"``, ``"mxfp8_qat"`` or ``"nvfp4"`` (SM100)."""
 
     @model_validator(mode="after")
     def validate_llep_precision(self):
-        if self.llep is not None and self.precision not in ("bf16", "mxfp8_qat"):
-            raise ValueError("model.moe.dispatch.llep requires model.moe.dispatch.precision 'bf16' or 'mxfp8_qat'.")
+        if self.llep is not None and self.precision not in ("bf16", "mxfp8", "mxfp8_qat", "nvfp4"):
+            raise ValueError(
+                "model.moe.dispatch.llep requires model.moe.dispatch.precision 'bf16', 'mxfp8', 'mxfp8_qat' or 'nvfp4'."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_four_over_six(self):
+        if self.four_over_six and self.precision != "nvfp4":
+            raise ValueError("model.moe.dispatch.four_over_six requires model.moe.dispatch.precision 'nvfp4'.")
         return self
 
     @model_validator(mode="after")
@@ -490,6 +504,9 @@ class TokenizerConfig(BaseConfig):
 class ConstantSchedulerConfig(BaseConfig):
     type: Literal["constant"] = "constant"
 
+    start_step: int = Field(0, ge=0)
+    """The step the schedule starts at. A constant schedule is the same at every step."""
+
 
 class LinearSchedulerConfig(BaseConfig):
     type: Literal["linear"] = "linear"
@@ -501,7 +518,12 @@ class LinearSchedulerConfig(BaseConfig):
     """Steps to decay the learning rate during the final portion of training."""
 
     min_lr: float = Field(0.0, ge=0)
-    """Minimum learning rate to converge to."""
+    """Learning rate the base param group, whose peak is ``optim.lr``, warms up from and decays to. Every other param
+    group warms up from and decays to ``min_lr / optim.lr`` times its own peak. 0 means a factor of ``1e-8``."""
+
+    start_step: int = Field(0, ge=0)
+    """The step the schedule starts at: its warmup and decay span the ``max_steps - start_step`` steps after it. Set
+    it to a resume step to start a fresh schedule there."""
 
 
 class CosineSchedulerConfig(BaseConfig):
@@ -511,7 +533,13 @@ class CosineSchedulerConfig(BaseConfig):
     """Warmup steps for the learning rate scheduler."""
 
     min_lr: float = Field(0.0, ge=0)
-    """Minimum learning rate to converge to."""
+    """Learning rate the base param group, whose peak is ``optim.lr``, warms up from and decays to. Every other param
+    group warms up from and decays to ``min_lr / optim.lr`` times its own peak. 0 means a warmup from ``1e-8`` times
+    the peak and a decay to 0."""
+
+    start_step: int = Field(0, ge=0)
+    """The step the schedule starts at: its warmup and decay span the ``max_steps - start_step`` steps after it. Set
+    it to a resume step to start a fresh schedule there."""
 
 
 SchedulerConfig: TypeAlias = Annotated[
@@ -521,24 +549,32 @@ SchedulerConfig: TypeAlias = Annotated[
 
 def validate_scheduler(scheduler: SchedulerConfig, max_steps: int | None) -> None:
     """Check scheduler phases against max_steps so misconfigurations fail at config time."""
+    if max_steps is not None and scheduler.start_step >= max_steps:
+        raise ValueError(f"start_step ({scheduler.start_step}) must be less than max_steps ({max_steps})")
+    # The steps the schedule spans
+    horizon = max_steps - scheduler.start_step if max_steps is not None else None
     if isinstance(scheduler, LinearSchedulerConfig):
         if scheduler.warmup_steps == 0 and scheduler.decay_steps == 0:
             raise ValueError(
                 "Linear scheduler requires warmup_steps > 0 or decay_steps > 0 (use the constant scheduler instead)"
             )
+        if scheduler.decay_steps == 1:
+            raise ValueError("decay_steps must be 0 or at least 2")
         if scheduler.decay_steps > 0:
-            if max_steps is None:
+            if horizon is None:
                 raise ValueError("Must specify max_steps when using a linear scheduler with decay_steps > 0")
-            if scheduler.warmup_steps + scheduler.decay_steps > max_steps:
+            if scheduler.warmup_steps + scheduler.decay_steps > horizon:
                 raise ValueError(
                     f"warmup_steps ({scheduler.warmup_steps}) + decay_steps ({scheduler.decay_steps}) "
-                    f"must not exceed max_steps ({max_steps})"
+                    f"must not exceed max_steps - start_step ({horizon})"
                 )
     if isinstance(scheduler, CosineSchedulerConfig):
-        if max_steps is None:
+        if horizon is None:
             raise ValueError("Must specify max_steps when using a cosine scheduler")
-        if scheduler.warmup_steps >= max_steps:
-            raise ValueError(f"warmup_steps ({scheduler.warmup_steps}) must be less than max_steps ({max_steps})")
+        if scheduler.warmup_steps >= horizon:
+            raise ValueError(
+                f"warmup_steps ({scheduler.warmup_steps}) must be less than max_steps - start_step ({horizon})"
+            )
 
 
 class BaseOptimizerConfig(BaseConfig):
@@ -604,14 +640,12 @@ class CheckpointConfig(BaseConfig):
     keep_interval: int | None = Field(None, ge=1)
     """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
 
-    skip_scheduler: bool = False
-    """Skip loading the scheduler from checkpoint."""
-
     skip_dataloader: bool = False
     """Skip loading the dataloader from checkpoint."""
 
     skip_optimizer: bool = False
-    """Skip loading the optimizer state from checkpoint."""
+    """Start the optimizer state fresh: new moments and dion Muon step counts. Loads none of the checkpoint's param
+    groups, so it has no hyperparameters to compare and logs no mismatch warning."""
 
     async_save: bool = False
     """Write checkpoints in the background. A save copies this rank's model and optimizer state into pinned host
@@ -819,7 +853,7 @@ class TrainerConfig(BaseTrainerConfig):
     """Loss config for the rl loss component (see ``setup_rl_loss_fn``). The ce / ref_kl components are fixed and do not read this."""
 
     resume: ResumeConfig | None = None
-    """Resume training from a checkpoint. None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step, ``resume.dir`` from an external checkpoint step directory. Without ``ckpt`` the run loads but saves no new checkpoints."""
+    """Resume training from a checkpoint. None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step, ``resume.dir`` from an external checkpoint step directory. Without ``ckpt`` the run loads but saves no new checkpoints. The checkpoint supplies the training state; the hyperparameters and the learning rate schedule come from this config."""
 
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
     """Transport used to broadcast updated weights from trainer to inference."""
@@ -838,6 +872,11 @@ class TrainerConfig(BaseTrainerConfig):
     so a trace can show trainer against sampler token by token. Needs ``monitors.file``.
     Each step gathers every trained token to the master rank before the optimizer step;
     disable with ``--no-annotations`` to skip that work."""
+
+    warmup: bool = True
+    """Before waiting for the first batch, run the training step's forward and backward on synthetic micro batches
+    that train nothing, so compilation, kernel JIT and communicator setup happen while the trainer would idle. The
+    warmup leaves the weights and the optimizer state unchanged."""
 
     enable_router_replay: bool = False
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""
