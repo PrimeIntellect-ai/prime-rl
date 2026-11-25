@@ -503,10 +503,8 @@ def get_model(config: ModelConfig, dtype: torch.dtype = torch.bfloat16) -> nn.Mo
 
         load_model_start_time = time.perf_counter()
         logger.info(f"Loading model {config.name} using {model_cls.__name__} to meta device")
-        if selection is not None:
-            model = selection.cls.from_config(model_config, dtype=dtype)
-        elif custom_vlm_cls is not None:
-            model = custom_vlm_cls.from_config(model_config, dtype=dtype)
+        if selection is not None or custom_vlm_cls is not None:
+            model = model_cls.from_config(model_config, dtype=dtype)
         else:
             model = custom_causal_lm_from_config(model_config, dtype=dtype)
         logger.debug(f"Loaded model {config.name} in {format_time(time.perf_counter() - load_model_start_time)}")

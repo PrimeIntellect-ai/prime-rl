@@ -16,6 +16,7 @@ import torch
 from torch import nn
 from torch.distributed.checkpoint import FileSystemReader, FileSystemWriter
 from torch.distributed.checkpoint.filesystem import DEFAULT_SUFFIX
+from torch.distributed.checkpoint.metadata import Metadata
 from torch.distributed.checkpoint.planner import SavePlan, SavePlanner, WriteItem
 from torch.distributed.checkpoint.state_dict import (
     get_model_state_dict,
@@ -861,9 +862,11 @@ def ckpt_output_dir(output_dir: Path, ckpt_config: CheckpointConfig | None) -> P
     return (ckpt_config.output_dir if ckpt_config else None) or output_dir
 
 
-def check_model_holds_checkpoint(path: Path, model: nn.Module) -> None:
-    """Raise unless ``model`` has every model tensor of the checkpoint at ``path``: a load would skip the others."""
-    if unexpected := get_unexpected_keys(FileSystemReader(path).read_metadata(), get_model_state_dict(model).keys()):
+def check_model_holds_checkpoint(path: Path, model: nn.Module, metadata: Metadata | None = None) -> None:
+    """Raise unless ``model`` has every model tensor of the checkpoint at ``path`` (its ``metadata``, read when not
+    given): a load would skip the others."""
+    metadata = metadata or FileSystemReader(path).read_metadata()
+    if unexpected := get_unexpected_keys(metadata, get_model_state_dict(model).keys()):
         raise ValueError(
             f"The checkpoint at {path} holds {len(unexpected)} tensors {type(model).__name__} lacks "
             f"({', '.join(unexpected[:3])})"
@@ -887,9 +890,10 @@ def _load_app_state(
     model_only: bool,
     check_tensors: bool,
 ) -> None:
+    metadata = FileSystemReader(path).read_metadata()
     if check_tensors:
-        check_model_holds_checkpoint(path, model)
-    saved_keys = None if model_only else set(FileSystemReader(path).read_metadata().state_dict_metadata)
+        check_model_holds_checkpoint(path, model, metadata)
+    saved_keys = None if model_only else set(metadata.state_dict_metadata)
     if saved_keys is not None:
         _check_param_group_count(saved_keys, optimizers)
     app_state = AppState(
