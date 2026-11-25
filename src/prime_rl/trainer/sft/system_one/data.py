@@ -151,8 +151,14 @@ def _find_violation(
     if "mm_kwargs" in rendered:
         if any("video" in key for key in rendered["mm_kwargs"]):
             return f"video inputs are not supported, got {sorted(rendered['mm_kwargs'])}"
-        if not rendered["mm_kwargs"]:
-            return "mm_kwargs is empty"
+        # Without pixel_values the model would train without the images
+        missing = {"pixel_values", "image_grid_thw"} - set(rendered["mm_kwargs"])
+        if missing:
+            return f"mm_kwargs lacks {sorted(missing)}"
+        # More than the record's are fine: a prompt per question shows them in each
+        num_images = len(rendered["mm_kwargs"]["image_grid_thw"])
+        if num_images < len(request.images):
+            return f"{num_images} images rendered of the record's {len(request.images)}"
         token_types = rendered["mm_token_type_ids"]
         if len(token_types) != len(input_ids):
             return f"{len(token_types)} mm_token_type_ids for {len(input_ids)} input_ids"
@@ -221,7 +227,8 @@ def check_images(request: SystemOneRequest, takes_images: bool) -> None:
     """Raise if the record has images that the run would leave out."""
     if request.images and not takes_images:
         raise ValueError(
-            f"record {request.id!r} has images, which need [model.vlm] and a model whose strategy reads images"
+            f"record {request.id!r} has images, which need [model.vlm] and a model whose strategy reads images; to "
+            "train without them, drop or rename the column"
         )
 
 
@@ -244,7 +251,10 @@ def render_sample(
     image_token_id = None if strategy.processor is None else strategy.config.image_token_id
     check_rendered_request(rendered, request, strategy.config.get_text_config().vocab_size, image_token_id)
     if image_token_id is not None and has_stray_image_token(rendered, image_token_id):
-        get_logger().warning(f"Skipping record {request.id!r}: its text holds the model's image token")
+        get_logger().warning(
+            f"Skipping record {request.id!r}: its rendering has the model's image token outside its images, as when "
+            "its text holds it"
+        )
         return None
     if len(rendered["input_ids"]) > seq_len:
         get_logger().warning(
@@ -281,9 +291,12 @@ def check_columns(dataset: Dataset, columns: SystemOneColumnsConfig) -> None:
         column = getattr(columns, field)
         feature = dataset.features[column]
         if not (isinstance(feature, Value) and feature.dtype in ("string", "large_string", "string_view")):
+            hint = "a text state as a JSON string"
+            if field == "images":
+                hint = "a list of base64 data URLs; drop or rename the column if it is not for the model"
             raise ValueError(
                 f"data.columns.{field} is {column!r}, a column of type {feature}, but System One columns hold "
-                "JSON text: store each value with json.dumps (a text state as a JSON string)"
+                f"JSON text: store each value with json.dumps ({hint})"
             )
 
 
@@ -299,6 +312,11 @@ def check_records(
     """Parse every ``world_size``-th row from ``rank`` of the split ``split`` of the source ``source`` once, so that a
     malformed record, or one with images when the run does not take them, stops the run at startup."""
     check_columns(dataset, columns)
+    if takes_images and rank == 0 and columns.images not in dataset.column_names:
+        get_logger().warning(
+            f"Source {source!r}, split {split!r} has no {columns.images!r} column (data.columns.images), so its "
+            f"records have no images: its columns are {dataset.column_names}"
+        )
     rows = dataset.shard(world_size, rank, contiguous=False)
     names = dict.fromkeys([*columns.model_dump().values(), "__index"])
     rows = rows.select_columns([name for name in names if name in rows.column_names])
