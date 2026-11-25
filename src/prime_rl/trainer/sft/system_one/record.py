@@ -43,6 +43,8 @@ class SystemOneRequest:
     state: Any
     """The state to decide on: text, or an object or array."""
     questions: tuple[Question, ...]
+    images: tuple[str, ...] = ()
+    """Images the model sees with the state, in order, as base64 data URLs."""
 
 
 def _decode(row: Mapping, column: str) -> Any:
@@ -65,6 +67,21 @@ def _decode_labels(row: Mapping, column: str, question_ids: set[str]) -> Mapping
     if not set(given) <= question_ids:
         raise ValueError(f"column {column!r} has labels for unknown questions {sorted(set(given) - question_ids)}")
     return given
+
+
+def _decode_images(row: Mapping, column: str) -> tuple[str, ...]:
+    """The images column as data URLs, which are not decoded here. An absent column and a null both mean no images."""
+    images = None if row.get(column) is None else _decode(row, column)
+    if images is None:
+        return ()
+    if not isinstance(images, list) or not all(
+        isinstance(url, str) and url.startswith("data:image/") and ";base64," in url for url in images
+    ):
+        raise ValueError(
+            f"column {column!r} must hold a list of base64 data URLs (data:image/...;base64,...); drop or rename the "
+            "column if it is not for the model"
+        )
+    return tuple(images)
 
 
 def _parse_question(question_id: str, definition: Any) -> Question:
@@ -147,6 +164,7 @@ def parse_record(
         if not isinstance(definitions, Mapping) or not definitions or "" in definitions:
             raise ValueError(f"column {columns.questions!r} must hold a non-empty object with non-empty question ids")
         questions = tuple(_parse_question(question_id, definition) for question_id, definition in definitions.items())
+        images = _decode_images(row, columns.images)
         hard = _decode_labels(row, columns.label, set(definitions))
         soft = _decode_labels(row, columns.soft_label, set(definitions))
         targets = []
@@ -156,4 +174,4 @@ def parse_record(
     # Deeply nested JSON raises RecursionError, a number too large for a float OverflowError
     except (ValueError, RecursionError, OverflowError) as error:
         raise ValueError(f"record {record_id!r}: {error}") from None
-    return SystemOneRequest(record_id, state, questions), targets
+    return SystemOneRequest(record_id, state, questions, images), targets

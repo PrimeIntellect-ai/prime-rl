@@ -404,13 +404,15 @@ soft_label  {"team": {"technical": 0.75, "billing": 0.25}}
 
 `instructions` is optional. A soft label gives every option a probability; one that sums to 1 within 0.005 per option (at least 0.05) is rescaled. A question's target is its soft label, else its hard label one-hot; a question with neither is not trained. A record without a labelled question, or whose rendering is longer than `data.seq_len`, is skipped: the trainer never truncates a rendering.
 
+**Images.** An optional `images` column holds a record's images as JSON text, a list of base64 data URLs (`data:image/png;base64,...`), shown with the state in that order. They need `[model.vlm]`, which needs `micro_batch_size = 1`, and a strategy that reads images; a record with images stops any other run at startup, as does a column of that name that holds anything else (drop or rename it). The startup check does not decode images. `[model.vlm]` freezes the vision encoder by default, and rows without images train alongside. With `[model.vlm]`, a record whose text holds the model's image token is skipped with a warning, as the model would put image features there. Video is not supported.
+
 **Loss and metrics.** The decision loss is soft cross-entropy plus `brier_weight` x Brier score per labelled question, in float32. It runs inside the forward, on the final hidden states, in place of the LM head, and is divided by the step's labelled questions, so `loss/mean` and `val/loss` are means per labelled question. `loss/{ce,brier,accuracy}/{mean,std,min,max}` and `val/{ce,brier,accuracy}/...` hold the per-question metrics; `accuracy` is whether the top logit is at a top option of the target. No perplexity is logged, and MFU leaves out the skipped LM head.
 
-**Not supported.** System One data refuses `loss.type = "ce"`, a non-default `[renderer]` (the strategy owns any template), `model.cp > 1` and `[model.vlm]`. It also refuses `[model.lora]` and `[eval]`, for reasons that hold for a decision model with its own readout: how that readout trains next to adapters is undefined, its LoRA checkpoint can be neither exported nor served, and vLLM serves it as a pooling model, which generates no text for an online eval to score. For now both are refused for all System One data, whatever the readout. Score checkpoints with `[val]` or as below.
+**Not supported.** System One data refuses `loss.type = "ce"`, a non-default `[renderer]` (the strategy owns any template), and `model.cp > 1`. It also refuses `[model.lora]` and `[eval]`, for reasons that hold for a decision model with its own readout: how that readout trains next to adapters is undefined, its LoRA checkpoint can be neither exported nor served, and vLLM serves it as a pooling model, which generates no text for an online eval to score. For now both are refused for all System One data, whatever the readout. Score checkpoints with `[val]` or as below.
 
 With several data ranks, validation stops when one rank runs out of packed rows, so some validation records can go unscored.
 
-**Writing a strategy.** A decision model is a prime-rl model class, registered like any other, and a `SystemOneStrategy` (`src/prime_rl/trainer/sft/system_one/data.py`), registered in `SYSTEM_ONE_STRATEGIES` (`src/prime_rl/trainer/sft/system_one/strategies.py`) under the first architecture name in the checkpoint's `config.json`. The readout is a head of the class's own, whose weights the class holds, or a head it already has, such as the LM head read at the option tokens. The trainer builds the strategy once, as `MyStrategy(tokenizer, model.config)`.
+**Writing a strategy.** A decision model is a prime-rl model class, registered like any other, and a `SystemOneStrategy` (`src/prime_rl/trainer/sft/system_one/data.py`), registered in `SYSTEM_ONE_STRATEGIES` (`src/prime_rl/trainer/sft/system_one/strategies.py`) under the first architecture name in the checkpoint's `config.json`. The readout is a head of the class's own, whose weights the class holds, or a head it already has, such as the LM head read at the option tokens. The trainer builds the strategy once, as `MyStrategy(tokenizer, model.config)`. A strategy that reads images has `modalities = frozenset({"image"})` and gets the model's processor as a third argument with `[model.vlm]`; for a request with images it also returns `mm_kwargs` (their inputs to the model's forward) and `mm_token_type_ids` (1 at their tokens, else 0). `load_image` (`src/prime_rl/trainer/sft/system_one/images.py`) loads an image as vLLM does.
 
 - `render_request(request, max_tokens)` returns the request's tokens, attention segments (`seq_lens`), the token spans each question is read from (`read_spans`) and optionally each question's option order, or `None` to skip the record. It never sees labels and must be deterministic. It may shorten its own content to fit `max_tokens`; a longer rendering is skipped.
 - `option_logits(model, hidden_states, input_ids, questions)` runs once per micro-batch inside the forward, on the packed row's final hidden states. Each `ReadQuestion` gives its option order, its reads and its record's span in row positions. It returns one 1-D tensor: each question's option logits in turn.
@@ -452,12 +454,18 @@ from prime_rl.trainer.sft.system_one.loss import build_decision_loss_inputs, che
 from prime_rl.trainer.sft.system_one.record import parse_record
 from prime_rl.trainer.sft.system_one.strategies import get_system_one_strategy_cls
 
+# With [model.vlm], a strategy that reads images takes the model's processor as a third argument
 strategy = get_system_one_strategy_cls(model.config)(tokenizer, model.config)
 source = data_config.source[0]  # the source the row is from
 request, _ = parse_record(row, source.columns, source.name, source.split)
 sample = render_sample(strategy, request, data_config.seq_len)  # None when skipped
 input_ids = torch.from_numpy(sample["input_ids"]).to(device)
 inputs = build_decision_loss_inputs([len(input_ids)], [sample["sample_data"]]).to(device)
+
+images = {}
+if sample["mm_kwargs"] is not None:
+    images["mm_kwargs"] = {key: value.to(device) for key, value in sample["mm_kwargs"].items()}
+    images["mm_token_type_ids"] = torch.from_numpy(sample["mm_token_type_ids"]).to(device)[None]
 
 def read(hidden_states):
     return {"logits": checked_option_logits(strategy, model, hidden_states[0], input_ids, inputs.questions)}
@@ -468,6 +476,7 @@ with torch.no_grad():
         input_ids[None],
         torch.from_numpy(sample["position_ids"]).to(device)[None],
         seq_lens=torch.tensor(sample["seq_lens"], device=device),
+        **images,
         hidden_states_fn=read,
     )["logits"]
 per_question = logits.split([len(question.options) for question in inputs.questions])
