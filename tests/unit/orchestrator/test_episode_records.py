@@ -23,7 +23,7 @@ from prime_rl.monitors.file.traces.index import index_record, index_row
 from prime_rl.monitors.file.traces.live import get_live_dir, read_live
 from prime_rl.monitors.file.traces.update import fold_trace_updates
 from prime_rl.monitors.prime import RecordUpload
-from prime_rl.orchestrator.algo.routing import assign_advantage
+from prime_rl.orchestrator.algo.routing import assign_advantage, assign_advantages
 from prime_rl.orchestrator.annotations import log_arrival, stamp_arrival, stamp_batch
 from tests.unit.orchestrator.test_train_sink import trace, whole_episode
 
@@ -153,6 +153,32 @@ def test_a_folded_advantage_credits_only_trainable_branches():
     assign_advantage(received.traces[0], 0.5)
     fold_trace_updates(record["traces"][0], stamp_batch([received], step=1))
     assert [node.get("advantages") for node in record["traces"][0]["nodes"]] == [None, [0.5, 0.5], None]
+
+
+def test_folded_token_advantages_land_on_the_tokens_they_credit():
+    """Per-token credit after a fork: a reader folds each branch's advantages onto its record,
+    the shared answer taking them from the first branch, as it trained."""
+    nodes = [
+        vf.MessageNode(message=vf.UserMessage(content="q"), token_ids=[1], mask=[False]),
+        vf.MessageNode(
+            parent=0, message=vf.AssistantMessage(content="A"), sampled=True, token_ids=[2, 3], mask=[True, True]
+        ),
+        vf.MessageNode(
+            parent=1, message=vf.AssistantMessage(content="B1"), sampled=True, token_ids=[4, 5], mask=[True, True]
+        ),
+        vf.MessageNode(parent=1, message=vf.AssistantMessage(content="B2"), sampled=True, token_ids=[6], mask=[True]),
+    ]
+    source = whole_episode([trace()])
+    source.traces[0].nodes = nodes
+    b1, b2 = (
+        next(b.index for b in source.traces[0].branches if b.nodes[-1].message.content == leaf) for leaf in ("B1", "B2")
+    )
+    received = recorded_head(source)
+    record = orjson.loads(received.take_record().json)
+    assign_advantages(received.traces[0], b1, [1.0, 2.0, 3.0, 4.0])
+    assign_advantages(received.traces[0], b2, [-1.0])
+    fold_trace_updates(record["traces"][0], stamp_batch([received], step=1))
+    assert [node.get("advantages") for node in record["traces"][0]["nodes"]] == [None, [1.0, 2.0], [3.0, 4.0], [-1.0]]
 
 
 def test_sampled_episodes_keep_their_arrival_under_a_trace_sample(tmp_path, monkeypatch):

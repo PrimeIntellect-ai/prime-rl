@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from prime_rl import monitors
 from prime_rl.monitors.base import Kind
 from prime_rl.monitors.file.traces.update import make_update
-from prime_rl.orchestrator.credit import trace_advantage
+from prime_rl.orchestrator.credit import branch_token_advantages, trace_advantage
 
 if TYPE_CHECKING:
     from prime_rl.env.heads import EpisodeHead, EpisodeRecord
@@ -44,14 +44,18 @@ async def log_arrival(episode: EpisodeHead, kind: Kind, step: int) -> None:
 
 def stamp_batch(episodes: list[EpisodeHead], step: int) -> list[dict[str, Any]]:
     """The updates a batched cohort adds over its arrival records: membership, the step
-    it ties to, and the trace's advantage with the branches it credits."""
+    it ties to, and the trace's advantage with the branches it credits; for a trace credited
+    per token, each branch's advantages over its trainable tokens."""
     now = time.time()
     updates = []
     for episode in episodes:
         for trace in episode.traces:
             info: dict[str, Any] = {"effective": True, "ship": {"step": step, "time": now}}
+            branches = {}
             if (advantage := trace_advantage(trace)) is not None:
                 info["advantage"] = advantage
                 info["advantage_branches"] = trace.trainable_branches
-            updates.append(make_update(trace.id, info=info))
+                if (values := branch_token_advantages(trace)) is not None:
+                    branches = {branch: {"token_advantages": v.tolist()} for branch, v in values.items()}
+            updates.append(make_update(trace.id, info=info, branches=branches))
     return updates

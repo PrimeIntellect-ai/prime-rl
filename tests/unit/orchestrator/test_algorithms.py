@@ -8,11 +8,19 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage
 
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
-from prime_rl.orchestrator.algo import EchoAlgorithm, assign_advantage, stamp_loss_routing
+from prime_rl.orchestrator.algo import (
+    EchoAlgorithm,
+    assign_advantage,
+    assign_advantages,
+    stamp_loss_routing,
+    token_layout,
+)
 from prime_rl.orchestrator.algo.base import iter_trainable_traces
+from prime_rl.orchestrator.algo.routing import is_trainable
+from prime_rl.orchestrator.credit import trace_advantage
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.transports.batch.types import TrainingSample
-from tests.unit.orchestrator.test_train_sink import received, train_trace
+from tests.unit.orchestrator.test_train_sink import received, train_trace, whole_episode
 
 FROZEN = {"name": "org/ref-model", "base_url": "http://ref:8001/v1"}
 
@@ -321,6 +329,41 @@ def test_assign_advantage_broadcasts_over_mask():
     [trace] = received(_make_episode()).traces
     assign_advantage(trace, 1.0)
     assert train_trace(trace)[0].advantages == pytest.approx([0.0, 0.0, 1.0, 1.0, 0.0, 1.0])
+
+
+def test_assign_advantages_credits_each_trainable_token_once():
+    """A fork after a shared answer: the shared node trains in the first branch only, so each
+    trainable token takes exactly one of the values assigned per branch, written into the
+    samples an env worker kept and built by the trainer."""
+    nodes = [
+        _node(UserMessage(content="U"), parent=None, sampled=False, token_ids=[1]),
+        _node(AssistantMessage(content="A"), parent=0, sampled=True, token_ids=[2, 3]),
+        _node(AssistantMessage(content="B1"), parent=1, sampled=True, token_ids=[4, 5]),
+        _node(AssistantMessage(content="B2"), parent=1, sampled=True, token_ids=[6]),
+    ]
+    trace = vf.Trace(
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        nodes=nodes,
+        rewards={},
+        ok=True,
+    )
+    b1, b2 = (next(b.index for b in trace.branches if b.nodes[-1].message.content == leaf) for leaf in ("B1", "B2"))
+    [head] = received(whole_episode([trace])).traces
+    assert token_layout(head) == {b1: [2, 2], b2: [1]}
+
+    assign_advantages(head, b1, [1.0, 2.0, 3.0, 4.0])
+    assign_advantages(head, b2, [-1.0])
+    credited = {
+        (sample.branch_index, int(token_id)): float(advantage)
+        for sample in train_trace(head)
+        for token_id, trainable, advantage in zip(sample.token_ids, sample.mask, sample.advantages, strict=True)
+        if trainable
+    }
+
+    assert credited == {(b1, 2): 1.0, (b1, 3): 2.0, (b1, 4): 3.0, (b1, 5): 4.0, (b2, 6): -1.0}
+    assert is_trainable(head)
+    assert trace_advantage(head) == pytest.approx(1.8)
 
 
 # --------------------------------------------------------------------------
