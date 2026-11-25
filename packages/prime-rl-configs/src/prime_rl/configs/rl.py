@@ -598,8 +598,9 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_score_centering(self):
+        """Capture the sampler's probabilities for score centering and the exact sampler KL."""
         loss = self.trainer.loss
-        if loss.type != "icepop" or not loss.score_centering:
+        if not getattr(loss, "captures_sampler_head", False):
             return self
         if not self.orchestrator.policy_samplings:
             raise ValueError("Score centering requires a policy-sampled training source")
@@ -625,6 +626,17 @@ class RLConfig(BaseConfig):
             raise ValueError(
                 "With speculative decoding, sampler logprobs (e.g. score centering) need truncated train sampling"
             )
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_sampler_kl_pruning(self):
+        """Zero-advantage tokens still have a sampler KL gradient, so keep them, unless
+        orchestrator.prune_zero_advantages is set: then the KL trains only on rollouts with an advantage."""
+        if "prune_zero_advantages" in self.orchestrator.model_fields_set:
+            return self
+        sampler_kl = getattr(self.trainer.loss, "sampler_kl", None)
+        if sampler_kl is not None and (sampler_kl.coef > 0 or sampler_kl.adaptive is not None):
+            self.orchestrator.prune_zero_advantages = False
         return self
 
     @model_validator(mode="after")
