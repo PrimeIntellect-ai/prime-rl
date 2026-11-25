@@ -25,6 +25,7 @@ from prime_rl.trainer.models.qwen3_5 import (
     ClefFlashForJointSchema,
     Qwen3_5Config,
     Qwen3_5ForCausalLM,
+    Qwen3_5ForSlotDecision,
     Qwen3_5MoeConfig,
     Qwen3_5MoeTextConfig,
     Qwen3_5TextConfig,
@@ -103,7 +104,7 @@ assert len(_CUSTOM_CAUSAL_LM_BY_MODEL_TYPE) == len(_CUSTOM_CAUSAL_LM_MODELS), (
 _TEXT_ONLY_COMPOSITE_CONFIGS: frozenset[type[PretrainedConfig]] = frozenset({Qwen3_5Config})
 
 # Classes selected, before their family's, by an extra config file next to a stock config.json or by one of its keys.
-_SELECTED_BY_EXTRA_CONFIG: tuple[type[PreTrainedModelPrimeRL], ...] = (ClefFlashForJointSchema,)
+_SELECTED_BY_EXTRA_CONFIG: tuple[type[PreTrainedModelPrimeRL], ...] = (ClefFlashForJointSchema, Qwen3_5ForSlotDecision)
 
 
 def check_selected_by_extra_config(classes: tuple[type[PreTrainedModelPrimeRL], ...]) -> None:
