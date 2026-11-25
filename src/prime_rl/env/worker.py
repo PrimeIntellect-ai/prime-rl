@@ -11,12 +11,13 @@ import zmq
 import zmq.asyncio
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.env import EnvConfig
-from verifiers.v1.delta import DeltaStreamer, dump
+from verifiers.v1.delta import DeltaStreamer
 from verifiers.v1.episode import Episode
 from verifiers.v1.task import Task
 from verifiers.v1.utils.loaders import load_environment
 
 from prime_rl.env.encoding import pack
+from prime_rl.env.heads import episode_head
 from prime_rl.env.types import (
     BaseResponse,
     CancelRequest,
@@ -24,8 +25,8 @@ from prime_rl.env.types import (
     HealthResponse,
     RunRequest,
     RunResponse,
-    TraceSummary,
 )
+from prime_rl.monitors.file.traces.index import index_record
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -63,6 +64,27 @@ def set_episode_hook(hook: EpisodeHook | None) -> None:
     a delivered one whose client cancels the run within `LATE_CANCEL_SECONDS`."""
     global _episode_hook
     _episode_hook = hook
+
+
+def progress_delta(delta: dict) -> dict | None:
+    """What a trace delta tells about the trace's progress: its phase, its model calls'
+    usage and sub-agent sessions, its errors; None if nothing."""
+    progress: dict = {"trace": delta["trace"]}
+    if delta.get("discard"):
+        progress["discard"] = True
+    if "open" in delta:
+        progress["open"] = {}
+    if calls := delta.get("calls"):
+        progress["calls"] = [
+            {
+                "usage": call.get("usage"),
+                **({"acp": {"agent_session_id": acp.get("agent_session_id")}} if (acp := call.get("acp")) else {}),
+            }
+            for call in calls
+        ]
+    if changed := {key: value for key, value in (delta.get("set") or {}).items() if key in ("errors", "timing")}:
+        progress["set"] = changed
+    return progress if len(progress) > 1 else None
 
 
 class _Keeping:
@@ -171,10 +193,12 @@ class EnvWorker:
         (slot,) = self.env.slots(self._build_task(req.task_data))
 
         async def send_delta(delta: dict) -> None:
+            if not req.live and (delta := progress_delta(delta)) is None:
+                return
             await self.frontend.send_multipart([client_id, request_id, b"delta", pack(delta)], copy=False)
 
         # The gate spans requests: it bounds this worker's episodes in flight. The
-        # streamer ships each trace as it changes; the reply below carries only the rest.
+        # streamer ships each trace as it changes; the reply below carries only its head.
         hook = _episode_hook
         async with DeltaStreamer(lambda: slot.traces, send_delta) as streamer:
             episode = await self.env.run_slot(slot, ctx, self._gate, on_trace=streamer.watch)
@@ -192,12 +216,21 @@ class EnvWorker:
                     keeping.abandon()
                     raise
                 self._kept[request_id] = (hook, episode)
-        return RunResponse(
-            head=dump(episode, exclude={"traces"}),
-            traces=[
-                TraceSummary(id=trace.id, nodes=len(trace.nodes), calls=len(trace.calls)) for trace in episode.traces
-            ],
-        )
+        if req.run is not None:
+            episode.record_run(req.run)
+            for trace in episode.traces:
+                trace.info["kind"] = req.run.work.type
+                trace.info["dispatch"] = {"step": req.run.work.step, "time": trace.timing.start}
+
+        def reply() -> RunResponse:
+            response = RunResponse(head=episode_head(episode).model_dump(mode="json"))
+            if req.record is not None:
+                response.record = episode.to_json(float_decimals=req.record.float_decimals)
+                response.index = index_record(episode)
+            return response
+
+        # A long episode's head and record take a while to build: off the loop.
+        return await asyncio.to_thread(reply)
 
     async def _handle(self, client_id: bytes, request_id: bytes, method: bytes, payload: bytes) -> None:
         try:

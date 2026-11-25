@@ -6,7 +6,7 @@ import random
 import uuid
 from collections import Counter, defaultdict, deque
 from collections.abc import Iterable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import verifiers.v1 as vf
 
@@ -16,6 +16,9 @@ from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.types import TaskRequest
 from prime_rl.orchestrator.utils import episode_env_name
 from prime_rl.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from prime_rl.env.heads import EpisodeHead
 
 
 class TrainSource(Reconfigurable):
@@ -77,7 +80,7 @@ class TrainSource(Reconfigurable):
         for group_id in group_ids:
             self.open_groups.pop(group_id, None)
 
-    def on_result(self, group: list[vf.Episode]) -> bool:
+    def on_result(self, group: list[EpisodeHead]) -> bool:
         """Report a finalized group and return whether it should train."""
         if not group:
             raise ValueError("Cannot report an empty rollout group")

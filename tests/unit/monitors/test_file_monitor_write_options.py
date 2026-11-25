@@ -10,15 +10,26 @@ import orjson
 import pytest
 
 from prime_rl.configs.monitors import FileMonitorConfig
+from prime_rl.env.heads import EpisodeHead, recorded_head
 from prime_rl.monitors.file.monitor import FileMonitor, in_trace_sample
 from prime_rl.monitors.file.traces import get_annotations_dir, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import chunk_path
 from prime_rl.monitors.file.traces.live import get_live_dir, get_pending_dir
 from prime_rl.orchestrator.annotations import stamp_batch
 from tests.unit.orchestrator.test_episode_records import _over_the_wire
-from tests.unit.orchestrator.test_train_sink import episode, trace
+from tests.unit.orchestrator.test_train_sink import trace, whole_episode
 
 GROUPS = [f"group-{i}" for i in range(400)]
+
+
+def episode(group: str) -> EpisodeHead:
+    """A finished episode of ``group`` as the orchestrator receives it, holding its record."""
+    return recorded_head(whole_episode([trace()], group=group))
+
+
+def _log(monitor: FileMonitor, episodes: list[EpisodeHead], kind: str = "train") -> None:
+    records = [(head, head.take_record()) for head in episodes]
+    asyncio.run(monitor.log_records(records, step=1, kind=kind))
 
 
 def _monitor(tmp_path, fraction: float = 1.0, live: bool = True) -> FileMonitor:
@@ -31,7 +42,7 @@ def _live_events(group: str) -> tuple[str, list[dict]]:
     """A dispatched train episode of ``group`` as the dispatcher reports it: its placeholder,
     then the deltas that stream its trace. Returns the trace id and the events."""
     dispatch = {"id": f"d-{group}", "kind": "train", "group": group}
-    _, deltas = _over_the_wire(episode([trace()], group=group))
+    _, deltas = _over_the_wire(whole_episode([trace()], group=group))
     events = [{"pending": dispatch["id"], "dispatch": dispatch}]
     events.extend({"delta": delta, "dispatch": dispatch} for delta in deltas)
     return deltas[0]["trace"], events
@@ -62,8 +73,7 @@ def test_fraction_must_be_in_range(fraction):
 
 def test_writes_whole_sampled_groups(tmp_path):
     monitor = _monitor(tmp_path, 0.25)
-    episodes = [episode([trace()], group=g) for g in GROUPS for _ in range(2)]
-    asyncio.run(monitor.log_episodes(episodes, step=1, kind="train", subset="all"))
+    _log(monitor, [episode(g) for g in GROUPS for _ in range(2)])
 
     written = [record["group"]["id"] for record in _stream_records(tmp_path)]
     expected = {g for g in GROUPS if in_trace_sample(g, 0.25)}
@@ -74,16 +84,15 @@ def test_writes_whole_sampled_groups(tmp_path):
 
 def test_eval_episodes_are_always_written(tmp_path):
     monitor = _monitor(tmp_path, 0.01)
-    episodes = [episode([trace()], group=g) for g in GROUPS[:20]]
-    asyncio.run(monitor.log_episodes(episodes, step=1, kind="eval", subset="all"))
+    _log(monitor, [episode(g) for g in GROUPS[:20]], kind="eval")
     assert len(_stream_records(tmp_path)) == 20
 
 
 def test_annotations_follow_the_written_traces(tmp_path):
     monitor = _monitor(tmp_path, 0.5)
     inside, outside = _group_pair(0.5)
-    episodes = [episode([trace()], group=inside), episode([trace()], group=outside)]
-    asyncio.run(monitor.log_episodes(episodes, step=1, kind="train", subset="all"))
+    episodes = [episode(inside), episode(outside)]
+    _log(monitor, episodes)
     asyncio.run(monitor.log_annotations(stamp_batch(episodes, step=1)))
 
     stream = chunk_path(get_annotations_dir(tmp_path) / "unknown", 0)
@@ -95,7 +104,7 @@ def test_a_producer_without_episodes_keeps_its_annotations(tmp_path):
     """The trainer annotates traces it never logged: its updates are not sampled."""
     monitor = _monitor(tmp_path, 0.5)
     _, outside = _group_pair(0.5)
-    asyncio.run(monitor.log_annotations(stamp_batch([episode([trace()], group=outside)], step=1)))
+    asyncio.run(monitor.log_annotations(stamp_batch([episode(outside)], step=1)))
     assert chunk_path(get_annotations_dir(tmp_path) / "unknown", 0).exists()
 
 
@@ -141,5 +150,5 @@ def test_live_off_clears_a_previous_attempts_live_traces(tmp_path):
 
 def test_live_off_still_writes_finished_episodes(tmp_path):
     monitor = _monitor(tmp_path, live=False)
-    asyncio.run(monitor.log_episodes([episode([trace()], group="g")], step=1, kind="train", subset="all"))
+    _log(monitor, [episode("g")])
     assert len(_stream_records(tmp_path)) == 1

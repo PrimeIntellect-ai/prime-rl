@@ -1,8 +1,9 @@
 from typing import ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.sampling import SamplingConfig
+from verifiers.v1.trace import RunInfo
 
 
 class BaseRequest(BaseModel):
@@ -45,6 +46,13 @@ class TrainRequest(BaseModel):
     """The source's dumped `AlgoConfig`."""
 
 
+class RecordRequest(BaseModel):
+    """Return the episode's record (`Episode.to_json`) for the trace monitors."""
+
+    float_decimals: int | None = 4
+    """Digits per-token float streams are rounded to; None keeps every digit."""
+
+
 class RunRequest(BaseRequest):
     """One env-rollout, shipping the task itself: `task_data` is the dumped
     `TaskData` the worker validates into the taskset's declared type."""
@@ -56,24 +64,22 @@ class RunRequest(BaseRequest):
     sampling: SamplingConfig
     train: TrainRequest | None = None
     """Set on train rollouts: the worker keeps their training samples. None for eval."""
-
-
-class TraceSummary(BaseModel):
-    """A finished trace's identity and size, for the client's assembly check."""
-
-    id: str
-    nodes: int
-    calls: int
+    run: RunInfo | None = None
+    """The run identity the worker stamps on the episode before recording it."""
+    record: RecordRequest | None = None
+    """Return the episode's record; None: the client persists no trace of it."""
+    live: bool = True
+    """Stream every change of the episode's traces; False streams only their progress (phase,
+    turns, errors), without messages."""
 
 
 class RunResponse(BaseResponse):
-    """The end of a run whose traces already streamed as deltas (`verifiers.v1.delta`)."""
+    """The end of a run: what the client knows of the episode. The worker keeps the episode
+    itself and its training samples."""
 
     head: dict | None = None
-    """The rollout's episode without its traces — its standing (`id`/`env`/`errors`,
-    carrying episode-level errors even when no trace minted); task-specific data
-    preserved in `model_extra`."""
-
-    traces: list[TraceSummary] = Field(default_factory=list)
-    """The finished traces in episode order, with the sizes the client's assembly
-    must match."""
+    """The episode's `EpisodeHead`, dumped."""
+    record: bytes | None = None
+    """The episode's record (`Episode.to_json`), when the request asked for it."""
+    index: dict | None = None
+    """The record's index row source (`index_record`), with the record."""

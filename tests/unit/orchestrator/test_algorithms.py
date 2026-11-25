@@ -12,7 +12,7 @@ from prime_rl.orchestrator.algo import EchoAlgorithm, assign_advantage, stamp_lo
 from prime_rl.orchestrator.algo.base import iter_trainable_traces
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.transports.batch.types import TrainingSample
-from tests.unit.orchestrator.test_train_sink import train_trace
+from tests.unit.orchestrator.test_train_sink import received, train_trace
 
 FROZEN = {"name": "org/ref-model", "base_url": "http://ref:8001/v1"}
 
@@ -298,10 +298,12 @@ def test_compaction_retries_train_only_causally_used_generations():
     assert branches["accepted summary"].trainable is True
     assert branches["answer"].trainable is True
 
-    assign_advantage(trace, 1.0)
+    episode = vf.Episode(env=vf.EnvInfo(id="test", name="test"), task=trace.task, traces=[trace], ok=True)
+    [head] = received(episode).traces
+    assign_advantage(head, 1.0)
     credited = {
         int(token_id): float(advantage)
-        for sample in train_trace(trace)
+        for sample in train_trace(head)
         for token_id, trainable, advantage in zip(sample.token_ids, sample.mask, sample.advantages, strict=True)
         if trainable
     }
@@ -310,13 +312,13 @@ def test_compaction_retries_train_only_causally_used_generations():
 
 
 def test_uncredited_rl_tokens_do_not_train():
-    trace = _make_episode().traces[0]
+    [trace] = received(_make_episode()).traces
     with pytest.raises(ValueError, match="no advantages"):
         train_trace(trace)
 
 
 def test_assign_advantage_broadcasts_over_mask():
-    trace = _make_episode().traces[0]
+    [trace] = received(_make_episode()).traces
     assign_advantage(trace, 1.0)
     assert train_trace(trace)[0].advantages == pytest.approx([0.0, 0.0, 1.0, 1.0, 0.0, 1.0])
 

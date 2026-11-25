@@ -2,14 +2,13 @@
 
 A DEALER socket + msgpack, with a single receive loop matching replies to
 per-request futures by `request_id` and routing a run's `delta` frames to its
-assembly (`verifiers.v1.delta`). The loop drains every queued frame per wakeup and
+caller (`verifiers.v1.delta`). The loop drains every queued frame per wakeup and
 handles the batch in arrival order, so a busy event loop costs one turn per batch
 rather than one per delta. Speaks the typed pydantic request/response models
 (`env/types.py`) end-to-end: a request is `model_dump`ed onto the wire; a run's
-traces stream back turn by turn and the assembled record is `model_validate`d into a
-`WireEpisode` once the reply lands — `Trace`s typed as `Trace[WireTaskData]`
-(non-strict task, so env fields survive without importing the env). Health is just
-another request (no dedicated probe thread).
+traces stream back turn by turn, and its reply carries the episode's head
+(`prime_rl.env.heads`): the worker keeps the episode. Health is just another request
+(no dedicated probe thread).
 """
 
 import asyncio
@@ -24,25 +23,24 @@ import zmq
 import zmq.asyncio
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.sampling import SamplingConfig
-from verifiers.v1.delta import EpisodeAssembly
-from verifiers.v1.episode import WireEpisode
+from verifiers.v1.trace import RunInfo
 
 from prime_rl.env.encoding import unpack
+from prime_rl.env.heads import EpisodeHead, EpisodeRecord
 from prime_rl.env.types import (
     BaseRequest,
     BaseResponse,
     CancelRequest,
     HealthRequest,
     HealthResponse,
+    RecordRequest,
     RunRequest,
     RunResponse,
-    TraceSummary,
     TrainRequest,
 )
 from prime_rl.utils.logger import get_logger
 
 ResponseT = TypeVar("ResponseT", bound=BaseResponse)
-DecodedT = TypeVar("DecodedT")
 
 # How much of the queue one wakeup drains before the loop yields.
 MAX_BATCH_FRAMES = 512
@@ -63,25 +61,6 @@ def _unpack_all(payloads: list[memoryview]) -> list[object]:
     return decoded
 
 
-def assemble_episode(assembly: EpisodeAssembly, head: dict, summaries: list[TraceSummary]) -> dict:
-    """The full episode record: `head` (the episode without its traces) joined with the
-    assembled traces in the server's order. A count mismatch means a delta was lost,
-    which the wire never does in a live connection — fail loudly."""
-    traces = []
-    for summary in summaries:
-        trace = assembly.traces.get(summary.id)
-        if trace is None:
-            raise RuntimeError(f"served episode is missing trace {summary.id}")
-        trace = {key: value for key, value in trace.items() if key != "pending"}
-        if len(trace["nodes"]) != summary.nodes or len(trace["calls"]) != summary.calls:
-            raise RuntimeError(
-                f"served trace {summary.id} assembled {len(trace['nodes'])} nodes / "
-                f"{len(trace['calls'])} calls, server reports {summary.nodes} / {summary.calls}"
-            )
-        traces.append(trace)
-    return {**head, "traces": traces}
-
-
 class EnvClient:
     """Receive streamed episodes, decoding each drained batch of frames at once."""
 
@@ -100,7 +79,6 @@ class EnvClient:
         # garbage-collected before it ever sends
         self._cancel_tasks: set[asyncio.Task] = set()
         self._receiver: asyncio.Task | None = None
-        self._decode_slots = asyncio.BoundedSemaphore(1)
 
     def _ensure_receiver(self) -> None:
         if self._receiver is None:
@@ -213,20 +191,6 @@ class EnvClient:
             raise RuntimeError(response.error or "env worker pool request failed")
         return response
 
-    async def _decode(self, decode: Callable[..., DecodedT], *args: object) -> DecodedT:
-        """Validate a finished episode off the loop, one at a time per client. The
-        receive loop decodes its own batches, so a large episode validating here
-        never holds up another run's deltas."""
-        await self._decode_slots.acquire()
-        decoding = asyncio.create_task(asyncio.to_thread(decode, *args))
-        # Hold the slot until the worker finishes so cancellation cannot overlap decodes.
-        decoding.add_done_callback(lambda _: self._decode_slots.release())
-        try:
-            return await asyncio.shield(decoding)
-        except asyncio.CancelledError:
-            decoding.add_done_callback(lambda task: None if task.cancelled() else task.exception())
-            raise
-
     def _cancel_run(self, run_request_id: str) -> None:
         """Fire-and-forget: tell the pool the caller abandoned the run, so it aborts
         the rollout (or frees what it kept for an episode already sent). A task on the
@@ -267,20 +231,15 @@ class EnvClient:
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
         train: TrainRequest | None = None,
-    ) -> WireEpisode:
-        """Run one rollout; return its episode record — flat traces (typed
-        `Trace[WireTaskData]`) plus the shared stamp. The worker takes the task
-        itself (`task_data`, its dumped `TaskData`). The traces stream in as the
-        rollout runs, one delta per turn or phase change (`verifiers.v1.delta`); `on_delta`
-        sees each as it lands, so a caller can relay or persist the stream. The
-        episode returned is assembled from the same deltas."""
-        assembly = EpisodeAssembly()
-
-        def apply(delta: dict) -> None:
-            assembly.apply(delta)
-            if on_delta is not None:
-                on_delta(delta)
-
+        run: RunInfo | None = None,
+        record: RecordRequest | None = None,
+        live: bool = True,
+    ) -> EpisodeHead:
+        """Run one rollout; return the head of its episode, holding the episode's record
+        (`EpisodeHead.take_record`) when ``record`` asks for it. The worker takes the task
+        itself (`task_data`, its dumped `TaskData`). The traces stream as the rollout runs,
+        one delta per turn or phase change (`verifiers.v1.delta`), or only their progress
+        without ``live``; `on_delta` sees each as it lands."""
         request_id = uuid.uuid4().hex
         response = await self._request(
             RunRequest(
@@ -289,22 +248,25 @@ class EnvClient:
                 model=model,
                 sampling=sampling,
                 train=train,
+                run=run,
+                record=record,
+                live=live,
             ),
             RunResponse,
-            on_delta=apply,
+            on_delta=on_delta,
             request_id=request_id,
         )
         assert response.head is not None
         try:
-            return await self._decode(
-                WireEpisode.model_validate,
-                assemble_episode(assembly, response.head, response.traces),
-            )
+            head = EpisodeHead.model_validate(response.head)
         except BaseException:
             # The reply already arrived, so the worker counts the episode delivered;
             # tell it this caller never got the episode.
             self._cancel_run(request_id)
             raise
+        if response.record is not None:
+            head._record = EpisodeRecord(json=response.record, index=response.index or {})
+        return head
 
     async def close(self) -> None:
         if self._receiver is not None:

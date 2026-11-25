@@ -11,14 +11,14 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal
 
 from prime_rl.configs.monitors import (
     FileMonitorConfig,
     PrimeMonitorConfig,
     WandbMonitorConfig,
 )
-from prime_rl.monitors.base import Kind, Monitor, Subset
+from prime_rl.monitors.base import Kind, Monitor
 from prime_rl.monitors.file import FileMonitor
 from prime_rl.monitors.prime import EVAL_ID_VAR, PrimeMonitor
 from prime_rl.monitors.wandb import WandbMonitor
@@ -26,7 +26,8 @@ from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import format_time, get_logger
 
 if TYPE_CHECKING:
-    import verifiers.v1 as vf
+    from prime_rl.env.heads import EpisodeHead, EpisodeRecord
+    from prime_rl.env.types import RecordRequest
 
 __all__ = [
     "Monitor",
@@ -110,25 +111,37 @@ def get(monitor_cls: type[Monitor]) -> Monitor | None:
     return next((monitor for monitor in MONITORS if isinstance(monitor, monitor_cls)), None)
 
 
-@overload
-async def log(data: dict[str, Any], step: int | None) -> None: ...
-
-
-@overload
-async def log(data: vf.Episode | list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None: ...
-
-
-async def log(
-    data: dict[str, Any] | vf.Episode | list[vf.Episode],
-    step: int | None,
-    kind: Kind = "train",
-    subset: Subset = "effective",
-) -> None:
-    """Log to all registered monitors: a dict of scalar metrics, or episodes
-    with their cohort coordinates (train/eval x all/effective)."""
+async def log(metrics: dict[str, Any], step: int | None) -> None:
+    """Log a dict of scalar metrics to all registered monitors."""
     for monitor in MONITORS:
         try:
-            await monitor.log(data, step=step, kind=kind, subset=subset)
+            await monitor.log(metrics, step=step)
+        except Exception as e:
+            get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
+
+
+def record_request(kind: Kind, group_id: str | None) -> RecordRequest | None:
+    """What a group's episodes must carry back for the monitors that persist them: their
+    records, serialized as the file monitor writes them; None if no monitor persists them."""
+    from prime_rl.env.types import RecordRequest
+
+    wanting = [monitor for monitor in MONITORS if monitor.wants_record(kind, group_id)]
+    if not wanting:
+        return None
+    file = next((monitor for monitor in wanting if isinstance(monitor, FileMonitor)), None)
+    return RecordRequest(float_decimals=file.config.float_decimals) if file is not None else RecordRequest()
+
+
+def wants_live(kind: Kind, group_id: str | None) -> bool:
+    """Whether a monitor shows a group's in-flight traces whole."""
+    return any(monitor.wants_live(kind, group_id) for monitor in MONITORS)
+
+
+async def log_records(records: list[tuple[EpisodeHead, EpisodeRecord]], step: int, kind: Kind) -> None:
+    """Persist finished episodes from their records on all registered monitors."""
+    for monitor in MONITORS:
+        try:
+            await monitor.log_records(records, step=step, kind=kind)
         except Exception as e:
             get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
 
@@ -160,7 +173,7 @@ async def log_live(events: list[dict[str, Any]]) -> None:
             get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
 
 
-async def log_eval_epoch(env_name: str, step: int, episodes: list[vf.Episode]) -> None:
+async def log_eval_epoch(env_name: str, step: int, episodes: list[EpisodeHead]) -> None:
     """Log one finished eval epoch to all registered monitors."""
     for monitor in MONITORS:
         try:

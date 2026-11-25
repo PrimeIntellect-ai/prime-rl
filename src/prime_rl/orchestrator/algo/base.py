@@ -6,11 +6,20 @@ import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
+from prime_rl.env.heads import EpisodeHead, TraceHead
 from prime_rl.orchestrator.clients import InferenceClient, connect_frozen_client
 
 
-def iter_trainable_traces(episodes: list[vf.Episode]):
-    """Yield clean, kept, trainable traces that contain sampled tokens."""
+def has_sampled_tokens(trace: vf.Trace | TraceHead) -> bool:
+    """Whether any node of the trace has trainable (model-sampled) tokens."""
+    if isinstance(trace, vf.Trace):
+        return any(np.any(node.mask) for node in trace.nodes)
+    return trace.has_sampled_tokens
+
+
+def iter_trainable_traces(episodes: list[vf.Episode] | list[EpisodeHead]):
+    """Yield clean, kept, trainable traces that contain sampled tokens: of full episodes in
+    the env worker, of their heads on the orchestrator."""
     for episode in episodes:
         for trace in episode.traces:
             if (
@@ -21,7 +30,7 @@ def iter_trainable_traces(episodes: list[vf.Episode]):
                 or trace.num_turns == 0
             ):
                 continue
-            if any(np.any(node.mask) for node in trace.nodes):
+            if has_sampled_tokens(trace):
                 yield episode, trace
 
 
@@ -54,7 +63,7 @@ class Algorithm:
         """Assign rollout-local, per-token annotations (reference logprobs, loss weights) to the
         nodes of one finalized episode, in the env worker that ran it."""
 
-    async def score_group(self, episodes: list[vf.Episode]) -> None:
+    async def score_group(self, episodes: list[EpisodeHead]) -> None:
         """Credit a finalized cohort: one advantage (``assign_advantage``) and optionally one rl
         weight (``assign_rl_weight``) per trace."""
 

@@ -14,6 +14,7 @@ from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from prime_rl.configs.orchestrator import DifficultyPoolSamplerConfig
+    from prime_rl.env.heads import EpisodeHead
 
 
 class DifficultyPoolSampler(TaskSampler):
@@ -68,7 +69,7 @@ class DifficultyPoolSampler(TaskSampler):
     def find_task(self, key: str) -> vf.Task | None:
         return self.tasks_by_key.get(key)
 
-    def observe(self, group: list[vf.Episode]) -> None:
+    def observe(self, group: list[EpisodeHead]) -> None:
         rewards = [
             trace.reward
             for episode in group

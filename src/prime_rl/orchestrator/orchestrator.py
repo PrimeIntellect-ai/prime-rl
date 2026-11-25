@@ -609,17 +609,21 @@ class Orchestrator:
             episode = item
 
             # Every completed rollout — errored, rejected, or never batched — lands in the
-            # ``all`` trace file the moment it arrives, so it survives crashes and drains.
+            # trace stream the moment it arrives, so it survives crashes and drains.
             # Train rollouts belong to the batch window currently collecting (``progress.step``),
-            # eval rollouts to the step whose eval triggered them.
+            # eval rollouts to the step whose eval triggered them. The record is the episode as
+            # its env worker serialized it; the orchestrator holds it only until it is logged.
             if episode.run is None:
                 raise ValueError("Dispatched episode is missing run identity")
             if not isinstance(episode.run, vf.TrainRunInfo):
                 raise ValueError("Orchestrated episode is missing training-run provenance")
             kind = episode.run.work.type
             step = episode.run.work.step if kind == "eval" else self.progress.step
-            stamp_arrival([episode], kind, step)
-            await monitors.log([episode], step, kind, "all")
+            record = episode.take_record()
+            await monitors.log_annotations(stamp_arrival(episode, record, kind, step))
+            if record is not None:
+                await monitors.log_records([(episode, record)], step, kind)
+            del record
 
             if kind == "eval":
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
@@ -739,12 +743,10 @@ class Orchestrator:
         rollout_metrics = self.take_rollout_metrics()
 
         # The effective (clean, trained-on) subset is logged at ship time as annotation
-        # records against each trace's arrival record - membership, advantages, the step
+        # records against each trace's arrival record - membership, advantage, the step
         # it shipped at - never a second episode copy.
-        effective_episodes = await asyncio.to_thread(lambda: effective.vf_episodes)
-        # Monitors may retain the list for asynchronous upload after publication.
-        await monitors.log(effective_episodes.copy(), step, "train", "effective")
-        annotations = await asyncio.to_thread(stamp_batch, effective_episodes, step)
+        effective_episodes = await asyncio.to_thread(lambda: effective.trimmed_episodes)
+        annotations = stamp_batch(effective_episodes, step)
         await monitors.log_annotations(annotations)
 
         pack_start_time = time.perf_counter()
@@ -1025,11 +1027,9 @@ class Orchestrator:
         # ``env_name``); the full returned cohort already streamed into ``all`` on arrival.
         episodes = batch.episodes
         effective = episodes.effective
-        effective_episodes = await asyncio.to_thread(lambda: effective.vf_episodes)
+        effective_episodes = await asyncio.to_thread(lambda: effective.trimmed_episodes)
         if effective_episodes:
-            await monitors.log(effective_episodes, batch.step, "eval", "effective")
-            annotations = await asyncio.to_thread(stamp_batch, effective_episodes, batch.step)
-            await monitors.log_annotations(annotations)
+            await monitors.log_annotations(stamp_batch(effective_episodes, batch.step))
         policy_spans = [eval_work(episode).policy for episode in episodes]
         if any(span is None for span in policy_spans):
             raise ValueError(f"Eval {batch.env_name} step {batch.step} is missing policy provenance")

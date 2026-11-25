@@ -70,7 +70,9 @@ class DispatchFailure:
 
 
 if TYPE_CHECKING:
-    DispatchResult: TypeAlias = vf.WireEpisode | DispatchFailure | GroupCancellation
+    from prime_rl.env.heads import EpisodeHead
+
+    DispatchResult: TypeAlias = EpisodeHead | DispatchFailure | GroupCancellation
 else:
     DispatchResult: TypeAlias = Any
 

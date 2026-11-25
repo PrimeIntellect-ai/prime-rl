@@ -14,10 +14,10 @@
   keeps it fed (``trainer_target``). Both only block opening train groups; eval
   and open groups schedule as before, and the concurrency controller sees only
   the episodes in flight.
-- Every dispatched attempt reaches ``out_q`` exactly once: as the native
-  episode returned by the environment, as a ``DispatchFailure`` when no
-  episode was produced, or under the group's ``GroupCancellation`` when the
-  orchestrator abandons it.
+- Every dispatched attempt reaches ``out_q`` exactly once: as the head of the
+  episode the environment returned (its env worker keeps the episode), as a
+  ``DispatchFailure`` when no episode was produced, or under the group's
+  ``GroupCancellation`` when the orchestrator abandons it.
 - ``DispatcherMode.PREFER_TRAIN`` / ``PREFER_EVAL`` controls which kind to
   schedule next. Transitions are level-triggered (driven by the eval
   source's emptiness), so in-flight episodes of the opposite kind drain
@@ -45,6 +45,7 @@ from aiolimiter import AsyncLimiter
 from verifiers.v1.semantic import routing_session_id
 
 from prime_rl import monitors
+from prime_rl.env.heads import EpisodeHead
 from prime_rl.orchestrator import live
 from prime_rl.orchestrator.clients import InferenceClient
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -130,7 +131,7 @@ class DispatcherMetrics:
         return out
 
 
-def _validate_episode_task(episode: vf.WireEpisode, task: vf.Task) -> None:
+def _validate_episode_task(episode: EpisodeHead, task: vf.Task) -> None:
     expected = (task.key, task.hash)
     actual = (episode.task.key, episode.task.hash)
     if actual != expected:
@@ -597,6 +598,9 @@ class Dispatcher:
 
         # A group samples with the settings of the step it was opened at, also across a live update.
         sampling = env.sampling_at(group.step)
+        run = self._run_info(group)
+        record = monitors.record_request(group.kind, str(group_id))
+        live_traces = monitors.wants_live(group.kind, str(group_id))
         group.episodes_to_schedule -= 1
         await self.acquire()
         self.admissions_in_window += 1
@@ -629,7 +633,7 @@ class Dispatcher:
             if first and meta.live:
                 self.live_events.append(live.dispatched_event(meta))
 
-        async def run_episode() -> vf.WireEpisode:
+        async def run_episode() -> EpisodeHead:
             episode = None
             try:
                 episode = await env.run(
@@ -639,6 +643,9 @@ class Dispatcher:
                     cache_salt=cache_salt,
                     task_data=group.task.data.model_dump(mode="json"),
                     on_delta=on_delta,
+                    run=run,
+                    record=record,
+                    live=live_traces,
                 )
                 session_ids.update(trace.id for trace in episode.traces)
                 return episode
@@ -658,7 +665,26 @@ class Dispatcher:
         self.live_events.append(live.pending_event(meta))
         return True
 
-    def _release_episodes(self, episodes: Iterable[vf.WireEpisode]) -> None:
+    def _live_policy(self, kind: WorkKind, env_name: str) -> bool:
+        """Whether the episodes of this kind of work sample from the live policy."""
+        if kind == "eval":
+            return True
+        assert self.train_envs is not None
+        return self.train_envs.get(env_name).uses_live_policy
+
+    def _run_info(self, group: GroupState) -> vf.TrainRunInfo:
+        """The run identity of a group's episodes at dispatch; ``emit_episode`` closes the
+        policy span on the version current when the episode lands."""
+        start = group.policy_version_at_start
+        policy = vf.PolicySpan(start=start, end=start) if self._live_policy(group.kind, group.env_name) else None
+        work: vf.WorkInfo = (
+            vf.EvalWorkInfo(step=group.step, policy=policy)
+            if group.kind == "eval"
+            else vf.TrainWorkInfo(step=group.step, policy=policy)
+        )
+        return vf.TrainRunInfo(id=self.run_id, name=self.run_name, work=work)
+
+    def _release_episodes(self, episodes: Iterable[EpisodeHead]) -> None:
         """Delete the training arrays env workers kept for episodes no sink will see."""
         delete_payloads(url for episode in episodes for trace in episode.traces for url in trace_payload_urls(trace))
 
@@ -731,7 +757,7 @@ class Dispatcher:
                 )
             )
             return
-        episode: vf.WireEpisode = task.result()
+        episode: EpisodeHead = task.result()
 
         for trace in episode.traces:
             if trace.is_timeout and not trace.has_error and meta.kind == "train":
@@ -775,7 +801,7 @@ class Dispatcher:
         self,
         meta: InflightEpisode,
         group: GroupState | None,
-        episode: vf.WireEpisode,
+        episode: EpisodeHead,
     ) -> None:
         """Stamp one completed episode with its dispatch provenance and emit it."""
         _validate_episode_task(episode, meta.task)
@@ -783,10 +809,7 @@ class Dispatcher:
 
         episode.env.name = meta.env_name
         episode.group = vf.GroupInfo(id=str(meta.group_id))
-        live_policy = meta.kind == "eval"
-        if meta.kind == "train":
-            assert self.train_envs is not None
-            live_policy = self.train_envs.get(meta.env_name).uses_live_policy
+        live_policy = self._live_policy(meta.kind, meta.env_name)
         policy = vf.PolicySpan(start=policy_version, end=self.policy.version) if live_policy else None
         work: vf.WorkInfo = (
             vf.EvalWorkInfo(step=meta.step, policy=policy)

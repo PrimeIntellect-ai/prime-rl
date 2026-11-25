@@ -11,6 +11,7 @@ from prime_rl.configs.algorithm import ActionLossType
 from prime_rl.orchestrator.credit import ADVANTAGE_KEY, RL_WEIGHT_KEY, trace_advantage
 
 if TYPE_CHECKING:
+    from prime_rl.env.heads import TraceHead
     from prime_rl.orchestrator.trajectories import BranchSample
 
 
@@ -20,14 +21,14 @@ def trainable_nodes(trace: vf.Trace) -> list[vf.MessageNode]:
     return [node for node in trace.nodes if id(node) in on_trainable_branch and np.any(node.mask)]
 
 
-def assign_advantage(trace: vf.Trace, value: float) -> None:
+def assign_advantage(trace: TraceHead, value: float) -> None:
     """Credit every sampled token on the trace's trainable branches with ``value``. A trace
     with no such token gets no credit."""
-    if trainable_nodes(trace):
+    if trace.trainable_tokens:
         trace.info[ADVANTAGE_KEY] = float(value)
 
 
-def assign_rl_weight(trace: vf.Trace, value: float) -> None:
+def assign_rl_weight(trace: TraceHead, value: float) -> None:
     """Weight the rl loss of every sampled token on the trace's trainable branches by ``value``."""
     trace.info[RL_WEIGHT_KEY] = float(value)
 
@@ -48,7 +49,7 @@ def assign_reference_logprobs(branch: vf.Branch, values: list[float] | np.ndarra
         offset = end
 
 
-def is_trainable(trace: vf.Trace) -> bool:
+def is_trainable(trace: TraceHead) -> bool:
     """Whether the trace's sampled tokens carry nonzero RL credit."""
     return bool(trace_advantage(trace))
 
