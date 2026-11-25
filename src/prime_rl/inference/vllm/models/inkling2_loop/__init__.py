@@ -1,5 +1,6 @@
-"""Looped Inkling 2 (Inkling 2 Mini) for RL on a vLLM build that ships the model: vLLM's own class with BF16 experts
-and weight updates loaded in place. Registered by `prime_rl.inference.patches.register_inkling2_loop_for_rl`."""
+"""Looped Inkling 2 (Inkling 2 Mini) for RL on a vLLM build that ships the model: vLLM's own class with experts in
+BF16 or FP8 and weight updates loaded in place. Registered by
+`prime_rl.inference.patches.register_inkling2_loop_for_rl`."""
 
 from typing import TYPE_CHECKING
 

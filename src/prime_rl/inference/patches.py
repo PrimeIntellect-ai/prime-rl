@@ -96,17 +96,43 @@ def apply_shared_vllm_patches():
         monkey_patch_no_moe_lora()
 
 
+INKLING2_LOOP_ARCHITECTURE = "Inkling2LoopForConditionalGeneration"
+# The HF config attribute that carries `inference.vllm.quantization` to `Inkling2LoopForRL`.
+INKLING2_LOOP_EXPERT_FORMAT_ATTRIBUTE = "rl_expert_format"
+
+
 def register_inkling2_loop_for_rl():
     """Serve looped Inkling 2 checkpoints (Inkling 2 Mini) through ``Inkling2LoopForRL``, which runs the experts in
-    BF16 and loads weight updates in place."""
+    BF16 or FP8 and loads weight updates in place."""
     if _missing_in_vllm("vllm.models.inkling2.nvidia.loop"):
         return  # The vLLM release prime-rl pins has no Inkling 2 of its own.
     from vllm import ModelRegistry
 
     ModelRegistry.register_model(
-        "Inkling2LoopForConditionalGeneration",
+        INKLING2_LOOP_ARCHITECTURE,
         "prime_rl.inference.vllm.models.inkling2_loop.model:Inkling2LoopForRL",
     )
+
+
+def select_inkling2_loop_expert_format(args) -> None:
+    """Hand ``vllm.quantization`` to ``Inkling2LoopForRL`` instead of vLLM, on the vLLM build that serves it.
+
+    The experts of that model are its own modules, so vLLM's online quantization does not reach them, and vLLM's
+    Inkling 2 model accepts no quantization method but the release's. The setting reaches the model as an HF
+    config override and selects the format the model rounds its BF16 expert weights to."""
+    quantization = getattr(args, "quantization", None)
+    if quantization is None or _missing_in_vllm("vllm.models.inkling2.nvidia.loop"):
+        return
+    from transformers import PretrainedConfig
+
+    architectures = PretrainedConfig.get_config_dict(args.model)[0].get("architectures") or []
+    if INKLING2_LOOP_ARCHITECTURE not in architectures:
+        return
+    del args.quantization
+    args.hf_overrides = {
+        **(getattr(args, "hf_overrides", None) or {}),
+        INKLING2_LOOP_EXPERT_FORMAT_ATTRIBUTE: quantization,
+    }
 
 
 def monkey_patch_nixl_bidirectional_single_pull():

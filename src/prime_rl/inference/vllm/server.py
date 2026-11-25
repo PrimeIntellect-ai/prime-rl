@@ -19,6 +19,7 @@ from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.shared import ADMIN_TOKEN_HEADER
+from prime_rl.inference.patches import select_inkling2_loop_expert_format
 from prime_rl.inference.server import setup_model_source
 from prime_rl.utils.admin_token import admin_token_matches, digest_var, expected_admin_digest
 from prime_rl.utils.specdec import check_draft_swap, local_draft_dir
@@ -280,6 +281,7 @@ def server(config: InferenceConfig):
 
     setup_model_source(config)
     namespace = config.to_namespace()
+    select_inkling2_loop_expert_format(namespace)
 
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")
     parser = make_arg_parser(parser)

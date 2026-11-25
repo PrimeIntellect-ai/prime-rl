@@ -51,6 +51,14 @@ def target_owned_storage(model_runner) -> set[int]:
     }
 
 
+def count_nonzero(tensor: torch.Tensor) -> int:
+    """``tensor.count_nonzero()``, also for FP8 tensors, which have no kernel for it: an E4M3 value is zero when
+    its byte is zero apart from the sign bit."""
+    if tensor.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
+        tensor = tensor.detach().contiguous().view(torch.uint8) & 0x7F
+    return tensor.count_nonzero().item()
+
+
 class WeightRPCMixin:
     """Weight RPCs shared by every weight-transport worker extension."""
 
@@ -92,7 +100,7 @@ class WeightRPCMixin:
                 "sha256": hashlib.sha256(
                     parameter.detach().contiguous().view(torch.uint8).cpu().numpy().tobytes()
                 ).hexdigest(),
-                "nonzero": parameter.count_nonzero().item(),
+                "nonzero": count_nonzero(parameter),
             }
             for name, parameter in tensors.items()
         }
