@@ -15,6 +15,7 @@ from prime_rl import monitors
 from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.env.encoding import pack, unpack
 from prime_rl.env.heads import EpisodeHead, recorded_head
+from prime_rl.env.worker import stamp_dispatch
 from prime_rl.monitors.file.monitor import FileMonitor, in_trace_sample
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import chunk_path
@@ -168,3 +169,17 @@ def test_sampled_episodes_keep_their_arrival_under_a_trace_sample(tmp_path, monk
     updates = [orjson.loads(line) for line in chunk_path(stream, 0).read_bytes().splitlines()]
     assert [update["trace_id"] for update in updates] == [episode.traces[0].id for episode in arrived]
     assert all(update["info"]["arrival"]["step"] == 1 for update in updates)
+
+
+def test_a_timed_out_train_rollout_is_recorded_as_failed():
+    timed_out = trace()
+    timed_out.record_timeout("rollout")
+    source = whole_episode([timed_out])
+    stamp_dispatch(source, vf.TrainRunInfo(id="run", work=vf.TrainWorkInfo(step=1)), "env", "g")
+
+    head = recorded_head(source, float_decimals=4)
+    record = head.take_record()
+    assert not head.ok and head.traces[0].last_error.type == "Timeout"
+    (written,) = orjson.loads(record.json)["traces"]
+    assert written["ok"] is False and written["errors"][-1]["type"] == "Timeout"
+    assert record.index["ok"] is False

@@ -14,6 +14,7 @@ from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.delta import DeltaStreamer
 from verifiers.v1.episode import Episode, GroupInfo
 from verifiers.v1.task import Task
+from verifiers.v1.trace import Error, RunInfo
 from verifiers.v1.utils.loaders import load_environment
 
 from prime_rl.env.encoding import pack
@@ -98,6 +99,27 @@ def progress_delta(delta: dict) -> dict | None:
     if changed := {key: value for key, value in (delta.get("set") or {}).items() if key in ("errors", "timing")}:
         progress["set"] = changed
     return progress if len(progress) > 1 else None
+
+
+def stamp_dispatch(episode: Episode, run: RunInfo | None, env_name: str | None, group_id: str | None) -> None:
+    """Stamp what the dispatch knows of an episode, before its head and record are built: its
+    identity as the orchestrator knows it, the run, each trace's kind and dispatch. A timed-out
+    train trace fails: training keeps it out of the batch like any other failure, while eval
+    keeps it as a scored outcome."""
+    if env_name is not None:
+        episode.env.name = env_name
+    if group_id is not None:
+        episode.group = GroupInfo(id=group_id)
+    if run is None:
+        return
+    episode.record_run(run)
+    for trace in episode.traces:
+        trace.info["kind"] = run.work.type
+        trace.info["dispatch"] = {"step": run.work.step, "time": trace.timing.start}
+        if run.work.type == "train" and trace.is_timeout and not trace.has_error:
+            trace.errors.append(Error(type="Timeout", message=f"Trace stopped by {trace.stop_condition}"))
+            trace.ok = False
+            episode.ok = False
 
 
 class _Keeping:
@@ -248,16 +270,7 @@ class EnvWorker:
                 self._kept[request_id] = (hook, episode)
                 if algorithm.scores_samples:
                     await self._score(req, algorithm, episode)
-        # The episode's identity as the orchestrator knows it, before the head and the record.
-        if req.env_name is not None:
-            episode.env.name = req.env_name
-        if req.group_id is not None:
-            episode.group = GroupInfo(id=req.group_id)
-        if req.run is not None:
-            episode.record_run(req.run)
-            for trace in episode.traces:
-                trace.info["kind"] = req.run.work.type
-                trace.info["dispatch"] = {"step": req.run.work.step, "time": trace.timing.start}
+        stamp_dispatch(episode, req.run, req.env_name, req.group_id)
 
         def reply() -> RunResponse:
             response = RunResponse(head=episode_head(episode).model_dump(mode="json"))
