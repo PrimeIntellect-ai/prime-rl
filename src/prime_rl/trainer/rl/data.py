@@ -294,11 +294,13 @@ class DataLoader:
         read them has fetched them. A retaining run's rollout stores keep them until
         `commit`: a restarted trainer fetches them again."""
         if self.retain:
-            stores = {url.rpartition("/")[0] for url in self.payload_urls}
+            # Arrays a checkpoint holds (`file://`) stay with it: no rollout store has them.
+            urls = [url for url in self.payload_urls if not url.startswith("file://")]
+            stores = {url.rpartition("/")[0] for url in urls}
             for store in stores - self.stores:
                 require_rollout_store(store)
             self.stores |= stores
-            mark_trained(self.stores, self.payload_urls, self.step, self.receiver.committed)
+            mark_trained(self.stores, urls, self.step, self.receiver.committed)
         else:
             delete_payloads(self.payload_urls)
         self.payload_urls = []

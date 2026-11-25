@@ -5,6 +5,7 @@ planned, and the store must serve and free the bodies."""
 import base64
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import msgspec
 import numpy as np
@@ -31,9 +32,11 @@ from prime_rl.transports.payload import (
     mark_trained,
     materialize_micro_batches,
     payload_host,
+    persist_payloads,
     require_rollout_store,
     wait_for_deletes,
 )
+from prime_rl.utils import pathing
 
 
 def _episode(
@@ -405,6 +408,19 @@ def test_rollout_store_keeps_trained_arrays_until_a_checkpoint_covers_them(tmp_p
     assert store.get("trained") is None and store.get("queued") == b"queued"
 
 
+def test_a_retaining_trainer_leaves_the_arrays_of_a_checkpoint_alone(tmp_path):
+    store = RolloutStore(tmp_path / "store", "127.0.0.1")
+    resumed = tmp_path / "checkpoints" / "resumed"
+    resumed.mkdir(parents=True)
+    loader = DataLoader.__new__(DataLoader)
+    loader.retain, loader.stores, loader.step = True, set(), 3
+    loader.receiver = SimpleNamespace(committed=2)
+    loader.payload_urls = [f"{store.url}/a", (resumed / "b").as_uri()]
+    loader.release_payloads()
+    wait_for_deletes()
+    assert loader.stores == {store.url}
+
+
 def test_a_pool_without_a_rollout_store_rejects_retention(tmp_path):
     require_rollout_store(RolloutStore(tmp_path, "127.0.0.1").url)
     with pytest.raises(RuntimeError, match="no rollout store"):
@@ -466,3 +482,80 @@ def test_an_unfetchable_multimodal_sample_borrows_a_fetched_image():
         [[plan]] = _plans([ref("missing")], seq_len=16, num_train_workers=1, bin_cost=sum)
         materialized = materialize_micro_batches([plan], pool)
         assert materialized.failed == [0] and materialized.unbuildable == [0]
+
+
+def test_persist_writes_blobs_only_inside_the_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(pathing, "_save_root", str(tmp_path.resolve()))
+    server = PayloadServer("127.0.0.1")
+    server.put("t1-0", b"arrays")
+    server.put("evil", b"x")
+    directory = tmp_path / "ckpt" / "arrays"
+    assert server.persist(str(directory), ["t1-0", "../evil", "sub/evil", "..", "", "gone"]) == ["t1-0"]
+    assert [file.name for file in (tmp_path / "ckpt").rglob("*") if file.is_file()] == ["t1-0"]
+    assert (directory / "t1-0").read_bytes() == b"arrays"
+    for outside in ("relative/dir", str(tmp_path.parent / "other"), str(tmp_path / ".." / "other")):
+        with pytest.raises(ValueError):
+            server.persist(outside, ["t1-0"])
+    monkeypatch.setattr(pathing, "_save_root", None)
+    with pytest.raises(ValueError):
+        server.persist(str(directory), ["t1-0"])
+
+
+def test_persist_links_a_blob_an_earlier_checkpoint_holds(tmp_path, monkeypatch):
+    monkeypatch.setattr(pathing, "_save_root", str(tmp_path.resolve()))
+    server = PayloadServer("127.0.0.1")
+    server.put("t1-0", b"arrays")
+    first, second, third = tmp_path / "step_1", tmp_path / "step_2", tmp_path / "step_3"
+    assert persist_payloads(server.url, first, ["t1-0", "../evil"]) == ["t1-0"]
+    assert persist_payloads(server.url, second, ["t1-0"]) == ["t1-0"]
+    assert (second / "t1-0").samefile(first / "t1-0")
+    # The earlier checkpoints are gone (the trainer's cleanup): the blob is written again.
+    (first / "t1-0").unlink()
+    (second / "t1-0").unlink()
+    assert persist_payloads(server.url, third, ["t1-0"]) == ["t1-0"]
+    assert (third / "t1-0").read_bytes() == b"arrays"
+    # A deleted blob is in no later checkpoint.
+    server.delete("t1-0")
+    assert persist_payloads(server.url, tmp_path / "step_4", ["t1-0"]) == []
+
+
+def test_a_checkpoints_arrays_survive_a_delete(tmp_path):
+    (tmp_path / "t1-0").write_bytes(b"arrays")
+    delete_payloads([f"{tmp_path.as_uri()}/t1-0"])
+    wait_for_deletes()
+    assert (tmp_path / "t1-0").read_bytes() == b"arrays"
+    # Blobs a checkpoint holds are linked into the next one; a missing one is not.
+    assert persist_payloads(tmp_path.as_uri(), tmp_path / "next", ["t1-0", "gone"]) == ["t1-0"]
+    assert (tmp_path / "next" / "t1-0").samefile(tmp_path / "t1-0")
+
+
+def test_a_rollout_store_persists_the_files_it_holds(tmp_path, monkeypatch):
+    monkeypatch.setattr(pathing, "_save_root", str(tmp_path.resolve()))
+    store = RolloutStore(tmp_path / "store", "127.0.0.1")
+    StoreWriter(tmp_path / "store", store.url).put("t1-0", b"arrays")
+    directory = tmp_path / "ckpt" / "arrays"
+    assert persist_payloads(store.url, directory, ["t1-0", "gone", "../evil"]) == ["t1-0"]
+    assert (directory / "t1-0").read_bytes() == b"arrays"
+    # The trainer's marks still reach the store on the same port.
+    require_rollout_store(store.url)
+
+
+def test_link_or_copy_fallback_copies_atomically(tmp_path, monkeypatch):
+    import errno
+    import os
+
+    from prime_rl.transports.payload import link_or_copy
+
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src.write_bytes(b"payload-bytes")
+
+    def exdev(a, b):
+        raise OSError(errno.EXDEV, "Cross-device link")
+
+    monkeypatch.setattr(os, "link", exdev)
+    assert link_or_copy(src, dst) is True
+    assert dst.read_bytes() == b"payload-bytes"
+    assert [p.name for p in tmp_path.iterdir()] == sorted(["src", "dst"])
+    assert link_or_copy(tmp_path / "missing", tmp_path / "dst2") is False
+    assert not (tmp_path / "dst2").exists()
