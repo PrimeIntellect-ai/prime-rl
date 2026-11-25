@@ -129,6 +129,12 @@ The LM head computes FP32 logits from its BF16 operands: one GEMM writes the log
 
 A model can keep parameters out of FSDP's BF16 cast when its checkpoint stores them, and vLLM computes them, in FP32 (`fp32_modules` on the model class): GLM-5.3 Flash's hyper-connections and KDA decay (`A_log`, `dt_bias`). Each module holding them is its own FSDP unit with FP32 masters, gathered in FP32 before the decoder layers run, and inference receives them in FP32.
 
+### Two-block attention
+
+Qwen3.5's full-attention layers can attend with a two-block mask instead of the causal one: the mask vLLM's `Qwen3_5ForSlotDecision` applies to a prompt's prefix and question (`"full_attention": "block_bidirectional"` in its `modeling_overrides`). `forward` (`src/prime_rl/trainer/model.py`) takes it as `prefix_lens`, one integer per attention segment of `seq_lens` with `0 < prefix_lens[s] <= seq_lens[s]`. The first `prefix_lens[s]` tokens of a segment are its prefix and the rest its second block, and a token attends the tokens at or before it and the tokens of its own block. So the prefix reads itself in both directions and nothing after it, and the second block reads the whole segment; a segment that is all prefix is one block read in both directions. The linear-attention layers stay causal and the positions are unchanged. Without `prefix_lens`, attention is causal as before.
+
+The flash-attention kernels take no mask, so a segment runs as two batch elements of one non-causal call: the prefix's queries over the prefix's keys, and the second block's queries over the segment's keys (`TwoBlockLayout` in `src/prime_rl/trainer/models/qwen3_5/attention.py`). The kernel therefore reads a gathered copy of the row's keys and values in which the prefix of each segment that has a second block appears twice, built once per full-attention layer. `prefix_lens` fails with context parallelism (`model.cp > 1`) and with every other model family.
+
 ### Expert Parallelism Backends
 
 `[trainer.model.moe.dispatch]` selects how routed tokens are dispatched and combined:

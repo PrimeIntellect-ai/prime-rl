@@ -951,6 +951,9 @@ DYNAMIC_INT_ARGS = (
     "max_seqlen",
     # DeepSeek V4: largest compressed-entry count of any document in the row. Sizes the HCA picks.
     "max_entries_per_doc",
+    # Qwen3.5 two-block attention (TwoBlockLayout fields): most queries and most keys of one batch element of the row.
+    "max_seqlen_q",
+    "max_seqlen_k",
 )
 
 # Tensor args, as (name, dim), whose dim changes between calls. Marking the tensor itself does not reach a compiled
@@ -979,6 +982,11 @@ DYNAMIC_TENSOR_ARG_DIMS = (
     # Qwen3.8: each token's document start and end, one entry per token of the full row across CP ranks.
     ("document_starts", 0),
     ("document_ends", 0),
+    # Qwen3.5 two-block attention (TwoBlockLayout fields): the batch elements' query and key boundaries,
+    # (elements + 1,), and the row token of each gathered key, one entry per key of every element.
+    ("cu_seqlens_q", 0),
+    ("cu_seqlens_k", 0),
+    ("key_index", 0),
 )
 
 
@@ -1243,9 +1251,14 @@ def forward(
     # (kept global because documents can straddle the shard cut).
     seq_lens_are_pre_shard: bool = False,
     hidden_states_fn: Callable[[Tensor], dict[str, Tensor]] | None = None,
+    prefix_lens: Int[Tensor, "segments"] | None = None,
 ) -> PrimeLmOutput | dict[str, Tensor]:
     """With ``hidden_states_fn``, the LM head is skipped and the function's dict of tensors, computed on the final
-    hidden states inside the forward, is returned."""
+    hidden states inside the forward, is returned.
+
+    With ``prefix_lens``, one integer per segment of ``seq_lens`` with ``0 < prefix_lens[s] <= seq_lens[s]``, a model
+    with two-block attention (Qwen3.5) splits each segment into its first ``prefix_lens[s]`` tokens and the rest: in
+    the full-attention layers a token attends the tokens at or before it and the tokens of its own block."""
     kwargs = {
         "input_ids": input_ids,
         "position_ids": position_ids,
@@ -1264,6 +1277,14 @@ def forward(
 
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts
+
+    if prefix_lens is not None:
+        # The forward patched in by inject_prime_lm_head hands it on, so the language model's forward decides
+        language_model = get_language_model(model)
+        assert "prefix_lens" in inspect.signature(language_model.forward).parameters, (
+            f"{type(language_model).__name__} has no two-block attention: its forward takes no prefix_lens"
+        )
+        kwargs["prefix_lens"] = prefix_lens
 
     if hidden_states_fn is not None:
         assert labels is None and temperature is None and support is None, "hidden_states_fn replaces the LM head"
