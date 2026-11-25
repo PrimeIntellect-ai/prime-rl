@@ -60,7 +60,7 @@ on eight (49 GiB on two with compiled layers).
 Serving it for rollouts needs a vLLM that has the looped Inkling 2 model itself (vllm-project/vllm#69028, merged
 after the pinned 0.34.0), so its inference server runs from its own environment. The `inkling2` plugin that serves
 Inkling 2 Small on the pinned vLLM has no loop and stands down on such a build, where `prime-rl` serves the
-checkpoint through `Inkling2LoopForRL` (`inference/vllm/models/inkling2_loop/`): routed experts in BF16, as
+checkpoint through `Inkling2LoopForRL` (`inference/vllm/models/inkling2_loop/`): routed experts loaded in BF16, as
 `tools/convert_inkling2_loop_to_bf16.py` writes them (the packed release is rejected), weight updates loaded in
 place, and one replica per GPU (`data_parallel_size`; tensor parallelism is not supported). The server-side
 parsers are vLLM's own `inkling` ones, not the plugin's `inkling2`. At the memory figures above the trainer takes
@@ -69,6 +69,23 @@ all eight GPUs of its node, so the rollouts are served from a second node. Serve
 effort from the renderer (`[orchestrator.renderer]` with `name = "inkling-2"` and `reasoning_effort`); online
 evals go through chat completions and take it from `[orchestrator.eval.sampling]`, where the router accepts `low`,
 `medium` and `high`.
+
+The server computes the routed experts in BF16 or, with `[inference.vllm] quantization = "fp8_per_block"`, in FP8:
+E4M3 weights with one FP32 scale per 128 x 128 block and inputs rounded to E4M3 per token per 128 channels, which
+is vLLM's online `fp8_per_block` format. An FP8 server still loads BF16 weights and rounds them itself, at start-up
+and at every weight update. For this model the setting goes to `Inkling2LoopForRL` and is taken off vLLM's
+arguments: vLLM's own Inkling 2 model accepts no quantization method but the release's. The trainer's half is
+`[trainer.model.moe.compute] type = "deepgemm_fp8"` (see [Low-precision training](#low-precision-training)), with
+`apply_to` at its default `"all"` and `[trainer.model.quantization]` unset, since the server rounds the experts of
+every layer and nothing else. Nothing checks that both halves are set. The server rounds the gate rows and the up
+rows of an expert in blocks of their own, as the trainer does, so both sides hold the same codes and scales: on
+H100, none of the 39.8 million codes and 2,430 scales that were compared differs. The products run in different
+kernels on the two sides. With the routing replayed, the mismatch KL of server and trainer on the untrained weights
+is 0.00087, against 0.00008 with BF16 on both sides. This pairing is for SM90 GPUs: on SM100 the trainer rounds its
+scales up to powers of two and the server does not, and nothing was run there. With FP8 experts one server GPU
+holds 25.8 GiB of weights instead of 48.6 GiB, and at the same memory fraction its KV cache is 41.0 GiB
+instead of 18.0 GiB. `examples/advanced/inkling2-mini/README.md` has the overlay that sets both halves, the other
+measurements, and what they do not show: that an FP8 run reaches the final result of a BF16 run.
 
 ### Low-precision training
 
