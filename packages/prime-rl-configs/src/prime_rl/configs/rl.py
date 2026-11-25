@@ -149,7 +149,7 @@ DeploymentConfig: TypeAlias = Annotated[
 
 
 class RLConfig(BaseConfig):
-    mode: Literal["rl"] | None = None
+    mode: Literal["rl"] = "rl"
     """Run kind of this config. ``uv run launch`` picks the entrypoint from it; ``uv run rl`` accepts only
     "rl" (or no mode)."""
 

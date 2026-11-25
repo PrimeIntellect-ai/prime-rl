@@ -13,6 +13,7 @@ from prime_rl.utils.admin_token import AdminTokenUses, TokenUse
 from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
+    check_resume_dir_mode,
     clean_future_steps,
     format_config_message,
     format_log_message,
@@ -481,6 +482,9 @@ def clean_stale_eval_artifacts(config: SupervisedTrainerConfig) -> None:
 
 
 def launch(config: SupervisedTrainerConfig, entrypoint: str):
+    # Fail before the model download when resume.dir forks another run kind's checkpoint.
+    check_resume_dir_mode(config.resume, entrypoint, ckpt=config.ckpt)
+
     # Launcher-only check: the trainer re-parses a sub-config with [inference] and
     # [deployment] stripped, so the model validator cannot enforce this.
     if config.weight_broadcast is not None and config.weight_broadcast.type == "nccl" and config.inference is None:
