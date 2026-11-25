@@ -447,6 +447,15 @@ def test_power_penalty_charges_each_agent_superlinearly():
     advantage = 0.2 * (1 - 205**1.5 / split) / 2
     assert _grpo([episode, unlabelled], length_penalty=discounted) == pytest.approx([advantage, -advantage], abs=1e-6)
 
+    # Calibrated to a budget: each solved reward falls by its own cost over budget ** alpha; failures keep 0.
+    budgeted = PowerLengthPenaltyConfig(weight=1.0, alpha=1.5, budget=1000)
+    advantage = (chained - split) / 1000**1.5 / 2
+    assert _grpo([episode, unlabelled], length_penalty=budgeted) == pytest.approx([-advantage, advantage], abs=1e-6)
+    failed = unlabelled.model_copy(deep=True)
+    failed.traces[0].rewards = {"reward": vf.Reward(score=0.0)}
+    shaped = 1 - chained / 1000**1.5
+    assert _grpo([episode, failed], length_penalty=budgeted) == pytest.approx([shaped / 2, -shaped / 2], abs=1e-6)
+
 
 @pytest.mark.parametrize("penalty_type", [LinearLengthPenaltyConfig, LinearSubagentLengthPenaltyConfig])
 @pytest.mark.parametrize("term", ["num_output_tokens_weight", "num_input_tokens_weight", "num_turns_weight"])
