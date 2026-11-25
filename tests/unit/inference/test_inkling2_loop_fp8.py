@@ -2,8 +2,9 @@
 
 ``Inkling2LoopForRL`` builds on vLLM's looped Inkling 2 model, which the vLLM release prime-rl pins does not have.
 The ``serving`` fixture runs the serving module on stand-ins for those vLLM modules, so these tests cover the
-module's own logic: which experts the constructor builds, where ``load_bf16_weight`` puts the rows of a checkpoint
-tensor, and that ``load_weights`` rounds the expert tensors of every layer and reports their scales. vLLM's
+module's own logic: which experts the constructor builds, and that ``load_weights`` rounds the expert tensors of
+every layer and reports their scales. The FP8 experts have a module of their own, which needs none of those vLLM
+modules and is imported as it is: where ``load_bf16_weight`` puts the rows of a checkpoint tensor. vLLM's
 ``per_block_cast_to_fp8`` is not replaced: it is plain torch code, and it runs here as written, without being
 compiled, on weights that lie on the FP8 grid, so that the codes it must give are known.
 
@@ -25,6 +26,7 @@ from transformers import PretrainedConfig
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.inference import patches
+from prime_rl.inference.vllm.models.inkling2_loop.fp8_experts import Inkling2FP8Experts
 from prime_rl.inference.vllm.worker import weight_transfer
 
 ARCHITECTURE = "Inkling2LoopForConditionalGeneration"
@@ -209,13 +211,13 @@ def test_the_expert_format_selects_the_experts_of_every_layer(serving):
     bf16 = serving.Inkling2LoopForRL(vllm_config=vllm_config())
     fp8 = serving.Inkling2LoopForRL(vllm_config=vllm_config("fp8_per_block"))
     assert [type(layer.mlp.experts) for layer in bf16.model.layers] == [serving.Inkling2BF16Experts] * LAYERS
-    assert [type(layer.mlp.experts) for layer in fp8.model.layers] == [serving.Inkling2FP8Experts] * LAYERS
+    assert [type(layer.mlp.experts) for layer in fp8.model.layers] == [Inkling2FP8Experts] * LAYERS
 
 
 def test_neither_experts_class_takes_lora_adapters(serving):
     # vLLM's `_expert_lora_capable` reads this attribute and takes an experts module without it as a LoRA target.
     assert serving.Inkling2BF16Experts.supports_lora is False
-    assert serving.Inkling2FP8Experts.supports_lora is False
+    assert Inkling2FP8Experts.supports_lora is False
 
 
 def test_an_unknown_expert_format_is_refused_before_the_model_is_built(serving, monkeypatch):
@@ -229,7 +231,7 @@ def test_an_unknown_expert_format_is_refused_before_the_model_is_built(serving, 
 
 
 def test_fp8_experts_round_the_gate_rows_then_the_up_rows(serving):
-    experts = serving.Inkling2FP8Experts(text_config())
+    experts = Inkling2FP8Experts(text_config())
     served = experts.w13_weight.data_ptr(), experts.w13_weight_scale.data_ptr()
     codes, scales, gate_then_up = on_the_fp8_grid(2 * INTERMEDIATE, HIDDEN, seed=0)
 
@@ -245,7 +247,7 @@ def test_fp8_experts_round_the_gate_rows_then_the_up_rows(serving):
 
 
 def test_fp8_experts_round_the_down_projection_in_the_checkpoints_layout(serving):
-    experts = serving.Inkling2FP8Experts(text_config())
+    experts = Inkling2FP8Experts(text_config())
     codes, scales, weight = on_the_fp8_grid(HIDDEN, INTERMEDIATE, seed=1)
 
     experts.load_bf16_weight("w2_weight", weight)
@@ -264,14 +266,14 @@ def test_fp8_experts_round_the_down_projection_in_the_checkpoints_layout(serving
     ids=["fp32", "fp8", "half the rows"],
 )
 def test_fp8_experts_refuse_a_weight_that_is_not_the_checkpoints_bf16_tensor(serving, weight):
-    experts = serving.Inkling2FP8Experts(text_config())
+    experts = Inkling2FP8Experts(text_config())
     with pytest.raises(ValueError, match="w13_weight: expected BF16"):
         experts.load_bf16_weight("w13_weight", weight)
 
 
 def test_fp8_experts_need_sizes_in_whole_blocks(serving):
     with pytest.raises(ValueError, match="multiples of"):
-        serving.Inkling2FP8Experts(text_config(intermediate_size=192))
+        Inkling2FP8Experts(text_config(intermediate_size=192))
 
 
 # --- the model's loader ---
