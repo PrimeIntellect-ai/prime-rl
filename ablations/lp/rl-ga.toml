@@ -1,0 +1,102 @@
+# Length penalty ablations on general-agent: base RL config and the no-penalty baseline.
+# Qwen3.6-35B-A3B (thinking on) with the null harness: native tool calls to each task's tool
+# server, colocated in one small Prime sandbox per rollout. Tiers 3-4 only (1476 tasks); 64 of
+# them are held out for eval (ga_eval_idx.txt, inlined below), avg@4. Scoring is deterministic
+# (final DB hash vs the gold chain, or the task's verify()); there is no judge. Penalty arms
+# override orchestrator.train.source[*].algo.length_penalty on top of this file.
+#
+# 1 trainer node + 1 inference node (tp1 dp8, no expert parallelism) on H200.
+#
+#   prime train run ablations/lp/rl-ga.toml --ref <commit> --gpu-type H200_141GB -e WANDB_API_KEY
+#   uv run rl @ ablations/lp/rl-ga.toml --slurm.job-name lp-ga-baseline
+
+mode = "rl"
+seq_len = 65536
+max_steps = 500
+
+[run]
+name = "lp-ga-baseline"
+
+[model]
+name = "Qwen/Qwen3.6-35B-A3B"
+
+[weight_broadcast]
+type = "nccl"
+
+[ckpt]
+interval = 20
+keep_last = 2
+
+[monitors.wandb]
+project = "lp-ablations"
+name = "ga-baseline"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+num_infer_replicas = 1
+
+# --- Trainer: one 65536-token sample per micro batch ---
+
+[trainer.model]
+ep = 8
+cp = 1
+ac_offloading = "None"
+
+# --- Orchestrator ---
+
+[orchestrator]
+batch_size = 64
+max_staleness = 16
+# Count zero-advantage groups toward the batch; they are still pruned before the trainer.
+constant_trainer_batch_size = false
+
+# Bounded adaptive concurrency: a fixed 512 filled one inference node's KV cache on bcplus.
+[orchestrator.concurrency]
+min_inflight = 128
+max_inflight = 384
+
+[orchestrator.train]
+group_size = 8
+
+[[orchestrator.train.source]]
+name = "ga"
+# No algo.length_penalty: the GRPO default (None) disables it.
+select.exclude.idx = [2, 28, 82, 127, 128, 151, 191, 194, 202, 206, 285, 286, 291, 300, 391, 418, 447, 454, 488, 499, 513, 530, 533, 577, 621, 635, 647, 666, 676, 682, 724, 733, 788, 816, 829, 861, 889, 906, 966, 976, 995, 1010, 1033, 1047, 1067, 1090, 1112, 1123, 1131, 1146, 1162, 1194, 1232, 1251, 1253, 1266, 1280, 1311, 1368, 1400, 1441, 1444, 1454, 1473]
+env.taskset.id = "general-agent"
+env.taskset.min_tier = 3
+env.taskset.max_tier = 4
+env.taskset.task.tools.runtime = { type = "prime", cpu = 1, memory = 2 }
+env.agent.harness.id = "null"
+env.agent.runtime = { type = "prime", cpu = 1, memory = 2 }
+env.agent.timeout.rollout = 1800
+
+[orchestrator.eval]
+interval = 20
+group_size = 4
+
+[[orchestrator.eval.source]]
+name = "ga-heldout"
+select.include.idx = [2, 28, 82, 127, 128, 151, 191, 194, 202, 206, 285, 286, 291, 300, 391, 418, 447, 454, 488, 499, 513, 530, 533, 577, 621, 635, 647, 666, 676, 682, 724, 733, 788, 816, 829, 861, 889, 906, 966, 976, 995, 1010, 1033, 1047, 1067, 1090, 1112, 1123, 1131, 1146, 1162, 1194, 1232, 1251, 1253, 1266, 1280, 1311, 1368, 1400, 1441, 1444, 1454, 1473]
+env.taskset.id = "general-agent"
+env.taskset.min_tier = 3
+env.taskset.max_tier = 4
+env.taskset.task.tools.runtime = { type = "prime", cpu = 1, memory = 2 }
+env.agent.harness.id = "null"
+env.agent.runtime = { type = "prime", cpu = 1, memory = 2 }
+env.agent.timeout.rollout = 1800
+
+# --- Inference ---
+
+[inference.vllm]
+max_model_len = 65536
+enable_prefix_caching = true
+tensor_parallel_size = 1
+data_parallel_size = 8
+gpu_memory_utilization = 0.85
+
+# Text-only RL: skip the vision encoder.
+[inference.vllm.limit_mm_per_prompt]
+image = 0
+video = 0
