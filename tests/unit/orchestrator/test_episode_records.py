@@ -119,3 +119,35 @@ def test_received_episode_encodes_as_its_record_did(tmp_path):
     assert orjson.loads(_encode_record(stamp_run(to_mapping(upload), "other", "train"), 1)) == orjson.loads(
         _encode_record(stamp_run(to_mapping(source), "other", "train"), 1)
     )
+
+
+def test_a_folded_advantage_credits_only_trainable_branches():
+    """A rejected compaction attempt's branch never trains, so a reader folding the cohort's
+    advantage onto the record leaves its tokens uncredited."""
+    nodes = [
+        vf.MessageNode(message=vf.UserMessage(content="q"), token_ids=[1], mask=[False]),
+        vf.MessageNode(
+            parent=0,
+            message=vf.AssistantMessage(content="kept"),
+            sampled=True,
+            token_ids=[2, 3],
+            mask=[True, True],
+            logprobs=[-0.1, -0.2],
+        ),
+        vf.MessageNode(
+            parent=0,
+            semantic_parents=[vf.ParentLink(node=1, type="compaction_attempt")],
+            message=vf.AssistantMessage(content="rejected"),
+            sampled=True,
+            token_ids=[4],
+            mask=[True],
+            logprobs=[-0.3],
+        ),
+    ]
+    source = whole_episode([trace()])
+    source.traces[0].nodes = nodes
+    received = recorded_head(source)
+    record = orjson.loads(received.take_record().json)
+    assign_advantage(received.traces[0], 0.5)
+    fold_trace_updates(record["traces"][0], stamp_batch([received], step=1))
+    assert [node.get("advantages") for node in record["traces"][0]["nodes"]] == [None, [0.5, 0.5], None]

@@ -31,7 +31,7 @@ def stamp_arrival(episode: EpisodeHead, record: EpisodeRecord | None, kind: Kind
 
 def stamp_batch(episodes: list[EpisodeHead], step: int) -> list[dict[str, Any]]:
     """The updates a batched cohort adds over its arrival records: membership, the step
-    it ties to, and the trace's advantage."""
+    it ties to, and the trace's advantage with the branches it credits."""
     now = time.time()
     updates = []
     for episode in episodes:
@@ -39,5 +39,6 @@ def stamp_batch(episodes: list[EpisodeHead], step: int) -> list[dict[str, Any]]:
             info: dict[str, Any] = {"effective": True, "ship": {"step": step, "time": now}}
             if (advantage := trace_advantage(trace)) is not None:
                 info["advantage"] = advantage
+                info["advantage_branches"] = trace.trainable_branches
             updates.append(make_update(trace.id, info=info))
     return updates
