@@ -638,8 +638,8 @@ class Materialized:
     """Micro batches with a sample that could not be fetched: it holds a placeholder of the right
     shape, and the caller must keep the micro batch out of the loss."""
     unbuildable: list[int]
-    """Failed multimodal micro batches no fetched sample could stand in for: they cannot run the
-    vision encoder the other data ranks run at this step, so the step cannot train."""
+    """Failed multimodal micro batches left without an image: they cannot run the vision encoder
+    the other data ranks run at this step, so the step cannot train."""
     urls: list[str]
     """The fetched samples, for `delete_payloads`."""
 
@@ -663,14 +663,13 @@ def materialize_micro_batches(plans: list[MicroBatchPlan], pool: ThreadPoolExecu
             result.failed.append(index)
             token_ids = np.concatenate([s.token_ids for s in samples if s is not None] or [np.zeros(0, np.int32)])
             for position, ref in enumerate(plan.samples):
-                if samples[position] is not None:
-                    continue
-                placeholder = _multimodal_placeholder(ref, donors) if ref.images else None
-                if ref.images and placeholder is None:
-                    result.unbuildable.append(index)
-                samples[position] = placeholder or _placeholder(ref, token_ids)
+                if samples[position] is None:
+                    placeholder = _multimodal_placeholder(ref, donors) if ref.images else None
+                    samples[position] = placeholder or _placeholder(ref, token_ids)
             _fill_missing_routing(samples, plan.samples)
         micro_batch = pad_micro_batch(materialize_bin([prepare_sample(sample) for sample in samples]), plan.padding)
+        if any(ref.images for ref in plan.samples) and micro_batch.mm_refs is None:
+            result.unbuildable.append(index)
         if plan.dummy:
             micro_batch = make_dummy_batch(micro_batch)
         assert_token_arrays_aligned(micro_batch)

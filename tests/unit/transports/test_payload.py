@@ -457,6 +457,12 @@ def test_an_unfetchable_multimodal_sample_borrows_a_fetched_image():
         assert materialized.failed == [0] and materialized.unbuildable == []
         assert [image.offset for image in micro_batch.mm_refs.images] == [1, 5]
 
+        # No image fits a one-token sample, but the micro batch keeps the fetched one's.
+        short = msgspec.structs.replace(ref("missing"), num_tokens=1, images=[[0, 1]])
+        [[plan]] = _plans([ref("kept"), short], seq_len=16, num_train_workers=1, bin_cost=sum)
+        materialized = materialize_micro_batches([plan], pool)
+        assert materialized.failed == [0] and materialized.unbuildable == []
+
         [[plan]] = _plans([ref("missing")], seq_len=16, num_train_workers=1, bin_cost=sum)
         materialized = materialize_micro_batches([plan], pool)
         assert materialized.failed == [0] and materialized.unbuildable == [0]
