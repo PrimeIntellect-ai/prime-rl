@@ -403,7 +403,7 @@ weight = 0.2
 subagent_weight = 1.0
 ```
 
-With `budget` set, the penalty is calibrated to that many tokens instead of to the group: each reward is scaled by $1 - $ `weight` $\cdot \min(1, \text{cost} / \text{budget}^{\alpha})$. A zero-reward rollout is never penalized, and with `weight = 1` a solved rollout's reward falls smoothly to 0 at the budget, meeting the reward 0 of a rollout that hits a token limit of the same size (`env.agent.max_total_tokens` with `scoring.skip_on_truncated`).
+With `budget` set, the penalty is calibrated to that many tokens instead of to the group: each reward is scaled by $1 - $ `weight` $\cdot \min(1, T / \text{budget})^{\alpha}$, where $T$ is the rollout's `num_total_tokens`, the count `env.agent.max_total_tokens` limits (compaction calls included; per-agent lifetimes and `subagent_weight` don't apply). A zero-reward rollout is never penalized, and with `weight = 1` a solved rollout's reward falls smoothly to 0 at the budget, meeting the reward 0 of a rollout that hits a token limit of the same size (`env.agent.max_total_tokens` with `scoring.skip_on_truncated`).
 
 A **length-weighted baseline** (`length_weighted_baseline = true` on the `grpo`-family algorithms) replaces the plain group mean with $b = \sum_i L_i s_i / \sum_i L_i$, where $L_i$ is the number of trainable (policy-sampled, loss-masked) tokens of rollout $i$, summed across all its turns; it applies after the length penalty. With token-level loss normalization, long rollouts carry more gradient weight, so this baseline makes the per-token advantage zero-mean across the group's tokens rather than across rollouts.
 

@@ -112,10 +112,18 @@ class PowerLengthPenaltyConfig(BaseConfig):
 
     budget: int | None = Field(None, gt=0)
     """Calibrate the penalty to a token budget instead of the group: each reward is scaled by
-    ``1 - weight * min(1, cost / budget ** alpha)``. A zero-reward rollout is never penalized, the penalty does
-    not depend on the rest of the group, and with ``weight = 1`` a solved rollout's reward falls smoothly to 0
-    at the budget, meeting the reward 0 of a rollout that hits a token limit of the same size. None normalizes
-    by the group's max cost and scales by its pass rate."""
+    ``1 - weight * min(1, num_total_tokens / budget) ** alpha``. It measures the rollout's total tokens, the count
+    ``env.agent.max_total_tokens`` limits (compaction calls included), so per-agent lifetimes and
+    ``subagent_weight`` don't apply. A zero-reward rollout is never penalized, the penalty does not depend on the
+    rest of the group, and with ``weight = 1`` a solved rollout's reward falls smoothly to 0 at the budget,
+    meeting the reward 0 of a rollout that hits a token limit of the same size. None normalizes by the group's
+    max cost and scales by its pass rate."""
+
+    @model_validator(mode="after")
+    def budget_ignores_agents(self):
+        if self.budget is not None and self.subagent_weight != 1.0:
+            raise ValueError("length_penalty.budget measures total tokens, so subagent_weight does not apply")
+        return self
 
 
 LengthPenaltyConfig: TypeAlias = Annotated[
