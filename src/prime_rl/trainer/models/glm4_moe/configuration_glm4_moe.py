@@ -102,15 +102,7 @@ class Glm4MoeConfig(PretrainedConfig):
             Whether to normalize the topk probabilities.
         use_qk_norm (`bool`, *optional*, defaults to `False`):
             Whether to use query-key normalization in the attention
-    ```python
-    >>> from transformers import Glm4MoeModel, Glm4MoeConfig
-    >>> # Initializing a Glm4Moe style configuration
-    >>> configuration = Glm4MoeConfig()
-    >>> # Initializing a model from the GLM-4-MOE-100B-A10B style configuration
-    >>> model = Glm4MoeModel(configuration)
-    >>> # Accessing the model configuration
-    >>> configuration = model.config
-    ```"""
+    """
 
     model_type = "glm4_moe"
     keys_to_ignore_at_inference = ["past_key_values"]

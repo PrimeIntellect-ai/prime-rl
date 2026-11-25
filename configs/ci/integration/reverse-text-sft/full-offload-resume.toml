@@ -2,7 +2,6 @@ max_steps = 6
 
 [ckpt]
 skip_optimizer = true
-skip_scheduler = true
 
 [resume]
 step = 5
@@ -15,6 +14,9 @@ offload = "full"
 lr = 0.0
 
 [data]
-name = "PrimeIntellect/Reverse-Text-SFT"
 batch_size = 4
 seq_len = 1024
+
+[[data.source]]
+name = "reverse-text"
+dataset = "PrimeIntellect/Reverse-Text-SFT"

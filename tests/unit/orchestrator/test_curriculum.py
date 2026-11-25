@@ -16,6 +16,7 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.orchestrator.curriculum import (
     AdvRangeGate,
     Curriculum,
+    DifficultyPoolSampler,
     StandardSampler,
 )
 from prime_rl.orchestrator.train_source import TrainSource
@@ -329,6 +330,25 @@ def test_difficulty_pool_sampler_drops_rewards_of_removed_tasks() -> None:
 
     assert restored.sampler.task_rewards == {tasks[0].key: 0.5, tasks[2].key: 0.5}
     assert restored.metrics()["sampler/pool/unseen"] == 1.0
+
+
+def test_difficulty_pool_sampler_draws_read_no_task_keys() -> None:
+    class CountingTask(vf.Task):
+        key_reads = 0
+
+        @property
+        def key(self) -> str:
+            CountingTask.key_reads += 1
+            return super().key
+
+    tasks = [CountingTask(make_task(i).data) for i in range(3)]
+    sampler = DifficultyPoolSampler(DifficultyPoolSamplerConfig(), tasks)
+    key_reads = CountingTask.key_reads
+    for _ in range(5):
+        next(sampler)
+
+    # Task.key serializes and hashes the task data on every read.
+    assert CountingTask.key_reads == key_reads
 
 
 def make_env(name: str, tasks: list[vf.Task]) -> SimpleNamespace:
