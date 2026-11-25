@@ -177,7 +177,9 @@ def train(config: SFTConfig | PretrainConfig):
         check_start = time.perf_counter()
         # Each rank parses its share of every source's records
         for datasets, source in record_sources:
-            check_records(datasets[source.name], source.columns, world.rank, world.world_size, source.name)
+            check_records(
+                datasets[source.name], source.columns, world.rank, world.world_size, source.name, source.split
+            )
         logger.info(f"Checked the System One records in {format_time(time.perf_counter() - check_start)}")
 
     # Initialize the model

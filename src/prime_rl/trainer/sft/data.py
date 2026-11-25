@@ -599,6 +599,7 @@ def setup_sft_dataset(
                 raw_datasets[source.name],
                 strategy,
                 name=source.name,
+                split=source.split,
                 columns=source.columns,
                 shuffle=config.shuffle,
                 seed=config.seed,

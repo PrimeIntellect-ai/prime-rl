@@ -384,7 +384,7 @@ brier_weight = 0.1  # default 0
 
 `[val.data]` lists its own sources and takes a missing `type` and `seq_len` from `[data]`; a `seq_len` it sets must equal `data.seq_len`. As with chat data, it does not take `[data.columns]`: rename a column in `[val.data.columns]` too.
 
-**Records.** A row is one record. `state`, `questions`, `label` and `soft_label` are string columns of JSON text (write them with `json.dumps`, so a text state is a JSON string), and `id` (optional) names the record in errors, defaulting to the source's name and the row's index. The trainer parses every record once at startup, so a malformed record stops the run before any weights load, naming the record.
+**Records.** A row is one record. `state`, `questions`, `label` and `soft_label` are string columns of JSON text (write them with `json.dumps`, so a text state is a JSON string), and `id` (optional) names the record in errors, defaulting to the source's name, its split and the row's index (`records/train/7`). The trainer parses every record once at startup, so a malformed record stops the run before any weights load, naming the record.
 
 ```text
 id          r
@@ -454,7 +454,7 @@ from prime_rl.trainer.sft.system_one.strategies import get_system_one_strategy_c
 
 strategy = get_system_one_strategy_cls(model.config)(tokenizer, model.config)
 source = data_config.source[0]  # the source the row is from
-request, _ = parse_record(row, source.columns, source.name)
+request, _ = parse_record(row, source.columns, source.name, source.split)
 sample = render_sample(strategy, request, data_config.seq_len)  # None when skipped
 input_ids = torch.from_numpy(sample["input_ids"]).to(device)
 inputs = build_decision_loss_inputs([len(input_ids)], [sample["sample_data"]]).to(device)

@@ -227,16 +227,17 @@ def check_records(
     rank: int = 0,
     world_size: int = 1,
     source: str | None = None,
+    split: str | None = None,
 ) -> None:
-    """Parse every ``world_size``-th row from ``rank`` of the source ``source`` once, so that a malformed record stops
-    the run at startup."""
+    """Parse every ``world_size``-th row from ``rank`` of the split ``split`` of the source ``source`` once, so that a
+    malformed record stops the run at startup."""
     check_columns(dataset, columns)
     rows = dataset.shard(world_size, rank, contiguous=False)
     names = dict.fromkeys([*columns.model_dump().values(), "__index"])
     rows = rows.select_columns([name for name in names if name in rows.column_names])
     for batch in rows.iter(batch_size=1024):
         for values in zip(*batch.values()):
-            parse_record(dict(zip(batch, values)), columns, source)
+            parse_record(dict(zip(batch, values)), columns, source, split)
 
 
 class SystemOneSource(HFRowSource):
@@ -247,6 +248,7 @@ class SystemOneSource(HFRowSource):
         dataset: Dataset,
         strategy: SystemOneStrategy,
         name: str = "train",
+        split: str | None = None,
         columns: SystemOneColumnsConfig = SystemOneColumnsConfig(),
         shuffle: bool = True,
         seed: int = 0,
@@ -254,12 +256,13 @@ class SystemOneSource(HFRowSource):
     ):
         super().__init__(dataset, name=name, shuffle=shuffle, seed=seed)
         self.strategy = strategy
+        self.split = split
         self.columns = columns
         self.seq_len = seq_len
         check_columns(dataset, columns)
 
     def _process(self, example: dict) -> Sample | None:
-        request, targets = parse_record(example, self.columns, self.name)
+        request, targets = parse_record(example, self.columns, self.name, self.split)
         if all(target is None for target in targets):
             self.logger.warning(f"Skipping record {request.id!r}: none of its questions has a label")
             return None

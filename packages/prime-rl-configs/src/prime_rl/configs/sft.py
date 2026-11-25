@@ -1,6 +1,6 @@
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
 from renderers.base import MODEL_RENDERER_MAP
 
@@ -88,14 +88,15 @@ class FakeDataConfig(BaseConfig):
 
 
 class HFDataConfig(BaseDataConfig):
-    """Samples drawn from one or more HF sources into packed rows of ``seq_len`` tokens. A subclass declares its
-    ``source`` list and the ``columns`` of every source."""
+    """Samples drawn from one or more HF sources into packed rows of ``seq_len`` tokens. The base of the data types,
+    never instantiated itself: a subclass declares the ``source`` list and the ``columns`` of every source, which
+    ``validate_sources`` reads."""
 
     shuffle: bool = True
     """Shuffle every source at the start of each of its passes."""
 
     seed: int = 0
-    """Seed for the order of every source, re-shuffled per pass by adding the pass count, and for fake tokens."""
+    """Seed for the order of every source, re-shuffled per pass by adding the pass count."""
 
     @model_validator(mode="after")
     def validate_sources(self):
@@ -118,7 +119,16 @@ class SFTDataConfig(HFDataConfig):
     """The sources to draw samples from (``[[data.source]]``)."""
 
     fake: FakeDataConfig | None = None
-    """Train on synthetic token sequences instead of the sources. Needs no renderer."""
+    """Train on synthetic token sequences instead of the sources, generated from ``seed``. Needs no renderer."""
+
+    @field_validator("fake", mode="before")
+    @classmethod
+    def expand_bare_flag(cls, value: Any) -> Any:
+        """``--data.fake`` and ``--no-data.fake`` arrive as booleans: the CLI expands a bare flag into a table only
+        outside a union, and ``[data]`` is one."""
+        if isinstance(value, bool):
+            return {} if value else None
+        return value
 
     columns: SFTColumnsConfig = SFTColumnsConfig()
     """Columns of every source. A source's ``columns`` override single fields."""
@@ -131,8 +141,8 @@ class SystemOneColumnsConfig(BaseConfig):
     """Dataset columns of a System One record. Set a field to read a column under another name."""
 
     id: str = "id"
-    """Column with the record id for warnings and errors. Absent or null, the id is the source's name and the row's
-    index."""
+    """Column with the record id for warnings and errors. Absent or null, the id is the source's name, its split and
+    the row's index."""
 
     state: str = "state"
     """Column with the state to decide on, as JSON text (a text state as a JSON string)."""

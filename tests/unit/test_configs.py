@@ -1398,6 +1398,12 @@ def test_sft_allows_unused_default_renderer_for_fake_data():
     assert config.renderer.name == "default"
 
 
+def test_sft_fake_data_from_a_bare_flag():
+    """`[data]` is a union, and below a union the CLI passes a bare flag on as a boolean."""
+    assert cli(SFTConfig, args=["--data.fake"]).data.fake is not None
+    assert SFTDataConfig.model_validate({"fake": False}).fake is None
+
+
 SYSTEM_ONE_SOURCE = {"name": "records", "dataset": "org/records"}
 SYSTEM_ONE_DATA = {"source": [SYSTEM_ONE_SOURCE], "seq_len": 4096}
 

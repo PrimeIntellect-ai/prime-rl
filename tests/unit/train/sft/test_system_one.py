@@ -126,20 +126,20 @@ def test_label_columns_may_be_absent_or_null():
     assert parse_record(row(), COLUMNS)[1] == [None, None, None]
 
 
-def test_columns_can_be_renamed_and_the_id_falls_back_to_the_source_and_row_index():
+def test_columns_can_be_renamed_and_the_id_falls_back_to_the_source_split_and_row_index():
     renamed = {"__index": 7, "input": json.dumps({"ticket": 7}), "questions": json.dumps(QUESTIONS)}
     renamed["probs"] = json.dumps(SOFT_LABEL)
     columns = SystemOneColumnsConfig(state="input", soft_label="probs")
-    request, targets = parse_record(renamed, columns, "train")
-    assert (request.id, request.state) == ("train/7", {"ticket": 7})
+    request, targets = parse_record(renamed, columns, "records", "train")
+    assert (request.id, request.state) == ("records/train/7", {"ticket": 7})
     assert targets[1] == [0.75, 0.25]
-    with pytest.raises(ValueError, match="record 'train/7': question 'team'"):
-        parse_record({**renamed, "probs": json.dumps({"team": {"technical": 1.0}})}, columns, "train")
+    with pytest.raises(ValueError, match="record 'records/train/7': question 'team'"):
+        parse_record({**renamed, "probs": json.dumps({"team": {"technical": 1.0}})}, columns, "records", "train")
 
 
 def test_a_null_id_falls_back_like_an_absent_one():
-    request, _ = parse_record({**ROW, "id": None, "__index": 7}, COLUMNS, "train")
-    assert request.id == "train/7"
+    request, _ = parse_record({**ROW, "id": None, "__index": 7}, COLUMNS, "records", "train")
+    assert request.id == "records/train/7"
 
 
 MANY_OPTIONS = {"q": {"type": "choice", "criteria": dict.fromkeys(map(str, range(200)))}}
@@ -294,10 +294,10 @@ def test_check_records_parses_the_data_rank_share_of_the_rows():
     with pytest.raises(ValueError, match="record 'bad': column 'label'"):
         check_records(dataset, COLUMNS)
     check_records(dataset, COLUMNS, rank=0, world_size=2)  # rows 0 and 2
-    # A record without an id is named by its source and row index
+    # A record without an id is named by its source, split and row index
     unnamed = Dataset.from_list([{**ROW, "id": None, "label": "{", "__index": 0}])
-    with pytest.raises(ValueError, match="record 'records/0': column 'label'"):
-        check_records(unnamed, COLUMNS, source="records")
+    with pytest.raises(ValueError, match="record 'records/validation/0': column 'label'"):
+        check_records(unnamed, COLUMNS, source="records", split="validation")
 
 
 def test_get_system_one_strategy_cls_looks_up_the_architecture(monkeypatch):
