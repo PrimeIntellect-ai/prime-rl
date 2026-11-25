@@ -70,13 +70,21 @@ def fold_trace_updates(trace: dict, updates: list[dict]) -> int:
     Merges each ``info`` and projects every branch stream onto the branch's nodes,
     compact over each node's mask like the node's own ``logprobs``. A node takes a
     stream only when it is fully covered with non-null values at every sampled
-    position, so a truncated stream leaves the tail nodes untouched. Returns how many
-    nodes carry trainer logprobs afterwards."""
+    position, so a truncated stream leaves the tail nodes untouched. An update with
+    the trace's advantage and no advantage stream gives every sampled token that
+    advantage. Returns how many nodes carry trainer logprobs afterwards."""
     nodes = trace.get("nodes") or []
     paths = branch_node_paths(nodes)
     for update in updates:
         if update.get("info"):
             trace["info"] = _deep_merge(trace.get("info") or {}, update["info"])
+        advantage = (update.get("info") or {}).get("advantage")
+        if isinstance(advantage, (int, float)) and not any(
+            branch.get("advantages") for branch in update.get("branches") or []
+        ):
+            for node in nodes:
+                if sampled := sum(1 for flag in node.get("mask") or [] if flag):
+                    node["advantages"] = [advantage] * sampled
         for branch in update.get("branches") or []:
             branch_index = branch.get("index")
             if not isinstance(branch_index, int) or not 0 <= branch_index < len(paths):

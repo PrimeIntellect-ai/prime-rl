@@ -19,6 +19,7 @@ from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, g
 from prime_rl.monitors.file.traces.chunks import chunk_path
 from prime_rl.monitors.file.traces.index import index_record, index_row
 from prime_rl.monitors.file.traces.live import get_live_dir, read_live
+from prime_rl.monitors.file.traces.update import fold_trace_updates
 from prime_rl.monitors.prime import RecordUpload
 from prime_rl.orchestrator.algo.routing import assign_advantage
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
@@ -79,6 +80,9 @@ def test_received_episode_writes_plain_records(tmp_path):
     arrival, shipped = (orjson.loads(line) for line in chunk_path(stream, 0).read_bytes().splitlines())
     assert arrival["info"]["arrival"]["step"] == 1 and arrival["info"]["kind"] == "train"
     assert shipped["info"]["advantage"] == 0.7 and shipped["info"]["effective"]
+    # A reader folding the updates onto the record sees the advantage on every sampled token
+    fold_trace_updates(written["traces"][0], [arrival, shipped])
+    assert [node.get("advantages") for node in written["traces"][0]["nodes"]] == [None, None, [0.7, 0.7]]
 
 
 def test_received_episode_encodes_as_its_record_did(tmp_path):
