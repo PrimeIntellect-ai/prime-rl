@@ -19,7 +19,7 @@ from collections.abc import Iterator
 import numpy as np
 import verifiers.v1 as vf
 
-from prime_rl.orchestrator.credit import trace_advantage, trace_rl_weight
+from prime_rl.orchestrator.credit import token_advantages, trace_advantage, trace_rl_weight
 from prime_rl.transports.batch import MMImageRef, MMRefs, TrainingSample
 from prime_rl.transports.batch.types import (
     PAYLOAD_INFO_KEY,
@@ -116,6 +116,16 @@ def _loss_weights(branch: vf.Branch, name: str, trained_nodes: set[int]) -> np.n
     return weights if weights.any() else None
 
 
+def branch_advantages(branch: vf.Branch, per_token: bool, advantage: float | None) -> np.ndarray | None:
+    """The branch's advantages over its tokens: its nodes' token advantages for a trace
+    credited per token, else the trace's advantage on every sampled token."""
+    if per_token:
+        return branch.spread(lambda node: node.advantages)
+    if advantage is None:
+        return None
+    return np.where(branch.sampled_mask, np.float32(advantage), np.float32(0.0))
+
+
 def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSample]:
     """Convert a v1 `Trace` into `TrainingSample`s — one per branch.
 
@@ -130,6 +140,7 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
     # Set by the env worker when it keeps the arrays (`prime_rl.transports.payload`).
     references = (trace.info.get(PAYLOAD_INFO_KEY) or {}).get("branches", {})
     trained_loss_nodes: dict[str, set[int]] = {"rl": set(), "ce": set(), "ref_kl": set()}
+    per_token = token_advantages(trace) is not None
     advantage = trace_advantage(trace)
     rl_weight = trace_rl_weight(trace)
     for branch, mask in iter_trainable_branches(trace):
@@ -159,9 +170,7 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
                 ),
                 ce_weights=_loss_weights(branch, "ce", trained_loss_nodes["ce"]),
                 ref_kl_weights=_loss_weights(branch, "ref_kl", trained_loss_nodes["ref_kl"]),
-                advantages=(
-                    None if advantage is None else np.where(branch.sampled_mask, np.float32(advantage), np.float32(0.0))
-                ),
+                advantages=branch_advantages(branch, per_token, advantage),
                 trace_id=trace.id,
                 branch_index=branch.index,
                 payload=PayloadSlice(

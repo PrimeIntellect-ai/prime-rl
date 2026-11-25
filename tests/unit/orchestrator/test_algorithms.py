@@ -8,8 +8,16 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage
 
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
-from prime_rl.orchestrator.algo import EchoAlgorithm, assign_advantage, stamp_loss_routing
+from prime_rl.orchestrator.algo import (
+    EchoAlgorithm,
+    assign_advantage,
+    assign_advantages,
+    stamp_loss_routing,
+    token_layout,
+)
 from prime_rl.orchestrator.algo.base import iter_trainable_traces
+from prime_rl.orchestrator.algo.routing import is_trainable
+from prime_rl.orchestrator.credit import trace_advantage
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.transports.batch.types import TrainingSample
 
@@ -317,6 +325,39 @@ def test_assign_advantage_broadcasts_over_mask():
     trace = _make_episode().traces[0]
     assign_advantage(trace, 1.0)
     assert trace_to_samples(trace)[0].advantages == pytest.approx([0.0, 0.0, 1.0, 1.0, 0.0, 1.0])
+
+
+def test_assign_advantages_credits_each_trainable_token_once():
+    """A fork after a shared answer: the shared node trains in the first branch only, so each
+    trainable token takes exactly one of the values assigned per branch."""
+    nodes = [
+        _node(UserMessage(content="U"), parent=None, sampled=False, token_ids=[1]),
+        _node(AssistantMessage(content="A"), parent=0, sampled=True, token_ids=[2, 3]),
+        _node(AssistantMessage(content="B1"), parent=1, sampled=True, token_ids=[4, 5]),
+        _node(AssistantMessage(content="B2"), parent=1, sampled=True, token_ids=[6]),
+    ]
+    trace = vf.Trace(
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        nodes=nodes,
+        rewards={},
+        ok=True,
+    )
+    b1, b2 = (next(b.index for b in trace.branches if b.nodes[-1].message.content == leaf) for leaf in ("B1", "B2"))
+    assert token_layout(trace) == {b1: [2, 2], b2: [1]}
+
+    assign_advantages(trace, b1, [1.0, 2.0, 3.0, 4.0])
+    assign_advantages(trace, b2, [-1.0])
+    credited = {
+        (sample.branch_index, int(token_id)): float(advantage)
+        for sample in trace_to_samples(trace)
+        for token_id, trainable, advantage in zip(sample.token_ids, sample.mask, sample.advantages, strict=True)
+        if trainable
+    }
+
+    assert credited == {(b1, 2): 1.0, (b1, 3): 2.0, (b1, 4): 3.0, (b1, 5): 4.0, (b2, 6): -1.0}
+    assert is_trainable(trace)
+    assert trace_advantage(trace) == pytest.approx(1.8)
 
 
 # --------------------------------------------------------------------------
