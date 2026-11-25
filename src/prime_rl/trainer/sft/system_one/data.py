@@ -58,8 +58,7 @@ class SystemOneStrategy(ABC):
     ``SYSTEM_ONE_STRATEGIES`` by architecture name. Must be deterministic, so a resumed run reads the same samples."""
 
     modalities: ClassVar[frozenset[str]] = frozenset()
-    """The media ``render_request`` renders with ``[model.vlm]``, in vLLM's names. Only "image" is supported: the models
-    and the packer take no video yet (docs/training.md)."""
+    """The media ``render_request`` renders with ``[model.vlm]``, in vLLM's names. Only "image" is supported."""
 
     def __init__(
         self, tokenizer: PreTrainedTokenizer, config: PretrainedConfig, processor: ProcessorMixin | None = None
