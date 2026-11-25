@@ -78,14 +78,20 @@ arguments: vLLM's own Inkling 2 model accepts no quantization method but the rel
 `[trainer.model.moe.compute] type = "deepgemm_fp8"` (see [Low-precision training](#low-precision-training)), with
 `apply_to` at its default `"all"` and `[trainer.model.quantization]` unset, since the server rounds the experts of
 every layer and nothing else. Nothing checks that both halves are set. The server rounds the gate rows and the up
-rows of an expert in blocks of their own, as the trainer does, so both sides hold the same codes and scales: on
-H100, none of the 39.8 million codes and 2,430 scales that were compared differs. The products run in different
-kernels on the two sides. With the routing replayed, the mismatch KL of server and trainer on the untrained weights
-is 0.00087, against 0.00008 with BF16 on both sides. This pairing is for SM90 GPUs: on SM100 the trainer rounds its
-scales up to powers of two and the server does not, and nothing was run there. With FP8 experts one server GPU
-holds 25.8 GiB of weights instead of 48.6 GiB, and at the same memory fraction its KV cache is 41.0 GiB
-instead of 18.0 GiB. `examples/advanced/inkling2-mini/README.md` has the overlay that sets both halves, the other
-measurements, and what they do not show: that an FP8 run reaches the final result of a BF16 run.
+rows of an expert in blocks of their own, as the trainer does, so both sides compute with the same codes and
+scales: on H100, none of the 39.8 million codes and 2,430 scales of the five experts that were compared (one layer,
+trained and released weights) differs. The products run in different kernels on the two sides. With the routing
+replayed, the mismatch KL of server and trainer on the released weights is 0.00087, against 0.00008 with BF16 on
+both sides (six general prompts, about 4,500 sampled tokens). This pairing is for SM90 GPUs: on SM100 the trainer
+rounds its scales up to powers of two and the server does not, and nothing was run there. As with BF16 experts, a
+weight update that fails part-way is not rolled back and leaves a mix of old and new weights. The server derives
+the scales of its FP8 experts from the weights, and a tensor in a weight stream that is named like one of them is
+not refused: after the expert's weights it replaces the derived scale. With FP8 experts one server GPU holds
+25.8 GiB of weights instead of 48.6 GiB, and at the same memory fraction its KV cache is 41.0 GiB instead of
+18.0 GiB.
+[`examples/advanced/inkling2-mini/README.md`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/advanced/inkling2-mini/README.md)
+has the overlay that sets both halves, the other measurements, and what they do not show: that an FP8 run reaches
+the final result of a BF16 run.
 
 ### Low-precision training
 

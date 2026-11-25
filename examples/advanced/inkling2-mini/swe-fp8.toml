@@ -1,11 +1,12 @@
 # Overlay for swe.toml: the routed experts in FP8 on both sides, in vLLM's online `fp8_per_block` format (E4M3
 # weights with one FP32 scale per 128 x 128 block, E4M3 inputs with one scale per token per 128 channels). The
 # servers round the BF16 expert weights as they load them, at start-up and at every weight update, and the
-# trainer computes its experts with the same rounding. Everything else stays in BF16, and both sides still load
-# the BF16 copy of the checkpoint. Set the two tables together: nothing checks that the two sides agree. This
-# combination has not been run on R2E-Gym, and no run shows that an FP8 run reaches the final result of a BF16
-# run: the README says what was measured, and on what. Launch with the template copy that the README describes
-# for swe.toml:
+# trainer's forward pass rounds its expert weights and inputs the same way. Everything else is computed as without
+# this overlay, and both sides still load the BF16 copy of the checkpoint. Set the two tables together: nothing
+# checks that the two sides agree. The pairing is for H100 (SM90) GPUs: on SM100 the trainer rounds its FP8 scales
+# up to powers of two and the servers do not. This combination has not been run on R2E-Gym, and no run shows that
+# an FP8 run reaches the final result of a BF16 run: the README says what was measured, and on what. Launch with
+# the template copy that the README describes for swe.toml:
 #
 #   uv run rl @ examples/advanced/inkling2-mini/swe.toml @ examples/advanced/inkling2-mini/swe-fp8.toml
 
