@@ -466,12 +466,18 @@ from prime_rl.trainer.sft.system_one.strategies import get_system_one_strategy_c
 
 # As the trainer does, a class selected by an extra config file (e.g. Clef-Flash) finds its strategy by its name
 selection = select_by_extra_config(model.config.model_type, model.config.architectures, model_name)
+# For records with images, pass the model's processor as a third argument
 strategy = get_system_one_strategy_cls(model.config, selection)(tokenizer, model.config)
 source = data_config.source[0]  # the source the row is from
 request, _ = parse_record(row, source.columns, source.name, source.split)
 sample = render_sample(strategy, request, data_config.seq_len)  # None when skipped
 input_ids = torch.from_numpy(sample["input_ids"]).to(device)
 inputs = build_decision_loss_inputs([len(input_ids)], [sample["sample_data"]]).to(device)
+
+images = {}
+if sample["mm_kwargs"] is not None:
+    images["mm_kwargs"] = {key: value.to(device) for key, value in sample["mm_kwargs"].items()}
+    images["mm_token_type_ids"] = torch.from_numpy(sample["mm_token_type_ids"]).to(device)[None]
 
 def read(hidden_states):
     return {"logits": checked_option_logits(strategy, model, hidden_states[0], input_ids, inputs.questions)}
@@ -482,6 +488,7 @@ with torch.no_grad():
         input_ids[None],
         torch.from_numpy(sample["position_ids"]).to(device)[None],
         seq_lens=torch.tensor(sample["seq_lens"], device=device),
+        **images,
         hidden_states_fn=read,
     )["logits"]
 per_question = logits.split([len(question.options) for question in inputs.questions])
@@ -491,7 +498,9 @@ per_question = logits.split([len(question.options) for question in inputs.questi
 
 **Clef and Clef-Flash.** A Clef release is a Qwen3.5 checkpoint with a `joint_head_config.json` beside its `config.json`: `Cloudflare/clef-flash` (9B, from Qwen3.5-9B) and `Cloudflare/clef` (27B, from Qwen3.8-27B, which has Qwen3.5's architecture). The two differ only in size. prime-rl loads both as `ClefFlashForJointSchema` (`src/prime_rl/trainer/models/qwen3_5/modeling_clef_flash.py`), as vLLM v0.34.0 does, and trains one with `model.name` set to the release. Clef-Omni (`Cloudflare/clef-omni`) has another backbone and is not supported. Only SFT trains it: RL training refuses every class [selected by an extra config file](development.md#selecting-a-model-class-by-an-extra-config-file). Train it on System One data only: on chat or pretraining data the LM head stays frozen and nothing calls the head, which then gets no gradient and no optimizer state to resume from.
 
-- **Prompt.** Its strategy, `ClefFlashStrategy` (`src/prime_rl/trainer/sft/system_one/clef_flash.py`), renders vLLM's `ClefFlashStrategy` prompt, text only: the state, then every question with its options. As on a vLLM server whose `max_model_len` is at least 16384, a prompt over 16384 tokens has its state cut, here with a warning. `data.seq_len` cuts nothing further: a longer rendering is skipped, so `data.seq_len = 16384` skips none. A record vLLM refuses is skipped with a warning: more than 64 questions, more than 26 choice options, or questions that alone exceed 16384 tokens.
+- **Prompt.** Its strategy, `ClefFlashStrategy` (`src/prime_rl/trainer/sft/system_one/clef_flash.py`), renders vLLM's `ClefFlashStrategy` prompt: the images if there are any, the state, then every question with its options. As on a vLLM server whose `max_model_len` is at least 16384, a prompt over 16384 tokens has its state cut, here with a warning. `data.seq_len` cuts nothing further: a longer rendering is skipped, so `data.seq_len = 16384` skips none. A record vLLM refuses is skipped with a warning: more than 64 questions, more than 26 choice options, or questions that with the images alone exceed 16384 tokens.
+- **Images.** With `[model.vlm]`, a record's images precede its state, loaded as vLLM loads them (EXIF orientation applied, transparency on white) and resized by the release's image processor: an image is up to 16384 tokens, so resize large ones when preparing the data. A record with an image that does not decode, or that the processor refuses, is skipped with a warning, as vLLM refuses it.
+- **Video.** vLLM serves Clef and Clef-Flash with `videos`; training does not take them, as the Qwen3.5 backbone cannot train on video yet (see **Video** above). Once steps 1 to 4 there are done, Clef needs the rest of vLLM's `_render_media`: the frames of `VideoMediaIO(num_frames=-1, fps=2)`, then `<|vision_start|><|video_pad|><|vision_end|>` after the images' placeholders, expanded to the temporal patches with their timestamps, with `do_sample_frames=False` in the processor. A video's sound is ignored, as in vLLM.
 - **Head.** The joint schema head reads the whole prompt and scores every question's options jointly. It runs once per micro-batch, on all of its records, and computes in bfloat16, as vLLM runs it; `[model.quantization]` leaves it in bfloat16. Its lexical prior reads the option tokens' rows of the LM head, as vLLM does, so the LM head is frozen and the release must be untied; the backbone and the head train.
 - **Export.** `tools/convert_dcp_to_bf16.py` writes a release that vLLM serves as is: the head in `joint_head.safetensors` and `joint_head_config.json` beside a stock `config.json`.
 - `model.init.type = "scratch"` fails: the model's init does not reach the head's attention input projections or its three scalars.
