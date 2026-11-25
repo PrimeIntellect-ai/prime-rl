@@ -1,0 +1,13 @@
+# Clef-Flash on clevr4, on top of clef-flash.toml:
+#   uv run python scripts/decision_parity.py data --dataset clevr4 --out data/clevr4
+#   uv run sft @ examples/extra/decision/clef-flash.toml @ examples/extra/decision/clef-flash-images.toml
+[model.vlm]
+
+[[data.source]]
+name = "clevr4"
+dataset = "data/clevr4"
+
+[[val.data.source]]
+name = "clevr4"
+dataset = "data/clevr4"
+split = "validation"

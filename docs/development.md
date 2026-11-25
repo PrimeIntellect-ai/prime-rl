@@ -169,7 +169,7 @@ VLM training (any run with `[model.vlm]` set, SFT or RL) is custom-implementatio
 
 ## Adding a Decision Model
 
-A decision model answers [System One records](training.md#system-one-data): SFT trains it and vLLM serves it at `/v1/systemone`. It generates no tokens and RL does not train it, so in place of the KL mismatch of [a chat model](#requirements-for-merging-a-new-model), its option probabilities are compared with vLLM's.
+A decision model answers [System One records](training.md#system-one-data): SFT trains it and vLLM serves it at `/v1/systemone`. On these records it generates no tokens and RL is not used, so in place of the KL mismatch of [a chat model](#requirements-for-merging-a-new-model), its option probabilities are compared with vLLM's.
 
 ### Implement the Model and Its Strategy
 
@@ -190,16 +190,16 @@ A decision model answers [System One records](training.md#system-one-data): SFT 
    - the class built from the published `config.json` has the published checkpoint's tensor names and shapes, and the export of its weights loads back unchanged.
 2. **GPU test** (`gpu-ci`): an integration test trains a tiny, randomly initialised checkpoint for a few steps on two GPUs with validation, and its export has the release's layout.
 3. **Parity with vLLM**, on the test records of `typed-decisions` (2,000 questions of every type, and 500 in reordered copies of the records). Serve with `uv run inference`, without prefix caching, and send the requests to the engine's port. If the pinned vLLM lacks the class, use one that has it, with a float32 LM head (`head_dtype`), and name its commit. Compare the trainer with vLLM on the release and on the export of step 4's run, and the release with that export (`--changed`), which must differ.
-4. **SFT on a real dataset.** Train on the training records of `typed-decisions` with a checked-in config, on at least two GPUs and with `val.eval_on_start = true`, and take the last checkpoint. Score the release and the export on the test records, once. `val/brier/mean` at the first step, which the packed training path gives, must be the Brier score of the release's answers on `validation.jsonl`.
-5. **Images**, if the strategy reads them: the release's parity on `clevr4`, and an SFT run on it, scored as in step 4.
+4. **SFT on a real dataset.** Train on the training records of `typed-decisions` with a checked-in config (`examples/extra/decision/`), on at least two GPUs and with `val.eval_on_start = true`, and take the last checkpoint. Score the release and the export on the test records, once. `val/brier/mean` at the first step, which the packed training path gives, must be the Brier score of the release's answers on `validation.jsonl`.
+5. **Images**, if the strategy reads them: the release's parity on `clevr4`, and an SFT run on it, run, checked and scored as in step 4.
 
 ### Requirements for merging a decision model
 
 - Steps 1 and 2 pass in CI.
-- Every comparison of step 3 and 5 passes. Per question type, the mean KL(vLLM || trainer) over a question's options is at most 5e-4; over all questions, the top option is the same for at least 99.8% of the decided ones, where it leads by more than 0.04 on both sides. Both sides answer the same records, with the same number of prompt tokens.
+- Every comparison of steps 3 and 5 passes. Per question type, the mean KL(vLLM || trainer) over a question's options is at most 5e-4; over all questions, the top option is the same for at least 99.8% of the decided ones, where it leads by more than 0.04 on both sides. Both sides answer the same records, with the same number of prompt tokens.
 - The export differs from the release (`compare --changed` passes), and its KL from the labels on the test records is at least 10% below the release's (on `clevr4`, below it). It is also at most 0.24 on `typed-decisions` and 0.76 on `clevr4`, three quarters of what answers that ignore the state get.
 - The validation's Brier score before training is within 0.01 of the script's.
-- Where the dataset's card has the release's scores from vLLM's `/v1/systemone` (for `typed-decisions`, the rows of its discussion #37), accuracy and KL are within 0.02 of them.
+- Where the dataset's card has the release's scores from vLLM's `/v1/systemone` (for `typed-decisions`, the vLLM rows of its discussion #37), accuracy and KL are within 0.02 of them.
 
 As with a chat model, a result outside these limits needs a justification, such as the same comparison between two of vLLM's own runs (one request at a time against 16 at once).
 

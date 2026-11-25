@@ -5,7 +5,7 @@ steps and the limits.
     uv run python scripts/decision_parity.py data --dataset typed-decisions --out data/typed-decisions
 
     # The trainer's answers: a release, or the export of a run. More processes for a model that one GPU does not hold:
-    # each answers every record and rank 0 writes the file
+    # each answers every record and rank 0 writes the file. --vlm for records with images
     uv run torchrun --nproc-per-node 1 scripts/decision_parity.py trainer --model MODEL \\
         --records data/typed-decisions/test.jsonl --out trainer.jsonl
 
@@ -158,6 +158,11 @@ def trainer(args: argparse.Namespace) -> None:
     processor = setup_processor(config) if args.vlm else None
     model_files = setup_model_files(config, tokenizer, processor)
     strategy_cls = get_system_one_strategy_cls(model_files.config, model_files.selection)
+    if args.vlm and "image" not in strategy_cls.modalities:
+        raise ValueError(f"--vlm is set, but {strategy_cls.__name__} reads no images")
+    requests = [parse_record(row, SystemOneColumnsConfig())[0] for row in read_jsonl(args.records)]
+    if not args.vlm and any(request.images for request in requests):
+        raise ValueError(f"{args.records} has images: set --vlm")
     model = setup_model(config, get_parallel_dims(config))
     strategy = strategy_cls(tokenizer, model.config, *([processor] if args.vlm else []))
     logits = []
@@ -165,8 +170,7 @@ def trainer(args: argparse.Namespace) -> None:
     strategy.option_logits = lambda *inputs: logits.append(read(*inputs)) or logits[-1]
 
     results = []
-    for row in read_jsonl(args.records):
-        request, _ = parse_record(row, SystemOneColumnsConfig())
+    for request in requests:
         sample = render_sample(strategy, request, args.seq_len)
         if sample is None:
             results.append({"id": request.id, "answers": None})
