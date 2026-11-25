@@ -1,4 +1,5 @@
-"""Selecting a model class by an extra config file next to a stock config.json, on stubs over prime-rl's Qwen3."""
+"""Selecting a model class by an extra config file next to a stock config.json or by one of its keys, on stubs over
+prime-rl's Qwen3."""
 
 import json
 
@@ -17,10 +18,14 @@ from tests.unit.train.models.extra_config_stub import (
     EXTRA_CONFIG,
     EXTRA_CONFIG_ATTR,
     EXTRA_CONFIG_FILE,
+    EXTRA_CONFIG_KEY,
+    KEY_VALUE,
     ConvertingStub,
     HeadStub,
+    KeyStub,
     load_like_the_trainer,
     register,
+    write_config_key,
     write_release_layout,
     write_stub,
 )
@@ -32,18 +37,36 @@ def model_config(name, **kwargs) -> ModelConfig:
 
 def test_a_listed_class_sets_what_selects_it():
     check_selected_by_extra_config((HeadStub,))
-    with pytest.raises(TypeError, match="Qwen3ForCausalLM must set extra_config_file, extra_config_attr, stock_model"):
+    check_selected_by_extra_config((KeyStub,))
+    with pytest.raises(TypeError, match="Qwen3ForCausalLM must set either extra_config_file or extra_config_key"):
         check_selected_by_extra_config((Qwen3ForCausalLM,))
+    both = type("BothStub", (HeadStub,), {"extra_config_key": EXTRA_CONFIG_KEY})
+    with pytest.raises(TypeError, match="BothStub must set either extra_config_file or extra_config_key"):
+        check_selected_by_extra_config((both,))
+    no_attr = type("NoAttrStub", (HeadStub,), {"extra_config_attr": None})
+    with pytest.raises(TypeError, match="NoAttrStub must set extra_config_attr to be selected by its extra config"):
+        check_selected_by_extra_config((no_attr,))
+    key_attr = type("KeyAttrStub", (KeyStub,), {"extra_config_attr": EXTRA_CONFIG_ATTR})
+    with pytest.raises(TypeError, match="KeyAttrStub must not set extra_config_attr to be selected by its config.json"):
+        check_selected_by_extra_config((key_attr,))
+    no_stock = type("NoStockStub", (KeyStub,), {"stock_architecture": None})
+    with pytest.raises(TypeError, match="NoStockStub must set stock_architecture to be selected by its config.json"):
+        check_selected_by_extra_config((no_stock,))
     renamed = type("HeadStub", (HeadStub,), {"extra_config_file": "other.json"})
-    with pytest.raises(ValueError, match="Two classes selected by an extra config file have the same name"):
+    with pytest.raises(ValueError, match="Two classes selected by an extra config file or key have the same name"):
         check_selected_by_extra_config((HeadStub, renamed))
-    with pytest.raises(ValueError, match="Two classes selected by an extra config file extend the same stock config"):
+    # A file selects before a key, so one class of each may extend the same stock config.json, but not two of either
+    check_selected_by_extra_config((HeadStub, KeyStub))
+    with pytest.raises(ValueError, match="Two classes extend the same stock config.json, both by an extra config file"):
         check_selected_by_extra_config((HeadStub, ConvertingStub))
+    other_key = type("OtherKeyStub", (KeyStub,), {"extra_config_key": "other_overrides"})
+    with pytest.raises(ValueError, match="Two classes extend the same stock config.json, both by an extra config file"):
+        check_selected_by_extra_config((KeyStub, other_key))
     two = type("TwoStub", (HeadStub,), {"export_files": {"head.": "a.safetensors", "lm_head.": "b.safetensors"}})
     with pytest.raises(ValueError, match="TwoStub.export_files may name one file"):
         check_selected_by_extra_config((two,))
     stock_named = type("Qwen3ForCausalLM", (HeadStub,), {})
-    with pytest.raises(ValueError, match="A class selected by an extra config file has the name of a stock archit"):
+    with pytest.raises(ValueError, match="A class selected by an extra config file or key has the name of a stock"):
         check_selected_by_extra_config((stock_named,))
 
 
@@ -78,12 +101,61 @@ def test_the_extra_config_file_selects_the_class(tmp_path, monkeypatch):
     assert type(get_model(model_config(tmp_path / "other"))) is Qwen3ForCausalLM
 
 
-def test_a_config_that_names_a_listed_class_is_refused(tmp_path, monkeypatch):
-    register(monkeypatch, HeadStub)
+def test_a_config_key_selects_the_class(tmp_path, monkeypatch):
+    register(monkeypatch, KeyStub)
+    write_stub(tmp_path / "stub", extra_config=None)
+    write_config_key(tmp_path / "stub")
+    model = get_model(model_config(tmp_path / "stub"))
+    assert type(model) is KeyStub and getattr(model.config, EXTRA_CONFIG_KEY) == KEY_VALUE
+    # No rename: the config keeps the stock architecture
+    assert model.config.architectures == ["Qwen3ForCausalLM"]
+
+    files = setup_model_files(model_config(tmp_path / "stub"), AutoTokenizer.from_pretrained(tmp_path / "stub"), None)
+    assert files.selection == (KeyStub, KEY_VALUE)
+    assert files.config.architectures == ["Qwen3ForCausalLM"] and getattr(files.config, EXTRA_CONFIG_KEY) == KEY_VALUE
+
+    # Any value but null selects the class, which checks the value itself
+    write_config_key(tmp_path / "stub", {})
+    assert type(get_model(model_config(tmp_path / "stub"))) is KeyStub
+    write_config_key(tmp_path / "stub", None)
+    assert type(get_model(model_config(tmp_path / "stub"))) is Qwen3ForCausalLM
+
+    write_stub(tmp_path / "stock", extra_config=None)
+    assert type(get_model(model_config(tmp_path / "stock"))) is Qwen3ForCausalLM
+
+    # Another architecture with the key is not the stub's
+    write_stub(tmp_path / "other", extra_config=None)
+    write_config_key(tmp_path / "other")
+    config = json.loads((tmp_path / "other" / "config.json").read_text())
+    (tmp_path / "other" / "config.json").write_text(json.dumps(config | {"architectures": ["Qwen3Model"]}))
+    assert type(get_model(model_config(tmp_path / "other"))) is Qwen3ForCausalLM
+
+
+def test_a_file_selects_before_a_key(tmp_path, monkeypatch):
+    """As in vLLM, which looks for the file first."""
+    write_stub(tmp_path)
+    write_config_key(tmp_path)
+    for classes in ((HeadStub, KeyStub), (KeyStub, HeadStub)):
+        register(monkeypatch, *classes)
+        model = get_model(model_config(tmp_path))
+        assert type(model) is HeadStub and getattr(model.config, EXTRA_CONFIG_ATTR) == EXTRA_CONFIG
+    (tmp_path / EXTRA_CONFIG_FILE).unlink()
+    assert type(get_model(model_config(tmp_path))) is KeyStub
+
+
+@pytest.mark.parametrize(
+    "cls, error",
+    [
+        (HeadStub, "names HeadStub, which is selected by stub_head_config.json next to a config.json with the arch"),
+        (KeyStub, "names KeyStub, which is selected by the key stub_overrides of a config.json with the architecture"),
+    ],
+)
+def test_a_config_that_names_a_listed_class_is_refused(tmp_path, monkeypatch, cls, error):
+    register(monkeypatch, cls)
     write_stub(tmp_path)
     config = json.loads((tmp_path / "config.json").read_text())
-    (tmp_path / "config.json").write_text(json.dumps({**config, "architectures": ["HeadStub"]}))
-    with pytest.raises(ValueError, match="names HeadStub, which is selected by stub_head_config.json next to a"):
+    (tmp_path / "config.json").write_text(json.dumps({**config, "architectures": [cls.__name__]}))
+    with pytest.raises(ValueError, match=error):
         get_model(model_config(tmp_path))
 
 

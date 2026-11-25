@@ -1,4 +1,5 @@
-"""Tiny classes on prime-rl's Qwen3 that an extra config file next to a stock Qwen3 config.json selects."""
+"""Tiny classes on prime-rl's Qwen3 that an extra config file next to a stock Qwen3 config.json, or one of its keys,
+selects."""
 
 import json
 from pathlib import Path
@@ -19,6 +20,8 @@ from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
 EXTRA_CONFIG_FILE = "stub_head_config.json"
 EXTRA_CONFIG_ATTR = "stub_head_config"
 EXTRA_CONFIG = {"num_outputs": 3}
+EXTRA_CONFIG_KEY = "stub_overrides"
+KEY_VALUE = {"readout": "stub"}
 
 
 def tiny_config(tied: bool = False) -> Qwen3Config:
@@ -65,8 +68,16 @@ class ConvertingStub(HeadStub):
         return state_dict
 
 
-def register(monkeypatch, *classes: type[HeadStub]) -> None:
-    """Make ``classes`` the classes selected by an extra config file."""
+class KeyStub(Qwen3ForCausalLM):
+    """Qwen3 that the ``stub_overrides`` key of a stock config.json selects. It adds no weights."""
+
+    extra_config_key = EXTRA_CONFIG_KEY
+    stock_model_type = "qwen3"
+    stock_architecture = "Qwen3ForCausalLM"
+
+
+def register(monkeypatch, *classes: type[Qwen3ForCausalLM]) -> None:
+    """Make ``classes`` the classes selected by an extra config file or key."""
     check_selected_by_extra_config(classes)
     monkeypatch.setattr(models, "_SELECTED_BY_EXTRA_CONFIG", classes)
 
@@ -102,6 +113,12 @@ def write_stub(
         del state["lm_head.weight"]
     save_file(state, directory / "model.safetensors", metadata={"format": "pt"})
     return state
+
+
+def write_config_key(directory: Path, value=KEY_VALUE) -> None:
+    """Set the key that selects ``KeyStub`` to ``value`` in the config.json in ``directory``."""
+    path = directory / "config.json"
+    path.write_text(json.dumps(json.loads(path.read_text()) | {EXTRA_CONFIG_KEY: value}))
 
 
 def write_release_layout(directory: Path) -> dict[str, torch.Tensor]:

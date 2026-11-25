@@ -10,8 +10,12 @@ from tests.unit.train.models.extra_config_stub import (
     EXTRA_CONFIG,
     EXTRA_CONFIG_ATTR,
     EXTRA_CONFIG_FILE,
+    EXTRA_CONFIG_KEY,
+    KEY_VALUE,
     HeadStub,
+    KeyStub,
     register,
+    write_config_key,
     write_stub,
 )
 
@@ -124,3 +128,20 @@ def test_a_step_dir_holds_the_extra_config_file(tmp_path, monkeypatch):
     model_config = ModelConfig(name=str(stock), attn="flash_attention_2")
     setup_model_files(model_config, AutoTokenizer.from_pretrained(stock), None).save(tmp_path / "stock_step")
     assert not (tmp_path / "stock_step" / EXTRA_CONFIG_FILE).exists()
+
+
+def test_a_step_dir_selects_the_class_of_a_config_key_again(tmp_path, monkeypatch):
+    """A key that selects a class is part of config.json, which a step directory keeps: it selects the class again."""
+    register(monkeypatch, KeyStub)
+    release, step_dir = tmp_path / "release", tmp_path / "run" / "checkpoints" / "step_5"
+    write_stub(release, extra_config=None)
+    write_config_key(release)
+    model_config = ModelConfig(name=str(release), attn="flash_attention_2")
+    files = setup_model_files(model_config, AutoTokenizer.from_pretrained(release), None)
+    assert files.selection == (KeyStub, KEY_VALUE)
+    files.save(step_dir)
+
+    saved = json.loads((step_dir / "config.json").read_text())
+    assert saved[EXTRA_CONFIG_KEY] == KEY_VALUE and saved["architectures"] == ["Qwen3ForCausalLM"]
+    model = get_model(ModelConfig(name=str(step_dir), attn="flash_attention_2"))
+    assert type(model) is KeyStub and getattr(model.config, EXTRA_CONFIG_KEY) == KEY_VALUE

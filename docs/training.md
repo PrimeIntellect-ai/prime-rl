@@ -452,8 +452,8 @@ from prime_rl.trainer.sft.system_one.loss import build_decision_loss_inputs, che
 from prime_rl.trainer.sft.system_one.record import parse_record
 from prime_rl.trainer.sft.system_one.strategies import get_system_one_strategy_cls
 
-# As the trainer does, a class selected by an extra config file (e.g. Clef-Flash) finds its strategy by its name
-selection = select_by_extra_config(model.config.model_type, model.config.architectures, model_name)
+# As the trainer does, a class selected by an extra config file or key (e.g. Clef-Flash) finds its strategy by its name
+selection = select_by_extra_config(model.config.to_dict(), model_name)
 strategy = get_system_one_strategy_cls(model.config, selection)(tokenizer, model.config)
 source = data_config.source[0]  # the source the row is from
 request, _ = parse_record(row, source.columns, source.name, source.split)
