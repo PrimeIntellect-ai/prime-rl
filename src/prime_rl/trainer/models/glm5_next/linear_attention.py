@@ -8,6 +8,25 @@ from prime_rl.trainer.models.layers import fla_ops
 from prime_rl.utils.cp import CPContext
 
 
+class KimiDeltaAttentionDecay(nn.Module):
+    """The forget gate's decay parameters, which the checkpoint stores and vLLM computes in FP32."""
+
+    def __init__(self, num_heads: int, projection_size: int) -> None:
+        super().__init__()
+        self.A_log = nn.Parameter(torch.empty(num_heads))
+        self.dt_bias = nn.Parameter(torch.empty(projection_size))
+        self.reset_parameters()
+
+    @torch.no_grad()
+    def reset_parameters(self) -> None:
+        # fla's KimiDeltaAttention init with a gate lower bound: dt is log-uniform in [1e-3, 0.1] and dt_bias is
+        # its inverse softplus, computed in float32 and rounded to the parameter's dtype once.
+        nn.init.zeros_(self.A_log)
+        dt = torch.empty_like(self.dt_bias, dtype=torch.float32)
+        dt.uniform_(math.log(1e-3), math.log(0.1)).exp_().clamp_(min=1e-4)
+        self.dt_bias.copy_(dt + torch.log(-torch.expm1(-dt)))
+
+
 class KimiDeltaAttention(nn.Module):
     """Kimi Delta Attention with GLM-5.3's safe (lower-bounded) forget gate.
 
@@ -41,8 +60,7 @@ class KimiDeltaAttention(nn.Module):
 
         self.f_a_proj = nn.Linear(hidden_size, head_dim, bias=False)
         self.f_b_proj = nn.Linear(head_dim, self.projection_size, bias=False)
-        self.A_log = nn.Parameter(torch.empty(num_heads))
-        self.dt_bias = nn.Parameter(torch.empty(self.projection_size))
+        self.decay = KimiDeltaAttentionDecay(num_heads, self.projection_size)
         self.b_proj = nn.Linear(hidden_size, num_heads, bias=False)
 
         self.g_a_proj = nn.Linear(hidden_size, head_dim, bias=False)
@@ -51,16 +69,6 @@ class KimiDeltaAttention(nn.Module):
         self.o_proj = nn.Linear(self.projection_size, hidden_size, bias=False)
 
         self.cp_context = CPContext()
-        self.reset_parameters()
-
-    @torch.no_grad()
-    def reset_parameters(self) -> None:
-        # fla's KimiDeltaAttention init with a gate lower bound: dt is log-uniform in [1e-3, 0.1] and dt_bias is
-        # its inverse softplus, computed in float32 and rounded to the parameter's dtype once.
-        nn.init.zeros_(self.A_log)
-        dt = torch.empty_like(self.dt_bias, dtype=torch.float32)
-        dt.uniform_(math.log(1e-3), math.log(0.1)).exp_().clamp_(min=1e-4)
-        self.dt_bias.copy_(dt + torch.log(-torch.expm1(-dt)))
 
     def _depthwise_conv(self) -> nn.Conv1d:
         return nn.Conv1d(
@@ -91,8 +99,8 @@ class KimiDeltaAttention(nn.Module):
             value,
             forget_gate,
             beta,
-            self.A_log,
-            self.dt_bias,
+            self.decay.A_log,
+            self.decay.dt_bias,
             self.gate_lower_bound,
             fla_varlen,
             self.cp_context,
@@ -109,4 +117,4 @@ class KimiDeltaAttention(nn.Module):
         return self.o_proj(core_output.reshape(batch_size, sequence_length, self.projection_size))
 
 
-__all__ = ["KimiDeltaAttention"]
+__all__ = ["KimiDeltaAttention", "KimiDeltaAttentionDecay"]
