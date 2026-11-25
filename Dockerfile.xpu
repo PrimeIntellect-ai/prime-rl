@@ -36,6 +36,8 @@ ARG VLLM_XPU_INDEX_URL=https://wheels.vllm.ai/0.34.0/xpu
 # Hosts triton==3.9.0+xpu, which the vLLM XPU wheel requires.
 ARG VLLM_XPU_EXTRA_INDEX_URL=https://wheels.vllm.ai/xpu
 # Hosts vllm_xpu_kernels, which the vLLM XPU wheel requires.
+# Read through --find-links on its vllm-xpu-kernels page only: queried as an index, it answers other
+# packages with intermittent 503s, which fail the build.
 ARG VLLM_XPU_KERNELS_INDEX_URL=https://vllm-project.github.io/vllm-xpu-kernels/whl
 # Environment packages installed alongside prime-rl (the basic examples' tasksets).
 ARG PRIME_RL_ENVS="deps/verifiers/environments/reverse_text deps/verifiers/environments/alphabet_sort deps/verifiers/environments/wordle deps/verifiers/environments/wiki_search deps/verifiers/environments/gsm8k"
@@ -244,7 +246,7 @@ uv pip compile /build/requirements.in \
     --extra-index-url "${TORCH_INDEX_URL}" \
     --extra-index-url "${VLLM_XPU_INDEX_URL}" \
     --extra-index-url "${VLLM_XPU_EXTRA_INDEX_URL}" \
-    --extra-index-url "${VLLM_XPU_KERNELS_INDEX_URL}" \
+    --find-links "${VLLM_XPU_KERNELS_INDEX_URL}/vllm-xpu-kernels/" \
     --no-header --no-annotate \
     --output-file /build/resolved.txt
 
@@ -268,7 +270,7 @@ RUN --mount=type=cache,target=/home/appuser/.cache/uv,uid=1000,gid=1000 \
         --extra-index-url "${TORCH_INDEX_URL}" \
         --extra-index-url "${VLLM_XPU_INDEX_URL}" \
         --extra-index-url "${VLLM_XPU_EXTRA_INDEX_URL}" \
-        --extra-index-url "${VLLM_XPU_KERNELS_INDEX_URL}" \
+        --find-links "${VLLM_XPU_KERNELS_INDEX_URL}/vllm-xpu-kernels/" \
         -r /build/third-party.txt \
     && uv pip install --no-config --no-deps -r /build/no-deps.txt
 
