@@ -86,6 +86,7 @@ requires_quack_cross_entropy = pytest.mark.skipif(
 
 
 @pytest.mark.gpu
+@pytest.mark.tiny
 @requires_quack_cross_entropy
 @pytest.mark.parametrize("vocab", [37, 32002, 151936, 201088])
 @pytest.mark.parametrize("with_grad", [True, False])
@@ -113,6 +114,7 @@ def test_cross_entropy_kernel_matches_eager_math(monkeypatch, vocab, with_grad):
 
 
 @pytest.mark.gpu
+@pytest.mark.tiny
 @requires_quack_cross_entropy
 @pytest.mark.parametrize("vocab, hidden", [(37, 8), (32002, 100), (201088, 256)])
 @pytest.mark.parametrize("chunk_size", [96, 4096])

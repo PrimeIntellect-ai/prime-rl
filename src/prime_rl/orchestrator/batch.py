@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 
 import msgspec
 import numpy as np
-import torch
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.trainer import ModelConfig
@@ -702,7 +701,7 @@ class BatchPacker:
         model_config = ModelConfig(
             name=config.model.name, attn="flash_attention_3", trust_remote_code=config.tokenizer.trust_remote_code
         )
-        self.bin_cost = FlopCounter(get_model(model_config, device=torch.device("meta")))
+        self.bin_cost = FlopCounter(get_model(model_config))
 
     def pack(self, samples: list[TrainingSample]) -> list[list[MicroBatch]]:
         return prepare_batch(

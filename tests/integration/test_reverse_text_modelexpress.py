@@ -6,7 +6,13 @@ import pytest
 from tests.conftest import ProcessResult
 from tests.utils import check_avg_mismatch_kl_in_range, check_no_error, check_reward_goes_up, strip_escape_codes
 
-pytestmark = [pytest.mark.gpu, pytest.mark.slow]
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.slow,
+    # NIXL's UCX backend needs a network transport, and UCX finds TCP interfaces only under /sys/class/net, which
+    # sandboxed containers such as Modal's gVisor lack
+    pytest.mark.skipif(not Path("/sys/class/net").exists(), reason="UCX finds no TCP interface: no /sys/class/net"),
+]
 
 RUN_NAME = "reverse-text-modelexpress"
 

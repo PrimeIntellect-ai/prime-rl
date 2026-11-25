@@ -2,16 +2,17 @@ import json
 import pickle
 from collections import Counter
 
+import numpy as np
 import pytest
 import torch
-from datasets import Dataset, interleave_datasets
+from datasets import Dataset
 from renderers import create_renderer
 from renderers.base import MultiModalData, PlaceholderRange, RenderedTrainingSample
 from transformers import AutoTokenizer
 
 import prime_rl.trainer.sft.data as sft_data
 from prime_rl.trainer.data import CatDataset, StatefulIterableDataset, cat_collate
-from prime_rl.trainer.sft.data import SFTDataset, _drop_null_fields
+from prime_rl.trainer.sft.data import HFSource, SFTDataset, _drop_null_fields
 from prime_rl.trainer.utils import print_sample
 
 _BOS_TOKEN_ID = 0
@@ -20,6 +21,10 @@ _STOP_TOKEN_ID = 1
 
 def _sample_token_ids(value: str) -> list[int]:
     return [ord(char) + 2 for char in value]
+
+
+def _as_lists(sample: dict) -> dict:
+    return {key: value.tolist() if isinstance(value, np.ndarray) else value for key, value in sample.items()}
 
 
 @pytest.fixture(scope="module")
@@ -54,174 +59,116 @@ def test_drop_null_fields_preserves_tool_call_arguments(arguments):
 def test_init_sft_dataset(build_dummy_dataset, dummy_renderer):
     """Tests basic initialization."""
     dataset = build_dummy_dataset("a", 1)
-    sft_dataset = SFTDataset(dataset, lambda _: dummy_renderer)
-    assert sft_dataset is not None
+    source = HFSource(dataset, lambda _: dummy_renderer)
+    assert SFTDataset([source]) is not None
 
 
 def test_raise_error_if_no_prompt_and_completion(build_dummy_dataset):
-    """Tests that an error is raised if no supported SFT message fields are provided."""
-    dataset = Dataset.from_list([{"text": "a0"}])
-    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-    sft_dataset = SFTDataset(dataset, lambda _: create_renderer(tokenizer))
+    """Tests that an error is raised if there is no prompt and completion."""
+    dataset = Dataset.from_list([{"text": "a"}])
+    tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")
+    source = HFSource(dataset, lambda _: create_renderer(tokenizer))
     with pytest.raises(ValueError):
-        next(iter(sft_dataset))
+        next(iter(SFTDataset([source])))
 
 
-@pytest.mark.parametrize("max_epochs", [1, 2, 4])
-def test_sft_first_exhausted(build_dummy_dataset, dummy_renderer, max_epochs: int):
-    a = build_dummy_dataset("a", 1)
-    b = build_dummy_dataset("b", 2)
-    ds = [a, b]
-    dataset = interleave_datasets(ds, stopping_strategy="first_exhausted")
-    dataset = SFTDataset(dataset, lambda _: dummy_renderer, shuffle=False, max_epochs=max_epochs)
-    num_samples = 0
-    sampling_order = []
-    for x in dataset:
-        sampling_order.append(x["target_ids"][:-1])
-        num_samples += 1
-    assert num_samples == max_epochs * min([len(d) for d in ds]) * len(ds)
-    assert sampling_order == [_sample_token_ids("a0"), _sample_token_ids("b0")] * max_epochs
+def position(state: dict) -> dict:
+    return {key: state[key] for key in ("step", "epoch", "draws")}
 
 
-@pytest.mark.parametrize("max_epochs", [1, 2, 4])
-def test_sft_all_exhausted(build_dummy_dataset, dummy_renderer, max_epochs: int):
-    a = build_dummy_dataset("a", 1)
-    b = build_dummy_dataset("b", 2)
-    ds = [a, b]
-    dataset = interleave_datasets(ds, stopping_strategy="all_exhausted")
-    dataset = SFTDataset(dataset, lambda _: dummy_renderer, shuffle=False, max_epochs=max_epochs)
-    num_samples = 0
-    sampling_order = []
-    for x in dataset:
-        sampling_order.append(x["target_ids"][:-1])
-        num_samples += 1
-    assert num_samples == max_epochs * max([len(d) for d in ds]) * len(ds)
-    print(sampling_order)
-    assert (
-        sampling_order
-        == [
-            _sample_token_ids("a0"),
-            _sample_token_ids("b0"),
-            _sample_token_ids("a0"),
-            _sample_token_ids("b1"),
-        ]
-        * max_epochs
-    )
+def _content(sample: dict) -> str:
+    return "".join(chr(token - 2) for token in sample["target_ids"][:-1].tolist())
 
 
-@pytest.mark.parametrize(
-    "probs",
-    [
-        pytest.param((0.5, 0.5), id="equal_probs"),
-        pytest.param((1 / 10, 9 / 10), id="low_high_probs"),
-        pytest.param((9 / 10, 1 / 10), id="high_low_probs"),
-    ],
-)
-def test_sft_all_exhausted_with_probs(build_dummy_dataset, dummy_renderer, probs: list[float]):
-    """Tests that the ratio of samples from different datasets is as specified, in expectation."""
-    a = build_dummy_dataset("a", int(1e3))
-    b = build_dummy_dataset("b", int(10e3))
-    ds = [a, b]
-    dataset = interleave_datasets(ds, stopping_strategy="all_exhausted", probabilities=probs)
-    dataset = SFTDataset(dataset, lambda _: dummy_renderer, shuffle=False, max_epochs=1)
-    num_samples = 0
-    sampling_freq = []
-    for x in dataset:
-        sampling_freq.append(x["target_ids"][0])
-        num_samples += 1
-    sampling_freq = Counter(sampling_freq)
-    ratio_a = sampling_freq[ord("a") + 2] / num_samples
-    ratio_b = sampling_freq[ord("b") + 2] / num_samples
-    assert ratio_a > probs[0] * 0.8 and ratio_a < probs[0] * 1.2, (
-        f"Expected frequency of samples from a to be between {probs[0] * 0.8} and {probs[0] * 1.2}, but got {ratio_a}"
-    )
-    assert ratio_b > probs[1] * 0.8 and ratio_b < probs[1] * 1.2, (
-        f"Exepcted frequency of samples from b to be between {probs[1] * 0.8} and {probs[1] * 1.2}, but got {ratio_b}"
-    )
+@pytest.fixture
+def source(build_dummy_dataset, dummy_renderer):
+    def make(letter: str, num_examples: int, **kwargs) -> HFSource:
+        dataset = build_dummy_dataset(letter, num_examples)
+        return HFSource(dataset, lambda _: dummy_renderer, name=letter, shuffle=kwargs.pop("shuffle", False), **kwargs)
+
+    return make
 
 
-def test_sft_dataset_state(build_dummy_dataset, dummy_renderer):
+@pytest.mark.parametrize("max_epochs", [1, 2])
+def test_natural_shares_read_every_row_once_per_epoch(source, max_epochs: int):
+    dataset = SFTDataset([source("a", 2), source("b", 4)], max_epochs=max_epochs)
+    order = [_content(sample) for sample in dataset]
+    # Due times (draws + 1) / rows, ties to the first source
+    assert order == ["b0", "a0", "b1", "b2", "a1", "b3"] * max_epochs
+    assert position(dataset.state_dict()) == {
+        "step": 6 * max_epochs,
+        "epoch": max_epochs - 1,
+        "draws": {"a": 2 * max_epochs, "b": 4 * max_epochs},
+    }
+
+
+def test_weights_set_the_share_of_every_stretch_of_draws(source):
+    dataset = SFTDataset([source("a", 1), source("b", 10)], weights=[1, 3])
+    dataiter = iter(dataset)
+    order = [_content(next(dataiter))[0] for _ in range(400)]
+    assert Counter(order) == {"a": 100, "b": 300}
+    assert all(Counter(order[i : i + 4]) == {"a": 1, "b": 3} for i in range(0, 400, 4))
+
+
+def test_zero_weight_source_is_never_drawn(source):
+    dataiter = iter(SFTDataset([source("a", 2), source("b", 2)], weights=[0, 1]))
+    assert {_content(next(dataiter))[0] for _ in range(10)} == {"b"}
+
+
+@pytest.mark.parametrize("dp_size", [2, 3])
+def test_ranks_split_the_same_draws(source, dp_size: int):
+    def contents(dp_rank: int, dp_size: int, count: int) -> list[str]:
+        dataset = SFTDataset(
+            [source("a", 3, shuffle=True), source("b", 5, shuffle=True)], dp_rank=dp_rank, dp_size=dp_size
+        )
+        dataiter = iter(dataset)
+        return [_content(next(dataiter)) for _ in range(count)]
+
+    single = contents(0, 1, 6 * dp_size)
+    per_rank = [contents(rank, dp_size, 6) for rank in range(dp_size)]
+    assert [per_rank[i % dp_size][i // dp_size] for i in range(6 * dp_size)] == single
+
+
+def test_sft_dataset_state(source):
     """Tests the state of the dataset within and across epochs."""
-    dataset = build_dummy_dataset("", 4)
-    dataset = SFTDataset(dataset, lambda _: dummy_renderer, shuffle=False, max_epochs=2)
+    dataset = SFTDataset([source("", 4)], max_epochs=2)
     dataiter = iter(dataset)
 
-    # Initial state
-    assert dataset.state_dict() == {"step": 0, "epoch": 0}
-
-    # Epoch 1
-    for i in range(4):
-        sample = next(dataiter)
-        assert sample["target_ids"][:-1] == _sample_token_ids(str(i))
-        assert dataset.state_dict() == {"epoch": 0, "step": i + 1}
-
-    # Epoch 2
-    for i in range(4):
-        sample = next(dataiter)
-        assert sample["target_ids"][:-1] == _sample_token_ids(str(i))
-        assert dataset.state_dict() == {"epoch": 1, "step": 4 + i + 1}
+    assert position(dataset.state_dict()) == {"step": 0, "epoch": 0, "draws": {"": 0}}
+    for epoch in range(2):
+        for i in range(4):
+            assert _content(next(dataiter)) == str(i)
+            step = 4 * epoch + i + 1
+            assert position(dataset.state_dict()) == {"step": step, "epoch": (step - 1) // 4, "draws": {"": step}}
 
     with pytest.raises(StopIteration):
         next(dataiter)
 
 
-def test_sft_dataset_state_resume(build_dummy_dataset, dummy_renderer):
-    """Tests resuming the dataset from checkpoint in between epochs."""
-    dataset = SFTDataset(
-        build_dummy_dataset("", 4),
-        lambda _: dummy_renderer,
-        shuffle=False,
-        max_epochs=2,
-    )
+def test_sft_dataset_state_resume(source):
+    """A resumed dataset continues the draws of an uninterrupted one, within a pass and across passes."""
+
+    def make() -> SFTDataset:
+        return SFTDataset([source("a", 3, shuffle=True), source("b", 4, shuffle=True)], max_epochs=3)
+
+    expected = [_content(sample) for sample in make()]
+    for stop in (2, 7, 12):
+        dataset = make()
+        dataiter = iter(dataset)
+        contents = [_content(next(dataiter)) for _ in range(stop)]
+        resumed = make()
+        resumed.load_state_dict(dataset.state_dict())
+        contents += [_content(sample) for sample in resumed]
+        assert contents == expected
+
+
+def test_resume_single_source_from_state_without_draws(source):
+    dataset = SFTDataset([source("", 4)])
+    dataset.num_samples["train"] = 3
+    dataset.load_state_dict({"step": 3, "epoch": 0})
+    assert dict(dataset.num_samples) == {"": 3}
     dataiter = iter(dataset)
-
-    # Initial state
-    assert dataset.state_dict() == {"step": 0, "epoch": 0}
-
-    # Epoch 1
-    for i in range(4):
-        sample = next(dataiter)
-        assert sample["target_ids"][:-1] == _sample_token_ids(str(i))
-        assert dataset.state_dict() == {"epoch": 0, "step": i + 1}
-
-    # Resuming from checkpoint cross epoch
-    state_dict = dataset.state_dict()
-    del dataset
-    dataset = SFTDataset(
-        build_dummy_dataset("", 4),
-        lambda _: dummy_renderer,
-        shuffle=False,
-        max_epochs=2,
-    )
-    dataset.load_state_dict(state_dict)
-    dataiter = iter(dataset)
-
-    # Epoch 2.1
-    for i in range(2):
-        sample = next(dataiter)
-        assert sample["target_ids"][:-1] == _sample_token_ids(str(i))
-        assert dataset.state_dict() == {"epoch": 1, "step": 4 + i + 1}
-
-    # Resuming from checkpoint mid epoch
-    state_dict = dataset.state_dict()
-    del dataset
-    dataset = SFTDataset(
-        build_dummy_dataset("", 4),
-        lambda _: dummy_renderer,
-        shuffle=False,
-        max_epochs=2,
-    )
-    dataset.load_state_dict(state_dict)
-    dataiter = iter(dataset)
-
-    # Epoch 2.2
-    for i in range(2, 4):
-        sample = next(dataiter)
-        assert sample["target_ids"][:-1] == _sample_token_ids(str(i))
-        assert dataset.state_dict() == {"epoch": 1, "step": 4 + i + 1}
-
-    with pytest.raises(StopIteration):
-        next(dataiter)
+    assert [_content(next(dataiter)) for _ in range(2)] == ["3", "0"]
 
 
 def test_multiturn_loss_mask():
@@ -238,8 +185,8 @@ def test_multiturn_loss_mask():
         ]
     )
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")  # Properly handles multi-turn think
-    dataset = SFTDataset(dataset, lambda _: create_renderer(tokenizer), max_examples=1)
-    sample = next(iter(dataset))
+    dataset = HFSource(dataset, lambda _: create_renderer(tokenizer), max_examples=1)
+    sample = dataset.sample(0)
     print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
 
 
@@ -301,8 +248,8 @@ def test_multiturn_loss_mask_with_tools():
 
     dataset = Dataset.from_list([tool_example])
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")  # Properly handles multi-turn think
-    dataset = SFTDataset(dataset, lambda _: create_renderer(tokenizer), max_examples=1)
-    sample = next(iter(dataset))
+    dataset = HFSource(dataset, lambda _: create_renderer(tokenizer), max_examples=1)
+    sample = dataset.sample(0)
     print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
 
 
@@ -326,18 +273,18 @@ def test_messages_rows_are_equivalent_to_empty_prompt_completion():
     ]
 
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")
-    messages_dataset = SFTDataset(
+    messages_dataset = HFSource(
         Dataset.from_list([{"messages": messages}]),
         lambda _: create_renderer(tokenizer),
         max_examples=1,
     )
-    split_dataset = SFTDataset(
+    split_dataset = HFSource(
         Dataset.from_list([{"prompt": [], "completion": messages}]),
         lambda _: create_renderer(tokenizer),
         max_examples=1,
     )
 
-    assert next(iter(messages_dataset)) == next(iter(split_dataset))
+    assert _as_lists(messages_dataset.sample(0)) == _as_lists(split_dataset.sample(0))
 
 
 def test_messages_take_precedence_over_prompt_and_completion():
@@ -352,18 +299,18 @@ def test_messages_take_precedence_over_prompt_and_completion():
         "completion": [{"role": "assistant", "content": "Ignored completion"}],
     }
 
-    messages_dataset = SFTDataset(
+    messages_dataset = HFSource(
         Dataset.from_list([row]),
         lambda _: create_renderer(tokenizer),
         max_examples=1,
     )
-    expected_dataset = SFTDataset(
+    expected_dataset = HFSource(
         Dataset.from_list([{"prompt": [], "completion": row["messages"]}]),
         lambda _: create_renderer(tokenizer),
         max_examples=1,
     )
 
-    assert next(iter(messages_dataset)) == next(iter(expected_dataset))
+    assert _as_lists(messages_dataset.sample(0)) == _as_lists(expected_dataset.sample(0))
 
 
 def test_null_messages_falls_back_to_prompt_and_completion():
@@ -373,18 +320,18 @@ def test_null_messages_falls_back_to_prompt_and_completion():
     prompt = [{"role": "user", "content": "What is 2+2?"}]
     completion = [{"role": "assistant", "content": "4"}]
 
-    mixed_row_dataset = SFTDataset(
+    mixed_row_dataset = HFSource(
         Dataset.from_list([{"messages": None, "prompt": prompt, "completion": completion}]),
         lambda _: create_renderer(tokenizer),
         max_examples=1,
     )
-    expected_dataset = SFTDataset(
+    expected_dataset = HFSource(
         Dataset.from_list([{"prompt": prompt, "completion": completion}]),
         lambda _: create_renderer(tokenizer),
         max_examples=1,
     )
 
-    assert next(iter(mixed_row_dataset)) == next(iter(expected_dataset))
+    assert _as_lists(mixed_row_dataset.sample(0)) == _as_lists(expected_dataset.sample(0))
 
 
 def test_vlm_truncation_does_not_append_trainable_eos(monkeypatch, dummy_renderer):
@@ -402,7 +349,7 @@ def test_vlm_truncation_does_not_append_trainable_eos(monkeypatch, dummy_rendere
         )
 
     monkeypatch.setattr(sft_data, "build_training_sample", fake_build_training_sample)
-    dataset = SFTDataset(Dataset.from_list([]), lambda _: dummy_renderer, seq_len=2, multimodal=True)
+    dataset = HFSource(Dataset.from_list([]), lambda _: dummy_renderer, seq_len=2, multimodal=True)
 
     assert dataset._process({"messages": [{"role": "assistant", "content": "ignored"}]}) is None
 
@@ -414,13 +361,13 @@ def _sft_sample(
     mm_token_type_ids: list[int] | None = None,
 ) -> dict:
     return {
-        "input_ids": input_ids,
-        "position_ids": list(range(len(input_ids))),
-        "loss_mask": [True] * len(input_ids),
-        "target_ids": [x + 1 for x in input_ids],
+        "input_ids": np.array(input_ids),
+        "position_ids": np.arange(len(input_ids)),
+        "loss_mask": np.ones(len(input_ids), dtype=bool),
+        "target_ids": np.array(input_ids) + 1,
         "seq_lens": [len(input_ids)],
         "mm_kwargs": mm_kwargs,
-        "mm_token_type_ids": mm_token_type_ids,
+        "mm_token_type_ids": np.array(mm_token_type_ids) if mm_token_type_ids is not None else None,
     }
 
 
@@ -450,9 +397,9 @@ def test_cat_dataset_packs_multimodal_samples():
 
     packed = next(iter(dataset))
 
-    assert packed["input_ids"] == [1, 2, 3, 4, 5]
+    assert packed["input_ids"].tolist() == [1, 2, 3, 4, 5]
     assert packed["seq_lens"] == [2, 3]
-    assert packed["mm_token_type_ids"] == [0, 1, 0, 1, 1]
+    assert packed["mm_token_type_ids"].tolist() == [0, 1, 0, 1, 1]
     assert packed["mm_kwargs"]["pixel_values"].shape == (5, 3)
     assert packed["mm_kwargs"]["image_grid_thw"].tolist() == [[1, 1, 2], [1, 1, 3]]
 
@@ -470,7 +417,7 @@ def test_cat_dataset_packs_text_and_multimodal_samples_together():
                 mm_token_type_ids=[0, 1],
             ),
             _sft_sample([4]),
-            _sft_sample([5, 6, 7, 8, 9, 10]),
+            _sft_sample([5, 6, 7, 8, 9, 10, 11]),
         ],
         seq_len=9,
         pad_to_multiple_of=3,
@@ -480,23 +427,25 @@ def test_cat_dataset_packs_text_and_multimodal_samples_together():
     packed = next(dataiter)
     text_pack = next(dataiter)
 
-    assert packed["input_ids"] == [1, 2, 3, 4, 0, 0]
-    assert packed["loss_mask"] == [True, True, True, True, False, False]
-    assert packed["position_ids"] == [0, 0, 1, 0, 0, 1]
+    assert packed["input_ids"].tolist() == [1, 2, 3, 4, 0, 0]
+    assert packed["loss_mask"].tolist() == [True, True, True, True, False, False]
+    assert packed["position_ids"].tolist() == [0, 0, 1, 0, 0, 1]
     assert packed["seq_lens"] == [1, 2, 1, 2]  # the padding is a segment of its own
     assert packed["sample_lens"] == [1, 2, 1]
     assert packed["mm_kwargs"] is not None
-    assert packed["mm_token_type_ids"] == [0, 0, 1, 0, 0, 0]
-    assert text_pack["input_ids"] == [5, 6, 7, 8, 9, 10]
-    assert text_pack["loss_mask"] == [True] * 6
-    assert text_pack["seq_lens"] == [6]
-    assert text_pack["sample_lens"] == [6]
+    assert packed["mm_token_type_ids"].tolist() == [0, 0, 1, 0, 0, 0]
+    # A text pack pads with its own tokens.
+    assert text_pack["input_ids"].tolist() == [5, 6, 7, 8, 9, 10, 11, 5, 6]
+    assert text_pack["position_ids"].tolist() == [0, 1, 2, 3, 4, 5, 6, 0, 1]
+    assert text_pack["loss_mask"].tolist() == [True] * 7 + [False] * 2
+    assert text_pack["seq_lens"] == [7, 2]
+    assert text_pack["sample_lens"] == [7]
     assert text_pack["mm_kwargs"] is None
     assert text_pack["mm_token_type_ids"] is None
 
 
 def test_cat_dataset_records_each_sample():
-    two_segments = {**_sft_sample([1, 2, 3]), "position_ids": [0, 1, 0], "seq_lens": [2, 1]}
+    two_segments = {**_sft_sample([1, 2, 3]), "position_ids": np.array([0, 1, 0]), "seq_lens": [2, 1]}
     dataset = CatDataset(
         [two_segments, _sft_sample([4, 5, 6]), _sft_sample(list(range(10, 17))), _sft_sample([7])],
         seq_len=5,
@@ -533,9 +482,9 @@ def test_cat_dataset_keeps_sample_data_in_pack_order():
 
     first, second = CatDataset(samples, seq_len=4, pad_to_multiple_of=1)
 
-    assert first["input_ids"] == [1, 2, 3]
+    assert first["input_ids"].tolist() == [1, 2, 3]
     assert first["sample_data"] == ["a", "b"]
-    assert second["input_ids"] == [4, 5, 6, 7]
+    assert second["input_ids"].tolist() == [4, 5, 6, 7]
     assert second["sample_data"] == ["c", "d"]
     assert cat_collate([first])["sample_data"] == ["a", "b"]
 
@@ -556,7 +505,7 @@ def test_cat_dataset_resumes_a_pending_sample_with_its_sample_data():
     resumed.load_state_dict(state)
     (packed,) = resumed
 
-    assert packed["input_ids"] == [3, 4, 5, 6]
+    assert packed["input_ids"].tolist() == [3, 4, 5, 6]
     batch = cat_collate([packed])
     assert batch["sample_lens"].tolist() == [3, 1]
     assert batch["sample_data"] == ["b", "c"]
@@ -601,6 +550,28 @@ def custom_renderer_config(tmp_path):
     path = tmp_path / "effort_renderer.py"
     path.write_text(CUSTOM_RENDERER_SOURCE)
     return CustomRendererConfig(import_path=f"{path}:EffortRenderer")
+
+
+def test_source_renderer_kwargs_apply_to_that_source_only(custom_renderer_config):
+    from prime_rl.configs.sft import SFTDataConfig
+
+    config = SFTDataConfig(
+        source=[
+            {"name": "high", "dataset": "unused", "renderer": {"reasoning_effort": "high"}},
+            {"name": "default", "dataset": "unused"},
+        ]
+    )
+    rows = Dataset.from_list([{"messages": [{"role": "assistant", "content": "a"}]}])
+    dataset = sft_data.setup_sft_dataset(
+        None,
+        config,
+        dp_rank=0,
+        dp_size=1,
+        raw_datasets={"high": rows, "default": rows},
+        renderer_config=custom_renderer_config,
+    )
+    efforts = [source.renderers({}).config.reasoning_effort for source in dataset.sources]
+    assert efforts == ["high", "low"]
 
 
 def test_renderer_resolver_applies_renderer_columns_to_custom_renderer(custom_renderer_config):
@@ -652,18 +623,16 @@ def test_sft_dataset_reads_mapped_message_columns(dummy_renderer):
 
     dataset = Dataset.from_list([{"conversation": [{"role": "assistant", "content": "a0"}]}])
 
-    sample = next(
-        iter(SFTDataset(dataset, lambda _: dummy_renderer, columns=SFTColumnsConfig(messages="conversation")))
-    )
-    assert sample["input_ids"] == [_BOS_TOKEN_ID, *_sample_token_ids("a0")]
-    assert sample["target_ids"] == [*_sample_token_ids("a0"), _STOP_TOKEN_ID]
+    sample = HFSource(dataset, lambda _: dummy_renderer, columns=SFTColumnsConfig(messages="conversation")).sample(0)
+    assert sample["input_ids"].tolist() == [_BOS_TOKEN_ID, *_sample_token_ids("a0")]
+    assert sample["target_ids"].tolist() == [*_sample_token_ids("a0"), _STOP_TOKEN_ID]
 
     with pytest.raises(ValueError, match="'messages' column"):
-        next(iter(SFTDataset(dataset, lambda _: dummy_renderer)))
+        HFSource(dataset, lambda _: dummy_renderer).sample(0)
     with pytest.raises(ValueError, match="data.columns.message_loss_mask"):
-        SFTDataset(dataset, lambda _: dummy_renderer, columns=SFTColumnsConfig(message_loss_mask="selection"))
+        HFSource(dataset, lambda _: dummy_renderer, columns=SFTColumnsConfig(message_loss_mask="selection"))
     with pytest.raises(ValueError, match="data.columns.prompt"):
-        SFTDataset(dataset, lambda _: dummy_renderer, columns=SFTColumnsConfig(prompt="question"))
+        HFSource(dataset, lambda _: dummy_renderer, columns=SFTColumnsConfig(prompt="question"))
 
 
 def test_sft_dataset_passes_tools_through_from_the_mapped_column(dummy_renderer):
@@ -683,8 +652,8 @@ def test_sft_dataset_passes_tools_through_from_the_mapped_column(dummy_renderer)
         def get_stop_token_ids(self):
             return dummy_renderer.get_stop_token_ids()
 
-    next(iter(SFTDataset(dataset, lambda _: RecordingRenderer())))
-    next(iter(SFTDataset(dataset, lambda _: RecordingRenderer(), columns=SFTColumnsConfig(tools="schemas"))))
+    HFSource(dataset, lambda _: RecordingRenderer()).sample(0)
+    HFSource(dataset, lambda _: RecordingRenderer(), columns=SFTColumnsConfig(tools="schemas")).sample(0)
 
     assert seen == [[], tools]
 
@@ -705,21 +674,19 @@ def test_sft_message_selection(model, layout, column, mask):
         {"role": "assistant", "content": "Answer"},
     ]
     row = {"messages": messages} if layout == "messages" else {"prompt": messages[:2], "completion": messages[2:]}
-    baseline = SFTDataset(Dataset.from_list([row]), lambda _: renderer)._process(row)
+    baseline = HFSource(Dataset.from_list([row]), lambda _: renderer)._process(row)
     row[column] = mask
-    dataset = SFTDataset(
-        Dataset.from_list([row]), lambda _: renderer, columns=SFTColumnsConfig(message_loss_mask=column)
-    )
+    dataset = HFSource(Dataset.from_list([row]), lambda _: renderer, columns=SFTColumnsConfig(message_loss_mask=column))
     sample = dataset._process(row)
     if mask == [0, 0, 0, 0]:
         assert sample is None
         return
-    assert sample["input_ids"] == baseline["input_ids"]
-    assert sample["target_ids"] == baseline["target_ids"]
+    assert sample["input_ids"].tolist() == baseline["input_ids"].tolist()
+    assert sample["target_ids"].tolist() == baseline["target_ids"].tolist()
     if mask is None or all(mask):
-        assert sample["loss_mask"] == baseline["loss_mask"]
+        assert sample["loss_mask"].tolist() == baseline["loss_mask"].tolist()
         return
-    trained = tokenizer.decode([token for token, keep in zip(sample["target_ids"], sample["loss_mask"]) if keep])
+    trained = tokenizer.decode(sample["target_ids"][sample["loss_mask"]].tolist())
     if mask[1]:
         assert "Prefilled" in trained
         assert "Answer" not in trained
@@ -737,6 +704,6 @@ def test_sft_message_selection(model, layout, column, mask):
 @pytest.mark.parametrize("mask", [[], [1, 0], ["0"], [2], [None]])
 def test_sft_rejects_invalid_message_selection(dummy_renderer, mask):
     row = {"messages": [{"role": "assistant", "content": "Answer"}], "message_loss_mask": mask}
-    dataset = SFTDataset(Dataset.from_list([row]), lambda _: dummy_renderer)
+    dataset = HFSource(Dataset.from_list([row]), lambda _: dummy_renderer)
     with pytest.raises(ValueError, match="message_loss_mask"):
         dataset._process(row)

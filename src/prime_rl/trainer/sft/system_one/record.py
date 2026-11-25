@@ -132,12 +132,15 @@ def _soft_label(question: Question, soft_label: Any) -> list[float]:
     return [p / total for p in values]
 
 
-def parse_record(row: Mapping, columns: SystemOneColumnsConfig) -> tuple[SystemOneRequest, list[list[float] | None]]:
+def parse_record(
+    row: Mapping, columns: SystemOneColumnsConfig, source: str | None = None
+) -> tuple[SystemOneRequest, list[list[float] | None]]:
     """A dataset row -> the checked request and each question's target over its options: the soft label if given,
-    else the hard label one-hot, else None (the question is not trained). The columns hold JSON text."""
+    else the hard label one-hot, else None (the question is not trained). The columns hold JSON text. A record without
+    an id is named by its source ``source`` and row index."""
     record_id = row.get(columns.id)
     if record_id is None:
-        record_id = "/".join(str(row[key]) for key in ("__subset", "__split", "__index") if row.get(key) is not None)
+        record_id = "/".join(str(part) for part in (source, row.get("__index")) if part is not None)
     try:
         state = _decode(row, columns.state)
         definitions = _decode(row, columns.questions)

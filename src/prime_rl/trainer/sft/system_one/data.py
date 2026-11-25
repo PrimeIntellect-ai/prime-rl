@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from itertools import accumulate
 from typing import NotRequired, TypedDict
 
+import numpy as np
 from datasets import Dataset, Value
 from jaxtyping import Float, Int
 from torch import Tensor, nn
@@ -14,7 +15,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.sft import SystemOneColumnsConfig
 from prime_rl.trainer.data import Sample
-from prime_rl.trainer.sft.data import HFDataset
+from prime_rl.trainer.sft.data import HFRowSource
 from prime_rl.trainer.sft.system_one.record import QuestionType, SystemOneRequest, parse_record
 from prime_rl.utils.logger import get_logger
 
@@ -138,12 +139,12 @@ def check_rendered_request(rendered: RenderedRequest, request: SystemOneRequest,
 def build_sample(rendered: RenderedRequest, request: SystemOneRequest, targets: list[list[float] | None]) -> Sample:
     """The training sample of a checked rendering. ``targets`` are in ``Question.options`` order."""
     num_tokens = len(rendered["input_ids"])
-    loss_mask = [False] * num_tokens
+    loss_mask = np.zeros(num_tokens, dtype=bool)
     orders = rendered.get("options", [question.options for question in request.questions])
     questions = []
     for question, spans, order, target in zip(request.questions, rendered["read_spans"], orders, targets, strict=True):
         for start, end in spans:
-            loss_mask[start:end] = [True] * (end - start)
+            loss_mask[start:end] = True
         if target is not None:
             target = [target[question.options.index(option)] for option in order]
         questions.append(
@@ -155,12 +156,12 @@ def build_sample(rendered: RenderedRequest, request: SystemOneRequest, targets: 
             }
         )
     return {
-        "input_ids": rendered["input_ids"],
-        "position_ids": [position for seq_len in rendered["seq_lens"] for position in range(seq_len)],
+        "input_ids": np.array(rendered["input_ids"], dtype=np.int64),
+        "position_ids": np.concatenate([np.arange(seq_len) for seq_len in rendered["seq_lens"]]),
         "seq_lens": rendered["seq_lens"],
         "loss_mask": loss_mask,
         # Targets are per question, in sample_data
-        "target_ids": [0] * num_tokens,
+        "target_ids": np.zeros(num_tokens, dtype=np.int64),
         "mm_kwargs": None,
         "mm_token_type_ids": None,
         "sample_data": {"id": request.id, "questions": questions},
@@ -220,39 +221,45 @@ def check_columns(dataset: Dataset, columns: SystemOneColumnsConfig) -> None:
             )
 
 
-def check_records(dataset: Dataset, columns: SystemOneColumnsConfig, rank: int = 0, world_size: int = 1) -> None:
-    """Parse every ``world_size``-th row from ``rank`` once, so that a malformed record stops the run at startup."""
+def check_records(
+    dataset: Dataset,
+    columns: SystemOneColumnsConfig,
+    rank: int = 0,
+    world_size: int = 1,
+    source: str | None = None,
+) -> None:
+    """Parse every ``world_size``-th row from ``rank`` of the source ``source`` once, so that a malformed record stops
+    the run at startup."""
     check_columns(dataset, columns)
     rows = dataset.shard(world_size, rank, contiguous=False)
-    names = dict.fromkeys([*columns.model_dump().values(), "__subset", "__split", "__index"])
+    names = dict.fromkeys([*columns.model_dump().values(), "__index"])
     rows = rows.select_columns([name for name in names if name in rows.column_names])
     for batch in rows.iter(batch_size=1024):
         for values in zip(*batch.values()):
-            parse_record(dict(zip(batch, values)), columns)
+            parse_record(dict(zip(batch, values)), columns, source)
 
 
-class SystemOneDataset(HFDataset):
-    """A HF dataset of System One records, one sample per record with a labelled question."""
+class SystemOneSource(HFRowSource):
+    """Rows of a HF dataset of System One records, one sample per record with a labelled question."""
 
     def __init__(
         self,
         dataset: Dataset,
         strategy: SystemOneStrategy,
+        name: str = "train",
         columns: SystemOneColumnsConfig = SystemOneColumnsConfig(),
         shuffle: bool = True,
         seed: int = 0,
         seq_len: int = 128,
-        non_dp_size: int = 1,
-        max_epochs: int | None = None,
     ):
-        super().__init__(dataset, shuffle=shuffle, seed=seed, non_dp_size=non_dp_size, max_epochs=max_epochs)
+        super().__init__(dataset, name=name, shuffle=shuffle, seed=seed)
         self.strategy = strategy
         self.columns = columns
         self.seq_len = seq_len
         check_columns(dataset, columns)
 
-    def _process(self, example: dict) -> dict | None:
-        request, targets = parse_record(example, self.columns)
+    def _process(self, example: dict) -> Sample | None:
+        request, targets = parse_record(example, self.columns, self.name)
         if all(target is None for target in targets):
             self.logger.warning(f"Skipping record {request.id!r}: none of its questions has a label")
             return None

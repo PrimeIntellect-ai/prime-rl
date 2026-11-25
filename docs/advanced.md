@@ -125,6 +125,10 @@ kernels and does not share this accumulation guarantee.
 
 The LM head computes FP32 logits from its BF16 operands: one GEMM writes the logits in FP32 instead of rounding them to BF16 (fused and vanilla head). Gradients stay BF16. This matches inference, whose `enable_fp32_lm_head` defaults to `true` (vLLM's FP32 head), and lowers the trainer–inference mismatch.
 
+### FP32 parameters
+
+A model can keep parameters out of FSDP's BF16 cast when its checkpoint stores them, and vLLM computes them, in FP32 (`fp32_modules` on the model class): GLM-5.3 Flash's hyper-connections and KDA decay (`A_log`, `dt_bias`). Each module holding them is its own FSDP unit with FP32 masters, gathered in FP32 before the decoder layers run, and inference receives them in FP32.
+
 ### Expert Parallelism Backends
 
 `[trainer.model.moe.dispatch]` selects how routed tokens are dispatched and combined:

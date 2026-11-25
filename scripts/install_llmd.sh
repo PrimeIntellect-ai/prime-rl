@@ -20,8 +20,7 @@
 # pins. Envoy is extracted as a static binary from its release container image
 # WITHOUT docker: we build `crane` (pure-Go, talks straight to the OCI registry)
 # with the same vendored toolchain and use it to export the image filesystem.
-# This is the only step that previously required a docker daemon, which cluster
-# compute nodes don't have.
+# Cluster compute nodes have no docker daemon.
 set -euo pipefail
 
 LLMD_ROUTER_REPO="${LLMD_ROUTER_REPO:-https://github.com/S1ro1/llm-d-router.git}"

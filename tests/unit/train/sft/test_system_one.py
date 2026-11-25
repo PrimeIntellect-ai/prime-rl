@@ -4,6 +4,7 @@ import os
 from functools import partial
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 import torch.distributed as dist
@@ -20,11 +21,12 @@ from prime_rl.trainer.model import forward, reshard_module, setup_fsdp
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.parallel_dims import get_parallel_dims
+from prime_rl.trainer.sft.data import SFTDataset
 from prime_rl.trainer.sft.system_one import strategies
 from prime_rl.trainer.sft.system_one.data import (
     ReadQuestion,
     RenderedRequest,
-    SystemOneDataset,
+    SystemOneSource,
     SystemOneStrategy,
     check_records,
     check_rendered_request,
@@ -124,19 +126,19 @@ def test_label_columns_may_be_absent_or_null():
     assert parse_record(row(), COLUMNS)[1] == [None, None, None]
 
 
-def test_columns_can_be_renamed_and_the_id_falls_back_to_the_split_and_row_index():
-    renamed = {"__split": "train", "__index": 7, "input": json.dumps({"ticket": 7}), "questions": json.dumps(QUESTIONS)}
+def test_columns_can_be_renamed_and_the_id_falls_back_to_the_source_and_row_index():
+    renamed = {"__index": 7, "input": json.dumps({"ticket": 7}), "questions": json.dumps(QUESTIONS)}
     renamed["probs"] = json.dumps(SOFT_LABEL)
     columns = SystemOneColumnsConfig(state="input", soft_label="probs")
-    request, targets = parse_record(renamed, columns)
+    request, targets = parse_record(renamed, columns, "train")
     assert (request.id, request.state) == ("train/7", {"ticket": 7})
     assert targets[1] == [0.75, 0.25]
     with pytest.raises(ValueError, match="record 'train/7': question 'team'"):
-        parse_record({**renamed, "probs": json.dumps({"team": {"technical": 1.0}})}, columns)
+        parse_record({**renamed, "probs": json.dumps({"team": {"technical": 1.0}})}, columns, "train")
 
 
 def test_a_null_id_falls_back_like_an_absent_one():
-    request, _ = parse_record({**ROW, "id": None, "__split": "train", "__index": 7}, COLUMNS)
+    request, _ = parse_record({**ROW, "id": None, "__index": 7}, COLUMNS, "train")
     assert request.id == "train/7"
 
 
@@ -222,14 +224,14 @@ class StubStrategy(SystemOneStrategy):
 READ_SPANS = [[(1, 2)], [(2, 4)], [(6, 7), (8, 10)]]
 
 
-def _dataset(read_spans=READ_SPANS) -> SystemOneDataset:
-    return SystemOneDataset(Dataset.from_list([ROW]), StubStrategy(None, CONFIG, read_spans))
+def _source(read_spans=READ_SPANS) -> SystemOneSource:
+    return SystemOneSource(Dataset.from_list([ROW]), StubStrategy(None, CONFIG, read_spans))
 
 
 def test_process_builds_sample_in_strategy_option_order():
-    sample = _dataset()._process(ROW)
+    sample = _source()._process(ROW)
 
-    assert sample == {
+    assert {key: value.tolist() if isinstance(value, np.ndarray) else value for key, value in sample.items()} == {
         "input_ids": list(range(10, 20)),
         "position_ids": [0, 1, 2, 3, 0, 1, 2, 3, 4, 5],
         "seq_lens": [4, 6],
@@ -273,7 +275,7 @@ def test_check_rendered_request_rejects_broken_renderings(input_ids, seq_lens, r
 
 
 def test_process_skips_record_without_labels():
-    assert _dataset()._process(row()) is None
+    assert _source()._process(row()) is None
 
 
 class SkippingStrategy(StubStrategy):
@@ -282,9 +284,9 @@ class SkippingStrategy(StubStrategy):
 
 
 def test_raises_when_every_record_is_skipped():
-    dataset = SystemOneDataset(Dataset.from_list([ROW] * 3), SkippingStrategy(None, CONFIG))
+    source = SystemOneSource(Dataset.from_list([ROW] * 3), SkippingStrategy(None, CONFIG))
     with pytest.raises(RuntimeError, match="skipped 7 rows in a row"):
-        next(iter(dataset))
+        next(iter(SFTDataset([source])))
 
 
 def test_check_records_parses_the_data_rank_share_of_the_rows():
@@ -292,6 +294,10 @@ def test_check_records_parses_the_data_rank_share_of_the_rows():
     with pytest.raises(ValueError, match="record 'bad': column 'label'"):
         check_records(dataset, COLUMNS)
     check_records(dataset, COLUMNS, rank=0, world_size=2)  # rows 0 and 2
+    # A record without an id is named by its source and row index
+    unnamed = Dataset.from_list([{**ROW, "id": None, "label": "{", "__index": 0}])
+    with pytest.raises(ValueError, match="record 'records/0': column 'label'"):
+        check_records(unnamed, COLUMNS, source="records")
 
 
 def test_get_system_one_strategy_cls_looks_up_the_architecture(monkeypatch):
@@ -326,19 +332,19 @@ PROBS = [[0.8, 0.2], [0.75, 0.25], [0.25, 0.25, 0.5], [0.9, 0.1], [0.2, 0.8], [0
 INPUT_IDS = torch.arange(24)[None]
 
 
-def _micro_batch(dataset: SystemOneDataset, rows: list[dict]) -> SystemOneBatch:
+def _micro_batch(source: SystemOneSource, rows: list[dict]) -> SystemOneBatch:
     """The rows' records packed into one micro-batch of seq_len 12 and micro_batch_size 2, padded to 24 tokens."""
-    samples = [dataset._process(example) for example in rows]
+    samples = [source._process(example) for example in rows]
     (packed,) = CatDataset(samples, seq_len=24, pad_to_multiple_of=24)
     return system_one_collate([packed])
 
 
 def _decision_loss_inputs(rows: list[dict] = [ROW, SECOND]) -> DecisionLossInputs:
-    return _micro_batch(_dataset(), rows)["decision_loss_inputs"].to("cpu")
+    return _micro_batch(_source(), rows)["decision_loss_inputs"].to("cpu")
 
 
 def test_build_decision_loss_inputs_maps_reads_into_the_row():
-    batch = _micro_batch(_dataset(), [ROW, SECOND])
+    batch = _micro_batch(_source(), [ROW, SECOND])
     assert batch["seq_lens"].tolist() == [4, 6, 4, 6, 4]  # the last segment is the padding
     assert batch["sample_lens"].tolist() == [10, 10]
     assert batch["sample_data"] is None  # replaced by the decision-loss inputs
@@ -410,7 +416,7 @@ def test_decision_loss_rejects_broken_readouts(logits, got):
 
 
 def test_decision_loss_without_labelled_questions_backpropagates_zero():
-    samples = [_dataset()._process(example) for example in (ROW, SECOND)]
+    samples = [_source()._process(example) for example in (ROW, SECOND)]
     for sample in samples:
         for question in sample["sample_data"]["questions"]:
             question["target"] = None
@@ -485,7 +491,9 @@ class SegmentDecisionModel(nn.Module):
 def _reference_loss(model, sample: dict, brier_weight: float) -> torch.Tensor:
     """A record's decision loss computed alone, without packing, in plain torch per labelled question."""
     hidden_states = model.model(
-        torch.tensor([sample["input_ids"]]), torch.tensor([sample["position_ids"]]), torch.tensor(sample["seq_lens"])
+        torch.from_numpy(sample["input_ids"])[None],
+        torch.from_numpy(sample["position_ids"])[None],
+        torch.tensor(sample["seq_lens"]),
     ).last_hidden_state[0]
     loss = torch.zeros(())
     for question in sample["sample_data"]["questions"]:
@@ -502,8 +510,8 @@ def test_decision_loss_equals_a_per_record_reference():
     torch.manual_seed(0)
     model = SegmentDecisionModel()
     strategy = TokenStrategy(None, CONFIG, READ_SPANS)
-    dataset = SystemOneDataset(Dataset.from_list([ROW]), strategy)
-    batch = _micro_batch(dataset, [ROW, SECOND])
+    source = SystemOneSource(Dataset.from_list([ROW]), strategy)
+    batch = _micro_batch(source, [ROW, SECOND])
     inputs = batch["decision_loss_inputs"]
     head_calls = []
     model.decision_head.register_forward_hook(lambda *args: head_calls.append(1))
@@ -522,7 +530,7 @@ def test_decision_loss_equals_a_per_record_reference():
     assert "lm_head.weight" not in grads
     model.zero_grad()
 
-    samples = [dataset._process(example) for example in (ROW, SECOND)]
+    samples = [source._process(example) for example in (ROW, SECOND)]
     reference = sum(_reference_loss(model, sample, brier_weight=0.1) for sample in samples)
     reference.backward()
     torch.testing.assert_close(loss, reference)
@@ -596,8 +604,6 @@ class HeadsModel(PreTrainedModelPrimeRL):
     """A decision model with a score head, and an LM head tied to the embeddings or not. The score head and a tied LM
     head are in the root FSDP unit; an untied LM head shares a unit with the final norm."""
 
-    config_class = HeadsConfig
-
     def __init__(self, config, freeze_lm_head: bool = False, vocab: int = 32, hidden: int = 8):
         super().__init__(config)
         self.model = Backbone(vocab, hidden)
@@ -623,7 +629,7 @@ def heads_loss(model: nn.Module, rank: int, strategy_cls: type[SystemOneStrategy
     """The loss of each rank's micro-batch: records r and s, with r's labels on rank 0 and s's on rank 1."""
     strategy = strategy_cls(None, CONFIG, READ_SPANS)
     rows = [ROW, SECOND] if rank == 0 else [{**SECOND, "id": "r"}, {**ROW, "id": "s"}]
-    batch = _micro_batch(SystemOneDataset(Dataset.from_list([ROW]), strategy), rows)
+    batch = _micro_batch(SystemOneSource(Dataset.from_list([ROW]), strategy), rows)
     inputs = batch["decision_loss_inputs"]
     loss_fn = partial(
         decision_loss, model, strategy=strategy, inputs=inputs, input_ids=batch["input_ids"], brier_weight=0.1

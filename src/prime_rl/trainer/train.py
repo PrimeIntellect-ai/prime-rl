@@ -1,5 +1,6 @@
 import prime_rl._compat  # noqa: F401
 
+import json
 import math
 import time
 import asyncio
@@ -42,16 +43,18 @@ from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.data import cat_collate, get_dataset_progress, get_dataset_state, setup_dataloader
 from prime_rl.trainer.pretrain.data import (
-    TokenShards,
+    TokenDataset,
+    check_ranks_see_same_data,
     detect_separator,
-    setup_document_dataset,
+    saved_data_state,
     setup_token_dataset,
     warn_if_no_document_separator,
 )
-from prime_rl.trainer.sft.data import load_sft_dataset, setup_sft_dataset
+from prime_rl.trainer.sft.data import SFTDataset, load_sft_dataset, setup_sft_dataset
 from prime_rl.trainer.sft.system_one.data import check_records
 from prime_rl.trainer.sft.system_one.loss import DECISION_METRICS, decision_loss, system_one_collate
 from prime_rl.trainer.sft.system_one.strategies import get_system_one_strategy_cls
+from prime_rl.trainer.val import Validation
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
@@ -70,6 +73,7 @@ from prime_rl.trainer.vlm import setup_processor
 from prime_rl.trainer.world import get_world
 from prime_rl.control.controller import Controller
 from prime_rl.control.server import ControlServer
+from prime_rl.utils.distributed import all_gather_bytes, broadcast_bytes
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.utils import clean_exit
@@ -162,18 +166,18 @@ def train(config: SFTConfig | PretrainConfig):
 
     # Look up the strategy and check every record before any weights load
     system_one = isinstance(config, SFTConfig) and config.data.type == "system_one"
-    strategy_cls = raw_dataset = val_raw_dataset = None
+    strategy_cls = raw_datasets = val_raw_datasets = None
     if system_one:
         strategy_cls = get_system_one_strategy_cls(model_files.config)
-        raw_dataset = load_sft_dataset(config.data)
-        record_datasets = [(raw_dataset, config.data.columns)]
+        raw_datasets = load_sft_dataset(config.data)
+        record_sources = [(raw_datasets, source) for source in config.data.source]
         if config.val is not None:
-            val_raw_dataset = load_sft_dataset(config.val.data)
-            record_datasets.append((val_raw_dataset, config.val.data.columns))
+            val_raw_datasets = load_sft_dataset(config.val.data)
+            record_sources += [(val_raw_datasets, source) for source in config.val.data.source]
         check_start = time.perf_counter()
-        # Each rank parses its share of the records
-        for record_dataset, columns in record_datasets:
-            check_records(record_dataset, columns, world.rank, world.world_size)
+        # Each rank parses its share of every source's records
+        for datasets, source in record_sources:
+            check_records(datasets[source.name], source.columns, world.rank, world.world_size, source.name)
         logger.info(f"Checked the System One records in {format_time(time.perf_counter() - check_start)}")
 
     # Initialize the model
@@ -201,33 +205,67 @@ def train(config: SFTConfig | PretrainConfig):
     )
 
     # Set up the learning rate scheduler
-    # skip_scheduler rebuilds a fresh schedule over the remaining steps: size it from the
-    # resolved checkpoint step (bare --resume and --resume.dir carry no explicit step).
-    scheduler_steps = (
-        config.max_steps - checkpoint_step
-        if config.max_steps is not None and (config.ckpt and config.ckpt.skip_scheduler and checkpoint_step is not None)
-        else config.max_steps
-    )
-    logger.info(f"Initializing scheduler with {scheduler_steps} steps ({config.scheduler})")
-    scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
+    logger.info(f"Initializing scheduler with {config.max_steps} steps ({config.scheduler})")
+    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr, checkpoint_step)
 
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
     multimodal = config.model.vlm is not None
+    dp_rank, dp_size = parallel_dims.data_parallel
     if isinstance(config, PretrainConfig):
-        shards = TokenShards(config.data.paths)
+        rows = dp_size * config.data.num_workers * config.data.micro_batch_size
+        assert config.data.batch_size % rows == 0, (
+            f"batch_size ({config.data.batch_size}) must be divisible by data-parallel size x num_workers x "
+            f"micro_batch_size ({rows}), so every dataloader worker reads whole micro-batches of every step"
+        )
+
+        # A resume sizes the subsets from the checkpoint's data state.
+        resume = None
+        if checkpoint_step is not None and not (config.ckpt and config.ckpt.skip_dataloader):
+            path = config.resume.dir / "trainer" if config.resume.dir else ckpt_manager.get_ckpt_path(checkpoint_step)
+            # Without the files, loading the checkpoint fails with its own error.
+            if (path / "dataloader" / "rank_0.pt").exists():
+                resume = (saved_data_state(path / "dataloader"), checkpoint_step)
+
+        def setup_dataset() -> TokenDataset:
+            return setup_token_dataset(
+                config.data,
+                dp_rank=dp_rank,
+                dp_size=dp_size,
+                cache_dir=config.run_dir / "data",
+                max_steps=config.max_steps,
+                resume=resume,
+            )
+
+        # Rank 0 writes the table of long documents to the cache, the other ranks then read it. Rank 0's error reaches
+        # every rank, so none waits for it.
+        error, message = None, None
+        if world.rank == 0:
+            try:
+                dataset = setup_dataset()
+                message = b""
+            except Exception as e:
+                error = e
+                message = f"{type(error).__name__}: {error}".encode(errors="backslashreplace")
+        rank_0_error = broadcast_bytes(message).decode()
+        if error is not None:
+            raise error
+        if rank_0_error:
+            raise RuntimeError(f"Rank 0 failed to set up the data: {rank_0_error}")
+        if world.rank != 0:
+            dataset = setup_dataset()
+        check_ranks_see_same_data(dataset.sampler)
         if config.data.eod_mask_loss:
-            eod_mask_token = detect_separator(shards, tokenizer)
+            dataset.eod_mask_token = detect_separator(dataset.sampler.shards, tokenizer)
         else:
-            eod_mask_token = None
-            warn_if_no_document_separator(shards, tokenizer)
-        dataset = setup_token_dataset(config.data, config.model.cp, eod_mask_token=eod_mask_token)
+            warn_if_no_document_separator(dataset.sampler.shards, tokenizer)
     else:
         dataset = setup_sft_dataset(
             tokenizer,
             config.data,
-            config.model.cp,
-            raw_dataset=raw_dataset,
+            dp_rank=dp_rank,
+            dp_size=dp_size,
+            raw_datasets=raw_datasets,
             renderer_config=config.renderer,
             processor=processor,
             multimodal=multimodal,
@@ -236,16 +274,12 @@ def train(config: SFTConfig | PretrainConfig):
     collate_fn = system_one_collate if system_one else cat_collate
     dataloader = setup_dataloader(dataset, config.data, config.model.cp, collate_fn)
 
-    if config.val is not None and isinstance(config, SFTConfig) and val_raw_dataset is None:
+    if config.val is not None and isinstance(config, SFTConfig) and val_raw_datasets is None:
         logger.info(f"Loading validation dataset ({config.val.data})")
-        val_raw_dataset = load_sft_dataset(config.val.data)
-
+        val_raw_datasets = load_sft_dataset(config.val.data)
+    validation = None
     if config.val is not None and isinstance(config, PretrainConfig):
-        val_document_dataset = setup_document_dataset(config.val.data, config.model.cp, config.val.num_samples)
-        logger.info(
-            f"Validation scores {len(val_document_dataset.windows)} windows of held-out documents "
-            f"in {len(val_document_dataset.rows)} rows"
-        )
+        validation = Validation(config.val, tokenizer, parallel_dims, config.run_dir)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -257,16 +291,22 @@ def train(config: SFTConfig | PretrainConfig):
             checkpoint_step,
             model,
             [optimizer],
-            scheduler if not skip.skip_scheduler else None,
             progress,
             dataloader=dataloader if not skip.skip_dataloader else None,
             path=resume_dir / "trainer" if resume_dir is not None else None,
         )
         # The checkpoint finished step ``checkpoint_step``; resume training at the next step.
         progress.step += 1
-        # This redundant setup is necessary because loading the optimizer's state has side effects on the scheduler state dict
-        if skip.skip_scheduler:
-            scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
+        if isinstance(dataset, SFTDataset) and not skip.skip_dataloader:
+            path = resume_dir / "trainer" if resume_dir is not None else ckpt_manager.get_ckpt_path(checkpoint_step)
+            view = dataset.saved_view(dataloader, path / "dataloader", world.rank, world.world_size)
+            views = [json.loads(saved) for saved in all_gather_bytes(json.dumps(view).encode())]
+            if (start := dataset.start_together(dataloader, views)) is not None:
+                draw, skipped = start
+                logger.info(
+                    f"The SFT data changed: every dataloader worker starts at draw {draw}, the furthest one reached; "
+                    f"{skipped} draws up to there are not trained on"
+                )
         logger.info(
             f"Resuming from step {checkpoint_step} (total_tokens={progress.total_tokens}, "
             f"total_samples={progress.total_samples}, dataset_state={get_dataset_state(dataloader)})"
@@ -409,28 +449,21 @@ def train(config: SFTConfig | PretrainConfig):
         metrics = stats.compute_stats() if stats is not None else {}
         return mean_loss, nan_count.item(), metrics
 
-    def run_validation(step: int) -> None:
-        if isinstance(config, PretrainConfig):
-            val_dataset = val_document_dataset
-        else:
-            val_dataset = setup_sft_dataset(
-                tokenizer,
-                config.val.data,
-                config.model.cp,
-                max_epochs=1,
-                raw_dataset=val_raw_dataset,
-                renderer_config=config.renderer,
-                processor=processor,
-                multimodal=multimodal,
-                strategy=strategy,
-            )
+    def run_sft_validation(step: int) -> dict[str, float]:
+        val_dataset = setup_sft_dataset(
+            tokenizer,
+            config.val.data,
+            dp_rank=dp_rank,
+            dp_size=dp_size,
+            max_epochs=1,
+            raw_datasets=val_raw_datasets,
+            renderer_config=config.renderer,
+            processor=processor,
+            multimodal=multimodal,
+            strategy=strategy,
+        )
         val_dataloader = setup_dataloader(val_dataset, config.val.data, config.model.cp, collate_fn)
-
-        # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
         mean_loss, nan_count, metrics = run_eval_loop(val_dataloader)
-        if is_tt_moe_model(model):
-            # Keep validation routing out of the next training step's statistics.
-            take_moe_routing_stats(model)
         if nan_count > 0:
             logger.warning(f"Validation at step {step}: {nan_count} batches had NaN loss")
         if mean_loss != mean_loss:
@@ -441,7 +474,15 @@ def train(config: SFTConfig | PretrainConfig):
         if not system_one:  # perplexity is exp(token cross-entropy)
             val_metrics["val/perplexity"] = math.exp(min(mean_loss, 20))
         val_metrics.update({f"val/{name}": value for name, value in metrics.items()})
-        asyncio.run(monitors.log({**val_metrics, "step": step}, step=step))
+        return val_metrics
+
+    def run_validation(step: int) -> None:
+        # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
+        metrics = validation.run(model, step) if validation is not None else run_sft_validation(step)
+        if is_tt_moe_model(model):
+            # Keep validation routing out of the next training step's statistics.
+            take_moe_routing_stats(model)
+        asyncio.run(monitors.log({**metrics, "step": step}, step=step))
 
     def logged_micro_batches(micro_batches):
         for micro_batch in micro_batches:
@@ -618,7 +659,7 @@ def train(config: SFTConfig | PretrainConfig):
         if (is_ckpt_step or step_action == "checkpoint") and not is_last_step:
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
-            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
+            ckpt_manager.save(progress.step, model, [optimizer], progress, dataloader=dataloader)
             if step_action == "checkpoint":
                 # The action commits once the checkpoint is on storage
                 ckpt_manager.wait()
@@ -639,9 +680,8 @@ def train(config: SFTConfig | PretrainConfig):
             memory_profiler.step()
 
         # Throughput / MFU per step over the full step wall time, as torchtitan reports them with
-        # log_freq=1 (tokens since last log / elapsed time), instead of a smoothed sliding window.
+        # log_freq=1 (tokens since last log / elapsed time).
         step_time = time.perf_counter() - step_start_time
-        perf_counter.count_tokens(result.num_tokens)
         throughput = perf_counter.get_step_tokens_per_second(result.num_tokens, step_time)
         mfu = perf_counter.get_step_mfu(result.num_flops, step_time)
         mfu_6dn = perf_counter.get_step_mfu(
@@ -675,18 +715,21 @@ def train(config: SFTConfig | PretrainConfig):
             "progress/num_tokens": progress.total_tokens,
             "step": progress.step,
         }
-        # At least two subsets/splits
         if len(samples_by_source) > 1:
             progress_metrics.update(
                 **{
-                    f"progress/{subset_or_split}/ratio_samples": num_samples / total_samples
-                    for subset_or_split, num_samples in samples_by_source.items()
+                    f"progress/{name}/ratio_samples": num_samples / total_samples
+                    for name, num_samples in samples_by_source.items()
                 },
                 **{
-                    f"progress/{subset_or_split}/ratio_tokens": num_tokens / total_tokens
-                    for subset_or_split, num_tokens in tokens_by_source.items()
+                    f"progress/{name}/ratio_tokens": num_tokens / total_tokens
+                    for name, num_tokens in tokens_by_source.items()
                 },
             )
+        if isinstance(dataset, SFTDataset):
+            progress_metrics.update(dataset.progress(dataset_progress))
+        if isinstance(dataset, TokenDataset):
+            progress_metrics.update(dataset.sampler.progress(dataset_progress["cursor"]))
         asyncio.run(monitors.log(progress_metrics, step=progress.step))
 
         # Log performance metrics
@@ -756,7 +799,7 @@ def train(config: SFTConfig | PretrainConfig):
     # Write final checkpoint
     if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
-        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
+        ckpt_manager.save(progress.step, model, [optimizer], progress, dataloader=dataloader)
         ckpt_manager.wait()
         if step_action is not None:
             controller.mark_saved(progress.step)
