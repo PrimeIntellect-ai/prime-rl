@@ -1,0 +1,27 @@
+# Inference server of reverse-text.toml: Inkling 2 Mini on one 8-GPU node, one replica per GPU, with NCCL weight
+# updates and routed experts returned for router replay. Start it from the environment whose vLLM has Inkling 2
+# (see the README), with that environment activated, from the repository root:
+#
+#   inference @ examples/advanced/inkling2-mini/infer.toml
+
+[server]
+port = 8000
+
+[weight_broadcast]
+type = "nccl"
+
+[vllm]
+# FILL IN: the BF16 copy written by tools/convert_inkling2_loop_to_bf16.py. The packed release is rejected.
+model = "/shared/models/Inkling-2-Mini-bf16"
+# One replica per GPU: tensor parallelism is not supported for this model.
+data_parallel_size = 8
+max_model_len = 4096
+# The trainer replays the experts every token was routed to.
+enable_return_routed_experts = true
+# No auto-detection for this model: name the parsers. They are vLLM's own `inkling` pair.
+reasoning_parser = "inkling"
+tool_call_parser = "inkling"
+
+# Text-only RL: skip the image tower.
+[vllm.limit_mm_per_prompt]
+image = 0

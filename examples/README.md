@@ -13,10 +13,11 @@ Larger runs on frontier models, one folder per model, each with a launch README 
 - [`glm-5.3/`](advanced/glm-5.3/README.md) — the GLM-5 family at scale: 16 trainer nodes, P/D-disaggregated FP8 inference, and an llm-d router + Mooncake KV-offload variant. Also ships standalone `infer/` pre-flights.
 - `deepseek-v4-flash/` — `DeepSeek-V4-Flash` (284B MoE) agentic RL on SWE tasks (`scaleswe`, eval on SWE-bench Verified) at 131k context with 1024+ rollouts in flight. A base plus per-GPU overlays: H200 runs 4 train + 2 infer nodes with blockwise FP8, B300 runs 4 train + 4 infer nodes with MXFP8.
 - `qwen3.6-35b-a3b/` — `Qwen3.6-35B-A3B` agentic RL on SWE tasks (`scaleswe`, eval on SWE-bench Verified) at 256k context. A base plus per-GPU overlays: H200 runs 1 train + 3 DEP8 infer nodes.
+- [`inkling2-mini/`](advanced/inkling2-mini/README.md) — `Inkling-2-Mini` (26B looped MoE) RL on reverse-text and on SWE tasks (`r2e-gym`) at 131k context with `cp = 8`. The inference server runs from a second environment whose vLLM has the model.
 - `intellect-3.1/` — reproduce the `INTELLECT-3.1` run: 4 train + 12 infer nodes on SWE.
 - [`qwen3-235b-a22b/`](advanced/qwen3-235b-a22b/README.md) — SFT max trainer perf: `Qwen3-235B-A22B` on 4 trainer nodes at 16k context, a throughput reference using the max trainer throughput recipe.
 
-All advanced configs submit through SLURM (the `rl` entrypoint writes the sbatch job when the config has a `[slurm]` table) and are monitored with `uv run dashboard`. See the per-model README for the full walkthrough.
+All advanced configs submit through SLURM (the `rl` entrypoint writes the sbatch job when the config has a `[slurm]` table), except the Inkling 2 Mini reverse-text pair, which is started by hand, and are monitored with `uv run dashboard`. See the per-model README for the full walkthrough.
 
 ## basic/ — 1 to 8 GPUs
 

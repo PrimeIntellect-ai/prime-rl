@@ -1,0 +1,81 @@
+# Inkling 2 Mini RL on reverse-text. The trainer takes one 8-GPU node, and the rollouts come from an inference
+# server on a second node, started by hand from an environment whose vLLM has Inkling 2 (see the README). So this
+# config has no [inference] table: it points the orchestrator and the NCCL weight broadcast at that server.
+#
+#   uv run rl @ examples/advanced/inkling2-mini/reverse-text.toml
+
+max_steps = 40
+seq_len = 4096
+
+[model]
+# FILL IN: the BF16 copy written by tools/convert_inkling2_loop_to_bf16.py, spelled as in infer.toml.
+name = "/shared/models/Inkling-2-Mini-bf16"
+
+[monitors.wandb]
+project = "inkling2-mini"
+
+[deployment]
+type = "single_node"
+num_train_gpus = 8
+num_infer_gpus = 0
+
+[weight_broadcast]
+type = "nccl"
+host = "trainer-node" # FILL IN: this node's host name, as the inference node reaches it
+# GPUs of the inference server (its data_parallel_size).
+inference_world_size = 8
+
+# --- Trainer ---
+
+[trainer]
+enable_router_replay = true
+
+[trainer.optim]
+lr = 3e-6
+
+# --- Orchestrator ---
+
+[orchestrator]
+batch_size = 128
+
+[orchestrator.concurrency]
+# Episodes in flight capped at the batch size: a step then trains on tokens about 2 policy versions old.
+max_inflight = 128
+
+[orchestrator.model.client]
+base_url = "http://inference-node:8000/v1" # FILL IN: the server's router
+admin_base_url = ["http://inference-node:8100/v1"] # FILL IN: the engine behind the router, for weight updates
+
+[orchestrator.renderer]
+# The pinned renderers map has no entry for this model, so the renderer is named.
+name = "inkling-2"
+reasoning_effort = "low"
+
+[orchestrator.train]
+group_size = 8
+
+[orchestrator.train.sampling]
+max_completion_tokens = 4000
+
+# The first 64 tasks are the held-out eval below.
+[[orchestrator.train.source]]
+name = "reverse-text"
+select.skip = 64
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[orchestrator.eval]
+interval = 5
+
+# Online evals go through chat completions, which take the reasoning effort from the request.
+[orchestrator.eval.sampling]
+max_completion_tokens = 4000
+reasoning_effort = "low"
+
+[[orchestrator.eval.source]]
+name = "reverse-text-eval"
+select.limit = 64
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"

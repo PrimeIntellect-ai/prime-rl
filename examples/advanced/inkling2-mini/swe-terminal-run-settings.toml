@@ -1,0 +1,68 @@
+# Overlay for swe.toml: the training settings of a 300-step run of this model on terminal tasks, put onto the
+# R2E-Gym tasks of swe.toml. That run's task set is not public (517 training tasks and 73 held-out tasks), so
+# its tasks are not here, and this combination has not been run on R2E-Gym. The README says what the run showed
+# and why it used each value. This file carries the deltas and, again, the train source of swe.toml (see below),
+# so compose the two, and launch with the template copy that the README describes for swe.toml:
+#
+#   uv run rl @ examples/advanced/inkling2-mini/swe.toml @ examples/advanced/inkling2-mini/swe-terminal-run-settings.toml
+
+# --- Trainer ---
+
+[trainer.optim]
+# swe.toml: 1e-6.
+lr = 3e-6
+# This model's gradient norms were 0.1 to 0.3, with rare spikes above 1.
+max_norm = 0.5
+
+# Caps the weight of a token that the trainer finds far more likely than the server did when it sampled it.
+[trainer.loss]
+max_importance_ratio = 10
+
+# --- Orchestrator ---
+
+[orchestrator]
+# 8 tasks per step, 16 attempts each (swe.toml: 32 tasks, 8 attempts each).
+batch_size = 128
+# A group trains once its slowest episode has returned, which can be 1,800 s after it started.
+max_staleness = 16
+
+[orchestrator.train]
+group_size = 16
+
+# An overlay replaces an array of tables wholesale, so the train source of swe.toml is spelled out again: a change
+# to the train source of swe.toml has to be repeated here. New in it: the task sampler, no compaction, the two
+# token limits and `skip_on_timeout`.
+[[orchestrator.train.source]]
+name = "r2e-gym"
+select.skip = 128
+# A task whose latest group had mixed rewards is drawn 2 times as often as a task not tried yet, and a task whose
+# latest group was all failed or all solved 0.05 times as often.
+curriculum.sampler.type = "difficulty_pool"
+curriculum.sampler.seed = 17
+curriculum.sampler.pools.never.threshold = 0.0
+curriculum.sampler.pools.never.weight = 0.05
+curriculum.sampler.pools.mixed.threshold = 0.999
+curriculum.sampler.pools.mixed.weight = 2.0
+curriculum.sampler.pools.always.threshold = 1.0
+curriculum.sampler.pools.always.weight = 0.05
+env.taskset.id = "r2e-gym"
+env.agent.harness.id = "bash"
+# The harness does not summarize a long history: the limit on total tokens below ends the episode instead.
+env.agent.harness.compaction = "None"
+env.agent.runtime.labels = ["inkling2-mini-swe"]
+env.agent.max_turns = 100
+# Ends an episode whose conversation has reached this length.
+env.agent.max_total_tokens = 106496
+# An episode that ends on a token limit is scored and trains. One that runs into the rollout limit is dropped.
+env.agent.max_output_tokens = 40000
+env.agent.timeout.rollout = 1800
+env.agent.scoring.skip_on_timeout = true
+
+# --- Eval: every task of both eval sources 4 times ---
+
+[orchestrator.eval]
+group_size = 4
+
+# The temperature of the training rollouts, named instead of left to the server's default.
+[orchestrator.eval.sampling]
+temperature = 1.0
