@@ -646,6 +646,7 @@ class Dispatcher:
                     run=run,
                     record=record,
                     live=live_traces,
+                    group_id=str(group_id),
                 )
                 session_ids.update(trace.id for trace in episode.traces)
                 return episode

@@ -12,7 +12,7 @@ import zmq.asyncio
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.delta import DeltaStreamer
-from verifiers.v1.episode import Episode
+from verifiers.v1.episode import Episode, GroupInfo
 from verifiers.v1.task import Task
 from verifiers.v1.utils.loaders import load_environment
 
@@ -248,6 +248,11 @@ class EnvWorker:
                 self._kept[request_id] = (hook, episode)
                 if algorithm.scores_samples:
                     await self._score(req, algorithm, episode)
+        # The episode's identity as the orchestrator knows it, before the head and the record.
+        if req.env_name is not None:
+            episode.env.name = req.env_name
+        if req.group_id is not None:
+            episode.group = GroupInfo(id=req.group_id)
         if req.run is not None:
             episode.record_run(req.run)
             for trace in episode.traces:

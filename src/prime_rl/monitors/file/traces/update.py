@@ -71,18 +71,27 @@ def fold_trace_updates(trace: dict, updates: list[dict]) -> int:
     compact over each node's mask like the node's own ``logprobs``. A node takes a
     stream only when it is fully covered with non-null values at every sampled
     position, so a truncated stream leaves the tail nodes untouched. An update with
-    the trace's advantage and no advantage stream gives every sampled token that
-    advantage. Returns how many nodes carry trainer logprobs afterwards."""
+    the trace's advantage and no advantage stream gives that advantage to every sampled
+    token on the branches it names (``advantage_branches``; all of them if it names none).
+    Returns how many nodes carry trainer logprobs afterwards."""
     nodes = trace.get("nodes") or []
     paths = branch_node_paths(nodes)
     for update in updates:
         if update.get("info"):
             trace["info"] = _deep_merge(trace.get("info") or {}, update["info"])
-        advantage = (update.get("info") or {}).get("advantage")
+        info = update.get("info") or {}
+        advantage = info.get("advantage")
         if isinstance(advantage, (int, float)) and not any(
             branch.get("advantages") for branch in update.get("branches") or []
         ):
-            for node in nodes:
+            credited = info.get("advantage_branches")
+            node_indices = (
+                range(len(nodes))
+                if credited is None
+                else {index for branch in credited if 0 <= branch < len(paths) for index in paths[branch]}
+            )
+            for node_index in node_indices:
+                node = nodes[node_index]
                 if sampled := sum(1 for flag in node.get("mask") or [] if flag):
                     node["advantages"] = [advantage] * sampled
         for branch in update.get("branches") or []:

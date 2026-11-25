@@ -85,6 +85,10 @@ class RunRequest(BaseRequest):
     """Set on train rollouts: the worker keeps their training samples. None for eval."""
     run: RunInfo | None = None
     """The run identity the worker stamps on the episode before recording it."""
+    env_name: str | None = None
+    """The name of the source the run belongs to, which the worker stamps on the episode."""
+    group_id: str | None = None
+    """The rollout group the run belongs to, which the worker stamps on the episode."""
     record: RecordRequest | None = None
     """Return the episode's record; None: the client persists no trace of it."""
     live: bool = True

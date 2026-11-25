@@ -77,6 +77,8 @@ class TraceHead(BaseModel):
     """Sampled tokens on the trace's trainable branches, each node counted once."""
     trainable_turns: int = 0
     """Sampled nodes on the trace's trainable branches."""
+    trainable_branches: list[int] = Field(default_factory=list)
+    """Indices of the trace's trainable branches (`Trace.branches`)."""
     length_tokens: LengthTokens = Field(default_factory=LengthTokens)
     versions: dict[int, int] = Field(default_factory=dict)
     """Sampled tokens per policy version that sampled them (``UNLABELED``: the engine reported none)."""
@@ -191,6 +193,7 @@ def trace_head(trace: vf.Trace) -> TraceHead:
         has_sampled_tokens=any(np.any(node.mask) for node in trace.nodes),
         trainable_tokens=sum(int(np.count_nonzero(node.mask)) for node in trainable),
         trainable_turns=sum(node.sampled for node in on_trainable_branch.values()),
+        trainable_branches=[branch.index for branch in trace.branches if branch.trainable],
         length_tokens=LengthTokens(
             output=output, input=input, subagent_output=subagent_output, subagent_input=subagent_input
         ),

@@ -204,7 +204,7 @@ def prepare_batch(
         min_version=0,
         pad_to_multiple_of=pad_to_multiple_of,
     )
-    return [materialize_micro_batches(plans, POOL)[0] for plans in plans_per_gpu]
+    return [materialize_micro_batches(plans, POOL).micro_batches for plans in plans_per_gpu]
 
 
 def _flatten_batches(batches_per_gpu):

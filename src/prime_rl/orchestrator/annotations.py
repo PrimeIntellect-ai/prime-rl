@@ -11,6 +11,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any
 
+from prime_rl import monitors
 from prime_rl.monitors.base import Kind
 from prime_rl.monitors.file.traces.update import make_update
 from prime_rl.orchestrator.credit import trace_advantage
@@ -29,9 +30,21 @@ def stamp_arrival(episode: EpisodeHead, record: EpisodeRecord | None, kind: Kind
     return [make_update(trace.id, info={"kind": kind, **arrival}) for trace in episode.traces]
 
 
+async def log_arrival(episode: EpisodeHead, kind: Kind, step: int) -> None:
+    """Log an arrived episode's record, stamped with its arrival, then the arrival's updates
+    over it. The record goes first: under a trace sample, the file monitor annotates only the
+    traces it wrote. An episode no monitor keeps a record of has nothing to annotate."""
+    record = episode.take_record()
+    if record is None:
+        return
+    updates = stamp_arrival(episode, record, kind, step)
+    await monitors.log_records([(episode, record)], step, kind)
+    await monitors.log_annotations(updates)
+
+
 def stamp_batch(episodes: list[EpisodeHead], step: int) -> list[dict[str, Any]]:
     """The updates a batched cohort adds over its arrival records: membership, the step
-    it ties to, and the trace's advantage."""
+    it ties to, and the trace's advantage with the branches it credits."""
     now = time.time()
     updates = []
     for episode in episodes:
@@ -39,5 +52,6 @@ def stamp_batch(episodes: list[EpisodeHead], step: int) -> list[dict[str, Any]]:
             info: dict[str, Any] = {"effective": True, "ship": {"step": step, "time": now}}
             if (advantage := trace_advantage(trace)) is not None:
                 info["advantage"] = advantage
+                info["advantage_branches"] = trace.trainable_branches
             updates.append(make_update(trace.id, info=info))
     return updates
