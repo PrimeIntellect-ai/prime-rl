@@ -4,13 +4,13 @@
 #   NoulQuestion and ScoreQuestion (146-162, 178-199, 219-234).
 # - vllm/entrypoints/generate/structured_decisions/serving.py: parse_questions (lines 27-53).
 # - vllm/entrypoints/openai/decisions/strategies.py: DecisionLimits (lines 83-89); JointSchemaStrategy (841-1068): its
-#   constants, __init__, limits, _render, _tokens, _options and encode; ClefFlashStrategy's MAX_LENGTH (1138-1142).
-#   Text only: the media (modalities, PLACEHOLDERS, _render_media) is not ported.
+#   SYSTEM_PROMPT, TYPE_IDS, NOUL_CRITERIA, __init__, limits, _render, _tokens, _options and encode; ClefFlashStrategy
+#   (1138-1190): its MAX_LENGTH, its image placeholder and _render_media for images, with the model's image processor
+#   in place of vLLM's renderer. Videos are not ported.
 # - vllm/model_executor/models/clef_joint_schema.py: parse_joint_schema's spans (lines 222-229) and
 #   JointSchemaPooler.forward's lexical embeddings (lines 287-297), read from the LM head as
 #   vllm/model_executor/models/clef_flash.py's _embed_lexical reads them (lines 43-44).
-# Left out, as only vLLM's other strategies and its responses use them: Question.labels, DecisionLimits.labeled,
-# render_state and encode's prefix argument.
+# Left out, as only vLLM's other strategies and its responses use them: Question.labels and DecisionLimits.labeled.
 """Clef-Flash's System One strategy: vLLM's ``ClefFlashStrategy`` prompt, read by the joint schema head."""
 
 import json
@@ -20,12 +20,14 @@ from dataclasses import dataclass
 from itertools import groupby
 from typing import Any, ClassVar
 
+import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
 from prime_rl.trainer.models.qwen3_5.clef_joint_schema import RecordSchema, schema_indices, segment_mean
 from prime_rl.trainer.sft.system_one import record
 from prime_rl.trainer.sft.system_one.data import ReadQuestion, RenderedRequest, SystemOneStrategy
+from prime_rl.trainer.sft.system_one.images import load_image
 from prime_rl.utils.logger import get_logger
 
 
@@ -142,22 +144,27 @@ def parse_questions(questions: tuple[record.Question, ...], limits: DecisionLimi
 
 
 class ClefFlashStrategy(SystemOneStrategy):
-    """vLLM's ClefFlashStrategy without its softmax: the state, then every question with its options, in one prompt
-    and one attention segment. A question's read spans are its instructions, then its options in the head's order."""
+    """vLLM's ClefFlashStrategy without its softmax: the images if there are any, the state, then every question with
+    its options, in one prompt and one attention segment. A question's read spans are its instructions, then its options
+    in the head's order."""
 
     SYSTEM_PROMPT = (
         "Read the complete state and schema. Decide every field jointly. Each "
         "answer must be exactly one of that field's allowed options."
     )
     MAX_LENGTH = 16384
+    IMAGE_PLACEHOLDER = "<|vision_start|><|image_pad|><|vision_end|>"
+    modalities = frozenset({"image"})
     TYPE_IDS = {"noul": 0, "choice": 1, "score": 2}
     NOUL_CRITERIA = {
         "true": "The proposition is true or the answer is yes.",
         "false": "The proposition is false or the answer is no.",
     }
 
-    def __init__(self, tokenizer, config):
-        super().__init__(tokenizer, config)
+    def __init__(self, tokenizer, config, processor=None):
+        super().__init__(tokenizer, config, processor)
+        if processor is not None and self._tokens(self.IMAGE_PLACEHOLDER).count(config.image_token_id) != 1:
+            raise ValueError(f"the tokenizer's <|image_pad|> is not the model's image token {config.image_token_id}")
         # vLLM's bound on a server that reads at least MAX_LENGTH tokens
         self.max_length = self.MAX_LENGTH
         self.prefix = self._tokens(f"<|im_start|>system\n{self.SYSTEM_PROMPT}<|im_end|>\n<|im_start|>user\nSTATE:\n")
@@ -189,11 +196,27 @@ class ClefFlashStrategy(SystemOneStrategy):
             return sorted(((o.name, o.description) for o in q.options), key=lambda option: option[0])
         return [(str(i), o.name) for i, o in enumerate(q.options)]
 
+    def _render_images(self, images: tuple[str, ...]) -> tuple[list[int], dict[str, Tensor]]:
+        """The system prompt and the images, with the images' placeholders expanded, and the images' inputs to the
+        model's forward."""
+        image_processor = self.processor.image_processor
+        try:
+            processed = image_processor(images=[load_image(url) for url in images], return_tensors="pt")
+        except ValueError as error:
+            raise StructuredDecisionError(f"media: {error}") from error
+        mm_kwargs = {key: torch.as_tensor(processed[key]).contiguous() for key in ("pixel_values", "image_grid_thw")}
+        lengths = iter((mm_kwargs["image_grid_thw"].prod(-1) // image_processor.merge_size**2).tolist())
+        prefix = list(self.prefix)
+        for token in self._tokens(self.IMAGE_PLACEHOLDER * len(images) + "\n"):
+            prefix += [token] * (next(lengths) if token == self.config.image_token_id else 1)
+        return prefix, mm_kwargs
+
     def encode(
-        self, questions: list[Question], state: str
+        self, questions: list[Question], state: str, prefix: list[int]
     ) -> tuple[list[int], dict[str, list[Any]], list[list[str]], int]:
         """The prompt, the head's schema with spans counted from the prompt's end, each question's option ids in the
-        head's order, and the number of tokens cut from the state's end."""
+        head's order, and the number of tokens cut from the state's end. ``prefix`` is what precedes the state: the
+        system prompt, and the images if there are any."""
         schema_ids = self._tokens("\n\nSCHEMA FIELDS:\n")
         question_spans, option_spans, option_ids = [], [], []
         for n, q in enumerate(questions, start=1):
@@ -215,14 +238,14 @@ class ClefFlashStrategy(SystemOneStrategy):
             schema_ids += self._tokens("END FIELD\n")
             option_ids.append([option_id for option_id, _ in options])
 
-        fixed = len(self.prefix) + len(schema_ids) + len(self.suffix)
+        fixed = len(prefix) + len(schema_ids) + len(self.suffix)
         if fixed > self.max_length:
             raise StructuredDecisionError(
                 f"the questions take {fixed} tokens, more than the {self.max_length} this model reads"
             )
         state_ids = self._tokens(state)
         cut = max(0, fixed + len(state_ids) - self.max_length)
-        prompt = self.prefix + state_ids[: self.max_length - fixed] + schema_ids + self.suffix
+        prompt = prefix + state_ids[: self.max_length - fixed] + schema_ids + self.suffix
         # The schema ends len(self.suffix) tokens before the prompt does.
         end = len(schema_ids) + len(self.suffix)
         schema: dict[str, list[Any]] = {
@@ -237,7 +260,8 @@ class ClefFlashStrategy(SystemOneStrategy):
         skipped. Not bounded by ``max_tokens``: a longer rendering is skipped, and only a kept one's cut is logged."""
         try:
             questions = parse_questions(request.questions, self.limits())
-            prompt, schema, options, cut = self.encode(questions, self._render(request.state))
+            prefix, mm_kwargs = self._render_images(request.images) if request.images else (self.prefix, None)
+            prompt, schema, options, cut = self.encode(questions, self._render(request.state), prefix)
         except StructuredDecisionError as error:
             get_logger().warning(f"Skipping record {request.id!r}: vLLM refuses it: {error}")
             return None
@@ -252,7 +276,14 @@ class ClefFlashStrategy(SystemOneStrategy):
             [question_span, *(next(option_spans) for _ in range(count))]
             for question_span, count in zip(question_spans, schema["option_counts"])
         ]
-        return RenderedRequest(input_ids=prompt, seq_lens=[prompt_len], read_spans=read_spans, options=options)
+        rendered = RenderedRequest(input_ids=prompt, seq_lens=[prompt_len], read_spans=read_spans, options=options)
+        if mm_kwargs is not None:
+            rendered["mm_kwargs"] = mm_kwargs
+            # Only the placeholders, so that an image token in the record's text stands out
+            image_token = self.config.image_token_id
+            rendered["mm_token_type_ids"] = [int(token == image_token) for token in prefix]
+            rendered["mm_token_type_ids"] += [0] * (prompt_len - len(prefix))
+        return rendered
 
     def option_logits(
         self, model: nn.Module, hidden_states: Tensor, input_ids: Tensor, questions: list[ReadQuestion]
