@@ -1,0 +1,7 @@
+# Over reinforce-kl.toml: prune zero-advantage rollouts as icepop does, so the sampler KL trains only on rollouts with
+# an advantage.
+#
+#   uv run rl @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/base.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/reinforce-kl.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/reinforce-kl-prune.toml
+
+[orchestrator]
+prune_zero_advantages = true

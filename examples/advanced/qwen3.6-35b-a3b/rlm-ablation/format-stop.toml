@@ -1,0 +1,19 @@
+# Format-stop arm: end a rollout with reward 0 at its first turn that leaves the Qwen3.6 agent-turn format, calls an
+# unknown tool, or misses a required argument or adds an unknown one (format_violation.py). Later config files replace
+# source lists wholesale, so this repeats base.toml's source with the stop added: keep the two in sync.
+#
+#   uv run rl @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/base.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/format-stop.toml
+#   uv run rl @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/base.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/mxfp8.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/nvfp4.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/stale-nocap.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/reinforce-kl.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/reinforce-kl-prune.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/format-stop.toml
+
+[[orchestrator.train.source]]
+name = "scaleswe"
+env.taskset.id = "scaleswe"
+env.taskset.task.stops.format_violation = { fn = "examples/advanced/qwen3.6-35b-a3b/rlm-ablation/format_violation.py:format_violation", skip_scoring = true }
+env.agent.harness = { id = "rlm", version = "8ca926cdd64fd7725b78cf95a4e1667315d3b1f6", allow_git = false, max_depth = 0, compaction = { max_attempts = 1 }, max_total_tokens = 0 }
+env.agent.runtime = { type = "prime", block = ["github.com", "githubusercontent.com", "gitlab.com", "bitbucket.org", "codeberg.org", "sourceforge.net", "googlesource.com"] }
+env.agent.max_turn_tokens = 32768
+env.agent.max_total_tokens = 131_072
+env.agent.timeout.rollout = 21600
+env.agent.scoring.skip_on_truncated = true
+env.agent.scoring.skip_on_timeout = true
+algo.length_penalty = { type = "linear-subagent", apply_to = "solved", num_output_tokens_weight = 0.2, num_input_tokens_weight = 0.2, num_turns_weight = 0.0, subagent_token_weight = 0.0 }
