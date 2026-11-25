@@ -16,15 +16,15 @@ from verifiers.v1.runtimes import set_base_sandbox_labels
 
 from prime_rl.configs.env_worker_pool import EnvWorkerPoolConfig
 from prime_rl.env import run_env_worker_pool, set_episode_hook
-from prime_rl.env.algorithm import run_algorithm_worker
-from prime_rl.env.worker import set_algorithm_worker
+from prime_rl.env.sample_server import run_sample_server
+from prime_rl.env.worker import set_sample_server
 from prime_rl.orchestrator.utils import setup_env_worker_pool_logging
 from prime_rl.transports.payload import PayloadHook, StoreClient, StoreWriter, payload_host
 from prime_rl.utils.config import check_mode, cli
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import clean_exit
 
-ALGORITHM_WORKER_STARTUP_TIMEOUT_S = 120
+SAMPLE_SERVER_STARTUP_TIMEOUT_S = 120
 
 
 def setup_worker(
@@ -32,26 +32,24 @@ def setup_worker(
     json_logging: bool,
     sandbox_labels: list[str],
     store: StoreWriter | StoreClient,
-    algorithm_worker: str,
+    sample_server: str,
 ) -> None:
     setup_env_worker_pool_logging(log_level, json_logging)
     set_base_sandbox_labels(sandbox_labels)
     # Episode streams never carry training arrays; the hook keeps them in the replica's store.
     set_episode_hook(PayloadHook(store=store))
-    set_algorithm_worker(algorithm_worker)
+    set_sample_server(sample_server)
 
 
-def start_algorithm_worker(
-    config: EnvWorkerPoolConfig, store_dir: Path | None
-) -> tuple[mp.Process, Connection, str, str]:
-    """Spawn the replica's algorithm worker, which holds its sample store (on disk under
+def start_sample_server(config: EnvWorkerPoolConfig, store_dir: Path | None) -> tuple[mp.Process, Connection, str, str]:
+    """Spawn the replica's sample server, which holds its sample store (on disk under
     ``store_dir``, else in memory) and scores the samples its env workers keep. Returns the
     process, the pipe end whose closing stops it, the store's URL and the worker's address."""
     context = mp.get_context("spawn")
     death_read, death_write = context.Pipe(duplex=False)
     ready_read, ready_write = context.Pipe(duplex=False)
     process = context.Process(
-        target=run_algorithm_worker,
+        target=run_sample_server,
         kwargs=dict(
             store_dir=store_dir,
             hosts=payload_host(config.serve.address),
@@ -65,21 +63,21 @@ def start_algorithm_worker(
     process.start()
     death_read.close()
     ready_write.close()
-    if not ready_read.poll(ALGORITHM_WORKER_STARTUP_TIMEOUT_S):
+    if not ready_read.poll(SAMPLE_SERVER_STARTUP_TIMEOUT_S):
         process.terminate()
-        raise TimeoutError(f"The algorithm worker did not start within {ALGORITHM_WORKER_STARTUP_TIMEOUT_S}s")
+        raise TimeoutError(f"The sample server did not start within {SAMPLE_SERVER_STARTUP_TIMEOUT_S}s")
     store_url, address = ready_read.recv()
     return process, death_write, store_url, address
 
 
 def stop_pool_with(process: mp.Process, stopping: threading.Event) -> None:
-    """Stop the pool if its algorithm worker dies: its env workers can keep no samples."""
+    """Stop the pool if its sample server dies: its env workers can keep no samples."""
     process.join()
     if stopping.is_set():
         return
     # Exit code 0: it was told to stop (a launcher stopping the whole run signals every process).
     log = get_logger().info if process.exitcode == 0 else get_logger().error
-    log(f"The algorithm worker exited (code {process.exitcode}); stopping the env worker pool")
+    log(f"The sample server exited (code {process.exitcode}); stopping the env worker pool")
     os.kill(os.getpid(), signal.SIGTERM)
 
 
@@ -112,21 +110,21 @@ def run_pool(config: EnvWorkerPoolConfig):
     with ExitStack() as stack:
         directory = None
         if config.store_dir is not None:
-            # The algorithm worker serves the samples the env workers write, so they outlive
+            # The sample server serves the samples the env workers write, so they outlive
             # any one env worker.
             config.store_dir.mkdir(parents=True, exist_ok=True)
             remove_dead_stores(config.store_dir)
             prefix = f"{socket.gethostname()}-{os.getpid()}-"
             directory = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix=prefix, dir=config.store_dir)))
-        algorithm_worker, death_pipe, store_url, algorithm_address = start_algorithm_worker(config, directory)
+        sample_server, death_pipe, store_url, sample_server_address = start_sample_server(config, directory)
         stopping = threading.Event()
         # Unwound last to first: mark the stop, then end the worker.
-        stack.callback(algorithm_worker.join, 10)
+        stack.callback(sample_server.join, 10)
         stack.callback(death_pipe.close)
         stack.callback(stopping.set)
-        threading.Thread(target=stop_pool_with, args=(algorithm_worker, stopping), daemon=True).start()
+        threading.Thread(target=stop_pool_with, args=(sample_server, stopping), daemon=True).start()
         store = StoreWriter(directory, store_url) if directory is not None else StoreClient(store_url)
-        # Apply logging, sandbox labels, the payload hook and the algorithm worker's address in
+        # Apply logging, sandbox labels, the payload hook and the sample server's address in
         # the broker and every env worker.
         run_env_worker_pool(
             pool=config.serve.pool,
@@ -138,7 +136,7 @@ def run_pool(config: EnvWorkerPoolConfig):
                 config.log.json_logging,
                 sandbox_labels,
                 store,
-                algorithm_address,
+                sample_server_address,
             ),
             config_data=config.env.model_dump(mode="json"),
             max_concurrent=config.serve.max_concurrent,

@@ -55,7 +55,7 @@ class SampleToScore(BaseModel):
 
 class ScoreRequest(BaseRequest):
     """Score kept samples with the source's algorithm (`Algorithm.score_sample`): sent by an
-    env worker to its replica's algorithm worker, with the client and model its rollout
+    env worker to its replica's sample server, with the client and model its rollout
     sampled from."""
 
     method: ClassVar[str] = "score"

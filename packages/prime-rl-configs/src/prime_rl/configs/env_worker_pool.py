@@ -32,7 +32,7 @@ PoolConfig = Annotated[StaticPoolConfig | ElasticPoolConfig, Field(discriminator
 
 
 class ScoringConfig(BaseConfig):
-    """How a replica's algorithm worker scores kept samples with model calls (e.g. a
+    """How a replica's sample server scores kept samples with model calls (e.g. a
     teacher's prefill logprobs)."""
 
     max_concurrent: int | None = Field(None, ge=1)
@@ -55,7 +55,7 @@ class ServeConfig(BaseConfig):
     """Episodes in flight per worker (None = unbounded). How many agent runs one episode
     carries is the env's own (`--env.max-concurrent-agents`, one at a time by default)."""
     scoring: ScoringConfig = ScoringConfig()
-    """How the replica's algorithm worker scores kept samples."""
+    """How the replica's sample server scores kept samples."""
 
 
 class EnvWorkerPoolConfig(BaseConfig):

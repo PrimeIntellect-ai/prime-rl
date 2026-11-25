@@ -1,4 +1,4 @@
-"""A pool replica's algorithm worker.
+"""A pool replica's sample server.
 
 Each pool replica runs one, beside its env workers. It holds the replica's sample store:
 the env workers keep their rollouts' training samples in it, and trainer ranks fetch them
@@ -46,8 +46,8 @@ _decoder = msgspec.msgpack.Decoder(SampleBody)
 MAX_RETRY_DELAY_S = 30.0
 
 
-class AlgorithmWorker:
-    """Scores the samples a replica's env workers kept, in the replica's store."""
+class SampleServer:
+    """Holds a replica's training samples, served to trainer ranks, and scores them."""
 
     def __init__(self, store: PayloadServer, address: str, scoring: ScoringConfig) -> None:
         self.store = store
@@ -119,7 +119,7 @@ class AlgorithmWorker:
         await self.socket.send_multipart([identity, request_id, pack(response.model_dump())])
 
     async def run(self) -> None:
-        get_logger().info(f"Started algorithm worker store={self.store.url} address={self.address}")
+        get_logger().info(f"Started sample server store={self.store.url} address={self.address}")
         tasks: set[asyncio.Task] = set()
         try:
             while True:
@@ -138,7 +138,7 @@ class AlgorithmWorker:
 
 
 class ScoreClient:
-    """An env worker's side of its replica's algorithm worker."""
+    """An env worker's side of its replica's sample server."""
 
     def __init__(self, address: str) -> None:
         self.address = address
@@ -162,7 +162,7 @@ class ScoreClient:
                 future.set_result(payload)
 
     async def score(self, request: ScoreRequest) -> None:
-        """Score the request's samples; raises if the algorithm worker could not."""
+        """Score the request's samples; raises if the sample server could not."""
         socket = self._connect()
         request_id = uuid.uuid4().hex.encode()
         future: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
@@ -173,10 +173,10 @@ class ScoreClient:
         finally:
             self._pending.pop(request_id, None)
         if not response.success:
-            raise RuntimeError(f"Scoring failed in the algorithm worker: {response.error}")
+            raise RuntimeError(f"Scoring failed in the sample server: {response.error}")
 
 
-def run_algorithm_worker(
+def run_sample_server(
     *,
     store_dir: Path | None,
     hosts: tuple[str, str],
@@ -185,16 +185,16 @@ def run_algorithm_worker(
     ready: Connection,
     death_pipe: Connection,
 ) -> None:
-    """A pool replica's algorithm worker process: report its store's URL and its address on
+    """A pool replica's sample server process: report its store's URL and its address on
     ``ready``, then serve until the pool goes (``death_pipe``)."""
     from prime_rl.env.pool import _arm_teardown
 
-    set_proc_title("AlgorithmWorker")
+    set_proc_title("SampleServer")
     _arm_teardown(death_pipe)
     setup()
     store = RolloutStore(store_dir, *hosts) if store_dir is not None else PayloadServer(*hosts)
-    address = f"ipc://{tempfile.mkdtemp(prefix='prl-algorithm-', dir='/tmp')}/socket"
-    worker = AlgorithmWorker(store, address, ScoringConfig(**scoring))
+    address = f"ipc://{tempfile.mkdtemp(prefix='prl-sample-server-', dir='/tmp')}/socket"
+    worker = SampleServer(store, address, ScoringConfig(**scoring))
     ready.send((store.url, worker.address))
     ready.close()
     try:

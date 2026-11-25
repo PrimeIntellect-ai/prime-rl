@@ -18,7 +18,7 @@ class OPDAlgorithm(Algorithm):
     per-token reverse KL is computed against.
 
     The policy samples its own rollouts; as each finishes, its replica's
-    algorithm worker prefill-scores each sample's full context under the teacher
+    sample server prefill-scores each sample's full context under the teacher
     (``ref_logprobs``), and the trainer evaluates the KL against the live policy. No
     credit is assigned — rollouts keep ``advantages=None`` and samples ship no
     advantage stream; ``group_size`` only fans out sampling."""
@@ -26,7 +26,7 @@ class OPDAlgorithm(Algorithm):
     def __init__(self, config: OPDAlgoConfig, clients: InferenceClient):
         super().__init__(config, clients)
         self.teacher = config.teacher
-        self.teacher_clients: ModelScorer | None = None  # frozen teacher endpoint, bound in the algorithm worker
+        self.teacher_clients: ModelScorer | None = None  # frozen teacher endpoint, bound in the sample server
 
     async def setup(self) -> None:
         # The orchestrator never scores; connecting checks the teacher is up before the run starts.

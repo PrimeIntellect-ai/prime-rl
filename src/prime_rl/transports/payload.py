@@ -386,7 +386,7 @@ class PayloadHook:
 
     @property
     def server(self) -> PayloadServer | StoreWriter | StoreClient:
-        """The replica's sample store, which its algorithm worker serves; without one, a
+        """The replica's sample store, which its sample server serves; without one, a
         server of this process's own, started on first use."""
         with self._lock:
             if self._server is None:

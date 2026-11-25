@@ -44,7 +44,7 @@ class Algorithm:
     - :meth:`score_episode`: rollout-local work on the trace graph (loss weights), in the env
       worker that ran the rollout, before it keeps the rollout's training samples.
     - :meth:`score_sample`: model-calling work on a kept sample (reference logprobs), in the
-      replica's algorithm worker, with :meth:`sample_context` gathered in the env worker.
+      replica's sample server, with :meth:`sample_context` gathered in the env worker.
     - :meth:`score_group`: cohort-relative credit on the orchestrator, one advantage per trace.
     """
 
@@ -57,7 +57,7 @@ class Algorithm:
         """Connect resources owned by the algorithm, on the orchestrator."""
 
     def bind(self, client: vf.ClientConfig, model: str) -> None:
-        """Connect what :meth:`score_sample` needs in an algorithm worker, given the client and
+        """Connect what :meth:`score_sample` needs in an sample server, given the client and
         model the replica's rollouts sample from."""
 
     def sample_context(self, episode: vf.Episode, trace: vf.Trace) -> dict:

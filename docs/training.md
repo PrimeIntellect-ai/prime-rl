@@ -74,11 +74,11 @@ single-node runs start one, and multi-node RL runs start one per inference node.
 Orchestrator
 └── Source (env configuration)
     ├── Pool replica 1: PRL::EnvBroker
-    │   ├── PRL::AlgorithmWorker
+    │   ├── PRL::SampleServer
     │   ├── PRL::EnvWorker
     │   └── PRL::EnvWorker
     └── Pool replica 2: PRL::EnvBroker
-        ├── PRL::AlgorithmWorker
+        ├── PRL::SampleServer
         └── PRL::EnvWorker
 ```
 
@@ -89,7 +89,7 @@ pool has a broker and a separate worker process.
 
 Env workers keep the training samples of the train rollouts they run, and the orchestrator
 gets only a short record of each rollout, so its memory does not grow with rollout length.
-The samples live in the replica's algorithm worker, which trainer ranks fetch them from. It
+The samples live in the replica's sample server, which trainer ranks fetch them from. It
 also runs the algorithm's model calls on them, such as `opd`'s teacher prefills, for every
 env worker of the replica. `[serve.scoring]` bounds those calls in flight per replica
 (`max_concurrent`) and how often each is tried before its rollout fails (`attempts`).

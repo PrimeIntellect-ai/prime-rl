@@ -16,9 +16,9 @@ from verifiers.v1.episode import Episode
 from verifiers.v1.task import Task
 from verifiers.v1.utils.loaders import load_environment
 
-from prime_rl.env.algorithm import ScoreClient
 from prime_rl.env.encoding import pack
 from prime_rl.env.heads import episode_head
+from prime_rl.env.sample_server import ScoreClient
 from prime_rl.env.types import (
     BaseResponse,
     CancelRequest,
@@ -53,7 +53,7 @@ class EpisodeHook(Protocol):
 
 
 _episode_hook: EpisodeHook | None = None
-_algorithm_worker: str | None = None
+_sample_server: str | None = None
 
 LATE_CANCEL_SECONDS = 10.0
 """How long a delivered episode stays discardable: a client whose caller cancels the run
@@ -63,11 +63,11 @@ _SHUTDOWN_DRAIN_SECONDS = 5.0
 """Leave time for shared-resource teardown before the pool's 10-second kill deadline."""
 
 
-def set_algorithm_worker(address: str | None) -> None:
-    """The address of the replica's algorithm worker, which scores the samples the episode
-    hook keeps (`prime_rl.env.algorithm`)."""
-    global _algorithm_worker
-    _algorithm_worker = address
+def set_sample_server(address: str | None) -> None:
+    """The address of the replica's sample server, which scores the samples the episode
+    hook keeps (`prime_rl.env.sample_server`)."""
+    global _sample_server
+    _sample_server = address
 
 
 def set_episode_hook(hook: EpisodeHook | None) -> None:
@@ -163,7 +163,7 @@ class EnvWorker:
         self._kept: dict[bytes, tuple[EpisodeHook, Episode]] = {}
         # Train sources' algorithms by config, for their rollout-local work on episodes.
         self._algorithms: dict[str, Algorithm] = {}
-        self._scorer = ScoreClient(_algorithm_worker) if _algorithm_worker is not None else None
+        self._scorer = ScoreClient(_sample_server) if _sample_server is not None else None
         self._delivered: dict[str, tuple[float, EpisodeHook, Episode]] = {}
         """Recently delivered kept episodes, oldest first, for a cancel that arrives late."""
         self.ctx = zmq.asyncio.Context()
@@ -200,10 +200,10 @@ class EnvWorker:
         return self._algorithms[key]
 
     async def _score(self, req: RunRequest, algorithm: Algorithm, episode: Episode) -> None:
-        """Have the replica's algorithm worker score the samples kept for the episode."""
+        """Have the replica's sample server score the samples kept for the episode."""
         if self._scorer is None:
             raise RuntimeError(
-                f"{type(algorithm).__name__} scores samples in the replica's algorithm worker: "
+                f"{type(algorithm).__name__} scores samples in the replica's sample server: "
                 "serve the env with prime-rl's `env-worker-pool` entrypoint"
             )
         samples = [
