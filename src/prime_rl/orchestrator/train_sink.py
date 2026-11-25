@@ -30,7 +30,6 @@ from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Prog
 from prime_rl.orchestrator.utils import (
     episode_env_name,
     episode_group_id,
-    episode_tokens,
     min_fresh_version,
     train_work,
 )
@@ -183,8 +182,6 @@ class TrainSink(Reconfigurable):
 
         self.rollout_window = RolloutWindow()
         self.pending_groups: dict[str, list[EpisodeHead]] = defaultdict(list)
-        self.group_tokens: dict[str, int] = defaultdict(int)
-        """Tokens of each pending group's arrived episodes."""
         self.pending_group_failures: dict[str, list[DispatchFailure]] = defaultdict(list)
         # A dropped group's terminal marker; its ``count`` fills in for the
         # episodes the group will never deliver.
@@ -259,18 +256,6 @@ class TrainSink(Reconfigurable):
         failures = sum(len(group) for group in self.pending_group_failures.values())
         return episodes + failures
 
-    def gauges(self) -> dict[str, float]:
-        """Rollouts and tokens the sink holds: episodes waiting for their group, and
-        samples queued for a batch."""
-        return {
-            "memory/held_rollouts/grouping": float(sum(len(group) for group in self.pending_groups.values())),
-            "memory/held_tokens/grouping": float(sum(self.group_tokens.values())),
-            "memory/held_rollouts/queued": float(len(self.pending_batch)),
-            "memory/held_tokens/queued": float(
-                sum(sample.ref.num_tokens for samples in self.pending_batch.values() for sample in samples)
-            ),
-        }
-
     def batchable_rollouts(self) -> int:
         """Finished rollouts queued for a batch; those of groups still waiting for members can't be taken yet."""
         return len(self.pending_batch)
@@ -287,7 +272,6 @@ class TrainSink(Reconfigurable):
         group_id = episode_group_id(episode)
         env_name = episode_env_name(episode)
         self.pending_groups[group_id].append(episode)
-        self.group_tokens[group_id] += episode_tokens(episode)
         if not self._group_complete(group_id, env_name):
             return None
         await self.process_group(group_id)
@@ -386,7 +370,6 @@ class TrainSink(Reconfigurable):
 
     async def _process_group(self, group_id: str) -> None:
         group = self.pending_groups.pop(group_id, [])
-        self.group_tokens.pop(group_id, None)
         failures = self.pending_group_failures.pop(group_id, [])
         cancellation = self.pending_group_cancellations.pop(group_id, None)
         if not group and not failures and cancellation is None:
