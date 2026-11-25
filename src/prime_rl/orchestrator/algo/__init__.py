@@ -31,7 +31,7 @@ from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.algo.opd import OPDAlgorithm
 from prime_rl.orchestrator.algo.opsd import OPSDAlgorithm
 from prime_rl.orchestrator.algo.rae import RAEAlgorithm
-from prime_rl.orchestrator.algo.routing import assign_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo.routing import assign_advantage, stamp_loss_routing
 from prime_rl.orchestrator.algo.sft import SFTDistillAlgorithm
 
 if TYPE_CHECKING:
@@ -75,6 +75,6 @@ __all__ = [
     "RAEAlgorithm",
     "SFTDistillAlgorithm",
     "build_algorithm",
-    "assign_advantages",
+    "assign_advantage",
     "stamp_loss_routing",
 ]

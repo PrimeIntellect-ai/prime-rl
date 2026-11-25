@@ -8,7 +8,7 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage
 
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
-from prime_rl.orchestrator.algo import EchoAlgorithm, assign_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo import EchoAlgorithm, assign_advantage, stamp_loss_routing
 from prime_rl.orchestrator.algo.base import iter_trainable_traces
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.transports.batch.types import TrainingSample
@@ -226,14 +226,6 @@ def test_trainable_traces_exclude_failed_episodes_without_changing_verdicts(fail
     assert failed.model_dump() == before
 
 
-def test_assign_advantages_full_length_stream():
-    # The advantage stream is full-length-N: 0.0 on prompt + non-trainable
-    # positions, the rl credit on trainable (mask True) tokens.
-    trace = _make_episode().traces[0]
-    assign_advantages(trace, [0.5, -0.5, 1.0])
-    assert trace_to_samples(trace)[0].advantages == pytest.approx([0.0, 0.0, 0.5, -0.5, 0.0, 1.0])
-
-
 def test_compaction_retries_train_only_causally_used_generations():
     nodes = [
         MessageNode(
@@ -305,27 +297,15 @@ def test_compaction_retries_train_only_causally_used_generations():
     assert branches["accepted summary"].trainable is True
     assert branches["answer"].trainable is True
 
-    assign_advantages(trace, 1.0)
-    assert trace.nodes[1].advantages == pytest.approx([1.0])
-    assert trace.nodes[3].advantages is None
-    assert trace.nodes[4].advantages == pytest.approx([1.0])
-    assert trace.nodes[6].advantages == pytest.approx([1.0])
-
-    trainable_ids = [
-        token_id
+    assign_advantage(trace, 1.0)
+    credited = {
+        int(token_id): float(advantage)
         for sample in trace_to_samples(trace)
-        for token_id, trainable in zip(sample.token_ids, sample.mask, strict=True)
+        for token_id, trainable, advantage in zip(sample.token_ids, sample.mask, sample.advantages, strict=True)
         if trainable
-    ]
+    }
 
-    assert sorted(trainable_ids) == [2, 5, 7]
-
-
-def test_assign_advantages_slices_across_nodes():
-    trace = _make_episode().traces[0]
-    assign_advantages(trace, [1.0, 2.0, 3.0])
-    assert trace.nodes[1].advantages == pytest.approx([1.0, 2.0])
-    assert trace.nodes[3].advantages == pytest.approx([3.0])
+    assert credited == {2: 1.0, 5: 1.0, 7: 1.0}
 
 
 def test_unassigned_advantages_ship_none():
@@ -333,22 +313,10 @@ def test_unassigned_advantages_ship_none():
     assert trace_to_samples(trace)[0].advantages is None
 
 
-def test_assign_advantages_rejects_misaligned():
+def test_assign_advantage_broadcasts_over_mask():
     trace = _make_episode().traces[0]
-    with pytest.raises(ValueError, match="align"):
-        assign_advantages(trace, [0.5])
-
-
-def test_assign_advantages_scalar_broadcasts_over_mask():
-    trace = _make_episode().traces[0]
-    assign_advantages(trace, 1.0)
+    assign_advantage(trace, 1.0)
     assert trace_to_samples(trace)[0].advantages == pytest.approx([0.0, 0.0, 1.0, 1.0, 0.0, 1.0])
-
-
-def test_assign_advantages_list_rejects_misaligned():
-    trace = _make_episode().traces[0]
-    with pytest.raises(ValueError, match="align"):
-        assign_advantages(trace, [0.5])
 
 
 # --------------------------------------------------------------------------

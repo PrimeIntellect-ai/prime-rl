@@ -8,7 +8,7 @@ from verifiers.v1.trace import min_new_input_tokens
 
 from prime_rl.configs.algorithm import GRPOAlgoConfig, LinearSubagentLengthPenaltyConfig
 from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
-from prime_rl.orchestrator.algo.routing import assign_advantages, trainable_nodes
+from prime_rl.orchestrator.algo.routing import assign_advantage, assign_rl_weight, trainable_nodes
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.clients import InferenceClient
@@ -111,12 +111,10 @@ class GRPOAlgorithm(Algorithm):
             baseline = (lengths * shaped_rewards).sum() / lengths.sum()
         advantages = shaped_rewards - baseline
         for trace, advantage in zip(traces, advantages.tolist(), strict=True):
-            assign_advantages(trace, advantage)
-        nodes = [node for trace in traces for node in trainable_nodes(trace)]
-        if self.loss_aggregation == "prompt" and nodes:
+            assign_advantage(trace, advantage)
+        num_tokens = sum(int(np.count_nonzero(node.mask)) for trace in traces for node in trainable_nodes(trace))
+        if self.loss_aggregation == "prompt" and num_tokens:
             # rl weight 1/T_q per token: each group's weights sum to 1, and the trainer divides the
             # rl loss by the sum of rl weights, i.e. the number of groups.
-            weight = 1.0 / sum(int(np.count_nonzero(node.mask)) for node in nodes)
-            for node in nodes:
-                rl = np.where(np.asarray(node.mask, dtype=bool), weight, 0.0).astype(np.float32)
-                node.loss_weights = {**(node.loss_weights or {}), "rl": rl}
+            for trace in traces:
+                assign_rl_weight(trace, 1.0 / num_tokens)

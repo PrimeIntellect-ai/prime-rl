@@ -19,6 +19,7 @@ from collections.abc import Iterator
 import numpy as np
 import verifiers.v1 as vf
 
+from prime_rl.orchestrator.credit import trace_advantage, trace_rl_weight
 from prime_rl.transports.batch import MMImageRef, MMRefs, TrainingSample
 from prime_rl.transports.batch.types import (
     PAYLOAD_INFO_KEY,
@@ -129,6 +130,8 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
     # Set by the env worker when it keeps the arrays (`prime_rl.transports.payload`).
     references = (trace.info.get(PAYLOAD_INFO_KEY) or {}).get("branches", {})
     trained_loss_nodes: dict[str, set[int]] = {"rl": set(), "ce": set(), "ref_kl": set()}
+    advantage = trace_advantage(trace)
+    rl_weight = trace_rl_weight(trace)
     for branch, mask in iter_trainable_branches(trace):
         token_ids = branch.token_ids
         mm_token_type_ids: np.ndarray | None = None
@@ -149,10 +152,16 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
                 ref_logprobs=branch.reference_logprobs,
                 mm_refs=mm_refs,
                 mm_token_type_ids=mm_token_type_ids,
-                rl_weights=_loss_weights(branch, "rl", trained_loss_nodes["rl"]),
+                rl_weights=(
+                    _loss_weights(branch, "rl", trained_loss_nodes["rl"])
+                    if rl_weight is None
+                    else np.where(mask, np.float32(rl_weight), np.float32(0.0))
+                ),
                 ce_weights=_loss_weights(branch, "ce", trained_loss_nodes["ce"]),
                 ref_kl_weights=_loss_weights(branch, "ref_kl", trained_loss_nodes["ref_kl"]),
-                advantages=branch.advantages,
+                advantages=(
+                    None if advantage is None else np.where(branch.sampled_mask, np.float32(advantage), np.float32(0.0))
+                ),
                 trace_id=trace.id,
                 branch_index=branch.index,
                 payload=PayloadSlice(

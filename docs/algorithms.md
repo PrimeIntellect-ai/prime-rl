@@ -33,7 +33,7 @@ This page covers the math and the configurable algorithmic components: the algor
 A training algorithm in `prime-rl` is configured under `[orchestrator.train.algo]`, where **`type` names the algorithm** (`grpo`, `opd`, `sft`, …) and the class defaults are its vetted setting. It has two parts:
 
 1. **The rollout model** — which model generates train rollouts: the live policy, except for `sft`, which samples from its frozen `teacher` (a [model reference](#model-references)). Group sizing stays on the env config (`group_size`).
-2. **The per-token training signal** — credit assignment and loss routing, fused; the algorithm's own parameters sit directly on `algo`. One mapping from a finalized rollout to per-token *(loss component, weight)* pairs — the credit a token gets and the loss that consumes it are two coordinates of the same output. Group-relative algorithms compute credit on the orchestrator and ship per-token advantage streams; reference-KL algorithms query a reference model at batch-ship time (bounded concurrency) and ship its prefill logprobs for the trainer to evaluate against the live policy. The `type` determines which loss component consumes the action tokens (`rl` / `ce` / `ref_kl`) and what happens to env-provided observation tokens in multi-turn rollouts (masked out by default; `echo` trains on them with weighted CE).
+2. **The per-token training signal** — credit assignment and loss routing, fused; the algorithm's own parameters sit directly on `algo`. One mapping from a finalized rollout to per-token *(loss component, weight)* pairs — the credit a token gets and the loss that consumes it are two coordinates of the same output. Group-relative algorithms compute one advantage per rollout on the orchestrator, broadcast over its sampled tokens; reference-KL algorithms query a reference model at batch-ship time (bounded concurrency) and ship its prefill logprobs for the trainer to evaluate against the live policy. The `type` determines which loss component consumes the action tokens (`rl` / `ce` / `ref_kl`) and what happens to env-provided observation tokens in multi-turn rollouts (masked out by default; `echo` trains on them with weighted CE).
 
 The trainer is algorithm-blind: the loss is a sum of three components (rl, ce, ref_kl), each normalized by its own global token count; per-token streams ship on the wire (the `rl_weights` / `ce_weights` / `ref_kl_weights` component weights plus the `advantages` stream on each training sample) and the trainer just executes them. Adding an algorithm never touches the dispatcher, batch packing, or trainer hot path.
 
@@ -157,7 +157,7 @@ Algorithms operate on native verifier artifacts and annotate their message graph
 - `async score_episode(episode)` — rollout-local scoring as one episode arrives.
 - `async score_group(episodes)` — group-relative scoring after the cohort completes.
 
-The pipeline calls `score_group` directly and `score_episode` through `finalize_episode`, which skips episodes with no trainable sampled tokens. Advantages, reference logprobs, and named loss weights stay on verifier nodes through admission. Only admitted traces are flattened into `TrainingSample`s.
+The pipeline calls `score_group` directly and `score_episode` through `finalize_episode`, which skips episodes with no trainable sampled tokens. Credit is one advantage per trace (`assign_advantage`), plus an optional rl loss weight (`assign_rl_weight`), both kept in `trace.info`; reference logprobs and named loss weights stay on verifier nodes through admission. Only admitted traces are flattened into `TrainingSample`s, which spread the advantage and rl weight over each branch's sampled tokens.
 
 The algorithm config states which loss component its action tokens feed (`action_loss_type`, a class variable on each config class). Every class is constructed with its algorithm config plus the one host-owned resource it can't rebuild — the live policy clients (`self.clients`). Everything else an algorithm needs it builds from its own config in `setup()`: `opd` connects its frozen `teacher`; `opsd` builds the renderer for its demonstration hint from the policy's renderer config and tokenizer. Writing your own algorithm is subclassing `Algorithm` and overriding the hooks its signal needs (see [Authoring an Algorithm](#authoring-an-algorithm)).
 
@@ -485,7 +485,7 @@ There is no config hook that points at user code — a new credit-assignment sch
 import torch
 
 from prime_rl.orchestrator.algo.base import Algorithm
-from prime_rl.orchestrator.algo.routing import assign_advantages
+from prime_rl.orchestrator.algo.routing import assign_advantage
 
 
 class MyAlgorithm(Algorithm):
@@ -494,12 +494,12 @@ class MyAlgorithm(Algorithm):
         rewards = torch.tensor([trace.reward for trace in traces], dtype=torch.float32)
         advantages = ...  # one value per trace
         for trace, advantage in zip(traces, advantages.tolist(), strict=True):
-            assign_advantages(trace, advantage)
+            assign_advantage(trace, advantage)
 ```
 
-Add a typed `MyAlgoConfig` to `prime_rl.configs.algorithm` and its discriminated union, then register `"my_algo": MyAlgorithm` in `ALGORITHM_CLASSES`. Pick `score_episode` for rollout-local work or model calls, and `score_group` for group-relative credit. `assign_advantages` takes a scalar or a list aligned to the trace graph's sampled tokens.
+Add a typed `MyAlgoConfig` to `prime_rl.configs.algorithm` and its discriminated union, then register `"my_algo": MyAlgorithm` in `ALGORITHM_CLASSES`. Pick `score_episode` for rollout-local work or model calls, and `score_group` for group-relative credit. `assign_advantage` credits every sampled token on the trace's trainable branches with one value.
 
-Curriculum admission and metrics can inspect the resulting graph-native streams after group scoring.
+Curriculum admission and metrics read each trace's advantage after group scoring.
 
 ### Reference Scoring
 

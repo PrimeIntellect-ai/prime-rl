@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 import verifiers.v1 as vf
 
-from prime_rl.orchestrator.algo.routing import is_trainable, scalar_advantage
+from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation
 from prime_rl.orchestrator.utils import compute_pass_metrics, episode_env_name, episode_group_id
 
@@ -515,11 +515,7 @@ class EpisodeCollection:
             return self.selected_episodes
         by_episode: dict[int, list[vf.Trace]] = {}
         for record in self.records:
-            trace = record.trace
-            advantage = scalar_advantage(trace)
-            if advantage is not None:
-                trace = trace.model_copy(update={"info": {**trace.info, "advantage": advantage}})
-            by_episode.setdefault(id(record.episode), []).append(trace)
+            by_episode.setdefault(id(record.episode), []).append(record.trace)
         return [
             episode.model_copy(update={"traces": by_episode[id(episode)]})
             for episode in self.selected_episodes
