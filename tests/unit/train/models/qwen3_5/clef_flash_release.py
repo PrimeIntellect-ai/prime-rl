@@ -92,7 +92,8 @@ def head_weights() -> dict[str, torch.Tensor]:
 
 
 def write_processor(directory: Path) -> None:
-    """The image processor of a Clef release, with smaller bounds on an image, and the tokenizer."""
+    """A processor of a Clef release's classes, with smaller bounds on an image, and the tokenizer. The video processor
+    is there as Qwen3VLProcessor does not load without one."""
     processor = {
         "do_convert_rgb": True,
         "do_normalize": True,

@@ -109,17 +109,51 @@ def test_the_state_is_cut_to_fit_with_the_images(strategy, processor, monkeypatc
     assert "\nA pho\n\nSCHEMA FIELDS:" in strategy.tokenizer.decode(cut["input_ids"])
 
 
+def test_skips_a_request_whose_questions_do_not_fit_with_the_images(processor, monkeypatch):
+    def render(max_length: int):
+        monkeypatch.setattr(ClefFlashStrategy, "MAX_LENGTH", max_length)
+        strategy = ClefFlashStrategy(tokenizer(), tiny_config(), processor)
+        return strategy.render_request(request(IMAGES, state=""), max_tokens=4096)
+
+    fixed = len(render(16384)["input_ids"])
+    assert render(fixed) is not None and render(fixed - 1) is None
+
+
+def test_renders_what_vllm_renders(strategy):
+    """vLLM's prompt after the media, which its renderer expands."""
+    strategies = pytest.importorskip("vllm.entrypoints.openai.decisions.strategies")
+    from vllm.entrypoints.openai.decisions.question_types import build_question
+
+    context = SimpleNamespace(
+        online_renderer=SimpleNamespace(renderer=SimpleNamespace(get_tokenizer=lambda: strategy.tokenizer)),
+        engine_client=SimpleNamespace(model_config=SimpleNamespace(max_model_len=ClefFlashStrategy.MAX_LENGTH)),
+    )
+    vllm_strategy = strategies.ClefFlashStrategy(context)
+    assert strategy.IMAGE_PLACEHOLDER == vllm_strategy.PLACEHOLDERS["image"]
+    question = QUESTIONS["q"]
+    questions = [build_question("q", question["type"], question["instructions"], question["criteria"], 26)]
+    prefix, _ = strategy._render_images(tuple(IMAGES))
+    prompt, schema, _ = vllm_strategy.encode(questions, vllm_strategy.render_state("A photo."), prefix)
+    rendered = strategy.render_request(request(IMAGES), max_tokens=4096)
+    assert rendered["input_ids"] == prompt
+    spans = [*schema["question_spans"], *schema["option_spans"]]
+    assert rendered["read_spans"] == [[(start + len(prompt), end + len(prompt)) for start, end in spans]]
+
+
 def test_skips_images_it_cannot_read(strategy, monkeypatch):
     warnings = []
     monkeypatch.setattr(clef_flash, "get_logger", lambda: SimpleNamespace(warning=warnings.append))
     assert strategy.render_request(request(["data:image/png;base64,AAAA"]), max_tokens=4096) is None
     # The processor's limit on an image's aspect ratio
     assert strategy.render_request(request([data_url(Image.new("RGB", (4096, 16)))]), max_tokens=4096) is None
+    # A format vLLM refuses, whatever the URL says
+    eps = data_url(WIDE, "EPS").replace("image/eps", "image/png")
+    assert strategy.render_request(request([eps]), max_tokens=4096) is None
     assert all(warning.startswith("Skipping record 'r': vLLM refuses it: media: ") for warning in warnings)
     # The model would put image features at the text's own image token
     assert strategy.render_request(request(IMAGES, "A <|image_pad|>."), max_tokens=4096) is None
     assert strategy.render_request(request(None, "A <|image_pad|>."), max_tokens=4096) is None
-    assert len(warnings) == 4 and warnings[2:] == ["Skipping record 'r': its text holds the image token"] * 2
+    assert len(warnings) == 5 and warnings[3:] == ["Skipping record 'r': its text holds the image token"] * 2
 
 
 def test_a_tokenizer_with_another_image_token_is_refused(processor):

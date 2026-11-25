@@ -270,7 +270,8 @@ def check_records(
     rows = dataset.shard(world_size, rank, contiguous=False)
     names = dict.fromkeys([*columns.model_dump().values(), "__index"])
     rows = rows.select_columns([name for name in names if name in rows.column_names])
-    for batch in rows.iter(batch_size=1024):
+    # Few rows at a time, as a row may hold images
+    for batch in rows.iter(batch_size=32):
         for values in zip(*batch.values()):
             request, _ = parse_record(dict(zip(batch, values)), columns, source, split)
             check_images(request, takes_images)
