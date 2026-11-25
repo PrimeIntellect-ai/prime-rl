@@ -88,7 +88,9 @@ def _is_int(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def _find_violation(rendered: RenderedRequest, request: SystemOneRequest, vocab_size: int) -> str | None:
+def _find_violation(
+    rendered: RenderedRequest, request: SystemOneRequest, vocab_size: int, image_token_id: int | None
+) -> str | None:
     required, optional = RenderedRequest.__required_keys__, RenderedRequest.__optional_keys__
     if not isinstance(rendered, dict) or not required <= set(rendered) <= required | optional:
         got = sorted(rendered) if isinstance(rendered, dict) else type(rendered).__name__
@@ -149,14 +151,26 @@ def _find_violation(rendered: RenderedRequest, request: SystemOneRequest, vocab_
     if "mm_kwargs" in rendered:
         if any("video" in key for key in rendered["mm_kwargs"]):
             return f"video inputs are not supported, got {sorted(rendered['mm_kwargs'])}"
-        if len(rendered["mm_token_type_ids"]) != len(input_ids):
-            return f"{len(rendered['mm_token_type_ids'])} mm_token_type_ids for {len(input_ids)} input_ids"
+        if not rendered["mm_kwargs"]:
+            return "mm_kwargs is empty"
+        token_types = rendered["mm_token_type_ids"]
+        if len(token_types) != len(input_ids):
+            return f"{len(token_types)} mm_token_type_ids for {len(input_ids)} input_ids"
+        if not set(token_types) <= {0, 1} or 1 not in token_types:
+            return f"mm_token_type_ids must be 1 at the images' tokens and 0 elsewhere, got {sorted(set(token_types))}"
+        # The model puts features at its image token only, and would leave the others out
+        others = {token for token, token_type in zip(input_ids, token_types) if token_type == 1} - {image_token_id}
+        if others:
+            return f"an image's tokens must be the model's image token {image_token_id}, got {sorted(others)}"
     return None
 
 
-def check_rendered_request(rendered: RenderedRequest, request: SystemOneRequest, vocab_size: int) -> None:
-    """Raise ``ValueError`` unless the strategy's rendering keeps the ``RenderedRequest`` contract for this request."""
-    violation = _find_violation(rendered, request, vocab_size)
+def check_rendered_request(
+    rendered: RenderedRequest, request: SystemOneRequest, vocab_size: int, image_token_id: int | None = None
+) -> None:
+    """Raise ``ValueError`` unless the strategy's rendering keeps the ``RenderedRequest`` contract for this request.
+    ``image_token_id`` is the model's, for a request with images."""
+    violation = _find_violation(rendered, request, vocab_size, image_token_id)
     if violation is not None:
         raise ValueError(f"record {request.id!r}: the strategy broke the RenderedRequest contract: {violation}")
 
@@ -219,13 +233,17 @@ def render_sample(
 ) -> Sample | None:
     """The record's sample, or None when the strategy skips it or it is longer than ``seq_len``."""
     check_images(request, strategy.processor is not None)
-    rendered = strategy.render_request(request, seq_len)
+    try:
+        rendered = strategy.render_request(request, seq_len)
+    except ValueError as error:
+        raise ValueError(f"record {request.id!r}: {error}") from error
     if rendered is None:
         get_logger().debug(f"Skipping record {request.id!r}: the strategy returned None")
         return None
     # Before the length check, so a broken rendering raises instead of being skipped
-    check_rendered_request(rendered, request, strategy.config.get_text_config().vocab_size)
-    if strategy.processor is not None and has_stray_image_token(rendered, strategy.config.image_token_id):
+    image_token_id = None if strategy.processor is None else strategy.config.image_token_id
+    check_rendered_request(rendered, request, strategy.config.get_text_config().vocab_size, image_token_id)
+    if image_token_id is not None and has_stray_image_token(rendered, image_token_id):
         get_logger().warning(f"Skipping record {request.id!r}: its text holds the model's image token")
         return None
     if len(rendered["input_ids"]) > seq_len:
