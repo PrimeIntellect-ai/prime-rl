@@ -32,11 +32,6 @@ def episode_group_id(episode: EpisodeHead) -> str:
     return group.id
 
 
-def episode_tokens(episode: EpisodeHead) -> int:
-    """The tokens of an episode's traces, which its env worker keeps."""
-    return episode.num_total_tokens
-
-
 def train_work(episode: EpisodeHead) -> vf.TrainWorkInfo:
     run = episode.run
     if not isinstance(run, vf.TrainRunInfo) or not isinstance(run.work, vf.TrainWorkInfo):

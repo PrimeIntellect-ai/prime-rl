@@ -57,10 +57,7 @@ def apply(meta: InflightEpisode, delta: dict[str, Any]) -> list[tuple[int, int]]
     contexts = []
     for call in calls:
         meta.calls += 1
-        usage = call.get("usage")
-        if usage:
-            trace.tokens = usage["prompt_tokens"] + (usage.get("cached_input_tokens") or 0) + usage["completion_tokens"]
-        contexts.append((context(trace, usage), meta.calls))
+        contexts.append((context(trace, call.get("usage")), meta.calls))
     changed = delta.get("set") or {}
     if changed.get("errors"):
         trace.stage = "error"
