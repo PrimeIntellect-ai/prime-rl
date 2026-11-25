@@ -447,14 +447,20 @@ def test_power_penalty_charges_each_agent_superlinearly():
     advantage = 0.2 * (1 - 205**1.5 / split) / 2
     assert _grpo([episode, unlabelled], length_penalty=discounted) == pytest.approx([advantage, -advantage], abs=1e-6)
 
-    # Calibrated to a budget: each solved reward falls by its own cost over budget ** alpha; failures keep 0.
-    budgeted = PowerLengthPenaltyConfig(weight=1.0, alpha=1.5, budget=1000)
-    advantage = (chained - split) / 1000**1.5 / 2
-    assert _grpo([episode, unlabelled], length_penalty=budgeted) == pytest.approx([-advantage, advantage], abs=1e-6)
-    failed = unlabelled.model_copy(deep=True)
-    failed.traces[0].rewards = {"reward": vf.Reward(score=0.0)}
-    shaped = 1 - chained / 1000**1.5
-    assert _grpo([episode, failed], length_penalty=budgeted) == pytest.approx([shaped / 2, -shaped / 2], abs=1e-6)
+
+def test_power_penalty_budget_scales_each_reward_by_its_total_tokens():
+    short, long, failed = (
+        _build_episode(r, sampled_lengths=n) for r, n in ((1.0, [40]), (1.0, [40, 80]), (0.0, [40, 80]))
+    )
+    budget = 2 * long.traces[0].num_total_tokens
+    shaped = [1 - (e.traces[0].num_total_tokens / budget) ** 1.5 for e in (short, long)] + [0.0]
+    mean = sum(shaped) / 3
+    penalty = PowerLengthPenaltyConfig(weight=1.0, alpha=1.5, budget=budget)
+    assert _grpo([short, long, failed], length_penalty=penalty) == pytest.approx([s - mean for s in shaped], abs=1e-6)
+    at_budget = PowerLengthPenaltyConfig(weight=1.0, alpha=1.5, budget=long.traces[0].num_total_tokens)
+    assert _grpo([long, failed], length_penalty=at_budget) == pytest.approx([0.0, 0.0], abs=1e-6)
+    with pytest.raises(ValueError, match="subagent_weight"):
+        PowerLengthPenaltyConfig(budget=budget, subagent_weight=0.5)
 
 
 @pytest.mark.parametrize("penalty_type", [LinearLengthPenaltyConfig, LinearSubagentLengthPenaltyConfig])
