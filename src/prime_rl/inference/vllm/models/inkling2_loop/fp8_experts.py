@@ -43,7 +43,6 @@ class Inkling2FP8Experts(nn.Module):
 
     def __init__(self, config) -> None:
         super().__init__()
-        self.topk = config.num_experts_per_tok
         self.gate_cap = config.mlp_gate_softcap
         self.up_cap = config.mlp_up_softcap
         num_experts, hidden, intermediate = config.n_routed_experts, config.hidden_size, config.intermediate_size
@@ -124,7 +123,7 @@ class Inkling2FP8Experts(nn.Module):
         down = torch.empty((tokens, topk, x.shape[1]), dtype=x.dtype, device=x.device)
         dispatch_fused_moe_kernel(
             activated_fp8, self.w2_weight, down, activated_scale, self.w2_weight_scale, None, None,
-            mul_routed_weight=False, top_k=1, num_input_tokens=tokens, **fp8_kernel,
+            mul_routed_weight=False, top_k=1, **fp8_kernel,
         )  # fmt: skip
         # Padding tokens keep the zeros: the kernel leaves a token without a slot untouched.
         out = x.new_zeros((tokens, x.shape[1]))
