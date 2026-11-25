@@ -2,8 +2,8 @@
 # convolutions) RL at 16k context. Model settings only: compose it with a compute overlay from `gpu/`
 # and a data config from `recipes/data/`:
 #
-#   uv run rl @ recipes/inkling2/rl.toml @ recipes/inkling2/gpu/h200.toml @ recipes/data/swe.toml
-#   uv run rl @ recipes/inkling2/rl.toml @ recipes/inkling2/gpu/h200.toml @ recipes/data/math.toml --orchestrator.train.sampling.max-completion-tokens 8192
+#   uv run rl @ recipes/inkling-2-small/rl.toml @ recipes/inkling-2-small/gpu/h200.toml @ recipes/data/swe.toml
+#   uv run rl @ recipes/inkling-2-small/rl.toml @ recipes/inkling-2-small/gpu/h200.toml @ recipes/data/math.toml --orchestrator.train.sampling.max-completion-tokens 8192
 #
 # The data overlays target 256k models. At 16k, set `env.agent.harness.compaction.summarize_at_tokens
 # = 12000` on the SWE source so the harness compacts before the trainer cap, and give math a completion

@@ -4,7 +4,7 @@
 # settings come from examples/advanced/inkling2/{math-rl,swe-rl}.toml, which ran 6 trainer nodes and
 # 2 inference replicas.
 #
-#   uv run rl @ recipes/inkling2/rl.toml @ recipes/inkling2/gpu/h200.toml @ recipes/fake.toml --trainer.model.debug.force-balanced-routing --trainer.data.fake.batch-size 48
+#   uv run rl @ recipes/inkling-2-small/rl.toml @ recipes/inkling-2-small/gpu/h200.toml @ recipes/fake.toml --trainer.model.debug.force-balanced-routing --trainer.data.fake.batch-size 48
 
 [deployment]
 type = "multi_node"

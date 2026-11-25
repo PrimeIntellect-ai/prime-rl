@@ -27,6 +27,8 @@ num_turns_weight = 0.01
 name = "scaleswe"
 env.taskset.id = "scaleswe"
 env.agent.harness.id = "bash"
+# Fail hung rollouts so they do not hold in-flight slots and block the pipeline.
+env.agent.timeout.rollout = 10800
 
 [orchestrator.eval]
 interval = 25
@@ -36,4 +38,3 @@ name = "swebench-verified"
 env.taskset.id = "swebench-verified"
 env.agent.harness.id = "bash"
 env.agent.timeout.rollout = 3600
-group_size = 1

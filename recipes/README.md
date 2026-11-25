@@ -30,9 +30,9 @@ checkpointing and activation offloading.
 | [Qwen3.8 Flash Next](qwen3.8-flash-next/rl.toml) | 3 | 39.1k tok/s | 1,629 tok/s | 109.3 GiB allocated | 2 nodes ran out of memory |
 | [GLM-5.3 Flash](glm-5.3-flash/rl.toml) | 6 | 61.0k tok/s | 1,270 tok/s | 94.6 GiB allocated | 4 and 5 nodes ran out of memory |
 | [Qwen3.6-35B-A3B](qwen3.6-35b-a3b/rl.toml) | 1 | | | | not tested in this layout |
-| [DeepSeek-V4-Flash](deepseek-v4-flash/rl.toml) | 4 | | | | not tested in this layout; FP8 trainer and inference, also on B300 (MXFP8) |
+| [DeepSeek-V4-Flash](deepseek-v4-flash-0731/rl.toml) | 4 | | | | not tested in this layout; FP8 trainer and inference, also on B300 (MXFP8) |
 | [Nemotron 3.5 Super](nemotron-3.5-super/rl.toml) | 4 | | | | not tested in this layout |
-| [Inkling 2 Small](inkling2/rl.toml) | 6 | 41.7k tok/s | 870 tok/s | 107.6 GiB allocated | fake 16k samples (no context parallelism for Inkling 2), FP8 routed experts, full offload, Sign-SGD; RL not tested in this layout |
+| [Inkling 2 Small](inkling-2-small/rl.toml) | 6 | 41.7k tok/s | 870 tok/s | 107.6 GiB allocated | fake 16k samples (no context parallelism for Inkling 2), FP8 routed experts, full offload, Sign-SGD; RL not tested in this layout |
 
 "Reserved" includes PyTorch's allocator cache, so real use is lower; "allocated" is the peak of
 live tensors (`perf/peak_allocated_memory`). Both include memory outside the allocator (NCCL, CUDA
