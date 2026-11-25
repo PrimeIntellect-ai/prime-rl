@@ -233,14 +233,16 @@ class SFTConfig(SupervisedTrainerConfig):
             )
         if self.model.lora is not None:
             raise ValueError(
-                'data.type = "system_one" is not supported with [model.lora]: decision models train with full '
-                "fine-tuning, and a LoRA checkpoint can be neither exported nor served."
+                'data.type = "system_one" is not supported with [model.lora]: how a decision model\'s own readout '
+                "trains next to adapters is undefined, and its LoRA checkpoint can be neither exported nor served. "
+                "For now this holds for all System One data. Remove [model.lora]."
             )
         if self.eval is not None:
             raise ValueError(
-                'data.type = "system_one" is not supported with [eval]: online evals send the trained weights to a '
-                "vLLM server, which runs its own model classes, not a decision model's prime-rl class. Remove [eval], "
-                "and score checkpoints outside the trainer instead."
+                'data.type = "system_one" is not supported with [eval]: online evals score generated text, and vLLM '
+                "serves a decision model with its own readout as a pooling model, which generates none. For now this "
+                "holds for all System One data. Remove [eval], and score checkpoints with [val] or outside the "
+                "trainer instead."
             )
         if self.model.cp > 1:
             raise ValueError(
