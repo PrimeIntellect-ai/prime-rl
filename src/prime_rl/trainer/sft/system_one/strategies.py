@@ -6,11 +6,15 @@ from transformers import PretrainedConfig
 
 from prime_rl.trainer.sft.system_one.clef_flash import ClefFlashStrategy
 from prime_rl.trainer.sft.system_one.data import SystemOneStrategy
+from prime_rl.trainer.sft.system_one.next_token import NextTokenStrategy
 
 if TYPE_CHECKING:
     from prime_rl.trainer.model import ExtraConfigSelection
 
-SYSTEM_ONE_STRATEGIES: dict[str, type[SystemOneStrategy]] = {"ClefFlashForJointSchema": ClefFlashStrategy}
+SYSTEM_ONE_STRATEGIES: dict[str, type[SystemOneStrategy]] = {
+    "ClefFlashForJointSchema": ClefFlashStrategy,
+    "Qwen3_5ForConditionalGeneration": NextTokenStrategy,
+}
 """Architecture name -> strategy."""
 
 

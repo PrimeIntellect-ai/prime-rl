@@ -31,6 +31,7 @@ from prime_rl.trainer.sft.system_one.data import (
     check_records,
     check_rendered_request,
 )
+from prime_rl.trainer.sft.system_one.lm_head import lm_head_logits
 from prime_rl.trainer.sft.system_one.loss import (
     DecisionLossInputs,
     SystemOneBatch,
@@ -548,6 +549,27 @@ def test_decision_loss_equals_a_per_record_reference():
     assert not torch.allclose(merged, loss)
 
 
+def test_lm_head_logits_are_float32_from_the_rows_of_the_tokens():
+    torch.manual_seed(0)
+    model = nn.Module()
+    model.lm_head = nn.Linear(8, 32, bias=False).to(torch.bfloat16)
+    hidden_states = torch.randn(6, 8).to(torch.bfloat16)
+    positions, token_ids = [5, 2], [[7, 3, 20], [3]]
+
+    logits = lm_head_logits(model, hidden_states, positions, token_ids)
+
+    weight = model.lm_head.weight.double()
+    exact = [hidden_states[p].double() @ weight[t] for p, tokens in zip(positions, token_ids) for t in tokens]
+    assert logits.dtype == torch.float32
+    # Closer than a logit rounded to bf16 would be
+    torch.testing.assert_close(logits, torch.stack(exact).float())
+
+    # A softcap of the LM head caps these logits too
+    model.lm_head.softcap = 0.5
+    capped = lm_head_logits(model, hidden_states, positions, token_ids)
+    torch.testing.assert_close(capped, 0.5 * torch.tanh(logits / 0.5))
+
+
 class HeadsConfig(PretrainedConfig):
     model_type = "decision_loss_heads_test"
 
@@ -589,6 +611,17 @@ class LMHeadStrategy(TokenStrategy):
                 for question in questions
             ]
         )
+
+
+class LMHeadRowsStrategy(TokenStrategy):
+    """LMHeadStrategy, with the options' logits read by ``lm_head_logits`` from their rows of the LM head's weight."""
+
+    def option_logits(self, model, hidden_states, input_ids, questions):
+        positions = [question.reads[0][0] for question in questions]
+        lm_logits = lm_head_logits(model, hidden_states, positions, [range(len(q.options)) for q in questions])
+        scores = model.score_head(hidden_states)[:, 0].float()
+        means = [scores[slice(*question.reads[0])].mean().expand(len(question.options)) for question in questions]
+        return lm_logits + torch.cat(means)
 
 
 class ScoreHeadStrategy(TokenStrategy):
@@ -670,7 +703,7 @@ def fsdp_worker(rank: int, world: int, tied: bool, strategy, init_file: str, out
     dist.destroy_process_group()
 
 
-@pytest.mark.parametrize("strategy", [LMHeadStrategy, ScoreHeadStrategy])
+@pytest.mark.parametrize("strategy", [LMHeadStrategy, LMHeadRowsStrategy, ScoreHeadStrategy])
 @pytest.mark.parametrize("tied", [True, False])
 def test_decision_loss_under_fsdp(tied, strategy, tmp_path):
     world = 2
@@ -682,7 +715,7 @@ def test_decision_loss_under_fsdp(tied, strategy, tmp_path):
     sum(heads_loss(model, rank, strategy) for rank in range(world)).div(world).backward()
     expected = {name: param.grad.float() for name, param in model.named_parameters() if param.grad is not None}
     if not tied:  # a tied LM head's weight is listed as the embeddings'
-        assert ("lm_head.weight" in expected) == (strategy is LMHeadStrategy)
+        assert ("lm_head.weight" in expected) == (strategy is not ScoreHeadStrategy)
     for rank in range(world):
         for grads in torch.load(tmp_path / f"{rank}.pt"):
             assert grads.keys() == expected.keys()

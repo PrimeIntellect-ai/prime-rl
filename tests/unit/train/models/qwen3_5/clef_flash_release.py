@@ -29,10 +29,11 @@ JOINT_HEAD_CONFIG = {
 }
 
 
-def tokenizer() -> PreTrainedTokenizerFast:
-    """One token per byte, plus Qwen's chat tokens."""
+def tokenizer(merges: tuple[tuple[str, str], ...] = ()) -> PreTrainedTokenizerFast:
+    """One token per byte, plus one per merge of two tokens and Qwen's chat tokens."""
     alphabet = sorted(pre_tokenizers.ByteLevel.alphabet())
-    model = Tokenizer(models.BPE(vocab={char: i for i, char in enumerate(alphabet)}, merges=[]))
+    vocab = {token: i for i, token in enumerate([*alphabet, *(left + right for left, right in merges)])}
+    model = Tokenizer(models.BPE(vocab=vocab, merges=list(merges)))
     model.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=False)
     model.decoder = decoders.ByteLevel()
     tokens = PreTrainedTokenizerFast(
