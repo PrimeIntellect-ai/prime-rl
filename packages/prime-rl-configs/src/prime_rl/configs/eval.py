@@ -87,7 +87,7 @@ class EvalConfig(ServedEvalConfig):
     """Run kind of this config. ``uv run launch`` picks the entrypoint from it; ``uv run eval`` accepts only
     "eval" (or no mode)."""
 
-    model: str = Field("deepseek/deepseek-v4.1-flash", validation_alias=AliasChoices("model", "m"))
+    model: str = Field("deepseek/deepseek-v4-flash-0731", validation_alias=AliasChoices("model", "m"))
     """Model id — the ``model`` field of every eval request and the startup model check."""
 
     client: ClientConfig = Field(default_factory=ClientConfig)
