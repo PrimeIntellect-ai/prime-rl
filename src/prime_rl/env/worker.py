@@ -18,6 +18,7 @@ from verifiers.v1.env import RunSlot
 from verifiers.v1.episode import Episode
 from verifiers.v1.restore import arm_hold_watchdogs, release_all, restore_entry, save_all
 from verifiers.v1.runtimes import PrimeBackend, Snapshot
+from verifiers.v1.runtimes.backends.prime import leased_client
 from verifiers.v1.task import Task
 from verifiers.v1.utils.loaders import load_environment
 
@@ -260,6 +261,32 @@ class EnvWorker:
                 orphans.append(restore_entry(trace)["snapshot"])
                 reason = "its episode has more than one trace, or it ended during the save"
                 reasons[reason] = reasons.get(reason, 0) + 1
+
+        async def confirm_upload(trace: dict) -> bool:
+            point = restore_entry(trace)
+            if point.get("time", {}).get("end"):
+                return True
+            snapshot_id = point["snapshot"]["id"]
+            try:
+                async with leased_client() as client:
+                    await client.wait_for_checkpoint(snapshot_id, timeout_seconds=600)
+            except Exception as e:
+                get_logger().warning(f"Could not confirm durability of rollout snapshot {snapshot_id} - {e!r}")
+                return False
+            return True
+
+        # Held saves can return during upload. Only durable restore files may
+        # enter the open work committed by progress.pt.
+        confirmed = await asyncio.gather(*(confirm_upload(trace) for trace in saved))
+        durable = []
+        for trace, ok in zip(saved, confirmed):
+            if ok:
+                durable.append(trace)
+            else:
+                orphans.append(restore_entry(trace)["snapshot"])
+                reason = "its snapshot upload was not confirmed durable"
+                reasons[reason] = reasons.get(reason, 0) + 1
+        saved = durable
         try:
             paths = await asyncio.to_thread(
                 write_restores, confined(req.dir), [(slots[trace["id"]][1].id, trace) for trace in saved]
