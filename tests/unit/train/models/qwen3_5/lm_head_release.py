@@ -39,7 +39,7 @@ def chat_tokenizer(merges: tuple[tuple[str, str], ...] = MERGES) -> PreTrainedTo
 
 def write_lm_head_release(directory: Path, modeling_overrides: dict | None = None) -> None:
     """A tiny stock Qwen3.5 checkpoint, or a slot decision model with ``modeling_overrides`` in its config.json."""
-    write_backbone(directory)
+    write_backbone(directory, MERGES)
     if modeling_overrides is not None:
         path = directory / "config.json"
         path.write_text(json.dumps({**json.loads(path.read_text()), "modeling_overrides": modeling_overrides}))

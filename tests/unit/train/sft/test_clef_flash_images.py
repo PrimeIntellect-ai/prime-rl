@@ -9,9 +9,11 @@ from PIL import Image
 
 from prime_rl.configs.sft import SystemOneColumnsConfig
 from prime_rl.configs.trainer import ModelConfig
+from prime_rl.trainer.data import CatDataset
 from prime_rl.trainer.sft.system_one import clef_flash
 from prime_rl.trainer.sft.system_one.clef_flash import ClefFlashStrategy
 from prime_rl.trainer.sft.system_one.data import render_sample
+from prime_rl.trainer.sft.system_one.loss import system_one_collate
 from prime_rl.trainer.sft.system_one.record import parse_record
 from prime_rl.trainer.vlm import setup_processor
 from tests.unit.train.models.qwen3_5.clef_flash_release import tiny_config, tokenizer, write_processor
@@ -132,6 +134,31 @@ def test_skips_images_it_cannot_read(strategy, monkeypatch):
 def test_skips_a_record_whose_text_holds_the_image_token(strategy, images):
     assert render_sample(strategy, request(images), 4096) is not None
     assert render_sample(strategy, request(images, "A <|image_pad|>."), 4096) is None
+    question = {"q": {**QUESTIONS["q"], "instructions": "What is <|image_pad|>?"}}
+    in_question = parse_record({**row(images), "questions": json.dumps(question)}, COLUMNS)[0]
+    assert render_sample(strategy, in_question, 4096) is None
+
+
+def test_keeps_a_record_whose_image_token_is_cut_with_the_state(strategy, processor, monkeypatch):
+    full = strategy.render_request(request(IMAGES, "A photo.<|image_pad|>"), max_tokens=4096)
+    monkeypatch.setattr(ClefFlashStrategy, "MAX_LENGTH", len(full["input_ids"]) - 1)
+    strategy = ClefFlashStrategy(tokenizer(), tiny_config(), processor)
+    kept = render_sample(strategy, request(IMAGES, "A photo.<|image_pad|>"), 4096)
+    assert kept["input_ids"].tolist() == strategy.render_request(request(IMAGES), 4096)["input_ids"]
+    is_image = kept["input_ids"] == tiny_config().image_token_id
+    assert kept["mm_token_type_ids"].tolist() == is_image.tolist()
+
+
+def test_records_with_and_without_images_pack_into_a_row(strategy):
+    samples = [render_sample(strategy, request(images), 4096) for images in (None, IMAGES[:1], IMAGES)]
+    length = sum(len(sample["input_ids"]) for sample in samples)
+    (packed,) = CatDataset(samples, seq_len=length, pad_to_multiple_of=length)
+    batch = system_one_collate([packed])
+    assert batch["mm_kwargs"]["image_grid_thw"].tolist() == [[1, 4, 6], [1, 4, 6], [1, 8, 4]]
+    for key, value in batch["mm_kwargs"].items():
+        assert torch.equal(value, torch.cat([sample["mm_kwargs"][key] for sample in samples[1:]]))
+    is_image = batch["input_ids"] == tiny_config().image_token_id
+    assert torch.equal(batch["mm_token_type_ids"], is_image.long())
 
 
 def test_a_tokenizer_with_another_image_token_is_refused(processor):

@@ -257,7 +257,7 @@ class ClefFlashStrategy(SystemOneStrategy):
 
     def render_request(self, request: record.SystemOneRequest, max_tokens: int) -> RenderedRequest | None:
         """vLLM's prompt, with the state cut to fit ``MAX_LENGTH`` tokens as vLLM cuts it. A request vLLM refuses is
-        skipped. Not bounded by ``max_tokens``: a longer rendering is skipped, and only a kept one's cut is logged."""
+        skipped. Not bounded by ``max_tokens``: a longer rendering is skipped, and its cut is not logged."""
         try:
             questions = parse_questions(request.questions, self.limits())
             prefix, mm_kwargs = self._render_images(request.images) if request.images else (self.prefix, None)

@@ -48,8 +48,9 @@ def tokenizer(merges: tuple[tuple[str, str], ...] = ()) -> PreTrainedTokenizerFa
     return tokens
 
 
-def tiny_config() -> Qwen3_5Config:
-    vision_start, vision_end, image, video = tokenizer().convert_tokens_to_ids(VISION_TOKENS)
+def tiny_config(merges: tuple[tuple[str, str], ...] = ()) -> Qwen3_5Config:
+    """``merges`` is the tokenizer's, as they move the ids of its vision tokens."""
+    vision_start, vision_end, image, video = tokenizer(merges).convert_tokens_to_ids(VISION_TOKENS)
     text_config = Qwen3_5TextConfig(
         vocab_size=VOCAB,
         hidden_size=HIDDEN,
@@ -118,11 +119,11 @@ def write_processor(directory: Path) -> None:
     tokenizer().save_pretrained(directory)
 
 
-def write_backbone(directory: Path) -> dict[str, torch.Tensor]:
+def write_backbone(directory: Path, merges: tuple[tuple[str, str], ...] = ()) -> dict[str, torch.Tensor]:
     """A stock Qwen3.5 config.json with an untied LM head, and the backbone (language model, vision encoder and LM
     head, no MTP weights) in shards with an index. Returns the weights as stored."""
     directory.mkdir(parents=True, exist_ok=True)
-    config = tiny_config()
+    config = tiny_config(merges)
     config.save_pretrained(directory)
     torch.manual_seed(0)
     model = hf_modeling.Qwen3_5ForConditionalGeneration(hf_configuration.Qwen3_5Config(**config.to_dict()))
