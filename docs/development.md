@@ -165,18 +165,20 @@ VLM training (any run with `[model.vlm]` set, SFT or RL) is custom-implementatio
 
 ## Selecting a Model Class by an Extra Config File
 
-Some releases ship a family's stock `config.json` plus an extra JSON file next to it, which makes the inference server load them as another model class. To train such a release with its own class, subclass the family's PrimeRL class and set:
+Some releases ship a family's stock `config.json` plus an extra JSON file next to it, which makes the inference server load them as another model class. Others carry a key in the stock `config.json` that the family's config class does not define, to the same effect. To train such a release with its own class, subclass the family's PrimeRL class and set:
 
 - `extra_config_file` and `extra_config_attr`: the file's name and the config attribute that holds its content, as the inference server names them.
+- `extra_config_key`, in place of those two, for a class selected by a key: the key's name. The config already holds its value under that name.
 - `stock_model_type` and `stock_architecture`: the `model_type` and only architecture of the `config.json` it extends.
 - `export_files` (optional): `{state-dict prefix: file name}` for weights the export writes to one file outside `model.safetensors.index.json`, without their prefix. Loading adds the prefix back.
 
 Add the class to `_SELECTED_BY_EXTRA_CONFIG` (`models/__init__.py`). prime-rl then:
 
 - builds it for a checkpoint whose `config.json` has that model type, exactly that architecture and the file next to it, with the file's content on the config under `extra_config_attr` (for a Hub model whose weights are cached, the cache alone decides);
+- for a class selected by a key, builds it when the key's value is anything but null, and leaves checking the value to the class. One class selected by a file and one selected by a key may extend the same stock `config.json`: the file selects first, as in vLLM;
 - keeps `architectures` stock, so code that needs the model's architecture name uses `type(model).__name__`;
-- writes the file next to the stock `config.json` in checkpoint step directories and in `tools/convert_dcp_to_bf16.py` exports, while the FP8 tools refuse a class with `export_files`;
+- writes the file next to the stock `config.json` in checkpoint step directories and in `tools/convert_dcp_to_bf16.py` exports, while the FP8 tools refuse a class with `export_files`. A key needs no file: step directories and exports keep it in `config.json`;
 - leaves a release that lacks a tensor the class keeps, or names its weights otherwise, to the class's `is_hf_state_dict`, `is_prime_state_dict` and `convert_to_prime`, which only `setup_model` runs;
 - refuses it in RL training, whose weight transfer to the inference server converts weights with the family's class rather than the selected one.
 
-`tests/unit/train/models/extra_config_stub.py` is a minimal example, and Clef-Flash (`src/prime_rl/trainer/models/qwen3_5/modeling_clef_flash.py`) a full one.
+`tests/unit/train/models/extra_config_stub.py` has a minimal example of each, and Clef-Flash (`src/prime_rl/trainer/models/qwen3_5/modeling_clef_flash.py`) is a full one selected by a file. `Qwen3_5ForSlotDecision` (`src/prime_rl/trainer/models/qwen3_5/modeling_qwen3_5_slot.py`) is selected by a key: vLLM's `main` serves a Qwen3.5 checkpoint whose `config.json` has `modeling_overrides`, such as `baselabs/mammoth-1`, under that name. The class adds no weights, and its `__init__` refuses the overrides that vLLM refuses to serve; `get_n_slots(model.config)` in the same file gives the number of slot labels they declare.
