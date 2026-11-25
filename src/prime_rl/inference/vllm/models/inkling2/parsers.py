@@ -55,6 +55,22 @@ _FRAMING = (
 )
 
 _FRAMING_PATTERN = re.compile("(" + "|".join(map(re.escape, _FRAMING)) + ")")
+_TOOL_CALL_MARKERS = (INVOKE_TOOL_JSON, INVOKE_TOOL_TEXT)
+
+
+def _open_block(text: str) -> tuple[str | None, str]:
+    """The block left open at the end of ``text``: its content marker, or ``MODEL_TOKEN`` while only
+    its header is written, with the header text; ``(None, "")`` between blocks."""
+    start = text.rfind(MODEL_TOKEN)
+    if start < 0:
+        return None, ""
+    block = text[start + len(MODEL_TOKEN) :]
+    marker = _FRAMING_PATTERN.search(block)
+    if marker is None:
+        return MODEL_TOKEN, block
+    if _FRAMING_PATTERN.search(block, marker.end()) is not None:
+        return None, ""
+    return marker.group(), block[: marker.start()]
 
 
 def _clean(text: str) -> str:
@@ -79,6 +95,18 @@ def _clean_content(text: str | None) -> str | None:
 class Inkling2ReasoningParser(BaseThinkingReasoningParser):
     """Thinking block between ``<|content_thinking|>`` and ``<|end_message|>``."""
 
+    # Without a tool parser, vLLM streams the text after the reasoning as is; this parser then
+    # streams every block, so the content comes without its framing.
+    opens_reasoning_in_content = True
+
+    def __init__(self, tokenizer, *args, **kwargs):
+        super().__init__(tokenizer, *args, **kwargs)
+        self._other_role_ids = {
+            token_id
+            for token, token_id in self.vocab.items()
+            if token.startswith("<|message_") and token != MODEL_TOKEN
+        }
+
     @property
     def start_token(self) -> str:
         return CONTENT_THINKING
@@ -86,6 +114,13 @@ class Inkling2ReasoningParser(BaseThinkingReasoningParser):
     @property
     def end_token(self) -> str:
         return END_MESSAGE
+
+    def is_reasoning_end(self, input_ids: Sequence[int]) -> bool:
+        # `<|end_message|>` closes every message, and a prompt ends with the one of its last message.
+        # Reasoning has only ended when the model turn being continued holds a closed thinking block.
+        turn_start = max((i for i, token_id in enumerate(input_ids) if token_id in self._other_role_ids), default=-1)
+        turn = input_ids[turn_start + 1 :]
+        return self.start_token_id in turn and super().is_reasoning_end(turn)
 
     def is_reasoning_end_streaming(self, input_ids: Sequence[int], delta_ids: Iterable[int]) -> bool:
         content_markers = (CONTENT_TEXT, CONTENT_TOOL_ERROR, INVOKE_TOOL_JSON, INVOKE_TOOL_TEXT)
@@ -95,14 +130,35 @@ class Inkling2ReasoningParser(BaseThinkingReasoningParser):
     def extract_reasoning_streaming(
         self, previous_text, current_text, delta_text, previous_token_ids, current_token_ids, delta_token_ids
     ) -> DeltaMessage | None:
-        if current_text.startswith(MODEL_TOKEN) and self.start_token not in current_text:
-            # Keep the model header (including a tool's name) until its block kind is known.
-            if self.is_reasoning_end_streaming(current_token_ids, delta_token_ids):
-                return DeltaMessage(content=current_text)
+        kind, header = _open_block(previous_text)
+        reasoning: list[str] = []
+        content: list[str] = []
+        # Each framing marker is a dedicated token. A vLLM delta may contain several blocks.
+        for part in _FRAMING_PATTERN.split(delta_text):
+            if not part:
+                continue
+            if part == MODEL_TOKEN:
+                kind, header = MODEL_TOKEN, ""
+            elif part in (END_MESSAGE, END_SAMPLING):
+                if kind in _TOOL_CALL_MARKERS:
+                    content.append(part)
+                kind = None
+            elif part in _TOOL_CALL_MARKERS:
+                # The tool parser reads a call from its whole block: hand it over with its header,
+                # which holds the tool's name.
+                content.append(MODEL_TOKEN + header + part)
+                kind = part
+            elif part in (CONTENT_TEXT, CONTENT_TOOL_ERROR, CONTENT_THINKING):
+                kind = part
+            elif kind == CONTENT_THINKING:
+                reasoning.append(part)
+            elif kind == MODEL_TOKEN:
+                header += part
+            else:
+                content.append(part)
+        if not reasoning and not content:
             return None
-        return super().extract_reasoning_streaming(
-            previous_text, current_text, delta_text, previous_token_ids, current_token_ids, delta_token_ids
-        )
+        return DeltaMessage(reasoning="".join(reasoning) or None, content="".join(content) or None)
 
     def extract_reasoning(
         self,
