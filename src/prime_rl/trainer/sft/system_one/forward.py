@@ -21,6 +21,10 @@ def decision_forward(
     """The micro-batch's decision loss, computed inside the model's forward on ``device``."""
     input_ids = micro_batch["input_ids"].to(device, non_blocking=True)
     prefix_lens = micro_batch["prefix_lens"]
+    mm_kwargs, mm_token_type_ids = micro_batch["mm_kwargs"], micro_batch["mm_token_type_ids"]
+    if mm_kwargs is not None:
+        mm_kwargs = {key: value.to(device, non_blocking=True) for key, value in mm_kwargs.items()}
+        mm_token_type_ids = mm_token_type_ids.to(device, non_blocking=True)
     # Bound in a partial, so FSDP does not cast the float32 targets to bf16 as it does forward inputs
     loss_fn = partial(
         decision_loss,
@@ -35,6 +39,8 @@ def decision_forward(
         input_ids,
         micro_batch["position_ids"].to(device, non_blocking=True),
         seq_lens=micro_batch["seq_lens"].to(device, non_blocking=True),
+        mm_kwargs=mm_kwargs,
+        mm_token_type_ids=mm_token_type_ids,
         hidden_states_fn=loss_fn,
         prefix_lens=None if prefix_lens is None else prefix_lens.to(device, non_blocking=True),
     )

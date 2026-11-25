@@ -177,6 +177,8 @@ def train(config: SFTConfig | PretrainConfig):
     if system_one:
         strategy_cls = get_system_one_strategy_cls(model_files.config, model_files.selection)
         logger.info(f"Training on System One data with {strategy_cls.__name__}")
+        if config.model.vlm is not None and "image" not in strategy_cls.modalities:
+            raise ValueError(f"[model.vlm] is set, but {strategy_cls.__name__} reads no images. Remove [model.vlm].")
         raw_datasets = load_sft_dataset(config.data)
         record_sources = [(raw_datasets, source) for source in config.data.source]
         if config.val is not None:
@@ -186,7 +188,13 @@ def train(config: SFTConfig | PretrainConfig):
         # Each rank parses its share of every source's records
         for datasets, source in record_sources:
             check_records(
-                datasets[source.name], source.columns, world.rank, world.world_size, source.name, source.split
+                datasets[source.name],
+                source.columns,
+                world.rank,
+                world.world_size,
+                source.name,
+                source.split,
+                takes_images=config.model.vlm is not None,
             )
         logger.info(f"Checked the System One records in {format_time(time.perf_counter() - check_start)}")
 
@@ -195,7 +203,11 @@ def train(config: SFTConfig | PretrainConfig):
     from_checkpoint = config.model.init.type == "pretrained" and is_checkpoint_step_dir(config.model.name)
     loading_from_ckpt_later = checkpoint_step is not None or from_checkpoint
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
-    strategy = strategy_cls(tokenizer, model.config) if strategy_cls is not None else None
+    strategy = None
+    if strategy_cls is not None:
+        # Only a strategy that reads images gets the processor
+        processors = () if config.model.vlm is None else (processor,)
+        strategy = strategy_cls(tokenizer, model.config, *processors)
 
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)

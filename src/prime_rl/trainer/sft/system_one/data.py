@@ -4,13 +4,13 @@ from abc import ABC, abstractmethod
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from itertools import accumulate
-from typing import NotRequired, TypedDict
+from typing import ClassVar, NotRequired, TypedDict
 
 import numpy as np
 from datasets import Dataset, Value
 from jaxtyping import Float, Int
 from torch import Tensor, nn
-from transformers import PretrainedConfig
+from transformers import PretrainedConfig, ProcessorMixin
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.sft import SystemOneColumnsConfig
@@ -34,6 +34,10 @@ class RenderedRequest(TypedDict):
     prefix_lens: NotRequired[list[int]]
     """Per segment, the tokens of its prefix, for a model with two-block attention (see ``forward``); without it,
     attention is the model's own. A strategy gives it for every request or for none."""
+    mm_kwargs: NotRequired[dict[str, Tensor]]
+    """The images' inputs to the model's forward, in prompt order, for a request with images."""
+    mm_token_type_ids: NotRequired[list[int]]
+    """With ``mm_kwargs``: per token, 1 for an image's token, else 0."""
 
 
 @dataclass(frozen=True)
@@ -53,9 +57,17 @@ class SystemOneStrategy(ABC):
     """How a decision model sees a request and how its head reads each question's logits. Registered in
     ``SYSTEM_ONE_STRATEGIES`` by architecture name. Must be deterministic, so a resumed run reads the same samples."""
 
-    def __init__(self, tokenizer: PreTrainedTokenizer, config: PretrainedConfig):
+    modalities: ClassVar[frozenset[str]] = frozenset()
+    """The media ``render_request`` renders with ``[model.vlm]``, in vLLM's names. Only "image" is supported: the models
+    and the packer take no video yet (docs/training.md)."""
+
+    def __init__(
+        self, tokenizer: PreTrainedTokenizer, config: PretrainedConfig, processor: ProcessorMixin | None = None
+    ):
+        """``processor`` is the model's, given with ``[model.vlm]`` to a strategy that reads images."""
         self.tokenizer = tokenizer
         self.config = config
+        self.processor = processor
 
     @abstractmethod
     def render_request(self, request: SystemOneRequest, max_tokens: int) -> RenderedRequest | None:
@@ -85,7 +97,10 @@ def _find_violation(rendered: RenderedRequest, request: SystemOneRequest, vocab_
     required, optional = RenderedRequest.__required_keys__, RenderedRequest.__optional_keys__
     if not isinstance(rendered, dict) or not required <= set(rendered) <= required | optional:
         got = sorted(rendered) if isinstance(rendered, dict) else type(rendered).__name__
-        return f"expected a dict with input_ids, seq_lens, read_spans and optionally options and prefix_lens, got {got}"
+        return (
+            "expected a dict with input_ids, seq_lens, read_spans and optionally options, prefix_lens, mm_kwargs and "
+            f"mm_token_type_ids, got {got}"
+        )
 
     input_ids, seq_lens, read_spans = rendered["input_ids"], rendered["seq_lens"], rendered["read_spans"]
     for key in ("input_ids", "seq_lens", "read_spans"):
@@ -137,6 +152,16 @@ def _find_violation(rendered: RenderedRequest, request: SystemOneRequest, vocab_
         same_length = isinstance(prefix_lens, list) and len(prefix_lens) == len(seq_lens)
         if not same_length or any(not _is_int(p) or not 0 < p <= s for p, s in zip(prefix_lens, seq_lens)):
             return f"prefix_lens must hold an int from 1 to its length per segment of {seq_lens}, got {prefix_lens!r}"
+
+    if ("mm_kwargs" in rendered) != ("mm_token_type_ids" in rendered):
+        return "mm_kwargs and mm_token_type_ids go together"
+    if ("mm_kwargs" in rendered) != bool(request.images):
+        return f"mm_kwargs must be given for a request with images and only then: it has {len(request.images)}"
+    if "mm_kwargs" in rendered:
+        if any("video" in key for key in rendered["mm_kwargs"]):
+            return f"video inputs are not supported, got {sorted(rendered['mm_kwargs'])}"
+        if len(rendered["mm_token_type_ids"]) != len(input_ids):
+            return f"{len(rendered['mm_token_type_ids'])} mm_token_type_ids for {len(input_ids)} input_ids"
     return None
 
 
@@ -176,10 +201,28 @@ def build_sample(rendered: RenderedRequest, request: SystemOneRequest, targets: 
         "loss_mask": loss_mask,
         # Targets are per question, in sample_data
         "target_ids": np.zeros(num_tokens, dtype=np.int64),
-        "mm_kwargs": None,
-        "mm_token_type_ids": None,
+        "mm_kwargs": rendered.get("mm_kwargs"),
+        "mm_token_type_ids": np.array(rendered["mm_token_type_ids"], dtype=np.int64)
+        if "mm_token_type_ids" in rendered
+        else None,
         "sample_data": sample_data,
     }
+
+
+def has_stray_image_token(rendered: RenderedRequest, image_token_id: int) -> bool:
+    """Whether the rendering has the image token where it has no image, as when a record's text holds it. The model
+    would put an image's features there."""
+    input_ids = np.asarray(rendered["input_ids"])
+    is_image = np.asarray(rendered.get("mm_token_type_ids", np.zeros_like(input_ids))) == 1
+    return bool(((input_ids == image_token_id) & ~is_image).any())
+
+
+def check_images(request: SystemOneRequest, takes_images: bool) -> None:
+    """Raise if the record has images that the run would leave out."""
+    if request.images and not takes_images:
+        raise ValueError(
+            f"record {request.id!r} has images, which need [model.vlm] and a model whose strategy reads images"
+        )
 
 
 def render_sample(
@@ -189,12 +232,16 @@ def render_sample(
     targets: list[list[float] | None] | None = None,
 ) -> Sample | None:
     """The record's sample, or None when the strategy skips it or it is longer than ``seq_len``."""
+    check_images(request, strategy.processor is not None)
     rendered = strategy.render_request(request, seq_len)
     if rendered is None:
         get_logger().debug(f"Skipping record {request.id!r}: the strategy returned None")
         return None
     # Before the length check, so a broken rendering raises instead of being skipped
     check_rendered_request(rendered, request, strategy.config.get_text_config().vocab_size)
+    if strategy.processor is not None and has_stray_image_token(rendered, strategy.config.image_token_id):
+        get_logger().warning(f"Skipping record {request.id!r}: its text holds the model's image token")
+        return None
     if len(rendered["input_ids"]) > seq_len:
         get_logger().warning(
             f"Skipping record {request.id!r}: its rendering has {len(rendered['input_ids'])} tokens, more than "
@@ -208,16 +255,17 @@ def check_columns(dataset: Dataset, columns: SystemOneColumnsConfig) -> None:
     """Raise unless the dataset has the record's columns, as string columns of JSON text."""
     names = dataset.column_names
     # state and questions are required; the other columns only when renamed
-    for field in ("id", "state", "questions", "label", "soft_label"):
+    for field in ("id", "state", "questions", "label", "soft_label", "images"):
         column = getattr(columns, field)
         if (field in ("state", "questions") or column != field) and column not in names:
             raise ValueError(f"data.columns.{field} is {column!r}, but the dataset has only {names}")
-    # A label column that is null in every row has the null type
-    label_fields = [
+    # A column that is null in every row has the null type
+    given = [
         field
-        for field in ("label", "soft_label")
+        for field in ("label", "soft_label", "images")
         if getattr(columns, field) in names and dataset.features[getattr(columns, field)] != Value("null")
     ]
+    label_fields = [field for field in given if field != "images"]
     if not label_fields:
         raise ValueError(
             f"System One data needs a label column, {columns.label!r} (data.columns.label) or "
@@ -225,7 +273,7 @@ def check_columns(dataset: Dataset, columns: SystemOneColumnsConfig) -> None:
             f"has only {names}"
         )
     # Not structs: a struct row gains the other rows' keys as nulls
-    for field in ("state", "questions", *label_fields):
+    for field in ("state", "questions", *given):
         column = getattr(columns, field)
         feature = dataset.features[column]
         if not (isinstance(feature, Value) and feature.dtype in ("string", "large_string", "string_view")):
@@ -242,16 +290,19 @@ def check_records(
     world_size: int = 1,
     source: str | None = None,
     split: str | None = None,
+    takes_images: bool = False,
 ) -> None:
     """Parse every ``world_size``-th row from ``rank`` of the split ``split`` of the source ``source`` once, so that a
-    malformed record stops the run at startup."""
+    malformed record, or one with images when the run does not take them, stops the run at startup."""
     check_columns(dataset, columns)
     rows = dataset.shard(world_size, rank, contiguous=False)
     names = dict.fromkeys([*columns.model_dump().values(), "__index"])
     rows = rows.select_columns([name for name in names if name in rows.column_names])
-    for batch in rows.iter(batch_size=1024):
+    # Few rows at a time, as a row may hold images
+    for batch in rows.iter(batch_size=32):
         for values in zip(*batch.values()):
-            parse_record(dict(zip(batch, values)), columns, source, split)
+            request, _ = parse_record(dict(zip(batch, values)), columns, source, split)
+            check_images(request, takes_images)
 
 
 class SystemOneSource(HFRowSource):

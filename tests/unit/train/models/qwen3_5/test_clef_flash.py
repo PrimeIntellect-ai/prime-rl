@@ -15,6 +15,7 @@ import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
 import torch.multiprocessing as mp
 import torch.nn.functional as F
+from huggingface_hub import hf_hub_download, parse_safetensors_file_metadata
 from safetensors.torch import load_file
 from torch import nn
 from torch.distributed.tensor import DTensor
@@ -22,7 +23,7 @@ from torch.distributed.tensor import DTensor
 import prime_rl.trainer.parallel_dims as parallel_dims_module
 from prime_rl.configs.sft import SystemOneColumnsConfig
 from prime_rl.configs.trainer import ModelConfig
-from prime_rl.trainer.model import forward, load_dcp_from_hf, setup_fsdp
+from prime_rl.trainer.model import forward, get_model, load_dcp_from_hf, setup_fsdp
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.qwen3_5 import clef_joint_schema as batched
 from prime_rl.trainer.models.qwen3_5.clef_joint_schema import MAX_LOGIT_SCALE, NUM_QUESTION_TYPES, RecordSchema
@@ -388,6 +389,22 @@ def test_a_release_loads_as_clef_flash_with_its_lm_head_frozen(tmp_path, monkeyp
         assert torch.equal(state[class_name(name)], tensor.reshape(state[class_name(name)].shape)), name
     assert {name for name, parameter in model.named_parameters() if not parameter.requires_grad} == {"lm_head.weight"}
     assert all(parameter.dtype == torch.bfloat16 for parameter in model.pooler.head.parameters())
+
+
+@pytest.mark.parametrize(("name", "hidden_size"), [("Cloudflare/clef-flash", 4096), ("Cloudflare/clef", 5120)])
+def test_the_published_releases_build_as_the_class(name, hidden_size):
+    """Built on the meta device from the config files on the Hub, with the tensors the release stores."""
+    # First, as a cached weight index without the head's config file would mean a release without a head
+    model = get_model(ModelConfig(name=name, attn="flash_attention_2"))
+    assert type(model) is ClefFlashForJointSchema and model.config.text_config.hidden_size == hidden_size
+
+    index = json.loads(Path(hf_hub_download(name, "model.safetensors.index.json")).read_text())
+    head = parse_safetensors_file_metadata(name, "joint_head.safetensors").tensors
+    state = model.state_dict()
+    assert set(state) == {class_name(tensor) for tensor in [*index["weight_map"], *head]}
+    for tensor, info in head.items():
+        assert state[class_name(tensor)].numel() == math.prod(info.shape), tensor
+        assert list(state[class_name(tensor)].shape) in (info.shape, [1]), tensor
 
 
 @pytest.mark.parametrize(

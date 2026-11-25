@@ -19,6 +19,7 @@ from tests.unit.train.models.extra_config_stub import load_like_the_trainer
 
 HIDDEN = 64
 VOCAB = 288
+VISION_TOKENS = ["<|vision_start|>", "<|vision_end|>", "<|image_pad|>", "<|video_pad|>"]
 JOINT_HEAD_CONFIG = {
     "hidden_size": HIDDEN,
     "width": 32,
@@ -43,10 +44,12 @@ def tokenizer(merges: tuple[tuple[str, str], ...] = ()) -> PreTrainedTokenizerFa
         additional_special_tokens=["<|im_start|>"],
     )
     tokens.add_tokens(["<think>", "</think>"])
+    tokens.add_tokens(VISION_TOKENS, special_tokens=True)
     return tokens
 
 
 def tiny_config() -> Qwen3_5Config:
+    vision_start, vision_end, image, video = tokenizer().convert_tokens_to_ids(VISION_TOKENS)
     text_config = Qwen3_5TextConfig(
         vocab_size=VOCAB,
         hidden_size=HIDDEN,
@@ -71,10 +74,10 @@ def tiny_config() -> Qwen3_5Config:
     return Qwen3_5Config(
         text_config=text_config,
         vision_config=vision_config,
-        image_token_id=280,
-        video_token_id=281,
-        vision_start_token_id=282,
-        vision_end_token_id=283,
+        image_token_id=image,
+        video_token_id=video,
+        vision_start_token_id=vision_start,
+        vision_end_token_id=vision_end,
         tie_word_embeddings=False,
         architectures=["Qwen3_5ForConditionalGeneration"],
     )
@@ -87,6 +90,32 @@ def head_weights() -> dict[str, torch.Tensor]:
     for scalar in SCALARS:
         head[scalar] = torch.randn(())
     return {name: tensor.to(torch.bfloat16) for name, tensor in head.items()}
+
+
+def write_processor(directory: Path) -> None:
+    """A processor of a Clef release's classes, with smaller bounds on an image, and the tokenizer. The video processor
+    is there as Qwen3VLProcessor does not load without one."""
+    processor = {
+        "do_convert_rgb": True,
+        "do_normalize": True,
+        "do_rescale": True,
+        "do_resize": True,
+        "image_mean": [0.5, 0.5, 0.5],
+        "image_std": [0.5, 0.5, 0.5],
+        "merge_size": 2,
+        "patch_size": 16,
+        "resample": 3,
+        "rescale_factor": 1 / 255,
+        "size": {"longest_edge": 65536, "shortest_edge": 1024},
+        "temporal_patch_size": 2,
+    }
+    config = {
+        "image_processor": {**processor, "image_processor_type": "Qwen2VLImageProcessor"},
+        "processor_class": "Qwen3VLProcessor",
+        "video_processor": {**processor, "video_processor_type": "Qwen3VLVideoProcessor"},
+    }
+    (directory / "processor_config.json").write_text(json.dumps(config))
+    tokenizer().save_pretrained(directory)
 
 
 def write_backbone(directory: Path) -> dict[str, torch.Tensor]:
