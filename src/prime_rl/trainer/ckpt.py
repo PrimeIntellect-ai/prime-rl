@@ -16,6 +16,7 @@ import torch
 from torch import nn
 from torch.distributed.checkpoint import FileSystemReader, FileSystemWriter
 from torch.distributed.checkpoint.filesystem import DEFAULT_SUFFIX
+from torch.distributed.checkpoint.metadata import Metadata
 from torch.distributed.checkpoint.planner import SavePlan, SavePlanner, WriteItem
 from torch.distributed.checkpoint.state_dict import (
     get_model_state_dict,
@@ -36,6 +37,7 @@ from prime_rl.configs.shared import ResumeConfig
 from prime_rl.configs.trainer import CheckpointConfig, ModelConfig
 from prime_rl.trainer.data import with_workers
 from prime_rl.trainer.lora import has_lora_layers
+from prime_rl.trainer.model import ExtraConfigSelection, select_by_extra_config
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.conversion_ops import view_mapping
 from prime_rl.trainer.models.fusions import (
@@ -49,6 +51,7 @@ from prime_rl.trainer.utils import DCP_TIMEOUT, empty_pinned, get_dcp_group
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_ckpt_dir, get_step_path, is_ckpt_step_complete
+from prime_rl.utils.weights import get_unexpected_keys
 
 
 @dataclass
@@ -61,12 +64,15 @@ class Progress:
 @dataclass
 class ModelFiles:
     """What a checkpoint step directory holds besides the weights, so that it loads as a model name: the model's
-    config.json, the tokenizer, a VLM's processor and the generation config."""
+    config.json, the tokenizer, a VLM's processor, the generation config and an extra config file that selects its
+    class."""
 
     config: PretrainedConfig
     tokenizer: PreTrainedTokenizerBase
     processor: ProcessorMixin | None
     generation_config: GenerationConfig | None
+    selection: ExtraConfigSelection | None = None
+    """The class an extra config file next to config.json selects, with the file's content, if any."""
 
     def save(self, directory: Path) -> None:
         directory.mkdir(parents=True, exist_ok=True)
@@ -77,6 +83,9 @@ class ModelFiles:
         if self.processor is not None:
             self.processor.save_pretrained(directory)
         self.tokenizer.save_pretrained(directory)
+        if self.selection is not None:
+            path = directory / self.selection.cls.extra_config_file
+            path.write_text(json.dumps(self.selection.content, indent=2) + "\n")
 
 
 MAX_CHECKPOINT_FILE_BYTES = 2 * 1024**3
@@ -131,7 +140,8 @@ def setup_model_files(
 ) -> ModelFiles:
     generation_config = load_generation_config(config.name)
     model_config = AutoConfig.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
-    return ModelFiles(model_config, tokenizer, processor, generation_config)
+    selection = select_by_extra_config(model_config.model_type, model_config.architectures, config.name)
+    return ModelFiles(model_config, tokenizer, processor, generation_config, selection)
 
 
 # Fields of a saved config.json that are metadata, not architecture.
@@ -557,9 +567,11 @@ class CheckpointManager:
         config: CheckpointConfig,
         model_files: ModelFiles,
         resume: ResumeConfig | None = None,
+        check_tensors: bool = True,
     ):
         self.config = config
         self.model_files = model_files
+        self.check_tensors = check_tensors
         self.skip_optimizer = config.skip_optimizer
         self.ckpt_dir = get_ckpt_dir(output_dir)
         self.logger = get_logger()
@@ -679,7 +691,9 @@ class CheckpointManager:
         self.logger.debug(f"Loading training checkpoint from {path}")
         start_time = time.perf_counter()
 
-        _load_app_state(path, model, optimizers, progress, model_only=self.skip_optimizer)
+        _load_app_state(
+            path, model, optimizers, progress, model_only=self.skip_optimizer, check_tensors=self.check_tensors
+        )
 
         # Load the dataloader
         if dataloader is not None:
@@ -705,7 +719,7 @@ class CheckpointManager:
             raise FileNotFoundError(f"No trainer checkpoint at {path}")
         self.logger.info(f"Initializing weights from {path}")
         start_time = time.perf_counter()
-        _load_app_state(path, model, optimizers, progress=None, model_only=True)
+        _load_app_state(path, model, optimizers, progress=None, model_only=True, check_tensors=self.check_tensors)
         self.logger.debug(f"Loaded weights in {format_time(time.perf_counter() - start_time)}")
 
     def load(
@@ -834,16 +848,29 @@ def setup_ckpt_manager(
     ckpt_config: CheckpointConfig | None,
     model_files: ModelFiles,
     resume: ResumeConfig | None = None,
+    check_tensors: bool = True,
 ) -> CheckpointManager:
     """The checkpoint manager always exists: ``resume`` decides whether it loads,
-    ``ckpt`` whether it saves (a resume without ``ckpt`` loads but saves nothing)."""
+    ``ckpt`` whether it saves (a resume without ``ckpt`` loads but saves nothing). With ``check_tensors``, a load
+    refuses a checkpoint with tensors the model lacks."""
     return CheckpointManager(
-        ckpt_output_dir(output_dir, ckpt_config), ckpt_config or CheckpointConfig(), model_files, resume
+        ckpt_output_dir(output_dir, ckpt_config), ckpt_config or CheckpointConfig(), model_files, resume, check_tensors
     )
 
 
 def ckpt_output_dir(output_dir: Path, ckpt_config: CheckpointConfig | None) -> Path:
     return (ckpt_config.output_dir if ckpt_config else None) or output_dir
+
+
+def check_model_holds_checkpoint(path: Path, model: nn.Module, metadata: Metadata | None = None) -> None:
+    """Raise unless ``model`` has every model tensor of the checkpoint at ``path`` (its ``metadata``, read when not
+    given): a load would skip the others."""
+    metadata = metadata or FileSystemReader(path).read_metadata()
+    if unexpected := get_unexpected_keys(metadata, get_model_state_dict(model).keys()):
+        raise ValueError(
+            f"The checkpoint at {path} holds {len(unexpected)} tensors {type(model).__name__} lacks "
+            f"({', '.join(unexpected[:3])})"
+        )
 
 
 # Compat, remove once no run resumes from such a checkpoint. Full offload used to save the BF16 GPU weights as the model
@@ -861,8 +888,12 @@ def _load_app_state(
     progress: Progress | None,
     *,
     model_only: bool,
+    check_tensors: bool,
 ) -> None:
-    saved_keys = None if model_only else set(FileSystemReader(path).read_metadata().state_dict_metadata)
+    metadata = FileSystemReader(path).read_metadata()
+    if check_tensors:
+        check_model_holds_checkpoint(path, model, metadata)
+    saved_keys = None if model_only else set(metadata.state_dict_metadata)
     if saved_keys is not None:
         _check_param_group_count(saved_keys, optimizers)
     app_state = AppState(

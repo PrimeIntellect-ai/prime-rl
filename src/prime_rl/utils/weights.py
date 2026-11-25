@@ -11,6 +11,7 @@ from huggingface_hub import split_torch_state_dict_into_shards
 from safetensors import safe_open
 from safetensors.torch import save_file
 from torch import Tensor, nn
+from torch.distributed.checkpoint.metadata import Metadata
 from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
 from torch.distributed.tensor import DTensor
 from transformers.utils import (
@@ -27,24 +28,50 @@ if TYPE_CHECKING:
     from prime_rl.trainer.models.conversion_ops import ChunkedConvOp
 
 
-def load_state_dict_keys(save_dir: Path) -> list[str]:
-    """Load only the key names from safetensor files without reading tensor data."""
+def get_unexpected_keys(metadata: Metadata, model_keys: Iterable[str]) -> list[str]:
+    """The model tensors of a DCP checkpoint (``metadata``) missing from ``model_keys``, sorted."""
+    stored = {key.removeprefix("app.model.") for key in metadata.state_dict_metadata if key.startswith("app.model.")}
+    return sorted(stored - set(model_keys))
+
+
+def load_state_dict_keys(save_dir: Path, export_files: dict[str, str] | None = None) -> list[str]:
+    """Load only the key names from safetensor files without reading tensor data. Keys of the ``export_files``
+    ({prefix: file name}), stored without their prefix, get it back."""
+    prefixes = {name: prefix for prefix, name in (export_files or {}).items()}
     keys: list[str] = []
     for safetensor_path in save_dir.glob("*.safetensors"):
+        prefix = prefixes.get(safetensor_path.name, "")
         with safe_open(safetensor_path, framework="pt", device="cpu") as f:
-            keys.extend(f.keys())
+            keys.extend(prefix + key for key in f.keys())
     return keys
 
 
-def load_state_dict(save_dir: Path) -> dict[str, Tensor]:
-    """Load a state dict from a local directory with safetensor files."""
+def load_state_dict(save_dir: Path, export_files: dict[str, str] | None = None) -> dict[str, Tensor]:
+    """Load a state dict from a local directory with safetensor files. Keys of the ``export_files`` ({prefix: file
+    name}), stored without their prefix, get it back."""
+    prefixes = {name: prefix for prefix, name in (export_files or {}).items()}
     safetensors_paths = list(save_dir.glob("*.safetensors"))
     state_dict = {}
     for safetensor_path in safetensors_paths:
+        prefix = prefixes.get(safetensor_path.name, "")
         with safe_open(safetensor_path, framework="pt", device="cpu") as f:
             for key in f.keys():
-                state_dict[key] = f.get_tensor(key)
+                state_dict[prefix + key] = f.get_tensor(key)
     return state_dict
+
+
+def name_as_stored(state_dict: dict[str, Tensor], export_files: dict[str, str], save_dir: Path) -> dict[str, Tensor]:
+    """``state_dict`` with the tensors of the ``export_files`` ({prefix: file name}) in ``save_dir`` under their stored
+    names, without the prefix."""
+    stored = dict(state_dict)
+    for prefix, name in export_files.items():
+        if not (save_dir / name).is_file():
+            continue
+        for key in [key for key in stored if key.startswith(prefix)]:
+            if key.removeprefix(prefix) in stored:
+                raise ValueError(f"{name} stores {key} as {key.removeprefix(prefix)}, the name of another tensor")
+            stored[key.removeprefix(prefix)] = stored.pop(key)
+    return stored
 
 
 def save_state_dict(

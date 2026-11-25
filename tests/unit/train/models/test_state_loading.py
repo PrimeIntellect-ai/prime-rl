@@ -38,7 +38,9 @@ def test_load_dcp_from_hf_keeps_checkpoint_selection_bias(model, tmp_path, monke
         buffer.copy_(expected.to(device=buffer.device, dtype=buffer.dtype))
 
     monkeypatch.setattr("prime_rl.trainer.model.dcp_load", fake_dcp_load)
-    monkeypatch.setattr("prime_rl.trainer.model.load_state_dict_keys", lambda path: model.state_dict().keys())
+    monkeypatch.setattr(
+        "prime_rl.trainer.model.load_state_dict_keys", lambda path, export_files: model.state_dict().keys()
+    )
     monkeypatch.setattr("torch.distributed.barrier", lambda *args, **kwargs: None)
     monkeypatch.setattr("prime_rl.trainer.model.wait_for_master", lambda *args, **kwargs: None)
     monkeypatch.setattr("prime_rl.trainer.model.get_dcp_group", lambda: None)
