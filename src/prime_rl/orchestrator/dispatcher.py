@@ -760,13 +760,8 @@ class Dispatcher:
             return
         episode: EpisodeHead = task.result()
 
+        # The env worker failed timed-out train traces before building the head and the record.
         for trace in episode.traces:
-            if trace.is_timeout and not trace.has_error and meta.kind == "train":
-                # Training keeps a timed-out rollout out of the batch: an error,
-                # like any other failure. Eval keeps it as a scored outcome.
-                trace.errors.append(vf.Error(type="Timeout", message=f"Trace stopped by {trace.stop_condition}"))
-                trace.ok = False
-                episode.ok = False
             if trace.is_dropped:
                 get_logger().info(f"Trace dropped in group {meta.group_id} ({meta.env_name}) — {trace.dropped}")
             if trace.has_error:
