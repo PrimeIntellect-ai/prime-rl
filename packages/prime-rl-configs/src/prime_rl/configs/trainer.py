@@ -741,6 +741,9 @@ class DataLoaderConfig(BaseConfig):
     num_workers: int = Field(1, ge=0)
     """Number of background threads that prepare micro batches ahead of the training loop, analogous to torch DataLoader's ``num_workers`` but with threads instead of processes. 0 prepares them on the main thread."""
 
+    pad_to_seq_len: bool = False
+    """Pad every micro batch to ``model.seq_len`` instead of to a multiple of the context-parallel degree. Rows then have one static shape, which avoids recompilation on dynamic sequence lengths (torch.compile, DeepGEMM JIT kernels, ...) at the cost of extra padding."""
+
 
 class BaseTrainerConfig(BaseConfig):
     """Fields and validators shared by the RL trainer (``TrainerConfig``) and the SFT and pretraining trainer

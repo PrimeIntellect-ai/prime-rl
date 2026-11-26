@@ -50,7 +50,6 @@ from prime_rl.control.types import ConfigUpdate, InvalidConfigError, Reconfigura
 from prime_rl.env.sandbox_owners import reap_previous_sandbox_pools
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import log_arrival, stamp_batch
-from prime_rl.orchestrator.batch import BatchPacker
 from prime_rl.orchestrator.ckpt import (
     ROLLOUTS_DIR,
     build_state,
@@ -98,7 +97,7 @@ from prime_rl.orchestrator.utils import (
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
-from prime_rl.transports.batch import setup_batch_sender
+from prime_rl.transports.batch import StepBatch, setup_batch_sender
 from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.config import dump_resolved_config
@@ -148,7 +147,6 @@ class Orchestrator:
     clients: InferenceClient | None
     admin_plane: AdminPlane | None
     sender: BatchSender | None
-    packer: BatchPacker
     train_envs: TrainEnvs
     train_source: TrainSource
     train_sink: TrainSink
@@ -336,11 +334,8 @@ class Orchestrator:
             get_logger().info("Starting from scratch")
 
         # Transports are local setup — initialize them before the env and inference waits.
-        self.packer = BatchPacker(config)
-        get_logger().info(f"Initializing micro batch sender ({config.rollout_transport})")
-        self.sender = setup_batch_sender(
-            config.output_dir, config.num_train_workers, self.progress.step, config.rollout_transport
-        )
+        get_logger().info(f"Initializing batch sender ({config.rollout_transport})")
+        self.sender = setup_batch_sender(config.output_dir, self.progress.step, config.rollout_transport)
 
         # Wait phase: envs, then inference, then the trainer's startup broadcast —
         # the last things before the main loop starts.
@@ -819,15 +814,12 @@ class Orchestrator:
         annotations = stamp_batch(effective_episodes, step)
         await monitors.log_annotations(annotations)
 
-        pack_start_time = time.perf_counter()
-        micro_batch_grid = await asyncio.to_thread(
-            lambda: self.packer.pack(
-                batch.samples,
-                trained_version=step - 1,
-                min_version=min_fresh_version(step, config.max_staleness),
-            )
+        # Every trainer rank plans the step's micro batches from the same samples.
+        step_batch = StepBatch(
+            samples=batch.samples,
+            trained_version=step - 1,
+            min_version=min_fresh_version(step, config.max_staleness),
         )
-        pack_time = time.perf_counter() - pack_start_time
         # Sending blocks until every trainer rank requested the batch, so the wait is the time
         # the orchestrator spent waiting on the trainer for the next policy.
         send_start_time = time.perf_counter()
@@ -838,7 +830,7 @@ class Orchestrator:
         self.unlock_sink()
         try:
             self.unsent_rollouts = batch.cohort.num_traces
-            send_batch_time = await self.sender.send(micro_batch_grid)
+            send_batch_time = await self.sender.send(step_batch)
             self.unsent_rollouts = 0
             shipped_at = time.perf_counter()
             # The trainer's first step in a process includes its warmup, so its pace counts from the second one
@@ -876,7 +868,6 @@ class Orchestrator:
                 "progress/input_tokens": num_input,
                 "progress/output_tokens": num_output,
                 "time/step": step_time,
-                "time/pack": pack_time,
                 "time/save_ckpt": save_ckpt_time,
                 "time/send_batch": send_batch_time,
                 "step": step,
@@ -936,7 +927,7 @@ class Orchestrator:
         # process shares with a checkpoint writer.
         if self.gc is not None and (self.ckpt_task is None or self.ckpt_task.done()):
             self.gc.run(step)
-        payload = (batch.samples, batch.cohort.episodes, effective_episodes, *micro_batch_grid)
+        payload = (batch.samples, batch.cohort.episodes, effective_episodes)
         self.release_future = asyncio.get_running_loop().run_in_executor(None, release_and_trim, *payload)
 
     async def start_draining(self, reason: str) -> None:
@@ -1549,7 +1540,7 @@ class Orchestrator:
                 self.ckpt_task = None
 
         async def teardown() -> None:
-            get_logger().debug("Closing micro batch sender")
+            get_logger().debug("Closing batch sender")
             self.sender.close()
             await finish_ckpt()
             if self.release_future is not None:

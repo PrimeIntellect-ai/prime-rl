@@ -27,10 +27,9 @@ from prime_rl.configs.trainer import (
     NVFP4MoEComputeConfig,
     TokenizerConfig,
     TrainerConfig,
-    rl_micro_batch_multiple,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
-from prime_rl.utils.validation import check_derived, propagate_shared_fields
+from prime_rl.utils.validation import propagate_shared_fields
 
 
 class SharedLogConfig(BaseConfig):
@@ -716,19 +715,8 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_deployment(self):
-        pad_to_multiple_of = rl_micro_batch_multiple(self.trainer.model)
-        check_derived(self.orchestrator, "pad_to_multiple_of", pad_to_multiple_of, "orchestrator.pad_to_multiple_of")
-        num_train_workers = self.orchestrator.num_train_workers
         env_worker_pool_replicas = self.orchestrator.env_worker_pool_replicas
         if self.deployment.type == "single_node":  # single-node
-            # set num_train_workers to the number of data replicas
-            non_data_parallel_size = self.trainer.model.cp
-            if self.deployment.num_train_gpus > 1:
-                num_train_workers = self.deployment.num_train_gpus // non_data_parallel_size
-                check_derived(
-                    self.orchestrator, "num_train_workers", num_train_workers, "orchestrator.num_train_workers"
-                )
-
             # fill up inference capacity with dp ranks
             if self.inference is not None:
                 num_infer_gpus = self.deployment.num_infer_gpus
@@ -750,8 +738,6 @@ class RLConfig(BaseConfig):
                     self.orchestrator.weight_broadcast.inference_world_size = world_size
 
         elif self.deployment.type == "multi_node":  # multi-node
-            num_train_workers = self.deployment.num_train_nodes * self.deployment.gpus_per_node // self.trainer.model.cp
-            check_derived(self.orchestrator, "num_train_workers", num_train_workers, "orchestrator.num_train_workers")
             if self.deployment.total_infer_nodes > 0:
                 env_worker_pool_replicas = self.deployment.total_infer_nodes
 
@@ -823,13 +809,7 @@ class RLConfig(BaseConfig):
                 assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
                 self.orchestrator.weight_broadcast.inference_world_size = total_infer_workers
 
-        self.orchestrator = self.orchestrator.model_copy(
-            update={
-                "pad_to_multiple_of": pad_to_multiple_of,
-                "num_train_workers": num_train_workers,
-                "env_worker_pool_replicas": env_worker_pool_replicas,
-            }
-        )
+        self.orchestrator = self.orchestrator.model_copy(update={"env_worker_pool_replicas": env_worker_pool_replicas})
         return self
 
     @model_validator(mode="after")

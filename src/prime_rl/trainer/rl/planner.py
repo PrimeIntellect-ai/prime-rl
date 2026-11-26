@@ -1,10 +1,13 @@
-"""Packing a step's samples into per-rank micro batches, by reference.
+"""Planning a step's micro batches on every trainer rank.
 
-The orchestrator never holds a sample's tokens: it packs ``SampleRef``s by token count into
-``MicroBatchPlan``s, and each trainer rank builds its micro batches from the plans
-(``prime_rl.transports.batch.materialize``).
+The orchestrator ships a step's samples by reference (``StepBatch``). Every trainer rank plans
+the micro batches of all data ranks from them, packing ``SampleRef``s by token count into rows
+of at most ``seq_len`` tokens and balancing the rows' training FLOPs across the data ranks. The
+planning is deterministic, so every rank plans the same; each builds its own data rank's micro
+batches (``prime_rl.transports.batch.materialize``).
 """
 
+import hashlib
 import heapq
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -12,10 +15,6 @@ from dataclasses import dataclass, field
 import msgspec
 import numpy as np
 
-from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.configs.trainer import ModelConfig
-from prime_rl.trainer.model import get_model
-from prime_rl.trainer.perf import FlopCounter
 from prime_rl.transports.batch.types import MicroBatchPlan, SampleRef
 
 
@@ -85,52 +84,78 @@ def _partition_loads(weights: Sequence[int], partitions: list[list[int]]) -> lis
     return [sum(weights[i] for i in partition) for partition in partitions]
 
 
+_NO_OTHER_MAX, _NO_OTHER_MIN = np.iinfo(np.int64).min, np.iinfo(np.int64).max
+
+
+def _others_extreme(
+    relative: np.ndarray, ranked: np.ndarray, rank: int, partners: np.ndarray, empty: int
+) -> np.ndarray:
+    """For each partner, the first load in ``ranked`` order of a rank other than ``rank`` and that
+    partner (``empty`` when there is none): the max (or min) over the ranks a swap leaves alone."""
+    leading = ranked[:3]
+    allowed = (leading != rank) & (leading[None, :] != partners[:, None])
+    first = allowed.argmax(axis=1)
+    return np.where(allowed.any(axis=1), relative[leading[first]], empty)
+
+
 def _refine_by_swapping(weights: Sequence[int], partitions: list[list[int]]) -> list[list[int]]:
     """Apply the best pairwise swap until none lowers ``(max load, max - min load)``.
 
-    Ties go to the first swap in (rank pair, left position, right position) order.
-    Loads are taken relative to the current max load, so the int64 math stays within
-    the spread plus the largest weight even when total FLOPs exceed int64.
+    Ties go to the first swap in (rank pair, left position, right position) order. A swap
+    between two ranks that are neither at the max nor at the min load leaves both, so each
+    round scores only those ranks' swaps, with every other rank at once. Loads are taken
+    relative to the current max load, so the int64 math stays within the spread plus the
+    largest weight even when total FLOPs exceed int64.
     """
-    partitions = [list(partition) for partition in partitions]
-    loads = _partition_loads(weights, partitions)
-    item_weights = np.asarray(weights, dtype=np.int64)
     num_partitions = len(partitions)
-    no_other_max, no_other_min = np.iinfo(np.int64).min, np.iinfo(np.int64).max
+    if num_partitions < 2:
+        return [list(partition) for partition in partitions]
+    assert len({len(partition) for partition in partitions}) == 1, "Partitions must be the same size"
+    items = np.array(partitions, dtype=np.int64)
+    item_weights = np.asarray(weights, dtype=np.int64)[items]
+    loads = _partition_loads(weights, partitions)
 
     while True:
-        top = max(loads)
+        top, bottom = max(loads), min(loads)
         relative = np.array([load - top for load in loads], dtype=np.int64)
-        best_score = (0, top - min(loads))
-        best_swap = None
-        for left_rank in range(num_partitions):
-            for right_rank in range(left_rank + 1, num_partitions):
-                others = np.delete(relative, [left_rank, right_rank])
-                other_max = others.max() if len(others) else no_other_max
-                other_min = others.min() if len(others) else no_other_min
-                left_weights = item_weights[partitions[left_rank]][:, None]
-                right_weights = item_weights[partitions[right_rank]][None, :]
-                new_left = relative[left_rank] - left_weights + right_weights
-                new_right = relative[right_rank] - right_weights + left_weights
-                new_max = np.maximum(np.maximum(new_left, new_right), other_max)
-                lowest_max = int(new_max.min())
-                if lowest_max > best_score[0]:
-                    continue
-                new_min = np.minimum(np.minimum(new_left, new_right), other_min)
-                spread = np.where(new_max == lowest_max, new_max - new_min, no_other_min)
-                flat = int(spread.argmin())
-                score = (lowest_max, int(spread.flat[flat]))
-                if score < best_score:
-                    best_score = score
-                    best_swap = (left_rank, right_rank, *divmod(flat, right_weights.shape[1]))
-        if best_swap is None:
-            return partitions
+        ascending = np.argsort(relative, kind="stable")
+        descending = ascending[::-1]
+        # (new max, spread, rank pair, left position, right position) of the best swap so far
+        best: tuple[int, ...] | None = None
+        for rank in (rank for rank in range(num_partitions) if loads[rank] in (top, bottom)):
+            partners = np.delete(np.arange(num_partitions), rank)
+            other_max = _others_extreme(relative, descending, rank, partners, _NO_OTHER_MAX)[:, None, None]
+            other_min = _others_extreme(relative, ascending, rank, partners, _NO_OTHER_MIN)[:, None, None]
+            # [partner, position in rank, position in partner]
+            own = item_weights[rank][None, :, None]
+            theirs = item_weights[partners][:, None, :]
+            new_own = relative[rank] - own + theirs
+            new_theirs = relative[partners][:, None, None] - theirs + own
+            new_max = np.maximum(np.maximum(new_own, new_theirs), other_max)
+            lowest_max = new_max.min()
+            tied = new_max == lowest_max
+            spread = np.where(tied, new_max - np.minimum(np.minimum(new_own, new_theirs), other_min), _NO_OTHER_MIN)
+            least_spread = spread.min()
+            for partner_index, own_pos, their_pos in np.argwhere(spread == least_spread).tolist():
+                partner = int(partners[partner_index])
+                if rank < partner:
+                    swap = (int(lowest_max), int(least_spread), rank, partner, own_pos, their_pos)
+                else:
+                    swap = (int(lowest_max), int(least_spread), partner, rank, their_pos, own_pos)
+                if best is None or swap < best:
+                    best = swap
+        if best is None or best[:2] >= (0, top - bottom):
+            return items.tolist()
 
-        left_rank, right_rank, left_pos, right_pos = best_swap
-        left_idx, right_idx = partitions[left_rank][left_pos], partitions[right_rank][right_pos]
-        partitions[left_rank][left_pos], partitions[right_rank][right_pos] = right_idx, left_idx
-        loads[left_rank] += weights[right_idx] - weights[left_idx]
-        loads[right_rank] += weights[left_idx] - weights[right_idx]
+        _, _, left_rank, right_rank, left_pos, right_pos = best
+        left_weight, right_weight = int(item_weights[left_rank, left_pos]), int(item_weights[right_rank, right_pos])
+        items[left_rank, left_pos], items[right_rank, right_pos] = (
+            items[right_rank, right_pos],
+            items[left_rank, left_pos],
+        )
+        item_weights[left_rank, left_pos], item_weights[right_rank, right_pos] = right_weight, left_weight
+        loads[left_rank] += right_weight - left_weight
+        loads[right_rank] += left_weight - right_weight
 
 
 def balanced_partition(weights: Sequence[int], num_partitions: int) -> list[list[int]]:
@@ -151,14 +176,6 @@ def _has_routing(ref: SampleRef) -> bool:
 class _Bin:
     samples: list[SampleRef] = field(default_factory=list)
     length: int = 0
-
-    def can_add(self, sample: SampleRef, max_seq_len: int) -> bool:
-        # Loss routing is per token (component weight streams), so samples of
-        # different loss types and raw-image refs pack together freely.
-        if self.length + sample.num_tokens > max_seq_len:
-            return False
-        # Routing replays per micro batch: every sample in it has routing rows or none does.
-        return _has_routing(self.samples[0]) == _has_routing(sample)
 
     def add(self, sample: SampleRef) -> None:
         self.samples.append(sample)
@@ -201,25 +218,36 @@ def _expand_bins_by_splitting(bins: list[_Bin], target_count: int, bin_cost: Cal
 def pack_samples(
     samples: list[SampleRef],
     max_seq_len: int,
-    num_train_workers: int,
+    num_data_ranks: int,
     bin_cost: Callable[[Sequence[int]], int],
 ) -> list[_Bin]:
     """Pack samples into micro batches with First Fit Decreasing, minimizing padding while never
     truncating; with several data ranks, split the heaviest bins until every rank gets one.
     Samples of any temperature, and multimodal samples with text ones, pack together."""
     bins: list[_Bin] = []
+    # Loss routing is per token (component weight streams), so samples of different loss types
+    # and raw-image refs pack together freely. Routing replays per micro batch: every sample in
+    # a bin has routing rows or none does, so a sample's first fit is the first bin of its
+    # routing class with room.
+    classes: dict[bool, list[_Bin]] = {False: [], True: []}
+    room = {routing: np.zeros(len(samples), dtype=np.int64) for routing in classes}
     for sample in sorted(samples, key=lambda sample: -sample.num_tokens):
-        for bin_content in bins:
-            if bin_content.can_add(sample, max_seq_len):
-                bin_content.add(sample)
-                break
+        routing = _has_routing(sample)
+        candidates = classes[routing]
+        fits = room[routing][: len(candidates)] >= sample.num_tokens
+        first = int(fits.argmax()) if len(candidates) else 0
+        if len(candidates) and fits[first]:
+            candidates[first].add(sample)
+            room[routing][first] -= sample.num_tokens
         else:
-            bins.append(_Bin([sample], sample.num_tokens))
+            room[routing][len(candidates)] = max_seq_len - sample.num_tokens
+            candidates.append(_Bin([sample], sample.num_tokens))
+            bins.append(candidates[-1])
 
-    if num_train_workers > 1:
+    if num_data_ranks > 1:
         target_count = max(
-            ((len(bins) + num_train_workers - 1) // num_train_workers) * num_train_workers,
-            num_train_workers,
+            ((len(bins) + num_data_ranks - 1) // num_data_ranks) * num_data_ranks,
+            num_data_ranks,
         )
         _expand_bins_by_splitting(bins, target_count, bin_cost)
     return bins
@@ -234,23 +262,23 @@ def sequence_lengths(plan: MicroBatchPlan) -> list[int]:
 
 def _distribute_group(
     group: list[MicroBatchPlan],
-    num_train_workers: int,
+    num_data_ranks: int,
     bin_cost: Callable[[Sequence[int]], int],
 ) -> list[list[MicroBatchPlan]]:
-    # Callers pad each group to a positive multiple of num_train_workers first.
-    assert len(group) % num_train_workers == 0, "Number of micro batches is not divisible by number of data ranks"
+    # Callers pad each group to a positive multiple of num_data_ranks first.
+    assert len(group) % num_data_ranks == 0, "Number of micro batches is not divisible by number of data ranks"
     if not group:
-        return [[] for _ in range(num_train_workers)]
+        return [[] for _ in range(num_data_ranks)]
 
     weights = [bin_cost(sequence_lengths(plan)) for plan in group]
-    partitions = balanced_partition(weights, num_train_workers)
+    partitions = balanced_partition(weights, num_data_ranks)
     return [[group[i] for i in partition] for partition in partitions]
 
 
-def _pad_group_for_distribution(group: list[MicroBatchPlan], num_train_workers: int) -> list[MicroBatchPlan]:
+def _pad_group_for_distribution(group: list[MicroBatchPlan], num_data_ranks: int) -> list[MicroBatchPlan]:
     """Pad a group of micro batches with zero-loss copies of its first so its length is
-    divisible by num_train_workers."""
-    num_padding = -len(group) % num_train_workers
+    divisible by num_data_ranks."""
+    num_padding = -len(group) % num_data_ranks
     if num_padding > 0 and len(group) > 0:
         dummy = msgspec.structs.replace(group[0], dummy=True)
         group.extend([dummy] * num_padding)
@@ -260,7 +288,7 @@ def _pad_group_for_distribution(group: list[MicroBatchPlan], num_train_workers: 
 def prepare_batch(
     samples: list[SampleRef],
     seq_len: int,
-    num_train_workers: int,
+    num_data_ranks: int,
     bin_cost: Callable[[Sequence[int]], int],
     *,
     trained_version: int,
@@ -276,7 +304,7 @@ def prepare_batch(
     and distribute them so that at each step index, all ranks see the same modality.
     """
     plans = []
-    for bin_content in pack_samples(samples, seq_len, num_train_workers, bin_cost):
+    for bin_content in pack_samples(samples, seq_len, num_data_ranks, bin_cost):
         padding = (pad_to_multiple_of - bin_content.length % pad_to_multiple_of) % pad_to_multiple_of
         plans.append(
             MicroBatchPlan(
@@ -291,38 +319,19 @@ def prepare_batch(
     mm_plans = [plan for plan in plans if any(sample.images for sample in plan.samples)]
     text_plans = [plan for plan in plans if not any(sample.images for sample in plan.samples)]
 
-    # Pad each group independently so its count is divisible by num_train_workers
-    mm_plans = _pad_group_for_distribution(mm_plans, num_train_workers)
-    text_plans = _pad_group_for_distribution(text_plans, num_train_workers)
+    # Pad each group independently so its count is divisible by num_data_ranks
+    mm_plans = _pad_group_for_distribution(mm_plans, num_data_ranks)
+    text_plans = _pad_group_for_distribution(text_plans, num_data_ranks)
 
-    plans_per_gpu: list[list[MicroBatchPlan]] = [[] for _ in range(num_train_workers)]
+    plans_per_gpu: list[list[MicroBatchPlan]] = [[] for _ in range(num_data_ranks)]
     for group in (mm_plans, text_plans):
-        for worker_idx, worker_plans in enumerate(_distribute_group(group, num_train_workers, bin_cost)):
+        for worker_idx, worker_plans in enumerate(_distribute_group(group, num_data_ranks, bin_cost)):
             plans_per_gpu[worker_idx].extend(worker_plans)
     return plans_per_gpu
 
 
-class BatchPacker:
-    """Bin-packs a step's training samples into one micro-batch plan list per trainer DP rank."""
-
-    def __init__(self, config: OrchestratorConfig):
-        self.seq_len = config.seq_len
-        self.num_train_workers = config.num_train_workers
-        # Rows hold at most `seq_len` tokens, so padding to a multiple of it pads every row to exactly `seq_len`
-        self.pad_to_multiple_of = config.seq_len if config.pad_to_seq_len else config.pad_to_multiple_of
-        # Built as the trainer builds it. The flash-attention version selects kernels, not modules.
-        model_config = ModelConfig(
-            name=config.model.name, attn="flash_attention_3", trust_remote_code=config.tokenizer.trust_remote_code
-        )
-        self.bin_cost = FlopCounter(get_model(model_config))
-
-    def pack(self, samples: list[SampleRef], *, trained_version: int, min_version: int) -> list[list[MicroBatchPlan]]:
-        return prepare_batch(
-            samples,
-            seq_len=self.seq_len,
-            num_train_workers=self.num_train_workers,
-            bin_cost=self.bin_cost,
-            trained_version=trained_version,
-            min_version=min_version,
-            pad_to_multiple_of=self.pad_to_multiple_of,
-        )
+def plan_digest(plans_per_rank: list[list[MicroBatchPlan]]) -> int:
+    """A digest of a step's plans for every data rank: equal on every trainer rank that
+    planned the step the same."""
+    digest = hashlib.blake2b(msgspec.msgpack.encode(plans_per_rank), digest_size=7).digest()
+    return int.from_bytes(digest, "big")
