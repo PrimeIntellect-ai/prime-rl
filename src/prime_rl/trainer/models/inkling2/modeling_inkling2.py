@@ -323,10 +323,12 @@ class Inkling2BlockAttentionResidual(nn.Module):
         """``query``: ``[num_queries, H]``; returns ``[B, S, num_queries, H]``."""
         stacked = torch.cat([block_states, partial.unsqueeze(-2)], dim=-2).float()
         stacked = stacked * torch.rsqrt(stacked.square().mean(-1, keepdim=True) + self.eps)
-        q = query.float().reshape(-1, self.hidden_size).expand(*stacked.shape[:-2], -1, -1)
-        scores = torch.matmul(q, stacked.transpose(-1, -2)) * self.hidden_size**-0.5
+        q = query.float().reshape(-1, self.hidden_size)
+        # Products and sums, not matmuls: Inductor rewrites matmul-softmax-matmul into SDPA, whose memory-efficient
+        # backward allocates [S, 128, H] fp32 for these at most 3 queries (72 GiB for 32K tokens).
+        scores = (q.unsqueeze(-2) * stacked.unsqueeze(-3)).sum(-1) * self.hidden_size**-0.5
         weights = torch.softmax(scores, dim=-1)
-        return torch.matmul(weights, stacked)
+        return (weights.unsqueeze(-1) * stacked.unsqueeze(-3)).sum(-2)
 
 
 class Inkling2AttnRes(nn.Module):
