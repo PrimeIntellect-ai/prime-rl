@@ -451,6 +451,12 @@ class Orchestrator:
         get_logger().info(f"Starting orchestrator loop (max_steps={config.max_steps or 'infinite'})")
         start_time = time.perf_counter()
 
+        completed_resume = (
+            self.resume_step is not None and config.max_steps is not None and self.resume_step >= config.max_steps
+        )
+        if completed_resume:
+            await self.start_draining(f"Checkpoint step {self.resume_step} reached max_steps={config.max_steps}")
+
         # Spawn background loops (dispatcher schedules, watcher polls). The
         # pipeline ``main_loop`` runs inline in this task; the single
         # ``PeriodicLogger`` polls dispatcher / watcher / sinks / lag
@@ -509,7 +515,7 @@ class Orchestrator:
             # first ship). Saved before finalize, which tells the launcher the run is done. Only once the
             # step loop finished (the last step is fully shipped); a crash mid-loop leaves no consistent
             # state for that step, and the trainer has no checkpoint for it.
-            if loop_done and self.config.ckpt is not None and self.progress.step > 1:
+            if loop_done and not completed_resume and self.config.ckpt is not None and self.progress.step > 1:
                 self.progress.step -= 1
                 get_logger().info(f"Saving final checkpoint at step {self.progress.step}")
                 self.ckpt_manager.save(self.progress, self.train_source, self.config_state(), step=self.progress.step)

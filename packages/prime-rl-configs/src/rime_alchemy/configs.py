@@ -40,7 +40,10 @@ class RIMEAlchemyEnvConfig(vf.EnvConfig):
     writer_frozen: bool = False
     actor_frozen: bool = False
     score_exploration: bool = True
-    memory_mode: Literal["written", "history", "shuffled"] = "written"
+    memory_mode: Literal["written", "history", "shuffled", "fork"] = "written"
+    fork_trial: int = Field(4, ge=1, le=8)
+    fork_horizon: int = Field(2, ge=1, le=5)
+    fork_repetitions: int = Field(2, ge=1, le=8)
     judge_max_concurrent: int = Field(1, ge=1)
     judge_max_retries: int = Field(5, ge=0)
     judge_retry_timeout: float = Field(180.0, gt=0)
@@ -48,6 +51,10 @@ class RIMEAlchemyEnvConfig(vf.EnvConfig):
 
     @model_validator(mode="after")
     def require_shared_policy(self):
+        if self.memory_mode == "fork" and (
+            self.fork_horizon > self.fork_trial or self.fork_trial + self.fork_horizon > 10
+        ):
+            raise ValueError("Memory forks need a full past window and must fit inside ten trials")
         if self.actor_frozen and self.writer_frozen:
             raise ValueError("At least one RIME role must remain trainable")
         if any(agent.model is not None or agent.client is not None for agent in (self.actor, self.writer)):

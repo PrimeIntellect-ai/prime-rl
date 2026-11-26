@@ -99,6 +99,10 @@ class RIMEAlchemyEnv(vf.Env[RIMEAlchemyEnvConfig]):
         )
 
     async def run(self, task: StreamTask, agents: vf.Agents, *, _donor=False):
+        if self.config.memory_mode == "fork":
+            from rime_study.memory_forks import run_memory_forks
+
+            return await run_memory_forks(self.config, task, agents)
         env = AlchemyStream(task.data.episode_index)
         memory = ""
         rewards, scores, gates, training = [], [], [], []

@@ -675,7 +675,24 @@ def train(config: TrainerConfig):
 
         return ForwardBackwardResult(tensor_stats, routing_stats, step_local_num_tokens, step_local_flops, grad_scale)
 
-    while True:
+    # Publish the incoming policy even if the checkpoint already finished the run.
+    if weight_sender is not None and progress.step - 1 > published:
+        startup_version = progress.step - 1
+        if world.is_master:
+            prune_broadcasts_beyond(config.output_dir, startup_version)
+        logger.info(f"Broadcasting startup policy weights (v{startup_version}) to inference engines")
+        t0 = time.perf_counter()
+        weight_sender.broadcast(model, startup_version)
+        logger.debug(
+            f"Broadcast startup policy weights (v{startup_version}) in {format_time(time.perf_counter() - t0)}"
+        )
+
+    completed_resume = (
+        checkpoint_step is not None and config.max_steps is not None and checkpoint_step >= config.max_steps
+    )
+    step_action = None
+    paused = False
+    while not completed_resume:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:
@@ -687,21 +704,6 @@ def train(config: TrainerConfig):
 
         logger.debug(f"Starting training step {progress.step}")
         step_start_time = time.perf_counter()
-
-        # Broadcast the incoming policy (v{progress.step-1}) before waiting for its
-        # rollouts so the trainer and inference pool join the same update lifecycle,
-        # and so a broken broadcast path fails at startup instead of after the first
-        # optimizer step.
-        if progress.step == start_step and weight_sender is not None and progress.step - 1 > published:
-            startup_version = progress.step - 1
-            if world.is_master:
-                prune_broadcasts_beyond(config.output_dir, startup_version)
-            logger.info(f"Broadcasting startup policy weights (v{startup_version}) to inference engines")
-            t0 = time.perf_counter()
-            weight_sender.broadcast(model, startup_version)
-            logger.debug(
-                f"Broadcast startup policy weights (v{startup_version}) in {format_time(time.perf_counter() - t0)}"
-            )
 
         # Warm up while the first batch is still being generated
         if progress.step == start_step and config.warmup:
@@ -945,7 +947,7 @@ def train(config: TrainerConfig):
         logger.info(f"Saved trace to {trace_file}")
 
     # Write final checkpoint
-    if config.ckpt is not None or step_action is not None:
+    if not completed_resume and (config.ckpt is not None or step_action is not None):
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
         ckpt_manager.wait()
@@ -959,6 +961,8 @@ def train(config: TrainerConfig):
         gradient_manager.close()
     micro_batch_workers.close()
 
+    if completed_resume:
+        progress.step = checkpoint_step
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
     logger.success(f"RL trainer {'paused' if paused else 'finished'} at step {progress.step}")
     asyncio.run(monitors.finalize(paused=paused))
