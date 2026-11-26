@@ -12,7 +12,12 @@ from pydantic import BaseModel, Field, ValidationError
 from pydantic_config import ConfigFileError
 from renderers import custom_renderer_config
 
-from prime_rl.configs.algorithm import GRPOAlgoConfig, LinearLengthPenaltyConfig, LinearSubagentLengthPenaltyConfig
+from prime_rl.configs.algorithm import (
+    BudgetLengthPenaltyConfig,
+    GRPOAlgoConfig,
+    LinearLengthPenaltyConfig,
+    LinearSubagentLengthPenaltyConfig,
+)
 from prime_rl.configs.env_worker_pool import EnvWorkerPoolConfig
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig
@@ -343,6 +348,7 @@ def test_toml_discriminated_union_switch_variant(tmp_path):
         ({"type": "linear"}, LinearLengthPenaltyConfig),
         ({"type": "linear-subagent"}, LinearSubagentLengthPenaltyConfig),
         ({"type": "linear-subagent", "subagent_token_weight": 0.2}, LinearSubagentLengthPenaltyConfig),
+        ({"type": "budget", "budget": 262144, "alpha": 1.5, "weight": 1.0}, BudgetLengthPenaltyConfig),
     ],
 )
 def test_length_penalty_variants_are_opt_in(tmp_path, penalty, expected_type):
@@ -358,6 +364,9 @@ def test_length_penalty_variants_are_opt_in(tmp_path, penalty, expected_type):
         assert "subagent_token_weight" not in direct.length_penalty.model_dump()
     with pytest.raises(ValidationError):
         GRPOAlgoConfig.model_validate({"length_penalty": {"type": "linear", "subagent_token_weight": 0.0}})
+    for bad in ({}, {"budget": 0}, {"budget": 1024, "alpha": 0}, {"budget": 1024, "weight": -1}):
+        with pytest.raises(ValidationError):
+            GRPOAlgoConfig.model_validate({"length_penalty": {"type": "budget", **bad}})
 
 
 def test_toml_discriminated_union_override_switch_variant(tmp_path):

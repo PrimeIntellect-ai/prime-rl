@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 import verifiers.v1 as vf
 from verifiers.v1.trace import min_new_input_tokens
 
-from prime_rl.configs.algorithm import GRPOAlgoConfig, LinearSubagentLengthPenaltyConfig
+from prime_rl.configs.algorithm import BudgetLengthPenaltyConfig, GRPOAlgoConfig, LinearSubagentLengthPenaltyConfig
 from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import assign_advantage, assign_rl_weight
 
@@ -75,6 +75,10 @@ class GRPOAlgorithm(Algorithm):
         length_penalty = self.length_penalty
         if length_penalty is None:
             shaped_rewards = rewards
+        elif isinstance(length_penalty, BudgetLengthPenaltyConfig):
+            tokens = torch.tensor([trace.num_total_tokens for trace in traces], dtype=torch.float64)
+            cost = (tokens / length_penalty.budget) ** length_penalty.alpha
+            shaped_rewards = rewards - (length_penalty.weight * cost).clamp(0, 1).to(rewards.dtype)
         else:
             subagent_weight = (
                 length_penalty.subagent_token_weight
