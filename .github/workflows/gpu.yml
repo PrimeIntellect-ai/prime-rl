@@ -61,7 +61,7 @@ jobs:
             run: |
               git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
               git config --global url."https://github.com/".insteadOf "git@github.com:"
-              git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
+              GIT_LFS_SKIP_SMUDGE=1 git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
           - name: Install uv
             uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
             with:
