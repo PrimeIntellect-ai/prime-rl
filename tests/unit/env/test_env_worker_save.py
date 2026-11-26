@@ -32,7 +32,7 @@ def test_save_maps_restore_points_to_runs_and_deletes_the_snapshots_of_the_rest(
             # Prime refuses the newest snapshot of a box that still runs: t2's episode goes on.
             return [snapshot.id for snapshot in snapshots if snapshot.id != "s-t2"]
 
-    async def save_all(skipped: dict[str, int], *, hold: bool, watchdog: bool) -> list[dict]:
+    async def save_all(skipped: dict[str, int], *, hold: bool, watchdog: bool, timeout: float | None) -> list[dict]:
         # t9's run ended while the checkpoints were taken; t2 is one trace of a multi-agent episode.
         assert hold and not watchdog
         skipped["the 'subprocess' runtime takes no memory snapshots"] = 2

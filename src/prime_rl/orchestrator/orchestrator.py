@@ -1204,9 +1204,11 @@ class Orchestrator:
 
         The env workers first take a memory checkpoint of each running train rollout.
         Then, with the sink locked, progress, train source, configs and open work are
-        read at one instant, the training arrays of the open work are written to the
-        checkpoint, and a forked writer gets the rest to disk while this process goes
-        on. The checkpoint is complete when ``ckpt_task`` ends."""
+        read at one instant, and the saved rollouts go on. The hook returns there, so
+        the trainer's broadcast completes. ``ckpt_task`` keeps the sink locked while it
+        writes the training arrays of the open work, so neither the sink nor the
+        trainer deletes them meanwhile, then forks a writer that gets the rest to disk.
+        The checkpoint is complete when ``ckpt_task`` ends."""
         if not self.saves_rollouts:
             return
         if self.controller is not None:
@@ -1229,7 +1231,27 @@ class Orchestrator:
             # before the writer finishes, this step has no progress.pt, and a resume
             # deletes its snapshots.
             self.ckpt_manager.snapshots.record(step, [restore.snapshot for restore in restores.values()])
-            saved = time.perf_counter()
+            seconds = {"save": time.perf_counter() - start}
+            recorded = asyncio.get_running_loop().create_future()
+            self.ckpt_task = asyncio.create_task(
+                self.write_rollout_ckpt(step, rollouts, restores, seconds, recorded), name="rollout_ckpt"
+            )
+            await asyncio.shield(recorded)
+        except BaseException:
+            await asyncio.shield(asyncio.gather(*(env.release() for env in self.train_envs), return_exceptions=True))
+            raise
+
+    async def write_rollout_ckpt(
+        self,
+        step: int,
+        rollouts: Path,
+        restores: dict[str, RestoreRef],
+        seconds: dict[str, float],
+        recorded: asyncio.Future[None],
+    ) -> None:
+        """Record the pipeline for ``step``'s rollout checkpoint, set ``recorded`` and let
+        the saved rollouts go on, then write the checkpoint (``finish_rollout_ckpt``)."""
+        try:
             async with self.sink_lock:
                 locked = time.perf_counter()
                 work = self.open_work(restores)
@@ -1238,23 +1260,24 @@ class Orchestrator:
                 # The saved rollouts wait at their restore points until here: each one
                 # is either in the open work with its restore point, or finished before.
                 await asyncio.gather(*(env.release() for env in self.train_envs))
-                # Under the lock, so the sink deletes none of the arrays meanwhile.
+                recorded.set_result(None)
+                # Under the lock: the sink deletes none of the arrays meanwhile, and the
+                # trainer takes no batch whose arrays the open work holds.
                 needed, persisted = await persist_open_work(work, rollouts)
                 forked = time.perf_counter()
                 pid = self.ckpt_manager.fork_writer(state, work, step, freeze=self.gc is None)
-        except BaseException:
-            await asyncio.shield(asyncio.gather(*(env.release() for env in self.train_envs), return_exceptions=True))
+        except BaseException as error:
+            if not recorded.done():
+                recorded.set_exception(error)
             raise
         if persisted < needed:
             get_logger().warning(
                 f"{needed - persisted} of {needed} training arrays of the unshipped episodes were not written "
                 f"to the checkpoint of step {step}; their samples are left out of the loss after a resume"
             )
-        seconds = {"save": saved - start, "snapshot": snapshotted - locked, "persist": forked - snapshotted}
+        seconds |= {"snapshot": snapshotted - locked, "persist": forked - snapshotted}
         # What is left in ``restores`` continues no episode in flight: those finished meanwhile.
-        self.ckpt_task = asyncio.create_task(
-            self.finish_rollout_ckpt(step, pid, work, list(restores.values()), seconds), name="rollout_ckpt"
-        )
+        await self.finish_rollout_ckpt(step, pid, work, list(restores.values()), seconds)
 
     async def save_inflight(self, directory: Path) -> dict[str, RestoreRef]:
         """Have the env workers of every train env take a memory checkpoint of their

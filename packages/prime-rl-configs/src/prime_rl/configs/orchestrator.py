@@ -446,11 +446,12 @@ class CheckpointConfig(BaseCheckpointConfig):
     of step N is then written when the trainer publishes the weights of N, not when N
     ships. Eval rollouts are never checkpointed."""
 
-    rollouts_save_timeout: int = Field(600, ge=1)
-    """Seconds each env worker pool gets to take the memory checkpoints of its running
-    train rollouts and write their restore files. A pool that has not answered by then
-    contributes no restore points: all of its running rollouts start over on resume.
-    The trainer waits in its weight broadcast for the whole save."""
+    rollouts_save_timeout: int = Field(120, ge=1)
+    """Seconds each running train rollout gets to take its memory checkpoint. A rollout
+    that takes longer has no restore point and starts over on resume. The trainer
+    waits in its weight broadcast for the whole save, which ends at most this long
+    after it starts, plus the time the env worker pools take to write the restore
+    files."""
 
 
 class ConcurrencyConfig(BaseConfig):
