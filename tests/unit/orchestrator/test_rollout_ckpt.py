@@ -475,7 +475,6 @@ def test_a_resumed_step_loop_ships_the_batch_then_the_saved_results_then_new_one
 
         async def ship(batch) -> None:
             seen.append(batch)
-            o.step_loop.move(Phase.SHIPPED)
             o.step_loop.move(Phase.COLLECTING)
 
         async def ingest(item) -> None:

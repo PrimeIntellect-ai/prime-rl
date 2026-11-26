@@ -700,7 +700,7 @@ class Orchestrator:
         batch = await self.train_sink.take_batch()
         if batch is not None:
             self.step_loop.move(Phase.SHIPPING, batch)
-        else:
+        elif self.step_loop.phase is not Phase.COLLECTING:
             self.step_loop.move(Phase.COLLECTING)
 
     def take_rollout_metrics(self) -> dict[str, float]:
@@ -759,9 +759,9 @@ class Orchestrator:
             raise RuntimeError(f"{task.get_name()} exited unexpectedly")
 
     async def ship(self, batch: TrainBatch) -> None:
-        """``SHIPPING``: hand the cut batch to the trainer, then ``SHIPPED``: do the step's I/O
-        (ckpt, monitors.log, metrics, heartbeat, progress, control) and move on. The sink has
-        already done all data-transformation work."""
+        """``SHIPPING``: hand the cut batch to the trainer. Once it took the batch, the loop moves
+        on and does the step's I/O (ckpt, monitors.log, metrics, heartbeat, control) as part of the
+        move. The sink has already done all data-transformation work."""
         config = self.config
         step = self.progress.step
         async with self.sink_lock:
@@ -830,7 +830,8 @@ class Orchestrator:
         # batch either unshipped or shipped.
         self.train_sink.shipped(batch)
         self.progress.step += 1
-        self.step_loop.move(Phase.SHIPPED)
+        final = config.max_steps is not None and step >= config.max_steps
+        self.step_loop.move(Phase.FINISHING if final else Phase.COLLECTING)
 
         async with self.sink_lock:
             self.update_dispatch_gate()
@@ -906,9 +907,7 @@ class Orchestrator:
             payload = (batch.samples, batch.cohort.episodes, effective_episodes)
             self.release_future = asyncio.get_running_loop().run_in_executor(None, release_and_trim, *payload)
 
-            if config.max_steps is not None and step >= config.max_steps:
-                self.step_loop.move(Phase.FINISHING)
-            else:
+            if not final:
                 await self.take_queued_batch()
 
     async def finish(self) -> None:

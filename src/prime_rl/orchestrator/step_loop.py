@@ -4,19 +4,19 @@ The orchestrator holds rollout heads and sample refs and coordinates: it takes r
 cuts batches and hands them to the trainer. Its step loop is always in one ``Phase``, waiting
 for one thing; ``progress.step`` is the step it works on.
 
-    COLLECTING ─batch cut─▶ SHIPPING ─trainer took it─▶ SHIPPED ─▶ COLLECTING
-                              │                            ├─next batch queued─▶ SHIPPING
-                              │                            └─final step─▶ FINISHING ─final policy applied─▶ DRAINING
-                              └─past max_steps─────────────────────────────────────────────────────────▶ DRAINING
+    COLLECTING ─batch cut─▶ SHIPPING ─trainer took it─▶ COLLECTING
+                              ├─trainer took the final step─▶ FINISHING ─final policy applied─▶ DRAINING
+                              └─past max_steps─────────────────────────────────────────────────▶ DRAINING
     DRAINING ─nothing in flight─▶ STOPPED
 
 A cut batch with nothing to train is skipped: ``SHIPPING`` moves on to the next queued batch,
 or back to ``COLLECTING``.
 
-Only the step loop moves the phase. It holds the pipeline lock while it moves and releases it
-while it waits, so a rollout checkpoint, which reads the pipeline with the lock held, finds the
-loop in a phase and never between two: a cut batch is in the sink or in ``StepLoop.batch``, and
-a batch the trainer took is in neither.
+Only the step loop moves the phase, and every phase is one it waits in. The work between two
+phases, such as a step's bookkeeping after the trainer took it, is part of the move: the loop
+holds the pipeline lock while it moves and releases it while it waits. A rollout checkpoint reads
+the pipeline with the lock held, so it finds the loop in a phase and never between two: a cut
+batch is in the sink or in ``StepLoop.batch``, and a batch the trainer took is in neither.
 """
 
 from __future__ import annotations
@@ -37,10 +37,9 @@ class Phase(StrEnum):
     """Waits for a dispatcher result. Each one goes to its sink; a train sink that cuts a batch
     moves the loop to ``SHIPPING``."""
     SHIPPING = "shipping"
-    """Waits for every trainer rank to take the cut batch (``StepLoop.batch``)."""
-    SHIPPED = "shipped"
-    """The trainer took the batch and ``progress.step`` advanced. The step's bookkeeping runs
-    before the loop moves on."""
+    """Waits for every trainer rank to take the cut batch (``StepLoop.batch``). Once they took
+    it, ``progress.step`` advances and the loop moves on to ``COLLECTING``, or to ``SHIPPING``
+    the next batch when the sink has one queued."""
     FINISHING = "finishing"
     """The final step shipped. Waits for inference to apply the policy the trainer trains on it,
     which triggers the final evals: they measure the final weights."""
@@ -53,8 +52,7 @@ class Phase(StrEnum):
 
 TRANSITIONS: dict[Phase, frozenset[Phase]] = {
     Phase.COLLECTING: frozenset({Phase.SHIPPING}),
-    Phase.SHIPPING: frozenset({Phase.SHIPPED, Phase.SHIPPING, Phase.COLLECTING, Phase.DRAINING}),
-    Phase.SHIPPED: frozenset({Phase.COLLECTING, Phase.SHIPPING, Phase.FINISHING}),
+    Phase.SHIPPING: frozenset({Phase.COLLECTING, Phase.SHIPPING, Phase.FINISHING, Phase.DRAINING}),
     Phase.FINISHING: frozenset({Phase.DRAINING}),
     Phase.DRAINING: frozenset({Phase.STOPPED}),
     Phase.STOPPED: frozenset(),
