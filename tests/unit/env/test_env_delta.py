@@ -1,5 +1,5 @@
 """The env-serve wire: a trace's deltas cross msgpack once each and reassemble into
-the episode the worker finished with."""
+the trace the worker finished with, for whoever shows it live."""
 
 import asyncio
 import copy
@@ -14,9 +14,8 @@ from verifiers.v1.semantic import ParentLink
 from verifiers.v1.trace import ModelCall, TimeSpan, TraceTask
 from verifiers.v1.types import AssistantMessage, Usage, UserMessage
 
-from prime_rl.env.client import assemble_episode
 from prime_rl.env.encoding import pack, unpack
-from prime_rl.env.types import TraceSummary
+from prime_rl.env.worker import progress_delta
 
 
 class MyTask(vf.TaskData):
@@ -136,8 +135,8 @@ async def test_deltas_stream_once_and_reassemble_the_episode():
         assembly.apply(delta)
     assert deltas == handed, "assembling never mutates a delta the caller holds"
     head = dump(episode, exclude={"traces"})
-    summaries = [TraceSummary(id=trace.id, nodes=len(trace.nodes), calls=len(trace.calls))]
-    rebuilt = WireEpisode.model_validate(unpack(pack(assemble_episode(assembly, head, summaries))))
+    traces = [{key: value for key, value in assembly.traces[trace.id].items() if key != "pending"}]
+    rebuilt = WireEpisode.model_validate(unpack(pack({**head, "traces": traces})))
     assert rebuilt.ok and rebuilt.traces[0].id == trace.id
     assert rebuilt.traces[0].messages == trace.messages
     # Training arrays stay in the worker.
@@ -146,6 +145,11 @@ async def test_deltas_stream_once_and_reassemble_the_episode():
     assert rebuilt.traces[0].rewards["match"].value == 1.0
     assert rebuilt.traces[0].stop_condition == "agent_completed"
     assert len(rebuilt.traces[0].calls) == 2
+
+    # Without a live view, a client sees only the trace's progress: its calls' usage and phases.
+    progress = [progress_delta(delta) for delta in deltas]
+    assert not any("nodes" in delta or "links" in delta for delta in progress if delta is not None)
+    assert sum(len(delta.get("calls", [])) for delta in progress if delta is not None) == 2
 
 
 @pytest.mark.asyncio
@@ -173,10 +177,3 @@ async def test_discarded_attempt_drops_its_trace():
     for delta in deltas:
         assembly.apply(delta)
     assert list(assembly.traces) == [second.id]
-
-
-def test_assemble_episode_refuses_a_gap():
-    assembly = EpisodeAssembly()
-    assembly.apply({"trace": "t", "open": {"id": "t"}, "nodes": [{}]})
-    with pytest.raises(RuntimeError, match="assembled 1 nodes"):
-        assemble_episode(assembly, {}, [TraceSummary(id="t", nodes=2, calls=0)])

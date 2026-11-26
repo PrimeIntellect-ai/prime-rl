@@ -5634,7 +5634,7 @@ train = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.5.11"
+version = "0.5.16"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -5646,9 +5646,9 @@ dependencies = [
     { name = "pyqwest" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/87/a4/863ce60f0c8cf74e7c59a754a53db5f9089c9ca68f976758f11bebb9c4a6/prime_sandboxes-0.5.11.tar.gz", hash = "sha256:c80062d3767ac352bc463ea4442a47eb3066e2c4ddd52ca6f39afafda1abd500", size = 177262, upload-time = "2026-11-11T17:52:49.813Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/23/a6/5ed33f82f0b7610759762d7eb0502a87c6be3ebd36dd42d2f9601dc019c6/prime_sandboxes-0.5.16.tar.gz", hash = "sha256:ce4fecc3f9d7a9c8e64e5d0c2e34442a4be15f6a49e0386fbfccf2a0dc515149", size = 181455, upload-time = "2026-11-25T00:48:17.608Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/61/73/10c87464a895c551409fb0496af01cd02d41d2f15d57ac9581506ad4ca88/prime_sandboxes-0.5.11-py3-none-any.whl", hash = "sha256:0496639fceacfc80a5778e7901b8c95fa2dac2dedda00ff30f58a5185db646e5", size = 96085, upload-time = "2026-11-11T17:52:48.032Z" },
+    { url = "https://files.pythonhosted.org/packages/bc/4a/6a2dcb7517b6f4568ad7139fce11982a14bd48cf7505b9f01456baa84e87/prime_sandboxes-0.5.16-py3-none-any.whl", hash = "sha256:b20eb728f3bbbb84bacc42b84c74658a20b73f953f0905c9e64403a34edb06c8", size = 111258, upload-time = "2026-11-25T00:48:15.991Z" },
 ]
 
 [[package]]
@@ -8213,7 +8213,7 @@ requires-dist = [
     { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
     { name = "orjson", specifier = ">=3.10.0" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.3" },
-    { name = "prime-sandboxes", specifier = ">=0.5.9" },
+    { name = "prime-sandboxes", specifier = ">=0.5.16" },
     { name = "prime-tunnel", specifier = ">=0.1.17" },
     { name = "pydantic", specifier = ">=2.12.3" },
     { name = "renderers", extras = ["multimodal"], specifier = ">=0.2.1.dev12" },

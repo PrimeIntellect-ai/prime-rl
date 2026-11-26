@@ -9,10 +9,12 @@ from prime_rl.configs.algorithm import (
     LinearSubagentLengthPenaltyConfig,
     MaxRLAlgoConfig,
 )
-from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm, _length_penalty_tokens
+from prime_rl.env.heads import episode_head
+from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm, length_penalty_tokens
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
-from prime_rl.orchestrator.algo.routing import assign_advantages
-from prime_rl.orchestrator.trajectories import trace_to_samples
+from prime_rl.orchestrator.algo.routing import assign_advantage
+from prime_rl.orchestrator.credit import trace_advantage
+from tests.unit.orchestrator.test_train_sink import received, train_trace
 
 
 def _build_episode(
@@ -145,28 +147,34 @@ def _make_group(rewards, completion_lengths=None, num_turns=None) -> list[vf.Epi
 
 
 def _scalar(episode: vf.Episode) -> float:
-    """The per-rollout advantage scalar an algorithm assigned — broadcast over
-    the rollout's trainable (mask-True) tokens, so any trainable position holds it."""
-    for node in episode.traces[0].nodes:
-        if node.advantages is not None and len(node.advantages):
-            return float(node.advantages[0])
-    raise AssertionError("episode has no trainable token")
+    """The per-rollout advantage an algorithm assigned."""
+    advantage = trace_advantage(episode.traces[0])
+    assert advantage is not None, "episode has no trainable token"
+    return advantage
+
+
+def _length_penalty_tokens(trace: vf.Trace, subagent_token_weight: float) -> tuple[float, float]:
+    """The output and new input tokens GRPO's length penalty weighs."""
+    output, input, subagent_output, subagent_input = length_penalty_tokens(trace)
+    return output + subagent_token_weight * subagent_output, input + subagent_token_weight * subagent_input
 
 
 def _grpo(group: list[vf.Episode], length_penalty=None, length_weighted_baseline=False) -> list[float]:
-    """Drive ``GRPOAlgorithm.score_group`` and read back each per-rollout scalar."""
+    """Drive ``GRPOAlgorithm.score_group`` over the group's heads and read back each per-rollout scalar."""
     algo = GRPOAlgorithm(
         GRPOAlgoConfig(length_penalty=length_penalty, length_weighted_baseline=length_weighted_baseline), clients=None
     )
-    asyncio.run(algo.score_group(group))
-    return [_scalar(episode) for episode in group]
+    heads = [episode_head(episode) for episode in group]
+    asyncio.run(algo.score_group(heads))
+    return [_scalar(head) for head in heads]
 
 
 def _max_rl(group: list[vf.Episode]) -> list[float]:
-    """Drive ``MaxRLAlgorithm.score_group`` and read back each per-rollout scalar."""
+    """Drive ``MaxRLAlgorithm.score_group`` over the group's heads and read back each per-rollout scalar."""
     algo = MaxRLAlgorithm(MaxRLAlgoConfig(), clients=None)
-    asyncio.run(algo.score_group(group))
-    return [_scalar(episode) for episode in group]
+    heads = [episode_head(episode) for episode in group]
+    asyncio.run(algo.score_group(heads))
+    return [_scalar(head) for head in heads]
 
 
 # --------------------------------------------------------------------------
@@ -219,9 +227,9 @@ def test_grpo_prompt_loss_aggregation_weights_sum_to_one_per_group():
     """Each group's rl weights total 1, spread as 1/T_q over its trainable tokens, whatever its length."""
     algo = GRPOAlgorithm(GRPOAlgoConfig(loss_aggregation="prompt"), clients=None)
     for lengths in ([10, 30], [100, 300]):
-        group = _make_group(rewards=[1.0, 0.0], completion_lengths=lengths)
+        group = [received(episode) for episode in _make_group(rewards=[1.0, 0.0], completion_lengths=lengths)]
         asyncio.run(algo.score_group(group))
-        weights = [w for episode in group for sample in trace_to_samples(episode.traces[0]) for w in sample.rl_weights]
+        weights = [w for episode in group for sample in train_trace(episode.traces[0]) for w in sample.rl_weights]
         assert sorted(set(weights)) == pytest.approx([0.0, 1.0 / sum(lengths)])
         assert sum(weights) == pytest.approx(1.0)
 
@@ -247,7 +255,7 @@ def test_grpo_reconfigure_applies_new_length_penalty():
     cfg = LinearLengthPenaltyConfig(num_output_tokens_weight=0.25, num_input_tokens_weight=0.0, num_turns_weight=0.0)
     algo = GRPOAlgorithm(GRPOAlgoConfig(), clients=None)
     algo.reconfigure(GRPOAlgoConfig(length_penalty=cfg))
-    group = _make_group(rewards=[1.0, 1.0, 1.0], completion_lengths=[10, 20, 30])
+    group = [episode_head(episode) for episode in _make_group(rewards=[1.0, 1.0, 1.0], completion_lengths=[10, 20, 30])]
 
     asyncio.run(algo.score_group(group))
 
@@ -273,8 +281,7 @@ def test_linear_context_term_penalizes_more_context():
         _build_episode(1.0, sampled_lengths=[10], obs_lengths=[]),
         _build_episode(1.0, sampled_lengths=[10], obs_lengths=[100]),
     ]
-    asyncio.run(GRPOAlgorithm(GRPOAlgoConfig(length_penalty=cfg), clients=None).score_group(group))
-    advs = [_scalar(episode) for episode in group]
+    advs = _grpo(group, length_penalty=cfg)
     assert advs[0] > advs[1]
     assert sum(advs) == pytest.approx(0.0, abs=1e-6)
 
@@ -439,30 +446,21 @@ def test_length_penalty_ignores_discarded_compactions(penalty_type, term):
 
 
 # --------------------------------------------------------------------------
-# assign_advantages: scalar broadcast over the rollout's trainable tokens.
+# assign_advantage: one value broadcast over the rollout's trainable tokens.
 # --------------------------------------------------------------------------
 
 
-def test_assign_advantages_broadcasts_scalar():
+def test_assign_advantage_broadcasts_scalar():
     """A scalar broadcasts uniformly over the rollout's trainable (mask-True) tokens."""
-    episode = _build_episode(0.0, sampled_lengths=[2])
-    trace = episode.traces[0]
+    [trace] = received(_build_episode(0.0, sampled_lengths=[2])).traces
     # one user prompt token (masked) + 2 sampled tokens (trainable)
-    assign_advantages(trace, 0.7)
-    assert trace_to_samples(trace)[0].advantages == pytest.approx([0.0, 0.7, 0.7])
+    assign_advantage(trace, 0.7)
+    assert train_trace(trace)[0].advantages == pytest.approx([0.0, 0.7, 0.7])
 
 
-def test_assign_advantages_zeros_non_trainable():
+def test_assign_advantage_zeros_non_trainable():
     """Non-trainable (mask=False) positions stay 0.0 under scalar broadcast."""
     # prompt(1, masked) + sampled(1) + obs(1, masked): mask is [F, T, F]
-    episode = _build_episode(0.0, sampled_lengths=[1], obs_lengths=[1])
-    trace = episode.traces[0]
-    assign_advantages(trace, 0.7)
-    assert trace_to_samples(trace)[0].advantages == pytest.approx([0.0, 0.7, 0.0])
-
-
-def test_assign_advantages_rejects_misaligned():
-    episode = _build_episode(0.0, sampled_lengths=[2])
-    # full length is 3 (prompt + 2 sampled); a 1-element list must be rejected
-    with pytest.raises(ValueError, match="align"):
-        assign_advantages(episode.traces[0], [0.5])
+    [trace] = received(_build_episode(0.0, sampled_lengths=[1], obs_lengths=[1])).traces
+    assign_advantage(trace, 0.7)
+    assert train_trace(trace)[0].advantages == pytest.approx([0.0, 0.7, 0.0])

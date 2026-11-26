@@ -14,6 +14,7 @@ from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from prime_rl.configs.orchestrator import CurriculumConfig
+    from prime_rl.env.heads import EpisodeHead
 
 
 class Curriculum:
@@ -50,7 +51,7 @@ class Curriculum:
                 raise TypeError(f"Unsupported admission gate config: {type(gate_config).__name__}")
             self.gates[name] = gate
 
-    def on_result(self, group: list[vf.Episode]) -> bool:
+    def on_result(self, group: list[EpisodeHead]) -> bool:
         """Observe every result and admit trainable groups that pass every gate."""
         if not group:
             raise ValueError("Cannot report an empty rollout group")

@@ -139,6 +139,22 @@ class RunConfig(BaseConfig):
     """Run directory name — the run writes all its artifacts to ``output_dir / dir``. Defaults to ``run.name``; set it only when the directory should differ from the display name."""
 
 
+class BaseCheckpointConfig(BaseConfig):
+    output_dir: Path | None = None
+    """Override directory for checkpoints. If set, checkpoints are written here instead of under the run's
+    ``output_dir``, e.g. on a separate storage volume. In an RL run the trainer and the orchestrator each write
+    their half of a step here."""
+
+    interval: int | None = Field(None, ge=1)
+    """Step interval at which to save checkpoints."""
+
+    keep_last: int | None = Field(None, ge=1)
+    """Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency."""
+
+    keep_interval: int | None = Field(None, ge=1)
+    """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
+
+
 class ControlConfig(BaseConfig):
     host: str = "0.0.0.0"
     """Address the control API binds to."""

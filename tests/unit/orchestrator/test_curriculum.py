@@ -13,6 +13,7 @@ from prime_rl.configs.orchestrator import (
     DifficultyPoolConfig,
     DifficultyPoolSamplerConfig,
 )
+from prime_rl.env.heads import EpisodeHead, episode_head
 from prime_rl.orchestrator.curriculum import (
     AdvRangeGate,
     Curriculum,
@@ -39,21 +40,22 @@ def make_rollout(
     *,
     env_name: str = "test",
     reward: float = 0.0,
-    advantages: list[float] | None = None,
-) -> list[vf.Episode]:
+    advantage: float | None = None,
+    sampled: bool = True,
+) -> list[EpisodeHead]:
+    """One rollout as the orchestrator receives it, credited with ``advantage``."""
     nodes = (
         [
             vf.MessageNode(
                 message=vf.AssistantMessage(content="answer"),
-                token_ids=list(range(len(advantages))),
-                mask=[True] * len(advantages),
-                logprobs=[0.0] * len(advantages),
-                advantages=advantages,
+                token_ids=[0],
+                mask=[True],
+                logprobs=[0.0],
                 sampled=True,
             )
         ]
-        if advantages is not None
-        else [vf.MessageNode(message=vf.AssistantMessage(content="answer"), sampled=True)]
+        if advantage is not None
+        else [vf.MessageNode(message=vf.AssistantMessage(content="answer"), sampled=sampled)]
     )
     trace = vf.Trace(
         task=vf.TraceTask(
@@ -74,7 +76,10 @@ def make_rollout(
         traces=[trace],
         ok=True,
     )
-    return [episode]
+    head = episode_head(episode)
+    if advantage is not None:
+        head.traces[0].info["advantage"] = advantage
+    return [head]
 
 
 def test_default_curriculum_resumes_finite_and_infinite_tasksets() -> None:
@@ -124,10 +129,9 @@ def test_train_source_composes_sampler_and_all_gates_with_state_and_metrics() ->
     source = TrainSource([env])
 
     sampled = source.next_task(step=1).task
-    empty = make_rollout(sampled, reward=1.0)
-    empty[0].traces[0].nodes[0].sampled = False
-    group = make_rollout(sampled, reward=0.25, advantages=[0.0])
-    failed = make_rollout(sampled, reward=1.0, advantages=[1.0])
+    empty = make_rollout(sampled, reward=1.0, sampled=False)
+    group = make_rollout(sampled, reward=0.25, advantage=0.0)
+    failed = make_rollout(sampled, reward=1.0, advantage=1.0)
     failed[0].ok = False
     assert source.on_result(group + failed + empty) is False
     assert source.metrics() == {
@@ -154,7 +158,7 @@ def test_train_source_composes_sampler_and_all_gates_with_state_and_metrics() ->
     assert source.metrics()["curriculum/test/admission_rate"] == 0.0
     assert source.curricula["test"].sampler.task_rewards == {sampled.key: 0.5}
 
-    assert source.on_result(make_rollout(sampled, reward=0.75, advantages=[1.0])) is True
+    assert source.on_result(make_rollout(sampled, reward=0.75, advantage=1.0)) is True
     assert source.metrics()["curriculum/test/admission_rate"] == 1.0
     assert source.curricula["test"].sampler.task_rewards == {sampled.key: 0.75}
 
@@ -176,7 +180,7 @@ def test_difficulty_pools_stack_with_advantage_gate_and_resume_sampling() -> Non
     rewards = {0: 0.1, 1: 0.5, 2: 0.9}
     decisions = []
     for index, task in enumerate(tasks):
-        group = make_rollout(task, reward=rewards[task.data.idx], advantages=[float(index > 0)])
+        group = make_rollout(task, reward=rewards[task.data.idx], advantage=float(index > 0))
         decisions.append(curriculum.on_result(group))
 
     assert decisions == [False, True, True]
@@ -197,15 +201,20 @@ def test_difficulty_pools_stack_with_advantage_gate_and_resume_sampling() -> Non
 def test_advantage_range_gate_generalizes_zero_advantage_rejection() -> None:
     task = make_task(0)
     zero_gate = AdvRangeGate(AdvRangeGateConfig())
-    assert zero_gate.admit(make_rollout(task, advantages=[0.0, 0.0])) is False
-    assert zero_gate.admit(make_rollout(task, advantages=[0.0, 0.2])) is True
+    assert zero_gate.admit(make_rollout(task, advantage=0.0) + make_rollout(task, advantage=0.0)) is False
+    assert zero_gate.admit(make_rollout(task, advantage=0.0) + make_rollout(task, advantage=0.2)) is True
     assert zero_gate.admit(make_rollout(task)) is True
 
     tolerance_gate = AdvRangeGate(AdvRangeGateConfig(reject_min=-0.1, reject_max=0.1))
-    assert tolerance_gate.admit(make_rollout(task, advantages=[-0.05, 0.0, 0.05])) is False
+    assert (
+        tolerance_gate.admit(
+            make_rollout(task, advantage=-0.05) + make_rollout(task, advantage=0.0) + make_rollout(task, advantage=0.05)
+        )
+        is False
+    )
 
     positive_gate = AdvRangeGate(AdvRangeGateConfig(reject_min=0.5, reject_max=0.5))
-    assert positive_gate.admit(make_rollout(task, advantages=[0.5])) is False
+    assert positive_gate.admit(make_rollout(task, advantage=0.5)) is False
 
 
 def keys(tasks: list[vf.Task]) -> list[str]:

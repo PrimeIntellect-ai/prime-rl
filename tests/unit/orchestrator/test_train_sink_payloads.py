@@ -1,4 +1,4 @@
-"""Strict payload accounting in the train sink: every array an env worker pool kept for a
+"""Strict payload accounting in the train sink: every sample an env worker pool kept for a
 delivered trace is either shipped in a batch (the trainer deletes it) or deleted by the
 sink when it drops the sample or trace."""
 
@@ -12,20 +12,19 @@ from prime_rl.configs.algorithm import GRPOAlgoConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.orchestrator.dispatcher import Dispatcher
-from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.types import Progress
 from prime_rl.transports.batch.types import PAYLOAD_INFO_KEY
 from prime_rl.transports.payload import PayloadHook, sample_payload_urls, wait_for_deletes
-from tests.unit.orchestrator.test_train_sink import episode, trace
+from tests.unit.orchestrator.test_train_sink import episode, trace, whole_episode
 
 
 def kept(hook: PayloadHook, **kwargs) -> vf.Trace:
-    """A trace whose arrays an env worker pool kept."""
+    """A trace whose samples an env worker pool kept."""
     t = trace(**kwargs)
     for node in t.nodes:
         node.routed_experts = np.ones((len(node.token_ids), 2, 2), dtype=np.uint8)
-    hook.keep(episode([t]), vf.SamplingConfig())
+    hook.keep(whole_episode([t]), "rl")
     return t
 
 
@@ -59,7 +58,7 @@ def test_sink_deletes_exactly_the_arrays_it_drops():
         dropped = [kept(hook, advantage=0), kept(hook, ok=False), kept(hook)]
         dropped[-1].drop("judge: outcome=task_defect")
         s = payload_sink()
-        await s.add(episode([queued, *dropped]))
+        await s.add(episode([queued, *dropped], keep=False))
         settle(s)
         assert set(hook.server.blobs) == {queued.info[PAYLOAD_INFO_KEY]["branches"]["0"]["id"]}
 
@@ -71,14 +70,14 @@ def test_sink_deletes_stale_pruned_and_discarded_arrays_but_not_shipped_ones():
         hook = PayloadHook()
         s = payload_sink(constant=False, batch_size=2)
         stale = kept(hook)
-        await s.add(episode([stale], group="stale", version=0))
+        await s.add(episode([stale], group="stale", version=0, keep=False))
         s.progress.step = 4
         assert await s.take_batch() is None
         shipped, pruned = kept(hook), kept(hook, advantage=0)
-        await s.add(episode([shipped], group="a", version=3))
-        batch = await s.add(episode([pruned], group="b", version=3))
+        await s.add(episode([shipped], group="a", version=3, keep=False))
+        batch = await s.add(episode([pruned], group="b", version=3, keep=False))
         leftover = kept(hook)
-        await s.add(episode([leftover], group="c", version=3))
+        await s.add(episode([leftover], group="c", version=3, keep=False))
         s.discard_queued()
         settle(s)
         assert batch is not None
@@ -89,24 +88,12 @@ def test_sink_deletes_stale_pruned_and_discarded_arrays_but_not_shipped_ones():
     asyncio.run(run())
 
 
-def test_eval_sink_deletes_the_arrays_of_eval_episodes():
-    """Env worker pools keep arrays for every episode; eval never trains, so its sink frees them."""
-    hook = PayloadHook()
-    evaluated = episode([kept(hook)])
-    evaluated.run = vf.TrainRunInfo(id="run", work=vf.EvalWorkInfo(step=0))
-    env = SimpleNamespace(examples=[None, None], config=SimpleNamespace(group_size=1))
-    sink = EvalSink(eval_envs=SimpleNamespace(get=lambda name: env))
-    assert sink.add(evaluated) is None
-    wait_for_deletes()
-    assert not hook.server.blobs
-
-
 def test_dispatcher_deletes_the_arrays_of_returned_episodes_it_drops():
     """A dropped group's task may already have returned its episode: no sink sees it."""
 
     async def run() -> None:
         hook = PayloadHook()
-        returned = episode([kept(hook)])
+        returned = episode([kept(hook)], keep=False)
         dispatcher = Dispatcher.__new__(Dispatcher)
 
         async def done():
