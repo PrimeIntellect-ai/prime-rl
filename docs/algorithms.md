@@ -404,6 +404,17 @@ alpha = 1.5
 weight = 1.0
 ```
 
+The `budget` penalty can also charge rule breaks softly instead of ending the rollout. `penalty_metrics` names trace metrics that count a rollout's breaks, such as a task metric counting its malformed tool calls. Their sum $V$ adds to the length cost inside the same clip: the reward becomes $r - \min(1, \lambda (T / B)^{\alpha} + \gamma \min(M, V))$, with $\gamma$ the `penalty_weight` and $M$ the `max_penalty` (unset: no cap). The rollout keeps running and is scored as usual; each break costs $\gamma$ until $M$ breaks.
+
+```toml
+[orchestrator.train.algo.length_penalty]
+type = "budget"
+budget = 262_144
+penalty_metrics = ["format_violations"]
+penalty_weight = 0.05
+max_penalty = 10
+```
+
 A **length-weighted baseline** (`length_weighted_baseline = true` on the `grpo`-family algorithms) replaces the plain group mean with $b = \sum_i L_i s_i / \sum_i L_i$, where $L_i$ is the number of trainable (policy-sampled, loss-masked) tokens of rollout $i$, summed across all its turns; it applies after the length penalty. With token-level loss normalization, long rollouts carry more gradient weight, so this baseline makes the per-token advantage zero-mean across the group's tokens rather than across rollouts.
 
 **Prompt-mean loss aggregation** (`loss_aggregation = "prompt"` on `grpo` and `echo`; default `"token"`). By default every `rl` token in the batch weighs the same, so prompts whose groups produce long trajectories dominate the gradient. With `"prompt"`, the loss is MiMo-V2.6's prompt-mean (Eq. 1): the mean over prompt groups $q$ of $\frac{1}{T_q}\sum_{t \in q} \mathcal{L}_{rl,t}$, where $T_q$ is the group's total trainable tokens. MiMo uses it to keep response length from growing too fast. `score_group` gives each trainable token of the group the `rl` weight $1/T_q$, so each group's weights sum to 1 and $N_{rl}$ (the summed weights) is the number of groups in the step. Zero-advantage tokens are still dropped from the `rl` component, so a group with a zero-advantage rollout keeps less than its full weight of 1. All envs with an `rl` loss in a run must use the same `loss_aggregation`.

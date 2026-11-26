@@ -250,6 +250,44 @@ def test_budget_penalty_charges_each_rollout_its_share_of_the_budget():
     assert _grpo(group(), length_penalty=off) == pytest.approx(_grpo(group()), abs=1e-6)
 
 
+def test_budget_penalty_adds_capped_rule_breaks():
+    def group():
+        return [
+            _make_episode(1.0, 10, metrics={"format_violations": 0.0}),
+            _make_episode(1.0, 10, metrics={"format_violations": 2.0}),
+            _make_episode(1.0, 10, metrics={"format_violations": 30.0}),
+            _make_episode(0.0, 10, metrics={"format_violations": 2.0, "bad_args": 1.0}),
+            _make_episode(0.0, 10),
+        ]
+
+    tokens = {episode.traces[0].num_total_tokens for episode in group()}
+    assert len(tokens) == 1
+    budget = 4 * tokens.pop()
+    length = (1 / 4) ** 1.5
+    rewards = [1.0, 1.0, 1.0, 0.0, 0.0]
+
+    def expected(breaks, gamma):
+        shaped = [r - min(1.0, length + gamma * b) for r, b in zip(rewards, breaks)]
+        return [s - sum(shaped) / len(shaped) for s in shaped]
+
+    # each break costs gamma on top of the length cost, the sum capped at max_penalty; a missing metric counts 0
+    cfg = BudgetLengthPenaltyConfig(
+        budget=budget, penalty_metrics=["format_violations"], penalty_weight=0.05, max_penalty=10
+    )
+    assert _grpo(group(), length_penalty=cfg) == pytest.approx(expected([0, 2, 10, 2, 0], 0.05), abs=1e-6)
+    # several metrics are summed before the cap
+    both = cfg.model_copy(update={"penalty_metrics": ["format_violations", "bad_args"]})
+    assert _grpo(group(), length_penalty=both) == pytest.approx(expected([0, 2, 10, 3, 0], 0.05), abs=1e-6)
+    # uncapped, the whole penalty is still clipped at 1
+    uncapped = cfg.model_copy(update={"penalty_weight": 0.5, "max_penalty": None})
+    assert _grpo(group(), length_penalty=uncapped) == pytest.approx(expected([0, 2, 30, 2, 0], 0.5), abs=1e-6)
+    # penalty_weight 0 leaves the length cost alone
+    no_breaks = cfg.model_copy(update={"penalty_weight": 0.0})
+    assert _grpo(group(), length_penalty=no_breaks) == pytest.approx(expected([0] * 5, 0.0), abs=1e-6)
+    with pytest.raises(ValueError, match="penalty_metrics"):
+        BudgetLengthPenaltyConfig(budget=budget, penalty_weight=0.05)
+
+
 def test_max_rl_mean_normalized():
     # mean 0.25: the success gets (1 - 0.25)/0.25 = 3, failures (0 - 0.25)/0.25 = -1
     assert _max_rl(_make_group(rewards=[1.0, 0.0, 0.0, 0.0])) == pytest.approx([3.0, -1.0, -1.0, -1.0])
