@@ -187,6 +187,9 @@ class DifficultyPoolSamplerConfig(BaseConfig):
     pools: dict[str, DifficultyPoolConfig] = Field(default_factory=default_difficulty_pools)
     """Named pools ordered by their reward thresholds."""
 
+    unseen_weight: float = Field(1.0, ge=0)
+    """Relative per-task sampling weight of tasks without a score yet."""
+
     seed: int = 42
 
     @model_validator(mode="after")
