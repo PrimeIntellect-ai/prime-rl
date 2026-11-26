@@ -125,9 +125,6 @@ SHUTDOWN_TIMEOUT_S = 300
 # trainer: a batch goes out only once every trainer rank requested it.
 TARGET_LAG = 1
 
-# How long a rollout checkpoint waits for the env workers to take the memory
-# checkpoints of the running rollouts. The trainer waits in its broadcast meanwhile.
-SAVE_TIMEOUT_SECONDS = 300.0
 # A send that waited at least this long for the trainer's request means the trainer is the bottleneck.
 TRAINER_BOUND_WAIT_S = 0.5
 
@@ -1277,11 +1274,13 @@ class Orchestrator:
     async def save_inflight(self, directory: Path) -> dict[str, RestoreRef]:
         """Have the env workers of every train env take a memory checkpoint of their
         running rollouts, written as restore files to ``directory``. Returns the restore
-        points by the ``request_id`` of their run. Bounded by ``SAVE_TIMEOUT_SECONDS``;
-        a rollout whose env worker failed or was too slow has none and starts over."""
+        points by the ``request_id`` of their run. Bounded by ``ckpt.rollouts_save_timeout``
+        (the trainer waits in its broadcast meanwhile); a rollout whose env worker failed or
+        was too slow has none and starts over."""
         if not self.dispatcher.inflight_train_count:
             return {}
-        replies = await asyncio.gather(*(env.save(str(directory), SAVE_TIMEOUT_SECONDS) for env in self.train_envs))
+        timeout = self.config.ckpt.rollouts_save_timeout
+        replies = await asyncio.gather(*(env.save(str(directory), timeout) for env in self.train_envs))
         for env in self.train_envs:
             self.ckpt_manager.snapshots.orphan(env.orphan_snapshots)
             env.orphan_snapshots.clear()
