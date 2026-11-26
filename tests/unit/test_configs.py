@@ -1830,6 +1830,21 @@ def test_inference_loads_dummy_weights_for_a_scratch_init(
     assert RLConfig.model_validate_json(config.model_dump_json()) == config
 
 
+def test_modelexpress_serves_a_draft_and_swaps_it():
+    config = RLConfig.model_validate(
+        {
+            "weight_broadcast": {"type": "modelexpress"},
+            "trainer": {},
+            "orchestrator": {
+                "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
+                "renderer": {"name": "qwen3"},
+            },
+            "inference": {"vllm": {"speculative_config": {"method": "eagle3", "model": "drafts/eagle3"}}},
+        }
+    )
+    assert config.orchestrator.speculative_decoding.draft == Path("drafts/eagle3")
+
+
 @pytest.mark.parametrize(
     ("init_type", "vllm", "match"),
     [

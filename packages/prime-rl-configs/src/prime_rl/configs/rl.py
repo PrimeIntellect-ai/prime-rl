@@ -492,10 +492,6 @@ class RLConfig(BaseConfig):
                 raise ValueError(
                     "modelexpress requires static inference admin endpoints; Dynamo discovery is not supported."
                 )
-            if self.inference is not None:
-                extra = self.inference.vllm.model_extra or {}
-                if extra.get("speculative_config") is not None:
-                    raise ValueError("modelexpress does not support speculative decoding.")
         self.trainer.weight_broadcast = self.weight_broadcast.model_copy()
         self.orchestrator = self.orchestrator.model_copy(
             update={"weight_broadcast": self.weight_broadcast.model_copy()}
