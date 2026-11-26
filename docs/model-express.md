@@ -4,7 +4,7 @@
 
 ## Setup
 
-The `inference` extra installs the MX client (`modelexpress==0.8.0.dev20261022`) and the `modelexpress-server` package, which puts the matching server and Valkey (the Redis-compatible store it keeps its state in) into the environment's `bin/`. Nothing else needs to be built.
+The `inference` extra installs the MX client (`modelexpress==0.8.0`) and the `modelexpress-server` package, which puts the matching server and Valkey (the Redis-compatible store it keeps its state in) into the environment's `bin/`. Nothing else needs to be built.
 
 `uv run rl` starts a run-scoped server and Valkey (logs under `logs/modelexpress/`). Multi-node SLURM jobs start them on the trainer head node. To use an existing server instead, set `slurm.launch_modelexpress = false` and configure `weight_broadcast.host` and `weight_broadcast.port`.
 
