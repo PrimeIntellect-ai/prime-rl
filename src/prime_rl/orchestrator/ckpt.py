@@ -290,9 +290,9 @@ def payload_refs(work: dict) -> dict[str, set[str]]:
 
 
 def batch_refs(work: dict) -> dict[str, set[str]]:
-    """The training arrays of the batch in ``work`` that was cut but not taken by the
-    trainer, as blob ids by the URL that serves them. The trainer frees them once it
-    fetched the batch."""
+    """The training arrays of the batch in ``work`` that the trainer has not taken yet.
+    Returns blob ids by the URL that serves them. The trainer frees these arrays once
+    it fetched the batch."""
     refs: dict[str, set[str]] = defaultdict(set)
     if work["batch"] is not None:
         for sample in work["batch"].samples:
@@ -301,8 +301,8 @@ def batch_refs(work: dict) -> dict[str, set[str]]:
 
 
 async def persist_arrays(refs: dict[str, set[str]], rollouts: Path) -> int:
-    """Have the training arrays ``refs`` names written to the checkpoint directory
-    ``rollouts``: the env workers write the ones they keep in memory, and the arrays of
+    """Write the training arrays that ``refs`` names to the checkpoint directory
+    ``rollouts``. The env workers write the arrays they keep in memory. The arrays of
     an earlier checkpoint are linked. Returns how many were written."""
     rollouts.mkdir(parents=True, exist_ok=True)
     urls = sorted(refs)
@@ -313,11 +313,12 @@ async def persist_arrays(refs: dict[str, set[str]], rollouts: Path) -> int:
 
 
 async def persist_open_work(work: dict, rollouts: Path, skip: dict[str, set[str]] | None = None) -> tuple[int, int]:
-    """Bring what ``work`` references into ``rollouts``, the directory its checkpoint
-    is written to: its training arrays (``persist_arrays``), except those in ``skip``,
-    which were written before, and the restore file of an episode this run resumed
-    and has not dispatched yet (if that file is gone, the episode starts over).
-    Returns how many arrays it needs, besides ``skip``, and how many were written."""
+    """Bring what ``work`` references into ``rollouts``, its checkpoint directory.
+    This covers its training arrays (``persist_arrays``) except those in ``skip``,
+    which were written before. It also covers the restore file of each episode this
+    run resumed and has not dispatched yet. If that file is gone, the episode starts
+    over. Returns how many arrays it needs besides ``skip``, and how many were
+    written."""
     refs = payload_refs(work)
     if skip:
         refs = {url: ids - skip.get(url, set()) for url, ids in refs.items()}

@@ -40,8 +40,11 @@ from prime_rl.utils.pathing import env_address_file
 # broker; a reply does not establish worker readiness.
 ENV_WORKER_POOL_STARTUP_TIMEOUT = 600.0
 
-SAVE_REPLY_SECONDS = 60.0
-"""Seconds a replica gets past the save timeout to write its restore files and reply."""
+SAVE_REPLY_SECONDS = 600.0
+"""Seconds a replica gets past the save timeout to write its restore files and reply.
+Restore files with top-k logprobs take minutes to write. A replica that misses this
+budget loses all its restore points, so the budget is generous. It delays a save
+only when a replica hangs."""
 
 
 async def wait_for_address(path: Path, timeout: float) -> str:

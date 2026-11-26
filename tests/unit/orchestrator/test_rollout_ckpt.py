@@ -502,10 +502,10 @@ def barrier_orchestrator(tmp_path, monkeypatch, events: list) -> Orchestrator:
 
 
 def test_the_publish_barrier_ends_before_the_arrays_are_written(tmp_path, monkeypatch):
-    """The hook at the publish barrier returns once the pipeline is recorded, the
-    saved rollouts go on and the arrays of the cut batch are written: the trainer
-    frees those once its broadcast completes and it took the batch. The other training
-    arrays are written afterwards, with the sink still locked."""
+    """The hook at the publish barrier records the pipeline and lets the saved
+    rollouts go on. It writes the arrays of the cut batch before it returns: the
+    trainer frees them once it took the batch. The other training arrays are written
+    afterwards, with the sink still locked."""
 
     async def run():
         events: list = []

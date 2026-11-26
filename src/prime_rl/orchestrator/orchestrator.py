@@ -1209,10 +1209,10 @@ class Orchestrator:
         read at one instant, and the saved rollouts go on. The training arrays of the
         cut batch are written next, since the trainer frees them once it took the
         batch. The hook returns there, so the trainer's broadcast completes.
-        ``ckpt_task`` keeps the sink locked while it writes the other training arrays
-        of the open work, so the sink deletes none of them meanwhile, then forks a
-        writer that gets the rest to disk.
-        The checkpoint is complete when ``ckpt_task`` ends."""
+        ``ckpt_task`` then writes the other training arrays of the open work. It keeps
+        the sink locked meanwhile, so the sink deletes none of them. Last, it forks a
+        writer that gets the rest to disk. The checkpoint is complete when
+        ``ckpt_task`` ends."""
         if not self.saves_rollouts:
             return
         if self.controller is not None:
@@ -1253,8 +1253,9 @@ class Orchestrator:
         seconds: dict[str, float],
         recorded: asyncio.Future[None],
     ) -> None:
-        """Record the pipeline for ``step``'s rollout checkpoint, set ``recorded`` and let
-        the saved rollouts go on, then write the checkpoint (``finish_rollout_ckpt``)."""
+        """Record the pipeline for ``step``'s rollout checkpoint and let the saved
+        rollouts go on. Set ``recorded``, then write the checkpoint
+        (``finish_rollout_ckpt``)."""
         try:
             async with self.sink_lock:
                 locked = time.perf_counter()
@@ -1264,8 +1265,9 @@ class Orchestrator:
                 # The saved rollouts wait at their restore points until here: each one
                 # is either in the open work with its restore point, or finished before.
                 await asyncio.gather(*(env.release() for env in self.train_envs))
-                # The trainer takes the cut batch once its broadcast completes, and frees
-                # its arrays after it fetched them: they go to the checkpoint first.
+                # The trainer takes the cut batch once its broadcast completes. It frees
+                # the batch's arrays after it fetched them, so they go to the checkpoint
+                # first.
                 batch = batch_refs(work)
                 persisted = await persist_arrays(batch, rollouts)
                 recorded.set_result(None)

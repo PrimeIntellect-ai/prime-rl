@@ -106,7 +106,7 @@ class SaveRequest(BaseRequest):
     method: ClassVar[str] = "save"
     dir: str
     timeout: float | None = None
-    """Seconds each rollout gets to take its memory checkpoint; a rollout that takes
+    """Seconds each rollout gets to take its memory checkpoint. A rollout that takes
     longer has no restore point and starts over."""
 
 

@@ -449,9 +449,8 @@ class CheckpointConfig(BaseCheckpointConfig):
     rollouts_save_timeout: int = Field(120, ge=1)
     """Seconds each running train rollout gets to take its memory checkpoint. A rollout
     that takes longer has no restore point and starts over on resume. The trainer
-    waits in its weight broadcast for the whole save, which ends at most this long
-    after it starts, plus the time the env worker pools take to write the restore
-    files."""
+    waits in its weight broadcast for the whole save. The save takes at most this
+    long, plus the time the env worker pools take to write the restore files."""
 
 
 class ConcurrencyConfig(BaseConfig):
