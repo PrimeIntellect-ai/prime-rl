@@ -36,7 +36,7 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "configs/ci/integration/reverse-text/start.toml",
+        "tests/integration/configs/reverse-text/start.toml",
         "--weight-broadcast.type",
         "modelexpress",
         "--clean",

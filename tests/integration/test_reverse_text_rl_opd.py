@@ -41,7 +41,7 @@ def rl_opd_process(
         "run",
         "rl",
         "@",
-        "configs/ci/integration/reverse-text-rl-opd/start.toml",
+        "tests/integration/configs/reverse-text-rl-opd/start.toml",
         "--clean",
         "--monitors.wandb.project",
         wandb_project,

@@ -93,5 +93,6 @@ In TOML, an empty section header (`[ckpt]`) does the same.
 ## Key files
 
 - `packages/prime-rl-configs/src/prime_rl/` — config classes under `configs/`; `utils/config.py` re-exports `BaseConfig` and `cli`
-- `configs/debug/` — minimal debug configs
+- `configs/` — minimal debug configs
+- `recipes/` — frontier-model configs, one folder per model
 - `examples/` — full example configs

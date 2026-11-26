@@ -314,7 +314,7 @@ prime-rl adds vLLM's `HiSparseConnector` to the KV transfer config. Under disagg
 
 ### Speculative Decoding
 
-Serve a draft model with vLLM's speculative config. `examples/specdecode/deepseek-v4/dspark.toml` serves a DSpark draft against DeepSeek-V4-Flash with 3 draft tokens and an FP8 draft KV cache; it caps each engine at 512 sequences and 2048-token CUDA graphs, which DeepGEMM's sparse-attention indexer needs with several draft tokens per sequence. On DeepSeek-V4's packed KV layout, a sliding-window draft's KV group is resized to fit within the target's widest group so it does not widen every KV block.
+Serve a draft model with vLLM's speculative config. `recipes/deepseek-v4-flash-0731/dspark.toml` serves a DSpark draft against DeepSeek-V4-Flash with 3 draft tokens and an FP8 draft KV cache; it caps each engine at 512 sequences and 2048-token CUDA graphs, which DeepGEMM's sparse-attention indexer needs with several draft tokens per sequence. On DeepSeek-V4's packed KV layout, a sliding-window draft's KV group is resized to fit within the target's widest group so it does not widen every KV block.
 
 ```toml
 [inference.vllm.speculative_config]

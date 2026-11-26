@@ -9,11 +9,11 @@
 # = 12000` on the SWE source so the harness compacts before the trainer cap, and give math a completion
 # budget that fits the window, as the tested recipes do.
 #
-# RL not tested in this layout. The settings come from examples/advanced/inkling2/{math-rl,swe-rl}.toml,
+# RL not tested in this layout. The settings come from {math-rl,swe-rl}.toml in this folder,
 # which ran end to end at 8k and 16k (#4551).
 
 # The model takes 1M tokens, but the trainer has no context parallelism for Inkling 2, so each sample
-# must fit on one GPU. 16k is the longest tested (examples/advanced/inkling2/swe-rl.toml).
+# must fit on one GPU. 16k is the longest tested (swe-rl.toml in this folder).
 seq_len = 16384
 
 [slurm]

@@ -173,6 +173,10 @@ class InferenceClient:
         }
 
 
+# An engine-wide update must not stall on a stale connection from an earlier request.
+ENGINE_ADMIN_LIMITS = httpx.Limits(max_connections=4, max_keepalive_connections=0)
+
+
 class AdminPlane:
     """Admin plane of the policy inference deployment: one httpx client per
     engine process. The router serves no admin routes (pause/resume,
@@ -194,7 +198,7 @@ class AdminPlane:
     """Runs after each policy transfer while the engines are still paused (a draft swap)."""
 
     def __init__(self, client_config: ClientConfig, roles: list[str | None] | None = None):
-        self.clients = setup_admin_clients(client_config, send_admin_token=True)
+        self.clients = setup_admin_clients(client_config, limits=ENGINE_ADMIN_LIMITS, send_admin_token=True)
         self.roles = roles
         # When admin URLs bypass a router, also health-check the client-facing
         # (router) endpoint - it only starts serving once its workers are healthy.

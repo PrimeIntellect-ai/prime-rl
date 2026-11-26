@@ -1,6 +1,10 @@
 # Recipes
 
-RL recipes per model at 256k context, in three layers:
+Configs for frontier models, one folder per model. Most folders hold a layered RL recipe at 256k
+context (below). Some folders also hold, or only hold, self-contained configs (see
+[Self-contained configs](#self-contained-configs)).
+
+The layered RL recipes have three layers:
 
 1. `<model>/rl.toml`: the model definition: the model, its optimizer, and its inference engine
    settings that do not depend on hardware (context length, parsers, prefix caching, router replay).
@@ -44,6 +48,27 @@ headers.
 H100 80GB overlays exist for Qwen3.6-35B-A3B, Muse Glimmer 30B and Qwen3.8 27B. They keep the H200
 node counts and inference layouts and use cp 8 with activation offloading to fit in 80 GB. Only
 Qwen3.6-35B-A3B has run (math, 5 steps): 61.9 GiB peak allocated, 2.0-2.3k tok/s per GPU.
+
+## Self-contained configs
+
+These configs run without overlays. Each header or README gives its launch command.
+
+- [`qwen3-30b-a3b/`](qwen3-30b-a3b/README.md): `Qwen3-30B-A3B` RL on math, SWE and agentic tool use,
+  and SFT on H200. 2 train + 2 infer nodes.
+- [`glm-4.5-air/`](glm-4.5-air/README.md): `GLM-4.5-Air` RL on search, SWE and terminal at 131k
+  context, a two-node SWE budget variant, and an IPO ablation.
+- [`glm-5.3/`](glm-5.3/README.md): the GLM-5 family at scale: 16 trainer nodes, P/D-disaggregated FP8
+  inference, an llm-d router + Mooncake KV-offload variant, `infer/` pre-flights and H200 SFT.
+- [`glm-5.3-flash/swe.toml`](glm-5.3-flash/swe.toml): SWE RL at 128k on 2 trainer nodes + 4 replicas.
+- [`inkling-2-small/`](inkling-2-small): `math-rl.toml` and `swe-rl.toml`, 6 trainer nodes + 2
+  replicas at 8k and 16k.
+- [`deepseek-v4-flash-0731/`](deepseek-v4-flash-0731): `sft.toml`, the vLLM serving pre-flight
+  `inference.toml`, P/D inference `inference_pd.toml`, and the DSpark draft overlay `dspark.toml`.
+- [`minimax-m2.5/swe.toml`](minimax-m2.5/swe.toml): `MiniMax-M2.5` SWE RL.
+- [`intellect-3.1/reproduce.toml`](intellect-3.1/reproduce.toml): reproduce the `INTELLECT-3.1` run, 4 train + 12
+  infer nodes.
+- [`qwen3-235b-a22b/`](qwen3-235b-a22b/README.md): `Qwen3-235B-A22B` SFT on 4 trainer nodes at 16k,
+  a max trainer throughput reference.
 
 ## ScaleSWE RL
 

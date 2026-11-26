@@ -38,6 +38,15 @@ Namespaces are one honking great idea -- let's do more of those!
 - **Git dependency pins**: when pinning git dependencies in `pyproject.toml`, always use a small (7-char) commit hash for the `rev` field.
 - **Never edit `.venv/`**: the local virtual env is read-only. Edits there are silently overwritten by the next `uv sync` and don't propagate to teammates or CI. Reading files under `.venv/` to understand library behavior is fine; writing is not. To fix a dependency issue, update `pyproject.toml` (pin a fork via 7-char commit hash if needed), vendor the code into `src/`, or patch upstream.
 
+## Configs
+
+Each config folder has one audience. Put a new TOML in the folder that matches its audience:
+
+- `examples/`: onboarding. End-to-end walkthroughs on 1-8 GPUs, each with a README (`basic/` for the eval → SFT → RL loop, `extra/` for the rest).
+- `recipes/`: configs for frontier models, one folder per model (`recipes/<model>/`). A layered recipe composes `<model>/rl.toml` (model settings), `<model>/gpu/<hw>.toml` (compute) and `recipes/data/<domain>.toml` (data). Keep `rl.toml` for the model layer; give a self-contained config another name. When you add a model, also add it to the recipes table in `README.md`.
+- `configs/`: internal smoke configs for developing the framework (`algo/`, `fake/`, `eval/`). They may drift.
+- `tests/integration/configs/` and `tests/regression/configs/`: configs that CI runs. Put a config here only if a test uses it.
+
 ## Docs
 
 - **Docs reflect `main`, not history**: `docs/` describes the current state of the codebase only. Don't mention removed/legacy fields, migration paths, or "this used to be X" anecdotes.

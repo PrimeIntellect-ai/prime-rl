@@ -27,7 +27,7 @@ def eval_process(run_process: Callable[..., ProcessResult], output_dir: Path) ->
         "run",
         "eval",
         "@",
-        "configs/ci/integration/gsm8k-eval.toml",
+        "tests/integration/configs/gsm8k-eval.toml",
         "--clean",
         "--output-dir",
         output_dir.as_posix(),
