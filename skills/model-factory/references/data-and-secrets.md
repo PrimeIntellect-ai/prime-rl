@@ -66,7 +66,7 @@ the mount; a training volume is not automatically mounted in rollout sandboxes.
 
 Start from [examples/basic/reverse-text/sft.toml](../../../examples/basic/reverse-text/sft.toml)
 in the selected revision. Model Factory SFT requires real datasets on a named volume;
-`HF_TOKEN` alone does not turn a Hub ID in `[data].name` into a volume dataset.
+`HF_TOKEN` alone does not turn a Hub ID in a source's `dataset` into a volume dataset.
 Use HF `load_dataset`-readable Parquet/JSON with `messages` or
 `prompt`/`completion` columns, not a `save_to_disk` directory.
 
@@ -86,11 +86,12 @@ upload dataset files, not the HF credential. Check the staging directory contain
 only the intended files. For HF authentication and download options, see the
 [HF CLI guide](https://huggingface.co/docs/huggingface_hub/guides/cli).
 
-In the copied SFT config, set `[data].name = "datasets/training-data"` (or
-`"/volume/datasets/training-data"`), `type = "sft"`, and the appropriate splits /
-subsets / column mapping. Verify loading in a fresh process with the same dataset
-library and options, without logging private rows. Pin and record the download
-revision; a local dataset path does not fetch `[data].revision` from the Hub.
+In the copied SFT config, set the `[[data.source]]` table's `dataset =
+"datasets/training-data"` (or `"/volume/datasets/training-data"`) and the
+appropriate `subset` / `split` / `columns`. Verify loading in a fresh process with
+the same dataset library and options, without logging private rows. Pin and record
+the download revision; a local dataset path does not fetch the source's `revision`
+from the Hub.
 
 The repository's basic SFT example includes `[eval]` and `[inference]`. The
 [Model Factory SFT docs](https://docs.primeintellect.ai/hosted-training/hosted-sft#online-evals)

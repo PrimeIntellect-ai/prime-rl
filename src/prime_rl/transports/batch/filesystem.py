@@ -5,7 +5,7 @@ from pathlib import Path
 import msgspec
 
 from prime_rl.transports.batch.base import BatchReceiver, BatchRequest, BatchSender, last_requested_at
-from prime_rl.transports.batch.types import MicroBatch
+from prime_rl.transports.batch.types import MicroBatchPlan
 from prime_rl.utils.pathing import get_step_path, sync_wait_for_path
 
 REQUEST_POLL_INTERVAL_S = 0.1
@@ -26,7 +26,7 @@ class FileSystemBatchSender(BatchSender):
         super().__init__(output_dir, data_world_size, retain)
         self.current_step = current_step
 
-    async def send(self, micro_batch_grid: list[list[MicroBatch]]) -> float:
+    async def send(self, micro_batch_grid: list[list[MicroBatchPlan]]) -> float:
         """Send grid of micro batches to the trainers. Encode + write run in a worker thread so the
         orchestrator event loop stays responsive, and before the wait, so only the rename sits
         between the last request and the batch."""
@@ -47,7 +47,7 @@ class FileSystemBatchSender(BatchSender):
         self.current_step += 1
         return send_end - send_start
 
-    def _encode_and_write(self, micro_batch_grid: list[list[MicroBatch]]) -> None:
+    def _encode_and_write(self, micro_batch_grid: list[list[MicroBatchPlan]]) -> None:
         self.log.write(self.current_step, [self.encode(micro_batches) for micro_batches in micro_batch_grid])
 
     async def _wait_for_requests(self) -> int:
@@ -79,8 +79,8 @@ class FileSystemBatchReceiver(BatchReceiver):
         write_atomic(step_path / f"rank_{self.rank}.request", msgspec.msgpack.encode(self.request()))
         sync_wait_for_path(self.log.path(self.current_step, self.data_rank))
 
-    def receive(self) -> list[MicroBatch]:
+    def receive(self) -> list[MicroBatchPlan]:
         """Read and return the micro batches from disk."""
-        micro_batches: list[MicroBatch] = self.decoder.decode(self.log.read(self.current_step, self.data_rank))
+        micro_batches: list[MicroBatchPlan] = self.decoder.decode(self.log.read(self.current_step, self.data_rank))
         self.current_step += 1
         return micro_batches

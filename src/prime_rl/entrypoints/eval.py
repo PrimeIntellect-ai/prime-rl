@@ -17,6 +17,8 @@ from subprocess import Popen
 from typing import Any
 
 from prime_rl.configs.eval import EvalConfig
+from prime_rl.configs.shared import ControlConfig
+from prime_rl.utils.admin_token import AdminTokenUses, TokenUse
 from prime_rl.utils.config import check_mode, cli, config_files, dump_resolved_config
 from prime_rl.utils.process import DEFAULT_COMMON_ENV_VARS, cleanup_processes, set_proc_title
 
@@ -144,7 +146,10 @@ def main():
         components.append(("Envs", f"{config_dir}/envs/eval/*.json"))
         for source in env_worker_pools:
             components.append(
-                (f" {source.resolved_name}", write_env_worker_pool_config(config_dir, "eval", source, config.log))
+                (
+                    f" {source.resolved_name}",
+                    write_env_worker_pool_config(config_dir, "eval", source, config.log, config.run_dir),
+                )
             )
     if config.dry_run:
         logger.info(f"Configs:\n{format_config_message(config_dir, 'eval', components)}")
@@ -154,6 +159,11 @@ def main():
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
     from prime_rl.eval.eval import run_eval
 
+    # The eval only checks the admin token, on its control API; its env worker pools get
+    # neither the token nor its digest, under any name the eval could read them through.
+    control = config.control or ControlConfig()
+    token_use = TokenUse(sends=config.client.admin_token_var, checks=control.admin_token_var)
+    pool_env = {**AdminTokenUses({"eval": token_use}).strip(os.environ), **DEFAULT_COMMON_ENV_VARS}
     processes: list[Popen] = []
     for source in env_worker_pools:
         name = source.resolved_name
@@ -164,7 +174,7 @@ def main():
             processes.append(
                 Popen(
                     ["env-worker-pool", "@", (config_dir / "envs" / "eval" / f"{name}.json").as_posix()],
-                    env={**os.environ, **DEFAULT_COMMON_ENV_VARS},
+                    env=pool_env,
                     stdout=log_file_handle,
                     stderr=log_file_handle,
                 )

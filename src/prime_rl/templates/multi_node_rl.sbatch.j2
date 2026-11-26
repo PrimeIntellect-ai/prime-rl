@@ -173,16 +173,32 @@ source .venv/bin/activate
 # inside the task because unexported vars in .env don't cross srun even with normal
 # SLURM env propagation; otherwise uv would silently fall back to the shared .venv.
 srun --ntasks-per-node=1 bash -s <<'SYNC_SH'
-cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync --all-extras --all-packages
+set -e
+cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync {{ sync_args }}
+# uv sync restores the locked NIXL wheel, whose bundled UCX breaks P/D KV transfer: reinstall the source build
+# into the project environment (uv pip would otherwise pick the activated .venv, not UV_PROJECT_ENVIRONMENT).
+if compgen -G "deps/nixl_cu13-*.whl" > /dev/null; then uv pip install -q --reinstall --no-deps --python "${UV_PROJECT_ENVIRONMENT:-.venv}" deps/nixl_cu13-*.whl; fi
 SYNC_SH
 {% else %}
 # Shared (NFS) venv: one sync on the batch node populates it for all nodes.
-uv sync --all-extras --all-packages
+uv sync {{ sync_args }}
+# uv sync restores the locked NIXL wheel, whose bundled UCX breaks P/D KV transfer: reinstall the source build
+# into the project environment (uv pip would otherwise pick the activated .venv, not UV_PROJECT_ENVIRONMENT).
+if compgen -G "deps/nixl_cu13-*.whl" > /dev/null; then uv pip install -q --reinstall --no-deps --python "${UV_PROJECT_ENVIRONMENT:-.venv}" deps/nixl_cu13-*.whl; fi
 {% endif %}
+# The environment is synced above. Every later `uv run` would sync it again: the per-process syncs race, and they
+# replace the source-built NIXL with the locked wheel.
+export UV_NO_SYNC=1
 
 {% if pre_run_command %}
 # Pre-run command
 {{ pre_run_command }}
+{% endif %}
+{% if admin_token.guards %}
+# The run's admin token, which guards the engines' admin routes and the control APIs.
+# Generated here unless the submitting environment or .env provides one, so it is
+# never written to this script.
+export PRL_ADMIN_TOKEN=${{ '{' }}{{ admin_token.names[0] }}:-$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")}
 {% endif %}
 
 # Cleanup stale node-local state from prior jobs. Orphan python/torchrun/vllm
@@ -248,6 +264,16 @@ python -m prime_rl.entrypoints.run_owner rl $CONFIG_DIR/rl.json srun --kill-on-b
     [ -f .env ] && source .env
     source .venv/bin/activate
     # Do not sync to avoid conflicts with lockfile
+{% if admin_token.guards %}
+    # Keep the admin token out of the environment: only the orchestrator, which calls
+    # the engines' admin routes, is started with it. The engines and the trainer's
+    # control API only check it, so they get its SHA-256 digest; the env worker pools
+    # and the router get neither.
+    ADMIN_TOKEN=$PRL_ADMIN_TOKEN
+    ADMIN_TOKEN_DIGEST=$(printf '%s' "$ADMIN_TOKEN" | sha256sum | cut -d' ' -f1)
+    unset PRL_ADMIN_TOKEN{% for name in admin_token.names %} {{ name }} {{ name }}_SHA256{% endfor %}
+
+{% endif %}
 
     # Higher ulimit
     ulimit -n 65536
@@ -379,6 +405,9 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         | tee $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
 
     CONFIG_PATH="$CONFIG_DIR/inference.json"
+{%- if admin_token.guards and admin_token.by_process.inference.checks %}
+    ADMIN_TOKEN_ENV="{{ admin_token.by_process.inference.checks }}_SHA256=$ADMIN_TOKEN_DIGEST"
+{%- endif %}
 {% include '_launch_rank.sh.j2' %}
 {% include '_launch_router.sh.j2' %}
 
@@ -409,9 +438,10 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     export LD_LIBRARY_PATH="$PROJECT_DIR/third_party/ucx/lib:$PROJECT_DIR/third_party/ucx/lib/ucx:${LD_LIBRARY_PATH:-}"
     export VLLM_NIXL_SIDE_CHANNEL_HOST=$LOCAL_IP
     export VLLM_NIXL_SIDE_CHANNEL_PORT=5600
+    export NIXL_NIC_AFFINITY={{ 1 if nixl_nic_affinity else 0 }}
 
-    # The kv_transfer_config (NIXL transfer + any KV offload connector) is built in
-    # InferenceConfig.to_namespace() from the per-node config, so it is no longer assembled here.
+    # InferenceConfig.to_namespace() builds the kv_transfer_config (NIXL transfer + any KV
+    # offload connector) from the per-node config.
 
     DECODE_COMPILE_CFG='{"cudagraph_mode":"FULL_DECODE_ONLY"}'
 
@@ -425,9 +455,13 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         PORT=$PREFILL_PORT
         START_RANK=$((ROLE_RANK * INFERENCE_DP_LOCAL))
         HEAD_HOST="${HOSTNAMES[$((REPLICA_BASE + SUB_REPLICA * NODES_PER_PREFILL_REPLICA))]}"
+{% if prefill_deepep_high_throughput %}
         # vLLM >= 0.29 auto-enables breakable CUDA graphs; capturing the DeepEP
         # high-throughput internode dispatch then fails ("timeout (dispatch CPU)").
+        # Only for that backend: without breakable graphs vLLM captures decode-only
+        # graphs, and every prefill step runs the model eagerly.
         export VLLM_USE_BREAKABLE_CUDAGRAPH=0
+{% endif %}
 {% for key, value in prefill_env_vars.items() %}
         export {{ key }}="{{ value }}"
 {% endfor %}
@@ -484,7 +518,13 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     for k in $(seq 0 $((INFERENCE_DP_LOCAL - 1))); do
         GLOBAL_RANK=$((START_RANK + k))
         RANK_GPUS=$(seq -s, $((k * INFERENCE_TP)) $((k * INFERENCE_TP + INFERENCE_TP - 1)))
-        RANK_EXTRA="{\"data_parallel_address\": \"$DP_ADDR\", \"data_parallel_rank\": $GLOBAL_RANK, $ROLE_EXTRA}"
+        # A single-engine role (DP=1, e.g. one TP=8 engine per node) is not an external-LB DP rank: vLLM rejects
+        # data_parallel_rank/address there ("data_parallel_external_lb can only be set when data_parallel_size > 1").
+        if [ "$DP" -gt 1 ]; then
+            RANK_EXTRA="{\"data_parallel_address\": \"$DP_ADDR\", \"data_parallel_rank\": $GLOBAL_RANK, $ROLE_EXTRA}"
+        else
+            RANK_EXTRA="{$ROLE_EXTRA}"
+        fi
         launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$INFERENCE_DATA_PARALLEL_RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")"
     done
 {%- else -%}
@@ -534,7 +574,7 @@ else
     echo $HOSTNAMES_STR | tee $LOG_DIR/trainer/node_${TRAIN_NODE_RANK}.log
 
     (
-        WANDB_SHARED_LABEL=trainer uv run torchrun \
+        {% if admin_token.guards and admin_token.by_process.trainer.checks %}{{ admin_token.by_process.trainer.checks }}_SHA256="$ADMIN_TOKEN_DIGEST" {% endif %}WANDB_SHARED_LABEL=trainer uv run torchrun \
             --role=trainer \
             --nnodes=$NUM_TRAIN_NODES \
             --nproc-per-node=$GPUS_PER_NODE \
@@ -576,7 +616,7 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
         {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
         {% elif uses_modelexpress_server %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $WEIGHT_BROADCAST_HOST"
         {% endif %}{% if use_zmq_transport %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --rollout_transport.host $ORCH_ADDR"
-        {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
+        {% endif %}{% if admin_token.guards and admin_token.by_process.orchestrator.sends %}{{ admin_token.by_process.orchestrator.sends }}="$ADMIN_TOKEN" {% endif %}{% if admin_token.guards and admin_token.by_process.orchestrator.checks %}{{ admin_token.by_process.orchestrator.checks }}_SHA256="$ADMIN_TOKEN_DIGEST" {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
             2>&1 | tee $LOG_DIR/orchestrator.log
         COMPONENT_CODE=$?
         if [ "$COMPONENT_CODE" -eq 0 ]; then

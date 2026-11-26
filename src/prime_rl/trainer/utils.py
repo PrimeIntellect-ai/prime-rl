@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
+import triton
 from rich import print as rich_print
 from rich.text import Text
 from torch import Tensor, nn
@@ -43,7 +44,9 @@ class GarbageCollection:
     In multi-GPU training, Python's automatic GC can trigger unpredictably on one rank
     while others wait at a synchronization point, stalling the entire step. This class
     disables automatic GC and runs deterministic collections every `interval` steps so
-    all ranks collect simultaneously.
+    all ranks collect simultaneously. It also collects right after any uncached Triton autotuning in which a
+    config failed to launch (out of shared memory): each failure leaves a reference cycle pinning the
+    Python stack that autotuned, including any compiled layer backward's buffers.
 
     Based on the approach from torchtitan (https://arxiv.org/abs/2505.05713).
     """
@@ -52,10 +55,15 @@ class GarbageCollection:
         assert interval > 0, "gc interval must be a positive integer"
         self.interval = interval
         gc.disable()
+        triton.knobs.autotuning.listener = self._collect_after_failed_autotune
         self._collect()
 
     def run(self, step: int):
         if step > 0 and step % self.interval == 0:
+            self._collect()
+
+    def _collect_after_failed_autotune(self, *, configs_timings: dict, cache_hit: bool, **_) -> None:
+        if not cache_hit and any(math.inf in timings for timings in configs_timings.values()):
             self._collect()
 
     def _collect(self, generation: int = 1):
@@ -94,29 +102,57 @@ def scale_gradients_(manager: "GradientOffloadManager | None", model: nn.Module,
     torch._foreach_mul_([grad.to_local() if isinstance(grad, DTensor) else grad for grad in grads], factor)
 
 
+MOE_SUBMODULES = ("experts", "router", "shared_expert")
+WRAPPER_PREFIXES = ("_orig_mod", "_checkpoint_wrapped_module", "_fsdp_wrapped_module")
+
+
+def grad_norm_group(name: str) -> str:
+    """The module group a parameter's gradient norm is reported under: its block in a decoder layer (`self_attn`,
+    `linear_attn`, `mlp`, or a MoE's `mlp.experts`, `mlp.router`, `mlp.shared_expert`), any norm as `norm`, and
+    outside the layers the top-level module (`embed_tokens`, `lm_head`)."""
+    parts = [part for part in name.split(".")[:-1] if part not in WRAPPER_PREFIXES]
+    if "layers" in parts:
+        parts = parts[parts.index("layers") + 2 :]
+    else:
+        parts = [part for part in parts if part not in ("model", "language_model")]
+    if not parts:
+        return "other"
+    if "norm" in parts[0]:
+        return "norm"
+    if parts[0] == "mlp" and len(parts) > 1 and parts[1] in MOE_SUBMODULES:
+        return f"mlp.{parts[1]}"
+    return parts[0]
+
+
 def clip_grad_norm_(
     manager: "GradientOffloadManager | None",
     model: nn.Module,
     max_norm: float,
-) -> Tensor:
+) -> tuple[Tensor, dict[str, Tensor]]:
+    """Clip the gradients to `max_norm`. Returns the total gradient norm before clipping and, without gradient
+    offloading, the norm of each module group (see `grad_norm_group`), whose squares sum to the total's."""
+    group_norms: dict[str, Tensor] = {}
     if manager is not None:
         grad_norm = manager.clip_grad_norm_(max_norm)
     else:
         # Norm reductions must complete on each parameter mesh before combining
         # dense, expert-parallel, and other model-parallel gradients.
-        mesh_parameters = defaultdict(list)
-        for param in model.parameters():
+        group_parameters = defaultdict(list)
+        for name, param in model.named_parameters():
             if param.grad is not None:
                 mesh = param.grad.device_mesh if isinstance(param.grad, DTensor) else None
-                mesh_parameters[mesh].append(param)
-        norms = []
-        for parameters in mesh_parameters.values():
+                group_parameters[grad_norm_group(name), mesh].append(param)
+        squares = defaultdict(list)
+        for (group, _), parameters in group_parameters.items():
             norm = torch.nn.utils.get_total_norm([param.grad for param in parameters])
-            norms.append(norm.full_tensor() if isinstance(norm, DTensor) else norm)
-        grad_norm = torch.linalg.vector_norm(torch.stack(norms)) if norms else torch.tensor(0.0)
-        for parameters in mesh_parameters.values():
+            squares[group].append((norm.full_tensor() if isinstance(norm, DTensor) else norm).square())
+        group_norms = {group: torch.stack(values).sum().sqrt() for group, values in squares.items()}
+        grad_norm = (
+            torch.linalg.vector_norm(torch.stack(list(group_norms.values()))) if group_norms else torch.tensor(0.0)
+        )
+        for parameters in group_parameters.values():
             torch.nn.utils.clip_grads_with_norm_(parameters, max_norm, grad_norm)
-    return grad_norm.cuda() if grad_norm.device.type == "cpu" else grad_norm
+    return (grad_norm.cuda() if grad_norm.device.type == "cpu" else grad_norm), group_norms
 
 
 class _PageLockedMapping(mmap.mmap):
@@ -159,8 +195,13 @@ def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:
     monitors.log(...) call (once per step).
     """
     ckpt_dir = get_ckpt_dir(output_dir)
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
-    usage = shutil.disk_usage(str(ckpt_dir))
+    try:
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        usage = shutil.disk_usage(str(ckpt_dir))
+    except OSError as e:
+        # Monitoring only: a transient filesystem error (e.g. a network filesystem timing out) must not stop training
+        get_logger().warning(f"Skipping checkpoint disk metrics: {e}")
+        return {}
     total = float(usage.total) if usage.total else 0.0
     return {
         "system/ckpt_disk_free_gib": usage.free / 1024**3,

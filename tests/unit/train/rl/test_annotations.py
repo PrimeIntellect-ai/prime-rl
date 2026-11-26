@@ -1,5 +1,4 @@
 import os
-import socket
 from types import SimpleNamespace
 from typing import Any
 
@@ -11,16 +10,11 @@ import torch.multiprocessing as mp
 
 from prime_rl import monitors
 from prime_rl.trainer.rl.annotations import AnnotationWriter, gather_streams
-
-
-def _free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+from prime_rl.utils.utils import get_free_port
 
 
 def _spawn(fn, world_size: int, *args) -> None:
-    mp.spawn(_init_and_run, args=(world_size, _free_port(), fn, args), nprocs=world_size, join=True)
+    mp.spawn(_init_and_run, args=(world_size, get_free_port(), fn, args), nprocs=world_size, join=True)
 
 
 def _init_and_run(rank: int, world_size: int, port: int, fn, args) -> None:

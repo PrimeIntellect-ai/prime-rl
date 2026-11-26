@@ -139,12 +139,31 @@ class RunConfig(BaseConfig):
     """Run directory name — the run writes all its artifacts to ``output_dir / dir``. Defaults to ``run.name``; set it only when the directory should differ from the display name."""
 
 
+class BaseCheckpointConfig(BaseConfig):
+    output_dir: Path | None = None
+    """Override directory for checkpoints. If set, checkpoints are written here instead of under the run's
+    ``output_dir``, e.g. on a separate storage volume. In an RL run the trainer and the orchestrator each write
+    their half of a step here."""
+
+    interval: int | None = Field(None, ge=1)
+    """Step interval at which to save checkpoints."""
+
+    keep_last: int | None = Field(None, ge=1)
+    """Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency."""
+
+    keep_interval: int | None = Field(None, ge=1)
+    """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
+
+
 class ControlConfig(BaseConfig):
     host: str = "0.0.0.0"
     """Address the control API binds to."""
 
     port: int = Field(8040, ge=1, le=65535)
     """Port the control API listens on."""
+
+    admin_token_var: str = "PRIME_RL_ADMIN_TOKEN"
+    """Name of the environment variable holding the run's admin token. When it, or ``<name>_SHA256`` holding the token's SHA-256 digest, is set, every control request must carry the token in the ``X-Prime-Admin-Token`` header."""
 
 
 class ResumeConfig(BaseConfig):
@@ -211,6 +230,9 @@ class SlurmConfig(BaseConfig):
     shared_fs: bool = True
     """Whether the project filesystem (including the venv) is shared across nodes (e.g. NFS). When True, a single ``uv sync`` on the batch node suffices. Set to False when the venv is node-local (e.g. ``UV_PROJECT_ENVIRONMENT`` on ``/tmp``) so ``uv sync`` runs on every node via srun."""
 
+    sync_args: str = "--all-extras --all-packages"
+    """Arguments of the ``uv sync`` the job runs before it starts. Narrow them to install less, e.g. ``--extra train`` for an SFT job without online evals. Set it in a TOML file: on the command line a value starting with ``--`` is read as a flag."""
+
     @property
     def template_vars(self) -> dict:
         """Common template variables for all SLURM templates."""
@@ -225,15 +247,13 @@ class SlurmConfig(BaseConfig):
             "pre_run_command": self.pre_run_command,
             "cleanup_grace_period": self.cleanup_grace_period,
             "shared_fs": self.shared_fs,
+            "sync_args": self.sync_args,
         }
 
     @model_validator(mode="after")
     def resolve_project_dir(self):
         self.project_dir = self.project_dir.resolve()
         return self
-
-
-ServerType = Literal["vllm", "openai"]
 
 
 class VLMConfig(BaseConfig):
@@ -257,6 +277,9 @@ class DynamoConfig(BaseConfig):
     """Dynamo frontend URL used to discover inference workers for RL control."""
 
 
+ADMIN_TOKEN_HEADER = "X-Prime-Admin-Token"
+
+
 class ClientConfig(BaseClientConfig):
     wait_for_ready_timeout: int = 3600
     """Seconds to wait at startup for the inference pool to become ready."""
@@ -267,12 +290,16 @@ class ClientConfig(BaseClientConfig):
     admin_base_url: list[str] | None = None
     """Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in multi-replica or disaggregated P/D deployments where the router must not handle admin traffic."""
 
+    admin_token_var: str | None = None
+    """Name of the environment variable holding the admin token of the inference servers. When it is set and non-empty, engine admin requests carry it in the ``X-Prime-Admin-Token`` header."""
+
 
 class VLLMClientConfig(ClientConfig):
     """Client defaults for the live inference deployment managed by training."""
 
     base_url: str = "http://localhost:8000/v1"
     api_key_var: str = "VLLM_API_KEY"
+    admin_token_var: str | None = "PRIME_RL_ADMIN_TOKEN"
 
 
 class PolicyClientConfig(VLLMClientConfig):

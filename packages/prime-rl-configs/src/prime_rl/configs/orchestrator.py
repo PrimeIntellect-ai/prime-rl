@@ -17,6 +17,7 @@ from prime_rl.configs.diff import Frozen, Live
 from prime_rl.configs.env_worker_pool import ServeConfig
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
+    BaseCheckpointConfig,
     BaseModelConfig,
     ControlConfig,
     EnvVars,
@@ -260,7 +261,7 @@ class TrainSourceConfig(EnvConfig):
             return self
         # The source owns the distribution replayed by the trainer; agents may
         # change generation limits and rendering without changing that distribution.
-        agent_options = {"max_tokens", "reasoning_effort", "chat_template_kwargs"}
+        agent_options = {"max_tokens", "reasoning_effort", "chat_template_kwargs", "skip_special_tokens"}
         supported = (
             agent_options
             | TrainSamplingConfig.model_fields.keys()
@@ -437,9 +438,14 @@ class RLOnlineEvalConfig(ScheduledEvalConfig):
     inference pool, on the policy the train rollouts see."""
 
 
-class CheckpointConfig(BaseConfig):
-    interval: int | None = Field(None, ge=1)
-    """Step interval at which to save the orchestrator checkpoint."""
+class CheckpointConfig(BaseCheckpointConfig):
+    rollouts: bool = False
+    """Also checkpoint the pipeline: the finished but unshipped train episodes, and the
+    running train rollouts, each as a memory checkpoint of its sandbox. A resumed run
+    continues them, so it starts with the batches the checkpointed run would have
+    shipped. A rollout that cannot take a memory checkpoint starts over. The checkpoint
+    of step N is then written when the trainer publishes the weights of N, not when N
+    ships. Eval rollouts are never checkpointed."""
 
 
 class ConcurrencyConfig(BaseConfig):

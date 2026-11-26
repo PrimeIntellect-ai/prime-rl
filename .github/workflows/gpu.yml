@@ -40,20 +40,15 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/labels/gpu-ci"
 
-  unit-gpu:
-    name: Unit (GPU)
+  # The full suite runs only when the tiny one passes
+  tiny:
+    name: Tiny (GPU)
     needs: gate
-    runs-on: prime-rl-2xh100
-    container:
-      image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
-      options: --gpus all
-    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MODAL_APP_NAME: prime-rl-ci-${{ github.run_id }}-${{ github.run_attempt }}-tiny
     steps:
-      - name: Install Git
-        run: |
-          apt-get update
-          apt-get install -y git
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -68,120 +63,39 @@ jobs:
               git config --global url."https://github.com/".insteadOf "git@github.com:"
               git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
           - name: Install uv
-            uses: astral-sh/setup-uv@v10.0.1
+            uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
             with:
               enable-cache: false
-      - name: Install dependencies
-        timeout-minutes: 20
+      - name: Run tiny tests on Modal
         env:
-          UV_LOCK_TIMEOUT: "600"
-          UV_HTTP_RETRIES: "8"
-        run: uv sync --all-extras --all-packages --locked
-      - name: Run unit tests
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: uvx --from modal==1.6.4 modal run --name "$MODAL_APP_NAME" scripts/modal_ci.py --suite tiny
+      # A cancelled job kills the Modal client before it stops the app, whose containers would keep running.
+      - name: Stop the Modal app
+        if: cancelled()
         env:
-          USERNAME_CI: CI_RUNNER
-          UV_NO_SYNC: "1"
-          WANDB_MODE: offline
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
-          GITHUB_REF_NAME: ${{ github.ref_name }}
-          GITHUB_HEAD_REF: ${{ github.head_ref }}
-          PYTEST_OUTPUT_DIR: /tmp/outputs
-        run: uv run pytest tests/unit -m gpu
-
-  integration:
-    name: Integration / ${{ matrix.name }}
-    needs: gate
-    runs-on: prime-rl-2xh100
-    container:
-      image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
-      options: --gpus all
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      # Bound per-PR fan-out: at most 5 integration jobs at a time (plus unit-tests),
-      # i.e. 6 h100 pods per PR. Tune together with the ARC scale set maxRunners.
-      max-parallel: 5
-      matrix:
-        include:
-          - {test: reverse_text_sft, name: Reverse Text SFT, dashboard: true}
-          - {test: reverse_text_sft_lora, name: Reverse Text SFT LoRA, dashboard: true}
-          - {test: pretrain, name: Pretrain}
-          - {test: reverse_text, name: Reverse Text, dashboard: true}
-          - {test: reverse_text_rl_opd, name: Reverse Text RL OPD, dashboard: true}
-          - {test: reverse_text_rl_sft, name: Reverse Text RL SFT, dashboard: true}
-          - {test: alphabet_sort, name: Alphabet Sort, dashboard: true}
-          - {test: reverse_text_lora, name: Reverse Text LoRA}
-          - {test: reverse_text_moe, name: Reverse Text MoE}
-          - {test: reverse_text_modelexpress, name: Reverse Text ModelExpress}
-    steps:
-      - name: Install Git
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
         run: |
-          apt-get update
-          apt-get install -y git
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          submodules: false
-          persist-credentials: false
-      - parallel:
-          - name: Init public submodules
-            env:
-              GITHUB_TOKEN: ${{ github.token }}
-            run: |
-              git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
-              git config --global url."https://github.com/".insteadOf "git@github.com:"
-              git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
-          - name: Install uv
-            uses: astral-sh/setup-uv@v10.0.1
-            with:
-              enable-cache: false
-      - name: Install dependencies
-        timeout-minutes: 20
-        env:
-          UV_LOCK_TIMEOUT: "600"
-          UV_HTTP_RETRIES: "8"
-        run: uv sync --all-extras --all-packages --locked
-      - name: Install Playwright browser
-        if: matrix.dashboard
-        timeout-minutes: 16
-        shell: bash
-        run: |
-          for attempt in 1 2 3; do
-            time timeout 300 uv run --no-sync playwright install --with-deps --only-shell chromium && exit 0
-            echo "Playwright install attempt $attempt failed"
-          done
-          exit 1
-      - name: Install ModelExpress server
-        if: matrix.test == 'reverse_text_modelexpress'
-        run: |
-          apt-get install -y curl make gcc
-          bash scripts/install_modelexpress.sh
-      - name: Run integration tests
-        env:
-          USERNAME_CI: CI_RUNNER
-          UV_NO_SYNC: "1"
-          WANDB_MODE: offline
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
-          PRIME_BASE_URL: ${{ secrets.PRIME_BASE_URL }}
-          PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
-          GITHUB_REF_NAME: ${{ github.ref_name }}
-          GITHUB_HEAD_REF: ${{ github.head_ref }}
-          PYTEST_OUTPUT_DIR: /tmp/outputs
-          VLLM_WORKER_MULTIPROC_METHOD: spawn
-          # The runner pods expose an InfiniBand device without a usable address, and UCX
-          # auto-selects it, so ModelExpress's NIXL agent fails with uct_iface_open "Address
-          # not valid". "^ib" excludes the InfiniBand transports, leaving TCP and CUDA IPC.
-          # ModelExpress applies it to UCX_TLS only for its agent. An empty value leaves UCX untouched.
-          NIXL_UCX_TLS: ${{ matrix.test == 'reverse_text_modelexpress' && '^ib' || '' }}
-        run: uv run pytest -vvs tests/integration/test_${{ matrix.test }}.py
+          uvx --from modal==1.6.4 modal app list --json \
+            | jq -r --arg name "$MODAL_APP_NAME" '.[] | select(.description == $name and .state != "stopped") | .app_id' \
+            | xargs -r -n1 uvx --from modal==1.6.4 modal app stop -y
       - name: Upload run logs on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.test }}-logs
-          path: /tmp/outputs/**/*.log
+          name: tiny-logs
+          path: outputs/modal-ci
           retention-days: 7
           if-no-files-found: ignore
+
+  full:
+    name: Full (GPU)
+    needs: tiny
+    # One full run at a time across PRs and main, so that Tiny runs keep their GPUs: a run waits for the one in
+    # progress. GitHub keeps one waiting run per group, and a newer one replaces it.
+    concurrency:
+      group: gpu-full-suite
+    uses: ./.github/workflows/gpu-full.yml
+    secrets: inherit

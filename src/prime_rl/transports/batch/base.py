@@ -6,7 +6,7 @@ from pathlib import Path
 
 import msgspec
 
-from prime_rl.transports.batch.types import MicroBatch, encode_array
+from prime_rl.transports.batch.types import MicroBatchPlan
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_batch_dir, get_step_path
 
@@ -74,8 +74,7 @@ class BatchSender(ABC):
 
     def __init__(self, output_dir: Path, data_world_size: int, retain: bool = False):
         self.logger = get_logger()
-        # Per-token streams are numpy arrays; each goes out as its raw bytes.
-        self.encoder = msgspec.msgpack.Encoder(enc_hook=encode_array)
+        self.encoder = msgspec.msgpack.Encoder()
         self.output_dir = output_dir
         self.data_world_size = data_world_size
         # Seconds the last send waited for the trainer to request its step, and when its last rank asked
@@ -86,12 +85,12 @@ class BatchSender(ABC):
         self.log = BatchLog(output_dir)
 
     @abstractmethod
-    async def send(self, micro_batch_grid: list[list[MicroBatch]]) -> float:
+    async def send(self, micro_batch_grid: list[list[MicroBatchPlan]]) -> float:
         """Send grid of micro batches to the trainers once every trainer rank requested the step.
         Returns the seconds spent handing the step to the transport, excluding the wait."""
         pass
 
-    def encode(self, micro_batches: list[MicroBatch]) -> bytes:
+    def encode(self, micro_batches: list[MicroBatchPlan]) -> bytes:
         """Byte-identical to ``self.encoder.encode(micro_batches)``, but encodes one
         micro batch at a time so a worker thread releases the GIL between them."""
         n = len(micro_batches)
@@ -119,7 +118,7 @@ class BatchReceiver(ABC):
 
     def __init__(self, output_dir: Path, data_rank: int, rank: int, world_size: int, current_step: int):
         self.logger = get_logger()
-        self.decoder = msgspec.msgpack.Decoder(type=list[MicroBatch])
+        self.decoder = msgspec.msgpack.Decoder(type=list[MicroBatchPlan])
         self.output_dir = output_dir
         self.data_rank = data_rank
         self.rank = rank
@@ -140,7 +139,7 @@ class BatchReceiver(ABC):
         pass
 
     @abstractmethod
-    def receive(self) -> list[MicroBatch]:
+    def receive(self) -> list[MicroBatchPlan]:
         """Receive the micro batches ``wait`` requested."""
         pass
 

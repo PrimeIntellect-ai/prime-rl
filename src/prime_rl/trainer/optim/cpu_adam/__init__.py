@@ -35,7 +35,9 @@ def _extension() -> ModuleType:
     return load(
         name=f"prime_rl_cpu_adam_{capability}",
         sources=[str(Path(__file__).with_name("kernel.cpp"))],
-        extra_cflags=["-O3", "-fopenmp", *capability_flags],
+        # No FMA contraction, so every inlined copy of a kernel's loop rounds alike and results don't depend on the
+        # thread count.
+        extra_cflags=["-O3", "-fopenmp", "-ffp-contract=off", *capability_flags],
         extra_ldflags=["-fopenmp"],
         verbose=False,
     )
@@ -43,6 +45,12 @@ def _extension() -> ModuleType:
 
 def load_cpu_adamw_kernel() -> None:
     _extension()
+
+
+def set_num_threads(num_threads: int) -> None:
+    """Set the calling thread's intra-op thread count (and torch's process-wide default); later changes to the default
+    don't reach the thread."""
+    _extension().set_num_threads(num_threads)
 
 
 @torch.no_grad()

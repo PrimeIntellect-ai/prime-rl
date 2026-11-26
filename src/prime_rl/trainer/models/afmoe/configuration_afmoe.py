@@ -1,7 +1,4 @@
 from transformers.configuration_utils import PretrainedConfig, layer_type_validation
-from transformers.utils import logging
-
-logger = logging.get_logger(__name__)
 
 
 class AfmoeConfig(PretrainedConfig):

@@ -8,6 +8,7 @@ from prime_rl.transports.batch.filesystem import (
 )
 from prime_rl.transports.batch.types import (
     MicroBatch,
+    MicroBatchPlan,
     MMImageRef,
     MMRefs,
     RoutedExperts,
@@ -53,6 +54,7 @@ __all__ = [
     "MMRefs",
     "TrainingSample",
     "MicroBatch",
+    "MicroBatchPlan",
     "SamplerSupport",
     "RoutedExperts",
     "setup_batch_sender",

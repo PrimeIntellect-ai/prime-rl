@@ -1,0 +1,49 @@
+# Qwen3.6-35B-A3B agentic RL at 256k context with the bash harness on a prime sandbox runtime:
+# train on `scaleswe`, eval on SWE-bench Verified. Compose it with a hardware overlay from `gpu/`:
+#
+#   uv run rl @ examples/advanced/qwen3.6-35b-a3b/rl.toml @ examples/advanced/qwen3.6-35b-a3b/gpu/h200.toml
+
+seq_len = 262144
+
+[slurm]
+job_name = "qwen3.6-rl"
+
+[model]
+name = "Qwen/Qwen3.6-35B-A3B"
+
+[weight_broadcast]
+type = "nccl"
+
+# --- Orchestrator ---
+
+[orchestrator]
+batch_size = 256
+max_staleness = 16
+
+[orchestrator.train]
+group_size = 8
+
+[[orchestrator.train.source]]
+name = "scaleswe"
+env.taskset.id = "scaleswe"
+env.agent.harness.id = "bash"
+
+[orchestrator.eval]
+interval = 25
+
+[[orchestrator.eval.source]]
+name = "swebench-verified"
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "bash"
+env.agent.timeout.rollout = 3600
+
+# --- Inference ---
+
+[inference.vllm]
+max_model_len = 262144
+enable_prefix_caching = true
+
+# Text-only RL: skip the vision encoder.
+[inference.vllm.limit_mm_per_prompt]
+image = 0
+video = 0

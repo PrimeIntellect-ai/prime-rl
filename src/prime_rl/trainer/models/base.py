@@ -1,11 +1,14 @@
-from collections.abc import Iterable
-from typing import Protocol, runtime_checkable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from itertools import chain
+from typing import ClassVar, Protocol, runtime_checkable
 
+import torch
 from torch import Tensor, nn
-from transformers.modeling_utils import PreTrainedModel
 
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.ngram import NGramTable
+from prime_rl.trainer.models.layers.rotary_emb import ROPE_INIT_FUNCTIONS
 from prime_rl.utils.cp import CPContext
 
 
@@ -16,6 +19,21 @@ class AttentionFlops(Protocol):
     def attention_flops(self, seq_len: int) -> int:
         """Training FLOPs of this layer's sequence mixing for one document of `seq_len` tokens."""
         ...
+
+
+@dataclass
+class TextModelOutput:
+    """Final hidden states of an inner text model."""
+
+    last_hidden_state: Tensor
+
+
+@dataclass
+class VisionModelOutput:
+    """Per-patch hidden states of a vision encoder and the merged embeddings it feeds the text model."""
+
+    last_hidden_state: Tensor
+    pooler_output: Tensor
 
 
 def count_active_params(model: nn.Module, params: Iterable[nn.Parameter] | None = None) -> int:
@@ -43,16 +61,78 @@ def count_active_params(model: nn.Module, params: Iterable[nn.Parameter] | None 
     return sum(param.numel() for param in params.values()) - inactive
 
 
-class PreTrainedModelPrimeRL(PreTrainedModel):
+class PreTrainedModelPrimeRL(nn.Module):
     """
-    Base class for all PrimeRL models that extends HuggingFace PreTrainedModel.
+    Base class for all PrimeRL models.
 
-    Provides a unified interface for state dict conversion between different formats
-    (e.g., HuggingFace format vs. training-optimized format) and buffer initialization
-    after loading with meta device.
+    Builds a model from its HF config, initializes and ties its weights, and provides a unified interface
+    for state dict conversion between different formats (e.g., HuggingFace format vs. training-optimized
+    format) and buffer initialization after loading with meta device.
     """
 
     cp_context: CPContext = CPContext()
+    supports_tied_word_embeddings: ClassVar[bool] = False
+
+    def __init__(self, config) -> None:
+        super().__init__()
+        self.config = config
+        if config._attn_implementation is None:
+            config._attn_implementation = "flash_attention_3"
+
+    @classmethod
+    def from_config(cls, config, *, attn_implementation: str | None = None, dtype: torch.dtype | None = None):
+        """Build the model with `dtype` (default `config.dtype`) as torch's default dtype, recorded on the config."""
+        dtype = config.dtype if dtype is None else dtype
+        config.dtype = dtype
+        for sub_config_key in config.sub_configs:
+            if (sub_config := getattr(config, sub_config_key)) is not None:
+                sub_config.dtype = dtype
+        if attn_implementation is not None:
+            config._attn_implementation = attn_implementation
+        previous_dtype = torch.get_default_dtype()
+        if dtype is not None:
+            torch.set_default_dtype(dtype)
+        try:
+            return cls(config)
+        finally:
+            torch.set_default_dtype(previous_dtype)
+
+    def post_init(self) -> None:
+        """Initialize the weights unless building on the meta device, then tie them."""
+        if torch.empty(0).device.type != "meta":
+            self.initialize_weights()
+        self.tie_weights()
+
+    def tie_weights(self) -> None:
+        """Share the input embedding weight with `lm_head` when the class supports it and the config asks for it."""
+        if self.supports_tied_word_embeddings and getattr(self.config, "tie_word_embeddings", False):
+            self.lm_head.weight = self.get_input_embeddings().weight
+
+    def get_input_embeddings(self) -> nn.Embedding:
+        """The input embedding table: `embed_tokens` on an inner model, `model.embed_tokens` on a causal LM."""
+        embed_tokens = getattr(self, "embed_tokens", None)
+        return embed_tokens if embed_tokens is not None else self.model.embed_tokens
+
+    @torch.no_grad()
+    def initialize_weights(self) -> None:
+        """Run `_init_weights` on each module not yet initialized, children first, nested models with their own."""
+
+        def initialize(module: nn.Module, initialize_module: Callable[[nn.Module], None]) -> None:
+            for child in module.children():
+                if isinstance(child, PreTrainedModelPrimeRL):
+                    initialize(child, child._initialize_module)
+                else:
+                    initialize(child, initialize_module)
+            initialize_module(module)
+
+        initialize(self, self._initialize_module)
+
+    def _initialize_module(self, module: nn.Module) -> None:
+        if getattr(module, "_weights_initialized", False):
+            return
+        if next(chain(module.parameters(recurse=False), module.buffers(recurse=False)), None) is not None:
+            self._init_weights(module)
+        module._weights_initialized = True
 
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:
@@ -75,35 +155,15 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         """
         return False
 
-    @classmethod
-    def from_config(cls, config, trust_remote_code: bool = False, **kwargs):
-        """Public from_config that mirrors the Auto class API."""
-        return cls._from_config(config, **kwargs)
+    def fp32_modules(self) -> list[nn.Module]:
+        """Modules whose parameters stay FP32 in the forward instead of taking FSDP's BF16 cast.
 
-    @classmethod
-    def _can_set_experts_implementation(cls) -> bool:
-        """PrimeRL models use custom MoE implementations and don't support dynamic experts implementation."""
-        return False
-
-    def _check_and_adjust_attn_implementation(
-        self, attn_implementation: str | None, is_init_check: bool = False, allow_all_kernels: bool = False
-    ) -> str:
-        """Bypass transformers' flash attention availability checks.
-
-        PrimeRL custom models dispatch attention through their own ``ATTN_IMPL2CLASS``
-        dictionaries, not through transformers' ``ALL_ATTENTION_FUNCTIONS``.  The default
-        ``_check_and_adjust_attn_implementation`` validates that the requested flash
-        attention package is installed and the device is supported, which fails on
-        CPU-only machines and is unnecessary because we never call transformers'
-        attention dispatch for custom models.
+        Each must own only such parameters. FSDP shards each as its own unit, gathers it in FP32 before the language
+        model's forward and frees it after the backward. The decoder layers must not call such a module, since
+        `module(...)` would run its FSDP hooks inside the compiled layer: they read its parameters or call its methods
+        (`module.forward(...)`) instead.
         """
-        if attn_implementation is None:
-            attn_implementation = "flash_attention_3"
-        return attn_implementation
-
-    def get_correct_experts_implementation(self, requested_experts: str | None) -> str:
-        """PrimeRL models always use eager experts implementation."""
-        return "eager"
+        return []
 
     def num_active_params(self) -> int:
         """Parameters a text token multiplies through, LoRA adapters included."""
@@ -156,10 +216,6 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         """Convert one layer from PrimeRL to HuggingFace format in-place."""
         return self.convert_to_hf(state_dict)
 
-    def convert_layer_to_prime(self, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
-        """Convert one layer from HuggingFace to PrimeRL format in-place."""
-        return self.convert_to_prime(state_dict)
-
     @classmethod
     def convert_adapter_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         """
@@ -176,7 +232,35 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         return state_dict
 
     def _init_weights(self, module: nn.Module) -> None:
-        super()._init_weights(module)
+        """Initialize the parameters and buffers `module` owns directly."""
+        if hasattr(self.config, "initializer_range"):
+            std = self.config.initializer_range or 0.02
+        elif hasattr(self.config, "init_std"):
+            std = self.config.init_std
+        elif hasattr(self.config, "initializer_factor"):
+            std = self.config.initializer_factor
+        else:
+            std = getattr(self.config.get_text_config(), "initializer_range", 0.02)
+
+        module_name = type(module).__name__
+        if isinstance(module, (nn.Linear, nn.Conv1d, nn.Conv3d)):
+            if getattr(module, "weight", None) is not None:
+                nn.init.normal_(module.weight, mean=0.0, std=std)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=std)
+            if module.padding_idx is not None:
+                nn.init.zeros_(module.weight[module.padding_idx])
+        elif "LayerNorm" in module_name or "RMSNorm" in module_name:
+            if getattr(module, "weight", None) is not None:
+                nn.init.ones_(module.weight)
+            if getattr(module, "bias", None) is not None:
+                nn.init.zeros_(module.bias)
+        elif "RotaryEmbedding" in module_name and hasattr(module, "original_inv_freq"):
+            inv_freq, _ = ROPE_INIT_FUNCTIONS[module.rope_type](module.config)
+            module.inv_freq.copy_(inv_freq)
+            module.original_inv_freq.copy_(inv_freq)
         if isinstance(module, MoE):
             module.init_weights(self.config.get_text_config().initializer_range, module.tokens_per_expert.device)
 
@@ -193,4 +277,4 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         raise NotImplementedError(f"init_buffers_post_meta is not implemented for {self.__class__.__name__}")
 
 
-__all__ = ["PreTrainedModelPrimeRL"]
+__all__ = ["PreTrainedModelPrimeRL", "TextModelOutput", "VisionModelOutput"]

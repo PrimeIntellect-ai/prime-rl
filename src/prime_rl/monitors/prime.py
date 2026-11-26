@@ -8,6 +8,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import msgspec
+import orjson
 import prime_runs as pr
 from prime_runs.config import Config
 
@@ -17,7 +19,7 @@ from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.supervised import SupervisedTrainerConfig
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.monitors.base import Kind, Monitor, Subset
+from prime_rl.monitors.base import Kind, Monitor
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.links import publish_link, register_links
 from prime_rl.utils.pathing import get_platform_run_path
@@ -25,7 +27,7 @@ from prime_rl.utils.record import update_record
 from prime_rl.utils.utils import sanitize
 
 if TYPE_CHECKING:
-    import verifiers.v1 as vf
+    from prime_rl.env.heads import EpisodeHead, EpisodeRecord
 
 BASE_URL_VAR = "PRIME_API_BASE"
 EVAL_ID_VAR = "PRIME_RUNS_EVAL_ID"
@@ -42,7 +44,7 @@ NO_KEY = (
 
 
 def _base_url() -> str | None:
-    """$PRIME_API_BASE historically points at the RFT API root (``.../api/v1/rft``);
+    """$PRIME_API_BASE may point at the RFT API root (``.../api/v1/rft``);
     the SDK takes the platform base URL. Unset means the SDK resolves it."""
     base = os.getenv(BASE_URL_VAR)
     return base.rstrip("/").removesuffix("/rft") if base else None
@@ -206,21 +208,24 @@ class PrimeMonitor(Monitor):
         # step=None rows keep a time anchor.
         self.run.log_metrics(metrics, step=step)
 
-    async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
-        """Every episode ships whole as it arrives (the ``all`` subset), errored and
-        filtered ones included, online evals too. The SDK keys each to its dispatch
-        step and work type off ``run.work`` - the ``TrainRunInfo`` the dispatcher
-        stamps at emit time."""
-        if subset != "all" or not episodes:
+    def wants_record(self, kind: Kind, group_id: str | None) -> bool:
+        return True
+
+    async def log_records(self, records: list[tuple[EpisodeHead, EpisodeRecord]], step: int, kind: Kind) -> None:
+        """Every episode ships whole as it arrives, errored and filtered ones included, online
+        evals too, as the record its env worker serialized. The SDK keys each to its dispatch
+        step and work type off ``run.work`` - the ``TrainRunInfo`` the dispatcher stamps."""
+        if not records:
             return
+        uploads = [RecordUpload(episode, record) for episode, record in records]
         if self.run is not None:
             # A queue put that never blocks.
-            self.run.log_episodes(episodes)
+            self.run.log_episodes(uploads)
             return
-        by_env: dict[str, list[vf.Episode]] = {}
-        for episode in episodes:
-            if episode.env.name is not None:
-                by_env.setdefault(episode.env.name, []).append(episode)
+        by_env: dict[str, list[RecordUpload]] = {}
+        for upload in uploads:
+            if upload.env_name is not None:
+                by_env.setdefault(upload.env_name, []).append(upload)
         for env_name, batch in by_env.items():
             run = await self.run_for(env_name, step)
             if run is not None:
@@ -345,7 +350,7 @@ class PrimeMonitor(Monitor):
         if self.run is None:
             await self.run_for(env_name, step, expected)
 
-    async def log_eval_epoch(self, env_name: str, step: int, episodes: list[vf.Episode]) -> None:
+    async def log_eval_epoch(self, env_name: str, step: int, episodes: list[EpisodeHead]) -> None:
         if self.run is not None:
             return
         run = await self.run_for(env_name, step)
@@ -357,3 +362,40 @@ class PrimeMonitor(Monitor):
             self.logger.warning(f"Failed to finish the {env_name} (Step {step}) evaluation: {type(e).__name__}: {e}")
             return
         self.logger.info(f"Uploaded {env_name} (Step {step}) evaluation - {run.url}")
+
+
+class RecordUpload:
+    """An episode for the Prime SDK as its env worker serialized it: the SDK uploads a record
+    that names its run as is (``to_json``), and maps one that does not (``to_record``) to key
+    it to the run."""
+
+    def __init__(self, episode: EpisodeHead, record: EpisodeRecord) -> None:
+        self.run = episode.run
+        self.env_name = episode.env.name
+        # Every trace of the record carries the episode's run (`Episode.record_run`).
+        self.traces = [_TraceRun(episode.run) for _ in episode.traces]
+        self._json = record.json
+
+    def to_json(self) -> bytes:
+        return self._json
+
+    def to_record(self) -> dict[str, Any]:
+        """The record as a mapping the SDK can key to the run: the episode's and each trace's
+        ``run`` decoded, every other field kept as the JSON it is, so a long episode is never
+        decoded whole."""
+        fields = msgspec.json.decode(self._json, type=dict[str, msgspec.Raw])
+        record: dict[str, Any] = {key: _field(key, value) for key, value in fields.items() if key != "traces"}
+        if "traces" in fields:
+            traces = msgspec.json.decode(fields["traces"], type=list[dict[str, msgspec.Raw]])
+            record["traces"] = [{key: _field(key, value) for key, value in trace.items()} for trace in traces]
+        return record
+
+
+class _TraceRun:
+    def __init__(self, run: Any) -> None:
+        self.run = run
+
+
+def _field(key: str, value: msgspec.Raw) -> Any:
+    """A record field as the SDK reads it: the run decoded, anything else as its JSON."""
+    return orjson.loads(bytes(value)) if key == "run" else orjson.Fragment(bytes(value))

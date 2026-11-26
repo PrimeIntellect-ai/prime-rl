@@ -17,14 +17,8 @@ from typing import Optional, Union
 
 import torch
 from torch import Tensor, nn
-from transformers.cache_utils import Cache
-from transformers.generation import GenerationMixin
-from transformers.modeling_layers import GradientCheckpointingLayer
-from transformers.modeling_outputs import BaseModelOutputWithPast
-from transformers.processing_utils import Unpack
-from transformers.utils import TransformersKwargs, auto_docstring
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, TextModelOutput
 from prime_rl.trainer.models.glm4_moe.configuration_glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.glm4_moe.converting_glm4_moe import conversion_chain
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
@@ -36,7 +30,7 @@ from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmb
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
-class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
+class Glm4MoeDecoderLayer(nn.Module):
     def __init__(self, config: Glm4MoeConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -115,10 +109,8 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
         return hidden_states
 
 
-@auto_docstring
 class Glm4MoePreTrainedModel(PreTrainedModelPrimeRL):
     config: Glm4MoeConfig
-    base_model_prefix = "model"
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
@@ -143,7 +135,6 @@ class Glm4MoePreTrainedModel(PreTrainedModelPrimeRL):
         return conversion_chain(config)
 
 
-@auto_docstring
 class Glm4MoeModel(Glm4MoePreTrainedModel):
     def __init__(self, config: Glm4MoeConfig):
         super().__init__(config)
@@ -165,12 +156,10 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
             model_config=config,
         )
         self.rotary_emb = RotaryEmbedding(rotary_config)
-        self.gradient_checkpointing = False
 
         # Initialize weights and apply final processing
         self.post_init()
 
-    @auto_docstring
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -180,7 +169,7 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> BaseModelOutputWithPast:
+    ) -> TextModelOutput:
         """
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
@@ -219,12 +208,11 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
             )
 
         hidden_states = self.norm(hidden_states)
-        return BaseModelOutputWithPast(last_hidden_state=hidden_states)
+        return TextModelOutput(last_hidden_state=hidden_states)
 
 
-@auto_docstring
-class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
-    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
+class Glm4MoeForCausalLM(Glm4MoePreTrainedModel):
+    supports_tied_word_embeddings = True
 
     def __init__(self, config):
         super().__init__(config)
@@ -235,33 +223,24 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @auto_docstring
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Cache] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: Optional[torch.Tensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-        **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
         seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
             Per-document lengths of the packed row (PrimeRL packed-batch contract).
         seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
             Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
-        cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
-            Indices of input tokens in the KV cache. Accepted only for HuggingFace API
-            compatibility — prime-rl asserts `use_cache is None` since training does not
-            perform autoregressive decoding, so this argument is unused.
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels used by PrimeRL's wrapped LM head to optionally compute per-token logprobs/entropy.
             If not provided, the wrapped LM head returns logits only.
@@ -269,33 +248,14 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
             Per-token temperatures for logprobs/entropy computation when `labels` are provided.
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
-
-        Example:
-
-        ```python
-        >>> from transformers import AutoTokenizer, Glm4MoeForCausalLM
-
-        >>> model = Glm4MoeForCausalLM.from_pretrained("meta-glm4_moe/Glm4Moe-2-7b-hf")
-        >>> tokenizer = AutoTokenizer.from_pretrained("meta-glm4_moe/Glm4Moe-2-7b-hf")
-
-        >>> prompt = "Hey, are you conscious? Can you talk to me?"
-        >>> inputs = tokenizer(prompt, return_tensors="pt")
-
-        >>> # Generate
-        >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
-        >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-        "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
-        ```"""
-        assert use_cache is None, "use_cache is not supported for custom glm4_moe for now"
-        assert past_key_values is None, "past_key_values is not supported for custom glm4_moe for now"
-
+        """
         if position_ids is None:
             if inputs_embeds is not None:
                 position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
             else:
                 position_ids = torch.arange(input_ids.shape[1], device=input_ids.device).unsqueeze(0)
 
-        outputs: BaseModelOutputWithPast = self.model(
+        outputs: TextModelOutput = self.model(
             input_ids=input_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
