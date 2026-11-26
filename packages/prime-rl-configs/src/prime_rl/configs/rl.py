@@ -786,7 +786,7 @@ class RLConfig(BaseConfig):
                 if self.inference.vllm.api_server_count == 1 and dp_per_node > 1:
                     self.inference.vllm.api_server_count = dp_per_node
 
-            if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl", "modelexpress"):
+            if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "modelexpress"):
                 # Every allocated inference GPU is an in-memory transfer worker.
                 # The external-LB launcher starts dp_per_node (= gpus_per_node / tp)
                 # TP-sharded servers per node, i.e. gpus_per_node workers per node, so use
@@ -795,11 +795,11 @@ class RLConfig(BaseConfig):
                 # factor count twice and wait for ranks that never connect. Matches
                 # the disaggregated path below.
                 total_infer_workers = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
-                assert self.trainer.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
+                assert self.trainer.weight_broadcast.type in ("nccl", "modelexpress")
                 if self.trainer.weight_broadcast.type == "nccl":
                     self.trainer.weight_broadcast.host = "0.0.0.0"
                 self.trainer.weight_broadcast.inference_world_size = total_infer_workers
-                assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
+                assert self.orchestrator.weight_broadcast.type in ("nccl", "modelexpress")
                 self.orchestrator.weight_broadcast.inference_world_size = total_infer_workers
 
         self.orchestrator = self.orchestrator.model_copy(update={"env_worker_pool_replicas": env_worker_pool_replicas})
@@ -833,10 +833,10 @@ class RLConfig(BaseConfig):
             self.orchestrator = self.orchestrator.model_copy(
                 update={"inference_metrics_roles": role_order * self.deployment.num_infer_replicas}
             )
-        if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl", "modelexpress"):
-            assert self.trainer.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
+        if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "modelexpress"):
+            assert self.trainer.weight_broadcast.type in ("nccl", "modelexpress")
             self.trainer.weight_broadcast.inference_world_size = total_infer_gpus
-            assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
+            assert self.orchestrator.weight_broadcast.type in ("nccl", "modelexpress")
             self.orchestrator.weight_broadcast.inference_world_size = total_infer_gpus
 
         return self

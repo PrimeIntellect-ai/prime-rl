@@ -139,7 +139,6 @@ export MASTER_ADDR="${HOSTNAMES[$NUM_INFER_NODES]}"
 export MASTER_PORT=29500
 echo "MASTER_ADDR=${MASTER_ADDR}"
 echo "MASTER_PORT=${MASTER_PORT}"
-{# The nixl and modelexpress weight broadcasts both rendezvous through a ModelExpress server; only nixl needs the source-built UCX. #}
 {% if uses_modelexpress_server -%}
 {% if launch_modelexpress -%}
 export WEIGHT_BROADCAST_HOST="$MASTER_ADDR"
@@ -175,23 +174,12 @@ source .venv/bin/activate
 srun --ntasks-per-node=1 bash -s <<'SYNC_SH'
 set -e
 cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync {{ sync_args }}
-{% if use_nixl_broadcast -%}
-# uv sync restores the locked NIXL wheel: reinstall the source build that the nixl weight broadcast requires into the
-# project environment (uv pip would otherwise pick the activated .venv, not UV_PROJECT_ENVIRONMENT).
-if compgen -G "deps/nixl_cu13-*.whl" > /dev/null; then uv pip install -q --reinstall --no-deps --python "${UV_PROJECT_ENVIRONMENT:-.venv}" deps/nixl_cu13-*.whl; fi
-{% endif -%}
 SYNC_SH
 {% else %}
 # Shared (NFS) venv: one sync on the batch node populates it for all nodes.
 uv sync {{ sync_args }}
-{% if use_nixl_broadcast -%}
-# uv sync restores the locked NIXL wheel: reinstall the source build that the nixl weight broadcast requires into the
-# project environment (uv pip would otherwise pick the activated .venv, not UV_PROJECT_ENVIRONMENT).
-if compgen -G "deps/nixl_cu13-*.whl" > /dev/null; then uv pip install -q --reinstall --no-deps --python "${UV_PROJECT_ENVIRONMENT:-.venv}" deps/nixl_cu13-*.whl; fi
-{% endif -%}
 {% endif %}
-# The environment is synced above. Every later `uv run` would sync it again: the per-process syncs race, and they
-# replace a source-built NIXL with the locked wheel.
+# The environment is synced above. Every later `uv run` would sync it again, and the per-process syncs race.
 export UV_NO_SYNC=1
 
 {% if pre_run_command %}
@@ -286,23 +274,6 @@ python -m prime_rl.entrypoints.run_owner rl $CONFIG_DIR/rl.json srun --kill-on-b
     IB_HCA=$(ibv_devinfo | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" |paste -sd,)
     export NCCL_IB_HCA=$IB_HCA
 
-{% if use_nixl_broadcast -%}
-    UCX_DIR="$PROJECT_DIR/third_party/ucx"
-    if [ ! -x "$UCX_DIR/bin/ucx_info" ]; then
-        echo "NIXL requires the UCX build installed by scripts/install_nixl_from_source.sh" >&2
-        exit 1
-    fi
-    export LD_LIBRARY_PATH="$UCX_DIR/lib:$UCX_DIR/lib/ucx:${LD_LIBRARY_PATH:-}"
-    UCX_TRANSPORTS=$("$UCX_DIR/bin/ucx_info" -d)
-    grep -q "Transport: cuda_copy" <<< "$UCX_TRANSPORTS" || {
-        echo "NIXL requires UCX cuda_copy support" >&2
-        exit 1
-    }
-    grep -q "Transport: rc_verbs" <<< "$UCX_TRANSPORTS" || {
-        echo "NIXL requires UCX rc_verbs support" >&2
-        exit 1
-    }
-{% endif %}
 {% if uses_modelexpress_server -%}
 {% if launch_modelexpress %}
 

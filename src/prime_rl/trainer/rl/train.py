@@ -268,7 +268,6 @@ def train(config: TrainerConfig):
         weight_sender = setup_weight_sender(
             config.output_dir,
             config.weight_broadcast,
-            parallel_dims,
             config.model.lora,
             model_name=config.model.name,
         )

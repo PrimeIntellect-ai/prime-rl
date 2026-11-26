@@ -591,7 +591,7 @@ class OrchestratorConfig(BaseConfig):
         if self.speculative_decoding is not None and dynamo is not None and dynamo.enabled:
             raise ValueError("Draft swaps use prime-rl's engine admin routes, which Dynamo deployments do not serve")
         if self.speculative_decoding is not None and self.weight_broadcast.type == "modelexpress":
-            raise ValueError("Draft swaps load with filesystem, NCCL or NIXL weight broadcasts, not modelexpress")
+            raise ValueError("Draft swaps load with filesystem or NCCL weight broadcasts, not modelexpress")
         return self
 
     @model_validator(mode="after")
