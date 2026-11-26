@@ -170,7 +170,7 @@ def run_case(config: ModelConfig, parallel_dims, rows: list[dict], routes: list[
     dist.all_reduce(loss_sum, group=dp_cp_group)
     dist.all_reduce(num_tokens, group=dp_cp_group)
     scale_gradients_(None, model, parallel_dims.fsdp_gradient_divide_factor / num_tokens.item())
-    grad_norm = clip_grad_norm_(None, model, max_norm=math.inf)
+    grad_norm, _ = clip_grad_norm_(None, model, max_norm=math.inf)
     grads = {
         unwrapped_name(name): param.grad.full_tensor() if isinstance(param.grad, DTensor) else param.grad
         for name, param in model.named_parameters()
