@@ -26,7 +26,7 @@ uv run eval @ eval.toml --no-monitors.prime                         # keep the r
 - Shorthands (single-source runs): `<taskset-id>`, `--env.<field> <value>`, `-n` `select.limit`, `-s` `select.shuffle`, `-r` `group_size`, `-m` `model`, `-c N` pins `concurrency.min_inflight = max_inflight = N`. `<taskset-id>` cannot be combined with a TOML that defines `[[source]]` blocks; next to such a TOML, `--env.<field>` sets the shared `env` block.
 - Concurrency: an API exposes no vLLM `/metrics`, so run pinned there; against `uv run inference` set `min_inflight < max_inflight` in `[concurrency]` to adapt to the engines' load (queued share and measured throughput; `docs/inference.md`).
 - Env worker pools: spawned per source on OS-assigned ports (published to `configs/attempt_N/resolved/envs/eval/<name>.address`) unless the source sets `serve.address`.
-- Ready-made configs: `configs/debug/eval/*.toml`, one per shape (single turn, multi turn, resume, multi env, aime2026, tb2).
+- Ready-made configs: `configs/eval/*.toml`, one per shape (single turn, multi turn, resume, multi env, aime2026, tb2).
 
 Minimal multi-source TOML (the eval block is flattened to the top level; per-source `select`, `group_size`, `sampling` override the top level):
 

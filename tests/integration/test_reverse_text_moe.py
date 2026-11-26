@@ -36,7 +36,7 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "configs/ci/integration/reverse-text-moe/start.toml",
+        "tests/integration/configs/reverse-text-moe/start.toml",
         "--clean",
         "--trainer.model.conversion-dir",
         (output_dir / RUN_NAME / "model-conversion").as_posix(),

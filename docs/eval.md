@@ -23,7 +23,7 @@ By default the model is served by Prime Inference; authenticate with `PRIME_API_
 
 ```bash
 uv run eval gsm8k -n 32 -r 4 -c 8                                   # Prime Inference
-uv run eval @ configs/debug/eval/single-turn.toml                   # the same shape as a TOML
+uv run eval @ configs/eval/single-turn.toml                   # the same shape as a TOML
 ```
 
 The default endpoint comes from `PRIME_INFERENCE_URL`, then the Prime CLI's `inference_url`, then the standard Prime Inference URL. An explicit `client.base_url` wins. API keys and environment-backed headers are resolved when clients are built; Prime CLI credential and team fallbacks apply only to Prime Inference hosts, including for a separate admin URL.

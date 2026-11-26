@@ -45,7 +45,7 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "configs/ci/integration/alphabet_sort.toml",
+        "tests/integration/configs/alphabet_sort.toml",
         "--clean",
         "--monitors.wandb.project",
         wandb_project,

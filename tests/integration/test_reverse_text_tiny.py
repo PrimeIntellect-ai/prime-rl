@@ -32,7 +32,7 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "configs/ci/integration/reverse-text-tiny/start.toml",
+        "tests/integration/configs/reverse-text-tiny/start.toml",
         "--clean",
         "--monitors.wandb.project",
         wandb_project,

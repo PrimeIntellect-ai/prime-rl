@@ -35,7 +35,7 @@ prime-rl is a framework for large-scale reinforcement learning. It is designed t
 5. Multi-node deployment with Slurm support.
 6. Multimodal support for Qwen3.5 and Qwen3.8 VLMs, with [image RL and SFT examples](examples/extra/vlm/README.md).
 7. Hackable, modular, and extensible by design.
-8. One-line SLURM deployment for frontier models — e.g. [`GLM-5` FP8 with P/D disaggregation, the `llm-d` router, and Mooncake KV offload](examples/advanced/glm-5.3/).
+8. One-line SLURM deployment for frontier models — e.g. [`GLM-5` FP8 with P/D disaggregation, the `llm-d` router, and Mooncake KV offload](recipes/glm-5.3/).
 
 
 ## Models support
@@ -135,7 +135,7 @@ uv run python -c "import flash_attn"
 3. Check that you can run SFT trainer  (*this requires 1 GPU*)
 
 ```bash
-uv run sft @ configs/debug/fake/sft.toml
+uv run sft @ configs/fake/sft.toml
 ```
 
 4. Check that you can run the inference server (*this requires 1 GPU*)
@@ -183,12 +183,12 @@ Follow this guide to learn the basics of prime-rl. You can train your own models
 
 ### Advanced Training: 32 - 2048 GPUs:
 
-Follow this guide to train large models on hard reasoning and agentic tasks.
-These guides are designed to be run from a Slurm cluster.
+The [`recipes`](recipes) directory holds the configs for frontier models on hard reasoning and agentic tasks, one folder per model.
+These configs are designed to be run from a Slurm cluster.
 
-1. [**Qwen3-30B-A3B**](examples/advanced/qwen3-30b-a3b/): Train `Qwen3-30B-A3B` on math, SWE, and agentic tool use.
-2. [**GLM-4.5-Air**](examples/advanced/glm-4.5-air/): Train `GLM-4.5-Air` on search, SWE, and terminal tasks.
-3. [**GLM-5**](examples/advanced/glm-5.3/): Large-scale `GLM-5`/`GLM-5.3` training with P/D disaggregation, the `llm-d` router, and FP8.
+1. [**Qwen3-30B-A3B**](recipes/qwen3-30b-a3b/): Train `Qwen3-30B-A3B` on math, SWE, and agentic tool use.
+2. [**GLM-4.5-Air**](recipes/glm-4.5-air/): Train `GLM-4.5-Air` on search, SWE, and terminal tasks.
+3. [**GLM-5**](recipes/glm-5.3/): Large-scale `GLM-5`/`GLM-5.3` training with P/D disaggregation, the `llm-d` router, and FP8.
 
 ## Docs
 
