@@ -193,6 +193,10 @@ class AdminPlane:
     after_transfer: Callable[[], Awaitable[None]] | None = None
     """Runs after each policy transfer while the engines are still paused (a draft swap)."""
 
+    update_weights_timeout: float = 720.0
+    """Read timeout in seconds of one engine's weight update, which can take far longer than the other
+    admin ops. The weight receiver sets it from ``weight_broadcast.update_weights_timeout``."""
+
     def __init__(self, client_config: ClientConfig, roles: list[str | None] | None = None):
         self.clients = setup_admin_clients(client_config, send_admin_token=True)
         self.roles = roles
@@ -234,8 +238,12 @@ class AdminPlane:
 
         async def initialize_client(admin_client: AsyncClient, rank_offset: int) -> None:
             try:
-                response = await admin_client.post(
+                # Sent once: a retry would have the workers join the rendezvous a second time.
+                await _admin_post(
+                    admin_client,
                     "/init_broadcaster",
+                    timeout_s=max(ADMIN_TIMEOUT_S, timeout),
+                    retry_if=None,
                     json={
                         "host": host,
                         "port": port,
@@ -244,7 +252,6 @@ class AdminPlane:
                         "timeout": timeout,
                     },
                 )
-                response.raise_for_status()
             except httpx.HTTPStatusError as error:
                 if error.response.status_code != 404:
                     raise
@@ -267,23 +274,49 @@ class AdminPlane:
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
     ) -> None:
-        """Update every inference engine through its configured weight transport."""
+        """Update every inference engine through its configured weight transport.
+
+        An NCCL transfer is sent again only while no engine has seen it, and a failed one leaves the engines
+        paused. The trainer's broadcast cannot be replayed: an engine asked again re-enters the receive and
+        waits for a stream that was already sent. On an engine with more than one worker, vLLM also raises at
+        the first failed worker without reading the other workers' replies, so every later all-worker RPC of
+        that engine reads a stale reply until it restarts."""
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
+        replayable = transport != "nccl"
 
         pause_times = await _pause_engines(self.clients, step=step, roles=self.roles)
+        resume = True
         try:
             if on_paused is not None:
                 on_paused()
-            transfer_times = await _post_all(
-                self.clients,
-                "/update_weights",
-                json={"weight_dir": weight_dir_posix, "weight_version": step},
-                timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
-            )
+            try:
+                transfer_times = await _post_all(
+                    self.clients,
+                    "/update_weights",
+                    json={"weight_dir": weight_dir_posix, "weight_version": step},
+                    timeout_s=self.update_weights_timeout,
+                    retry_if=_is_retryable_admin_error if replayable else _is_unsent_request_error,
+                )
+            except Exception as failure:
+                if replayable:
+                    raise
+                resume = False
+                outcome = "failed"
+                if isinstance(failure, httpx.ReadTimeout):
+                    outcome = (
+                        "did not finish within weight_broadcast.update_weights_timeout "
+                        f"({self.update_weights_timeout:g} s), which has to exceed the time one engine takes "
+                        "to receive an update"
+                    )
+                raise RuntimeError(
+                    f"The NCCL weight update to policy v{step} {outcome}. It cannot be retried and the "
+                    "inference engines stay paused: restart the inference servers and the trainer."
+                ) from failure
             if self.after_transfer is not None:
                 await self.after_transfer()
         finally:
-            resume_times = await _resume_engines(self.clients)
+            if resume:
+                resume_times = await _resume_engines(self.clients)
         self.update_times = {"pause": pause_times, "transfer": transfer_times, "resume": resume_times}
 
     async def update_draft_weights(self, weight_dir: Path) -> None:
@@ -292,8 +325,8 @@ class AdminPlane:
             self.clients,
             "/update_draft_weights",
             json={"weight_dir": weight_dir.as_posix()},
-            timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
-            retry_errors=False,
+            timeout_s=self.update_weights_timeout,
+            retry_if=None,
         )
 
     async def draft_digests(self) -> list[str]:
@@ -331,7 +364,7 @@ class AdminPlane:
                 response = await client.post(
                     "/update_weights_from_modelexpress",
                     json={"version_uid": version_uid, "weight_version": step},
-                    timeout=httpx.Timeout(connect=10.0, read=UPDATE_WEIGHTS_TIMEOUT_S, write=60.0, pool=10.0),
+                    timeout=httpx.Timeout(connect=10.0, read=self.update_weights_timeout, write=60.0, pool=10.0),
                 )
                 response.raise_for_status()
                 return time.perf_counter() - start
@@ -447,9 +480,19 @@ def _setup_session_client(client_config: ClientConfig) -> AsyncClient:
     return setup_admin_clients(client_config, limits=limits)[0]
 
 
+# A request sent on an idle connection as the server closes its end fails with a read error although no
+# engine saw it, and a request that is sent once cannot be retried on that error. vLLM's API server closes a
+# connection that has been idle for VLLM_HTTP_TIMEOUT_KEEP_ALIVE seconds: 3600 on the servers prime-rl's
+# entrypoints start, 5 by default, which is also httpx's default expiry. The admin clients drop an idle
+# connection before either.
+ADMIN_KEEPALIVE_EXPIRY_S = 2.0
+
+
 def setup_admin_clients(
     client_config: ClientConfig,
-    limits: httpx.Limits = httpx.Limits(max_connections=4, max_keepalive_connections=1),
+    limits: httpx.Limits = httpx.Limits(
+        max_connections=4, max_keepalive_connections=1, keepalive_expiry=ADMIN_KEEPALIVE_EXPIRY_S
+    ),
     *,
     send_admin_token: bool = False,
 ) -> list[AsyncClient]:
@@ -563,26 +606,33 @@ def _is_retryable_admin_error(exception: BaseException) -> bool:
     return False
 
 
+def _is_unsent_request_error(exception: BaseException) -> bool:
+    """Check if a request failed before it was sent: no engine has seen it, so sending it again is safe."""
+    return isinstance(exception, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
+
+
 # Per-attempt read timeout for admin ops, overridable per call. The admin
 # AsyncClient uses `timeout=None`, so without this a stuck server would hang the
 # weight update forever: the read timeout converts a hang into a TimeoutException
 # that tenacity retries. Sized for `/pause`, which drains in-flight requests
 # (mode="keep") and so can legitimately take a while.
 ADMIN_TIMEOUT_S = 300.0
-# `/update_weights` runs a collective NCCL receive across all DP workers, which
-# can take longer than the other admin ops.
-UPDATE_WEIGHTS_TIMEOUT_S = 720.0
 
 
 async def _admin_post(
-    client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, retry_errors: bool = True, **kwargs
+    client: AsyncClient,
+    path: str,
+    *,
+    timeout_s: float = ADMIN_TIMEOUT_S,
+    retry_if: Callable[[BaseException], bool] | None = _is_retryable_admin_error,
+    **kwargs,
 ) -> None:
-    """POST an admin op with a bounded per-attempt timeout, retrying transient errors unless ``retry_errors`` is off.
+    """POST an admin op with a bounded per-attempt timeout, retrying the errors ``retry_if`` accepts (none if None).
 
     The total wall-clock budget across all retries is twice the per-attempt timeout.
     """
     async for attempt in AsyncRetrying(
-        retry=retry_if_exception(_is_retryable_admin_error) if retry_errors else retry_never,
+        retry=retry_if_exception(retry_if) if retry_if is not None else retry_never,
         stop=stop_after_delay(2 * timeout_s) | stop_after_attempt(10),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,

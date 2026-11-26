@@ -1,4 +1,6 @@
 import asyncio
+import contextlib
+import inspect
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
@@ -6,13 +8,14 @@ import httpx
 import pytest
 from verifiers.v1.configs.client import EvalClientConfig
 
-from prime_rl.configs.shared import ADMIN_TOKEN_HEADER, ClientConfig, VLLMClientConfig
+from prime_rl.configs.shared import ADMIN_TOKEN_HEADER, ClientConfig, NCCLWeightBroadcastConfig, VLLMClientConfig
 from prime_rl.orchestrator.clients import (
     AdminPlane,
     _is_retryable_lora_error,
     _pause_engines,
     check_health,
     load_lora_adapter,
+    setup_admin_clients,
     setup_client,
 )
 
@@ -78,6 +81,7 @@ def test_admin_plane_initializes_nccl():
 
     client.post.assert_awaited_once_with(
         "/init_broadcaster",
+        timeout=httpx.Timeout(connect=10.0, read=1200, write=60.0, pool=10.0),
         json={
             "host": "trainer",
             "port": 29501,
@@ -86,6 +90,105 @@ def test_admin_plane_initializes_nccl():
             "timeout": 1200,
         },
     )
+    asyncio.run(admin_plane.aclose())
+
+
+def fake_engine(outcomes: dict[str, list[int | Exception]] | None = None):
+    """An admin client that answers a POST with the next outcome listed for its path, a status to return or an
+    error to raise, and with 200 after those."""
+    outcomes = {path: list(listed) for path, listed in (outcomes or {}).items()}
+    client = create_autospec(httpx.AsyncClient, instance=True)
+
+    def post(path, **kwargs):
+        listed = outcomes.get(path)
+        outcome = listed.pop(0) if listed else 200
+        if isinstance(outcome, Exception):
+            raise outcome
+        return httpx.Response(outcome, request=httpx.Request("POST", f"http://engine{path}"))
+
+    client.post.side_effect = post
+    return client
+
+
+def posted_paths(client) -> list[str]:
+    return [call.args[0] for call in client.post.await_args_list]
+
+
+@pytest.mark.parametrize(
+    "status, expectation",
+    [(404, contextlib.nullcontext()), (500, pytest.raises(httpx.HTTPStatusError))],
+)
+def test_admin_plane_only_tolerates_a_missing_init_broadcaster_route(status, expectation):
+    admin_plane = AdminPlane(ClientConfig())
+    client = fake_engine({"/init_broadcaster": [status]})
+    admin_plane.clients = [client]
+
+    with expectation:
+        asyncio.run(admin_plane.initialize_nccl(host="trainer", port=29501, timeout=1200, inference_world_size=1))
+
+    assert posted_paths(client) == ["/init_broadcaster"]
+    asyncio.run(admin_plane.aclose())
+
+
+@pytest.mark.parametrize(
+    "failure, names_the_timeout",
+    [(500, False), (httpx.ReadError("connection reset"), False), (httpx.ReadTimeout("timed out"), True)],
+    ids=["500", "read-error", "read-timeout"],
+)
+def test_failed_nccl_update_is_sent_once_and_leaves_the_engines_paused(failure, names_the_timeout):
+    admin_plane = AdminPlane(ClientConfig())
+    failed, healthy = fake_engine({"/update_weights": [failure]}), fake_engine()
+    admin_plane.clients = [failed, healthy]
+
+    with pytest.raises(RuntimeError, match="restart the inference servers") as error:
+        asyncio.run(admin_plane.update_weights(Path("/broadcasts/step_3"), transport="nccl", step=3))
+
+    assert ("update_weights_timeout (720 s)" in str(error.value)) is names_the_timeout
+    assert posted_paths(failed) == ["/pause", "/update_weights"]
+    assert posted_paths(healthy) == ["/pause", "/update_weights"]
+    asyncio.run(admin_plane.aclose())
+
+
+@pytest.mark.parametrize(
+    "transport, failure",
+    [("filesystem", 500), ("nccl", httpx.ConnectError("connection refused"))],
+    ids=["filesystem-500", "nccl-request-never-sent"],
+)
+def test_update_is_retried_and_resumes_the_engines(transport, failure):
+    admin_plane = AdminPlane(ClientConfig())
+    client = fake_engine({"/update_weights": [failure]})
+    admin_plane.clients = [client]
+
+    with patch("prime_rl.orchestrator.clients.asyncio.sleep", new=AsyncMock()):
+        asyncio.run(admin_plane.update_weights(Path("/broadcasts/step_3"), transport=transport, step=3))
+
+    assert posted_paths(client) == ["/pause", "/update_weights", "/update_weights", "/resume"]
+    asyncio.run(admin_plane.aclose())
+
+
+def test_admin_clients_expire_idle_connections_before_the_vllm_server_closes_them():
+    from vllm import envs
+
+    limits = inspect.signature(setup_admin_clients).parameters["limits"].default
+    assert limits.keepalive_expiry < envs.VLLM_HTTP_TIMEOUT_KEEP_ALIVE
+
+
+def test_weight_broadcast_config_sets_the_update_weights_timeout(tmp_path):
+    from prime_rl.transports.weights import setup_weight_receiver
+
+    assert NCCLWeightBroadcastConfig().update_weights_timeout == 720
+    admin_plane = AdminPlane(ClientConfig())
+    client = fake_engine()
+    admin_plane.clients = [client]
+    receiver = setup_weight_receiver(
+        tmp_path, NCCLWeightBroadcastConfig(update_weights_timeout=1800), admin_plane, "model"
+    )
+    receiver.step_dir(3).mkdir()
+
+    asyncio.run(receiver.receive(3))
+
+    assert posted_paths(client) == ["/pause", "/update_weights", "/resume"]
+    assert client.post.await_args_list[1].kwargs["timeout"].read == 1800
     asyncio.run(admin_plane.aclose())
 
 
