@@ -6,9 +6,12 @@ import httpx
 import pytest
 from verifiers.v1.configs.client import EvalClientConfig
 
+import prime_rl.orchestrator.clients as clients_module
 from prime_rl.configs.shared import ADMIN_TOKEN_HEADER, ClientConfig, VLLMClientConfig
 from prime_rl.orchestrator.clients import (
+    PAUSE_ATTEMPT_TIMEOUT_S,
     AdminPlane,
+    _admin_post,
     _is_retryable_lora_error,
     _pause_engines,
     check_health,
@@ -224,3 +227,57 @@ def test_admin_timeout_can_be_overridden_by_env(monkeypatch):
     finally:
         monkeypatch.delenv("PRIME_ADMIN_TIMEOUT_S", raising=False)
         importlib.reload(clients)
+
+
+def _dead_connection_client(calls):
+    """A pooled admin client whose connection died: every request on it times out."""
+
+    async def post(path, **kwargs):
+        calls.append(("pooled", path, kwargs["timeout"].read))
+        raise httpx.ReadTimeout("no response")
+
+    return MagicMock(
+        base_url=httpx.URL("http://engine:8206"), headers=httpx.Headers({ADMIN_TOKEN_HEADER: "secret"}), post=post
+    )
+
+
+def test_pause_retries_on_a_new_connection(monkeypatch):
+    calls, created = [], []
+
+    class FreshClient:
+        def __init__(self, base_url, headers):
+            created.append((str(base_url), headers.get(ADMIN_TOKEN_HEADER)))
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, path, **kwargs):
+            calls.append(("fresh", path, kwargs["timeout"].read))
+            return MagicMock()
+
+    monkeypatch.setattr(clients_module, "AsyncClient", FreshClient)
+    asyncio.run(_pause_engines([_dead_connection_client(calls)], step=1, roles=["decode"]))
+
+    assert calls == [("pooled", "/pause", PAUSE_ATTEMPT_TIMEOUT_S), ("fresh", "/pause", PAUSE_ATTEMPT_TIMEOUT_S)]
+    assert created == [("http://engine:8206", "secret")]
+
+
+def test_admin_post_retries_on_the_pooled_client_without_reconnect(monkeypatch):
+    calls = []
+    client = _dead_connection_client(calls)
+    attempts = iter([httpx.ReadTimeout("no response"), None])
+
+    async def post(path, **kwargs):
+        calls.append(("pooled", path, kwargs["timeout"].read))
+        if (error := next(attempts)) is not None:
+            raise error
+        return MagicMock()
+
+    client.post = post
+    monkeypatch.setattr(clients_module, "AsyncClient", MagicMock(side_effect=AssertionError("no new connection")))
+    asyncio.run(_admin_post(client, "/finish_session", timeout_s=5.0))
+
+    assert calls == [("pooled", "/finish_session", 5.0), ("pooled", "/finish_session", 5.0)]

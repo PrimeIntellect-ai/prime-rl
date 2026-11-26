@@ -573,15 +573,30 @@ ADMIN_TIMEOUT_S = float(os.environ.get("PRIME_ADMIN_TIMEOUT_S", "300"))
 # `/update_weights` runs a collective NCCL receive across all DP workers, which
 # can take longer than the other admin ops.
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
+# Per-attempt read timeout of a /pause or /resume. A ``keep`` pause and a resume return within an engine step,
+# so an attempt that takes longer is stuck (e.g. on a connection that silently died) and is better retried on
+# a new connection than waited out; the total budget stays twice ``ADMIN_TIMEOUT_S``.
+PAUSE_ATTEMPT_TIMEOUT_S = 60.0
 
 
 async def _admin_post(
-    client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, retry_errors: bool = True, **kwargs
+    client: AsyncClient,
+    path: str,
+    *,
+    timeout_s: float = ADMIN_TIMEOUT_S,
+    attempt_timeout_s: float | None = None,
+    reconnect: bool = False,
+    retry_errors: bool = True,
+    **kwargs,
 ) -> None:
     """POST an admin op with a bounded per-attempt timeout, retrying transient errors unless ``retry_errors`` is off.
 
-    The total wall-clock budget across all retries is twice the per-attempt timeout.
+    Each attempt waits at most ``attempt_timeout_s`` (default ``timeout_s``) for the response, and the total
+    wall-clock budget across all retries is twice ``timeout_s``. With ``reconnect``, every retry is sent on a new
+    connection instead of the client's pool: a pooled keep-alive connection can die without the client noticing,
+    and every request sent on it then times out, retries included.
     """
+    timeout = httpx.Timeout(connect=10.0, read=attempt_timeout_s or timeout_s, write=60.0, pool=10.0)
     async for attempt in AsyncRetrying(
         retry=retry_if_exception(_is_retryable_admin_error) if retry_errors else retry_never,
         stop=stop_after_delay(2 * timeout_s) | stop_after_attempt(10),
@@ -589,20 +604,21 @@ async def _admin_post(
         reraise=True,
     ):
         with attempt:
-            response = await client.post(
-                path,
-                timeout=httpx.Timeout(connect=10.0, read=timeout_s, write=60.0, pool=10.0),
-                **kwargs,
-            )
+            if reconnect and attempt.retry_state.attempt_number > 1:
+                async with AsyncClient(base_url=client.base_url, headers=client.headers) as fresh:
+                    response = await fresh.post(path, timeout=timeout, **kwargs)
+            else:
+                response = await client.post(path, timeout=timeout, **kwargs)
             response.raise_for_status()
 
 
 async def _post_all(admin_clients: list[AsyncClient], path: str, **kwargs) -> list[float]:
-    """POST ``path`` to every engine concurrently; returns each engine's request time."""
+    """POST ``path`` to every engine concurrently; returns each engine's request time. A retry goes out on a
+    new connection: one engine's dead pooled connection must not fail an operation that waits for all of them."""
 
     async def post(client: AsyncClient) -> float:
         start = time.perf_counter()
-        await _admin_post(client, path, **kwargs)
+        await _admin_post(client, path, reconnect=True, **kwargs)
         return time.perf_counter() - start
 
     return await asyncio.gather(*[post(client) for client in admin_clients])
@@ -625,7 +641,12 @@ async def _pause_engines(
     rest = [client for client, role in zip(admin_clients, roles, strict=True) if role != "prefill"]
     pause_times: list[float] = []
     for clients in (prefill, rest):
-        pause_times += await _post_all(clients, "/pause", params={"mode": "keep", "clear_cache": "false"})
+        pause_times += await _post_all(
+            clients,
+            "/pause",
+            attempt_timeout_s=PAUSE_ATTEMPT_TIMEOUT_S,
+            params={"mode": "keep", "clear_cache": "false"},
+        )
     logger.debug(f"All inference engines paused in {min(pause_times):.2f}-{max(pause_times):.2f}s")
     return pause_times
 
@@ -636,7 +657,7 @@ async def _resume_engines(admin_clients: list[AsyncClient]) -> list[float]:
     Resuming is idempotent (it just clears the paused flag), so retrying transient
     failures is safe; a dropped /resume would leave engines paused indefinitely.
     """
-    resume_times = await _post_all(admin_clients, "/resume")
+    resume_times = await _post_all(admin_clients, "/resume", attempt_timeout_s=PAUSE_ATTEMPT_TIMEOUT_S)
     get_logger().debug("All inference engines resumed")
     return resume_times
 
