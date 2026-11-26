@@ -129,8 +129,51 @@ class PowerLengthPenaltyConfig(BaseConfig):
         return self
 
 
+class BudgetLengthPenaltyConfig(BaseConfig):
+    """Penalty against a token budget, subtracted from every rollout's reward before the GRPO baseline:
+    ``r - clip(weight * (num_total_tokens / budget) ** alpha + penalty_weight * min(max_penalty, sum of
+    the penalty_metrics), 0, 1)``. It neither scales with the group's pass rate nor depends on the rest of
+    the group, and it reaches failed rollouts too, so a long failure scores below a short one."""
+
+    type: Literal["budget"] = "budget"
+
+    budget: int = Field(gt=0)
+    """Token budget the cost is measured against, normally the env's ``agent.max_total_tokens``: the
+    rollout's ``num_total_tokens`` (new input counted once, plus all output) is the count that limit applies to."""
+
+    alpha: float = Field(1.5, gt=0, allow_inf_nan=False)
+    """Exponent on the budget fraction. Above 1 the penalty stays small for short rollouts and rises
+    steeply toward the budget."""
+
+    weight: float = Field(1.0, ge=0, allow_inf_nan=False)
+    """The penalty at the budget (lambda), before the clip to 1. 0 disables the penalty. Each source
+    sets its own, so sources sampled at different reasoning efforts can weigh length differently."""
+
+    penalty_metrics: list[str] = Field(default_factory=list)
+    """Trace metrics that count a rollout's rule breaks, such as a task metric counting its malformed
+    tool calls. Their sum, capped at ``max_penalty`` and scaled by ``penalty_weight``, adds to the length
+    cost inside the same clip: the rollout keeps running and scoring, and pays per break. A metric the
+    trace lacks counts 0."""
+
+    penalty_weight: float = Field(0.0, ge=0, allow_inf_nan=False)
+    """Penalty per unit of the summed ``penalty_metrics`` (gamma). 0 disables the term."""
+
+    max_penalty: float | None = Field(None, gt=0, allow_inf_nan=False)
+    """Cap on the summed ``penalty_metrics`` before ``penalty_weight`` scales it. None leaves it uncapped
+    (the clip to 1 still bounds the whole penalty)."""
+
+    @model_validator(mode="after")
+    def penalty_weight_needs_metrics(self):
+        if self.penalty_weight > 0 and not self.penalty_metrics:
+            raise ValueError("length_penalty.penalty_weight is set but penalty_metrics is empty")
+        return self
+
+
 LengthPenaltyConfig: TypeAlias = Annotated[
-    LinearLengthPenaltyConfig | LinearSubagentLengthPenaltyConfig | PowerLengthPenaltyConfig,
+    LinearLengthPenaltyConfig
+    | LinearSubagentLengthPenaltyConfig
+    | PowerLengthPenaltyConfig
+    | BudgetLengthPenaltyConfig,
     Field(discriminator="type"),
 ]
 
