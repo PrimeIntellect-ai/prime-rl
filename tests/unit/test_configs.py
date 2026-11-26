@@ -992,8 +992,6 @@ def test_single_node_nccl_resolved_json_roundtrips(tmp_path):
 @pytest.mark.parametrize(
     "overrides, match",
     [
-        ({"orchestrator": {"pad_to_multiple_of": 4}}, "orchestrator.pad_to_multiple_of"),
-        ({"orchestrator": {"num_train_workers": 3}}, "orchestrator.num_train_workers"),
         ({"orchestrator": {"weight_broadcast": {"type": "filesystem"}}}, "orchestrator.weight_broadcast"),
         ({"trainer": {"weight_broadcast": {"type": "nccl", "timeout": 60}}}, "trainer.weight_broadcast"),
     ],

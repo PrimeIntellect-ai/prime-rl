@@ -89,10 +89,13 @@ pool has a broker and a separate worker process.
 
 Env workers keep the training samples of the train rollouts they run, and the orchestrator
 gets only a short record of each rollout, so its memory does not grow with rollout length.
-The samples live in the replica's sample server, which trainer ranks fetch them from. It
-also runs the algorithm's model calls on them, such as `opd`'s teacher prefills, for every
-env worker of the replica. `[serve.scoring]` bounds those calls in flight per replica
-(`max_concurrent`) and how often each is tried before its rollout fails (`attempts`).
+The samples live in the replica's sample server, which trainer ranks fetch them from. The
+orchestrator ships each step's samples by reference to every trainer rank, and each rank
+packs them into micro batches of at most `trainer.model.seq_len` tokens, balanced by
+training FLOPs across the data ranks, and fetches its own. The sample server also runs the
+algorithm's model calls on them, such as `opd`'s teacher prefills, for every env worker of
+the replica. `[serve.scoring]` bounds those calls in flight per replica (`max_concurrent`)
+and how often each is tried before its rollout fails (`attempts`).
 
 `[serve]` configures the pool's address, static/elastic worker count and per-worker episode
 concurrency. Each broker publishes its bound address under

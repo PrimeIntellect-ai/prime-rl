@@ -5,7 +5,7 @@ import msgspec
 import numpy as np
 import pytest
 
-from prime_rl.orchestrator import batch as planner
+from prime_rl.trainer.rl import planner
 from prime_rl.transports.batch.materialize import mm_cut, pad_micro_batch, prepare_sample
 from prime_rl.transports.batch.types import (
     UNVERSIONED,
@@ -191,14 +191,14 @@ def _keep(sample: TrainingSample, seq_len: int) -> SampleRef:
 
 
 def prepare_batch(
-    rollouts: list[TrainingSample], seq_len: int, num_train_workers: int, bin_cost, pad_to_multiple_of: int = 1
+    rollouts: list[TrainingSample], seq_len: int, num_data_ranks: int, bin_cost, pad_to_multiple_of: int = 1
 ) -> list[list[MicroBatch]]:
     """The micro batches each data rank trains on: the orchestrator plans them over the kept
     samples' references, and each trainer rank builds its plans from the fetched samples."""
     plans_per_gpu = planner.prepare_batch(
         [_keep(sample, seq_len) for sample in rollouts],
         seq_len=seq_len,
-        num_train_workers=num_train_workers,
+        num_data_ranks=num_data_ranks,
         bin_cost=bin_cost,
         trained_version=TRAINED_VERSION,
         min_version=0,
@@ -236,24 +236,24 @@ def test_training_sample_requires_env_name():
 
 
 @pytest.mark.parametrize(
-    ("rollout_count", "num_train_workers", "expected_batches_per_worker"), [(4, 2, 2), (5, 2, 3), (7, 1, 7), (11, 4, 3)]
+    ("rollout_count", "num_data_ranks", "expected_batches_per_worker"), [(4, 2, 2), (5, 2, 3), (7, 1, 7), (11, 4, 3)]
 )
 def test_prepare_batch_balances_micro_batches_across_workers(
-    make_training_example, rollout_count, num_train_workers, expected_batches_per_worker
+    make_training_example, rollout_count, num_data_ranks, expected_batches_per_worker
 ):
     examples = [make_training_example() for i in range(rollout_count)]
 
     batches_per_gpu = prepare_batch(
         rollouts=examples,
         seq_len=4,
-        num_train_workers=num_train_workers,
+        num_data_ranks=num_data_ranks,
         bin_cost=sum,
     )
 
     assert all(len(worker_batches) == expected_batches_per_worker for worker_batches in batches_per_gpu)
 
     flat_batches = _flatten_batches(batches_per_gpu)
-    assert len(examples) <= len(flat_batches) < len(examples) + num_train_workers
+    assert len(examples) <= len(flat_batches) < len(examples) + num_data_ranks
 
     # Identify real vs padding batches by content, not position — the packer
     # distributes by workload, so a dummy can land anywhere in the order.
@@ -285,7 +285,7 @@ def test_prepare_batch_preserves_branch_identity(make_training_example):
     batches_per_gpu = prepare_batch(
         rollouts=examples,
         seq_len=4,
-        num_train_workers=2,
+        num_data_ranks=2,
         bin_cost=sum,
         pad_to_multiple_of=8,
     )
@@ -305,7 +305,7 @@ def test_prepare_sample_truncation_keeps_identity():
     sample = make_sized_training_example(10)
     sample.trace_id = "trace-x"
     sample.branch_index = 2
-    [[micro_batch]] = prepare_batch([sample], seq_len=4, num_train_workers=1, bin_cost=sum)
+    [[micro_batch]] = prepare_batch([sample], seq_len=4, num_data_ranks=1, bin_cost=sum)
     assert len(micro_batch.input_ids) == 4
     assert micro_batch.trace_ids == ["trace-x"]
     assert micro_batch.branch_indices == [2]
@@ -316,7 +316,7 @@ def test_randomized_packing_invariants():
 
     for case_idx in range(80):
         seq_len = int(rng.choice([8, 16, 32, 64]))
-        num_train_workers = int(rng.choice([1, 2, 4, 8]))
+        num_data_ranks = int(rng.choice([1, 2, 4, 8]))
         num_samples = int(rng.integers(1, 65))
         lengths = [int(x) for x in rng.integers(1, seq_len + 1, size=num_samples)]
         examples = [make_sized_training_example(length, env_name=f"env-{case_idx}") for length in lengths]
@@ -325,7 +325,7 @@ def test_randomized_packing_invariants():
         batches_per_gpu = prepare_batch(
             rollouts=examples,
             seq_len=seq_len,
-            num_train_workers=num_train_workers,
+            num_data_ranks=num_data_ranks,
             bin_cost=bin_cost,
         )
         flat_batches = _flatten_batches(batches_per_gpu)
@@ -364,7 +364,7 @@ def test_split_to_align_avoids_dummy_micro_batches():
     batches_per_gpu = prepare_batch(
         rollouts=examples,
         seq_len=12,
-        num_train_workers=4,
+        num_data_ranks=4,
         bin_cost=sum,
     )
 
@@ -378,7 +378,7 @@ def test_pack_first_then_balance_distributes_micro_batches_by_tokens_without_mod
     balanced = prepare_batch(
         rollouts=examples,
         seq_len=100,
-        num_train_workers=2,
+        num_data_ranks=2,
         bin_cost=sum,
     )
 
@@ -392,7 +392,7 @@ def test_flop_aware_balancing_pairs_long_and_short_sequence_workloads():
     balanced = prepare_batch(
         rollouts=examples,
         seq_len=32,
-        num_train_workers=2,
+        num_data_ranks=2,
         bin_cost=bin_cost,
     )
 
@@ -407,7 +407,7 @@ def test_flop_aware_split_to_align_splits_heaviest_flop_bin():
     batches_per_gpu = prepare_batch(
         rollouts=examples,
         seq_len=64,
-        num_train_workers=4,
+        num_data_ranks=4,
         bin_cost=flop_cost,
     )
 
@@ -425,7 +425,7 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
     batches_per_gpu = prepare_batch(
         rollouts=[example1, example2],
         seq_len=16,
-        num_train_workers=1,
+        num_data_ranks=1,
         bin_cost=sum,
     )
 
@@ -484,7 +484,7 @@ def test_prepare_batch_packs_mixed_components(make_training_example, streams_on_
     batches_per_gpu = prepare_batch(
         rollouts=[longer, shorter],
         seq_len=16,
-        num_train_workers=1,
+        num_data_ranks=1,
         bin_cost=sum,
     )
 
@@ -515,7 +515,7 @@ def test_prepare_batch_backfills_and_pads_staleness(make_training_example):
     shorter = make_training_example()
 
     [batch] = _flatten_batches(
-        prepare_batch(rollouts=[longer, shorter], seq_len=16, pad_to_multiple_of=4, num_train_workers=1, bin_cost=sum)
+        prepare_batch(rollouts=[longer, shorter], seq_len=16, pad_to_multiple_of=4, num_data_ranks=1, bin_cost=sum)
     )
     assert batch.staleness.tolist() == [-1, -1, 0, 1, 3, 3] + [-1] * 4 + [-1] * 2
 
@@ -542,7 +542,7 @@ def test_prepare_batch_aligns_ref_logprobs_in_mixed_bins(make_training_example, 
         rollouts=[longer, shorter],
         seq_len=16,
         pad_to_multiple_of=1,
-        num_train_workers=1,
+        num_data_ranks=1,
         bin_cost=sum,
     )
     flat_batches = _flatten_batches(batches_per_gpu)
@@ -576,7 +576,7 @@ def test_prepare_sample_truncates_mm_at_image_boundary():
     )
 
     # seq_len=5 falls inside img1 (one of its two placeholders survives) -> drop img1 entirely.
-    [[mb]] = prepare_batch([sample], seq_len=5, num_train_workers=1, bin_cost=sum)
+    [[mb]] = prepare_batch([sample], seq_len=5, num_data_ranks=1, bin_cost=sum)
     assert len(mb.input_ids) == 4  # cut back to img1's first placeholder (index 4)
     assert len(mb.mm_token_type_ids) == len(mb.input_ids)
     n_placeholders = sum(1 for t in mb.mm_token_type_ids if t)
@@ -608,7 +608,7 @@ def test_prepare_batch_packs_multimodal_with_text():
     batches_per_gpu = prepare_batch(
         rollouts=[mm_sample, text_sample],
         seq_len=8,
-        num_train_workers=1,
+        num_data_ranks=1,
         bin_cost=sum,
     )
 
@@ -640,7 +640,7 @@ def test_split_to_align_splits_multimodal_bins():
     batches_per_gpu = prepare_batch(
         rollouts=[make_mm_sample(10), make_mm_sample(20)],
         seq_len=8,
-        num_train_workers=2,
+        num_data_ranks=2,
         bin_cost=sum,
     )
 

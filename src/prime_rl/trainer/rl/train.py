@@ -21,7 +21,7 @@ from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager, setup_model_files
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
-from prime_rl.configs.trainer import TrainerConfig
+from prime_rl.configs.trainer import TrainerConfig, rl_micro_batch_multiple
 from prime_rl.trainer.rl.data import (
     DataLoader,
     FakeDataLoader,
@@ -319,6 +319,12 @@ def train(config: TrainerConfig):
             progress.step,
             parallel_dims.get_mesh("dp").size(),
             config.rollout_transport,
+            seq_len=config.model.seq_len,
+            # Rows hold at most `seq_len` tokens, so padding to a multiple of it pads every row to exactly `seq_len`
+            pad_to_multiple_of=config.model.seq_len
+            if config.data.pad_to_seq_len
+            else rl_micro_batch_multiple(config.model),
+            bin_cost=get_perf_counter(model).flop_counter,
         )
     logger.debug(f"Initialized data loader in {format_time(time.perf_counter() - t0)}")
 
@@ -701,6 +707,12 @@ def train(config: TrainerConfig):
         micro_batches = dataloader.get_batch()
         dropped_micro_batches = 0
         if not config.data.fake:
+            # Every rank plans the step from the same samples, so all plan the same; ranks that
+            # did not would run collectives of different sizes and hang, so they stop here.
+            digests = torch.tensor([dataloader.plan_digest, -dataloader.plan_digest], device="cuda")
+            dist.all_reduce(digests, op=dist.ReduceOp.MAX)
+            if digests.tolist() != [dataloader.plan_digest, -dataloader.plan_digest]:
+                raise RuntimeError(f"Trainer ranks planned step {progress.step} differently")
             # Ranks that share a data rank train the same micro batches, so they must drop
             # the same ones even when only one of them failed to fetch.
             # 1: keep the micro batch out of the loss; 2: no rank can train this step.

@@ -1,7 +1,7 @@
 """Building micro batches on a trainer rank.
 
-The orchestrator ships each micro batch as a ``MicroBatchPlan``: its samples by reference.
-A trainer rank fetches their bodies (``prime_rl.transports.payload``), turns each into a
+A trainer rank plans each micro batch as a ``MicroBatchPlan``: its samples by reference.
+The rank fetches their bodies (``prime_rl.transports.payload``), turns each into a
 ``TrainingSample`` and packs them here into the ``MicroBatch`` it trains on: per-token streams,
 routing rows and sampler support concatenated in packing order, the trailing padding, and the
 zero-loss copies that even out the micro batch count across data ranks.

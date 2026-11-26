@@ -100,9 +100,21 @@ class SampleRef(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """``[offset, length]`` of each image placeholder run within ``num_tokens``."""
 
 
+class StepBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
+    """A step's training samples by reference, as the orchestrator ships them: the same to
+    every trainer rank. Each rank plans the step's micro batches from them
+    (``prime_rl.trainer.rl.planner``) and builds its own."""
+
+    samples: list[SampleRef]
+    trained_version: int
+    """The policy version this step trains (per-token staleness)."""
+    min_version: int
+    """Tokens sampled by an older policy version leave every loss component."""
+
+
 class MicroBatchPlan(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
-    """One micro batch as the orchestrator ships it: its samples by reference, in packing
-    order. The trainer fetches their bodies and builds the ``MicroBatch``."""
+    """One micro batch as a trainer rank plans it: its samples by reference, in packing
+    order. The rank fetches their bodies and builds the ``MicroBatch``."""
 
     samples: list[SampleRef]
     trained_version: int

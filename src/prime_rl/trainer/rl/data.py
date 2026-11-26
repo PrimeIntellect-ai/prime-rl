@@ -1,5 +1,5 @@
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import NotRequired, TypedDict
@@ -10,6 +10,7 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 from prime_rl.configs.trainer import FakeDataLoaderConfig
+from prime_rl.trainer.rl.planner import plan_digest, prepare_batch
 from prime_rl.trainer.world import get_world
 from prime_rl.transports.batch import (
     BatchReceiver,
@@ -236,8 +237,8 @@ def drop_micro_batches(micro_batches: list[TensorMicroBatch], indices: list[int]
 
 
 class DataLoader:
-    """Receives the orchestrator's micro batch plans, one stream per DP rank, and builds the
-    micro batches from the samples the env worker pools keep."""
+    """Receives each step's samples from the orchestrator, plans the step's micro batches
+    for every data rank and builds this rank's from the samples the env worker pools keep."""
 
     def __init__(
         self,
@@ -245,8 +246,17 @@ class DataLoader:
         start_step: int,
         dp_world_size: int,
         config: TransportConfig,
+        seq_len: int,
+        pad_to_multiple_of: int,
+        bin_cost: Callable[[Sequence[int]], int],
     ):
         self.world = get_world()
+        self.seq_len = seq_len
+        self.pad_to_multiple_of = pad_to_multiple_of
+        self.bin_cost = bin_cost
+        """The training FLOPs of a micro batch's sequences, which the data ranks are balanced by."""
+        self.plan_digest = 0
+        """The digest of the last step's plans for every data rank (`plan_digest`)."""
 
         non_dp_world_size = self.world.world_size // dp_world_size
         dp_rank = self.world.rank // non_dp_world_size
@@ -262,7 +272,6 @@ class DataLoader:
 
         self.receiver: BatchReceiver = setup_batch_receiver(
             output_dir,
-            data_rank=dp_rank,
             rank=self.world.rank,
             world_size=self.world.world_size,
             current_step=start_step,
@@ -278,7 +287,23 @@ class DataLoader:
 
     def get_batch(self) -> list[TensorMicroBatch]:
         self.step = self.receiver.current_step
-        plans = self.receiver.receive()
+        batch = self.receiver.receive()
+        start = time.perf_counter()
+        plans_per_rank = prepare_batch(
+            batch.samples,
+            self.seq_len,
+            self.dp_world_size,
+            self.bin_cost,
+            trained_version=batch.trained_version,
+            min_version=batch.min_version,
+            pad_to_multiple_of=self.pad_to_multiple_of,
+        )
+        self.plan_digest = plan_digest(plans_per_rank)
+        plans = plans_per_rank[self.dp_rank]
+        get_logger().debug(
+            f"Planned {len(plans)} micro batches per data rank from {len(batch.samples)} samples "
+            f"in {format_time(time.perf_counter() - start)}"
+        )
         start = time.perf_counter()
         materialized = materialize_micro_batches(plans, self.payload_pool)
         micro_batches = materialized.micro_batches

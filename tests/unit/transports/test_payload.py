@@ -16,8 +16,8 @@ from verifiers.v1.episode import EnvInfo, Episode
 from verifiers.v1.types import SamplerSupport, TurnTokens
 
 from prime_rl.env.heads import episode_head
-from prime_rl.orchestrator import batch as planner
 from prime_rl.orchestrator.train_sink import queued_samples
+from prime_rl.trainer.rl import planner
 from prime_rl.trainer.rl.data import DataLoader
 from prime_rl.transports import payload
 from prime_rl.transports.batch import materialize
@@ -141,7 +141,7 @@ def test_fetched_micro_batches_hold_each_branchs_arrays():
     refs = _refs(episodes, seq_len=256)
 
     for pad in (1, 64):
-        kwargs = dict(seq_len=256, num_train_workers=2, bin_cost=sum, pad_to_multiple_of=pad)
+        kwargs = dict(seq_len=256, num_data_ranks=2, bin_cost=sum, pad_to_multiple_of=pad)
         with ThreadPoolExecutor(4) as pool:
             for plans in _plans(refs, **kwargs):
                 materialized = materialize_micro_batches(plans, pool)
@@ -232,13 +232,13 @@ def test_heads_and_masks_survive_truncation_mixed_packing_and_padding():
         replayed=np.array([False, False, False, True]).tobytes(),
     )
     with ThreadPoolExecutor(2) as pool:
-        [[plan]] = _plans([sample("head", head, seq_len=3)], seq_len=3, num_train_workers=1, bin_cost=sum)
+        [[plan]] = _plans([sample("head", head, seq_len=3)], seq_len=3, num_data_ranks=1, bin_cost=sum)
         materialized = materialize_micro_batches([plan], pool)
         [truncated] = materialized.micro_batches
         assert materialized.failed == []
         np.testing.assert_array_equal(np.frombuffer(truncated.sampler_support.counts, np.int32), [0, 0, 2])
         np.testing.assert_array_equal(np.frombuffer(truncated.sampler_support.ids, np.int32), [3, 7])
-        [[plan]] = _plans([sample("replayed", replayed, seq_len=3)], seq_len=3, num_train_workers=1, bin_cost=sum)
+        [[plan]] = _plans([sample("replayed", replayed, seq_len=3)], seq_len=3, num_data_ranks=1, bin_cost=sum)
         materialized = materialize_micro_batches([plan], pool)
         [truncated] = materialized.micro_batches
         assert materialized.failed == []
@@ -248,7 +248,7 @@ def test_heads_and_masks_survive_truncation_mixed_packing_and_padding():
 
         # No arrays at all: the last sample shares the micro batch and gets empty rows.
         refs = [sample("head", head), sample("replayed", replayed), sample("plain", plain), sample("none", None)]
-        [[plan]] = _plans(refs, seq_len=16, num_train_workers=1, bin_cost=sum, pad_to_multiple_of=16)
+        [[plan]] = _plans(refs, seq_len=16, num_data_ranks=1, bin_cost=sum, pad_to_multiple_of=16)
         plan = msgspec.msgpack.decode(msgspec.msgpack.encode(plan), type=wire.MicroBatchPlan)
         materialized = materialize_micro_batches([plan], pool)
         [packed] = materialized.micro_batches
@@ -281,7 +281,7 @@ def test_unfetchable_micro_batches_are_reported():
     PayloadHook().keep(episode, "rl")
     [ref] = _refs([episode], seq_len=16)
     ref.id = "missing"
-    [[plan]] = _plans([ref], seq_len=16, num_train_workers=1, bin_cost=sum)
+    [[plan]] = _plans([ref], seq_len=16, num_data_ranks=1, bin_cost=sum)
     with ThreadPoolExecutor(1) as pool:
         materialized = materialize_micro_batches([plan], pool)
     [micro_batch] = materialized.micro_batches
@@ -468,7 +468,7 @@ def test_an_unfetchable_multimodal_sample_borrows_a_fetched_image():
         )
 
     with ThreadPoolExecutor(2) as pool:
-        [[plan]] = _plans([ref("kept"), ref("missing")], seq_len=16, num_train_workers=1, bin_cost=sum)
+        [[plan]] = _plans([ref("kept"), ref("missing")], seq_len=16, num_data_ranks=1, bin_cost=sum)
         materialized = materialize_micro_batches([plan], pool)
         [micro_batch] = materialized.micro_batches
         assert materialized.failed == [0] and materialized.unbuildable == []
@@ -476,11 +476,11 @@ def test_an_unfetchable_multimodal_sample_borrows_a_fetched_image():
 
         # No image fits a one-token sample, but the micro batch keeps the fetched one's.
         short = msgspec.structs.replace(ref("missing"), num_tokens=1, images=[[0, 1]])
-        [[plan]] = _plans([ref("kept"), short], seq_len=16, num_train_workers=1, bin_cost=sum)
+        [[plan]] = _plans([ref("kept"), short], seq_len=16, num_data_ranks=1, bin_cost=sum)
         materialized = materialize_micro_batches([plan], pool)
         assert materialized.failed == [0] and materialized.unbuildable == []
 
-        [[plan]] = _plans([ref("missing")], seq_len=16, num_train_workers=1, bin_cost=sum)
+        [[plan]] = _plans([ref("missing")], seq_len=16, num_data_ranks=1, bin_cost=sum)
         materialized = materialize_micro_batches([plan], pool)
         assert materialized.failed == [0] and materialized.unbuildable == [0]
 
