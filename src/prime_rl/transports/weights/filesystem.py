@@ -117,3 +117,26 @@ class FileSystemWeightReceiver(WeightReceiver):
             await load_lora_adapter(self.admin_plane, self.model_name, weights_dir, step)
         else:
             await self.admin_plane.update_weights(weights_dir, transport="filesystem", step=step)
+
+
+class PulledFileSystemWeightReceiver(WeightReceiver):
+    """The consumer side of ``weight_broadcast.pull``: the engines watch the broadcast dir and move themselves onto
+    each version (``prime_rl.inference.vllm.weight_pull``), so receiving a version only waits until every engine
+    serves it or a newer one. Nothing is acknowledged and no engine is paused from here."""
+
+    engines_pull = True
+    poll_interval = 0.1
+
+    async def receive(self, step: int) -> None:
+        start = last_log = time.monotonic()
+        while True:
+            served = await self.admin_plane.served_versions()
+            if all(version is not None and version >= step for version in served):
+                return
+            now = time.monotonic()
+            if now - start > self.config.timeout:
+                raise TimeoutError(f"The engines did not pull policy v{step} within {self.config.timeout}s: {served}")
+            if now - last_log > 60:
+                self.logger.warning(f"Still waiting for the engines to pull policy v{step}; they serve {served}")
+                last_log = now
+            await asyncio.sleep(self.poll_interval)

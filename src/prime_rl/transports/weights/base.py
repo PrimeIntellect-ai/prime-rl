@@ -1,5 +1,4 @@
 import asyncio
-import os
 import shutil
 import time
 from abc import ABC, abstractmethod
@@ -12,33 +11,15 @@ import torch.nn as nn
 from prime_rl.configs.shared import WeightBroadcastConfig
 from prime_rl.orchestrator.clients import AdminPlane
 from prime_rl.trainer.world import get_world, wait_for_master
+from prime_rl.utils.broadcasts import (  # noqa: F401 (re-exported)
+    FINISHED_MARKER,
+    RECEIVER_READY_MARKER,
+    SENDER_READY_MARKER,
+    STARTED_MARKER,
+    marker_exists,
+)
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_broadcast_dir, get_step_path
-
-# Broadcast-dir sentinels. Every transport goes through the same four stages:
-# the trainer resets the step dir and raises ``.sender_ready``, the consumer
-# joins the transfer and replies ``.receiver_ready`` (for NCCL with the
-# engines paused inside the receive RPC), the trainer raises ``.started`` and
-# moves the weights, then raises ``.finished`` — for filesystem, the weights
-# are fully on disk.
-SENDER_READY_MARKER = ".sender_ready"
-RECEIVER_READY_MARKER = ".receiver_ready"
-STARTED_MARKER = ".started"
-FINISHED_MARKER = ".finished"
-
-
-def marker_exists(marker: Path) -> bool:
-    """``marker.exists()`` that sees a marker the other host just created on a
-    shared NFS mount. NFS clients cache "not found" answers for the attribute
-    timeout (30 s by default); opening a directory forces the client to
-    revalidate it (close-to-open). The step dir may not exist yet, so the
-    broadcast dir above it is opened too."""
-    for directory in (marker.parent.parent, marker.parent):
-        try:
-            os.close(os.open(directory, os.O_RDONLY | os.O_DIRECTORY))
-        except FileNotFoundError:
-            pass
-    return marker.exists()
 
 
 def prune_broadcasts_beyond(output_dir: Path, step: int) -> None:
@@ -68,11 +49,16 @@ class WeightSender(ABC):
     offered (``.sender_ready``), acknowledged by the consumer
     (``.receiver_ready``), transferred (``.started``), and committed
     (``.finished``). The trainer therefore runs in lockstep with its consumer
-    on every transport — a broadcast nobody receives blocks and then fails."""
+    on every transport — a broadcast nobody receives blocks and then fails —
+    unless the engines pull (``acknowledged``)."""
 
     # Gathering full weights peaks well above the resident weights, so the trainer drains the GPU and
     # releases cached blocks before such a broadcast.
     gathers_full_weights = True
+
+    acknowledged = True
+    """Whether a consumer acknowledges each offered version before the transfer. Engines that pull the
+    versions themselves (``weight_broadcast.pull``) acknowledge none: the trainer publishes and goes on."""
 
     def __init__(self, output_dir: Path, timeout: int):
         self.logger = get_logger()
@@ -91,7 +77,8 @@ class WeightSender(ABC):
             shutil.rmtree(step_dir, ignore_errors=True)
             step_dir.mkdir(parents=True)
             (step_dir / SENDER_READY_MARKER).touch()
-            self._wait_for_receiver_ready(step_dir)
+            if self.acknowledged:
+                self._wait_for_receiver_ready(step_dir)
             (step_dir / STARTED_MARKER).touch()
         wait_for_master(f"weight_broadcast/{step}", self.timeout)
         self._broadcast(model, step, step_dir)
@@ -199,6 +186,10 @@ class WeightReceiver(ABC):
     def _ack(self, step: int) -> None:
         """Acknowledge the offered version — unblocks the waiting trainer."""
         (self.step_dir(step) / RECEIVER_READY_MARKER).touch()
+
+    engines_pull = False
+    """Whether the engines move themselves onto each version (``weight_broadcast.pull``): the consumer then
+    only waits until they serve it, and pauses nothing."""
 
     async def prepare(self, step: int) -> None:
         """Work on the offered v{step} that needs no engine pause, done before the consumer stops dispatching for
