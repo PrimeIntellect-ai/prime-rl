@@ -256,6 +256,10 @@ def test_cost_penalty_charges_each_rollout_its_own_cost():
     off = CostLengthPenaltyConfig(weight=0.0)
     assert _grpo(group(), length_penalty=off) == pytest.approx(_grpo(group()), abs=1e-6)
 
+    # a group where every rollout failed is not charged
+    all_failed = [_make_episode(0.0, 10), _make_episode(0.0, 40)]
+    assert _grpo(all_failed, length_penalty=cfg) == pytest.approx([0.0, 0.0])
+
 
 def test_max_rl_mean_normalized():
     # mean 0.25: the success gets (1 - 0.25)/0.25 = 3, failures (0 - 0.25)/0.25 = -1

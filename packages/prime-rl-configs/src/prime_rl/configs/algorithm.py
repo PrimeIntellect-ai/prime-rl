@@ -104,7 +104,8 @@ class CostLengthPenaltyConfig(BaseConfig):
     ``R = S - lambda_e * C`` of Cognition's SWE-2, where ``weight`` is lambda_e for the source's reasoning
     effort, set to the slope of the base model's reward-vs-cost Pareto curve at that effort so that moving
     along the curve leaves the objective unchanged to first order. It neither scales with the group's pass
-    rate nor depends on the rest of the group, and it reaches failed rollouts too."""
+    rate nor depends on the rest of the group, and it reaches failed rollouts too, unless every rollout of
+    the group failed (no positive reward), in which case the group is not charged."""
 
     type: Literal["cost"] = "cost"
 
@@ -210,7 +211,7 @@ class GRPOAlgoConfig(BaseAlgoConfig):
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
     length_penalty: Annotated[LengthPenaltyConfig | None, Live()] = None
-    """Length penalty subtracted from each reward before the GRPO baseline: a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max. ``linear`` uses trace token counts; opt-in ``linear-subagent`` discounts semantic subagent tokens; ``cost`` instead charges each rollout ``weight`` per 1,000 weighted tokens, with no group normalization or pass-rate scaling. None disables it. The only live field of an algorithm: a config update may change it, or turn it on or off, while the run is going."""
+    """Length penalty subtracted from each reward before the GRPO baseline: a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max. ``linear`` uses trace token counts; opt-in ``linear-subagent`` discounts semantic subagent tokens; ``cost`` instead charges each rollout ``weight`` per weighted token, with no group normalization or pass-rate scaling. A group where no rollout has a positive reward is never charged. None disables it. The only live field of an algorithm: a config update may change it, or turn it on or off, while the run is going."""
 
     @field_validator("length_penalty", mode="before")
     @classmethod
