@@ -15,6 +15,8 @@ import verifiers.v1 as vf
 
 from prime_rl.monitors.base import Kind
 from prime_rl.monitors.file.traces.update import make_update
+from prime_rl.orchestrator.credit import token_advantages, trace_advantage
+from prime_rl.orchestrator.trajectories import branch_advantages
 
 
 def stamp_arrival(episodes: list[vf.Episode], kind: Kind, step: int) -> None:
@@ -38,12 +40,14 @@ def stamp_batch(episodes: list[vf.Episode], step: int) -> list[dict[str, Any]]:
     for episode in episodes:
         for trace in episode.traces:
             info: dict[str, Any] = {"effective": True, "ship": {"step": step, "time": now}}
-            if (advantage := trace.info.get("advantage")) is not None:
+            branches = {}
+            if (advantage := trace_advantage(trace)) is not None:
                 info["advantage"] = advantage
-            branches = {
-                branch.index: {"advantages": advantages}
-                for branch in trace.branches
-                if branch.trainable and (advantages := branch.advantages) is not None
-            }
+                per_token = token_advantages(trace) is not None
+                branches = {
+                    branch.index: {"advantages": branch_advantages(branch, per_token, advantage)}
+                    for branch in trace.branches
+                    if branch.trainable
+                }
             updates.append(make_update(trace.id, info=info, branches=branches))
     return updates

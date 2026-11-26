@@ -62,7 +62,8 @@ def mk(
         stop_condition=stop_condition,
         metrics=metrics or {},
         agent=SimpleNamespace(trainable=trainable, name=agent_name),
-        nodes=[SimpleNamespace(advantages=[1.0] if is_trainable else [0.0], sampler_support=None)],
+        info={"advantage": 1.0 if is_trainable else 0.0},
+        nodes=[SimpleNamespace(advantages=None, sampler_support=None)],
         calls=[],
         timing=SimpleNamespace(
             setup=SimpleNamespace(duration=setup),

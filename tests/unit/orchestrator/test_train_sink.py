@@ -46,7 +46,6 @@ def trace(*, advantage=1.0, ok=True, trainable=True, sampled=True):
             mask=[sampled, sampled],
             is_content=[True, True],
             logprobs=[-0.1, -0.2],
-            advantages=[advantage, advantage],
             reference_logprobs=[-0.3, -0.4],
             routed_experts=np.ones((2, 2, 2), dtype=np.uint8),
         ),
@@ -61,6 +60,7 @@ def trace(*, advantage=1.0, ok=True, trainable=True, sampled=True):
         rewards={"correct": vf.Reward(score=1.0)},
         calls=[ModelCall(node=2, usage=Usage(prompt_tokens=2, completion_tokens=2), finish_reason="stop")],
         errors=[] if ok else [vf.Error(type="ProviderError", message="failed")],
+        info={"advantage": advantage} if sampled else {},
     )
 
 

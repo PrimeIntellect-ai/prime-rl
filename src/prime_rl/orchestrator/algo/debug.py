@@ -6,7 +6,7 @@ import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import DebugAlgoConfig
 from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
-from prime_rl.orchestrator.algo.routing import assign_advantages
+from prime_rl.orchestrator.algo.routing import assign_advantage
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.clients import InferenceClient
@@ -27,4 +27,4 @@ class DebugAlgorithm(Algorithm):
 
     async def score_episode(self, episode: vf.Episode) -> None:
         for _, trace in iter_trainable_traces([episode]):
-            assign_advantages(trace, self.advantage)
+            assign_advantage(trace, self.advantage)

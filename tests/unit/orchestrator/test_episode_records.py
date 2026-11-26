@@ -23,7 +23,7 @@ from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, g
 from prime_rl.monitors.file.traces.chunks import chunk_path
 from prime_rl.monitors.file.traces.index import index_row
 from prime_rl.monitors.file.traces.live import get_live_dir, read_live
-from prime_rl.orchestrator.algo.routing import assign_advantages
+from prime_rl.orchestrator.algo.routing import assign_advantage
 from prime_rl.orchestrator.annotations import stamp_batch
 from tests.unit.orchestrator.test_train_sink import episode, trace
 
@@ -56,7 +56,7 @@ def test_received_episode_writes_plain_records(tmp_path):
     received, deltas = _over_the_wire(episode([trace()]))
     nodes = received.traces[0].nodes
     assert isinstance(nodes[2].token_ids, np.ndarray) and not nodes[2].token_ids.flags.writeable
-    assign_advantages(received.traces[0], 0.7)
+    assign_advantage(received.traces[0], 0.7)
 
     monitor = FileMonitor(FileMonitorConfig())
     asyncio.run(monitor.init(tmp_path))

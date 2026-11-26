@@ -11,7 +11,8 @@ from prime_rl.configs.algorithm import (
 )
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm, _length_penalty_tokens
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
-from prime_rl.orchestrator.algo.routing import assign_advantages
+from prime_rl.orchestrator.algo.routing import assign_advantage
+from prime_rl.orchestrator.credit import trace_advantage
 from prime_rl.orchestrator.trajectories import trace_to_samples
 
 
@@ -145,12 +146,10 @@ def _make_group(rewards, completion_lengths=None, num_turns=None) -> list[vf.Epi
 
 
 def _scalar(episode: vf.Episode) -> float:
-    """The per-rollout advantage scalar an algorithm assigned — broadcast over
-    the rollout's trainable (mask-True) tokens, so any trainable position holds it."""
-    for node in episode.traces[0].nodes:
-        if node.advantages is not None and len(node.advantages):
-            return float(node.advantages[0])
-    raise AssertionError("episode has no trainable token")
+    """The per-rollout advantage an algorithm assigned."""
+    advantage = trace_advantage(episode.traces[0])
+    assert advantage is not None, "episode has no trainable token"
+    return advantage
 
 
 def _grpo(group: list[vf.Episode], length_penalty=None, length_weighted_baseline=False) -> list[float]:
@@ -439,30 +438,23 @@ def test_length_penalty_ignores_discarded_compactions(penalty_type, term):
 
 
 # --------------------------------------------------------------------------
-# assign_advantages: scalar broadcast over the rollout's trainable tokens.
+# assign_advantage: one value broadcast over the rollout's trainable tokens.
 # --------------------------------------------------------------------------
 
 
-def test_assign_advantages_broadcasts_scalar():
+def test_assign_advantage_broadcasts_scalar():
     """A scalar broadcasts uniformly over the rollout's trainable (mask-True) tokens."""
     episode = _build_episode(0.0, sampled_lengths=[2])
     trace = episode.traces[0]
     # one user prompt token (masked) + 2 sampled tokens (trainable)
-    assign_advantages(trace, 0.7)
+    assign_advantage(trace, 0.7)
     assert trace_to_samples(trace)[0].advantages == pytest.approx([0.0, 0.7, 0.7])
 
 
-def test_assign_advantages_zeros_non_trainable():
+def test_assign_advantage_zeros_non_trainable():
     """Non-trainable (mask=False) positions stay 0.0 under scalar broadcast."""
     # prompt(1, masked) + sampled(1) + obs(1, masked): mask is [F, T, F]
     episode = _build_episode(0.0, sampled_lengths=[1], obs_lengths=[1])
     trace = episode.traces[0]
-    assign_advantages(trace, 0.7)
+    assign_advantage(trace, 0.7)
     assert trace_to_samples(trace)[0].advantages == pytest.approx([0.0, 0.7, 0.0])
-
-
-def test_assign_advantages_rejects_misaligned():
-    episode = _build_episode(0.0, sampled_lengths=[2])
-    # full length is 3 (prompt + 2 sampled); a 1-element list must be rejected
-    with pytest.raises(ValueError, match="align"):
-        assign_advantages(episode.traces[0], [0.5])

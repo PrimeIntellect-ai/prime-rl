@@ -7,7 +7,7 @@ import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import HierarchicalGRPOAlgoConfig
 from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
-from prime_rl.orchestrator.algo.routing import assign_advantages
+from prime_rl.orchestrator.algo.routing import assign_advantage
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.clients import InferenceClient
@@ -39,4 +39,4 @@ class HierarchicalGRPOAlgorithm(Algorithm):
         for members in peers.values():
             baseline = sum(trace.reward for trace in members) / len(members)
             for trace in members:
-                assign_advantages(trace, trace.reward - baseline)
+                assign_advantage(trace, trace.reward - baseline)
