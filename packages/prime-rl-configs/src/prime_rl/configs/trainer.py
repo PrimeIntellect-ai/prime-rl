@@ -208,8 +208,27 @@ class MXFP8MoEComputeConfig(MoEComputeConfigBase):
     """MXFP8 expert-compute recipe."""
 
 
+class NVFP4MoEComputeConfig(MoEComputeConfigBase):
+    """Run routed experts with the numerics of vLLM's online ``nvfp4_per_token`` MoE: NVFP4 forward with per-token
+    activation scales and the engines' load-time weight quantizer, MXFP8 backward on the dequantized operands (SM100).
+    In ``rl`` the engines must run ``quantization = "online"`` with ``quantization_config.moe = "nvfp4_per_token"``."""
+
+    type: Literal["nvfp4"] = "nvfp4"
+    four_over_six: bool = False
+    """Choose each activation block's scale with 4/6 (the lower-error of the max-6 and max-4 scales), as FlashInfer's
+    ``FLASHINFER_NVFP4_4OVER6``. ``rl`` applies the same setting to the engines. Weights never use it."""
+
+    @property
+    def flashinfer_env(self) -> dict[str, str]:
+        """FlashInfer quantizer settings the trainer and the engines share: IEEE division, 4/6 on or off."""
+        return {
+            "FLASHINFER_DISABLE_FP4_QUANT_FAST_MATH": "1",
+            "FLASHINFER_NVFP4_4OVER6": "1" if self.four_over_six else "0",
+        }
+
+
 MoEComputeConfig: TypeAlias = Annotated[
-    BF16MoEComputeConfig | DeepGemmFP8MoEComputeConfig | MXFP8MoEComputeConfig,
+    BF16MoEComputeConfig | DeepGemmFP8MoEComputeConfig | MXFP8MoEComputeConfig | NVFP4MoEComputeConfig,
     Field(discriminator="type"),
 ]
 

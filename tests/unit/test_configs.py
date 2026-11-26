@@ -1792,6 +1792,30 @@ def test_score_centering_replays_top_p_alone():
     assert config.inference.enable_return_sampling_mask
 
 
+def test_rl_nvfp4_experts_set_up_matching_engines():
+    def rl(vllm, env_vars=None):
+        return RLConfig.model_validate(
+            {
+                "trainer": {"model": {"moe": {"compute": {"type": "nvfp4", "four_over_six": True}}}},
+                "orchestrator": {},
+                "inference": {"vllm": {"tensor_parallel_size": 1, **vllm}, "env_vars": env_vars or {}},
+                "deployment": {"type": "single_node", "gpus_per_node": 2, "num_train_gpus": 1, "num_infer_gpus": 1},
+            }
+        )
+
+    nvfp4 = {"quantization": "online", "quantization_config": {"linear": "mxfp8", "moe": "nvfp4_per_token"}}
+    config = rl(nvfp4)
+    assert config.inference.env_vars["FLASHINFER_NVFP4_4OVER6"] == "1"
+    assert config.inference.env_vars["FLASHINFER_DISABLE_FP4_QUANT_FAST_MATH"] == "1"
+    assert config.inference.vllm.moe_backend == "flashinfer_trtllm"
+    with pytest.raises(ValueError, match="moe_backend"):
+        rl({**nvfp4, "moe_backend": "flashinfer_cutedsl"})
+    with pytest.raises(ValueError, match="nvfp4_per_token"):
+        rl({"quantization": "mxfp8"})
+    with pytest.raises(ValueError, match="FLASHINFER_NVFP4_4OVER6"):
+        rl(nvfp4, {"FLASHINFER_NVFP4_4OVER6": "0"})
+
+
 @pytest.mark.parametrize("rollouts", [False, True])
 def test_shared_ckpt_rollouts_reaches_the_orchestrator(rollouts):
     config = RLConfig.model_validate(
