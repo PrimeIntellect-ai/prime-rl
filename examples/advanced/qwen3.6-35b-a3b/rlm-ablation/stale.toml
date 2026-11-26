@@ -1,0 +1,11 @@
+# Staleness arm: the policy reaches the engines only every 64 steps, so within each cycle the engines sample from a
+# frozen policy while the trainer moves on, and rollouts up to 63 steps stale still train (max staleness 64).
+#
+#   uv run rl @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/base.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/stale.toml
+#   uv run rl @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/base.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/h200.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/stale.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/reinforce-kl.toml
+
+[weight_broadcast]
+interval = 64
+
+[orchestrator]
+max_staleness = 64

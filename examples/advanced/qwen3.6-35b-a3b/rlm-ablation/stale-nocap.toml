@@ -1,0 +1,11 @@
+# Staleness arm without a cap: the policy reaches the engines every 32 steps, rollouts of any age train in full and
+# the dispatcher never pauses, so inference runs continuously and the batches mix rollouts of all ages.
+#
+#   uv run rl @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/base.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/nvfp4.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/stale-nocap.toml
+
+[weight_broadcast]
+interval = 32
+
+[orchestrator]
+max_staleness = 1_000_000
+max_policy_lag = 1_000_000

@@ -1,0 +1,15 @@
+# Loss arm: REINFORCE with score centering under the sampler and a KL(sampler || trainer) penalty on tokens at least
+# one policy version stale, exact over the replayed top-k 256 support, in place of icepop. Zero-advantage rollouts stay
+# in the batch for their KL gradient (stack reinforce-kl-prune.toml to prune them).
+#
+#   uv run rl @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/base.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/reinforce-kl.toml
+#   uv run rl @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/base.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/nvfp4.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/stale-nocap.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/reinforce-kl.toml
+
+[trainer.loss]
+type = "reinforce"
+score_centering = true
+
+[trainer.loss.sampler_kl]
+coef = 0.05
+estimator = "exact"
+min_staleness = 1
