@@ -8,7 +8,8 @@ RL recipes per model at 256k context, in three layers:
    262144-token sample per micro batch, and one inference node per trainer node. The trainer keeps
    the defaults: optimizer offload, full activation checkpointing and activation offloading.
 3. `data/`: one representative data overlay per domain, updated as models get stronger: `swe.toml`
-   (ScaleSWE with the bash harness, bash + edit tools, eval on SWE-bench Verified) and `math.toml`
+   (ScaleSWE with the bash harness, bash + edit tools, eval on SWE-bench Verified), `tool-use.toml`
+   (general-agent tiers 3-4 with native tool calls, eval on 128 held-out tasks) and `math.toml`
    (INTELLECT-3 math, eval on AIME 2025, for functional tests).
 
 ```bash
