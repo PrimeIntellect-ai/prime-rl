@@ -74,7 +74,8 @@ class GRPOAlgorithm(Algorithm):
         traces = [trace for _, trace in iter_trainable_traces(episodes)]
         rewards = torch.tensor([trace.reward for trace in traces], dtype=torch.float32)
         length_penalty = self.length_penalty
-        if length_penalty is None:
+        if length_penalty is None or not (rewards > 0).any():
+            # A group where every rollout failed has no success to keep, so it is not charged for length.
             shaped_rewards = rewards
         elif isinstance(length_penalty, BudgetLengthPenaltyConfig):
             tokens = torch.tensor([trace.num_total_tokens for trace in traces], dtype=torch.float64)
