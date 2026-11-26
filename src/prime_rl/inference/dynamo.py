@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from prime_rl.configs.shared import ClientConfig, PolicyClientConfig
 from prime_rl.orchestrator.clients import (
     ADMIN_TIMEOUT_S,
+    ENGINE_ADMIN_LIMITS,
     UPDATE_WEIGHTS_TIMEOUT_S,
     AdminPlane,
     _admin_post,
@@ -255,7 +256,7 @@ class DynamoAdminPlane(AdminPlane):
         return httpx.AsyncClient(
             base_url=worker.admin_base_url,
             headers=self._headers,
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=1),
+            limits=ENGINE_ADMIN_LIMITS,
             timeout=httpx.Timeout(worker_timeout),
             trust_env=False,
         )
