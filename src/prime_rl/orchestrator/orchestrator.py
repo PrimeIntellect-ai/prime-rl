@@ -119,12 +119,6 @@ from prime_rl.utils.utils import clean_exit
 # shutdown wedges (env-worker-pool ZMQ recv, vLLM admin aclose, etc)
 SHUTDOWN_TIMEOUT_S = 300
 
-# Maximum shipped batches that inference has not applied the policy for yet. The
-# dispatcher is paused via ``update_dispatch_gate`` once this is exceeded; resumed
-# when the watcher advances ``policy.version``. Shipping itself is paced by the
-# trainer: a batch goes out only once every trainer rank requested it.
-TARGET_LAG = 1
-
 # How long a rollout checkpoint waits for the env workers to take the memory
 # checkpoints of the running rollouts. The trainer waits in its broadcast meanwhile.
 SAVE_TIMEOUT_SECONDS = 300.0
@@ -1516,13 +1510,16 @@ class Orchestrator:
         here, policy update in ``on_new_version``) share one lead formula. Steps
         are 1-indexed while policy versions stay 0-indexed, so the shipped-batch
         count is ``progress.step - 1``."""
+        # Once more than ``max_policy_lag`` shipped batches run ahead of the applied policy, the dispatcher
+        # pauses until the watcher advances ``policy.version``. Shipping itself is paced by the trainer.
+        max_lag = self.config.max_policy_lag
         lead = (self.progress.step - 1) - self.policy.version
         gate = self.dispatcher.dispatch_allowed
         was_set = gate.is_set()
-        if lead > TARGET_LAG:
+        if lead > max_lag:
             if was_set:
                 get_logger().info(
-                    f"Pausing dispatcher until inference applies policy v{self.progress.step - 1 - TARGET_LAG} "
+                    f"Pausing dispatcher until inference applies policy v{self.progress.step - 1 - max_lag} "
                     f"(currently v{self.policy.version})"
                 )
             gate.clear()

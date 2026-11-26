@@ -1938,3 +1938,34 @@ def test_env_worker_pool_uses_ckpt_output_dir_as_save_root(tmp_path):
     assert pool_configs
     data = json.loads(pool_configs[0].read_text())
     assert Path(data["output_dir"]) == ckpt_dir.resolve()
+
+
+@pytest.mark.parametrize(
+    "orchestrator, lag",
+    [({"max_staleness": 32}, 32), ({"max_staleness": 1_000_000, "max_policy_lag": 1_000_000}, 1_000_000)],
+)
+def test_policy_lag_follows_the_broadcast_interval_unless_set(orchestrator, lag):
+    config = RLConfig.model_validate(
+        {
+            "weight_broadcast": {"type": "filesystem", "interval": 32},
+            "trainer": {},
+            "orchestrator": {**orchestrator, "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]}},
+            "inference": {},
+        }
+    )
+    assert config.orchestrator.max_policy_lag == lag
+
+
+def test_broadcast_interval_must_fit_max_staleness():
+    with pytest.raises(ValidationError, match="must not exceed"):
+        RLConfig.model_validate(
+            {
+                "weight_broadcast": {"type": "filesystem", "interval": 32},
+                "trainer": {},
+                "orchestrator": {
+                    "max_staleness": 8,
+                    "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
+                },
+                "inference": {},
+            }
+        )

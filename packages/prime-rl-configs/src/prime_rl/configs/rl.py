@@ -503,6 +503,29 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_weight_broadcast_interval(self):
+        """Batches late in a broadcast interval train on rollouts at least ``interval - 1`` steps stale; past
+        ``max_staleness`` every token is masked and the batch never fills."""
+        interval = self.weight_broadcast.interval
+        if interval - 1 > self.orchestrator.max_staleness:
+            raise ValueError(
+                f"weight_broadcast.interval - 1 ({interval - 1}) must not exceed "
+                f"orchestrator.max_staleness ({self.orchestrator.max_staleness})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_policy_lag(self):
+        """Engines that get the policy every N steps run up to N shipped batches behind it. A configured
+        ``orchestrator.max_policy_lag`` is kept (e.g. a larger one, so the dispatcher never pauses)."""
+        if "max_policy_lag" in self.orchestrator.model_fields_set:
+            return self
+        self.orchestrator = self.orchestrator.model_copy(
+            update={"max_policy_lag": self.weight_broadcast.interval}
+        )
+        return self
+
+    @model_validator(mode="after")
     def validate_enough_devices_for_nccl(self):
         if self.deployment.type == "single_node":
             if self.weight_broadcast.type == "nccl":

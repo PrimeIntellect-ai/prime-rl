@@ -286,6 +286,8 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
                 self.weight_broadcast = FileSystemWeightBroadcastConfig()
             else:
                 self.weight_broadcast = NCCLWeightBroadcastConfig()
+        if self.weight_broadcast.interval != 1:
+            raise ValueError("weight_broadcast.interval is RL only: online evals broadcast at every eval step.")
         if self.weight_broadcast.type != "filesystem":
             if self.weight_broadcast.type in ("nixl", "modelexpress"):
                 raise ValueError("NIXL and ModelExpress weight broadcast are not supported for SFT online evals.")
