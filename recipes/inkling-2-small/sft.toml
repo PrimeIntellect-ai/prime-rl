@@ -1,0 +1,37 @@
+# SFT for inkling-2-small: the model and the trainer setup of gpu/h200.toml (its trainer nodes,
+# parallelism, offload and precision), with the sequence length of rl.toml. Not tested as SFT.
+#
+#   uv run sft @ recipes/inkling-2-small/sft.toml @ recipes/data/sft.toml
+
+[model]
+name = "PrimeIntellect/Inkling-2-Small-bf16"
+ep = 8
+offload = "full"
+ac_offloading = "None"
+
+[model.moe.compute]
+type = "deepgemm_fp8"
+
+[optim]
+type = "sign_sgd"
+weight_decay = 0.01
+
+[data]
+# Two packed rows per data-parallel rank per step (48 ranks at cp 1).
+batch_size = 96
+micro_batch_size = 1
+# The trainer compiles flex attention for static shapes.
+pad_to_seq_len = true
+seq_len = 16384
+
+# The checkpoint is not in the renderer map; same renderer as rl.toml.
+[renderer]
+name = "inkling-2"
+reasoning_effort = "low"
+tool_parser = "inkling2"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 6
+
+[slurm]

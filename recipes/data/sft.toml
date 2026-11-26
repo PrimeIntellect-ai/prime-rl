@@ -1,0 +1,44 @@
+# SFT on PrimeIntellect/INTELLECT-3-SFT-10K, all six splits weighted equally. Compose it after a
+# model's sft.toml, which sets the model, its trainer parallelism and the sequence length:
+#
+#   uv run sft @ recipes/qwen3.8-flash-next/sft.toml @ recipes/data/sft.toml
+
+max_steps = 500
+
+[optim]
+lr = 1e-5
+
+[scheduler]
+type = "linear"
+warmup_steps = 50
+decay_steps = 0
+
+[[data.source]]
+name = "chat"
+dataset = "PrimeIntellect/INTELLECT-3-SFT-10K"
+split = "chat"
+
+[[data.source]]
+name = "code"
+dataset = "PrimeIntellect/INTELLECT-3-SFT-10K"
+split = "code"
+
+[[data.source]]
+name = "if"
+dataset = "PrimeIntellect/INTELLECT-3-SFT-10K"
+split = "if"
+
+[[data.source]]
+name = "math"
+dataset = "PrimeIntellect/INTELLECT-3-SFT-10K"
+split = "math"
+
+[[data.source]]
+name = "science"
+dataset = "PrimeIntellect/INTELLECT-3-SFT-10K"
+split = "science"
+
+[[data.source]]
+name = "tool"
+dataset = "PrimeIntellect/INTELLECT-3-SFT-10K"
+split = "tool"
