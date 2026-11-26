@@ -412,11 +412,11 @@ soft_label  {"team": {"technical": 0.75, "billing": 0.25}}
 
 With several data ranks, validation stops when one rank runs out of packed rows, so some validation records can go unscored.
 
-**Writing a strategy.** A decision model is a prime-rl model class, registered like any other, and a `SystemOneStrategy` (`src/prime_rl/trainer/sft/system_one/data.py`), registered in `SYSTEM_ONE_STRATEGIES` (`src/prime_rl/trainer/sft/system_one/strategies.py`) under the first architecture name in the checkpoint's `config.json`. The readout is a head of the class's own, whose weights the class holds, or a head it already has, such as the LM head read at the option tokens. The trainer builds the strategy once, as `MyStrategy(tokenizer, model.config)`. A strategy that reads images has `modalities = frozenset({"image"})` and gets the model's processor as a third argument with `[model.vlm]`; for a request with images it also returns `mm_kwargs` (their inputs to the model's forward) and `mm_token_type_ids` (1 at their tokens, else 0). `load_image` (`src/prime_rl/trainer/sft/system_one/images.py`) loads an image as vLLM does.
+**Writing a strategy.** A decision model is a prime-rl model class, registered like any other, and a `SystemOneStrategy` (`src/prime_rl/trainer/sft/system_one/data.py`), registered in `SYSTEM_ONE_STRATEGIES` (`src/prime_rl/trainer/sft/system_one/strategies.py`) under the first architecture name in the checkpoint's `config.json`, or under its class's name if the class is [selected by an extra config file](development.md#selecting-a-model-class-by-an-extra-config-file). The readout is a head of the class's own, whose weights the class holds, or a head it already has, such as the LM head read at the option tokens. The trainer builds the strategy once, as `MyStrategy(tokenizer, model.config)`. A strategy that reads images has `modalities = frozenset({"image"})` and gets the model's processor as a third argument with `[model.vlm]`; for a request with images it also returns `mm_kwargs` (their inputs to the model's forward) and `mm_token_type_ids` (1 at their tokens, else 0). `load_image` (`src/prime_rl/trainer/sft/system_one/images.py`) loads an image as vLLM does.
 
 - `render_request(request, max_tokens)` returns the request's tokens, attention segments (`seq_lens`), the token spans each question is read from (`read_spans`) and optionally each question's option order, or `None` to skip the record. It never sees labels and must be deterministic. It may shorten its own content to fit `max_tokens`; a longer rendering is skipped.
 - `option_logits(model, hidden_states, input_ids, questions)` runs once per micro-batch inside the forward, on the packed row's final hidden states. Each `ReadQuestion` gives its option order, its reads and its record's span in row positions. It returns one 1-D tensor: each question's option logits in turn.
-- Under FSDP the readout calls the model's modules, never their weights directly, on the whole micro-batch at once, and the same modules on every micro-batch. The model class freezes parameters the readout never uses, such as an untied LM head: the trainer raises after the first step if a trainable parameter got no gradient (except with `model.offload = "full"`, which gives every parameter optimizer state up front).
+- Under FSDP the readout calls the model's modules, never their weights directly, on the whole micro-batch at once, and the same modules on every micro-batch. The exception is an untied LM head's weight, which stays gathered with the final norm through the forward: Clef-Flash reads its rows there. The model class freezes parameters the readout never uses, such as an untied LM head: the trainer raises after the first step if a trainable parameter got no gradient (except with `model.offload = "full"`, which gives every parameter optimizer state up front).
 - The fused LM head takes labels and returns their log-probabilities, which differ from logits by a constant per row: `model.lm_head(rows[None], labels=ids[None], temperature=torch.ones_like(ids, dtype=torch.float32)[None])["logprobs"][0]`.
 
 An example for a model class with a `decision_head` of 255 outputs, which freezes its untied LM head:
@@ -445,17 +445,19 @@ class MyStrategy(SystemOneStrategy):
         return torch.cat([row[: len(question.options)] for row, question in zip(logits, questions)])
 ```
 
-**Scoring outside the trainer.** `model` is built by `setup_model` (`src/prime_rl/trainer/model.py`), as in the trainer:
+**Scoring outside the trainer.** `model` is built from `model_name` by `setup_model` (`src/prime_rl/trainer/model.py`), as in the trainer:
 
 ```python
-from prime_rl.trainer.model import forward
+from prime_rl.trainer.model import forward, select_by_extra_config
 from prime_rl.trainer.sft.system_one.data import render_sample
 from prime_rl.trainer.sft.system_one.loss import build_decision_loss_inputs, checked_option_logits
 from prime_rl.trainer.sft.system_one.record import parse_record
 from prime_rl.trainer.sft.system_one.strategies import get_system_one_strategy_cls
 
+# As the trainer does, a class selected by an extra config file (e.g. Clef-Flash) finds its strategy by its name
+selection = select_by_extra_config(model.config.model_type, model.config.architectures, model_name)
 # With [model.vlm], a strategy that reads images takes the model's processor as a third argument
-strategy = get_system_one_strategy_cls(model.config)(tokenizer, model.config)
+strategy = get_system_one_strategy_cls(model.config, selection)(tokenizer, model.config)
 source = data_config.source[0]  # the source the row is from
 request, _ = parse_record(row, source.columns, source.name, source.split)
 sample = render_sample(strategy, request, data_config.seq_len)  # None when skipped
@@ -483,6 +485,14 @@ per_question = logits.split([len(question.options) for question in inputs.questi
 ```
 
 `per_question[i]` follows `inputs.questions[i].options`: the strategy's option order, which can differ from the record's own (`request.questions[i].options`).
+
+**Clef and Clef-Flash.** A Clef release is a Qwen3.5 checkpoint with a `joint_head_config.json` beside its `config.json`: `Cloudflare/clef-flash` (9B, from Qwen3.5-9B) and `Cloudflare/clef` (27B, from Qwen3.8-27B, which has Qwen3.5's architecture). The two differ only in size. prime-rl loads both as `ClefFlashForJointSchema` (`src/prime_rl/trainer/models/qwen3_5/modeling_clef_flash.py`), as vLLM v0.34.0 does, and trains one with `model.name` set to the release. Clef-Omni (`Cloudflare/clef-omni`) has another backbone and is not supported. Only SFT trains it: RL training refuses every class [selected by an extra config file](development.md#selecting-a-model-class-by-an-extra-config-file). Train it on System One data only: on chat or pretraining data the LM head stays frozen and nothing calls the head, which then gets no gradient and no optimizer state to resume from.
+
+- **Prompt.** Its strategy, `ClefFlashStrategy` (`src/prime_rl/trainer/sft/system_one/clef_flash.py`), renders vLLM's `ClefFlashStrategy` prompt: the images if there are any, the state, then every question with its options. As on a vLLM server whose `max_model_len` is at least 16384, a prompt over 16384 tokens has its state cut, here with a warning. `data.seq_len` cuts nothing further: a longer rendering is skipped, so `data.seq_len = 16384` skips none. A record vLLM refuses is skipped with a warning: more than 64 questions, more than 26 choice options, or questions that with the images alone exceed 16384 tokens.
+- **Images.** With `[model.vlm]`, a record's images precede its state, loaded as vLLM loads them (EXIF orientation applied, transparency on white) and resized by the release's image processor: an image is up to 16384 tokens, so resize large ones when preparing the data. A record with an image that does not decode, or that the processor refuses, is skipped with a warning, as vLLM refuses it. One whose text holds `<|image_pad|>` is skipped too, though vLLM serves it: it reads that as text. Videos are not supported.
+- **Head.** The joint schema head reads the whole prompt and scores every question's options jointly. It runs once per micro-batch, on all of its records, and computes in bfloat16, as vLLM runs it; `[model.quantization]` leaves it in bfloat16. Its lexical prior reads the option tokens' rows of the LM head, as vLLM does, so the LM head is frozen and the release must be untied; the backbone and the head train.
+- **Export.** `tools/convert_dcp_to_bf16.py` writes a release that vLLM serves as is: the head in `joint_head.safetensors` and `joint_head_config.json` beside a stock `config.json`.
+- `model.init.type = "scratch"` fails: the model's init does not reach the head's attention input projections or its three scalars.
 
 ### Important Metrics
 

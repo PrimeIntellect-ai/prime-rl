@@ -92,6 +92,7 @@ SUITES = {
                     "reverse_text_sft_lora",
                     "alphabet_sort",
                     "pretrain",
+                    "clef_flash_sft",
                 )
             ),
         ),
