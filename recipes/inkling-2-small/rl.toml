@@ -39,7 +39,7 @@ type = "sign_sgd"
 lr = 1e-6
 weight_decay = 0.01
 
-[orchestrator]
+[trainer.data]
 # The trainer compiles flex attention for static shapes: pad every micro batch to seq_len.
 pad_to_seq_len = true
 
