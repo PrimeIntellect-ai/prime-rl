@@ -96,8 +96,29 @@ class LinearSubagentLengthPenaltyConfig(LinearLengthPenaltyConfig):
     """Multiplier on subagent input and output tokens before group normalization. Uses harness-declared ``subagent_call`` edges and their continuations, compaction attempts, and compacted contexts; unlabelled calls count at full weight. Nested subagents use the same multiplier. 0 excludes subagent tokens, 1 counts them fully. Does not change the turns term or training-token weights."""
 
 
+class BudgetLengthPenaltyConfig(BaseConfig):
+    """Penalty against a token budget, subtracted from every rollout's reward before the GRPO baseline:
+    ``r - clip(weight * (num_total_tokens / budget) ** alpha, 0, 1)``. It neither scales with the group's
+    pass rate nor depends on the rest of the group, and it reaches failed rollouts too, so a long failure
+    scores below a short one."""
+
+    type: Literal["budget"] = "budget"
+
+    budget: int = Field(gt=0)
+    """Token budget the cost is measured against, normally the env's ``agent.max_total_tokens``: the
+    rollout's ``num_total_tokens`` (new input counted once, plus all output) is the count that limit applies to."""
+
+    alpha: float = Field(1.5, gt=0, allow_inf_nan=False)
+    """Exponent on the budget fraction. Above 1 the penalty stays small for short rollouts and rises
+    steeply toward the budget."""
+
+    weight: float = Field(1.0, ge=0, allow_inf_nan=False)
+    """The penalty at the budget (lambda), before the clip to 1. 0 disables the penalty. Each source
+    sets its own, so sources sampled at different reasoning efforts can weigh length differently."""
+
+
 LengthPenaltyConfig: TypeAlias = Annotated[
-    LinearLengthPenaltyConfig | LinearSubagentLengthPenaltyConfig,
+    LinearLengthPenaltyConfig | LinearSubagentLengthPenaltyConfig | BudgetLengthPenaltyConfig,
     Field(discriminator="type"),
 ]
 
@@ -186,7 +207,7 @@ class GRPOAlgoConfig(BaseAlgoConfig):
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
     length_penalty: Annotated[LengthPenaltyConfig | None, Live()] = None
-    """Length penalty subtracted from each reward before the GRPO baseline: a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max. ``linear`` uses trace token counts; opt-in ``linear-subagent`` discounts semantic subagent tokens. None disables it. The only live field of an algorithm: a config update may change it, or turn it on or off, while the run is going."""
+    """Length penalty subtracted from each reward before the GRPO baseline: a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max. ``linear`` uses trace token counts; opt-in ``linear-subagent`` discounts semantic subagent tokens; ``budget`` instead charges each rollout its own share of a token budget, with no group normalization. None disables it. The only live field of an algorithm: a config update may change it, or turn it on or off, while the run is going."""
 
     @field_validator("length_penalty", mode="before")
     @classmethod

@@ -4,6 +4,7 @@ import pytest
 import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import (
+    BudgetLengthPenaltyConfig,
     GRPOAlgoConfig,
     LinearLengthPenaltyConfig,
     LinearSubagentLengthPenaltyConfig,
@@ -212,6 +213,41 @@ def test_grpo_length_weighted_baseline():
     ]
     advs = _grpo(group, length_penalty=cfg, length_weighted_baseline=True)
     assert advs == pytest.approx([0.75 - 65 / 120, -1 / 12 - 65 / 120])
+
+
+def _budget_shaped(group: list[vf.Episode], budget: int, alpha: float, weight: float) -> list[float]:
+    """Each rollout's reward minus its own clipped share of the budget."""
+    return [
+        episode.traces[0].reward - min(1.0, weight * (episode.traces[0].num_total_tokens / budget) ** alpha)
+        for episode in group
+    ]
+
+
+def test_budget_penalty_charges_each_rollout_its_share_of_the_budget():
+    def group():
+        return [_make_episode(1.0, 10), _make_episode(1.0, 40), _make_episode(0.0, 10), _make_episode(0.0, 40)]
+
+    tokens = [episode.traces[0].num_total_tokens for episode in group()]
+    assert tokens[0] < tokens[1] and tokens[0] == tokens[2] and tokens[1] == tokens[3]
+    budget = 2 * tokens[1]
+    shaped = _budget_shaped(group(), budget, 1.5, 1.0)
+    # solved and failed rollouts alike pay (T / B) ** 1.5: no pass-rate scaling, no correctness gating
+    assert shaped[0] - shaped[1] == pytest.approx(shaped[2] - shaped[3]) and shaped[3] < shaped[2] < 0
+    cfg = BudgetLengthPenaltyConfig(budget=budget, alpha=1.5, weight=1.0)
+    assert _grpo(group(), length_penalty=cfg) == pytest.approx([s - sum(shaped) / 4 for s in shaped], abs=1e-6)
+
+    # a rollout's shaped reward does not depend on the rest of its group
+    solo = [_make_episode(1.0, 10), _make_episode(0.0, 10)]
+    shaped_solo = _budget_shaped(solo, budget, 1.5, 1.0)
+    assert shaped_solo[0] == pytest.approx(shaped[0])
+    assert _grpo(solo, length_penalty=cfg) == pytest.approx([s - sum(shaped_solo) / 2 for s in shaped_solo], abs=1e-6)
+
+    # the penalty is clipped at 1: past the budget, a success scores 0 and a failure -1
+    tiny = BudgetLengthPenaltyConfig(budget=tokens[0] // 2, alpha=1.5, weight=3.0)
+    assert _grpo(group(), length_penalty=tiny) == pytest.approx([0.5, 0.5, -0.5, -0.5], abs=1e-6)
+    # weight 0 is plain GRPO
+    off = BudgetLengthPenaltyConfig(budget=budget, weight=0.0)
+    assert _grpo(group(), length_penalty=off) == pytest.approx(_grpo(group()), abs=1e-6)
 
 
 def test_max_rl_mean_normalized():
