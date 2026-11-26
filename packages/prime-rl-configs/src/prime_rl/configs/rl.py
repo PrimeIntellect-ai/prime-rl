@@ -493,7 +493,31 @@ class RLConfig(BaseConfig):
             update={"weight_broadcast": self.weight_broadcast.model_copy()}
         )
         if self.inference is not None:
-            self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
+            pull = self.weight_broadcast.type == "filesystem" and self.weight_broadcast.pull
+            self.inference.weight_broadcast = InferenceWeightBroadcastConfig(
+                type=self.weight_broadcast.type, pull_from=self.run_dir / "broadcasts" if pull else None
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_weight_pull(self):
+        """Engines that pull their weights replace the orchestrator's update, so the features that hook into it
+        are not supported yet."""
+        if self.weight_broadcast.type != "filesystem" or not self.weight_broadcast.pull:
+            return self
+        if self.inference is None:
+            raise ValueError(
+                "weight_broadcast.pull needs inference servers launched by rl: they read the broadcast dir"
+            )
+        unsupported = {
+            "LoRA": self.trainer.model.lora is not None,
+            "disaggregated P/D (prefill and decode must switch versions together)": (
+                self.inference.deployment.type == "disaggregated"
+            ),
+            "draft swaps (orchestrator.speculative_decoding)": self.orchestrator.speculative_decoding is not None,
+        }
+        if blocked := [name for name, hit in unsupported.items() if hit]:
+            raise ValueError(f"weight_broadcast.pull does not support {', '.join(blocked)} yet")
         return self
 
     @model_validator(mode="after")

@@ -12,7 +12,11 @@ from prime_rl.transports.weights.base import (
     latest_finished_broadcast,
     prune_broadcasts_beyond,
 )
-from prime_rl.transports.weights.filesystem import FileSystemWeightReceiver, FileSystemWeightSender
+from prime_rl.transports.weights.filesystem import (
+    FileSystemWeightReceiver,
+    FileSystemWeightSender,
+    PulledFileSystemWeightReceiver,
+)
 from prime_rl.transports.weights.nccl import NCCLWeightReceiver, NCCLWeightSender
 from prime_rl.transports.weights.sparse import SparseFileSystemWeightSender
 
@@ -36,10 +40,13 @@ def setup_weight_sender(
 ) -> WeightSender:
     if config.type == "nccl":
         return NCCLWeightSender(output_dir, config, torch.cuda.current_device())
-    elif config.type == "filesystem" and config.delta is not None:
-        return SparseFileSystemWeightSender(output_dir, config.timeout, config.delta)
     elif config.type == "filesystem":
-        return FileSystemWeightSender(output_dir, config, lora_config)
+        if config.delta is not None:
+            sender = SparseFileSystemWeightSender(output_dir, config.timeout, config.delta)
+        else:
+            sender = FileSystemWeightSender(output_dir, config, lora_config)
+        sender.acknowledged = not config.pull
+        return sender
     elif config.type == "nixl":
         from prime_rl.transports.weights.nixl import NIXLWeightSender
 
@@ -62,6 +69,8 @@ def setup_weight_receiver(
 ) -> WeightReceiver:
     if config.type == "nccl":
         return NCCLWeightReceiver(broadcast_dir, config, admin_plane, model_name)
+    elif config.type == "filesystem" and config.pull:
+        return PulledFileSystemWeightReceiver(broadcast_dir, config, admin_plane, model_name)
     elif config.type == "filesystem":
         return FileSystemWeightReceiver(broadcast_dir, config, admin_plane, model_name)
     elif config.type == "nixl":

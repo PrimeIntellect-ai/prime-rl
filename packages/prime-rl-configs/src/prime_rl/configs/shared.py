@@ -61,6 +61,12 @@ class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     delta: DeltaWeightBroadcastConfig | None = None
     """Publish sparse deltas instead of full checkpoints."""
 
+    pull: bool = False
+    """The engines pull each version themselves: they watch the broadcast dir, decode a sparse delta while serving
+    and apply the newest finished version in a short pause of their own. The trainer then waits for no consumer and
+    the orchestrator pauses no engine: it only reads the version each engine serves. Not supported yet with LoRA,
+    disaggregated P/D or draft swaps."""
+
 
 class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
     host: str = "localhost"

@@ -211,6 +211,16 @@ class WeightBroadcastConfig(BaseConfig):
     type: Literal["nccl", "filesystem", "nixl", "modelexpress"] = "filesystem"
     """Weight broadcast transport."""
 
+    pull_from: Path | None = None
+    """Broadcast dir to pull the policy weights from (``filesystem`` only): the server applies each version the
+    trainer publishes there itself, while serving. Set by ``rl`` with ``weight_broadcast.pull``."""
+
+    @model_validator(mode="after")
+    def validate_pull_transport(self):
+        if self.pull_from is not None and self.type != "filesystem":
+            raise ValueError("Engines pull their weights only from a filesystem broadcast")
+        return self
+
 
 class CPUOffloadTier(BaseConfig):
     num_bytes: int = Field(..., ge=0)
