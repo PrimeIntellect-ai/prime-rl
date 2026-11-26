@@ -20,7 +20,6 @@ from prime_rl.transports.batch import (
     BatchReceiver,
     MicroBatch,
     MMRefs,
-    setup_batch_receiver,
 )
 from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES, SamplerSupport, StepBatch
 from prime_rl.transports.payload import (
@@ -347,7 +346,7 @@ class DataLoader:
         """The last batch's fetched samples, for `release_payloads`."""
         self.step = start_step
 
-        self.receiver: BatchReceiver = setup_batch_receiver(
+        self.receiver = BatchReceiver(
             output_dir,
             rank=self.world.rank,
             world_size=self.world.world_size,
