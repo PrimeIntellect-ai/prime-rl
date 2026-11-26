@@ -168,8 +168,29 @@ class Orchestrator:
         self.launch_draft = config.speculative_decoding.draft if config.speculative_decoding is not None else None
         self.config_revision = 0
         self.resume_step = resolve_resume_step(config, self.ckpt_manager)
+        self.resume_without_orchestrator_state = False
+        if self.resume_step is not None:
+            orchestrator_path = resume_path(config) or self.ckpt_manager.get_ckpt_path(self.resume_step)
+            if (
+                config.max_steps is not None
+                and self.resume_step >= config.max_steps
+                and not (orchestrator_path / "progress.pt").exists()
+            ):
+                trainer_metadata = orchestrator_path.parent / "trainer" / ".metadata"
+                if not trainer_metadata.is_file():
+                    raise FileNotFoundError(f"Completed trainer checkpoint not found at {trainer_metadata}")
+                self.resume_without_orchestrator_state = True
+                get_logger().warning(
+                    f"Orchestrator checkpoint missing at {orchestrator_path / 'progress.pt'}; "
+                    f"resuming completed trainer checkpoint {self.resume_step} for evaluation with fresh "
+                    "progress and curriculum and the launch config (live updates cannot be restored)"
+                )
         # Components read the config when built, so a resumed run restores live updates first.
-        self.config = self.restore_live_config(config) if self.resume_step is not None else config
+        self.config = (
+            self.restore_live_config(config)
+            if self.resume_step is not None and not self.resume_without_orchestrator_state
+            else config
+        )
         self.controller = None
         self.control_requested = asyncio.Event()
         # The state as of shipping the last step, which a pause at that step saves.
@@ -315,10 +336,11 @@ class Orchestrator:
             get_logger().success(f"Eval environments ready in {format_time(time.perf_counter() - t0)}")
 
         self.train_source = TrainSource(self.train_envs)
-        if self.resume_step is not None:
+        if self.resume_step is not None and not self.resume_without_orchestrator_state:
             self.ckpt_manager.load(
                 self.progress, self.train_source, step=self.resume_step, path=resume_path(self.config)
             )
+        if self.resume_step is not None:
             self.progress.step = self.resume_step + 1
 
         get_logger().info("Waiting for policy inference pool to be ready")
