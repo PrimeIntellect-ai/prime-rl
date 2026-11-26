@@ -76,7 +76,7 @@ def start_sample_server(config: EnvWorkerPoolConfig, store_dir: Path | None) -> 
     ready_write.close()
     if not ready_read.poll(SAMPLE_SERVER_STARTUP_TIMEOUT_S):
         process.terminate()
-        process.join()
+        stop_sample_server(process)
         raise TimeoutError(f"The sample server did not start within {SAMPLE_SERVER_STARTUP_TIMEOUT_S}s")
     try:
         store_url, address = ready_read.recv()
@@ -87,9 +87,9 @@ def start_sample_server(config: EnvWorkerPoolConfig, store_dir: Path | None) -> 
 
 
 def stop_sample_server(process: mp.Process, timeout: float = 10) -> None:
-    """End the sample server once its death pipe is closed. It stops on its own then (its
-    pipe watcher sends it SIGTERM); one still running after ``timeout`` is stuck, and is killed
-    so it never outlives the pool and its store."""
+    """End the sample server once its death pipe is closed or it got SIGTERM. It stops on its
+    own then; one still running after ``timeout`` is stuck, and is killed so it never outlives
+    the pool and its store."""
     process.join(timeout)
     if process.is_alive():
         get_logger().warning(f"The sample server did not stop within {timeout}s; killing it")

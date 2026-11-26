@@ -76,7 +76,15 @@ class SampleServer:
 
     async def score(self, request: ScoreRequest) -> None:
         algorithm = self.algorithm(request)
-        await asyncio.gather(*(self.score_sample(algorithm, sample) for sample in request.samples))
+        tasks = [asyncio.create_task(self.score_sample(algorithm, sample)) for sample in request.samples]
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException:
+            # One failed sample fails the rollout: its siblings stop, freeing their scoring slots.
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
 
     async def score_sample(self, algorithm: Algorithm, sample: SampleToScore) -> None:
         """Score one kept sample and keep its scores in its body."""
