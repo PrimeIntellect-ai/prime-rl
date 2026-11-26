@@ -3,7 +3,7 @@
 #     --vllm.model PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
 #     --server.port 8001 --vllm.gpu-memory-utilization 0.5 --vllm.enforce-eager
 # Then:
-#   uv run rl @ configs/algo/opd.toml
+#   uv run rl @ dev/algo/opd_lora.toml
 
 max_steps = 20
 seq_len = 2048
@@ -13,7 +13,7 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [monitors.wandb]
 project = "algorithms-debug"
-name = "debug-opd"
+name = "debug-opd-lora"
 
 [orchestrator]
 batch_size = 128
@@ -57,7 +57,10 @@ env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 
 [trainer.optim]
-lr = 3e-6
+lr = 1e-4
+
+[trainer.model.lora]
+rank = 8
 
 [ckpt]
 

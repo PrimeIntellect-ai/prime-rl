@@ -3,7 +3,7 @@
 #     --vllm.model PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
 #     --server.port 8001 --vllm.gpu-memory-utilization 0.5 --vllm.enforce-eager
 # Then:
-#   uv run rl @ configs/algo/sft_distill_lora.toml
+#   uv run rl @ dev/algo/sft_distill_lora.toml
 
 max_steps = 20
 seq_len = 2048

@@ -3,9 +3,9 @@
 # episodes are restored from the trace stream and only the owed rollouts run.
 # Resuming a finished run restores everything and exits.
 #
-#   uv run eval @ configs/eval/resume.toml --run.name resume-debug
+#   uv run eval @ dev/eval/resume.toml --run.name resume-debug
 #   <Ctrl-C partway>
-#   uv run eval @ configs/eval/resume.toml --run.name resume-debug --resume
+#   uv run eval @ dev/eval/resume.toml --run.name resume-debug --resume
 
 group_size = 2
 

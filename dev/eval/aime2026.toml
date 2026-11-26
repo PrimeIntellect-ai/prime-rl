@@ -4,7 +4,7 @@
 # rollouts run in prime sandboxes (PRIME_API_KEY) rather than as subprocesses.
 # Competition math needs room to reason, so the completion budget is generous.
 #
-#   uv run eval @ configs/eval/aime2026.toml
+#   uv run eval @ dev/eval/aime2026.toml
 
 group_size = 16
 

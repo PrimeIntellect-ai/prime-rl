@@ -1,7 +1,7 @@
 # Single env, single turn: gsm8k with the null harness (one chat completion per
 # task, no sandbox) against Prime Inference.
 #
-#   uv run eval @ configs/eval/single-turn.toml
+#   uv run eval @ dev/eval/single-turn.toml
 
 group_size = 2
 
