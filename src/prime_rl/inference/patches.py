@@ -46,6 +46,11 @@ def apply_shared_vllm_patches():
     monkey_patch_freeze_nixl_leases_during_keep_pause()
     monkey_patch_drop_reservation_of_failed_kv_load()
     monkey_patch_skip_store_lookup_after_match()
+    monkey_patch_release_failed_kv_loads()
+    from prime_rl.inference.kv_spill import monkey_patch_nixl_spill_expiring_kv_to_store
+
+    # After the spec-decode coverage patch: the spill stores the blocks that patch exports.
+    monkey_patch_nixl_spill_expiring_kv_to_store()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
@@ -299,6 +304,58 @@ def monkey_patch_freeze_nixl_leases_during_keep_pause():
 
     resume_scheduler._prime_rl_freeze_leases = True
     EngineCore.resume_scheduler = resume_scheduler
+
+
+def monkey_patch_release_failed_kv_loads():
+    """A request whose asynchronous KV load failed outright gives its blocks back as soon as the failure is known.
+
+    The scheduler only acts on a finished load when its waiting loop reaches the request, and the loop stops at the
+    first request it cannot allocate blocks for. A request whose load failed (a declined or expired read, a store
+    miss) still holds the blocks it allocated for that load, and needs its whole sequence recomputed. With enough
+    of them, the request at the head cannot allocate, the loop never reaches the ones behind it, and their blocks
+    are never released: the engine idles with a full KV cache, nothing running and no error.
+
+    When the failure arrives, release the request's blocks right away and move it from the queue of block-holding
+    requests to the front of the ordinary waiting queue. Requests whose loads succeeded then stay first in line,
+    and they only need the few blocks they reserved.
+    """
+    from vllm.v1.core.sched.scheduler import Scheduler
+    from vllm.v1.request import RequestStatus
+
+    original = Scheduler._update_from_kv_xfer_finished
+    if getattr(original, "_prime_rl_releases_failed_loads", False):
+        return
+
+    def _update_from_kv_xfer_finished(self, kv_connector_output):
+        original(self, kv_connector_output)
+        failed = self.failed_recving_kv_req_ids & self.finished_recving_kv_req_ids
+        if not failed:
+            return
+        released = []
+        for request in list(self.kv_holding_waiting):
+            # A load that failed outright has no computed tokens: `_handle_failed_recving` zeroed them earlier in
+            # this update. One that kept part of its prefix keeps those blocks, and is left to the waiting loop.
+            if (
+                request.request_id not in failed
+                or request.status != RequestStatus.WAITING_FOR_REMOTE_KVS
+                or request.num_computed_tokens
+            ):
+                continue
+            # Frees the blocks, drops the reservation, and makes the request WAITING (or PREEMPTED) again.
+            self._handle_blocked_waiting_request(request)
+            # The load is over: it no longer counts toward --max-num-inflight-kv-loads.
+            self._set_kv_fetch_stage(request, None)
+            released.append(request)
+        if released:
+            self.kv_holding_waiting.remove_requests(released)
+            self.deferred_waiting.difference_update(released)
+            # `prepend_requests` reverses its argument; this keeps the requests in their queue order.
+            self.waiting.prepend_requests(reversed(released))
+
+    _update_from_kv_xfer_finished._prime_rl_releases_failed_loads = True
+    # Carry the marker of the patch underneath, if it is there, so that one is neither applied twice nor skipped.
+    _update_from_kv_xfer_finished._prime_rl_tolerates_freed = getattr(original, "_prime_rl_tolerates_freed", False)
+    Scheduler._update_from_kv_xfer_finished = _update_from_kv_xfer_finished
 
 
 def monkey_patch_drop_reservation_of_failed_kv_load():

@@ -56,6 +56,19 @@ class PrefillScorer:
             await self._client.close()
 
 
+class ModelScorer:
+    """Prefill-scores token ids under one model of one endpoint."""
+
+    def __init__(self, config: vf.ClientConfig, model: str) -> None:
+        self.config = config
+        self.model = model
+        self._scorer = PrefillScorer()
+
+    async def score(self, token_ids: list[int]) -> list[float]:
+        """One logprob per token, 0.0 for the leading token."""
+        return await self._scorer.score(self.config, self.model, token_ids)
+
+
 # Concurrent session releases per endpoint. The release client has one connection per slot, so
 # requests never wait in httpx's pool, where a pool timeout can leak connections for good
 # (encode/httpcore#1099). A release that waits longer than the queue timeout for a slot is

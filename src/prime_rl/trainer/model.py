@@ -1,4 +1,5 @@
-import logging
+import importlib.metadata
+import importlib.util
 import os
 import shutil
 import sys
@@ -28,7 +29,6 @@ from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
 from torch.distributed.tensor import DTensor, Shard
 from transformers import AutoConfig, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
-from transformers.utils.import_utils import is_flash_attn_3_available
 
 from prime_rl.configs.trainer import (
     MODULE_TARGET_SEPARATOR,
@@ -46,9 +46,10 @@ from prime_rl.trainer.activation_checkpointing import (
 )
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
-    AutoModelForCausalLMPrimeRL,
+    PreTrainedModelPrimeRL,
     PrimeLmOutput,
     cast_float_and_contiguous,
+    custom_causal_lm_from_config,
     get_custom_causal_lm_cls,
     get_custom_vlm_cls,
     supports_custom_impl,
@@ -78,13 +79,6 @@ from prime_rl.utils.weights import (
     load_state_dict,
     load_state_dict_keys,
     save_state_dict,
-)
-
-# Add filter to the standard logging module for transformers.modeling_utils to supress the
-# flash attention dtype warnings since FSDP is used to handle mixed precision.
-transformers_modeling_utils_logger = logging.getLogger("transformers.modeling_utils")
-transformers_modeling_utils_logger.addFilter(
-    lambda record: "Flash Attention 2 only supports torch.float16 and torch.bfloat16 dtypes" not in record.getMessage()
 )
 
 DTYPE_MAP = {
@@ -132,10 +126,19 @@ def freeze_moe_router(model: nn.Module) -> None:
         logger.info(f"Froze {num_frozen} MoE router parameters")
 
 
+def get_fp32_modules(model: nn.Module) -> list[nn.Module]:
+    """The model's modules whose parameters stay FP32 in the forward (see `PreTrainedModelPrimeRL.fp32_modules`)."""
+    return model.fp32_modules() if isinstance(model, PreTrainedModelPrimeRL) else []
+
+
 def get_full_offload_dtype_policy(model: nn.Module) -> dict[int, tuple[torch.dtype, torch.dtype]]:
     """Return persistent parameter and reduced-gradient dtypes for full offload."""
     # FSDP casts reduced gradients back to the persistent sharded-parameter dtype.
-    return {id(param): (torch.bfloat16, torch.bfloat16) for param in model.parameters() if param.is_floating_point()}
+    policy = {id(param): (torch.bfloat16, torch.bfloat16) for param in model.parameters() if param.is_floating_point()}
+    for module in get_fp32_modules(model):
+        for param in module.parameters():
+            policy[id(param)] = (torch.float32, torch.float32)
+    return policy
 
 
 def freeze_sparse_indexer(model: nn.Module) -> None:
@@ -328,9 +331,7 @@ def get_expert_load_stats(tokens_per_expert: Tensor, group: dist.ProcessGroup) -
     return {name: value.item() for name, value in compute_expert_load_stats(tokens_per_expert).items()}
 
 
-def get_model(
-    config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
-) -> nn.Module:
+def get_model(config: ModelConfig, dtype: torch.dtype = torch.bfloat16) -> nn.Module:
     logger = get_logger()
     logger.debug(
         f"Loading model config (name={config.name}, attn={config.attn}, trust_remote_code={config.trust_remote_code})"
@@ -426,21 +427,15 @@ def get_model(
             f"VLM training requires a registered PrimeRL VLM implementation; {model_config.model_type!r} has none."
         )
 
-    with device:
-        model_cls = custom_vlm_cls or AutoModelForCausalLMPrimeRL
+    with torch.device("meta"):
+        model_cls = custom_vlm_cls or get_custom_causal_lm_cls(model_config)
 
         load_model_start_time = time.perf_counter()
-        if device == torch.device("meta"):
-            logger.info(f"Loading model {config.name} using {model_cls.__name__} to meta device")
-            model = model_cls.from_config(model_config, trust_remote_code=config.trust_remote_code, dtype=dtype)
+        logger.info(f"Loading model {config.name} using {model_cls.__name__} to meta device")
+        if custom_vlm_cls is not None:
+            model = custom_vlm_cls.from_config(model_config, dtype=dtype)
         else:
-            logger.info(f"Loading model {config.name} using {model_cls.__name__} to CPU")
-            model = model_cls.from_pretrained(
-                pretrained_model_name_or_path=config.name,
-                config=model_config,
-                trust_remote_code=config.trust_remote_code,
-                dtype=dtype,
-            )
+            model = custom_causal_lm_from_config(model_config, dtype=dtype)
         logger.debug(f"Loaded model {config.name} in {format_time(time.perf_counter() - load_model_start_time)}")
 
     assert model.lm_head.weight.dtype == dtype, (
@@ -563,6 +558,32 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     language_model = get_language_model(model)
     transformer_layers = language_model.layers
+
+    # Parameters kept in FP32 skip the BF16 cast: each module holding them is its own unit, gathered before the language
+    # model runs, so the compiled decoder layers only read them. The final backward callback reduces their gradients
+    # and frees them; a forward without grad frees them at its end.
+    fp32_modules = get_fp32_modules(model)
+    for module in fp32_modules:
+        fully_shard(
+            module,
+            mesh=hsdp_mesh,
+            mp_policy=MixedPrecisionPolicy(param_dtype=torch.float32, reduce_dtype=torch.float32),
+            offload_policy=offload_policy,
+            shard_placement_fn=shard_placement_fn,
+        )
+    if fp32_modules:
+
+        def unshard_fp32_modules(module: nn.Module, args: tuple) -> None:
+            for fp32_module in fp32_modules:
+                fp32_module.unshard()
+
+        def reshard_fp32_modules(module: nn.Module, args: tuple, output) -> None:
+            if not torch.is_grad_enabled():
+                for fp32_module in fp32_modules:
+                    fp32_module.reshard()
+
+        language_model.register_forward_pre_hook(unshard_fp32_modules)
+        language_model.register_forward_hook(reshard_fp32_modules)
 
     for transformer_block in transformer_layers:
         block_mlp = getattr(transformer_block, "mlp", None)
@@ -980,6 +1001,16 @@ def _reset_runtime_moe_buffers(model: nn.Module) -> None:
             module.routing_confidence_sum.zero_()
 
 
+def _is_flash_attn_3_available() -> bool:
+    if importlib.util.find_spec("flash_attn_interface") is None or not torch.cuda.is_available():
+        return False
+    try:
+        importlib.metadata.distribution("flash-attn-3")
+    except importlib.metadata.PackageNotFoundError:
+        return False
+    return True
+
+
 def _validate_flash_attn_4_installed() -> None:
     """Validate that flash-attn-cute is installed and not overwritten by flash-attn.
 
@@ -1028,7 +1059,7 @@ def setup_model(
 ) -> nn.Module:
     resolve_auto_attn(config)
 
-    if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
+    if config.attn == "flash_attention_3" and not _is_flash_attn_3_available():
         raise ValueError(
             "Flash attention 3 is only supported if the flash_attn_3 package is installed. Install with `uv pip install 'flash-attn-3 @ git+https://github.com/Dao-AILab/flash-attention.git@main#subdirectory=hopper' --no-build-isolation`"
         )
@@ -1039,7 +1070,7 @@ def setup_model(
     logger = get_logger()
 
     # Build on the meta device; weights are materialized after FSDP sharding.
-    model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
+    model = get_model(config, dtype=DTYPE_MAP[config.optimization_dtype])
 
     if config.fusions.enabled and config.lora is not None:
         logger.warning("Skipping runtime model fusions because LoRA targets the unfused projections")
@@ -1078,6 +1109,10 @@ def setup_model(
 
     if frozen_vision_encoder is not None:
         freeze_vision_encoder(frozen_vision_encoder)
+
+    # FP32 masters, so that the checkpoint's FP32 values survive loading whatever the optimization dtype
+    for module in get_fp32_modules(model):
+        module.to(torch.float32)
 
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:

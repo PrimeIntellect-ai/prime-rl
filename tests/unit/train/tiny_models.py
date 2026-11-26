@@ -335,7 +335,7 @@ def save_tiny_model(name: str, models_dir: Path) -> dict:
             model.save_pretrained(models_dir / name)
     else:
         config = TINY_PRIME_RL_MODELS[name]
-        model = get_custom_causal_lm_cls(config)._from_config(config)
+        model = get_custom_causal_lm_cls(config).from_config(config)
         init_weights(model)
         if get_world().is_master:
             save_state_dict(model.convert_to_hf(model.state_dict()), models_dir / name)
@@ -345,7 +345,7 @@ def save_tiny_model(name: str, models_dir: Path) -> dict:
 
 @torch.no_grad()
 def init_weights(model: torch.nn.Module) -> None:
-    """Seeded values for every floating parameter, since `_from_config` leaves some of them uninitialized, and a
+    """Seeded values for every floating parameter, since `from_config` leaves some of them uninitialized, and a
     DeepSeek-V4 hash routing table with distinct experts per token."""
     for name, param in model.named_parameters():
         if param.ndim == 1 and name.endswith("norm.weight"):

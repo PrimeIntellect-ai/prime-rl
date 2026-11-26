@@ -20,6 +20,7 @@ from prime_rl.trainer.models.layers.mega_moe import (
     MegaMoeMXFP8ExpertWeights,
     _activation_clamp,
     _dw_dtype,
+    _nvfp4_weights,
     check_mega_moe_dims,
     mega_moe_available,
     mxfp8_decoded_weights,
@@ -32,6 +33,7 @@ if TYPE_CHECKING:
 
 _STATES: dict[int, "LLEPMegaMoE"] = {}
 _PRECISIONS: dict[int, str] = {}
+_FOUR_OVER_SIX: dict[int, bool] = {}
 
 
 @torch.library.custom_op("prime_rl::llep_plan", mutates_args=())
@@ -65,6 +67,12 @@ def llep_mega_moe_forward_op(
     state = _STATES[state_key]
     if state.precision == "bf16":
         return state.forward(x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj, activation_clamp)
+    if state.precision == "nvfp4":
+        # Each rank quantizes its own experts; the kernel hands the quantized copies to the helpers
+        l1, l2, weight_scales = _nvfp4_weights(gate_up_proj, down_proj)
+        return state.forward_nvfp4(
+            x, vids, foreign, plan_id, topk_weights, l1, l2, weight_scales, activation_clamp, _FOUR_OVER_SIX[state_key]
+        )
     # MXFP8: each rank quantizes its own experts; the kernel hands the quantized copies to the helpers
     weights = MegaMoeMXFP8ExpertWeights.build(gate_up_proj, down_proj, for_backward=False)
     x_fp8, x_sf = mx_cast(x.to(torch.bfloat16).contiguous(), along_rows=False)
@@ -97,6 +105,24 @@ def llep_mega_moe_backward_op(
     state, precision = _STATES[state_key], _PRECISIONS[state_key]
     if precision == "bf16":
         return state.backward(dy, x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj, activation_clamp)
+    if precision == "nvfp4":
+        # Every GEMM in MXFP8 on the forward's NVFP4 operands, from the stash the forward left (or recomputes)
+        l1, l2, weight_scales = _nvfp4_weights(gate_up_proj, down_proj)
+        dx, dtopk, dw1, dw2 = state.backward_nvfp4(
+            dy,
+            x,
+            vids,
+            foreign,
+            plan_id,
+            topk_weights,
+            l1,
+            l2,
+            weight_scales,
+            activation_clamp,
+            _FOUR_OVER_SIX[state_key],
+            _dw_dtype(gate_up_proj),
+        )
+        return dx.to(x.dtype), dtopk, dw1, dw2
     if precision == "mxfp8":
         # Every GEMM in MXFP8: the kernel quantizes x, dy and dz itself; the owners push the three weight operands
         weights = MegaMoeMXFP8ExpertWeights.build(gate_up_proj, down_proj, for_backward=True)
@@ -165,10 +191,13 @@ class LLEPMegaMoEExpertCompute:
         num_sms: int,
         options: LLEPConfig,
         precision: str = "bf16",
+        four_over_six: bool = False,
     ) -> None:
         major = 9 if precision == "bf16" else 10
-        if precision not in ("bf16", "mxfp8", "mxfp8_qat"):
-            raise ValueError(f"LLEP Mega MoE supports precision 'bf16', 'mxfp8' and 'mxfp8_qat', got {precision!r}.")
+        if precision not in ("bf16", "mxfp8", "mxfp8_qat", "nvfp4"):
+            raise ValueError(
+                f"LLEP Mega MoE supports precision 'bf16', 'mxfp8', 'mxfp8_qat' and 'nvfp4', got {precision!r}."
+            )
         if not mega_moe_available(precision) or torch.cuda.get_device_capability()[0] != major:
             raise RuntimeError(
                 f"LLEP Mega MoE `{precision}` needs an SM{major}0 GPU and the prime-mega-moe `deep_gemm` build with LLEP "
@@ -181,7 +210,7 @@ class LLEPMegaMoEExpertCompute:
                 "LLEP needs a prime-mega-moe `deep_gemm` build with LLEP support (`deep_gemm.llep`)."
             ) from error
 
-        check_mega_moe_dims(hidden, intermediate_hidden)
+        check_mega_moe_dims(hidden, intermediate_hidden, precision)
         self.num_experts = num_experts
         self.top_k = top_k
         self.hidden = hidden
@@ -196,12 +225,13 @@ class LLEPMegaMoEExpertCompute:
             max_tokens_per_rank,
             num_sms,
             LLEPOptions(**options.model_dump()),
-            precision="bf16" if precision == "bf16" else "mxfp8",
+            precision={"bf16": "bf16", "nvfp4": "nvfp4"}.get(precision, "mxfp8"),
             mxfp8_backward=precision == "mxfp8",
         )
         self.state_key = id(state)
         _STATES[self.state_key] = state
         _PRECISIONS[self.state_key] = precision
+        _FOUR_OVER_SIX[self.state_key] = four_over_six
 
     def validate(self, experts: "GroupedExperts") -> None:
         if experts.gate_proj is None and experts.gate_up_proj is None:
@@ -222,6 +252,7 @@ class LLEPMegaMoEExpertCompute:
 
     def destroy(self) -> None:
         _PRECISIONS.pop(self.state_key)
+        _FOUR_OVER_SIX.pop(self.state_key)
         _STATES.pop(self.state_key).destroy()
 
     def __call__(

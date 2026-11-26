@@ -96,8 +96,33 @@ class LinearSubagentLengthPenaltyConfig(LinearLengthPenaltyConfig):
     """Multiplier on subagent input and output tokens before group normalization. Uses harness-declared ``subagent_call`` edges and their continuations, compaction attempts, and compacted contexts; unlabelled calls count at full weight. Nested subagents use the same multiplier. 0 excludes subagent tokens, 1 counts them fully. Does not change the turns term or training-token weights."""
 
 
+class CostLengthPenaltyConfig(BaseConfig):
+    """Linear cost penalty subtracted from every rollout's reward before the GRPO baseline:
+    ``r - clip(weight * cost, 0, 1)``, with
+    ``cost = num_output_tokens_weight * output + num_input_tokens_weight * input`` in tokens. Subagent tokens
+    count like the main agent's, so delegating work does not lower the cost. The reward
+    ``R = S - lambda_e * C`` of Cognition's SWE-2, where ``weight`` is lambda_e for the source's reasoning
+    effort, set to the slope of the base model's reward-vs-cost Pareto curve at that effort so that moving
+    along the curve leaves the objective unchanged to first order. It neither scales with the group's pass
+    rate nor depends on the rest of the group, and it reaches failed rollouts too, unless every rollout of
+    the group failed (no positive reward), in which case the group is not charged."""
+
+    type: Literal["cost"] = "cost"
+
+    weight: float = Field(ge=0, allow_inf_nan=False)
+    """lambda: reward subtracted per cost token, before the clip to 1 (e.g. 4e-6). 0 disables the penalty. Each
+    source sets its own, so sources sampled at different reasoning efforts can each use their frontier slope."""
+
+    num_output_tokens_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
+    """Weight of an output (sampled) token in the cost."""
+
+    num_input_tokens_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
+    """Weight of a new input token in the cost: tokens the model conditioned on but did not generate (prompts,
+    tool responses), each counted once per trainable branch, as the ``linear`` penalty counts them."""
+
+
 LengthPenaltyConfig: TypeAlias = Annotated[
-    LinearLengthPenaltyConfig | LinearSubagentLengthPenaltyConfig,
+    LinearLengthPenaltyConfig | LinearSubagentLengthPenaltyConfig | CostLengthPenaltyConfig,
     Field(discriminator="type"),
 ]
 
@@ -186,7 +211,7 @@ class GRPOAlgoConfig(BaseAlgoConfig):
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
     length_penalty: Annotated[LengthPenaltyConfig | None, Live()] = None
-    """Length penalty subtracted from each reward before the GRPO baseline: a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max. ``linear`` uses trace token counts; opt-in ``linear-subagent`` discounts semantic subagent tokens. None disables it. The only live field of an algorithm: a config update may change it, or turn it on or off, while the run is going."""
+    """Length penalty subtracted from each reward before the GRPO baseline: a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max. ``linear`` uses trace token counts; opt-in ``linear-subagent`` discounts semantic subagent tokens; ``cost`` instead charges each rollout ``weight`` per weighted token, with no group normalization or pass-rate scaling. A group where no rollout has a positive reward is never charged. None disables it. The only live field of an algorithm: a config update may change it, or turn it on or off, while the run is going."""
 
     @field_validator("length_penalty", mode="before")
     @classmethod

@@ -47,6 +47,7 @@ members = [
     "aime25",
     "aime26",
     "alphabet-sort",
+    "apex-agents",
     "apex-shortlist",
     "arxivmath",
     "bfcl-v3",
@@ -66,6 +67,7 @@ members = [
     "formalmath",
     "forth-lang",
     "frontierscience",
+    "gdp-pdf",
     "general-agent",
     "gpqa",
     "graphwalks",
@@ -147,6 +149,7 @@ members = [
     "swesmith-env",
     "terminal-bench",
     "terminal-bench-2",
+    "terminal-bench-2-1",
     "terminal-bench-4-1",
     "terminal-bench-science",
     "terminal-lego",
@@ -428,6 +431,26 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/7d/80/963c991934a4eb0fa0c0178f51963333fe14a96b732009da642b6bf6b42e/apache_tvm_ffi-0.1.11-cp312-abi3-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:a8b845c8dff498fb981c1dda36c954549204191b485a385845e604966594d0b2", size = 2513121, upload-time = "2026-05-04T17:48:03.43Z" },
     { url = "https://files.pythonhosted.org/packages/4d/18/95569107ee83619d61a3bb0d28743a0599f85c5161981e3e098c82c2b185/apache_tvm_ffi-0.1.11-cp312-abi3-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2843f084cdc94dedacd8b257a395a2b71b8a3dc7fc99711b148bf1d161983128", size = 2697683, upload-time = "2026-05-04T17:48:05.222Z" },
 ]
+
+[[package]]
+name = "apex-agents"
+version = "0.5.0"
+source = { editable = "deps/prime-envs/environments/tool_use/apex_agents" }
+dependencies = [
+    { name = "prime-sandboxes" },
+    { name = "pyyaml" },
+    { name = "verifiers", extra = ["harbor"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "prime-sandboxes", specifier = ">=0.5.11" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev115" },
+]
+
+[package.metadata.requires-dev]
+dev = []
 
 [[package]]
 name = "apex-shortlist"
@@ -1575,7 +1598,7 @@ wheels = [
 
 [[package]]
 name = "drug-discovery-bench"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "deps/prime-envs/environments/science/drug_discovery_bench" }
 dependencies = [
     { name = "huggingface-hub", version = "1.33.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
@@ -1586,7 +1609,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub", specifier = ">=0.34.0" },
-    { name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" },
+    { name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev115" },
 ]
 
 [[package]]
@@ -2150,6 +2173,33 @@ wheels = [
 http = [
     { name = "aiohttp" },
 ]
+
+[[package]]
+name = "gdp-pdf"
+version = "0.2.0"
+source = { editable = "deps/prime-envs/environments/office/gdp_pdf" }
+dependencies = [
+    { name = "datasets" },
+    { name = "huggingface-hub", version = "1.33.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "huggingface-hub", version = "2.4.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "verifiers" },
+]
+
+[package.optional-dependencies]
+prepare = [
+    { name = "liteparse" },
+    { name = "pypdfium2" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets", specifier = ">=3.0.0" },
+    { name = "huggingface-hub", specifier = ">=0.28" },
+    { name = "liteparse", marker = "extra == 'prepare'", specifier = "==2.5.0" },
+    { name = "pypdfium2", marker = "extra == 'prepare'", specifier = ">=4.30" },
+    { name = "verifiers", specifier = ">=0.4.2.dev115" },
+]
+provides-extras = ["prepare"]
 
 [[package]]
 name = "general-agent"
@@ -3100,14 +3150,14 @@ wheels = [
 
 [[package]]
 name = "jobbench"
-version = "0.1.0"
+version = "0.3.0"
 source = { editable = "deps/prime-envs/environments/office/jobbench" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev115" }]
 
 [[package]]
 name = "joblib"
@@ -3284,14 +3334,14 @@ requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "lab"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "deps/prime-envs/environments/tool_use/lab" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev115" }]
 
 [[package]]
 name = "langdetect"
@@ -3400,6 +3450,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f3/e5/12c5184d984554d968cd8f8963b604e4759ffcdb8d5a63d3996529746bd1/litellm-1.108.3.tar.gz", hash = "sha256:b6ce7a78efbaff7214e731ba0769b156e05b150d05184def61913ee9ff0befb3", size = 21457171, upload-time = "2026-11-07T22:26:06.992Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/52/15/b45ffb4cd6f82e26b37eba73a3c9191677186f8de61fe145a886eaa30590/litellm-1.108.3-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:9955cc7a29b3060bb791a90cefb6d10df2f0cf63ea720c9d3a26bc8d253eae43", size = 34971257, upload-time = "2026-11-07T22:25:43.822Z" },
+]
+
+[[package]]
+name = "liteparse"
+version = "2.5.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/52/a3/55da41efee13596ad24a6fee2d8d7a3558c938860f619bcd71c3c13b8478/liteparse-2.5.0.tar.gz", hash = "sha256:8a95a6e51c5e390430d88ccdeee7e10d97cee65f3473b308a227513eaf61128d", size = 333581, upload-time = "2026-07-07T23:09:38.877Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a7/97/371052c5072795c4d8157e8134837daec259b3e5c7ce77b06acd702f706a/liteparse-2.5.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:8b2bf32f254552e86e2c7ef556ac7d0dba6043a1d98adc177cace49e24f47a8d", size = 8094740, upload-time = "2026-07-07T23:08:53.42Z" },
+    { url = "https://files.pythonhosted.org/packages/84/8d/1625f5792be9dab782104747cd51e1a2ef9dfc0fad948540325511b076a9/liteparse-2.5.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:a52f0c2902fe07d4f8185458774f5163d9c791cb09f12e5b39a4ad7d35e82303", size = 9321570, upload-time = "2026-07-07T23:08:54.975Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/a8/5834cb0c3e25d73f783025a0baac3cfbad958c8f981d4b8dc2a4171fb59d/liteparse-2.5.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:116e60f206fa4d74739286b4c648cbda7ebb28bed11ff65f05ce0587053a4e67", size = 9665148, upload-time = "2026-07-07T23:08:56.951Z" },
+    { url = "https://files.pythonhosted.org/packages/b4/9c/9de381df29335cf039cb6ddf4bb0c0d1b5362c09ea668407e79b32a6b407/liteparse-2.5.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:c29f7864804e74223d983876805d964369f541c9298db01d70c04dfd3c192d3d", size = 12686905, upload-time = "2026-07-07T23:08:58.852Z" },
 ]
 
 [[package]]
@@ -5111,14 +5173,14 @@ requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2
 
 [[package]]
 name = "pi-officeqa-pro-v2"
-version = "0.1.7"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/search/pi_officeqa_pro_v2" }
 dependencies = [
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.4.2.dev115" }]
 
 [[package]]
 name = "pi-programbench"
@@ -5438,6 +5500,17 @@ gpu = [
     { name = "vllm", version = "0.34.0", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.34.0/vllm-0.34.0-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
     { name = "vllm", version = "0.34.0", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.34.0/vllm-0.34.0-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
+inference = [
+    { name = "flashinfer-cubin", marker = "sys_platform == 'linux'" },
+    { name = "flashinfer-jit-cache", version = "0.7.3+cu130", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache-0.7.3%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "flashinfer-jit-cache", version = "0.7.3+cu130", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache-0.7.3%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "modelexpress", marker = "sys_platform == 'linux'" },
+    { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux'" },
+    { name = "nixl-cu13", marker = "sys_platform == 'linux'" },
+    { name = "torchaudio", marker = "sys_platform == 'linux'" },
+    { name = "vllm", version = "0.34.0", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.34.0/vllm-0.34.0-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "vllm", version = "0.34.0", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.34.0/vllm-0.34.0-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
 kernels = [
     { name = "prime-kernels", version = "0.1.0+cu130torch2.14.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
     { name = "prime-kernels", version = "0.1.0+cu130torch2.14.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/prime_kernels-0.1.0+cu130torch2.14.0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -5447,6 +5520,23 @@ quack = [
 ]
 sonic-moe = [
     { name = "sonic-moe", marker = "sys_platform == 'linux'" },
+]
+train = [
+    { name = "deep-select", version = "1.0.0+bfa4507.20261109.170213", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_select-1.0.0+bfa4507.20261109.170213-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "deep-select", version = "1.0.0+bfa4507.20261109.170237", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_select-1.0.0+bfa4507.20261109.170237-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "dion", marker = "sys_platform == 'linux'" },
+    { name = "flash-linear-attention", marker = "sys_platform == 'linux'" },
+    { name = "mamba-ssm", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cudnn-frontend", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-ml-py", marker = "sys_platform == 'linux'" },
+    { name = "tilelang" },
+    { name = "torch", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "torch", version = "2.14.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "sys_platform == 'linux'" },
+    { name = "torchao", version = "0.18.0+git5f2baf9d5", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "torchao", version = "0.18.0+git5f2baf9d5", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "torchdata", marker = "sys_platform == 'linux'" },
+    { name = "torchtitan", marker = "sys_platform == 'linux'" },
+    { name = "torchvision", marker = "sys_platform == 'linux'" },
 ]
 
 [package.dev-dependencies]
@@ -5469,33 +5559,33 @@ requires-dist = [
     { name = "deep-ep", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_aarch64.whl" },
     { name = "deep-ep", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'disagg'" },
     { name = "deep-ep", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" },
-    { name = "deep-select", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_select-1.0.0+bfa4507.20261109.170213-cp312-cp312-linux_aarch64.whl" },
-    { name = "deep-select", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'gpu'" },
-    { name = "deep-select", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_select-1.0.0+bfa4507.20261109.170237-cp312-cp312-linux_x86_64.whl" },
-    { name = "dion", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/samsja/dion.git?rev=0c801b0" },
+    { name = "deep-select", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'train'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_select-1.0.0+bfa4507.20261109.170213-cp312-cp312-linux_aarch64.whl" },
+    { name = "deep-select", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'train'" },
+    { name = "deep-select", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'train'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/deep_select-1.0.0+bfa4507.20261109.170237-cp312-cp312-linux_x86_64.whl" },
+    { name = "dion", marker = "sys_platform == 'linux' and extra == 'train'", git = "https://github.com/samsja/dion.git?rev=0c801b0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "fastapi", marker = "extra == 'dashboard'", specifier = ">=0.115" },
     { name = "flash-attn", marker = "platform_machine == 'aarch64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.10.1/flash_attn-2.8.3+cu130torch2.14-cp312-cp312-linux_aarch64.whl" },
     { name = "flash-attn", marker = "platform_machine == 'x86_64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.10.0/flash_attn-2.8.3+cu130torch2.14-cp312-cp312-linux_x86_64.whl" },
     { name = "flash-attn-3", marker = "sys_platform == 'linux' and extra == 'flash-attn-3'", index = "https://download.pytorch.org/whl/test/cu130" },
     { name = "flash-attn-4", marker = "sys_platform == 'linux' and extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=0251105" },
-    { name = "flash-linear-attention", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/fla-org/flash-linear-attention" },
-    { name = "flashinfer-cubin", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = "==0.7.3", index = "https://flashinfer.ai/whl" },
-    { name = "flashinfer-jit-cache", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache-0.7.3%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl" },
-    { name = "flashinfer-jit-cache", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", specifier = "==0.7.3+cu130" },
-    { name = "flashinfer-jit-cache", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache-0.7.3%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl" },
+    { name = "flash-linear-attention", marker = "sys_platform == 'linux' and extra == 'train'", git = "https://github.com/fla-org/flash-linear-attention" },
+    { name = "flashinfer-cubin", marker = "sys_platform == 'linux' and extra == 'inference'", specifier = "==0.7.3", index = "https://flashinfer.ai/whl" },
+    { name = "flashinfer-jit-cache", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'inference'", url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache-0.7.3%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl" },
+    { name = "flashinfer-jit-cache", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'inference'", specifier = "==0.7.3+cu130" },
+    { name = "flashinfer-jit-cache", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'inference'", url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache-0.7.3%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "loguru", specifier = ">=0.7.3" },
-    { name = "mamba-ssm", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/state-spaces/mamba?rev=f577286" },
-    { name = "modelexpress", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = "==0.8.0.dev20261022" },
-    { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.3.10.post2" },
+    { name = "mamba-ssm", marker = "sys_platform == 'linux' and extra == 'train'", git = "https://github.com/state-spaces/mamba?rev=f577286" },
+    { name = "modelexpress", marker = "sys_platform == 'linux' and extra == 'inference'", specifier = "==0.8.0.dev20261022" },
+    { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux' and extra == 'inference'", specifier = ">=0.3.10.post2" },
     { name = "msgpack", specifier = ">=1.2.3" },
     { name = "msgspec", specifier = ">=0.18" },
     { name = "nixl", marker = "sys_platform == 'linux' and extra == 'disagg'", specifier = "==1.5.0" },
-    { name = "nixl-cu13", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = "==1.5.0" },
+    { name = "nixl-cu13", marker = "sys_platform == 'linux' and extra == 'inference'", specifier = "==1.5.0" },
     { name = "numpy", specifier = ">=2.2.6" },
-    { name = "nvidia-cudnn-frontend", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = "==1.32.2" },
-    { name = "nvidia-ml-py", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=12.575.51" },
+    { name = "nvidia-cudnn-frontend", marker = "sys_platform == 'linux' and extra == 'train'", specifier = "==1.32.2" },
+    { name = "nvidia-ml-py", marker = "sys_platform == 'linux' and extra == 'train'", specifier = ">=12.575.51" },
     { name = "openai", specifier = ">=1.106.1" },
     { name = "orjson", specifier = ">=3.11.0" },
     { name = "pillow", specifier = ">=13.0.0" },
@@ -5508,8 +5598,10 @@ requires-dist = [
     { name = "prime-rl", extras = ["flash-attn-3"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["flash-attn-cute"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["gpu"], marker = "extra == 'all'" },
+    { name = "prime-rl", extras = ["inference"], marker = "extra == 'gpu'" },
     { name = "prime-rl", extras = ["quack"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["sonic-moe"], marker = "extra == 'all'" },
+    { name = "prime-rl", extras = ["train"], marker = "extra == 'gpu'" },
     { name = "prime-rl-configs", editable = "packages/prime-rl-configs" },
     { name = "prime-runs", extras = ["train"], specifier = ">=0.1.6" },
     { name = "prometheus-client", specifier = ">=0.20.0" },
@@ -5524,30 +5616,30 @@ requires-dist = [
     { name = "sonic-moe", marker = "sys_platform == 'linux' and extra == 'sonic-moe'", git = "https://github.com/S1ro1/sonic-moe?rev=0bf06ac" },
     { name = "sympy", specifier = ">=1.13.3" },
     { name = "tenacity", specifier = ">=8.2.0" },
-    { name = "tilelang", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.1.8" },
-    { name = "torch", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=2.14.0", index = "https://download.pytorch.org/whl/cu130" },
-    { name = "torchao", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl" },
-    { name = "torchao", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.18.0" },
-    { name = "torchao", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl" },
-    { name = "torchaudio", marker = "sys_platform == 'linux' and extra == 'gpu'", index = "https://download.pytorch.org/whl/cu130" },
-    { name = "torchdata", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.11.0" },
-    { name = "torchtitan", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/pytorch/torchtitan?rev=23e4dfc" },
-    { name = "torchvision", marker = "sys_platform == 'linux' and extra == 'gpu'", index = "https://download.pytorch.org/whl/cu130" },
+    { name = "tilelang", marker = "sys_platform == 'linux' and extra == 'train'", specifier = ">=0.1.8" },
+    { name = "torch", marker = "sys_platform == 'linux' and extra == 'train'", specifier = ">=2.14.0", index = "https://download.pytorch.org/whl/cu130" },
+    { name = "torchao", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'train'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl" },
+    { name = "torchao", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'train'", specifier = ">=0.18.0" },
+    { name = "torchao", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'train'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-86f0ad0/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl" },
+    { name = "torchaudio", marker = "sys_platform == 'linux' and extra == 'inference'", index = "https://download.pytorch.org/whl/cu130" },
+    { name = "torchdata", marker = "sys_platform == 'linux' and extra == 'train'", specifier = ">=0.11.0" },
+    { name = "torchtitan", marker = "sys_platform == 'linux' and extra == 'train'", git = "https://github.com/pytorch/torchtitan?rev=23e4dfc" },
+    { name = "torchvision", marker = "sys_platform == 'linux' and extra == 'train'", index = "https://download.pytorch.org/whl/cu130" },
     { name = "transformers", specifier = "==5.20.2" },
     { name = "uvicorn", specifier = ">=0.30" },
     { name = "uvicorn", marker = "extra == 'dashboard'", specifier = ">=0.30" },
     { name = "uvloop", specifier = ">=0.21.0" },
     { name = "verifiers", extras = ["harbor"], editable = "deps/verifiers" },
-    { name = "vllm", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/vllm-project/vllm/releases/download/v0.34.0/vllm-0.34.0-cp38-abi3-manylinux_2_28_aarch64.whl" },
-    { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.34.0" },
-    { name = "vllm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/vllm-project/vllm/releases/download/v0.34.0/vllm-0.34.0-cp38-abi3-manylinux_2_28_x86_64.whl" },
+    { name = "vllm", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'inference'", url = "https://github.com/vllm-project/vllm/releases/download/v0.34.0/vllm-0.34.0-cp38-abi3-manylinux_2_28_aarch64.whl" },
+    { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'inference'", specifier = ">=0.34.0" },
+    { name = "vllm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'inference'", url = "https://github.com/vllm-project/vllm/releases/download/v0.34.0/vllm-0.34.0-cp38-abi3-manylinux_2_28_x86_64.whl" },
     { name = "vllm-router", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.8/vllm_router-0.2.8-cp38-abi3-manylinux_2_28_aarch64.whl" },
     { name = "vllm-router", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'disagg'" },
     { name = "vllm-router", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.8/vllm_router-0.2.8-cp38-abi3-manylinux_2_28_x86_64.whl" },
     { name = "wandb", specifier = ">=0.26.1" },
     { name = "wandb-workspaces", specifier = ">=0.4.3" },
 ]
-provides-extras = ["gpu", "dashboard", "dynamo", "flash-attn", "flash-attn-3", "flash-attn-cute", "disagg", "quack", "sonic-moe", "kernels", "all"]
+provides-extras = ["train", "inference", "gpu", "dashboard", "dynamo", "flash-attn", "flash-attn-3", "flash-attn-cute", "disagg", "quack", "sonic-moe", "kernels", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -5604,7 +5696,7 @@ train = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.5.11"
+version = "0.5.18"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -5616,9 +5708,9 @@ dependencies = [
     { name = "pyqwest" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/87/a4/863ce60f0c8cf74e7c59a754a53db5f9089c9ca68f976758f11bebb9c4a6/prime_sandboxes-0.5.11.tar.gz", hash = "sha256:c80062d3767ac352bc463ea4442a47eb3066e2c4ddd52ca6f39afafda1abd500", size = 177262, upload-time = "2026-11-11T17:52:49.813Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d5/e8/4c5375fc0e26e2878a4e0b5d21a6e8554413cea24c7a343dc5c707c51010/prime_sandboxes-0.5.18.tar.gz", hash = "sha256:0a241c834b5d85237b3364a5d89a831677ecb2fed68a654facfe80d8f21f24aa", size = 184734, upload-time = "2026-11-26T05:05:34.481Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/61/73/10c87464a895c551409fb0496af01cd02d41d2f15d57ac9581506ad4ca88/prime_sandboxes-0.5.11-py3-none-any.whl", hash = "sha256:0496639fceacfc80a5778e7901b8c95fa2dac2dedda00ff30f58a5185db646e5", size = 96085, upload-time = "2026-11-11T17:52:48.032Z" },
+    { url = "https://files.pythonhosted.org/packages/fc/07/38c8b507569fffee8fc2e7f815107a808c9bde8d975016a8ca23be902f93/prime_sandboxes-0.5.18-py3-none-any.whl", hash = "sha256:d0ff75fdbd4cc30ea07f6dbf062683ddac9772ef79cd0188b56d75f75c67cdb1", size = 113451, upload-time = "2026-11-26T05:05:32.929Z" },
 ]
 
 [[package]]
@@ -6104,6 +6196,20 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/38/1c/78f6fdf85133157a6a3405eab5ef4c2bc8048194dbda1c91bb9b8645bb36/pynvvideocodec-2.0.4-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:bad9e25f494abdcfa8f9dffa33a840509eda3ffcdf6e7cf6465d73be307c0c82", size = 28630316, upload-time = "2026-07-08T04:25:54.596Z" },
     { url = "https://files.pythonhosted.org/packages/ca/49/98da271686e00676f41b1197ba5431ddc341b96d8efb68ea9d68e2b0d870/pynvvideocodec-2.0.4-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:b59cec7a1a3f78fad13fead78cad8b6d9686827f9ff4477080245457675a01d0", size = 43176147, upload-time = "2026-05-27T04:04:08.297Z" },
     { url = "https://files.pythonhosted.org/packages/42/80/7b13c12fd5f3243b01190130ce098a44ddf62e030e6ed712911cbfe40311/pynvvideocodec-2.0.4-cp312-cp312-manylinux_2_34_aarch64.whl", hash = "sha256:a0daa28b09705806c8c6b26326df217c45e60c0a12a673ea3ea6ee5e2e7193b0", size = 35754893, upload-time = "2026-05-27T04:04:43.866Z" },
+]
+
+[[package]]
+name = "pypdfium2"
+version = "5.15.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fb/47/8555ff96dd676dd7b2029b8c98a8afd255f5f9eef4a2f4a0445566a323bb/pypdfium2-5.15.2.tar.gz", hash = "sha256:0185193bbdf0cc39f0bf31954c25f12edb81048bcb628ea4fc3dccf8d2ce2aef", size = 696348, upload-time = "2026-11-09T15:33:28.299Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e7/bb/bf88a781a53c905022b25b2d1fb742c908f86b8076403471f626cc41a508/pypdfium2-5.15.2-py3-none-macosx_13_0_arm64.whl", hash = "sha256:e71fe832e94421ac3c28d6a6ed4a9e61f22417089652d339f391c4ffc2a44c35", size = 3710813, upload-time = "2026-11-09T15:32:39.633Z" },
+    { url = "https://files.pythonhosted.org/packages/03/1f/7a18e64c50049dce8512239bcdb9f8469d0a0c352dd42ae85b6b01d143f8/pypdfium2-5.15.2-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:dd46e93c0c3a73f6cea8489baff6d77a5d0759dd53fbbce0aeb49c91830176fc", size = 3887212, upload-time = "2026-11-09T15:32:43.395Z" },
+    { url = "https://files.pythonhosted.org/packages/c8/e5/2e668bc1bc6fe22f9006694b5571a2dd2c9b874d6a21d16ee839c8f7f6ea/pypdfium2-5.15.2-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:dc31aea5b0fb9fefc9b537a65f4113980b2c40798445736a7e6565bc85161e37", size = 4020833, upload-time = "2026-11-09T15:32:50.715Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/29/5a68e61d8404047b411219b5d1915692c5daf02326449aed4c75fb3b2809/pypdfium2-5.15.2-py3-none-musllinux_1_2_aarch64.whl", hash = "sha256:71ba93a356708cb2a7b1a82dbc2c07ddb62c501e35bb6a67c7323e1da6ae9cb7", size = 5113284, upload-time = "2026-11-09T15:32:56.709Z" },
+    { url = "https://files.pythonhosted.org/packages/53/54/2936bc6b2887fd8bba6bfc641448d3820e56469e4a47e3aee8ef212bfc96/pypdfium2-5.15.2-py3-none-musllinux_1_2_x86_64.whl", hash = "sha256:ef452a7178744196d4ff97029f46b56a13817346fc7ee0473c75643512276b3a", size = 5193509, upload-time = "2026-11-09T15:33:19.228Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/4b/f3425e1f3759d2a6473cddbba5bdcc25ac0c49939921d568331fee16ca03/pypdfium2-5.15.2-py3-none-pyemscripten_2026_0_wasm32.whl", hash = "sha256:51e380faf433899d3b07a40b3f6aa97b9ab61399e732280f4007dc7aa0d0694f", size = 2695471, upload-time = "2026-11-09T15:33:21.089Z" },
 ]
 
 [[package]]
@@ -6800,14 +6906,14 @@ wheels = [
 
 [[package]]
 name = "senior-swe-bench"
-version = "0.1.1"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/swe/senior_swe_bench" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev115" }]
 
 [[package]]
 name = "sentence-transformers"
@@ -7106,37 +7212,60 @@ wheels = [
 ]
 
 [[package]]
-name = "swe-atlas-qna"
-version = "0.3.0"
-source = { editable = "deps/prime-envs/environments/swe/swe_atlas_qna" }
+name = "swe-atlas-grading"
+version = "0.1.0"
+source = { editable = "deps/prime-envs/packages/swe_atlas_grading" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev115" }]
+
+[[package]]
+name = "swe-atlas-qna"
+version = "0.5.0"
+source = { editable = "deps/prime-envs/environments/swe/swe_atlas_qna" }
+dependencies = [
+    { name = "swe-atlas-grading" },
+    { name = "verifiers", extra = ["harbor"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "swe-atlas-grading", editable = "deps/prime-envs/packages/swe_atlas_grading" },
+    { name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev115" },
+]
 
 [[package]]
 name = "swe-atlas-rf"
-version = "0.3.0"
+version = "0.5.0"
 source = { editable = "deps/prime-envs/environments/swe/swe_atlas_rf" }
 dependencies = [
+    { name = "swe-atlas-grading" },
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [
+    { name = "swe-atlas-grading", editable = "deps/prime-envs/packages/swe_atlas_grading" },
+    { name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev115" },
+]
 
 [[package]]
 name = "swe-atlas-tw"
-version = "0.3.0"
+version = "0.5.0"
 source = { editable = "deps/prime-envs/environments/swe/swe_atlas_tw" }
 dependencies = [
+    { name = "swe-atlas-grading" },
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+requires-dist = [
+    { name = "swe-atlas-grading", editable = "deps/prime-envs/packages/swe_atlas_grading" },
+    { name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev115" },
+]
 
 [[package]]
 name = "swe-lancer"
@@ -7210,7 +7339,7 @@ wheels = [
 
 [[package]]
 name = "swebench-multilingual"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "deps/prime-envs/environments/swe/swebench_multilingual" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
@@ -7221,7 +7350,7 @@ requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2
 
 [[package]]
 name = "swebench-pro"
-version = "0.3.0"
+version = "0.3.1"
 source = { editable = "deps/prime-envs/environments/swe/swebench_pro" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
@@ -7391,6 +7520,17 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+
+[[package]]
+name = "terminal-bench-2-1"
+version = "0.1.0"
+source = { editable = "deps/prime-envs/environments/terminal/terminal_bench_2_1" }
+dependencies = [
+    { name = "verifiers", extra = ["harbor"] },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev115" }]
 
 [[package]]
 name = "terminal-bench-4-1"
@@ -8183,7 +8323,7 @@ requires-dist = [
     { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
     { name = "orjson", specifier = ">=3.10.0" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.3" },
-    { name = "prime-sandboxes", specifier = ">=0.5.9" },
+    { name = "prime-sandboxes", specifier = ">=0.5.18" },
     { name = "prime-tunnel", specifier = ">=0.1.17" },
     { name = "pydantic", specifier = ">=2.12.3" },
     { name = "renderers", extras = ["multimodal"], specifier = ">=0.2.1.dev12" },

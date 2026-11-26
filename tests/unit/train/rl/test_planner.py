@@ -1,14 +1,28 @@
 import itertools
+from concurrent.futures import ThreadPoolExecutor
 
+import msgspec
 import numpy as np
 import pytest
 
-from prime_rl.orchestrator.batch import (
-    pad_micro_batch,
-    prepare_batch,
-    prepare_sample,
+from prime_rl.trainer.rl import planner
+from prime_rl.transports.batch.materialize import mm_cut, pad_micro_batch, prepare_sample
+from prime_rl.transports.batch.types import (
+    UNVERSIONED,
+    MicroBatch,
+    MMImageRef,
+    MMRefs,
+    SampleBody,
+    SampleRef,
+    TrainingSample,
 )
-from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, PayloadSlice, TrainingSample
+from prime_rl.transports.payload import PayloadServer, materialize_micro_batches
+
+# The env worker that keeps the test samples, and the step their batches train.
+STORE = PayloadServer("127.0.0.1")
+POOL = ThreadPoolExecutor(8)
+TRAINED_VERSION = 10
+_ids = itertools.count()
 
 SAMPLE_DTYPES = {
     "token_ids": np.int32,
@@ -131,6 +145,68 @@ def make_sized_training_example(length: int, env_name: str = "test-env") -> Trai
     )
 
 
+def _keep(sample: TrainingSample, seq_len: int) -> SampleRef:
+    """Keep a sample as an env worker does, and reference it as the orchestrator does: one
+    advantage spread over its trainable tokens, its staleness as the policy versions that
+    sampled them, cut to ``seq_len``."""
+    key = f"sample-{next(_ids)}"
+
+    def raw(values, dtype):
+        return None if values is None else np.asarray(values, dtype).tobytes()
+
+    versions = np.full(len(sample.token_ids), UNVERSIONED, np.int32)
+    if sample.staleness is not None:
+        versions = np.where(sample.staleness >= 0, TRAINED_VERSION - sample.staleness, UNVERSIONED).astype(np.int32)
+    body = SampleBody(
+        token_ids=raw(sample.token_ids, np.int32),
+        mask=raw(sample.mask, np.bool_),
+        sampled=raw(sample.mask, np.bool_),
+        logprobs=raw(sample.logprobs, np.float32),
+        versions=versions.tobytes(),
+        rl_weights=raw(sample.rl_weights, np.float32),
+        ce_weights=raw(sample.ce_weights, np.float32),
+        ref_kl_weights=raw(sample.ref_kl_weights, np.float32),
+        ref_logprobs=raw(sample.ref_logprobs, np.float32),
+        mm_token_type_ids=raw(sample.mm_token_type_ids, np.int32),
+        mm_refs=sample.mm_refs,
+    )
+    STORE.put(key, msgspec.msgpack.encode(body))
+    images = [[image.offset, image.length] for image in sample.mm_refs.images] if sample.mm_refs else []
+    num_tokens = mm_cut(images, len(sample.token_ids), seq_len)
+    advantage = None
+    if sample.advantages is not None:
+        advantage = float(sample.advantages[sample.mask][0]) if sample.mask.any() else 0.0
+    return SampleRef(
+        url=STORE.url,
+        id=key,
+        num_tokens=num_tokens,
+        env_name=sample.env_name,
+        trace_id=sample.trace_id or "",
+        branch_index=sample.branch_index if sample.branch_index is not None else -1,
+        temperature=float(sample.temperatures[0]),
+        advantage=advantage,
+        policy_start=0 if sample.staleness is not None else None,
+        images=[image for image in images if image[0] + image[1] <= num_tokens] or None,
+    )
+
+
+def prepare_batch(
+    rollouts: list[TrainingSample], seq_len: int, num_data_ranks: int, bin_cost, pad_to_multiple_of: int = 1
+) -> list[list[MicroBatch]]:
+    """The micro batches each data rank trains on: the orchestrator plans them over the kept
+    samples' references, and each trainer rank builds its plans from the fetched samples."""
+    plans_per_gpu = planner.prepare_batch(
+        [_keep(sample, seq_len) for sample in rollouts],
+        seq_len=seq_len,
+        num_data_ranks=num_data_ranks,
+        bin_cost=bin_cost,
+        trained_version=TRAINED_VERSION,
+        min_version=0,
+        pad_to_multiple_of=pad_to_multiple_of,
+    )
+    return [materialize_micro_batches(plans, POOL).micro_batches for plans in plans_per_gpu]
+
+
 def _flatten_batches(batches_per_gpu):
     return [batch for worker_batches in batches_per_gpu for batch in worker_batches]
 
@@ -160,24 +236,24 @@ def test_training_sample_requires_env_name():
 
 
 @pytest.mark.parametrize(
-    ("rollout_count", "num_train_workers", "expected_batches_per_worker"), [(4, 2, 2), (5, 2, 3), (7, 1, 7), (11, 4, 3)]
+    ("rollout_count", "num_data_ranks", "expected_batches_per_worker"), [(4, 2, 2), (5, 2, 3), (7, 1, 7), (11, 4, 3)]
 )
 def test_prepare_batch_balances_micro_batches_across_workers(
-    make_training_example, rollout_count, num_train_workers, expected_batches_per_worker
+    make_training_example, rollout_count, num_data_ranks, expected_batches_per_worker
 ):
     examples = [make_training_example() for i in range(rollout_count)]
 
     batches_per_gpu = prepare_batch(
         rollouts=examples,
         seq_len=4,
-        num_train_workers=num_train_workers,
+        num_data_ranks=num_data_ranks,
         bin_cost=sum,
     )
 
     assert all(len(worker_batches) == expected_batches_per_worker for worker_batches in batches_per_gpu)
 
     flat_batches = _flatten_batches(batches_per_gpu)
-    assert len(examples) <= len(flat_batches) < len(examples) + num_train_workers
+    assert len(examples) <= len(flat_batches) < len(examples) + num_data_ranks
 
     # Identify real vs padding batches by content, not position — the packer
     # distributes by workload, so a dummy can land anywhere in the order.
@@ -209,7 +285,7 @@ def test_prepare_batch_preserves_branch_identity(make_training_example):
     batches_per_gpu = prepare_batch(
         rollouts=examples,
         seq_len=4,
-        num_train_workers=2,
+        num_data_ranks=2,
         bin_cost=sum,
         pad_to_multiple_of=8,
     )
@@ -229,7 +305,7 @@ def test_prepare_sample_truncation_keeps_identity():
     sample = make_sized_training_example(10)
     sample.trace_id = "trace-x"
     sample.branch_index = 2
-    micro_batch = prepare_sample(sample, seq_len=4)
+    [[micro_batch]] = prepare_batch([sample], seq_len=4, num_data_ranks=1, bin_cost=sum)
     assert len(micro_batch.input_ids) == 4
     assert micro_batch.trace_ids == ["trace-x"]
     assert micro_batch.branch_indices == [2]
@@ -240,7 +316,7 @@ def test_randomized_packing_invariants():
 
     for case_idx in range(80):
         seq_len = int(rng.choice([8, 16, 32, 64]))
-        num_train_workers = int(rng.choice([1, 2, 4, 8]))
+        num_data_ranks = int(rng.choice([1, 2, 4, 8]))
         num_samples = int(rng.integers(1, 65))
         lengths = [int(x) for x in rng.integers(1, seq_len + 1, size=num_samples)]
         examples = [make_sized_training_example(length, env_name=f"env-{case_idx}") for length in lengths]
@@ -249,7 +325,7 @@ def test_randomized_packing_invariants():
         batches_per_gpu = prepare_batch(
             rollouts=examples,
             seq_len=seq_len,
-            num_train_workers=num_train_workers,
+            num_data_ranks=num_data_ranks,
             bin_cost=bin_cost,
         )
         flat_batches = _flatten_batches(batches_per_gpu)
@@ -271,9 +347,9 @@ def test_randomized_packing_invariants():
 
 
 def test_pad_micro_batch_preserves_explicit_sequence_lengths():
-    micro_batch = prepare_sample(make_sized_training_example(4), seq_len=16)
+    micro_batch = prepare_sample(make_sized_training_example(4))
 
-    padded = pad_micro_batch(micro_batch, pad_to_multiple_of=6)
+    padded = pad_micro_batch(micro_batch, padding_size=2)
 
     assert len(padded.input_ids) == 6
     assert padded.sequence_lengths == [6]
@@ -288,7 +364,7 @@ def test_split_to_align_avoids_dummy_micro_batches():
     batches_per_gpu = prepare_batch(
         rollouts=examples,
         seq_len=12,
-        num_train_workers=4,
+        num_data_ranks=4,
         bin_cost=sum,
     )
 
@@ -302,7 +378,7 @@ def test_pack_first_then_balance_distributes_micro_batches_by_tokens_without_mod
     balanced = prepare_batch(
         rollouts=examples,
         seq_len=100,
-        num_train_workers=2,
+        num_data_ranks=2,
         bin_cost=sum,
     )
 
@@ -316,7 +392,7 @@ def test_flop_aware_balancing_pairs_long_and_short_sequence_workloads():
     balanced = prepare_batch(
         rollouts=examples,
         seq_len=32,
-        num_train_workers=2,
+        num_data_ranks=2,
         bin_cost=bin_cost,
     )
 
@@ -331,7 +407,7 @@ def test_flop_aware_split_to_align_splits_heaviest_flop_bin():
     batches_per_gpu = prepare_batch(
         rollouts=examples,
         seq_len=64,
-        num_train_workers=4,
+        num_data_ranks=4,
         bin_cost=flop_cost,
     )
 
@@ -349,7 +425,7 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
     batches_per_gpu = prepare_batch(
         rollouts=[example1, example2],
         seq_len=16,
-        num_train_workers=1,
+        num_data_ranks=1,
         bin_cost=sum,
     )
 
@@ -369,14 +445,14 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
 def test_prepare_sample_propagates_weight_streams(make_training_example):
     example = make_training_example(ce_weights=[0.0, 0.0, 1.0, 1.0], rl_weights=[0.0, 0.0, 0.0, 0.0])
 
-    micro_batch = prepare_sample(example, seq_len=16)
+    micro_batch = prepare_sample(example)
 
     assert micro_batch.ce_weights == pytest.approx([0.0, 0.0, 1.0, 1.0])
     assert micro_batch.rl_weights == pytest.approx([0.0, 0.0, 0.0, 0.0])
 
 
 def test_prepare_sample_uniform_rl_keeps_streams_none(make_training_example):
-    micro_batch = prepare_sample(make_training_example(), seq_len=16)
+    micro_batch = prepare_sample(make_training_example())
 
     assert micro_batch.rl_weights is None
     assert micro_batch.ce_weights is None
@@ -408,7 +484,7 @@ def test_prepare_batch_packs_mixed_components(make_training_example, streams_on_
     batches_per_gpu = prepare_batch(
         rollouts=[longer, shorter],
         seq_len=16,
-        num_train_workers=1,
+        num_data_ranks=1,
         bin_cost=sum,
     )
 
@@ -439,7 +515,7 @@ def test_prepare_batch_backfills_and_pads_staleness(make_training_example):
     shorter = make_training_example()
 
     [batch] = _flatten_batches(
-        prepare_batch(rollouts=[longer, shorter], seq_len=16, pad_to_multiple_of=4, num_train_workers=1, bin_cost=sum)
+        prepare_batch(rollouts=[longer, shorter], seq_len=16, pad_to_multiple_of=4, num_data_ranks=1, bin_cost=sum)
     )
     assert batch.staleness.tolist() == [-1, -1, 0, 1, 3, 3] + [-1] * 4 + [-1] * 2
 
@@ -466,7 +542,7 @@ def test_prepare_batch_aligns_ref_logprobs_in_mixed_bins(make_training_example, 
         rollouts=[longer, shorter],
         seq_len=16,
         pad_to_multiple_of=1,
-        num_train_workers=1,
+        num_data_ranks=1,
         bin_cost=sum,
     )
     flat_batches = _flatten_batches(batches_per_gpu)
@@ -500,7 +576,7 @@ def test_prepare_sample_truncates_mm_at_image_boundary():
     )
 
     # seq_len=5 falls inside img1 (one of its two placeholders survives) -> drop img1 entirely.
-    mb = prepare_sample(sample, seq_len=5)
+    [[mb]] = prepare_batch([sample], seq_len=5, num_data_ranks=1, bin_cost=sum)
     assert len(mb.input_ids) == 4  # cut back to img1's first placeholder (index 4)
     assert len(mb.mm_token_type_ids) == len(mb.input_ids)
     n_placeholders = sum(1 for t in mb.mm_token_type_ids if t)
@@ -532,7 +608,7 @@ def test_prepare_batch_packs_multimodal_with_text():
     batches_per_gpu = prepare_batch(
         rollouts=[mm_sample, text_sample],
         seq_len=8,
-        num_train_workers=1,
+        num_data_ranks=1,
         bin_cost=sum,
     )
 
@@ -564,33 +640,10 @@ def test_split_to_align_splits_multimodal_bins():
     batches_per_gpu = prepare_batch(
         rollouts=[make_mm_sample(10), make_mm_sample(20)],
         seq_len=8,
-        num_train_workers=2,
+        num_data_ranks=2,
         bin_cost=sum,
     )
 
     batches = _flatten_batches(batches_per_gpu)
     assert len(batches) == 2
     assert all(_has_loss_tokens(batch) and batch.mm_refs is not None for batch in batches)
-
-
-def test_prepare_sample_keeps_the_payload_reference():
-    """The packer carries a sample's reference, one per sequence; truncation shortens the
-    token count and keeps the rest of the reference."""
-    payload = PayloadSlice(
-        url="http://h:1", id="t-0", num_tokens=4, fields=["routed_experts"], routed_shape=[2, 2], routed_dtype="uint8"
-    )
-    sample = _sample(
-        token_ids=[1, 2, 3, 4],
-        mask=[False, False, True, True],
-        logprobs=[0.0, 0.0, -0.1, -0.2],
-        temperatures=[1.0, 1.0, 1.0, 1.0],
-        advantages=[0.0, 0.0, 1.0, 1.0],
-        env_name="test-env",
-        payload=payload,
-    )
-    assert prepare_sample(sample, seq_len=8).payloads == [payload]
-    [truncated] = prepare_sample(sample, seq_len=3).payloads
-    assert truncated.num_tokens == 3
-    assert (truncated.routed_shape, truncated.routed_dtype) == ([2, 2], "uint8")
-    sample.payload = None
-    assert prepare_sample(sample, seq_len=8).payloads is None

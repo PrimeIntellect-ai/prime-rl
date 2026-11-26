@@ -13,7 +13,6 @@ from prime_rl.transports.weights.base import (
     prune_broadcasts_beyond,
 )
 from prime_rl.transports.weights.filesystem import FileSystemWeightReceiver, FileSystemWeightSender
-from prime_rl.transports.weights.nccl import NCCLWeightReceiver, NCCLWeightSender
 
 __all__ = [
     "WeightReceiver",
@@ -34,6 +33,10 @@ def setup_weight_sender(
     model_name: str | None = None,
 ) -> WeightSender:
     if config.type == "nccl":
+        # Deferred: the NCCL transport needs vLLM (the `inference` extra), and this module is
+        # imported by every trainer run, not just the ones that broadcast weights.
+        from prime_rl.transports.weights.nccl import NCCLWeightSender
+
         return NCCLWeightSender(output_dir, config, torch.cuda.current_device())
     elif config.type == "filesystem":
         return FileSystemWeightSender(output_dir, config, lora_config)
@@ -58,6 +61,8 @@ def setup_weight_receiver(
     model_name: str,
 ) -> WeightReceiver:
     if config.type == "nccl":
+        from prime_rl.transports.weights.nccl import NCCLWeightReceiver
+
         return NCCLWeightReceiver(broadcast_dir, config, admin_plane, model_name)
     elif config.type == "filesystem":
         return FileSystemWeightReceiver(broadcast_dir, config, admin_plane, model_name)

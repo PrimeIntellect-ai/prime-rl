@@ -1,6 +1,6 @@
 """Each monitor under an orchestrator-sized load: up to a thousand agentic episodes,
 sized like a production RL run's, and thousands of metric rows, logged through
-``monitors.log`` as the orchestrator does.
+``monitors.log_records`` and ``monitors.log`` as the orchestrator does.
 Everything logged must arrive, and the event loop must stay responsive while the
 monitor writes or uploads."""
 
@@ -24,6 +24,7 @@ from verifiers.v1 import AssistantMessage, MessageNode, ModelCall, Usage, UserMe
 
 from prime_rl import monitors
 from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig, WandbMonitorConfig
+from prime_rl.env.heads import EpisodeHead, EpisodeRecord, recorded_head
 from prime_rl.monitors.file.monitor import FileMonitor
 from prime_rl.monitors.file.traces import get_trace_stream
 from prime_rl.monitors.file.traces.chunks import chunk_numbers, open_chunk
@@ -117,19 +118,28 @@ def traces() -> list[vf.Trace]:
     return [_trace(rng, max(1, round(size / turn_mb))) for size in TRACE_SIZES_MB]
 
 
-def _episodes(traces: list[vf.Trace], count: int) -> list[vf.Episode]:
-    """``count`` episodes with production sizes. Every monitor serializes each episode on
-    its own, so sharing traces keeps the load of distinct ones at a fraction of the memory."""
+def _episodes(traces: list[vf.Trace], count: int) -> list[tuple[EpisodeHead, EpisodeRecord]]:
+    """``count`` episodes with production sizes, as heads with the records their env workers
+    serialized. Episodes of one size share their record's bytes, which keeps the load of
+    distinct ones at a fraction of the memory."""
     sizes = np.random.default_rng(1).lognormal(np.log(SIZE_MEDIAN_MB), SIZE_SIGMA, count)
     nearest = np.abs(np.log(sizes)[:, None] - np.log(TRACE_SIZES_MB)).argmin(1)
-    return [_episode(traces[index], i) for i, index in enumerate(nearest)]
+    by_size: dict[int, tuple[EpisodeHead, EpisodeRecord]] = {}
+    out = []
+    for i, index in enumerate(nearest):
+        if index not in by_size:
+            head = recorded_head(_episode(traces[index], i))
+            by_size[index] = (head, head.take_record())
+        head, record = by_size[index]
+        out.append((head.model_copy(update={"group": vf.GroupInfo(id=f"g{i // 8}")}), record))
+    return out
 
 
 def _metrics(step: int) -> dict[str, float]:
     return {f"group{key % 10}/metric{key}": step + key / METRIC_KEYS for key in range(METRIC_KEYS)}
 
 
-async def _drive(episodes: list[vf.Episode]) -> tuple[list[float], list[float]]:
+async def _drive(episodes: list[tuple[EpisodeHead, EpisodeRecord]]) -> tuple[list[float], list[float]]:
     """Log every episode on arrival and the metric rows between them, as the orchestrator
     does, while a ticker measures how late the event loop wakes it. Returns the event-loop
     lags and the duration of each ``monitors.log`` call."""
@@ -145,9 +155,9 @@ async def _drive(episodes: list[vf.Episode]) -> tuple[list[float], list[float]]:
     tick = asyncio.create_task(ticker())
     calls: list[float] = []
 
-    async def timed(*args, **kwargs) -> None:
+    async def timed(log, *args, **kwargs) -> None:
         start = time.perf_counter()
-        await monitors.log(*args, **kwargs)
+        await log(*args, **kwargs)
         calls.append(time.perf_counter() - start)
         # The orchestrator awaits its next arrival between log calls.
         await asyncio.sleep(0)
@@ -156,8 +166,8 @@ async def _drive(episodes: list[vf.Episode]) -> tuple[list[float], list[float]]:
     every = METRIC_ROWS // len(episodes)
     for step in range(1, METRIC_ROWS + 1):
         if step % every == 0 and step // every <= len(episodes):
-            await timed([episodes[step // every - 1]], 1, "train", "all")
-        await timed(_metrics(step), step=step)
+            await timed(monitors.log_records, [episodes[step // every - 1]], 1, "train")
+        await timed(monitors.log, _metrics(step), step=step)
     stop.set()
     await tick
     return lags, calls

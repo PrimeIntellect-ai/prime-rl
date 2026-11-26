@@ -4,6 +4,7 @@ import numpy as np
 import verifiers.v1 as vf
 from verifiers.v1 import WeightVersionSpan
 
+from prime_rl.env.heads import _versions
 from prime_rl.orchestrator.utils import Staleness, rollout_staleness
 
 
@@ -13,12 +14,12 @@ def test_rollout_staleness_is_max_token_staleness():
         WeightVersionSpan(version="7", start=4, end=10),
         WeightVersionSpan(version="9", start=10, end=12),
     ]
-    trace = SimpleNamespace(
-        nodes=[
-            SimpleNamespace(mask=np.array([False, True]), weight_versions=None),
-            SimpleNamespace(mask=np.array([False] + [True] * 12), weight_versions=spans),
-        ]
-    )
+    nodes = [
+        SimpleNamespace(mask=np.array([False, True]), weight_versions=None),
+        SimpleNamespace(mask=np.array([False] + [True] * 12), weight_versions=spans),
+    ]
+    # The head of the trace counts its sampled tokens per policy version.
+    trace = SimpleNamespace(versions=_versions(SimpleNamespace(nodes=nodes)))
     work = vf.TrainWorkInfo(step=7, policy=vf.PolicySpan(start=6, end=9))
     episode = SimpleNamespace(run=vf.TrainRunInfo(id="run", work=work), traces=[trace])
 

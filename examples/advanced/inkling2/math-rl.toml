@@ -70,6 +70,9 @@ freq = 1
 [trainer.model.moe.compute]
 type = "deepgemm_fp8"
 
+[trainer.data]
+pad_to_seq_len = true
+
 [trainer.optim]
 type = "sign_sgd"
 lr = 1e-6
@@ -81,7 +84,6 @@ interval = 50
 keep_last = 1
 
 [orchestrator]
-pad_to_seq_len = true
 batch_size = 64
 
 [orchestrator.train]

@@ -9,7 +9,8 @@ A broker binds the client-facing ROUTER, starts one worker process and scales up
 load-balancing requests to the least-busy worker over a `DEALER` per worker. The
 worker's `client_id` (its reply identity) is the broker's DEALER identity; the broker
 holds the real client identity in `pending` and routes the reply back by `request_id`.
-`health` is answered inline (no worker needed); everything else goes to a worker.
+`health` is answered inline (no worker needed); a `BROADCAST` request goes to every
+worker and the client gets their merged reply; everything else goes to one worker.
 
 Scaling is elastic but upscale-only: a new worker is spawned when in-flight requests
 reach 90% of current capacity (`workers * multiplex`). Workers are spawned `spawn`-style
@@ -41,6 +42,29 @@ from prime_rl.utils.process import set_proc_title
 
 _HEALTH = msgpack.packb(HealthResponse().model_dump(mode="json"), use_bin_type=True)
 _CANCEL_MISS = msgpack.packb(CancelResponse(cancelled=False).model_dump(mode="json"), use_bin_type=True)
+
+BROADCAST = (b"save", b"release")
+"""Requests every worker answers for its own rollouts (`merge_replies`)."""
+
+
+def merge_replies(replies: list[bytes]) -> bytes:
+    """One reply from the workers' replies to a `BROADCAST` request: dicts merge, lists
+    join, counts add up, and it fails if any worker failed."""
+    merged: dict = {"success": True, "error": None}
+    for reply in (msgpack.unpackb(data, raw=False) for data in replies):
+        for key, value in reply.items():
+            if key == "success":
+                merged["success"] = merged["success"] and value
+            elif key == "error":
+                if value:
+                    merged["error"] = "; ".join(filter(None, [merged["error"], value]))
+            elif isinstance(value, dict):
+                merged.setdefault(key, {}).update(value)
+            elif isinstance(value, list):
+                merged.setdefault(key, []).extend(value)
+            else:
+                merged[key] = merged.get(key, 0) + value
+    return msgpack.packb(merged, use_bin_type=True)
 
 
 def _arm_teardown(death_pipe=None) -> None:
@@ -168,6 +192,9 @@ class EnvWorkerPool:
         # request_id -> (replied_at, worker), oldest first: a late cancel still reaches
         # the worker that may hold the run's kept arrays (`LATE_CANCEL_SECONDS`).
         replied: dict[bytes, tuple[float, dict]] = {}
+        # `BROADCAST` request_id -> {client_id, method, pending, replies}; each worker's part
+        # carries `<request_id>/<worker index>`.
+        broadcasts: dict[bytes, dict] = {}
         sizing = (
             f"max_workers={self._cap_str} multiplex={self.pool.multiplex}"
             if self.elastic
@@ -179,7 +206,7 @@ class EnvWorkerPool:
         try:
             in_flight = 0
             while True:
-                events = dict(await self._poller.poll())
+                events = dict(await self._poller.poll(timeout=1000 if broadcasts else None))
                 if self.frontend in events:
                     frames = await self.frontend.recv_multipart()
                     # Drop malformed requests without skipping ready worker replies.
@@ -219,6 +246,23 @@ class EnvWorkerPool:
                                 }
                                 in_flight += 1
                                 await worker["dealer"].send_multipart([request_id, method, payload])
+                        elif method in BROADCAST:
+                            live = [w for w in self.workers if w["process"].is_alive()]
+                            if not live:
+                                error = msgpack.packb(
+                                    {"success": False, "error": "no live env workers"}, use_bin_type=True
+                                )
+                                await self.frontend.send_multipart([client_id, request_id, b"reply", error])
+                            else:
+                                broadcasts[request_id] = {
+                                    "client_id": client_id,
+                                    "method": method,
+                                    "pending": {w["index"] for w in live},
+                                    "replies": [],
+                                }
+                                for w in live:
+                                    part = request_id + b"/" + str(w["index"]).encode()
+                                    await w["dealer"].send_multipart([part, method, payload])
                         else:
                             worker = min(self.workers, key=lambda w: w["active"])
                             worker["active"] += 1
@@ -235,6 +279,19 @@ class EnvWorkerPool:
                 for w in self.workers:
                     if w["dealer"] in events:
                         request_id, kind, data = await w["dealer"].recv_multipart(copy=False)
+                        parent = request_id.bytes.rpartition(b"/")[0]
+                        if kind.bytes == b"reply" and parent in broadcasts:
+                            broadcast = broadcasts[parent]
+                            if w["index"] in broadcast["pending"]:
+                                broadcast["pending"].discard(w["index"])
+                                broadcast["replies"].append(data.bytes)
+                            if not broadcast["pending"]:
+                                del broadcasts[parent]
+                                with contextlib.suppress(zmq.ZMQError):
+                                    await self.frontend.send_multipart(
+                                        [broadcast["client_id"], parent, b"reply", merge_replies(broadcast["replies"])]
+                                    )
+                            continue
                         # Copy only the routing key; relay the Frames unchanged. A
                         # `delta` is one of many for its request — only the `reply`
                         # closes the request out.
@@ -270,6 +327,27 @@ class EnvWorkerPool:
                                         ),
                                     ]
                                 )
+                if broadcasts:
+                    dead = {w["index"] for w in self.workers if not w["process"].is_alive()}
+                    if dead:
+                        for req_id, broadcast in list(broadcasts.items()):
+                            dropped = broadcast["pending"] & dead
+                            if not dropped:
+                                continue
+                            broadcast["pending"] -= dropped
+                            for index in sorted(dropped):
+                                # The dead worker's rollouts are gone with it; the others'
+                                # replies, and the snapshots their restores own, still count.
+                                part: dict = {"success": True, "error": None}
+                                if broadcast["method"] == b"save":
+                                    part["skipped"] = [f"env worker {index} exited during the save"]
+                                broadcast["replies"].append(msgpack.packb(part, use_bin_type=True))
+                            if not broadcast["pending"]:
+                                del broadcasts[req_id]
+                                with contextlib.suppress(zmq.ZMQError):
+                                    await self.frontend.send_multipart(
+                                        [broadcast["client_id"], req_id, b"reply", merge_replies(broadcast["replies"])]
+                                    )
         except (asyncio.CancelledError, KeyboardInterrupt):
             pass
         finally:

@@ -3,7 +3,6 @@ import gc
 import weakref
 from types import SimpleNamespace
 
-import msgspec
 import numpy as np
 import pytest
 import verifiers.v1 as vf
@@ -21,18 +20,20 @@ from verifiers.v1 import (
 from prime_rl.configs.algorithm import GRPOAlgoConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.control.types import ConfigUpdate
+from prime_rl.env.heads import EpisodeHead, TraceHead, episode_head
 from prime_rl.orchestrator.algo.base import Algorithm
-from prime_rl.orchestrator.train_sink import TrainSink, mask_stale_tokens
-from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress
-from prime_rl.orchestrator.utils import episode_group_id
-from prime_rl.transports.payload import PayloadHook, wait_for_deletes
+from prime_rl.orchestrator.train_sink import TrainSink, queued_samples, write_token_advantages
+from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TrainBatch
+from prime_rl.orchestrator.utils import episode_group_id, min_fresh_version
+from prime_rl.transports import payload
+from prime_rl.transports.batch.types import MicroBatchPlan, TrainingSample
+from prime_rl.transports.payload import PayloadHook, build_sample, sample_url, wait_for_deletes
 from prime_rl.utils.logger import setup_logger
 
-# Samples hold numpy streams; encode them as lists to compare them byte for byte.
-ENCODER = msgspec.msgpack.Encoder(enc_hook=lambda value: value.tolist())
-
 setup_logger("warning")
+
+# The env worker that keeps every test episode's samples.
+HOOK = PayloadHook()
 
 
 def trace(*, advantage=1.0, ok=True, trainable=True, sampled=True):
@@ -53,7 +54,6 @@ def trace(*, advantage=1.0, ok=True, trainable=True, sampled=True):
             mask=[sampled, sampled],
             is_content=[True, True],
             logprobs=[-0.1, -0.2],
-            advantages=[advantage, advantage],
             reference_logprobs=[-0.3, -0.4],
             routed_experts=np.ones((2, 2, 2), dtype=np.uint8),
         ),
@@ -68,10 +68,24 @@ def trace(*, advantage=1.0, ok=True, trainable=True, sampled=True):
         rewards={"correct": vf.Reward(score=1.0)},
         calls=[ModelCall(node=2, usage=Usage(prompt_tokens=2, completion_tokens=2), finish_reason="stop")],
         errors=[] if ok else [vf.Error(type="ProviderError", message="failed")],
+        info={"advantage": advantage} if sampled else {},
     )
 
 
-def episode(traces, *, group="g", version=0):
+def received(ep: vf.Episode, *, keep: bool = True) -> EpisodeHead:
+    """The head of an episode as the orchestrator receives it: with ``keep``, an env worker
+    kept its samples. A trace's ``advantage`` info stands for the credit its group earned."""
+    if keep:
+        HOOK.keep(ep, "rl")
+    head = episode_head(ep)
+    for trace_head, trace in zip(head.traces, ep.traces, strict=True):
+        if "advantage" in trace.info:
+            trace_head.info["advantage"] = trace.info["advantage"]
+    return head
+
+
+def whole_episode(traces, *, group="g", version=0) -> vf.Episode:
+    """A train episode as the env worker that ran it holds it."""
     return vf.Episode(
         env=vf.EnvInfo(id="test", name="test"),
         task=traces[0].task,
@@ -80,6 +94,31 @@ def episode(traces, *, group="g", version=0):
         ok=True,
         run=vf.TrainRunInfo(id="run", work=vf.TrainWorkInfo(step=1, policy=vf.PolicySpan(start=version, end=version))),
     )
+
+
+def episode(traces, *, group="g", version=0, keep=True) -> EpisodeHead:
+    """A train episode as the orchestrator receives it."""
+    return received(whole_episode(traces, group=group, version=version), keep=keep)
+
+
+def train_trace(trace: TraceHead) -> list[TrainingSample]:
+    """The samples a trainer rank builds from one trace an env worker kept, referenced with
+    the trace's credit by the orchestrator."""
+    assert not write_token_advantages([trace])
+    refs = [
+        sample.ref
+        for sample in queued_samples(trace, env_name="test", temperature=1.0, policy_start=None, seq_len=1 << 20)
+    ]
+    plan = MicroBatchPlan(samples=refs, trained_version=0, min_version=0)
+    return [build_sample(payload._fetch(sample_url(ref)), ref, plan) for ref in refs]
+
+
+def trained(batch: TrainBatch, step: int, max_staleness: int = 1) -> list[TrainingSample]:
+    """The samples a trainer rank builds from a batch the sink cut at ``step``."""
+    plan = MicroBatchPlan(
+        samples=batch.samples, trained_version=step - 1, min_version=min_fresh_version(step, max_staleness)
+    )
+    return [build_sample(payload._fetch(sample_url(ref)), ref, plan) for ref in batch.samples]
 
 
 def sink(*, constant=True, admitted=True, batch_size=100, closed=None, group_size=None):
@@ -112,10 +151,8 @@ def test_zero_output_finalization_releases_objects_without_reporting(constant, a
             t = trace(advantage=0)
             ep = episode([t], group=str(i))
             refs.extend([weakref.ref(t), weakref.ref(ep)])
-            before = ENCODER.encode(trace_to_samples(t, env_name="test"))
             batch = await s.add(ep)
             assert batch is None or not batch.samples
-            assert ENCODER.encode(trace_to_samples(t, env_name="test")) == before
             assert s.take_rollout_window() is None
             assert s.rollout_window.attempts == i + 1
             del t, ep, batch
@@ -143,14 +180,12 @@ def test_queued_trace_does_not_own_discarded_siblings():
         ep = episode([kept, *discarded])
         refs = [weakref.ref(t) for t in discarded] + [weakref.ref(ep)]
         s = sink()
-        before = ENCODER.encode(trace_to_samples(kept, env_name="test"))
         assert await s.add(ep) is None
         assert all(t.nodes[2].token_ids.tolist() == [3, 4] for t in discarded)
         del discarded, ep
         gc.collect()
         assert all(ref() is None for ref in refs)
-        assert s.episode_by_trace[kept.id].traces == [kept]
-        assert ENCODER.encode(trace_to_samples(kept, env_name="test")) == before
+        assert [trace.id for trace in s.episode_by_trace[kept.id].traces] == [kept.id]
         window = s.take_rollout_window(force=True)
         assert window.traces == 5 and window.attempts == 1
         assert window.metrics.to_dict()["rollout/traces/discarded"] == 4
@@ -178,33 +213,23 @@ def test_stale_queue_releases_trace_without_recounting_arrivals():
     asyncio.run(run())
 
 
-def test_mask_stale_tokens_keeps_fresher_tokens():
-    t = trace()
-    # Unlabelled tokens take the episode's dispatch version (the fallback).
-    t.nodes[2].weight_versions = [
-        WeightVersionSpan(version="default", start=0, end=1),
-        WeightVersionSpan(version="3", start=1, end=2),
-    ]
-    [sample] = trace_to_samples(t, env_name="test")
-    sample.ref_kl_weights = np.ones(4, dtype=np.float32)
-    assert mask_stale_tokens(sample, t.branches[sample.branch_index], fallback=1, min_version=2) == 1
-    assert sample.mask.tolist() == [False, False, False, True]
-    assert sample.ref_kl_weights.tolist() == [1.0, 1.0, 0.0, 1.0]
-
-
 def test_partially_stale_trace_ships_fresh_tokens():
     async def run():
         s = sink(batch_size=1)
         s.progress.step = 4
         t = trace()
+        # Unlabelled tokens take the episode's dispatch version.
         t.nodes[2].weight_versions = [
             WeightVersionSpan(version="default", start=0, end=1),
             WeightVersionSpan(version="3", start=1, end=2),
         ]
+        t.nodes[2].loss_weights = {"ref_kl": np.ones(2, dtype=np.float32)}
         batch = await s.add(episode([t], version=1))
-        assert batch.samples[0].mask.tolist() == [False, False, False, True]
+        [sample] = trained(batch, step=4)
+        assert sample.mask.tolist() == [False, False, False, True]
+        assert sample.ref_kl_weights.tolist() == [0.0, 0.0, 0.0, 1.0]
         # Batch 4 trains on v3: the unlabelled token took dispatch version v1.
-        assert batch.samples[0].staleness.tolist() == [-1, -1, 2, 0]
+        assert sample.staleness.tolist() == [-1, -1, 2, 0]
         assert s.take_rollout_window(force=True).metrics.to_dict()["staleness/token/masked"] == 0.5
 
     asyncio.run(run())
@@ -406,7 +431,6 @@ def test_open_group_closes_at_the_size_it_was_drawn_with():
 @pytest.mark.parametrize("support", ["missing", "head", "replayed"])
 def test_truncated_sampling_requires_replayed_support(support):
     async def run():
-        hook = PayloadHook()
         t = trace()
         if support != "missing":
             t.nodes[-1].sampler_support = vf.SamplerSupport(
@@ -416,7 +440,6 @@ def test_truncated_sampling_requires_replayed_support(support):
                 logprobs=np.array([-0.1, -0.2], dtype=np.float32),
             )
         ep = episode([t])
-        hook.keep(ep, vf.SamplingConfig())
         s = sink()
         s.train_envs.get("test").requires_sampling_masks = True
         try:
@@ -427,7 +450,7 @@ def test_truncated_sampling_requires_replayed_support(support):
                 with pytest.raises(RuntimeError, match="carry no sampling masks"):
                     await s.add(ep)
         finally:
-            hook.discard(ep)
+            HOOK.discard(ep)
             wait_for_deletes()
 
     asyncio.run(run())

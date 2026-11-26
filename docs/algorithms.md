@@ -33,7 +33,7 @@ This page covers the math and the configurable algorithmic components: the algor
 A training algorithm in `prime-rl` is configured under `[orchestrator.train.algo]`, where **`type` names the algorithm** (`grpo`, `opd`, `sft`, …) and the class defaults are its vetted setting. It has two parts:
 
 1. **The rollout model** — which model generates train rollouts: the live policy, except for `sft`, which samples from its frozen `teacher` (a [model reference](#model-references)). Group sizing stays on the env config (`group_size`).
-2. **The per-token training signal** — credit assignment and loss routing, fused; the algorithm's own parameters sit directly on `algo`. One mapping from a finalized rollout to per-token *(loss component, weight)* pairs — the credit a token gets and the loss that consumes it are two coordinates of the same output. Group-relative algorithms compute credit on the orchestrator and ship per-token advantage streams; reference-KL algorithms query a reference model at batch-ship time (bounded concurrency) and ship its prefill logprobs for the trainer to evaluate against the live policy. The `type` determines which loss component consumes the action tokens (`rl` / `ce` / `ref_kl`) and what happens to env-provided observation tokens in multi-turn rollouts (masked out by default; `echo` trains on them with weighted CE).
+2. **The per-token training signal** — credit assignment and loss routing, fused; the algorithm's own parameters sit directly on `algo`. One mapping from a finalized rollout to per-token *(loss component, weight)* pairs — the credit a token gets and the loss that consumes it are two coordinates of the same output. Group-relative algorithms compute one advantage per rollout on the orchestrator, broadcast over its sampled tokens; reference-KL algorithms query a reference model as each rollout finishes, in the env worker that ran it, and keep its prefill logprobs with the rollout's samples for the trainer to evaluate against the live policy. The `type` determines which loss component consumes the action tokens (`rl` / `ce` / `ref_kl`) and what happens to env-provided observation tokens in multi-turn rollouts (masked out by default; `echo` trains on them with weighted CE).
 
 The trainer is algorithm-blind: the loss is a sum of three components (rl, ce, ref_kl), each normalized by its own global token count; per-token streams ship on the wire (the `rl_weights` / `ce_weights` / `ref_kl_weights` component weights plus the `advantages` stream on each training sample) and the trainer just executes them. Adding an algorithm never touches the dispatcher, batch packing, or trainer hot path.
 
@@ -148,16 +148,17 @@ At runtime, each env's `TrainEnv` (`prime_rl.orchestrator.envs`) resolves the al
 | `max_rl` | `MaxRLAlgorithm` | `score_group`: mean-normalized group credit |
 | `rae` | `RAEAlgorithm` | `score_group`: per-agent EMA-baseline credit |
 | `hierarchical_grpo` | `HierarchicalGRPOAlgorithm` | `score_group`: GRPO baseline per episode for solvers, per group for the proposer |
-| `opd` | `OPDAlgorithm` | `score_episode`: own-context prefill under the teacher |
-| `opsd` | `OPSDAlgorithm` | `score_episode`: demo-conditioned prefill under the live policy |
+| `opd` | `OPDAlgorithm` | `score_sample`: own-context prefill under the teacher |
+| `opsd` | `OPSDAlgorithm` | `score_sample`: demo-conditioned prefill under the live policy |
 | `sft` | `SFTDistillAlgorithm` | no credit assignment; CE on sampled tokens |
 
 Algorithms operate on native verifier artifacts and annotate their message graphs directly:
 
-- `async score_episode(episode)` — rollout-local scoring as one episode arrives.
+- `async score_episode(episode)` — rollout-local, per-token work on the trace graph (loss weights), in the env worker that ran the episode, before it keeps the episode's training samples.
+- `async score_sample(token_ids, sampled, context)` — model-calling scoring of one kept sample (reference logprobs), in the replica's sample server, retried and bounded by `[serve.scoring]`. `sample_context(episode, trace)` gathers what it needs of the trace in the env worker; `bind(client, model)` connects its models in the sample server.
 - `async score_group(episodes)` — group-relative scoring after the cohort completes.
 
-The pipeline calls `score_group` directly and `score_episode` through `finalize_episode`, which skips episodes with no trainable sampled tokens. Advantages, reference logprobs, and named loss weights stay on verifier nodes through admission. Only admitted traces are flattened into `TrainingSample`s.
+The env worker calls `score_episode` through `finalize_episode`, which skips episodes with no trainable sampled tokens, then keeps each trainable branch's per-token columns (tokens, masks, logprobs, policy versions, loss weights) as a sample in its replica's sample server, which runs `score_sample` on it. The orchestrator only references the samples: it calls `score_group` once a group completes. Credit is one advantage per trace (`assign_advantage`), plus an optional rl loss weight (`assign_rl_weight`), both kept in the trace head's `info`. An algorithm that credits tokens unevenly assigns one advantage per trainable token of a branch instead (`assign_advantages(trace, branch, values)`); `token_layout(trace)` gives each branch's trainable tokens per sampled node, which is how many values it takes and where its turns start. The head carries that layout, so the orchestrator never needs the rollout's tokens to size the values. A trace credited per token uses token advantages on every branch, and a branch assigned none gets 0.0. The trainer fetches each admitted sample and spreads the advantage and rl weight over its sampled tokens; token advantages the orchestrator writes into the sample in the sample server, as one more column, before the sample can ship.
 
 The algorithm config states which loss component its action tokens feed (`action_loss_type`, a class variable on each config class). Every class is constructed with its algorithm config plus the one host-owned resource it can't rebuild — the live policy clients (`self.clients`). Everything else an algorithm needs it builds from its own config in `setup()`: `opd` connects its frozen `teacher`; `opsd` builds the renderer for its demonstration hint from the policy's renderer config and tokenizer. Writing your own algorithm is subclassing `Algorithm` and overriding the hooks its signal needs (see [Authoring an Algorithm](#authoring-an-algorithm)).
 
@@ -197,7 +198,7 @@ $$
 - `ce` — masked NLL. Used for frozen-model tokens (`sft`) and env-observation tokens (`echo`).
 - `ref_kl` — the per-token reverse KL to a reference model ($\log \pi_{\text{ref}} - \log \pi$) as the policy-gradient signal, importance-ratio corrected with a one-sided trust region (`opd`, `opsd`). Requires `ref_logprobs` from a [reference scoring](#reference-scoring); the scoring model must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
 
-The orchestrator stamps each sample's component membership as per-token weight streams (`rl_weights` / `ce_weights` / `ref_kl_weights` on the wire): a weight scales that component's per-token loss, `0.0` leaves the token out of the component entirely (mask *and* denominator), and components may overlap on the same token — their gradients sum. Each $N$ is the global (all-reduced) count of that component's member tokens — for `rl`, the sum of its weights, which is the same count while weights are 0/1 — so the components don't dilute each other: adding echo observation tokens never changes the rl term's effective per-token learning rate, and an sft env packed next to a GRPO env doesn't soften its gradient. Tokens of different components pack freely into the same micro batch, and a plain GRPO run ships no weight streams at all (absent streams mean rl weight 1.0 on every trainable token — the unchanged hot path). Advantages always ship per token (`advantages` on the wire), assigned as per-token streams from the start — uniform group credit is broadcast over completion tokens at assignment; algorithms with no rl credit (opd, opsd) ship none.
+Each sample's component membership is a set of per-token weight streams (`rl_weights` / `ce_weights` / `ref_kl_weights`), kept by the env worker and applied by the trainer: a weight scales that component's per-token loss, `0.0` leaves the token out of the component entirely (mask *and* denominator), and components may overlap on the same token — their gradients sum. Each $N$ is the global (all-reduced) count of that component's member tokens — for `rl`, the sum of its weights, which is the same count while weights are 0/1 — so the components don't dilute each other: adding echo observation tokens never changes the rl term's effective per-token learning rate, and an sft env packed next to a GRPO env doesn't soften its gradient. Tokens of different components pack freely into the same micro batch, and a plain GRPO run ships no weight streams at all (absent streams mean rl weight 1.0 on every trainable token — the unchanged hot path). Advantages are one value per rollout, which the trainer broadcasts over its completion tokens, or a column of the sample for an algorithm that credits per token; algorithms with no rl credit (opd, opsd) assign none.
 
 The trainer divides by these counts after backward, so activation gradients are independent of batch size. With $L_c$ the loss sum of component $c$, it backpropagates $\sum_c L_c \max_{c'} N_{c'} / N_c$ and then divides the parameter gradients by $\max_c N_c$.
 
@@ -393,6 +394,16 @@ num_turns_weight = 0.0
 
 Subagent membership follows harness-declared `subagent_call`, `continuation`, `compaction_attempt`, and `compaction` edges, including nested subagents at the same weight. Return, cancel, message, and unknown edges do not propagate membership. Calls without subagent attribution count fully. Root coordination tokens still count. The multiplier does not change the turns term, training-token weights, or the length-weighted baseline's token counts; set `num_turns_weight = 0` to disable the turns term, as above.
 
+The `cost` penalty charges each rollout for its own cost instead of against its group: its reward becomes $r - \min(1, \lambda C)$, with $C = w_{out} \cdot \text{output} + w_{in} \cdot \text{input}$ in tokens (input is new input, counted once, as the `linear` penalty counts it; subagent tokens count like the main agent's) and $\lambda$ the `weight`, in reward per cost token. This is the $R = S - \lambda_e C$ of Cognition's SWE-2: set $\lambda_e$ per source to the slope of the base model's reward-vs-cost Pareto curve at that source's reasoning effort, so that moving along the curve leaves the objective unchanged to first order and only pushing the curve up raises it. It applies to every rollout, solved or not, and does not scale with the group's pass rate, except that a group where every rollout failed (no positive reward) is not charged: with no success to keep, the penalty would only teach shorter failures. The penalty is linear, so a token budget would only rescale $\lambda$.
+
+```toml
+[orchestrator.train.source.algo.length_penalty]
+type = "cost"
+weight = 4e-6                # reward per cost token (lambda_e)
+num_output_tokens_weight = 1.0
+num_input_tokens_weight = 0.25
+```
+
 A **length-weighted baseline** (`length_weighted_baseline = true` on the `grpo`-family algorithms) replaces the plain group mean with $b = \sum_i L_i s_i / \sum_i L_i$, where $L_i$ is the number of trainable (policy-sampled, loss-masked) tokens of rollout $i$, summed across all its turns; it applies after the length penalty. With token-level loss normalization, long rollouts carry more gradient weight, so this baseline makes the per-token advantage zero-mean across the group's tokens rather than across rollouts.
 
 **Prompt-mean loss aggregation** (`loss_aggregation = "prompt"` on `grpo` and `echo`; default `"token"`). By default every `rl` token in the batch weighs the same, so prompts whose groups produce long trajectories dominate the gradient. With `"prompt"`, the loss is MiMo-V2.6's prompt-mean (Eq. 1): the mean over prompt groups $q$ of $\frac{1}{T_q}\sum_{t \in q} \mathcal{L}_{rl,t}$, where $T_q$ is the group's total trainable tokens. MiMo uses it to keep response length from growing too fast. `score_group` gives each trainable token of the group the `rl` weight $1/T_q$, so each group's weights sum to 1 and $N_{rl}$ (the summed weights) is the number of groups in the step. Zero-advantage tokens are still dropped from the `rl` component, so a group with a zero-advantage rollout keeps less than its full weight of 1. All envs with an `rl` loss in a run must use the same `loss_aggregation`.
@@ -485,7 +496,7 @@ There is no config hook that points at user code — a new credit-assignment sch
 import torch
 
 from prime_rl.orchestrator.algo.base import Algorithm
-from prime_rl.orchestrator.algo.routing import assign_advantages
+from prime_rl.orchestrator.algo.routing import assign_advantage
 
 
 class MyAlgorithm(Algorithm):
@@ -494,16 +505,16 @@ class MyAlgorithm(Algorithm):
         rewards = torch.tensor([trace.reward for trace in traces], dtype=torch.float32)
         advantages = ...  # one value per trace
         for trace, advantage in zip(traces, advantages.tolist(), strict=True):
-            assign_advantages(trace, advantage)
+            assign_advantage(trace, advantage)
 ```
 
-Add a typed `MyAlgoConfig` to `prime_rl.configs.algorithm` and its discriminated union, then register `"my_algo": MyAlgorithm` in `ALGORITHM_CLASSES`. Pick `score_episode` for rollout-local work or model calls, and `score_group` for group-relative credit. `assign_advantages` takes a scalar or a list aligned to the trace graph's sampled tokens.
+Add a typed `MyAlgoConfig` to `prime_rl.configs.algorithm` and its discriminated union, then register `"my_algo": MyAlgorithm` in `ALGORITHM_CLASSES`. Pick `score_episode` for rollout-local work on the trace graph, `score_sample` for model calls on a rollout's samples, and `score_group` for group-relative credit. `assign_advantage` credits every sampled token on the trace's trainable branches with one value.
 
-Curriculum admission and metrics can inspect the resulting graph-native streams after group scoring.
+Curriculum admission and metrics read each trace's advantage after group scoring.
 
 ### Reference Scoring
 
-`OPDAlgorithm` / `OPSDAlgorithm` do their model I/O in `score_episode`: as each episode arrives they query a reference and attach sampled-token reference logprobs to its graph nodes:
+`OPDAlgorithm` / `OPSDAlgorithm` do their model I/O in `score_sample`: as each episode finishes, its replica's sample server queries a reference for each kept sample and keeps the sampled-token reference logprobs with it:
 
 - `opd` — score each sample's own context under the `teacher` (a frozen [model reference](#model-references)) via prefill; fills `ref_logprobs` for the `ref_kl` loss component (on-policy distillation). The `teacher` is typed `FrozenModelConfig`, so `"policy"` isn't representable (the KL would be identically zero).
 - `opsd` — SDFT: prepend an expert demonstration as a leading system message (`template`, with a `{demonstration}` placeholder) and score the sample under that demo-conditioned context. The sample is scored verbatim (`hint_block + token_ids`, slicing the hint's logprobs back off), so the join is BPE-clean and it's robust to tool/multimodal prompts and any number of turns. The scoring reference *is* the live policy — self-distillation names no teacher. opsd tokenizes the hint block with the policy's renderer (`orchestrator.renderer`) and tokenizer. The demonstration is read from the example's `info[demo_key]`, falling back to a top-level rollout field of the same name (e.g. `answer`).

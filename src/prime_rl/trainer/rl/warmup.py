@@ -121,7 +121,7 @@ def warmup(
     optimizer.zero_grad()
     torch.cuda.synchronize()
 
-    peak_memory, _ = get_peak_memory_across_ranks()
+    peak_memory, _, _ = get_peak_memory_across_ranks()
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
     warmup_time = time.perf_counter() - start_time
