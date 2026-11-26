@@ -13,6 +13,7 @@ from prime_rl.configs.trainer import (
     LossConfig,
 )
 from prime_rl.trainer.models.layers.lm_head import TokenSupport, support_replay_mask
+from prime_rl.trainer.rl.supervised import gather_action_logprobs, summed_weighted_nll
 from prime_rl.utils.utils import import_object
 
 
@@ -68,8 +69,7 @@ Expected signature for a custom loss:
 def selective_log_softmax(
     logits: Float[Tensor, "batch seq vocab"], index: Int[Tensor, "batch seq"]
 ) -> Float[Tensor, "batch seq"]:
-    logprobs = logits.log_softmax(dim=-1)
-    return torch.gather(logprobs, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
+    return gather_action_logprobs(logits, index)
 
 
 def _segment_logsumexp(values: Tensor, rows: Tensor, num_rows: int) -> Tensor:
@@ -345,10 +345,7 @@ def ce_loss_fn(inputs: LossInputs) -> LossOutputs:
     trainer_logprobs = inputs.trainer_logprobs
     loss_mask = inputs.loss_mask
 
-    nll = -trainer_logprobs
-    if inputs.loss_weights is not None:
-        nll = nll * inputs.loss_weights
-    loss = nll[loss_mask].sum()
+    loss = summed_weighted_nll(trainer_logprobs, loss_mask, inputs.loss_weights)
     metrics = {
         "nll": _safe_mean(-trainer_logprobs, loss_mask),
     }
