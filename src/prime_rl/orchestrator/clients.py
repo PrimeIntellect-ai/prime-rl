@@ -267,7 +267,7 @@ class AdminPlane:
         self,
         weight_dir: Path | None,
         *,
-        transport: Literal["filesystem", "nccl", "nixl"],
+        transport: Literal["filesystem", "nccl"],
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
     ) -> None:
@@ -698,38 +698,6 @@ async def load_lora_adapter(admin_plane: AdminPlane, lora_name: str, lora_path: 
         response.raise_for_status()
 
     await asyncio.gather(*[_load_lora_adapter(client) for client in admin_plane.clients])
-
-
-async def init_nixl_broadcast(
-    admin_plane: AdminPlane,
-    host: str,
-    port: int,
-    timeout: int,
-    inference_world_size: int,
-    session_id: str,
-) -> None:
-    """Configure every vLLM worker for NIXL + ModelExpress pulls."""
-    admin_clients = admin_plane.clients
-    workers_per_server = inference_world_size // len(admin_clients)
-
-    async def initialize(admin_client: AsyncClient, rank_offset: int) -> None:
-        await _admin_post(
-            admin_client,
-            "/init_broadcaster",
-            timeout_s=max(ADMIN_TIMEOUT_S, timeout),
-            json={
-                "host": host,
-                "port": port,
-                "rank_offset": rank_offset,
-                "inference_world_size": inference_world_size,
-                "timeout": timeout,
-                "session_id": session_id,
-            },
-        )
-
-    await asyncio.gather(
-        *[initialize(admin_client, index * workers_per_server) for index, admin_client in enumerate(admin_clients)]
-    )
 
 
 async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]) -> list[float]:

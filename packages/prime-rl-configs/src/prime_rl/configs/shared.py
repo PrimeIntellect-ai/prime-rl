@@ -67,19 +67,6 @@ class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     """Port for the NCCL broadcast rendezvous."""
 
 
-class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
-    type: Literal["nixl"] = "nixl"
-
-    port: int = 8001
-    """ModelExpress gRPC port."""
-
-    session_id: str = "default"
-    """ModelExpress session ID."""
-
-    overlap_transfer_and_replay: bool = False
-    """Allocate two transfer arenas so inference can replay one weight group while receiving the next."""
-
-
 class ModelExpressWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     type: Literal["modelexpress"] = "modelexpress"
 
@@ -100,10 +87,7 @@ class ModelExpressWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig
-    | NCCLWeightBroadcastConfig
-    | NIXLWeightBroadcastConfig
-    | ModelExpressWeightBroadcastConfig,
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | ModelExpressWeightBroadcastConfig,
     Field(discriminator="type"),
 ]
 """Weight transfer from trainer to inference. ``rl`` copies its ``[weight_broadcast]`` to the trainer and orchestrator."""
@@ -222,7 +206,7 @@ class SlurmConfig(BaseConfig):
     """Shell command to run on the head node after cd, .env sourcing, and venv activation. Useful for cleanup like ``sudo pkill -f vllm``; wrap with ``srun bash -c '...'`` to fan out to all nodes."""
 
     launch_modelexpress: bool = True
-    """Start a job-scoped ModelExpress server for NIXL and ModelExpress weight broadcasts on multi-node jobs."""
+    """Start a job-scoped ModelExpress server for ModelExpress weight broadcasts on multi-node jobs."""
 
     cleanup_grace_period: int = Field(3600, ge=0)
     """Maximum seconds a multi-node RL job that hit a non-zero exit waits for an in-flight trainer checkpoint to finish before tearing down. Without an in-flight checkpoint (or without ``[ckpt]``) it tears down immediately. Set to 0 to never wait."""

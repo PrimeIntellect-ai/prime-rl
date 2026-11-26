@@ -405,14 +405,12 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
     train_env_names = env_worker_pool_names(config, "train")
     eval_env_names = env_worker_pool_names(config, "eval")
 
-    # NIXL and ModelExpress weight broadcasts both rendezvous through a ModelExpress server.
     mx_broadcast = (
         config.weight_broadcast
-        if config.weight_broadcast is not None and config.weight_broadcast.type in ("nixl", "modelexpress")
+        if config.weight_broadcast is not None and config.weight_broadcast.type == "modelexpress"
         else None
     )
     modelexpress_vars = {
-        "use_nixl_broadcast": mx_broadcast is not None and mx_broadcast.type == "nixl",
         "uses_modelexpress_server": mx_broadcast is not None,
         "launch_modelexpress": mx_broadcast is not None and config.slurm.launch_modelexpress,
         "modelexpress_host": mx_broadcast.host if mx_broadcast is not None else "",

@@ -287,8 +287,8 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
             else:
                 self.weight_broadcast = NCCLWeightBroadcastConfig()
         if self.weight_broadcast.type != "filesystem":
-            if self.weight_broadcast.type in ("nixl", "modelexpress"):
-                raise ValueError("NIXL and ModelExpress weight broadcast are not supported for SFT online evals.")
+            if self.weight_broadcast.type == "modelexpress":
+                raise ValueError("ModelExpress weight broadcast is not supported for SFT online evals.")
             if self.model.lora is not None:
                 raise ValueError(
                     "LoRA training is not yet supported with in-memory weight broadcast. "
