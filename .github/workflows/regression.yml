@@ -184,7 +184,10 @@ jobs:
               with:
                   path: ~/.cache/harbor
                   key: ${{ steps.harbor.outputs.key }}
+            # The console output keeps errors that stop the eval before it writes its logs,
+            # e.g. a config error. Bash runs with pipefail, so a failed eval fails the step.
             - name: Run eval
+              shell: bash
               env:
                   HF_TOKEN: ${{ secrets.HF_TOKEN }}
                   PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
@@ -195,20 +198,22 @@ jobs:
               run: |
                   start=$(date +%s)
                   uv run eval @ "tests/regression/configs/eval/$CONFIG.toml" ${MODEL:+-m "$MODEL"} \
-                      --run.name "$CONFIG-$REPEAT" --output-dir outputs
+                      --run.name "$CONFIG-$REPEAT" --output-dir outputs 2>&1 | tee console.log
                   mkdir -p "results/$CONFIG"
                   python3 tests/regression/scripts/eval.py collect "outputs/$CONFIG-$REPEAT" \
                       --repeat "$REPEAT" --wall-s "$(( $(date +%s) - start ))" --out "results/$CONFIG/$REPEAT.json"
             - name: Upload result
+              id: upload
               if: always()
               uses: actions/upload-artifact@v7
               with:
                   name: eval-result-${{ matrix.config }}-${{ matrix.repeat }}
                   path: |
                       results
+                      console.log
                       outputs/${{ matrix.config }}-${{ matrix.repeat }}/logs
-                      outputs/${{ matrix.config }}-${{ matrix.repeat }}/monitors/file/metrics.jsonl
-                      outputs/${{ matrix.config }}-${{ matrix.repeat }}/monitors/file/traces/stream.index.jsonl
+                      outputs/${{ matrix.config }}-${{ matrix.repeat }}/configs
+                      outputs/${{ matrix.config }}-${{ matrix.repeat }}/monitors/file
                   if-no-files-found: ignore
                   retention-days: 30
             # Each config posts its own message when its eval ends, so a long eval does not delay
@@ -221,6 +226,8 @@ jobs:
                   SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
                   CONFIG: ${{ matrix.config }}
                   NAME: ${{ matrix.name }}
+                  JOB_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/job/${{ job.check_run_id }}
+                  ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
               run: |
                   if [ -z "$SLACK_WEBHOOK_URL" ]; then
                       echo "SLACK_WEBHOOK_URL is not set. Skipped."
@@ -229,7 +236,7 @@ jobs:
                   python3 tests/regression/scripts/eval.py summarize --name "$NAME" \
                       $(find results -path "results/$CONFIG/*.json" 2>/dev/null) \
                       --expected 1 --baseline "tests/regression/baselines/eval/$CONFIG.json" \
-                      --slack slack.json > /dev/null || true
+                      --console console.log --slack slack.json > /dev/null || true
                   curl -fsS -X POST -H "Content-Type: application/json" --data @slack.json "$SLACK_WEBHOOK_URL"
 
     eval-summary:
