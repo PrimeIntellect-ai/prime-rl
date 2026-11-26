@@ -22,4 +22,4 @@ env.taskset.ignore_timeouts = true
 env.agent.harness.id = "bash"
 env.agent.runtime.type = "prime"
 env.agent.timeout.rollout = 14400
-env.agent.scoring.skip_on_timeout = true
+env.agent.scoring.skip.timeout = 0.0
