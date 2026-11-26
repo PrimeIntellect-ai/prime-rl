@@ -208,3 +208,19 @@ def test_setup_client_preserves_chat_client_defaults():
         base_url="http://worker-a:8000/v1",
         headers={},
     )
+
+
+def test_admin_timeout_can_be_overridden_by_env(monkeypatch):
+    """A loaded pool can take longer than the default to drain on /pause: PRIME_ADMIN_TIMEOUT_S raises the bound."""
+    import importlib
+
+    import prime_rl.orchestrator.clients as clients
+
+    try:
+        monkeypatch.setenv("PRIME_ADMIN_TIMEOUT_S", "1800")
+        assert importlib.reload(clients).ADMIN_TIMEOUT_S == 1800.0
+        monkeypatch.delenv("PRIME_ADMIN_TIMEOUT_S")
+        assert importlib.reload(clients).ADMIN_TIMEOUT_S == 300.0
+    finally:
+        monkeypatch.delenv("PRIME_ADMIN_TIMEOUT_S", raising=False)
+        importlib.reload(clients)
