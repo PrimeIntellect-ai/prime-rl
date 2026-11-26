@@ -2203,7 +2203,7 @@ provides-extras = ["prepare"]
 
 [[package]]
 name = "general-agent"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "deps/prime-envs/environments/tool_use/general_agent" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
