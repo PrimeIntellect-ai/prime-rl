@@ -1,0 +1,6 @@
+# H200 overlay for base.toml: two one-node DP8 + EP inference replicas behind the router, BF16 on trainer and engines.
+#
+#   uv run rl @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/base.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/h200.toml
+
+[deployment]
+num_infer_replicas = 2

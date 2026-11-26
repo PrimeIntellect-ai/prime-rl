@@ -1,0 +1,22 @@
+# MXFP8 arm (Blackwell): MXFP8 dense linears and routed experts on the trainer, MXFP8 engines with FlashInfer's
+# TRT-LLM MoE, and an fp8 KV cache.
+#
+#   uv run rl @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/base.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/mxfp8.toml
+
+[slurm]
+job_name = "qwen3.6-rlm-ablation-mxfp8"
+
+# The vision tower has no MXFP8 shapes; text-only RL never runs it.
+[trainer.model.quantization]
+type = "mxfp8"
+extra_ignore_patterns = ['visual\.']
+
+[trainer.model.moe.compute]
+type = "mxfp8"
+
+[inference.vllm]
+quantization = "mxfp8"
+quantization_config = { ignore = ["*visual*"] }
+kv_cache_dtype = "fp8"
+all2all_backend = "flashinfer_nvlink_one_sided"
+moe_backend = "flashinfer_trtllm"

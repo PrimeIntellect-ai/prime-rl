@@ -1,0 +1,104 @@
+# Qwen3.6-35B-A3B agentic SWE RL with the rlm harness: the shared base, BF16 on trainer and engines, icepop with score
+# centering, max staleness 8. Hardware and precision overlays in this folder: h200.toml, mxfp8.toml, nvfp4.toml.
+#
+#   uv run rl @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/base.toml
+#   uv run rl @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/base.toml @ examples/advanced/qwen3.6-35b-a3b/rlm-ablation/h200.toml
+#
+# 1 trainer node (cp 4, ep 8 at 128K) and 1 inference node (DP8 + EP), batch 64 x group 8, Muon lr 5e-6, and the
+# solved-only length penalty. Rollouts run the rlm harness without sub-agents (one compaction attempt; a failed
+# compaction ends the rollout truncated), with 128K tokens per rollout, a 32K-token turn cap and a 6 h timeout.
+# Truncated rollouts train with reward 0; timed-out rollouts are kept out of the batch.
+
+max_steps = 2000
+seq_len = 131072
+
+[slurm]
+job_name = "qwen3.6-rlm-ablation"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+
+[monitors.wandb]
+project = "qwen3.6-rlm-ablation"
+
+[ckpt]
+interval = 25
+keep_last = 2
+
+[weight_broadcast]
+type = "nccl"
+timeout = 3600
+
+[model]
+name = "Qwen/Qwen3.6-35B-A3B"
+
+# --- Trainer ---
+
+[trainer]
+dist_timeout_seconds = 7200
+
+[trainer.model]
+cp = 4
+ep = 8
+offload = "none"
+
+[trainer.optim]
+type = "muon"
+lr = 5e-6
+
+[trainer.loss]
+type = "icepop"
+score_centering = true
+
+# --- Orchestrator ---
+
+[orchestrator]
+batch_size = 64
+max_staleness = 8
+
+[orchestrator.concurrency]
+max_inflight = 512
+
+[orchestrator.train]
+group_size = 8
+select.shuffle = true
+
+[orchestrator.train.sampling]
+top_p = 0.99
+top_k = 256
+
+[[orchestrator.train.source]]
+name = "scaleswe"
+env.taskset.id = "scaleswe"
+env.agent.harness = { id = "rlm", version = "8ca926cdd64fd7725b78cf95a4e1667315d3b1f6", allow_git = false, max_depth = 0, compaction = { max_attempts = 1 }, max_total_tokens = 0 }
+# scale-swe repos keep their upstream remote and the sandbox network is open: block the code hosts so rollouts can't
+# fetch the upstream fix.
+env.agent.runtime = { type = "prime", block = ["github.com", "githubusercontent.com", "gitlab.com", "bitbucket.org", "codeberg.org", "sourceforge.net", "googlesource.com"] }
+env.agent.max_turn_tokens = 32768
+env.agent.max_total_tokens = 131_072
+env.agent.timeout.rollout = 21600
+env.agent.scoring.skip_on_truncated = true
+env.agent.scoring.skip_on_timeout = true
+algo.length_penalty = { type = "linear-subagent", apply_to = "solved", num_output_tokens_weight = 0.2, num_input_tokens_weight = 0.2, num_turns_weight = 0.0, subagent_token_weight = 0.0 }
+
+# --- Inference ---
+
+[inference.router]
+type = "vllm-router"
+
+[inference.vllm]
+max_model_len = 131072
+data_parallel_size = 8
+enable_expert_parallel = true
+enable_prefix_caching = true
+gpu_memory_utilization = 0.85
+
+# Text-only RL: skip the vision encoder.
+[inference.vllm.limit_mm_per_prompt]
+image = 0
+video = 0
+
+[inference.env_vars]
+VLLM_FLOAT32_MATMUL_PRECISION = "highest"
