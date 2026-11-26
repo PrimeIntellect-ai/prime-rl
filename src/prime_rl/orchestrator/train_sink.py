@@ -567,12 +567,12 @@ class TrainSink(Reconfigurable):
             + ", ".join(f"{reason}={count}" for reason, count in self.zero_output_units.most_common())
         )
 
-    @staticmethod
-    def _prune(samples: list[QueuedSample], min_version: int | None = None) -> list[QueuedSample]:
-        """Take zero-advantage tokens out of the samples' rl component, and the samples left
+    def _prune(self, samples: list[QueuedSample], min_version: int | None = None) -> list[QueuedSample]:
+        """Take zero-advantage tokens out of the samples' rl component (unless
+        ``prune_zero_advantages`` is off: a sampler KL still trains on them), and the samples left
         with nothing to train (tokens older than ``min_version`` already out) out of the queue."""
         for sample in samples:
-            sample.pruned = True
+            sample.pruned = self.config.prune_zero_advantages
         return [sample for sample in samples if sample.has_loss(min_version)]
 
     async def process_batch(self) -> TrainBatch:

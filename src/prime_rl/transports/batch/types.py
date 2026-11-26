@@ -113,6 +113,9 @@ class MicroBatchPlan(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     """Trailing padding tokens."""
     dummy: bool = False
     """A zero-loss copy that evens out the micro batch count across data ranks."""
+    prune_zero_advantages: bool = True
+    """Zero-advantage tokens leave the rl component (``orchestrator.prune_zero_advantages``). Off for an
+    advantage-independent rl term such as the sampler KL, which still trains on them."""
 
 
 # Built by a trainer rank from a fetched ``SampleBody`` and its ``SampleRef``; packed into

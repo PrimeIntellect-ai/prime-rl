@@ -266,6 +266,7 @@ def prepare_batch(
     trained_version: int,
     min_version: int,
     pad_to_multiple_of: int = 1,
+    prune_zero_advantages: bool = True,
 ) -> list[list[MicroBatchPlan]]:
     """Plan a step's micro batches for each data rank. Each micro batch is one row of at most
     ``seq_len`` tokens holding any number of samples.
@@ -284,6 +285,7 @@ def prepare_batch(
                 trained_version=trained_version,
                 min_version=min_version,
                 padding=padding if pad_to_multiple_of > 1 else 0,
+                prune_zero_advantages=prune_zero_advantages,
             )
         )
 
@@ -310,6 +312,7 @@ class BatchPacker:
         self.num_train_workers = config.num_train_workers
         # Rows hold at most `seq_len` tokens, so padding to a multiple of it pads every row to exactly `seq_len`
         self.pad_to_multiple_of = config.seq_len if config.pad_to_seq_len else config.pad_to_multiple_of
+        self.prune_zero_advantages = config.prune_zero_advantages
         # Built as the trainer builds it. The flash-attention version selects kernels, not modules.
         model_config = ModelConfig(
             name=config.model.name, attn="flash_attention_3", trust_remote_code=config.tokenizer.trust_remote_code
@@ -325,4 +328,5 @@ class BatchPacker:
             trained_version=trained_version,
             min_version=min_version,
             pad_to_multiple_of=self.pad_to_multiple_of,
+            prune_zero_advantages=self.prune_zero_advantages,
         )

@@ -720,7 +720,7 @@ def build_sample(body: SampleBody, ref: SampleRef, plan: MicroBatchPlan) -> Trai
     """The first ``ref.num_tokens`` of a kept sample, with the orchestrator's decisions applied:
     the trace's advantage spread over the sampled tokens (or the sample's own per-token
     advantages) and its rl weight over the trainable ones, zero-advantage tokens out of the rl
-    component, and tokens of a policy older than the step's ``min_version`` out of every
+    component (unless the plan keeps them), and tokens of a policy older than the step's ``min_version`` out of every
     component."""
     n = ref.num_tokens
     mask = np.frombuffer(body.mask, np.bool_)[:n].copy()
@@ -742,7 +742,7 @@ def build_sample(body: SampleBody, ref: SampleRef, plan: MicroBatchPlan) -> Trai
         advantages = np.where(sampled, np.float32(ref.advantage), np.float32(0.0))
     elif body.advantages is not None:
         advantages = stream(body.advantages)
-    if advantages is not None:
+    if advantages is not None and plan.prune_zero_advantages:
         pruned = mask & (advantages == 0.0)
         if rl_weights is not None:
             pruned &= rl_weights != 0.0
