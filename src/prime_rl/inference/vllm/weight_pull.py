@@ -18,7 +18,7 @@ from vllm.logger import init_logger
 
 from prime_rl.utils.broadcasts import FINISHED_MARKER, marker_exists
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_step_path
-from prime_rl.utils.sparse_weights import DELTA_DIR, MANIFEST
+from prime_rl.utils.sparse_weights import DELTA_DIR, MANIFEST, revalidate
 
 logger = init_logger("vllm.inference.vllm.weight_pull")
 
@@ -49,16 +49,23 @@ class WeightPuller:
                 await asyncio.sleep(RETRY_INTERVAL_S)
             await asyncio.sleep(POLL_INTERVAL_S)
 
+    def steps(self) -> list[int]:
+        """The published steps, oldest first. Reopening the broadcast dir first makes an NFS client list a step
+        another host just published, instead of answering from its cached listing."""
+        revalidate(self.broadcast_dir)
+        return get_all_ckpt_steps(self.broadcast_dir)
+
     def newest_finished(self) -> int | None:
-        steps = reversed(get_all_ckpt_steps(self.broadcast_dir))
-        return next((step for step in steps if marker_exists(self.step_dir(step) / FINISHED_MARKER)), None)
+        return next(
+            (step for step in reversed(self.steps()) if marker_exists(self.step_dir(step) / FINISHED_MARKER)), None
+        )
 
     async def poll(self) -> None:
         finished = self.newest_finished()
         if finished is not None and finished != self.served:
             await self.apply(finished)
             return
-        newest = max(get_all_ckpt_steps(self.broadcast_dir), default=-1)
+        newest = max(self.steps(), default=-1)
         if newest > self.served and newest != self.prefetched:
             if marker_exists(self.step_dir(newest) / DELTA_DIR / MANIFEST):
                 await self.prefetch(newest)

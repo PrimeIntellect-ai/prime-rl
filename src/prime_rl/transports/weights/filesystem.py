@@ -127,11 +127,19 @@ class PulledFileSystemWeightReceiver(WeightReceiver):
     engines_pull = True
     poll_interval = 0.1
 
+    def serves(self, version: int | None, step: int) -> bool:
+        """Whether an engine serving ``version`` serves v{step} or a newer version of this trainer. A trainer that
+        restarted from a checkpoint drops the broadcasts beyond it, so a newer version without its broadcast is
+        from before the restart, and the engine has yet to move back."""
+        if version is None or version < step:
+            return False
+        return version == step or marker_exists(self.step_dir(version) / FINISHED_MARKER)
+
     async def receive(self, step: int) -> None:
         start = last_log = time.monotonic()
         while True:
             served = await self.admin_plane.served_versions()
-            if all(version is not None and version >= step for version in served):
+            if all(self.serves(version, step) for version in served):
                 return
             now = time.monotonic()
             if now - start > self.config.timeout:
