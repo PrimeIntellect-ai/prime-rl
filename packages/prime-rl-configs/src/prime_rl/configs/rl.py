@@ -97,6 +97,9 @@ class SharedCheckpointConfig(BaseConfig):
     keep_interval: int | None = Field(None, ge=1)
     """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
 
+    rollouts: bool = False
+    """Also checkpoint the orchestrator's finished but unshipped episodes and its running rollouts, so a resumed run continues them (``orchestrator.ckpt.rollouts``)."""
+
     async_save: bool | None = None
     """Write trainer checkpoints in the background (see ``trainer.ckpt.async_save``). If None, uses the trainer's default."""
 
@@ -410,13 +413,15 @@ class RLConfig(BaseConfig):
                 "Checkpointing must be configured on both trainer and orchestrator. Use the shared [ckpt]."
             )
         if trainer.ckpt and orchestrator.ckpt:
-            require_equal(
-                "ckpt.interval",
-                {
-                    "trainer.ckpt.interval": trainer.ckpt.interval,
-                    "orchestrator.ckpt.interval": orchestrator.ckpt.interval,
-                },
-            )
+            # Both halves of a step share one directory and one retention policy.
+            for leaf in ("output_dir", "interval", "keep_last", "keep_interval"):
+                require_equal(
+                    f"ckpt.{leaf}",
+                    {
+                        f"trainer.ckpt.{leaf}": getattr(trainer.ckpt, leaf),
+                        f"orchestrator.ckpt.{leaf}": getattr(orchestrator.ckpt, leaf),
+                    },
+                )
         trainer_wandb, orchestrator_wandb = trainer.monitors.wandb, orchestrator.monitors.wandb
         if (trainer_wandb is None) != (orchestrator_wandb is None):
             raise ValueError(

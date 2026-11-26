@@ -78,6 +78,7 @@ FULL_SUITE_CASES = [
     Case("deepseek_v4-cp2_ep2", "deepseek_v4", cp=2, ep=2),
     Case("glm_moe_dsa-ep2", "glm_moe_dsa", ep=2),
     Case("glm_moe_dsa-cp2_ep2", "glm_moe_dsa", cp=2, ep=2),
+    Case("glm5_next-cp2_ep2", "glm5_next", cp=2, ep=2),
 ]
 SUITES = {"tiny": CASES, "full": FULL_SUITE_CASES}
 TIMEOUTS = {"tiny": 5 * 60, "full": 20 * 60}
@@ -126,8 +127,10 @@ def run_reference(config: ModelConfig, rows: list[dict]) -> dict:
     model.to_empty(device="cuda")
     model.tie_weights()
     load_dcp_from_hf(model, config)
+    fp32_params = {param for module in model.fp32_modules() for param in module.parameters()}
     for param in model.parameters():
-        param.data = param.data.bfloat16()
+        if param not in fp32_params:
+            param.data = param.data.bfloat16()
     routing = record_routing(model)
     grads: dict[str, torch.Tensor] = {}
     routes = []

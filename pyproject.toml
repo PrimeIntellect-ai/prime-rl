@@ -55,13 +55,12 @@ prime_rl = "prime_rl.inference.patches:apply_shared_vllm_patches"
 inkling2 = "prime_rl.inference.vllm.models.inkling2.plugin:register"
 
 [project.optional-dependencies]
-gpu = [
+# The trainer stack: enough for `sft`, `pretrain` and the `trainer` process when nothing
+# is served alongside them.
+train = [
     "torch>=2.14.0 ; sys_platform == 'linux'",
     "torchvision ; sys_platform == 'linux'",
-    "torchaudio ; sys_platform == 'linux'",
     "torchdata>=0.11.0 ; sys_platform == 'linux'",
-    "vllm>=0.34.0 ; sys_platform == 'linux'",
-    "mooncake-transfer-engine>=0.3.10.post2 ; sys_platform == 'linux'",
     "torchtitan ; sys_platform == 'linux'",
     "dion ; sys_platform == 'linux'",
     "tilelang>=0.1.8 ; sys_platform == 'linux'",
@@ -73,12 +72,23 @@ gpu = [
     "mamba-ssm>=2.3.0 ; sys_platform == 'linux'",
     "nvidia-ml-py>=12.575.51 ; sys_platform == 'linux'",
     "torchao>=0.18.0 ; sys_platform == 'linux'",
+]
+# The vLLM server and the transports that carry trainer weights to it. vLLM also bundles
+# kernels the trainer borrows (DeepGEMM for FP8 and MegaMoE, FlashMLA for sparse attention).
+inference = [
+    "vllm>=0.34.0 ; sys_platform == 'linux'",
+    "torchaudio ; sys_platform == 'linux'",
+    "mooncake-transfer-engine>=0.3.10.post2 ; sys_platform == 'linux'",
     "nixl-cu13==1.5.0 ; sys_platform == 'linux'",
     # Precompiled FlashInfer kernels for vLLM's flashinfer-python pin. Without them every fresh node
     # downloads the trtllm-gen cubins and JIT-builds its modules into its node-local cache at startup.
     "flashinfer-cubin==0.7.3 ; sys_platform == 'linux'",
     "flashinfer-jit-cache==0.7.3+cu130 ; sys_platform == 'linux'",
     "modelexpress==0.8.0.dev20261022 ; sys_platform == 'linux'",
+]
+gpu = [
+    "prime-rl[train]",
+    "prime-rl[inference]",
 ]
 dashboard = [
     "fastapi>=0.115",

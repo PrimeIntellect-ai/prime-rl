@@ -14,17 +14,17 @@ from verifiers.v1.trace import EXCLUDE_FIELDS
 from verifiers.v1.types import decode_ndarray
 
 from prime_rl.configs.monitors import FileMonitorConfig
-from prime_rl.monitors.base import Kind, Monitor, Subset
+from prime_rl.monitors.base import Kind, Monitor
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import ChunkedJsonl
-from prime_rl.monitors.file.traces.index import index_record, index_row
+from prime_rl.monitors.file.traces.index import index_row
 from prime_rl.monitors.file.traces.live import get_live_dir, get_pending_dir
 from prime_rl.monitors.file.traces.update import STREAM_FIELDS, update_index_row
 from prime_rl.utils.pathing import get_eval_plan_path, get_file_monitor_dir
 from prime_rl.utils.utils import sanitize
 
 if TYPE_CHECKING:
-    import verifiers.v1 as vf
+    from prime_rl.env.heads import EpisodeHead, EpisodeRecord
 
 OPTS = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
 
@@ -43,9 +43,8 @@ def _live_value(value: Any) -> Any:
     return value
 
 
-def _group_id(episode: vf.Episode) -> str | None:
-    group = getattr(episode, "group", None)
-    return getattr(group, "id", None)
+def _group_id(episode: EpisodeHead) -> str | None:
+    return episode.group.id if episode.group is not None else None
 
 
 def _forget(written: set[str] | None, key: str) -> bool:
@@ -230,38 +229,40 @@ class FileMonitor(Monitor):
             )
         return self._value_streams[directory]
 
-    async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
-        """Append each episode to the trace stream as it completes — every episode is
-        serialized exactly once, in arrival order, whatever its kind, so an in-progress
-        run can be tailed. Episode-level failures are preserved even when no trace was
-        produced. The shipped cohort writes no second copy: what it learns arrives as
-        annotations that readers fold back onto the stream."""
-        if subset == "effective":
-            return
+    def wants_record(self, kind: Kind, group_id: str | None) -> bool:
+        # Only a producer that logs episodes asks, before any of its annotations: from here it
+        # annotates only the traces it writes, also before its first sampled record lands.
+        self._logs_episodes = True
+        return self._samples(kind, group_id)
+
+    def wants_live(self, kind: Kind, group_id: str | None) -> bool:
+        return self.config.live and self._samples(kind, group_id)
+
+    async def log_records(self, records: list[tuple[EpisodeHead, EpisodeRecord]], step: int, kind: Kind) -> None:
+        """Append each episode's record to the trace stream as it completes — every episode is
+        written exactly once, in arrival order, whatever its kind, so an in-progress run can
+        be tailed. Episode-level failures are preserved even when no trace was produced. The
+        shipped cohort writes no second copy: what it learns arrives as annotations that
+        readers fold back onto the stream."""
         self._logs_episodes = True
         if self._written_traces is not None:
-            episodes = [episode for episode in episodes if self._samples(kind, _group_id(episode))]
-            self._written_traces.update(trace.id for episode in episodes for trace in episode.traces)
-            if not episodes:
-                return
+            records = [(episode, record) for episode, record in records if self._samples(kind, _group_id(episode))]
+            self._written_traces.update(trace.id for episode, _ in records for trace in episode.traces)
+        if not records:
+            return
 
         def write() -> None:
             stream, index = self._stream(get_trace_stream(self.output_dir))
-            # An index row goes out with every episode: summarising the episode here,
-            # while it is still in hand, saves every reader from parsing a stream
+            # An index row goes out with every episode, so no reader has to parse a stream
             # that outgrows memory long before the run does.
-            for episode in episodes:
-                # `to_json` encodes in short steps, so a long episode never holds the GIL
-                # (and the event loop) for the whole encode.
-                line = episode.to_json(float_decimals=self.config.float_decimals)
-                chunk, offset = stream.append(line, b"\n")
+            for _, record in records:
+                chunk, offset = stream.append(record.json, b"\n")
                 self._logged += 1
-                row = index_row(self._logged, index_record(episode), chunk, offset)
+                row = index_row(self._logged, record.index, chunk, offset)
                 index.write(orjson.dumps(row, default=str, option=OPTS))
             stream.flush()
             index.flush()
 
-        # Record serialization is heavy pure-Python work; keep it off the event loop.
         # Awaited (not fire-and-forget) so appends to one stream never interleave.
         await asyncio.to_thread(write)
 

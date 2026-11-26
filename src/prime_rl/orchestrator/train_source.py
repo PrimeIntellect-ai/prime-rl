@@ -6,7 +6,7 @@ import random
 import uuid
 from collections import Counter, defaultdict, deque
 from collections.abc import Iterable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import verifiers.v1 as vf
 
@@ -16,6 +16,9 @@ from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.types import TaskRequest
 from prime_rl.orchestrator.utils import episode_env_name
 from prime_rl.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from prime_rl.env.heads import EpisodeHead
 
 
 class TrainSource(Reconfigurable):
@@ -77,7 +80,7 @@ class TrainSource(Reconfigurable):
         for group_id in group_ids:
             self.open_groups.pop(group_id, None)
 
-    def on_result(self, group: list[vf.Episode]) -> bool:
+    def on_result(self, group: list[EpisodeHead]) -> bool:
         """Report a finalized group and return whether it should train."""
         if not group:
             raise ValueError("Cannot report an empty rollout group")
@@ -113,10 +116,11 @@ class TrainSource(Reconfigurable):
             ],
         }
 
-    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+    def load_state_dict(self, state_dict: dict[str, Any], reopen: bool = True) -> None:
         """Restore each configured env's curriculum by env name. An env missing from the
         checkpoint starts fresh; state of an env that is no longer configured is dropped.
-        Open groups re-run, except those of a removed env or task or a streaming taskset."""
+        Open groups re-run, except those of a removed env or task or a streaming taskset.
+        Without ``reopen`` none re-runs: the caller continues them (``adopt_open_groups``)."""
         required_fields = {"rng", "envs"}
         if not required_fields <= set(state_dict) <= required_fields | {"open_groups"}:
             raise ValueError(f"Unexpected train-source checkpoint fields: {sorted(state_dict)}")
@@ -130,7 +134,16 @@ class TrainSource(Reconfigurable):
                 get_logger().info(f"Env {name} is not in the checkpoint, so its curriculum starts fresh")
         for name in sorted(env_states.keys() - self.curricula.keys()):
             get_logger().info(f"Dropped the checkpointed curriculum state of env {name}, which is no longer configured")
-        self._reopen(state_dict.get("open_groups", []))
+        if reopen:
+            self._reopen(state_dict.get("open_groups", []))
+
+    def adopt_open_groups(
+        self, open_groups: dict[str, tuple[str, str, int]], reopened: list[tuple[str, str, int]]
+    ) -> None:
+        """Take over a rollout checkpoint's open groups as they were: ``open_groups``
+        stay open under their ids and sizes, and ``reopened`` still wait to re-run."""
+        self.open_groups = {group_id: group for group_id, group in open_groups.items() if group[0] in self.curricula}
+        self._reopen(reopened)
 
     def _reopen(self, open_groups: list[tuple[str, str] | tuple[str, str, int]]) -> None:
         removed_env: Counter[str] = Counter()
