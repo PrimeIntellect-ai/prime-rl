@@ -50,6 +50,7 @@ def _enumerated_prefix(logits, advantage):
         q[draws].log().repeat(n),
         torch.arange(n).repeat_interleave(k),
         torch.zeros(n, dtype=torch.bool),
+        support_ids=draws.repeat(n),
     )
     return inputs, logp, q
 
@@ -101,8 +102,12 @@ def test_reinforce_score_centering_matches_dense_gradient(constant_advantage):
     advantage = torch.ones(4) if constant_advantage else torch.tensor([1.3, -0.7, 0.2, -1.0])
     inputs, logp, q = _enumerated_prefix(logits, advantage)
     config = ReinforceLossConfig(score_centering=True)
-    actual = setup_rl_loss_fn(config).loss(inputs).loss
+    result = setup_rl_loss_fn(config).loss(inputs)
+    actual = result.loss
     reference = -(q * advantage * (logp - (q * logp).sum())).sum()
+    # Repeated draws of one id count once: the logit correction is q - p over the vocabulary
+    l1 = (q - logp.detach().exp()).abs().sum()
+    torch.testing.assert_close(result.metrics["score_centering/logit_correction_l1"], l1.expand(4))
     actual_gradient = torch.autograd.grad(actual, logits, retain_graph=True)[0]
     torch.testing.assert_close(actual_gradient, torch.autograd.grad(reference, logits)[0], atol=2e-7, rtol=2e-6)
     if constant_advantage:

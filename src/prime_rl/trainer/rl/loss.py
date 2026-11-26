@@ -39,6 +39,7 @@ class LossInputs:
     support_rows: Int[Tensor, " entries"] | None = None
     support_replayed: Bool[Tensor, " seq"] | None = None
     staleness: Int[Tensor, " seq"] | None = None
+    support_ids: Int[Tensor, " entries"] | None = None
 
 
 @dataclass
@@ -201,11 +202,24 @@ def _sampler_support_distribution(
     return head, p, log_q, u, row_sum
 
 
-def _logit_correction_l1(mass: Tensor, p: Tensor, rows: Tensor, row_sum: Callable[[Tensor], Tensor]) -> Tensor:
+def _logit_correction_l1(
+    mass: Tensor, p: Tensor, rows: Tensor, ids: Tensor | None, row_sum: Callable[[Tensor], Tensor]
+) -> Tensor:
     """Per-token L1 norm over the full vocabulary of ``sum_v mass_v * (e_v - p)``, the logit gradient of
-    ``sum_v mass_v * log p_v``; the support-only ``p`` puts its remaining mass on the tail."""
+    ``sum_v mass_v * log p_v``; the support-only ``p`` puts its remaining mass on the tail. Repeated sampler
+    draws of one id are one vocabulary entry."""
     total_mass = row_sum(mass)
-    return row_sum((mass - p * total_mass[rows]).abs()) + (1.0 - row_sum(p)).clamp_min(0.0) * total_mass.abs()
+    if ids is not None:
+        _, entry = torch.unique(rows * (int(ids.max()) + 1) + ids.long(), return_inverse=True)
+        num_entries = int(entry.max()) + 1
+        mass = mass.new_zeros(num_entries).index_add(0, entry, mass)
+        p = p.new_zeros(num_entries).scatter(0, entry, p)
+        rows = rows.new_zeros(num_entries).scatter(0, entry, rows)
+
+    def entry_sum(values: Tensor) -> Tensor:
+        return values.new_zeros(total_mass.shape[0]).index_add(0, rows, values)
+
+    return entry_sum((mass - p * total_mass[rows]).abs()) + (1.0 - entry_sum(p)).clamp_min(0.0) * total_mass.abs()
 
 
 class SamplerKL:
@@ -340,9 +354,9 @@ class IcePopLoss:
                 mass = u * ratio * accepted
                 centering_metrics["score_centering/replayed"] = inputs.support_replayed[mask].to(p.dtype)
                 centering_metrics["score_centering/support_mass"] = row_sum(u * ratio)[mask]
-                centering_metrics["score_centering/logit_correction_l1"] = _logit_correction_l1(mass, p, rows, row_sum)[
-                    mask
-                ]
+                centering_metrics["score_centering/logit_correction_l1"] = _logit_correction_l1(
+                    mass, p, rows, inputs.support_ids, row_sum
+                )[mask]
             correction = loss_config.adv_tau * advantages.detach() * row_sum(mass * head)[mask]
             if weights is not None:
                 correction = correction * weights
@@ -388,9 +402,9 @@ class ReinforceLoss:
                 # E_q[grad log p] ~ sum_v u_v grad log p_v
                 metrics["score_centering/replayed"] = inputs.support_replayed[inputs.loss_mask].to(p.dtype)
                 metrics["score_centering/support_mass"] = row_sum(u * (head - log_q).exp())[inputs.loss_mask]
-                metrics["score_centering/logit_correction_l1"] = _logit_correction_l1(u, p, rows, row_sum)[
-                    inputs.loss_mask
-                ]
+                metrics["score_centering/logit_correction_l1"] = _logit_correction_l1(
+                    u, p, rows, inputs.support_ids, row_sum
+                )[inputs.loss_mask]
             per_token_loss = per_token_loss + loss_config.adv_tau * advantages * row_sum(u * head)[inputs.loss_mask]
         if weights is not None:
             per_token_loss = per_token_loss * weights
@@ -572,6 +586,7 @@ def compute_loss(
                     sampler_support_logprobs=support.logprobs[first:last],
                     support_rows=rows[first:last] - start,
                     support_replayed=support.replayed[start:end],
+                    support_ids=support.ids[first:last],
                 )
             )
             start = end
