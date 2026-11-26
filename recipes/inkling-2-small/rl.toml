@@ -1,0 +1,64 @@
+# Inkling 2 Small (594B-A17B MoE, 384 experts; sliding-window and global relative attention, short
+# convolutions) RL at 16k context. Model settings only: compose it with a compute overlay from `gpu/`
+# and a data config from `recipes/data/`:
+#
+#   uv run rl @ recipes/inkling-2-small/rl.toml @ recipes/inkling-2-small/gpu/h200.toml @ recipes/data/swe.toml
+#   uv run rl @ recipes/inkling-2-small/rl.toml @ recipes/inkling-2-small/gpu/h200.toml @ recipes/data/math.toml --orchestrator.train.sampling.max-completion-tokens 8192
+#
+# The data overlays target 256k models. At 16k, set `env.agent.harness.compaction.summarize_at_tokens
+# = 12000` on the SWE source so the harness compacts before the trainer cap, and give math a completion
+# budget that fits the window, as the tested recipes do.
+#
+# RL not tested in this layout. The settings come from examples/advanced/inkling2/{math-rl,swe-rl}.toml,
+# which ran end to end at 8k and 16k (#4551).
+
+# The model takes 1M tokens, but the trainer has no context parallelism for Inkling 2, so each sample
+# must fit on one GPU. 16k is the longest tested (examples/advanced/inkling2/swe-rl.toml).
+seq_len = 16384
+
+[slurm]
+
+[model]
+# bf16 export of thinkingmachines/Inkling-2-Small-MXFP8. Without access to this repo, convert the
+# release locally and pass the folder as --model.name:
+#   uv run python tools/convert_inkling2_mxfp8_to_bf16.py <Inkling-2-Small-MXFP8 dir> <out dir>
+name = "PrimeIntellect/Inkling-2-Small-bf16"
+
+[weight_broadcast]
+type = "nccl"
+timeout = 12000
+
+[trainer.model]
+# Compiled flex attention hits the saved-tensor tracker assertion under activation offloading.
+ac_offloading = "None"
+
+# Sign-SGD as in the tested recipes: full optimizer offload, which the overlay needs, supports only
+# AdamW and Sign-SGD.
+[trainer.optim]
+type = "sign_sgd"
+lr = 1e-6
+weight_decay = 0.01
+
+[trainer.data]
+# The trainer compiles flex attention for static shapes: pad every micro batch to seq_len.
+pad_to_seq_len = true
+
+[orchestrator.renderer]
+# The bf16 export is not in the renderer map. Both tested recipes use low effort; the template
+# defaults to high.
+name = "inkling-2"
+reasoning_effort = "low"
+# Envs that pass tools (the SWE bash harness) need a renderer-side tool parser.
+tool_parser = "inkling2"
+
+[inference.vllm]
+# Server window above the trainer seq_len so the harness can compact before the cap.
+max_model_len = 32768
+enable_prefix_caching = true
+# The plugin pads the short-convolution state to the attention page; 128-token pages raised
+# concurrency 1.7-6x (#4551).
+block_size = 128
+tool_call_parser = "inkling2"
+reasoning_parser = "inkling2"
+# The Inkling 2 framing tokens are special tokens; parsers need them in the text.
+override_generation_config = { skip_special_tokens = false }

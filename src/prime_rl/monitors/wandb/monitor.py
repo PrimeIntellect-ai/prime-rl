@@ -13,14 +13,14 @@ from wandb.errors import CommError, UsageError
 from wandb.sdk.mailbox.mailbox_handle import ServerResponseError
 
 from prime_rl.configs.monitors import WandbMonitorConfig
-from prime_rl.monitors.base import Kind, Monitor, Subset
+from prime_rl.monitors.base import Monitor
 from prime_rl.monitors.wandb.overview import ensure_overview_view
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.links import publish_link, register_links
 from prime_rl.utils.logger import format_time
 
 if TYPE_CHECKING:
-    import verifiers.v1 as vf
+    pass
 
 
 class WandbMonitor(Monitor):
@@ -165,9 +165,6 @@ class WandbMonitor(Monitor):
             wandb.log({**metrics, "_timestamp": time.time()})
         else:
             wandb.log({**metrics, "step": step, "_timestamp": time.time()})
-
-    async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
-        pass
 
     async def finalize(self, paused: bool = False) -> None:
         self.logger.info(f"Finalizing W&B run {self.wandb.id}")

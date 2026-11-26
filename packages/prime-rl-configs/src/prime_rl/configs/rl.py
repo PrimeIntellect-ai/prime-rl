@@ -18,18 +18,18 @@ from prime_rl.configs.shared import (
     ResumeConfig,
     RunConfig,
     SlurmConfig,
-    TransportConfig,
     VLMConfig,
     WeightBroadcastConfig,
+    ZMQTransportConfig,
 )
 from prime_rl.configs.trainer import (
     InitConfig,
+    NVFP4MoEComputeConfig,
     TokenizerConfig,
     TrainerConfig,
-    rl_micro_batch_multiple,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
-from prime_rl.utils.validation import check_derived, propagate_shared_fields
+from prime_rl.utils.validation import propagate_shared_fields
 
 
 class SharedLogConfig(BaseConfig):
@@ -96,6 +96,12 @@ class SharedCheckpointConfig(BaseConfig):
 
     keep_interval: int | None = Field(None, ge=1)
     """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
+
+    rollouts: bool = False
+    """Also checkpoint the orchestrator's finished but unshipped episodes and its running rollouts, so a resumed run continues them (``orchestrator.ckpt.rollouts``)."""
+
+    rollouts_save_timeout: int = Field(600, ge=1)
+    """Seconds each env worker pool gets to save its running rollouts at a rollout checkpoint (``orchestrator.ckpt.rollouts_save_timeout``)."""
 
     async_save: bool | None = None
     """Write trainer checkpoints in the background (see ``trainer.ckpt.async_save``). If None, uses the trainer's default."""
@@ -241,7 +247,7 @@ class RLConfig(BaseConfig):
 
     weight_broadcast: WeightBroadcastConfig | None = None
 
-    rollout_transport: TransportConfig | None = None
+    rollout_transport: ZMQTransportConfig | None = None
 
     deployment: DeploymentConfig = SingleNodeDeploymentConfig()
 
@@ -418,13 +424,15 @@ class RLConfig(BaseConfig):
                 "Checkpointing must be configured on both trainer and orchestrator. Use the shared [ckpt]."
             )
         if trainer.ckpt and orchestrator.ckpt:
-            require_equal(
-                "ckpt.interval",
-                {
-                    "trainer.ckpt.interval": trainer.ckpt.interval,
-                    "orchestrator.ckpt.interval": orchestrator.ckpt.interval,
-                },
-            )
+            # Both halves of a step share one directory and one retention policy.
+            for leaf in ("output_dir", "interval", "keep_last", "keep_interval"):
+                require_equal(
+                    f"ckpt.{leaf}",
+                    {
+                        f"trainer.ckpt.{leaf}": getattr(trainer.ckpt, leaf),
+                        f"orchestrator.ckpt.{leaf}": getattr(orchestrator.ckpt, leaf),
+                    },
+                )
         trainer_wandb, orchestrator_wandb = trainer.monitors.wandb, orchestrator.monitors.wandb
         if (trainer_wandb is None) != (orchestrator_wandb is None):
             raise ValueError(
@@ -521,6 +529,9 @@ class RLConfig(BaseConfig):
         unsupported = {
             "LoRA": self.trainer.model.lora is not None,
             "draft swaps (orchestrator.speculative_decoding)": self.orchestrator.speculative_decoding is not None,
+            "rollout checkpoints (their consistency point is the orchestrator's weight update)": (
+                self.orchestrator.ckpt is not None and self.orchestrator.ckpt.rollouts
+            ),
         }
         if blocked := [name for name, hit in unsupported.items() if hit]:
             raise ValueError(f"weight_broadcast.pull does not support {', '.join(blocked)} yet")
@@ -539,21 +550,14 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_rollout_transport(self):
         """Resolve the shared ``rollout_transport`` from the sub-configs so the launcher can
-        gate multi-node ZMQ host injection on it (mirrors ``auto_setup_weight_broadcast``).
+        read ``retain`` from it (mirrors ``auto_setup_weight_broadcast``).
 
         ``rollout_transport`` may be set either as the shared block (propagated down to both
         sub-configs by ``propagate_shared_fields``) or directly on
         ``trainer.rollout_transport`` / ``orchestrator.rollout_transport`` (the documented
         fallback). Either way the shared field must reflect the resolved per-component
-        transport, otherwise the launcher would leave ZMQ trainers connecting to localhost.
+        transport.
         """
-        if self.trainer.rollout_transport.type != self.orchestrator.rollout_transport.type:
-            raise ValueError(
-                "trainer.rollout_transport.type "
-                f"({self.trainer.rollout_transport.type!r}) != orchestrator.rollout_transport.type "
-                f"({self.orchestrator.rollout_transport.type!r}); set the shared [rollout_transport] "
-                "block or make both sub-configs the same type."
-            )
         if self.trainer.rollout_transport.retain != self.orchestrator.rollout_transport.retain:
             raise ValueError(
                 "trainer.rollout_transport.retain != orchestrator.rollout_transport.retain; set the "
@@ -598,6 +602,50 @@ class RLConfig(BaseConfig):
                 warnings.warn(
                     "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` to the vLLM server.",
                     stacklevel=2,
+                )
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_nvfp4_experts(self):
+        """NVFP4 trainer experts reproduce vLLM's online ``nvfp4_per_token`` experts on the FlashInfer TRT-LLM backend
+        (vLLM's other backends round differently), so every engine must run them, with the trainer's FlashInfer
+        quantizer settings. Disaggregated roles can override both, so each role is checked."""
+        compute = self.trainer.model.moe.compute
+        if not isinstance(compute, NVFP4MoEComputeConfig) or self.inference is None:
+            return self
+        vllm = self.inference.vllm
+        if getattr(vllm, "moe_backend", None) is None:
+            vllm.moe_backend = "flashinfer_trtllm"
+        for name, value in compute.flashinfer_env.items():
+            self.inference.env_vars.setdefault(name, value)
+        deployment = self.inference.deployment
+        roles = {"inference": ({}, {})} | {
+            role: (getattr(deployment, f"{role}_vllm_overrides", {}), getattr(deployment, f"{role}_env_vars", {}))
+            for role in ("prefill", "decode")
+        }
+        for role, (overrides, env_vars) in roles.items():
+            quantization, quantization_config, moe_backend = (
+                overrides.get(key, getattr(vllm, key, None))
+                for key in ("quantization", "quantization_config", "moe_backend")
+            )
+            if (
+                quantization != "online"
+                or (quantization_config or {}).get("moe") != "nvfp4_per_token"
+                or moe_backend != "flashinfer_trtllm"
+            ):
+                raise ValueError(
+                    "trainer.model.moe.compute.type = 'nvfp4' needs engines on vLLM's online nvfp4_per_token experts "
+                    f"with moe_backend = 'flashinfer_trtllm', but the {role} engines run quantization = "
+                    f"{quantization!r}, quantization_config = {quantization_config!r}, moe_backend = {moe_backend!r}."
+                )
+            env_vars = {**self.inference.env_vars, **env_vars}
+            disagreeing = {
+                name: env_vars[name] for name, value in compute.flashinfer_env.items() if env_vars[name] != value
+            }
+            if disagreeing:
+                raise ValueError(
+                    f"The {role} engines' {disagreeing} disagree with the trainer's NVFP4 experts "
+                    f"({compute.flashinfer_env}); set them through trainer.model.moe.compute."
                 )
         return self
 
@@ -693,19 +741,8 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_deployment(self):
-        pad_to_multiple_of = rl_micro_batch_multiple(self.trainer.model)
-        check_derived(self.orchestrator, "pad_to_multiple_of", pad_to_multiple_of, "orchestrator.pad_to_multiple_of")
-        num_train_workers = self.orchestrator.num_train_workers
         env_worker_pool_replicas = self.orchestrator.env_worker_pool_replicas
         if self.deployment.type == "single_node":  # single-node
-            # set num_train_workers to the number of data replicas
-            non_data_parallel_size = self.trainer.model.cp
-            if self.deployment.num_train_gpus > 1:
-                num_train_workers = self.deployment.num_train_gpus // non_data_parallel_size
-                check_derived(
-                    self.orchestrator, "num_train_workers", num_train_workers, "orchestrator.num_train_workers"
-                )
-
             # fill up inference capacity with dp ranks
             if self.inference is not None:
                 num_infer_gpus = self.deployment.num_infer_gpus
@@ -727,8 +764,6 @@ class RLConfig(BaseConfig):
                     self.orchestrator.weight_broadcast.inference_world_size = world_size
 
         elif self.deployment.type == "multi_node":  # multi-node
-            num_train_workers = self.deployment.num_train_nodes * self.deployment.gpus_per_node // self.trainer.model.cp
-            check_derived(self.orchestrator, "num_train_workers", num_train_workers, "orchestrator.num_train_workers")
             if self.deployment.total_infer_nodes > 0:
                 env_worker_pool_replicas = self.deployment.total_infer_nodes
 
@@ -800,13 +835,7 @@ class RLConfig(BaseConfig):
                 assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
                 self.orchestrator.weight_broadcast.inference_world_size = total_infer_workers
 
-        self.orchestrator = self.orchestrator.model_copy(
-            update={
-                "pad_to_multiple_of": pad_to_multiple_of,
-                "num_train_workers": num_train_workers,
-                "env_worker_pool_replicas": env_worker_pool_replicas,
-            }
-        )
+        self.orchestrator = self.orchestrator.model_copy(update={"env_worker_pool_replicas": env_worker_pool_replicas})
         return self
 
     @model_validator(mode="after")

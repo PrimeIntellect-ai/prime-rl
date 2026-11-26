@@ -1,0 +1,22 @@
+# H100 80GB overlay for rl.toml: 1 trainer node and 1 one-node DEP8 inference replica. The H200
+# layout (cp 4, no activation offloading) peaks at 87 GiB, so this one uses cp 8 with the default
+# activation offloading. Math RL (data/math.toml, 5 steps, Model Factory): 61.9 GiB peak allocated,
+# 16-18.5k tok/s (2.0-2.3k per GPU), steady steps of 12-29 min with the trainer waiting 45-75% of each.
+#
+#   uv run rl @ recipes/qwen3.6-35b-a3b/rl.toml @ recipes/qwen3.6-35b-a3b/gpu/h100.toml @ recipes/data/math.toml
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+num_infer_replicas = 1
+
+[trainer.model]
+ep = 8
+cp = 8
+
+[inference.vllm]
+tensor_parallel_size = 1
+data_parallel_size = 8
+enable_expert_parallel = true
+gpu_memory_utilization = 0.85

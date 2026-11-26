@@ -12,7 +12,9 @@ weight update and optimizer state is compared by relative error.
 - Resume: save after step 2, train step 3 on, and train it again from the checkpoint. The loaded state must equal the
   saved one, and both step-3 states the straight 3-step run.
 - Load: a checkpoint of one strategy or layout, loaded into another, must restore the training state (FP32 weights,
-  optimizer states, lr, scheduler, progress). The one-GPU suite loads checkpoints of the full suite on one GPU.
+  optimizer states, lr, progress). The one-GPU suite loads checkpoints of the full suite on one GPU.
+- Reconfigure: a checkpoint loaded into a run whose lr and weight decay differ: the run's values must apply, with a
+  warning, and the rest of the training state must load.
 
 `CASES` run in the tiny GPU subset, the other suites in the full GPU suite. A case is one entry in its suite, a new
 strategy a `Setup` field. Run a suite without pytest (it writes `results-<suite>.json`; `one_gpu` runs with one process
@@ -66,7 +68,7 @@ from prime_rl.trainer.utils import clip_grad_norm_, prepare_gradient_offload, sc
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 from prime_rl.utils.cp import setup_context_parallel
-from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.logger import get_logger, setup_logger
 
 pytestmark = [pytest.mark.gpu]
 
@@ -74,7 +76,7 @@ NUM_STEPS = 3
 SAVE_STEP = 2
 ROWS_PER_STEP = 4
 OPTIMIZERS = {"adamw": AdamWConfig, "muon": MuonConfig, "sign_sgd": SignSGDConfig}
-# The cosine schedule changes the lr every step, so a resume that loses the scheduler or the lr shows
+# The cosine schedule changes the lr every step, so a resume at the wrong position of the schedule shows
 SCHEDULES = {"cosine": CosineSchedulerConfig(warmup_steps=0), "constant": ConstantSchedulerConfig()}
 HYPERPARAMETERS = ("lr", "initial_lr", "betas", "eps", "weight_decay")
 # Full offload against no offloading: about 3x the worst relative errors measured, 3.6e-2 for a norm weight's update
@@ -98,6 +100,8 @@ class Setup:
     step_during_backward: bool = True
     """Full offload: False steps the CPU optimizer after the backward, as on SFT validation steps."""
     lr_schedule: Literal["cosine", "constant"] = "cosine"
+    lr: float = 1e-4
+    weight_decay: float = 0.01
     freeze_moe_router: bool = False
     async_save: bool = False
 
@@ -135,6 +139,16 @@ class Resume:
 @dataclass(frozen=True)
 class Load:
     """Load the checkpoint that `saved` writes after step 2 into a run of `setup` and train step 3."""
+
+    name: str
+    saved: Setup
+    setup: Setup
+
+
+@dataclass(frozen=True)
+class Reconfigure:
+    """Load the checkpoint that `saved` writes after step 2 into a run of `setup`, whose lr and weight decay differ,
+    and train step 3."""
 
     name: str
     saved: Setup
@@ -203,6 +217,12 @@ ONE_GPU_CASES = [
         ("qwen3-dp2-full-constant_lr", replace(FULL, lr_schedule="constant")),
         ("qwen3_moe-ep2-optimizer-ac_offloading", replace(MOE_EP2, offload="optimizer", ac_offloading=True)),
     ]
+] + [
+    Reconfigure(
+        "reconfigure-qwen3-dp2-full-constant_lr-to-one_gpu",
+        replace(FULL, lr_schedule="constant"),
+        replace(FULL, lr_schedule="constant", lr=2e-4, weight_decay=0.02),
+    )
 ]
 SUITES = {"tiny": CASES, "full": FULL_SUITE_CASES, "one_gpu": ONE_GPU_CASES}
 TIMEOUTS = {"tiny": 5 * 60, "full": 20 * 60, "one_gpu": 5 * 60}
@@ -299,7 +319,9 @@ class Run:
         self.model = setup_model(self.config, self.parallel_dims, loading_from_checkpoint_later=from_checkpoint)
         if self.parallel_dims.cp_enabled:
             setup_context_parallel(self.model, self.config, self.parallel_dims)
-        self.optim_config = OPTIMIZERS[setup.optimizer](lr=1e-4, weight_decay=0.01, max_norm=setup.max_norm)
+        self.optim_config = OPTIMIZERS[setup.optimizer](
+            lr=setup.lr, weight_decay=setup.weight_decay, max_norm=setup.max_norm
+        )
         self.optimizer, self.gradient_manager = setup_optimizer(
             self.optim_config,
             list(self.model.named_parameters()),
@@ -311,7 +333,13 @@ class Run:
         if not setup.fused_adamw:
             for group in self.optimizer.param_groups:
                 group["fused"] = False
-        self.scheduler = setup_scheduler(self.optimizer, SCHEDULES[setup.lr_schedule], NUM_STEPS, self.optim_config.lr)
+        self.scheduler = setup_scheduler(
+            self.optimizer,
+            SCHEDULES[setup.lr_schedule],
+            NUM_STEPS,
+            self.optim_config.lr,
+            checkpoint_step=SAVE_STEP if from_checkpoint else None,
+        )
         self.progress = Progress()
         self.rows = env.rows[setup.model]
         self.perf_counter = SimpleNamespace(flop_counter=FlopCounter(self.model))
@@ -324,7 +352,7 @@ class Run:
             self.train_step(manager)
             if manager is not None and self.progress.step == SAVE_STEP:
                 saved = hashes(checkpoint_state(self))
-                manager.save(SAVE_STEP, self.model, [self.optimizer], self.scheduler, self.progress)
+                manager.save(SAVE_STEP, self.model, [self.optimizer], self.progress)
             if self.progress.step == until:
                 return saved
             self.progress.step += 1
@@ -376,7 +404,7 @@ class Run:
 
     def load(self, manager: CheckpointManager) -> dict[str, str]:
         """Load the checkpoint and go on at the next step, as the trainer resumes. Returns the hashed loaded state."""
-        manager.load(SAVE_STEP, self.model, [self.optimizer], self.scheduler, self.progress)
+        manager.load(SAVE_STEP, self.model, [self.optimizer], self.progress)
         loaded = hashes(checkpoint_state(self))
         self.progress.step += 1
         return loaded
@@ -408,7 +436,7 @@ def flatten(value, prefix: str = "") -> dict:
 
 def checkpoint_state(run: Run) -> dict:
     """What a checkpoint of `run` saves (`AppState.state_dict()`), flattened."""
-    return flatten(AppState(run.model, [run.optimizer], run.scheduler, run.progress).state_dict())
+    return flatten(AppState(run.model, [run.optimizer], progress=run.progress).state_dict())
 
 
 def sha256(value) -> str:
@@ -432,15 +460,15 @@ def differing(state: dict[str, str], reference: dict[str, str], label: str = "")
 
 def training_state(state: dict) -> dict:
     """What a load must restore under any offloading: the FP32 weights of the trained parameters, the optimizer states
-    and step counters, the param groups' hyperparameters, the scheduler and the progress counters. Works on states and
-    on their hashes."""
+    and step counters, the param groups' hyperparameters and the progress counters. Works on states and on their
+    hashes."""
     training = {}
     for key, value in state.items():
         if key.startswith("optimizers/state/"):
             training[key] = value
             fqn = key.removeprefix("optimizers/state/").rsplit("/", 1)[0]
             training.setdefault(f"weights/{fqn}", state[f"model/{fqn}"])
-        elif key.startswith(("scheduler/", "progress/")):
+        elif key.startswith("progress/"):
             training[key] = value
         elif key.startswith("optimizers/param_groups/") and key.rsplit("/", 1)[1] in HYPERPARAMETERS:
             training[key] = value
@@ -454,7 +482,7 @@ def relative_error(value: torch.Tensor, reference: torch.Tensor) -> float:
 
 def tolerance_errors(state: dict, reference: dict, initial_weights: dict) -> dict:
     """The worst relative errors of the weight updates and of the optimizer state tensors, which must stay within the
-    tolerances. The other entries (step counters, learning rates, scheduler, progress) must be equal."""
+    tolerances. The other entries (step counters, learning rates, progress) must be equal."""
     errors = {"update": {}, "state": {}}
     unequal = sorted(state.keys() ^ reference.keys())
     for key in sorted(state.keys() & reference.keys()):
@@ -507,7 +535,37 @@ def run_load(case: Load, env: Env) -> dict:
     return {"differing": differing(training_state(loaded), training_state(saved))}
 
 
-RUNNERS = {Offload: run_offload, Resume: run_resume, Load: run_load}
+def run_reconfigure(case: Reconfigure, env: Env) -> dict:
+    manager, saved = env.checkpoint(case.saved)
+    run = Run(case.setup, env, from_checkpoint=True)
+    warnings = []
+    sink = get_logger().add(lambda message: warnings.append(message.record["message"]), level="WARNING")
+    loaded = run.load(manager)
+    get_logger().remove(sink)
+    live = [(group["lr"], group["weight_decay"]) for group in run.optimizer.param_groups]
+    run.train(NUM_STEPS)
+    run.close()
+    changed = {"lr": (case.saved.lr, case.setup.lr), "weight_decay": (case.saved.weight_decay, case.setup.weight_decay)}
+    changed["initial_lr"] = changed["lr"]
+    unchanged_state = [
+        key for key in differing(training_state(loaded), training_state(saved)) if key.rsplit("/", 1)[1] not in changed
+    ]
+    group_warnings = [warning for warning in warnings if "group 0:" in warning]
+    missing = [
+        f"group {index}: {key} {old} -> {new}"
+        for index in range(len(live))
+        for key, (old, new) in changed.items()
+        if not any(f"group {index}: {key} {old} -> {new}" in warning for warning in group_warnings)
+    ]
+    return {
+        "differing": unchanged_state
+        + [f"live (lr, weight_decay) {value}" for value in live if value != (case.setup.lr, case.setup.weight_decay)]
+        + [f"warnings {warnings} lack {line}" for line in missing]
+        + ([f"{len(group_warnings)} param group warnings"] if len(group_warnings) != 1 else [])
+    }
+
+
+RUNNERS = {Offload: run_offload, Resume: run_resume, Load: run_load, Reconfigure: run_reconfigure}
 
 
 def isolated(run, *args) -> dict:
@@ -537,7 +595,11 @@ def main(output_dir: Path, suite: str) -> None:
         results[case.name]["seconds"] = time.perf_counter() - start
         torch.cuda.empty_cache()
         # Checkpoints take ~1 GB each: keep those that later cases or the one-GPU launch load
-        kept = {env.ckpt_dir(later.saved) for later in cases[index + 1 :] + ONE_GPU_CASES if isinstance(later, Load)}
+        kept = {
+            env.ckpt_dir(later.saved)
+            for later in cases[index + 1 :] + ONE_GPU_CASES
+            if isinstance(later, (Load, Reconfigure))
+        }
         if get_world().is_master:
             for directory in (output_dir / "checkpoints").glob("*"):
                 if directory not in kept:

@@ -1,0 +1,34 @@
+# Trainer-only fit test: no inference or orchestrator, fake data, random weights. MoE models add
+# `--trainer.model.debug.force-balanced-routing`, since untrained routing is badly unbalanced.
+# Every micro batch is one full-length sample, the worst case a real run can send. Read tok/s and
+# `perf/peak_allocated_memory` of steps 2 and 3 (step 1 includes torch.compile).
+#
+#   uv run rl @ recipes/qwen3.8-flash-next/rl.toml @ recipes/qwen3.8-flash-next/gpu/h200.toml @ recipes/fake.toml --trainer.model.debug.force-balanced-routing
+
+max_steps = 3
+# Drop the inference server of the model config.
+inference = "None"
+
+# Required by the RL config; not started without inference.
+[orchestrator]
+
+[deployment]
+num_infer_nodes = 0
+
+# Router replay needs the inference engine's routed experts.
+[trainer]
+enable_router_replay = false
+
+# Without inference there is nothing to broadcast to; NCCL needs an inference world.
+[weight_broadcast]
+type = "filesystem"
+
+[trainer.model.init]
+type = "scratch"
+
+[trainer.data.fake]
+# One micro batch per data-parallel rank: set it to the number of DP ranks (trainer GPUs / cp),
+# which is the trainer node count at cp 8.
+batch_size = 1
+generate_samples = true
+doc_len = 262144

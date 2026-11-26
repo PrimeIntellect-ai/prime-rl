@@ -24,6 +24,7 @@ from prime_rl.utils.admin_token import AdminTokenUses, TokenUse
 from prime_rl.utils.config import check_mode, cli, dump_resolved_config, dump_rl_components
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
+    ckpt_output_dir,
     clean_future_steps,
     format_config_message,
     format_log_message,
@@ -199,9 +200,10 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     # orchestrator picks it up.
     # Train pools of a retaining run keep their arrays on node-local disk, not in memory.
     retain = config.rollout_transport is not None and config.rollout_transport.retain
+    save_dir = ckpt_output_dir(config.orchestrator.output_dir, config.orchestrator.ckpt)
     for split, source in env_worker_pools(config):
         store_dir = ROLLOUT_STORE_DIR if retain and split == "train" else None
-        write_env_worker_pool_config(output_dir, split, source, config.orchestrator.log, store_dir)
+        write_env_worker_pool_config(output_dir, split, source, config.orchestrator.log, save_dir, store_dir)
 
 
 def rl_local(config: RLConfig):
@@ -314,7 +316,13 @@ def rl_local(config: RLConfig):
             processes.start(
                 f"{split} env worker pool {name}",
                 ["env-worker-pool", "@", (config_dir / ENVS_DIR / split / f"{name}.json").as_posix()],
-                env={**base_env, **DEFAULT_COMMON_ENV_VARS, **config.env_vars, **config.orchestrator.env_vars},
+                env={
+                    **base_env,
+                    **DEFAULT_COMMON_ENV_VARS,
+                    **config.env_vars,
+                    **config.orchestrator.env_vars,
+                    **attempt_env,
+                },
                 log_path=log_dir / ENVS_DIR / split / f"{name}.log",
             )
 
@@ -474,7 +482,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             dp_per_node=config.deployment.gpus_per_node // config.inference.vllm.tensor_parallel_size,
             **mooncake_vars,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
-            use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
             train_env_names=train_env_names,
@@ -515,7 +522,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             else 1,
             **mooncake_vars,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
-            use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
             trainer_env_vars=trainer_env_vars,
@@ -610,7 +616,7 @@ def rl(config: RLConfig):
             resume_step = config.resume.step
             if resume_step is None:
                 ckpt_base = ckpt_output_dir if ckpt_output_dir is not None else config.run_dir
-                resume_step = resolve_latest_ckpt_step(get_ckpt_dir(ckpt_base))
+                resume_step = resolve_latest_ckpt_step(get_ckpt_dir(ckpt_base), get_ckpt_dir(ckpt_base))
 
     if resume_step is not None:
         get_logger().info(f"Resuming from step {resume_step}, cleaning future rollouts and broadcasts")

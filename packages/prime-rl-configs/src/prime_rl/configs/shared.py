@@ -159,6 +159,22 @@ class RunConfig(BaseConfig):
     """Run directory name — the run writes all its artifacts to ``output_dir / dir``. Defaults to ``run.name``; set it only when the directory should differ from the display name."""
 
 
+class BaseCheckpointConfig(BaseConfig):
+    output_dir: Path | None = None
+    """Override directory for checkpoints. If set, checkpoints are written here instead of under the run's
+    ``output_dir``, e.g. on a separate storage volume. In an RL run the trainer and the orchestrator each write
+    their half of a step here."""
+
+    interval: int | None = Field(None, ge=1)
+    """Step interval at which to save checkpoints."""
+
+    keep_last: int | None = Field(None, ge=1)
+    """Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency."""
+
+    keep_interval: int | None = Field(None, ge=1)
+    """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
+
+
 class ControlConfig(BaseConfig):
     host: str = "0.0.0.0"
     """Address the control API binds to."""
@@ -234,6 +250,9 @@ class SlurmConfig(BaseConfig):
     shared_fs: bool = True
     """Whether the project filesystem (including the venv) is shared across nodes (e.g. NFS). When True, a single ``uv sync`` on the batch node suffices. Set to False when the venv is node-local (e.g. ``UV_PROJECT_ENVIRONMENT`` on ``/tmp``) so ``uv sync`` runs on every node via srun."""
 
+    sync_args: str = "--all-extras --all-packages"
+    """Arguments of the ``uv sync`` the job runs before it starts. Narrow them to install less, e.g. ``--extra train`` for an SFT job without online evals. Set it in a TOML file: on the command line a value starting with ``--`` is read as a flag."""
+
     @property
     def template_vars(self) -> dict:
         """Common template variables for all SLURM templates."""
@@ -248,6 +267,7 @@ class SlurmConfig(BaseConfig):
             "pre_run_command": self.pre_run_command,
             "cleanup_grace_period": self.cleanup_grace_period,
             "shared_fs": self.shared_fs,
+            "sync_args": self.sync_args,
         }
 
     @model_validator(mode="after")
@@ -344,7 +364,13 @@ class HeartbeatConfig(BaseConfig):
     rate limit. Size it well under the monitor's period."""
 
 
-class BaseTransportConfig(BaseConfig):
+class ZMQTransportConfig(BaseConfig):
+    host: str = "localhost"
+    """Host address for ZMQ transport."""
+
+    port: int = 5555
+    """Port for ZMQ transport."""
+
     retain: bool = False
     """Keep every shipped step, and the training arrays the env worker pools hold for it,
     until a trainer checkpoint covers it, so a restarted trainer resumes from its newest
@@ -352,23 +378,6 @@ class BaseTransportConfig(BaseConfig):
     weight broadcast, a run directory the orchestrator and trainer share, and a rollout store
     in every train env worker pool: the ``rl`` launcher sets ``store_dir`` for the pools it
     starts, a pool started separately needs it in its own config."""
-
-
-class FileSystemTransportConfig(BaseTransportConfig):
-    type: Literal["filesystem"] = "filesystem"
-
-
-class ZMQTransportConfig(BaseTransportConfig):
-    type: Literal["zmq"] = "zmq"
-
-    host: str = "localhost"
-    """Host address for ZMQ transport."""
-
-    port: int = 5555
-    """Port for ZMQ transport."""
-
-
-TransportConfig: TypeAlias = Annotated[FileSystemTransportConfig | ZMQTransportConfig, Field(discriminator="type")]
 
 
 def validate_step_dir(path: Path, *, field: str) -> None:

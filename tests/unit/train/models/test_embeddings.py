@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from prime_rl.trainer.models import _CUSTOM_CAUSAL_LM_MODELS, AutoModelForCausalLMPrimeRL
+from prime_rl.trainer.models import _CUSTOM_CAUSAL_LM_MODELS, custom_causal_lm_from_config
 
 PAD_TOKEN_ID = 1
 
@@ -16,7 +16,7 @@ def test_pad_token_embedding_receives_gradient(config_cls):
     text_config.vocab_size = 8
     text_config.pad_token_id = PAD_TOKEN_ID
     with torch.device("meta"):
-        model = AutoModelForCausalLMPrimeRL.from_config(config, attn_implementation="flash_attention_3")
+        model = custom_causal_lm_from_config(config, attn_implementation="flash_attention_3")
     embed_tokens = model.get_input_embeddings().to_empty(device="cpu")
     embed_tokens(torch.tensor([PAD_TOKEN_ID])).sum().backward()
     assert embed_tokens.weight.grad[PAD_TOKEN_ID].all()

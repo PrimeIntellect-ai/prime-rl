@@ -25,9 +25,10 @@ import verifiers.v1 as vf
 from prime_rl import monitors
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
 from prime_rl.control.server import serve
+from prime_rl.env.heads import EpisodeHead, episode_head, recorded_head
 from prime_rl.eval.control import create_app
 from prime_rl.orchestrator import live
-from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
+from prime_rl.orchestrator.annotations import log_arrival, stamp_batch
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
@@ -50,6 +51,16 @@ from prime_rl.utils.pathing import get_config_dir
 
 # How often ``run_epoch`` re-checks for a superseding checkpoint while it waits for episodes.
 POLL_INTERVAL_S = 2.0
+
+
+def restored_head(episode: vf.Episode) -> EpisodeHead:
+    """The head of an episode a resumed run restored, holding its record as an env worker
+    would return it: only when a monitor persists it, rounded as the file monitor writes."""
+    group_id = episode.group.id if episode.group is not None else None
+    request = monitors.record_request("eval", group_id)
+    if request is None:
+        return episode_head(episode)
+    return recorded_head(episode, float_decimals=request.float_decimals)
 
 
 class EvalRunner:
@@ -205,7 +216,7 @@ class EvalRunner:
 
         pending = {env_name for env_name in fired if self.eval_sink.batch_size_for(env_name) > 0}
         for episode in restored:
-            await self.land(episode, pending)
+            await self.land(restored_head(episode), pending)
         cancellation_task: asyncio.Task[int] | None = None
         newer_step: int | None = None
 
@@ -237,7 +248,6 @@ class EvalRunner:
             elif isinstance(item, DispatchFailure):
                 eval_batch = self.eval_sink.fail(item)
             else:
-                stamp_arrival([item], "eval", eval_work(item).step)
                 if self.heart is not None:
                     self.heart.beat()
                 await self.land(item, pending)
@@ -252,11 +262,11 @@ class EvalRunner:
                 f"Cancelled {cancelled} unfinished eval episodes for step {step}; advancing to checkpoint {newer_step}"
             )
 
-    async def land(self, episode: vf.Episode, pending: set[str]) -> None:
+    async def land(self, episode: EpisodeHead, pending: set[str]) -> None:
         """One episode of the epoch, arrived or restored: through the monitors and into
         its env's batch, which is finalized once the epoch is complete."""
         step = eval_work(episode).step
-        await monitors.log([episode], step, "eval", "all")
+        await log_arrival(episode, "eval", step)
         eval_batch = self.eval_sink.add(episode)
         if eval_batch is not None:
             await self.finalize_eval_batch(eval_batch)
@@ -272,12 +282,10 @@ class EvalRunner:
 
         episodes = batch.episodes
         effective = episodes.effective
-        effective_episodes = await asyncio.to_thread(lambda: effective.vf_episodes)
+        effective_episodes = await asyncio.to_thread(lambda: effective.trimmed_episodes)
         if effective_episodes:
-            await monitors.log(effective_episodes, batch.step, "eval", "effective")
-            annotations = await asyncio.to_thread(stamp_batch, effective_episodes, batch.step)
-            await monitors.log_annotations(annotations)
-        await monitors.log_eval_epoch(batch.env_name, batch.step, episodes.vf_episodes)
+            await monitors.log_annotations(stamp_batch(effective_episodes, batch.step))
+        await monitors.log_eval_epoch(batch.env_name, batch.step, episodes.trimmed_episodes)
 
         total_attempts = len(episodes) + len(batch.failures) + batch.cancelled
 
