@@ -48,6 +48,33 @@ def bits_dtype(dtype: str) -> torch.dtype:
     return _BITS_DTYPE[getattr(torch, dtype).itemsize]
 
 
+# MXFP8 (vLLM's online ``mxfp8``): e4m3 values with one e8m0 (uint8) scale per 32 consecutive elements of a row
+MX_BLOCK = 32
+# Suffix of the checkpoint-format tensor holding a tensor's block scales, per fp8 mode
+SCALE_SUFFIX = {"fp32": "_scale_inv", "ue8m0": "_scale_inv", "mxfp8": "_mx_scale"}
+
+
+def quantize_mx_blocks(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """vLLM's online MXFP8 quantization of a 2-D bf16 weight: fp8 bits (uint8) and e8m0 scales (uint8,
+    ``[rows, cols / 32]``). vLLM's own function, as engines run it (FlashInfer on SM100+, torch elsewhere: the
+    same bytes for bf16 inputs)."""
+    from vllm.model_executor.layers.quantization.utils.mxfp8_utils import mxfp8_e4m3_quantize
+
+    quantized, scales = mxfp8_e4m3_quantize(weight.contiguous())
+    return quantized.view(torch.uint8), scales.view(torch.uint8).view(weight.shape[0], -1)
+
+
+def swizzled_mx_scale_offsets(num_rows: int, num_cols: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Row and column offset tables of FlashInfer's F8_128x4 layout of ``[num_rows, num_cols / 32]`` MXFP8 scales
+    (vLLM's ``swizzle_mxfp8_scale``): scale ``(r, c)`` is at ``rows[r] + cols[c]`` of the flat swizzled tensor."""
+    k_tiles = -(-num_cols // (MX_BLOCK * 4))
+    rows = torch.arange(num_rows)
+    cols = torch.arange(num_cols // MX_BLOCK)
+    row_offsets = rows // 128 * k_tiles * 512 + rows % 32 * 16 + rows // 32 % 4 * 4
+    col_offsets = cols // 4 * 512 + cols % 4
+    return row_offsets, col_offsets
+
+
 def quantize_fp8_blocks(weight: torch.Tensor, ue8m0: bool, compiled=None) -> tuple[torch.Tensor, torch.Tensor]:
     """vLLM's online ``fp8_per_block`` quantization of a 2-D weight: fp8 bits (uint8) and fp32 block scales; with
     ``ue8m0``, also DeepGEMM's requantization to power-of-two scales. Uses vLLM's own kernels, as a reimplementation
