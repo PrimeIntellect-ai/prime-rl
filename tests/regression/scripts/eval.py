@@ -15,9 +15,10 @@ import argparse
 import json
 import math
 import os
+import re
 import statistics
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,6 +60,16 @@ METRICS = [
 # A baseline only applies to runs of the same eval.
 IDENTITY = ("env", "model", "tasks", "episodes")
 
+# Most distinct error messages a result keeps, and most console lines a Slack message quotes.
+TOP_ERRORS = 5
+CONSOLE_TAIL = 10
+
+# The eval log has one line per failed trace: "... Trace failed in group <id> (<env>) — <error>".
+TRACE_FAILED = re.compile(r"Trace failed in group \S+ \(.*?\) — (.+)$")
+# Request ids and JSON bodies make each message unique. Cut them, so equal errors group.
+ERROR_BODY = re.compile(r":? \{.*$")
+ERROR_ID = re.compile(r"\b[0-9a-f]{8,}(-[0-9a-f]{4,})*\b")
+
 
 def quantile(values: list[float], q: float) -> float:
     ordered = sorted(values)
@@ -73,6 +84,18 @@ def fmt(value: float | None, spec: str) -> str:
 
 def mean_std(values: list[float]) -> tuple[float, float]:
     return statistics.fmean(values), statistics.stdev(values) if len(values) > 1 else 0.0
+
+
+def top_errors(run_dir: Path) -> dict[str, int]:
+    """Count the failed traces of a run by error message, most frequent first."""
+    logs = sorted(run_dir.glob("logs/attempt_*/eval.log"))
+    if not logs:
+        return {}
+    counts: Counter[str] = Counter()
+    for line in logs[-1].read_text(errors="replace").splitlines():
+        if match := TRACE_FAILED.search(line):
+            counts[ERROR_ID.sub("…", ERROR_BODY.sub("", match.group(1)))[:160]] += 1
+    return dict(counts.most_common(TOP_ERRORS))
 
 
 def collect(run_dir: Path, repeat: int, wall_s: float | None) -> dict:
@@ -106,6 +129,7 @@ def collect(run_dir: Path, repeat: int, wall_s: float | None) -> dict:
         "episode_p90_s": quantile(durations, 0.9),
         "eval_window_s": max(row["arrival"] for row in rows) - min(row["dispatch"] for row in rows),
         "wall_s": wall_s,
+        "errors": top_errors(run_dir),
     }
 
 
@@ -260,18 +284,55 @@ def summarize(
             "",
         ]
 
+    if errors := error_lines(results):
+        lines += ["### Errors", "", *[f"- {line}" for line in errors], ""]
     if k > 1:
         lines += ["### Across repeats", "", "Mean ± 95% CI of the mean (Student-t).", "", *spread(results), ""]
     lines += ["<details><summary>Per repeat</summary>", "", *per_repeat(results), "", "</details>"]
     return "\n".join(lines) + "\n", regressed
 
 
-def slack(results: list[dict], expected: int | None, baseline: dict | None, name: str | None = None) -> dict:
+def error_lines(results: list[dict]) -> list[str]:
+    """Render the failed traces of all repeats by error message, most frequent first."""
+    counts: Counter[str] = Counter()
+    for r in results:
+        counts.update(r.get("errors", {}))
+    return [f"{count}× `{message}`" for message, count in counts.most_common(TOP_ERRORS)]
+
+
+def console_tail(console: Path | None) -> list[str]:
+    """Return the last lines of the eval's console output, without the box drawing of rich panels."""
+    if console is None or not console.exists():
+        return []
+    lines = [line.strip(" │╭╮╰╯─") for line in console.read_text(errors="replace").splitlines()]
+    return [line for line in lines if line][-CONSOLE_TAIL:]
+
+
+def links() -> str:
+    """Render the links to the workflow run, the job log and the uploaded logs that the environment provides."""
+    urls = [
+        (run_url(), "workflow run"),
+        (os.environ.get("JOB_URL"), "job log"),
+        (os.environ.get("ARTIFACT_URL"), "logs and traces"),
+    ]
+    return "".join(f" · <{url}|{label}>" for url, label in urls if url)
+
+
+def slack(
+    results: list[dict],
+    expected: int | None,
+    baseline: dict | None,
+    name: str | None = None,
+    console: Path | None = None,
+) -> dict:
     """Render a short Slack message (webhook payload) with the gated metrics of the summary."""
-    run = f" · <{run_url()}|workflow run>" if run_url() else ""
+    run = links()
     title = f"*Eval regression: {name}*" if name else "*Eval regression*"
     if not results:
-        return {"text": f"❌ {title}: no repeat finished{run}"}
+        lines = [f"❌ {title}: no repeat finished{run}"]
+        if tail := console_tail(console):
+            lines += ["```", *tail, "```"]
+        return {"text": "\n".join(lines)}
 
     results = sorted(results, key=lambda r: r["repeat"])
     first, k = results[0], len(results)
@@ -292,6 +353,8 @@ def slack(results: list[dict], expected: int | None, baseline: dict | None, name
                 f"{r.status} {r.metric.label}: *{fmt(r.value, spec)}* vs {fmt(r.base_mean, spec)}"
                 f" ± {fmt(r.base_std, spec)} (Δ {r.delta}, tolerance {fmt(r.tol, '±' + spec)})"
             )
+    if errors := error_lines(results):
+        lines += ["Errors:", *[f"• {line}" for line in errors]]
     header = [
         f"{icon} {title}: {verdict}",
         f"`{first['model']}` · {first['tasks']} tasks × {first['episodes'] // first['tasks']} rollouts{run}",
@@ -351,6 +414,12 @@ def main() -> None:
     p_summarize.add_argument("--baseline", type=Path, default=None, help="Baseline file to compare against.")
     p_summarize.add_argument("--name", default=None, help="Config name for the heading.")
     p_summarize.add_argument("--slack", type=Path, default=None, help="Also write a Slack webhook payload here.")
+    p_summarize.add_argument(
+        "--console",
+        type=Path,
+        default=None,
+        help="Console output of the eval. Slack quotes its tail if no repeat finished.",
+    )
 
     p_baseline = sub.add_parser("baseline", help="Turn 2+ result JSONs into a baseline and its report.")
     p_baseline.add_argument("results", type=Path, nargs="+")
@@ -379,7 +448,7 @@ def main() -> None:
     markdown, regressed = summarize(results, args.expected, baseline, args.name)
     sys.stdout.write(markdown)
     if args.slack:
-        args.slack.write_text(json.dumps(slack(results, args.expected, baseline, args.name)) + "\n")
+        args.slack.write_text(json.dumps(slack(results, args.expected, baseline, args.name, args.console)) + "\n")
     sys.exit(1 if regressed else 0)
 
 
