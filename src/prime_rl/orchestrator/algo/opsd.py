@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 
+import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import OPSDAlgoConfig
-from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
-from prime_rl.orchestrator.algo.routing import assign_reference_logprobs
+from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.orchestrator.clients import ModelScorer
-from prime_rl.orchestrator.trajectories import iter_trainable_branches
 from prime_rl.orchestrator.utils import episode_env_name
 
 if TYPE_CHECKING:
@@ -62,16 +60,14 @@ class OPSDAlgorithm(Algorithm):
             )
         return demonstration
 
-    async def score_episode(self, episode: vf.Episode) -> None:
+    def sample_context(self, episode: vf.Episode, trace: vf.Trace) -> dict:
+        return {"demonstration": self._demonstration(episode, trace)}
+
+    async def score_sample(self, token_ids: np.ndarray, sampled: np.ndarray, context: dict) -> np.ndarray:
         teacher = self.teacher_clients
         renderer = self.renderer
         assert teacher is not None and renderer is not None, "not bound — Algorithm.bind() must run first"
-        for _, trace in iter_trainable_traces([episode]):
-            hint = self.template.format(demonstration=self._demonstration(episode, trace))
-            hint_block = renderer.render_ids([{"role": "system", "content": hint}], add_generation_prompt=False)
-            branches = [branch for branch, _ in iter_trainable_branches(trace)]
-            scores = await asyncio.gather(
-                *(teacher.score([*hint_block, *branch.token_ids.tolist()]) for branch in branches)
-            )
-            for branch, full_logprobs in zip(branches, scores, strict=True):
-                assign_reference_logprobs(branch, full_logprobs[len(hint_block) :])
+        hint = self.template.format(demonstration=context["demonstration"])
+        hint_block = renderer.render_ids([{"role": "system", "content": hint}], add_generation_prompt=False)
+        full_logprobs = await teacher.score([*hint_block, *token_ids.tolist()])
+        return np.where(sampled, np.asarray(full_logprobs[len(hint_block) :], dtype=np.float32), np.float32(0.0))

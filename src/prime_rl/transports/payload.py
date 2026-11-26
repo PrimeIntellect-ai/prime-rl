@@ -185,9 +185,10 @@ def link_or_copy(source: Path, target: Path) -> bool:
 
 
 class PayloadServer:
-    """One env worker's arrays, served at `GET <url>/<id>`, credited per token by
-    `PATCH <url>/<id>` and freed by `DELETE <url>/<id>`. `POST <url>/persist` with
-    `{"dir", "ids"}` writes those blobs to `<dir>/<id>` and answers `{"persisted": [ids]}`."""
+    """A pool replica's samples, kept by `PUT <url>/<id>`, served at `GET <url>/<id>`,
+    credited per token by `PATCH <url>/<id>` and freed by `DELETE <url>/<id>`. `POST
+    <url>/persist` with `{"dir", "ids"}` writes those samples to `<dir>/<id>` and answers
+    `{"persisted": [ids]}`."""
 
     def __init__(self, bind_host: str, url_host: str | None = None):
         self.blobs: dict[str, bytes] = {}
@@ -204,6 +205,11 @@ class PayloadServer:
                 self.end_headers()
                 if blob is not None:
                     self.wfile.write(blob)
+
+            def do_PUT(self) -> None:
+                server.put(self.path.lstrip("/"), self.rfile.read(int(self.headers["Content-Length"])))
+                self.send_response(204)
+                self.end_headers()
 
             def do_PATCH(self) -> None:
                 values = self.rfile.read(int(self.headers["Content-Length"]))
@@ -313,11 +319,11 @@ _trained_decoder = msgspec.msgpack.Decoder(Trained)
 
 
 class RolloutStore(PayloadServer):
-    """One env worker pool's arrays as files, kept until a trainer checkpoint covers them.
+    """A pool replica's samples as files, kept until a trainer checkpoint covers them.
 
-    The pool's workers write each blob to `live/<id>` (`StoreWriter`). A blob the trainer
-    trained on moves to `step_<N>/<id>` and stays fetchable; the step directories up to the
-    trainer's committed step are deleted."""
+    The replica's env workers write each blob to `live/<id>` (`StoreWriter`). A blob the
+    trainer trained on moves to `step_<N>/<id>` and stays fetchable; the step directories up
+    to the trainer's committed step are deleted."""
 
     def __init__(self, directory: Path, bind_host: str, url_host: str | None = None):
         self.directory = directory
@@ -339,6 +345,12 @@ class RolloutStore(PayloadServer):
             return self.path(key).read_bytes()
         except FileNotFoundError:
             return None
+
+    def put(self, key: str, blob: bytes) -> None:
+        path = self.path(key)
+        tmp = path.with_name(f".{key}.tmp")
+        tmp.write_bytes(blob)
+        tmp.rename(path)
 
     def replace(self, key: str, blob: bytes) -> bool:
         # In place, never created: a blob unlinked after the open takes the write with it.
@@ -383,8 +395,22 @@ class RolloutStore(PayloadServer):
         return True
 
 
+class StoreClient:
+    """An env worker's side of its replica's in-memory `PayloadServer`, over local HTTP."""
+
+    def __init__(self, url: str):
+        self.url = url
+
+    def put(self, key: str, blob: bytes) -> None:
+        _opener.open(urllib.request.Request(f"{self.url}/{key}", data=blob, method="PUT"), timeout=60).close()
+
+    def delete(self, key: str) -> None:
+        """Without waiting: an env worker frees samples on its event loop."""
+        delete_payloads([f"{self.url}/{key}"])
+
+
 class StoreWriter:
-    """An env worker's side of its pool's `RolloutStore`: blobs go straight to the store's
+    """An env worker's side of its replica's `RolloutStore`: blobs go straight to the store's
     directory, and the store serves them at `url`."""
 
     def __init__(self, directory: Path, url: str):
@@ -469,15 +495,15 @@ def _fields(body: SampleBody) -> set[str]:
 class PayloadHook:
     """`prime_rl.env.set_episode_hook` hook: keep a finished train episode's samples."""
 
-    def __init__(self, bind_address: str | None = None, store: StoreWriter | None = None):
+    def __init__(self, bind_address: str | None = None, store: StoreWriter | StoreClient | None = None):
         self._hosts = payload_host(bind_address)
-        self._server: PayloadServer | StoreWriter | None = store
+        self._server: PayloadServer | StoreWriter | StoreClient | None = store
         self._lock = threading.Lock()
 
     @property
-    def server(self) -> PayloadServer | StoreWriter:
-        """The pool's rollout store if it has one, else this worker's own server, started on
-        first use: a pool broker installs the hook too but never keeps samples."""
+    def server(self) -> PayloadServer | StoreWriter | StoreClient:
+        """The replica's sample store, which its sample server serves; without one, a
+        server of this process's own, started on first use."""
         with self._lock:
             if self._server is None:
                 self._server = PayloadServer(*self._hosts)

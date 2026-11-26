@@ -1,8 +1,12 @@
 from __future__ import annotations
 
-from prime_rl.env.heads import EpisodeHead
+from typing import TYPE_CHECKING
+
 from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import assign_advantage
+
+if TYPE_CHECKING:
+    from prime_rl.env.heads import EpisodeHead
 
 
 class MaxRLAlgorithm(Algorithm):
