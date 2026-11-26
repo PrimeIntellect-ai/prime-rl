@@ -22,7 +22,7 @@ env.taskset.id = "i3_math"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 # A completion cut at max_completion_tokens is not scored: it gets reward 0.
-env.agent.scoring.skip_on_truncated = true
+env.agent.scoring.skip.truncated = 0.0
 
 [orchestrator.eval]
 interval = 25
