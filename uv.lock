@@ -149,6 +149,7 @@ members = [
     "swesmith-env",
     "terminal-bench",
     "terminal-bench-2",
+    "terminal-bench-2-1",
     "terminal-bench-4-1",
     "terminal-bench-science",
     "terminal-lego",
@@ -7519,6 +7520,17 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev47" }]
+
+[[package]]
+name = "terminal-bench-2-1"
+version = "0.1.0"
+source = { editable = "deps/prime-envs/environments/terminal/terminal_bench_2_1" }
+dependencies = [
+    { name = "verifiers", extra = ["harbor"] },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.2.dev115" }]
 
 [[package]]
 name = "terminal-bench-4-1"
