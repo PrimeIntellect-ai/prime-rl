@@ -27,7 +27,6 @@ from prime_rl.configs.shared import (
     LogConfig,
     PolicyClientConfig,
     ResumeConfig,
-    TransportConfig,
     WeightBroadcastConfig,
     ZMQTransportConfig,
 )
@@ -532,7 +531,7 @@ class OrchestratorConfig(BaseConfig):
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
     """Transport used to receive updated weights from the trainer."""
 
-    rollout_transport: TransportConfig = ZMQTransportConfig()
+    rollout_transport: ZMQTransportConfig = ZMQTransportConfig()
     """Transport used to ship rollouts from orchestrator to trainer."""
 
     env_worker_pool_replicas: int | None = Field(None, ge=1)

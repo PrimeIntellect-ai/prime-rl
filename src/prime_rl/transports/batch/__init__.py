@@ -1,11 +1,7 @@
 from pathlib import Path
 
-from prime_rl.configs.shared import TransportConfig
+from prime_rl.configs.shared import ZMQTransportConfig
 from prime_rl.transports.batch.base import BatchReceiver, BatchSender
-from prime_rl.transports.batch.filesystem import (
-    FileSystemBatchReceiver,
-    FileSystemBatchSender,
-)
 from prime_rl.transports.batch.types import (
     MicroBatch,
     MicroBatchPlan,
@@ -22,29 +18,17 @@ from prime_rl.transports.batch.zmq import (
 )
 
 
-def setup_batch_sender(output_dir: Path, current_step: int, transport: TransportConfig) -> BatchSender:
-    if transport.type == "filesystem":
-        return FileSystemBatchSender(output_dir, current_step, transport.retain)
-    elif transport.type == "zmq":
-        return ZMQBatchSender(output_dir, current_step, transport)
-    else:
-        raise ValueError(f"Invalid transport type: {transport.type}")
+def setup_batch_sender(output_dir: Path, current_step: int, transport: ZMQTransportConfig) -> BatchSender:
+    return ZMQBatchSender(output_dir, current_step, transport)
 
 
 def setup_batch_receiver(
-    output_dir: Path, rank: int, world_size: int, current_step: int, transport: TransportConfig
+    output_dir: Path, rank: int, world_size: int, current_step: int, transport: ZMQTransportConfig
 ) -> BatchReceiver:
-    if transport.type == "filesystem":
-        return FileSystemBatchReceiver(output_dir, rank, world_size, current_step)
-    elif transport.type == "zmq":
-        return ZMQBatchReceiver(output_dir, rank, world_size, current_step, transport)
-    else:
-        raise ValueError(f"Invalid transport type: {transport.type}")
+    return ZMQBatchReceiver(output_dir, rank, world_size, current_step, transport)
 
 
 __all__ = [
-    "FileSystemBatchSender",
-    "FileSystemBatchReceiver",
     "ZMQBatchSender",
     "ZMQBatchReceiver",
     "BatchReceiver",

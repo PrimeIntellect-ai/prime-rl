@@ -1,4 +1,3 @@
-import os
 import shutil
 import time
 from abc import ABC, abstractmethod
@@ -35,7 +34,7 @@ def last_requested_at(requests: list[BatchRequest]) -> float | None:
 class BatchLog:
     """Shipped steps on disk, one file per step (``<batch_dir>/step_<N>/batch.bin``). A step
     is written ahead of its delivery and published with it, so every published step is one
-    the trainer was handed. An offered step is readable before that, as ``offer.bin``."""
+    the trainer was handed."""
 
     def __init__(self, output_dir: Path):
         self.dir = get_batch_dir(output_dir)
@@ -46,27 +45,6 @@ class BatchLog:
     def write(self, step: int, payload: bytes) -> None:
         get_step_path(self.dir, step).mkdir(parents=True, exist_ok=True)
         self.path(step).with_suffix(".bin.tmp").write_bytes(payload)
-
-    def offer(self, step: int) -> None:
-        """Make the written step readable ahead of its delivery, as the same file where the
-        filesystem links (``offer.bin``)."""
-        written, offer = self.path(step).with_suffix(".bin.tmp"), self.offer_path(step)
-        linked = offer.with_name(".offer.bin.tmp")
-        linked.unlink(missing_ok=True)
-        try:
-            os.link(written, linked)
-        except OSError:
-            shutil.copyfile(written, linked)
-        linked.replace(offer)
-
-    def offer_path(self, step: int) -> Path:
-        return get_step_path(self.dir, step) / "offer.bin"
-
-    def read_offer(self, step: int) -> bytes | None:
-        try:
-            return self.offer_path(step).read_bytes()
-        except FileNotFoundError:
-            return None
 
     def publish(self, step: int) -> None:
         path = self.path(step)

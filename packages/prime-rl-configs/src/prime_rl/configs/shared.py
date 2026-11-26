@@ -344,7 +344,13 @@ class HeartbeatConfig(BaseConfig):
     rate limit. Size it well under the monitor's period."""
 
 
-class BaseTransportConfig(BaseConfig):
+class ZMQTransportConfig(BaseConfig):
+    host: str = "localhost"
+    """Host address for ZMQ transport."""
+
+    port: int = 5555
+    """Port for ZMQ transport."""
+
     retain: bool = False
     """Keep every shipped step, and the training arrays the env worker pools hold for it,
     until a trainer checkpoint covers it, so a restarted trainer resumes from its newest
@@ -352,23 +358,6 @@ class BaseTransportConfig(BaseConfig):
     weight broadcast, a run directory the orchestrator and trainer share, and a rollout store
     in every train env worker pool: the ``rl`` launcher sets ``store_dir`` for the pools it
     starts, a pool started separately needs it in its own config."""
-
-
-class FileSystemTransportConfig(BaseTransportConfig):
-    type: Literal["filesystem"] = "filesystem"
-
-
-class ZMQTransportConfig(BaseTransportConfig):
-    type: Literal["zmq"] = "zmq"
-
-    host: str = "localhost"
-    """Host address for ZMQ transport."""
-
-    port: int = 5555
-    """Port for ZMQ transport."""
-
-
-TransportConfig: TypeAlias = Annotated[FileSystemTransportConfig | ZMQTransportConfig, Field(discriminator="type")]
 
 
 def validate_step_dir(path: Path, *, field: str) -> None:
