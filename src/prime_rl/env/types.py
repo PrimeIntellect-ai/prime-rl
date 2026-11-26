@@ -101,29 +101,39 @@ class RunRequest(BaseRequest):
 
 class SaveRequest(BaseRequest):
     """Take a memory checkpoint of every rollout running on the worker, and write each
-    one's restore point to `<dir>/<trace id>.restore`."""
+    running episode's restore point to `<dir>/<episode id>.restore`."""
 
     method: ClassVar[str] = "save"
     dir: str
 
 
 class RestoreRef(BaseModel):
-    """A restore file, and the box snapshot it continues from. Whoever holds the
-    reference owns the snapshot and deletes it (`discard`) once nothing restores it."""
+    """An episode's restore file, and the box snapshots it continues from. Whoever holds
+    the reference owns the snapshots and deletes them (`discard`) once nothing restores
+    them."""
 
-    trace_id: str
+    episode_id: str
     path: str
-    snapshot: dict
+    snapshots: list[dict]
+
+    def __setstate__(self, state: dict) -> None:
+        # A checkpoint written before episodes were saved whole refers to one trace.
+        fields = state["__dict__"]
+        if "snapshot" in fields:
+            fields["snapshots"] = [fields.pop("snapshot")]
+            fields["episode_id"] = fields.pop("trace_id")
+            state["__pydantic_fields_set__"] = set(fields)
+        super().__setstate__(state)
 
 
 class SaveResponse(BaseResponse):
     restores: dict[str, RestoreRef] = Field(default_factory=dict)
     """The restore points taken, by the wire ``request_id`` of the run they continue.
-    A running rollout without an entry took none and starts over."""
+    A running episode without an entry took none and starts over."""
     orphans: list[dict] = Field(default_factory=list)
     """Unused snapshots the worker could not delete. The owner retries their cleanup."""
     skipped: list[str] = Field(default_factory=list)
-    """Why a running rollout took no restore point: one reason per such rollout."""
+    """Why a running episode took no restore point: one reason per such episode."""
 
 
 class ReleaseRequest(BaseRequest):

@@ -41,7 +41,7 @@ def test_runs_go_to_the_least_loaded_replica():
 
 class SaveClient:
     def __init__(self, request_id: str, *, fails: bool = False, waits: bool = False):
-        self.restore = RestoreRef(trace_id=f"t-{request_id}", path=f"/ckpt/t-{request_id}.restore", snapshot={})
+        self.restore = RestoreRef(episode_id=f"e-{request_id}", path=f"/ckpt/e-{request_id}.restore", snapshots=[])
         self.request_id = request_id
         self.fails = fails
         self.release = asyncio.Event()
