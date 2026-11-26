@@ -76,7 +76,7 @@ data_parallel_size = 4
 type = "single_node"
 ```
 
-We reccomend choosing your parallelism based on the expected throughput and latency requirements. High `dp` might create high latency, however it will also give you the highest throughput. This is a tradeoff you need to make based on your use case and required concurrency (see [Adaptive Concurrency](#adaptive-concurrency)). Setting `tp` to a higher value will usually give you lower latency, but the inference server also will become saturated faster with lower number of requests.
+We recommend choosing your parallelism based on the expected throughput and latency requirements. High `dp` might create high latency, however it will also give you the highest throughput. This is a tradeoff you need to make based on your use case and required concurrency (see [Adaptive Concurrency](#adaptive-concurrency)). Setting `tp` to a higher value will usually give you lower latency, but the inference server also will become saturated faster with lower number of requests.
 
 Another thing to consider, is the memory usage. You need to make sure that the model will fit into the available GPU memory. We will not go into the details on how to do this in this document. Related thing to consider, is the space for the KV cache. This will heavily affect the amount of requests your inference server can handle. You want to shard your model, either using `inference.vllm.enable_expert_parallel` or `inference.vllm.tensor_parallel_size` to maximize the available GPU memory.
 
@@ -424,7 +424,7 @@ enable_router_replay = true # this will also auto-set inference.vllm.enable_retu
 enable_return_routed_experts = true
 ```
 
-This however is not free, it adds a significant overhead to the HTTP requests as this payload can grow quite large. We reccomend sizing up the env worker pool (`orchestrator.*.source.serve.pool`) to allow for more parallelization on the verifiers side.
+This however is not free, it adds a significant overhead to the HTTP requests as this payload can grow quite large. We recommend sizing up the env worker pool (`orchestrator.*.source.serve.pool`) to allow for more parallelization on the verifiers side.
 
 Router replay works with `inference.kv_cache_offload` (native and Mooncake). vLLM keeps routing rows in a local store keyed by block hash, and no connector moves them with the KV, so a loaded block has no rows on this instance. prime-rl therefore limits an offload load to the prompt tokens the client already has routing for: the blocks before `routed_experts_prompt_start`. Multi-turn rollouts keep their offload hits, because the reloaded earlier turns sit before that position. Offloaded prefixes past it (first turns, prompts shared across a group or across nodes) are recomputed. Loaded blocks then serve local GPU prefix hits like any other block, so a local hit is cut at the first loaded block that a request needs routing from (for example a first turn that hits a prefix reloaded by another rollout's later turn), and the rest is recomputed. Under P/D, decode-side loads are not limited: decode requests emit routing only from their first forward.
 
