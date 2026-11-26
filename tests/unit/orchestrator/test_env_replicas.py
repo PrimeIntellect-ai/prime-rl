@@ -19,7 +19,7 @@ class FakeClient:
 
 def test_runs_go_to_the_least_loaded_replica():
     async def run():
-        env = Env(None, None, [])
+        env = Env(SimpleNamespace(resolved_name="env"), None, [])
         env._env_clients = [FakeClient(), FakeClient()]
         env._in_flight = [0, 0]
         client = None

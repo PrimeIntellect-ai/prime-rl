@@ -13,6 +13,7 @@ from verifiers.v1.types import AssistantMessage, Tool, ToolMessage, Usage, UserM
 from prime_rl.configs.algorithm import GRPOAlgoConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.control.types import ConfigUpdate
+from prime_rl.env.heads import EpisodeHead, TraceHead, episode_head
 from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.orchestrator.train_sink import TrainSink, queued_samples, write_token_advantages
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TrainBatch
@@ -64,9 +65,21 @@ def trace(*, advantage=1.0, ok=True, trainable=True, sampled=True):
     )
 
 
-def episode(traces, *, group="g", version=0, keep=True):
-    """A train episode as the orchestrator receives it: with ``keep``, an env worker kept its samples."""
-    ep = vf.Episode(
+def received(ep: vf.Episode, *, keep: bool = True) -> EpisodeHead:
+    """The head of an episode as the orchestrator receives it: with ``keep``, an env worker
+    kept its samples. A trace's ``advantage`` info stands for the credit its group earned."""
+    if keep:
+        HOOK.keep(ep, "rl")
+    head = episode_head(ep)
+    for trace_head, trace in zip(head.traces, ep.traces, strict=True):
+        if "advantage" in trace.info:
+            trace_head.info["advantage"] = trace.info["advantage"]
+    return head
+
+
+def whole_episode(traces, *, group="g", version=0) -> vf.Episode:
+    """A train episode as the env worker that ran it holds it."""
+    return vf.Episode(
         env=vf.EnvInfo(id="test", name="test"),
         task=traces[0].task,
         group=vf.GroupInfo(id=group),
@@ -74,15 +87,16 @@ def episode(traces, *, group="g", version=0, keep=True):
         ok=True,
         run=vf.TrainRunInfo(id="run", work=vf.TrainWorkInfo(step=1, policy=vf.PolicySpan(start=version, end=version))),
     )
-    if keep:
-        HOOK.keep(ep, "rl")
-    return ep
 
 
-def train_trace(trace: vf.Trace) -> list[TrainingSample]:
-    """The samples a trainer rank builds from one trace: kept by an env worker, referenced
-    with the trace's credit by the orchestrator."""
-    episode([trace])
+def episode(traces, *, group="g", version=0, keep=True) -> EpisodeHead:
+    """A train episode as the orchestrator receives it."""
+    return received(whole_episode(traces, group=group, version=version), keep=keep)
+
+
+def train_trace(trace: TraceHead) -> list[TrainingSample]:
+    """The samples a trainer rank builds from one trace an env worker kept, referenced with
+    the trace's credit by the orchestrator."""
     assert not write_token_advantages([trace])
     refs = [
         sample.ref
@@ -164,7 +178,7 @@ def test_queued_trace_does_not_own_discarded_siblings():
         del discarded, ep
         gc.collect()
         assert all(ref() is None for ref in refs)
-        assert s.episode_by_trace[kept.id].traces == [kept]
+        assert [trace.id for trace in s.episode_by_trace[kept.id].traces] == [kept.id]
         window = s.take_rollout_window(force=True)
         assert window.traces == 5 and window.attempts == 1
         assert window.metrics.to_dict()["rollout/traces/discarded"] == 4

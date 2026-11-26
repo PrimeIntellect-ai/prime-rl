@@ -13,6 +13,7 @@ from prime_rl.configs.orchestrator import (
     DifficultyPoolConfig,
     DifficultyPoolSamplerConfig,
 )
+from prime_rl.env.heads import EpisodeHead, episode_head
 from prime_rl.orchestrator.curriculum import (
     AdvRangeGate,
     Curriculum,
@@ -40,7 +41,9 @@ def make_rollout(
     env_name: str = "test",
     reward: float = 0.0,
     advantage: float | None = None,
-) -> list[vf.Episode]:
+    sampled: bool = True,
+) -> list[EpisodeHead]:
+    """One rollout as the orchestrator receives it, credited with ``advantage``."""
     nodes = (
         [
             vf.MessageNode(
@@ -52,7 +55,7 @@ def make_rollout(
             )
         ]
         if advantage is not None
-        else [vf.MessageNode(message=vf.AssistantMessage(content="answer"), sampled=True)]
+        else [vf.MessageNode(message=vf.AssistantMessage(content="answer"), sampled=sampled)]
     )
     trace = vf.Trace(
         task=vf.TraceTask(
@@ -65,7 +68,6 @@ def make_rollout(
         nodes=nodes,
         rewards={"reward": vf.Reward(score=reward)},
         ok=True,
-        info={} if advantage is None else {"advantage": advantage},
     )
     episode = vf.Episode(
         env=vf.EnvInfo(id=env_name, name=env_name),
@@ -74,7 +76,10 @@ def make_rollout(
         traces=[trace],
         ok=True,
     )
-    return [episode]
+    head = episode_head(episode)
+    if advantage is not None:
+        head.traces[0].info["advantage"] = advantage
+    return [head]
 
 
 def test_default_curriculum_resumes_finite_and_infinite_tasksets() -> None:
@@ -124,8 +129,7 @@ def test_train_source_composes_sampler_and_all_gates_with_state_and_metrics() ->
     source = TrainSource([env])
 
     sampled = source.next_task(step=1).task
-    empty = make_rollout(sampled, reward=1.0)
-    empty[0].traces[0].nodes[0].sampled = False
+    empty = make_rollout(sampled, reward=1.0, sampled=False)
     group = make_rollout(sampled, reward=0.25, advantage=0.0)
     failed = make_rollout(sampled, reward=1.0, advantage=1.0)
     failed[0].ok = False

@@ -10,6 +10,7 @@ from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import assign_advantage
 
 if TYPE_CHECKING:
+    from prime_rl.env.heads import EpisodeHead
     from prime_rl.orchestrator.clients import InferenceClient
 
 
@@ -30,7 +31,7 @@ class HierarchicalGRPOAlgorithm(Algorithm):
         super().__init__(config, clients)
         self.episode_agents = set(config.episode_agents)
 
-    async def score_group(self, episodes: list[vf.Episode]) -> None:
+    async def score_group(self, episodes: list[EpisodeHead]) -> None:
         peers: dict[tuple[str, str | None], list[vf.Trace]] = defaultdict(list)
         for episode, trace in iter_trainable_traces(episodes):
             episode_scoped = trace.agent.name in self.episode_agents

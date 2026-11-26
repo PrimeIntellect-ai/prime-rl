@@ -18,14 +18,12 @@ import asyncio
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-
-import verifiers.v1 as vf
+from typing import TYPE_CHECKING
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.control.types import ConfigUpdate, Reconfigurable
 from prime_rl.orchestrator.algo.base import iter_trainable_traces
-from prime_rl.orchestrator.algo.routing import branch_token_advantages
-from prime_rl.orchestrator.credit import token_advantages, trace_advantage, trace_rl_weight
+from prime_rl.orchestrator.credit import branch_token_advantages, token_advantages, trace_advantage, trace_rl_weight
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import RolloutWindow, TrainEpisodes
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TrainBatch
@@ -39,6 +37,9 @@ from prime_rl.transports.batch.materialize import mm_cut
 from prime_rl.transports.batch.types import PAYLOAD_INFO_KEY, UNLABELED, UNVERSIONED, SampleRef
 from prime_rl.transports.payload import delete_payloads, sample_payload_urls, trace_payload_urls, write_advantages
 from prime_rl.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from prime_rl.env.heads import EpisodeHead, TraceHead
 
 # Training samples reach the trainer only through env workers that keep them.
 _KEEP_SAMPLES_HINT = (
@@ -93,7 +94,7 @@ def _counts(counts: dict[str, int]) -> dict[int, int]:
 
 
 def queued_samples(
-    trace: vf.Trace, *, env_name: str, temperature: float, policy_start: int | None, seq_len: int
+    trace: TraceHead, *, env_name: str, temperature: float, policy_start: int | None, seq_len: int
 ) -> list[QueuedSample]:
     """References to the samples an env worker kept for the trace, credited with its advantage
     and rl weight and cut to ``seq_len`` tokens. A trace credited per token has its advantages
@@ -135,7 +136,7 @@ def queued_samples(
     return samples
 
 
-def write_token_advantages(traces: Iterable[vf.Trace]) -> list[vf.Trace]:
+def write_token_advantages(traces: Iterable[TraceHead]) -> list[TraceHead]:
     """Write the advantages of traces credited per token into the samples their env workers
     kept. The traces whose samples are no longer all kept."""
     lost = []
@@ -162,7 +163,7 @@ class TrainSink(Reconfigurable):
         train_envs: TrainEnvs,
         progress: Progress,
         batch_size: int,
-        on_result: Callable[[list[vf.Episode]], bool] | None = None,
+        on_result: Callable[[list[EpisodeHead]], bool] | None = None,
         on_groups_closed: Callable[[Iterable[str]], None] | None = None,
         group_size: Callable[[str], int | None] | None = None,
     ) -> None:
@@ -180,13 +181,13 @@ class TrainSink(Reconfigurable):
         self.group_size = group_size
 
         self.rollout_window = RolloutWindow()
-        self.pending_groups: dict[str, list[vf.Episode]] = defaultdict(list)
+        self.pending_groups: dict[str, list[EpisodeHead]] = defaultdict(list)
         self.pending_group_failures: dict[str, list[DispatchFailure]] = defaultdict(list)
         # A dropped group's terminal marker; its ``count`` fills in for the
         # episodes the group will never deliver.
         self.pending_group_cancellations: dict[str, GroupCancellation] = {}
         self.pending_batch: dict[str, list[QueuedSample]] = {}
-        self.episode_by_trace: dict[str, vf.Episode] = {}
+        self.episode_by_trace: dict[str, EpisodeHead] = {}
         # Step of the last full staleness sweep — queued traces only age when
         # ``progress.step`` advances, so one full sweep per step suffices.
         self._swept_step = 0
@@ -266,7 +267,7 @@ class TrainSink(Reconfigurable):
             counts[episode_env_name(episode)] += 1
         return dict(counts)
 
-    async def add(self, episode: vf.Episode) -> TrainBatch | None:
+    async def add(self, episode: EpisodeHead) -> TrainBatch | None:
         """Process one completed episode and return a batch when ready."""
         group_id = episode_group_id(episode)
         env_name = episode_env_name(episode)
@@ -379,7 +380,7 @@ class TrainSink(Reconfigurable):
         )
         env = self.train_envs.get(env_name)
         traces = [trace for episode in group for trace in episode.traces]
-        task_idx = next((trace.task.data.idx for trace in traces), None)
+        task_idx = next((trace.task.idx for trace in traces), None)
         num_errored = (
             sum(trace.has_error for trace in traces)
             + sum(not episode.ok for episode in group if not episode.traces)
@@ -485,13 +486,13 @@ class TrainSink(Reconfigurable):
 
     def _record_group(
         self,
-        group: list[vf.Episode],
+        group: list[EpisodeHead],
         failures: list[DispatchFailure],
         cancellation: GroupCancellation | None,
         env_name: str,
         *,
         admitted: bool = True,
-        cancelled: Iterable[vf.Episode] = (),
+        cancelled: Iterable[EpisodeHead] = (),
         queued_trace_ids: set[str] | None = None,
     ) -> None:
         episodes = TrainEpisodes(cancelled={episode.id for episode in cancelled})
@@ -538,11 +539,11 @@ class TrainSink(Reconfigurable):
             queued = {episode_group_id(episode) for episode in self.episode_by_trace.values()}
             self._close(group_ids - queued)
 
-    def _admit(self, group: list[vf.Episode]) -> bool:
+    def _admit(self, group: list[EpisodeHead]) -> bool:
         return self.on_result(group) if self.on_result is not None else True
 
     def _record_zero_output(
-        self, group: list[vf.Episode], survivors: list[vf.Trace], n_owed: int, *, reason: str
+        self, group: list[EpisodeHead], survivors: list[TraceHead], n_owed: int, *, reason: str
     ) -> None:
         """``n_owed`` counts the group's full episode budget (arrived +
         cancelled), so dropped groups advance the zero-output tally at the
@@ -601,8 +602,8 @@ class TrainSink(Reconfigurable):
         self.rollout_window.metrics.rate("staleness/token/masked", {"": float(masked)}, kept + masked)
 
         shipped_ids = set(selected_by_trace)
-        traces_by_episode: dict[str, list[vf.Trace]] = defaultdict(list)
-        selected_episodes: dict[str, vf.Episode] = {}
+        traces_by_episode: dict[str, list[TraceHead]] = defaultdict(list)
+        selected_episodes: dict[str, EpisodeHead] = {}
         pruned_groups: set[str] = set()
         for trace_id in selected_ids:
             episode = self.episode_by_trace.pop(trace_id)

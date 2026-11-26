@@ -20,7 +20,7 @@ from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.credit import trace_advantage
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.transports.batch.types import TrainingSample
-from tests.unit.orchestrator.test_train_sink import train_trace
+from tests.unit.orchestrator.test_train_sink import received, train_trace, whole_episode
 
 FROZEN = {"name": "org/ref-model", "base_url": "http://ref:8001/v1"}
 
@@ -306,10 +306,12 @@ def test_compaction_retries_train_only_causally_used_generations():
     assert branches["accepted summary"].trainable is True
     assert branches["answer"].trainable is True
 
-    assign_advantage(trace, 1.0)
+    episode = vf.Episode(env=vf.EnvInfo(id="test", name="test"), task=trace.task, traces=[trace], ok=True)
+    [head] = received(episode).traces
+    assign_advantage(head, 1.0)
     credited = {
         int(token_id): float(advantage)
-        for sample in train_trace(trace)
+        for sample in train_trace(head)
         for token_id, trainable, advantage in zip(sample.token_ids, sample.mask, sample.advantages, strict=True)
         if trainable
     }
@@ -318,13 +320,13 @@ def test_compaction_retries_train_only_causally_used_generations():
 
 
 def test_uncredited_rl_tokens_do_not_train():
-    trace = _make_episode().traces[0]
+    [trace] = received(_make_episode()).traces
     with pytest.raises(ValueError, match="no advantages"):
         train_trace(trace)
 
 
 def test_assign_advantage_broadcasts_over_mask():
-    trace = _make_episode().traces[0]
+    [trace] = received(_make_episode()).traces
     assign_advantage(trace, 1.0)
     assert train_trace(trace)[0].advantages == pytest.approx([0.0, 0.0, 1.0, 1.0, 0.0, 1.0])
 
@@ -347,20 +349,21 @@ def test_assign_advantages_credits_each_trainable_token_once():
         ok=True,
     )
     b1, b2 = (next(b.index for b in trace.branches if b.nodes[-1].message.content == leaf) for leaf in ("B1", "B2"))
-    assert token_layout(trace) == {b1: [2, 2], b2: [1]}
+    [head] = received(whole_episode([trace])).traces
+    assert token_layout(head) == {b1: [2, 2], b2: [1]}
 
-    assign_advantages(trace, b1, [1.0, 2.0, 3.0, 4.0])
-    assign_advantages(trace, b2, [-1.0])
+    assign_advantages(head, b1, [1.0, 2.0, 3.0, 4.0])
+    assign_advantages(head, b2, [-1.0])
     credited = {
         (sample.branch_index, int(token_id)): float(advantage)
-        for sample in train_trace(trace)
+        for sample in train_trace(head)
         for token_id, trainable, advantage in zip(sample.token_ids, sample.mask, sample.advantages, strict=True)
         if trainable
     }
 
     assert credited == {(b1, 2): 1.0, (b1, 3): 2.0, (b1, 4): 3.0, (b1, 5): 4.0, (b2, 6): -1.0}
-    assert is_trainable(trace)
-    assert trace_advantage(trace) == pytest.approx(1.8)
+    assert is_trainable(head)
+    assert trace_advantage(head) == pytest.approx(1.8)
 
 
 # --------------------------------------------------------------------------

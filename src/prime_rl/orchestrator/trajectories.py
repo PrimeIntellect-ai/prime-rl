@@ -130,14 +130,20 @@ def token_versions(branch: vf.Branch) -> np.ndarray:
     return np.concatenate(parts) if parts else np.zeros(0, dtype=np.int32)
 
 
-def branch_advantages(branch: vf.Branch, per_token: bool, advantage: float | None) -> np.ndarray | None:
-    """The branch's advantages over its tokens: its nodes' token advantages for a trace
-    credited per token, else the trace's advantage on every sampled token."""
-    if per_token:
-        return branch.spread(lambda node: node.advantages)
-    if advantage is None:
-        return None
-    return np.where(branch.sampled_mask, np.float32(advantage), np.float32(0.0))
+def trainable_token_layout(trace: vf.Trace) -> dict[int, list[int]]:
+    """The trainable tokens of each of the trace's training samples, by branch index: one
+    count per sampled node of the branch that trains in it, in order. A sampled node shared
+    by several branches trains only in the first."""
+    layout: dict[int, list[int]] = {}
+    for branch, mask in iter_trainable_branches(trace):
+        counts, offset = [], 0
+        for node in branch.nodes:
+            count = int(np.count_nonzero(mask[offset : offset + len(node.mask)]))
+            offset += len(node.mask)
+            if count:
+                counts.append(count)
+        layout[branch.index] = counts
+    return layout
 
 
 @dataclass

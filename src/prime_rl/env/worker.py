@@ -15,15 +15,17 @@ import zmq
 import zmq.asyncio
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.env import EnvConfig
-from verifiers.v1.delta import DeltaStreamer, dump
+from verifiers.v1.delta import DeltaStreamer
 from verifiers.v1.env import RunSlot
-from verifiers.v1.episode import Episode
+from verifiers.v1.episode import Episode, GroupInfo
 from verifiers.v1.restore import arm_hold_watchdogs, release_all, restore_entry, save_all
 from verifiers.v1.runtimes import PrimeBackend, Snapshot
 from verifiers.v1.task import Task
+from verifiers.v1.trace import Error, RunInfo
 from verifiers.v1.utils.loaders import load_environment
 
 from prime_rl.env.encoding import pack
+from prime_rl.env.heads import episode_head
 from prime_rl.env.types import (
     BaseResponse,
     CancelRequest,
@@ -36,8 +38,8 @@ from prime_rl.env.types import (
     RunResponse,
     SaveRequest,
     SaveResponse,
-    TraceSummary,
 )
+from prime_rl.monitors.file.traces.index import index_record
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import confined, is_file_name
 
@@ -76,6 +78,48 @@ def set_episode_hook(hook: EpisodeHook | None) -> None:
     a delivered one whose client cancels the run within `LATE_CANCEL_SECONDS`."""
     global _episode_hook
     _episode_hook = hook
+
+
+def progress_delta(delta: dict) -> dict | None:
+    """What a trace delta tells about the trace's progress: its phase, its model calls'
+    usage and sub-agent sessions, its errors; None if nothing."""
+    progress: dict = {"trace": delta["trace"]}
+    if delta.get("discard"):
+        progress["discard"] = True
+    if "open" in delta:
+        progress["open"] = {}
+    if calls := delta.get("calls"):
+        progress["calls"] = [
+            {
+                "usage": call.get("usage"),
+                **({"acp": {"agent_session_id": acp.get("agent_session_id")}} if (acp := call.get("acp")) else {}),
+            }
+            for call in calls
+        ]
+    if changed := {key: value for key, value in (delta.get("set") or {}).items() if key in ("errors", "timing")}:
+        progress["set"] = changed
+    return progress if len(progress) > 1 else None
+
+
+def stamp_dispatch(episode: Episode, run: RunInfo | None, env_name: str | None, group_id: str | None) -> None:
+    """Stamp what the dispatch knows of an episode, before its head and record are built: its
+    identity as the orchestrator knows it, the run, each trace's kind and dispatch. A timed-out
+    train trace fails: training keeps it out of the batch like any other failure, while eval
+    keeps it as a scored outcome."""
+    if env_name is not None:
+        episode.env.name = env_name
+    if group_id is not None:
+        episode.group = GroupInfo(id=group_id)
+    if run is None:
+        return
+    episode.record_run(run)
+    for trace in episode.traces:
+        trace.info["kind"] = run.work.type
+        trace.info["dispatch"] = {"step": run.work.step, "time": trace.timing.start}
+        if run.work.type == "train" and trace.is_timeout and not trace.has_error:
+            trace.errors.append(Error(type="Timeout", message=f"Trace stopped by {trace.stop_condition}"))
+            trace.ok = False
+            episode.ok = False
 
 
 class _Keeping:
@@ -225,10 +269,12 @@ class EnvWorker:
             (slot,) = self.env.slots(task)
 
         async def send_delta(delta: dict) -> None:
+            if not req.live and (delta := progress_delta(delta)) is None:
+                return
             await self.frontend.send_multipart([client_id, request_id, b"delta", pack(delta)], copy=False)
 
         # The gate spans requests: it bounds this worker's episodes in flight. The
-        # streamer ships each trace as it changes; the reply below carries only the rest.
+        # streamer ships each trace as it changes; the reply below carries only its head.
         hook = _episode_hook
         self._slots[request_id.decode()] = slot
         try:
@@ -250,12 +296,17 @@ class EnvWorker:
                     self._kept[request_id] = (hook, episode)
         finally:
             self._slots.pop(request_id.decode(), None)
-        return RunResponse(
-            head=dump(episode, exclude={"traces"}),
-            traces=[
-                TraceSummary(id=trace.id, nodes=len(trace.nodes), calls=len(trace.calls)) for trace in episode.traces
-            ],
-        )
+        stamp_dispatch(episode, req.run, req.env_name, req.group_id)
+
+        def reply() -> RunResponse:
+            response = RunResponse(head=episode_head(episode).model_dump(mode="json"))
+            if req.record is not None:
+                response.record = episode.to_json(float_decimals=req.record.float_decimals)
+                response.index = index_record(episode)
+            return response
+
+        # A long episode's head and record take a while to build: off the loop.
+        return await asyncio.to_thread(reply)
 
     async def _save(self, req: SaveRequest) -> SaveResponse:
         try:

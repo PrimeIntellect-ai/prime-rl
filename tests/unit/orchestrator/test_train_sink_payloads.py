@@ -16,7 +16,7 @@ from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.types import Progress
 from prime_rl.transports.batch.types import PAYLOAD_INFO_KEY
 from prime_rl.transports.payload import PayloadHook, sample_payload_urls, wait_for_deletes
-from tests.unit.orchestrator.test_train_sink import episode, trace
+from tests.unit.orchestrator.test_train_sink import episode, trace, whole_episode
 
 
 def kept(hook: PayloadHook, **kwargs) -> vf.Trace:
@@ -24,7 +24,7 @@ def kept(hook: PayloadHook, **kwargs) -> vf.Trace:
     t = trace(**kwargs)
     for node in t.nodes:
         node.routed_experts = np.ones((len(node.token_ids), 2, 2), dtype=np.uint8)
-    hook.keep(episode([t], keep=False), "rl")
+    hook.keep(whole_episode([t]), "rl")
     return t
 
 

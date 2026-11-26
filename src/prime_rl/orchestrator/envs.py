@@ -9,9 +9,8 @@ The orchestrator owns task selection and loads the dataset once. Requests carry
 ``task_data``; each worker validates it into the taskset's declared ``TaskData`` type
 and executes it through its own Verifiers env. Workers do not load the dataset.
 
-The pool returns one ``Episode`` per run request, whose traces we validate into
-``Trace[WireTaskData]`` — real ``vf.Trace``\\ s (never loose dicts) whose task
-keeps the env's task-specific fields as extras (``WireTaskData`` allows them).
+The pool returns the head of one ``Episode`` per run request (``prime_rl.env.heads``):
+its workers keep the episode itself and its training samples.
 """
 
 from __future__ import annotations
@@ -30,7 +29,8 @@ from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.control.types import ConfigUpdate, Reconfigurable
 from prime_rl.env import EnvClient
-from prime_rl.env.types import RestoreRef, TrainRequest
+from prime_rl.env.heads import EpisodeHead
+from prime_rl.env.types import RecordRequest, RestoreRef, TrainRequest
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.clients import InferenceClient, connect_frozen_client
 from prime_rl.utils.logger import format_time, get_logger
@@ -136,15 +136,20 @@ class Env:
         cache_salt: str | None,
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
+        run: vf.RunInfo | None = None,
+        record: RecordRequest | None = None,
+        live: bool = True,
+        group_id: str | None = None,
         restore: str | None = None,
         request_id: str | None = None,
-    ) -> vf.WireEpisode:
-        """Run and return the native typed episode.
-        ``on_delta`` sees each delta of the env worker pool's stream — a turn or a phase
-        change of one of the episode's traces — as it lands. ``restore`` is the path of a
-        restore file (``save``): the run continues that rollout. ``request_id`` names the
-        run in what ``save`` returns. The run goes to the replica with the fewest runs in
-        flight. A train run's worker keeps its training samples."""
+    ) -> EpisodeHead:
+        """Run and return the head of the episode, holding its record when ``record`` asks
+        for it. ``on_delta`` sees each delta of the env worker pool's stream — a turn or a
+        phase change of one of the episode's traces, or only its progress without ``live`` —
+        as it lands. ``restore`` is the path of a restore file (``save``): the run continues
+        that rollout. ``request_id`` names the run in what ``save`` returns. The run goes to
+        the replica with the fewest runs in flight. A train run's worker keeps its training
+        samples."""
         if cache_salt is not None:
             sampling = sampling.model_copy(update={"cache_salt": cache_salt})
         replica = min(range(len(self.env_clients)), key=self._in_flight.__getitem__)
@@ -157,6 +162,11 @@ class Env:
                 sampling=sampling,
                 on_delta=on_delta,
                 train=self.train_request(),
+                run=run,
+                record=record,
+                live=live,
+                env_name=self.name,
+                group_id=group_id,
                 restore=restore,
                 request_id=request_id,
             )

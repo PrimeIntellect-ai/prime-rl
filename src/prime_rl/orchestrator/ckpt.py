@@ -35,10 +35,9 @@ from typing import Any
 
 import msgspec
 import torch
-import verifiers.v1 as vf
-from verifiers.v1.delta import dump
 
 from prime_rl.configs.orchestrator import CheckpointConfig
+from prime_rl.env.heads import EpisodeHead
 from prime_rl.orchestrator.metrics import TrainEpisodes
 from prime_rl.orchestrator.train_sink import QueuedSample
 from prime_rl.orchestrator.train_source import TrainSource
@@ -315,12 +314,11 @@ async def persist_open_work(work: dict, rollouts: Path) -> tuple[int, int]:
     return sum(map(len, refs.values())), sum(map(len, written))
 
 
-def _dump_episode(episode: vf.Episode) -> dict:
-    """An episode as the checkpoint file holds it: its nodes' token streams as raw bytes,
-    which pickle without a Python object per token. A served episode's type is a
-    parametrized generic, which pickle cannot find by name, so the file holds it dumped."""
-    dumped = dump(episode, context={"token_arrays": True})
-    for trace in dumped["traces"]:
+def _dump_episode(episode: EpisodeHead) -> dict:
+    """An episode's head as the checkpoint file holds it (`EpisodeHead.to_checkpoint`), its
+    training samples read from the checkpoint."""
+    dumped = episode.to_checkpoint()
+    for trace in dumped["head"]["traces"]:
         if payload := trace["info"].get(PAYLOAD_INFO_KEY):
             trace["info"][PAYLOAD_INFO_KEY] = {**payload, "url": PERSISTED_URL}
     return dumped
@@ -332,12 +330,12 @@ def _dump_sample(sample: QueuedSample | SampleRef) -> QueuedSample | SampleRef:
     return msgspec.structs.replace(sample, url=PERSISTED_URL)
 
 
-def _load_episode(dumped: dict, arrays_url: str) -> vf.WireEpisode:
-    for trace in dumped["traces"]:
+def _load_episode(dumped: dict, arrays_url: str) -> EpisodeHead:
+    for trace in dumped["head"]["traces"]:
         payload = trace["info"].get(PAYLOAD_INFO_KEY)
         if payload and payload["url"] == PERSISTED_URL:
             payload["url"] = arrays_url
-    return vf.WireEpisode.model_validate(dumped)
+    return EpisodeHead.from_checkpoint(dumped)
 
 
 def _load_sample(sample: QueuedSample | SampleRef, arrays_url: str) -> QueuedSample | SampleRef:

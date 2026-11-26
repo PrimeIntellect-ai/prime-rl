@@ -15,6 +15,7 @@ from verifiers.v1 import graph
 from verifiers.v1.episode import EnvInfo, Episode
 from verifiers.v1.types import SamplerSupport, TurnTokens
 
+from prime_rl.env.heads import episode_head
 from prime_rl.orchestrator import batch as planner
 from prime_rl.orchestrator.train_sink import queued_samples
 from prime_rl.trainer.rl.data import DataLoader
@@ -86,7 +87,7 @@ def _refs(episodes: list[vf.Episode], seq_len: int) -> list[SampleRef]:
     """The orchestrator's references to the samples the episodes' worker kept."""
     refs = []
     for episode in episodes:
-        trace = episode.traces[0]
+        trace = episode_head(episode).traces[0]
         trace.info["advantage"] = 1.0
         refs += [
             sample.ref

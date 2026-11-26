@@ -15,8 +15,10 @@ import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import GRPOAlgoConfig
 from prime_rl.configs.orchestrator import CheckpointConfig, CurriculumConfig, OrchestratorConfig
+from prime_rl.env.heads import EpisodeHead, recorded_head
 from prime_rl.env.types import RestoreRef
 from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.orchestrator.algo.routing import assign_advantages
 from prime_rl.orchestrator.ckpt import (
     ARRAYS_DIR,
     RESUMED_DIR,
@@ -49,7 +51,7 @@ from prime_rl.transports import payload
 from prime_rl.transports.payload import PayloadHook, delete_payloads, wait_for_deletes
 from prime_rl.utils import pathing
 from prime_rl.utils.pathing import kept_ckpt_steps
-from tests.unit.orchestrator.test_train_sink import episode, trace
+from tests.unit.orchestrator.test_train_sink import episode, trace, whole_episode
 
 
 @pytest.fixture(autouse=True)
@@ -102,7 +104,7 @@ def kept(hook: PayloadHook) -> vf.Trace:
     t = trace()
     for node in t.nodes:
         node.routed_experts = np.ones((len(node.token_ids), 2, 2), dtype=np.uint8)
-    hook.keep(episode([t], keep=False), "rl")
+    hook.keep(whole_episode([t]), "rl")
     return t
 
 
@@ -129,7 +131,7 @@ def test_the_sink_state_round_trips_through_the_checkpoint_file(tmp_path):
                 dataclasses.replace(x, ref=msgspec.structs.replace(x.ref, url="file:///arrays")) for x in samples
             ]
             assert ENCODER.encode(resumed.pending_batch[trace_id]) == ENCODER.encode(restored)
-            assert isinstance(resumed.episode_by_trace[trace_id], vf.WireEpisode)
+            assert isinstance(resumed.episode_by_trace[trace_id], EpisodeHead)
             assert resumed.episode_by_trace[trace_id].id == s.episode_by_trace[trace_id].id
         assert [e.id for e in resumed.pending_groups["open"]] == [e.id for e in s.pending_groups["open"]]
         # The open group finalizes with its last episode after the resume.
@@ -167,7 +169,10 @@ def test_open_work_round_trips_through_the_checkpoint_file(tmp_path):
         error=vf.Error(type="Boom", message="failed"),
     )
     cancellation = GroupCancellation(kind="train", env_name="test", group_id="gc", step=2, count=2, reason="overload")
-    queued = episode([trace()], group="gq")
+    # A result the orchestrator has not taken yet still holds the record it logs on arrival.
+    queued = recorded_head(whole_episode([trace()], group="gq"))
+    record = queued._record
+    assign_advantages(queued.traces[0], 0, [0.5, -0.5])
     work = open_work(
         results=[queued, failure, cancellation],
         groups=[
@@ -192,8 +197,9 @@ def test_open_work_round_trips_through_the_checkpoint_file(tmp_path):
     loaded = read_open_work(tmp_path, "file:///arrays")
 
     first, second, third = loaded["results"]
-    assert isinstance(first, vf.WireEpisode) and first.id == queued.id and first.group.id == "gq"
+    assert isinstance(first, EpisodeHead) and first.id == queued.id and first.group.id == "gq"
     assert first.run.work.type == "train"
+    assert first.take_record() == record and first.traces[0].branch_advantages[0].tolist() == [0.5, -0.5]
     assert second == failure and third == cancellation
     (group,) = loaded["groups"]
     assert group.group_id == group_id and group.episodes_to_schedule == 1 and group.emitted == 1
@@ -319,6 +325,7 @@ def dispatcher(env: FakeEnv) -> Dispatcher:
     d.train_scheduling_disabled = False
     d.policy = Policy(version=3, model_name="m")
     d.policy_weights_change = True
+    d.run_id, d.run_name = "run", None
     d.cache_salt_prefix = "salt"
     d.rate_limiter = None
     d.current_inflight = 0

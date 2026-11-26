@@ -5,13 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
-import verifiers.v1 as vf
 
 from prime_rl.orchestrator.credit import advantage_values
 from prime_rl.orchestrator.curriculum.gates.base import AdmissionGate
 
 if TYPE_CHECKING:
     from prime_rl.configs.orchestrator import AdvRangeGateConfig
+    from prime_rl.env.heads import EpisodeHead
 
 
 class AdvRangeGate(AdmissionGate):
@@ -24,7 +24,7 @@ class AdvRangeGate(AdmissionGate):
     def __init__(self, config: AdvRangeGateConfig) -> None:
         self.config = config
 
-    def admit(self, group: list[vf.Episode]) -> bool:
+    def admit(self, group: list[EpisodeHead]) -> bool:
         parts = [
             values
             for episode in group
