@@ -25,7 +25,7 @@ import verifiers.v1 as vf
 from prime_rl import monitors
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
 from prime_rl.control.server import serve
-from prime_rl.env.heads import EpisodeHead, recorded_head
+from prime_rl.env.heads import EpisodeHead, episode_head, recorded_head
 from prime_rl.eval.control import create_app
 from prime_rl.orchestrator import live
 from prime_rl.orchestrator.annotations import log_arrival, stamp_batch
@@ -51,6 +51,16 @@ from prime_rl.utils.pathing import get_config_dir
 
 # How often ``run_epoch`` re-checks for a superseding checkpoint while it waits for episodes.
 POLL_INTERVAL_S = 2.0
+
+
+def restored_head(episode: vf.Episode) -> EpisodeHead:
+    """The head of an episode a resumed run restored, holding its record as an env worker
+    would return it: only when a monitor persists it, rounded as the file monitor writes."""
+    group_id = episode.group.id if episode.group is not None else None
+    request = monitors.record_request("eval", group_id)
+    if request is None:
+        return episode_head(episode)
+    return recorded_head(episode, float_decimals=request.float_decimals)
 
 
 class EvalRunner:
@@ -206,7 +216,7 @@ class EvalRunner:
 
         pending = {env_name for env_name in fired if self.eval_sink.batch_size_for(env_name) > 0}
         for episode in restored:
-            await self.land(recorded_head(episode), pending)
+            await self.land(restored_head(episode), pending)
         cancellation_task: asyncio.Task[int] | None = None
         newer_step: int | None = None
 
