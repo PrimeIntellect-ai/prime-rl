@@ -115,7 +115,7 @@ Inkling 2 Small (TP8 + EP, online FP8 experts, 32k window, one node, synthetic a
 ## SFT
 
 Each model also has an `sft.toml` (its trainer setup from `gpu/h200.toml` and sequence length from
-`rl.toml`) for SFT on `PrimeIntellect/INTELLECT-3-SFT-10K` (all six splits) with `data/sft.toml`:
+`rl.toml`) for SFT on `PrimeIntellect/INTELLECT-3-SFT-10K` (math split) with `data/sft.toml`:
 
 ```bash
 uv run sft @ recipes/<model>/sft.toml @ recipes/data/sft.toml --slurm.partition <partition> --output-dir <shared-dir>
