@@ -574,8 +574,8 @@ ADMIN_TIMEOUT_S = float(os.environ.get("PRIME_ADMIN_TIMEOUT_S", "300"))
 # can take longer than the other admin ops.
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
 # Per-attempt read timeout of a /pause or /resume. A ``keep`` pause and a resume return within an engine step,
-# so an attempt that takes longer is stuck (e.g. on a connection that silently died) and is better retried on
-# a new connection than waited out; the total budget stays twice ``ADMIN_TIMEOUT_S``.
+# so an attempt that takes longer is stuck and is better retried than waited out; the total budget stays twice
+# ``ADMIN_TIMEOUT_S``.
 PAUSE_ATTEMPT_TIMEOUT_S = 60.0
 
 
@@ -585,16 +585,16 @@ async def _admin_post(
     *,
     timeout_s: float = ADMIN_TIMEOUT_S,
     attempt_timeout_s: float | None = None,
-    reconnect: bool = False,
+    new_connection: bool = False,
     retry_errors: bool = True,
     **kwargs,
 ) -> None:
     """POST an admin op with a bounded per-attempt timeout, retrying transient errors unless ``retry_errors`` is off.
 
     Each attempt waits at most ``attempt_timeout_s`` (default ``timeout_s``) for the response, and the total
-    wall-clock budget across all retries is twice ``timeout_s``. With ``reconnect``, every retry is sent on a new
-    connection instead of the client's pool: a pooled keep-alive connection can die without the client noticing,
-    and every request sent on it then times out, retries included.
+    wall-clock budget across all retries is twice ``timeout_s``. With ``new_connection``, every attempt is sent on a
+    new connection instead of the client's pool: a pooled keep-alive connection can die without the client noticing,
+    and every request sent on it then times out, retries and later operations included.
     """
     timeout = httpx.Timeout(connect=10.0, read=attempt_timeout_s or timeout_s, write=60.0, pool=10.0)
     async for attempt in AsyncRetrying(
@@ -604,21 +604,27 @@ async def _admin_post(
         reraise=True,
     ):
         with attempt:
-            if reconnect and attempt.retry_state.attempt_number > 1:
-                async with AsyncClient(base_url=client.base_url, headers=client.headers) as fresh:
-                    response = await fresh.post(path, timeout=timeout, **kwargs)
+            if new_connection:
+                response = await _post_on_new_connection(client, path, timeout=timeout, **kwargs)
             else:
                 response = await client.post(path, timeout=timeout, **kwargs)
             response.raise_for_status()
 
 
+async def _post_on_new_connection(client: AsyncClient, path: str, **kwargs) -> httpx.Response:
+    """POST on a connection of its own to ``client``'s engine, closed afterwards."""
+    async with AsyncClient(base_url=client.base_url, headers=client.headers) as fresh:
+        return await fresh.post(path, **kwargs)
+
+
 async def _post_all(admin_clients: list[AsyncClient], path: str, **kwargs) -> list[float]:
-    """POST ``path`` to every engine concurrently; returns each engine's request time. A retry goes out on a
-    new connection: one engine's dead pooled connection must not fail an operation that waits for all of them."""
+    """POST ``path`` to every engine concurrently; returns each engine's request time. Every attempt goes out on
+    a new connection: one engine's dead pooled connection must not stall an operation that waits for all of them
+    (a weight update keeps every engine paused meanwhile). These operations run a few times per step."""
 
     async def post(client: AsyncClient) -> float:
         start = time.perf_counter()
-        await _admin_post(client, path, reconnect=True, **kwargs)
+        await _admin_post(client, path, new_connection=True, **kwargs)
         return time.perf_counter() - start
 
     return await asyncio.gather(*[post(client) for client in admin_clients])
