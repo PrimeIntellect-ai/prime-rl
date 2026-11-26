@@ -2,6 +2,7 @@ import json
 import os
 import socket
 import sys
+import sysconfig
 import tempfile
 import time
 from pathlib import Path
@@ -59,7 +60,6 @@ INFERENCE_CONFIG = "inference.json"
 ENVS_DIR = "envs"
 ROLLOUT_STORE_DIR = Path(tempfile.gettempdir()) / "prime-rl-rollout-store"
 
-MODELEXPRESS_BIN_DIR = Path(__file__).resolve().parents[3] / "third_party" / "modelexpress" / "bin"
 MODELEXPRESS_READY_TIMEOUT_S = 120
 
 
@@ -129,22 +129,23 @@ def wait_for_port(host: str, port: int, processes: ProcessGroup, name: str, time
 
 
 def start_modelexpress(processes: ProcessGroup, port: int, log_dir: Path, base_env: dict[str, str]) -> None:
-    """Start a run-scoped ModelExpress server backed by its own Redis."""
-    server, redis = MODELEXPRESS_BIN_DIR / "modelexpress-server", MODELEXPRESS_BIN_DIR / "redis-server"
-    if not (server.is_file() and redis.is_file()):
+    """Start a run-scoped ModelExpress server backed by its own Valkey, both from the modelexpress-server package."""
+    bin_dir = Path(sysconfig.get_path("scripts"))
+    server, valkey = bin_dir / "modelexpress-server", bin_dir / "valkey-server"
+    if not (server.is_file() and valkey.is_file()):
         raise FileNotFoundError(
-            f"ModelExpress server binaries are missing in {MODELEXPRESS_BIN_DIR}; run scripts/install_modelexpress.sh"
+            f"modelexpress-server and valkey-server are missing in {bin_dir}; install the `inference` extra"
         )
     state_dir = log_dir / "modelexpress"
     (state_dir / "cache").mkdir(parents=True, exist_ok=True)
 
-    redis_port = get_free_port()
+    valkey_port = get_free_port()
     processes.start(
-        "redis",
+        "valkey",
         [
-            str(redis),
+            str(valkey),
             "--port",
-            str(redis_port),
+            str(valkey_port),
             "--bind",
             "127.0.0.1",
             "--save",
@@ -155,9 +156,9 @@ def start_modelexpress(processes: ProcessGroup, port: int, log_dir: Path, base_e
             str(state_dir),
         ],
         env=base_env,
-        log_path=state_dir / "redis.log",
+        log_path=state_dir / "valkey.log",
     )
-    wait_for_port("127.0.0.1", redis_port, processes, "redis", MODELEXPRESS_READY_TIMEOUT_S)
+    wait_for_port("127.0.0.1", valkey_port, processes, "valkey", MODELEXPRESS_READY_TIMEOUT_S)
 
     processes.start(
         "modelexpress",
@@ -173,7 +174,7 @@ def start_modelexpress(processes: ProcessGroup, port: int, log_dir: Path, base_e
         env={
             **base_env,
             "MX_METADATA_BACKEND": "redis",
-            "REDIS_URL": f"redis://127.0.0.1:{redis_port}",
+            "REDIS_URL": f"redis://127.0.0.1:{valkey_port}",
             "MX_HEARTBEAT_TIMEOUT_SECS": "31536000",
         },
         log_path=state_dir / "server.log",
@@ -415,7 +416,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
         "launch_modelexpress": mx_broadcast is not None and config.slurm.launch_modelexpress,
         "modelexpress_host": mx_broadcast.host if mx_broadcast is not None else "",
         "modelexpress_port": mx_broadcast.port if mx_broadcast is not None else 0,
-        "modelexpress_redis_port": 6380 if mx_broadcast is not None and mx_broadcast.port == 6379 else 6379,
+        "modelexpress_valkey_port": 6380 if mx_broadcast is not None and mx_broadcast.port == 6379 else 6379,
     }
 
     ckpt_dir = get_ckpt_dir(config.trainer.ckpt.output_dir or config.run_dir) if config.trainer.ckpt else None
