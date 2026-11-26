@@ -30,6 +30,7 @@ staging_buffers_count = 2          # overlap the next read with the current inst
 - The first update is slower while MX plans the transfer; later updates reuse the plan.
 - Inference is paused only after the trainer has published the version. A failed update leaves inference paused; restart the trainer and inference together, since there is no rollback.
 - Trainer rank 0 and the orchestrator must share the broadcast directory, which holds only rendezvous markers, not weights.
+- MX transfers floating-point tensors only. Integer tensors are lookup tables that training never changes, such as DeepSeek-V4's hash-routing table `tid2eid`: inference keeps the values it loaded from the checkpoint.
 
 ## Limitations
 

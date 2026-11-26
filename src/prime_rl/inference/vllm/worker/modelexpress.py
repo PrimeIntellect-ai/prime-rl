@@ -19,6 +19,40 @@ else:
     Worker = object
 
 
+def keep_integer_parameters_as_buffers(model: nn.Module) -> list[str]:
+    """Re-register the engine's integer parameters as non-persistent buffers, keeping their loaded values.
+
+    ModelExpress publishes only floating-point trainer tensors, and a full refit must write every engine parameter,
+    so an integer parameter fails every update. Integer parameters are lookup tables the trainer never changes, such
+    as DeepSeek-V4's hash-routing table `tid2eid`, so they leave the refit's coverage as buffers.
+
+    The refit installs through vLLM's layerwise reload, which rebuilds each layer from the tensors recorded at load
+    and copies the rebuilt values back into the live ones. The table is dropped from that record, so the reload
+    neither rebuilds it nor waits for it, and it is non-persistent, so the copy-back skips it while unwritten: the
+    live table keeps the values loaded from the checkpoint.
+
+    Other modules may hold the same parameter as a plain attribute (DeepSeek-V4's routed experts keep the gate's table
+    as `hash_indices_table`). Those references move to the buffer too: the refit restores plain tensor attributes
+    with `setattr`, which would try to register a leftover `Parameter` as a new parameter of that module.
+    """
+    from vllm.model_executor.model_loader.reload.layerwise import get_layerwise_info
+
+    moved, buffers = [], {}
+    for module_name, module in model.named_modules():
+        for name, param in list(module.named_parameters(recurse=False)):
+            if not param.is_floating_point():
+                del module._parameters[name]
+                module.register_buffer(name, param.data, persistent=False)
+                get_layerwise_info(module).restore_metadata[0].pop(name, None)
+                buffers[id(param)] = getattr(module, name)
+                moved.append(f"{module_name}.{name}" if module_name else name)
+    for module in model.modules():
+        for attribute, value in list(vars(module).items()):
+            if id(value) in buffers:
+                object.__setattr__(module, attribute, buffers[id(value)])
+    return moved
+
+
 class ModelExpressWeightUpdateWorker(Worker):
     def liveness_probe(self) -> None:
         return None
@@ -45,10 +79,12 @@ class ModelExpressWeightUpdateWorker(Worker):
         hf_config = AutoConfig.from_pretrained(model_config.model, trust_remote_code=model_config.trust_remote_code)
         chain = get_custom_causal_lm_cls(hf_config).conversion_chain(hf_config)
         worker_id = f"{session_id}:{rank_offset + self.rank}"
+        model = cast(nn.Module, self.model_runner.get_model())
+        keep_integer_parameters_as_buffers(model)
         self._generator = ModelExpressGeneratorClient.initialize(
             ModelExpressGeneratorConfig(
                 engine_context=VllmGeneratorContext(
-                    model=cast(nn.Module, self.model_runner.get_model()),
+                    model=model,
                     vllm_config=self.vllm_config,
                     convert_native_to_hf=(lambda tensors: apply_prime_to_hf(tensors, chain)) if chain else None,
                 ),
