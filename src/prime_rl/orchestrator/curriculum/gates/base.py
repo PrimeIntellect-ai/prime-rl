@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import verifiers.v1 as vf
+if TYPE_CHECKING:
+    from prime_rl.env.heads import EpisodeHead
 
 
 class AdmissionGate:
     """Base class for user-authored training-sample admission policies."""
 
-    def admit(self, group: list[vf.Episode]) -> bool:
-        """Return whether a finalized group should enter the training batch."""
+    def admit(self, group: list[EpisodeHead]) -> bool:
+        """Return whether a finalized group should enter the training batch. A resume
+        re-runs the groups that had not shipped, so a group admitted before the
+        checkpoint can come back once more, with new rollouts."""
         return True
 
     def state_dict(self) -> dict[str, Any]:

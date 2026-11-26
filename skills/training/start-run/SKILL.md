@@ -1,11 +1,13 @@
 ---
 name: start-run
-description: How to launch prime-rl training runs — the `rl`, `sft`, and `inference` entrypoints, their config classes, and single-node/SLURM/dry-run modes. Use when starting a run or picking the right entrypoint. Standalone evals are the `eval` skill.
+description: Launch local or SLURM prime-rl training runs with the rl, sft, and inference entrypoints, including dry runs. Model Factory uses model-factory; standalone evals use eval.
 ---
 
 # Start a run
 
-All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/to.toml` plus CLI overrides.
+For "run this on model factory", use the [model-factory skill](../../model-factory/SKILL.md). Explicit SLURM jobs use this skill even on a Model Factory cluster.
+
+The local entrypoints below run via `uv run <command>` and accept TOML configs via `@ path/to.toml` plus CLI overrides.
 
 SLURM launches write generated scripts and coordination files under `<run_dir>/launcher/`, with batch logs under `launcher/logs/`. Local launches do not create this directory. Every launch writes configs and `command.txt` under `configs/attempt_<n>/`. `configs/latest` points to the current attempt. The command uses shell-safe quoting.
 
@@ -22,8 +24,7 @@ SLURM launches write generated scripts and coordination files under `<run_dir>/l
 - Bool toggles: bare `--flag` enables, `--no-flag` disables (nested too).
 - Lists: space-separated or JSON literal. Dicts: JSON literal, deep-merged with file values.
 - Optional sub-configs (`WandbMonitorConfig | None`): bare `--monitors.wandb` enables defaults; `--monitors.wandb @ wandb.toml` enables from a file; `--no-monitors.wandb` disables.
-- Discriminated unions are switched by the `type` tag (e.g. `--optimizer.type muon`).
-- Validation aliases let renamed fields keep working; legacy keys can be remapped in a `model_validator(mode="before")`.
+- Discriminated unions are switched by the `type` tag (e.g. `--optim.type muon`).
 - Auto-generated `--help` panels from `Field(description=...)` or PEP 224 docstrings.
 - Friendly errors: required-field boxes, validator errors point at the offending flag, unknown flags get a "did you mean" hint.
 - State-only optimizer offload is enabled by default (`model.offload = "optimizer"`).
@@ -73,8 +74,6 @@ uv run sft @ examples/basic/reverse-text/sft.toml --dry-run
 
 ## `inference` — vLLM server
 
-Router session cleanup runs on successful, failed, and cancelled episodes, including discarded retry traces. Cleanup failures are logged per session and do not disable subsequent releases.
-
 OpenAI-compatible API plus prime-rl custom endpoints (`/update_weights`, `/load_lora_adapter`, `/init_broadcaster`). Always use this entrypoint — never `vllm serve` directly. It starts a `vllm-router` on `server.port` (default 8000, the client-facing URL) fronting the engine on `backend_port` (default 8100); admin endpoints must target the engine port directly. The default `sticky_least_loaded` policy keeps each rollout on one replica while assigning new sessions to the least-loaded replica; RL and SFT online eval automatically release completed sessions.
 
 ```bash
@@ -98,7 +97,7 @@ curl http://localhost:8000/v1/chat/completions \
 
 ## Exporting checkpoints
 
-Trainer checkpoints are DCP-sharded (`<run_dir>/checkpoints/step_{n}/trainer`). Convert to HF safetensors with `uv run python tools/convert_dcp_to_bf16.py <run_dir>/checkpoints/step_{n}` (writes `<ckpt_dir>/weights`, serveable via `uv run inference --vllm.model <dir>`; model config auto-read from the run’s `configs/latest/resolved/trainer.json`/`sft.json`; multi-rank via `torchrun --nproc-per-node N`; full fine-tunes only, LoRA rejected). Quantize a bf16 HF dir to blockwise FP8 with `tools/convert_bf16_to_fp8.py <dir>` (vLLM-native format), or straight from a checkpoint with `tools/convert_dcp_to_fp8.py <ckpt_dir>` (rank-parallel, writes only `<ckpt_dir>/weights-FP8`, no bf16 on disk); dequantize fp8-only releases with `tools/convert_fp8_to_bf16.py <dir>`. Caveat: on SM120 GPUs (RTX PRO 6000) vLLM 0.26 picks `CutlassFp8BlockScaledMMKernel` for blockwise-fp8 checkpoints and it silently degrades outputs — serve with `VLLM_DISABLED_KERNELS=CutlassFp8BlockScaledMMKernel,MarlinFP8ScaledMMLinearKernel` to fall back to the Triton kernel.
+Trainer checkpoints are DCP-sharded (`<run_dir>/checkpoints/step_{n}/trainer`). Convert to HF safetensors with `uv run python tools/convert_dcp_to_bf16.py <run_dir>/checkpoints/step_{n}` (writes `<ckpt_dir>/weights`, serveable via `uv run inference --vllm.model <dir>`; model config auto-read from the run’s `configs/latest/resolved/trainer.json`/`sft.json`/`pretrain.json`; one CPU process with `--workers N` for layer concurrency; full fine-tunes only, LoRA rejected). Quantize a bf16 HF dir to blockwise FP8 with `tools/convert_bf16_to_fp8.py <dir>` (vLLM-native format), or straight from a checkpoint with `tools/convert_dcp_to_fp8.py <ckpt_dir>` (CPU streaming with `--workers N`, writes only `<ckpt_dir>/weights-FP8`, no bf16 on disk; `--device cuda` enables GPU quantization, default `cpu`); dequantize fp8-only releases with `tools/convert_fp8_to_bf16.py <dir>`. Caveat: on SM120 GPUs (RTX PRO 6000) vLLM 0.26 picks `CutlassFp8BlockScaledMMKernel` for blockwise-fp8 checkpoints and it silently degrades outputs — serve with `VLLM_DISABLED_KERNELS=CutlassFp8BlockScaledMMKernel,MarlinFP8ScaledMMLinearKernel` to fall back to the Triton kernel.
 
 ## Summary
 

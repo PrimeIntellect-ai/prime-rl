@@ -67,11 +67,8 @@ def propagate_shared_fields(data: Any) -> Any:
         "inference.vllm.model",
         "orchestrator.model.name",
     )
-    propagate(
-        "model.vlm",
-        "trainer.model.vlm",
-        "orchestrator.model.vlm",
-    )
+    propagate("model.vlm", "trainer.model.vlm")
+    propagate("model.init", "trainer.model.init")
 
     # [log]
     propagate("log.level", "trainer.log.level", "orchestrator.log.level", "inference.log.level")
@@ -83,16 +80,14 @@ def propagate_shared_fields(data: Any) -> Any:
     )
 
     # [ckpt] leaves. (Bare empty ``[ckpt]`` block enablement is at the end.)
-    # ``orchestrator.ckpt`` has no ``output_dir`` field — trainer-only.
-    propagate("ckpt.output_dir", "trainer.ckpt.output_dir")
-    propagate("ckpt.interval", "trainer.ckpt.interval", "orchestrator.ckpt.interval")
-    propagate("ckpt.keep_last", "trainer.ckpt.keep_last")
-    propagate("ckpt.keep_interval", "trainer.ckpt.keep_interval")
+    for leaf in ("output_dir", "interval", "keep_last", "keep_interval"):
+        propagate(f"ckpt.{leaf}", f"trainer.ckpt.{leaf}", f"orchestrator.ckpt.{leaf}")
+    propagate("ckpt.rollouts", "orchestrator.ckpt.rollouts")
+    propagate("ckpt.async_save", "trainer.ckpt.async_save")
 
     # [monitors.wandb] leaves. (Bare empty ``[monitors.wandb]`` block enablement is at the end.)
-    # ``monitors.wandb.name`` flows verbatim to both sub-configs — shared W&B mode is
-    # always on for the rl entrypoint, so the legacy ``-trainer`` /
-    # ``-orchestrator`` suffix split is gone.
+    # ``monitors.wandb.name`` flows verbatim to both sub-configs: the rl entrypoint
+    # always runs W&B in shared mode, so both log to one run.
     for leaf in ("project", "entity", "name", "group", "tags", "offline"):
         propagate(
             f"monitors.wandb.{leaf}",
@@ -103,15 +98,13 @@ def propagate_shared_fields(data: Any) -> Any:
     # [monitors.file] leaf. (Bare empty ``[monitors.file]`` block enablement is at the end.)
     propagate("monitors.file.path", "trainer.monitors.file.path", "orchestrator.monitors.file.path")
 
-    # [monitors.prime] leaf → orchestrator only (the RL trainer has no platform
-    # integration; the SFT trainer does, but it parses SFTConfig directly).
-    propagate("monitors.prime.name", "orchestrator.monitors.prime.name")
+    # [monitors.prime] leaf.
+    propagate("monitors.prime.name", "trainer.monitors.prime.name", "orchestrator.monitors.prime.name")
 
-    # [tokenizer]. ``chat_template`` also flows to ``inference.vllm`` (vLLM's
-    # ``--chat-template``); ``name`` and ``trust_remote_code`` can legitimately
-    # differ between sub-configs (auto-derived from model names, which may
-    # differ for FP8-quantized inference variants).
-    propagate("tokenizer.name", "trainer.tokenizer.name", "orchestrator.tokenizer.name")
+    # [tokenizer]. ``name`` also flows to ``inference.vllm`` (vLLM's ``--tokenizer``, which also picks its "auto"
+    # parsers) and ``chat_template`` too (vLLM's ``--chat-template``); ``trust_remote_code`` can legitimately differ
+    # between sub-configs (auto-derived from model names, which may differ for FP8-quantized inference variants).
+    propagate("tokenizer.name", "trainer.tokenizer.name", "orchestrator.tokenizer.name", "inference.vllm.tokenizer")
     propagate(
         "tokenizer.trust_remote_code",
         "trainer.tokenizer.trust_remote_code",
@@ -161,8 +154,8 @@ def propagate_shared_fields(data: Any) -> Any:
     # without this an empty shared block would be a no-op. Leaf-level conflicts
     # (e.g. shared ``ckpt.interval`` vs ``trainer.ckpt.interval``) are already
     # caught above; the bare block is exempt because ``[ckpt]`` +
-    # ``[trainer.ckpt] keep_last = 3`` is a legitimate "enable + customise per
-    # side" pattern. CLI ``--no-ckpt`` / ``--no-monitors.wandb`` land as the
+    # ``[trainer.ckpt] skip_optimizer = true`` is a legitimate "enable + customise
+    # per side" pattern. CLI ``--no-ckpt`` / ``--no-monitors.wandb`` land as the
     # *string* ``"None"`` until ``BaseConfig``'s parent-class validator converts
     # it, which happens after this one — the disable must propagate too, since
     # the monitor sub-configs default to enabled.
@@ -170,7 +163,7 @@ def propagate_shared_fields(data: Any) -> Any:
         "ckpt": ("trainer", "orchestrator"),
         "monitors.wandb": ("trainer", "orchestrator"),
         "monitors.file": ("trainer", "orchestrator"),
-        "monitors.prime": ("orchestrator",),
+        "monitors.prime": ("trainer", "orchestrator"),
     }
     for key, targets in presence_targets.items():
         value = get(key)
@@ -192,3 +185,14 @@ def propagate_shared_fields(data: Any) -> Any:
         raise ValueError("\n".join(lines))
 
     return data
+
+
+def check_derived(config: Any, field: str, value: Any, path: str) -> None:
+    """Check a field the launcher derives. An explicit value is accepted only when it
+    equals the derived one, so resolved configs re-parse but a conflicting value fails
+    instead of being silently replaced. The caller applies the derived value."""
+    if field in config.model_fields_set and getattr(config, field) != value:
+        raise ValueError(
+            f"{path} ({getattr(config, field)!r}) conflicts with the derived value ({value!r}). "
+            "It is set automatically by the launcher; remove it."
+        )

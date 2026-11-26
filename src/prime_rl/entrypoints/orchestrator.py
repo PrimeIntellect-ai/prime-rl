@@ -12,12 +12,13 @@ The actual orchestrator implementation lives in
 import asyncio
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.utils.config import cli
+from prime_rl.utils.config import check_mode, cli
 from prime_rl.utils.process import set_proc_title
 
 
 def main():
     set_proc_title("Orchestrator")
+    check_mode("orchestrator")
     config = cli(OrchestratorConfig)
     from prime_rl.orchestrator.orchestrator import run_orchestrator
 

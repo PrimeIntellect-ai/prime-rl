@@ -17,7 +17,7 @@ from modelexpress.client import MxClient
 from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 
-from prime_rl.inference.vllm.worker.weight_transfer import update_mla_absorbed_weights
+from prime_rl.inference.vllm.worker.weight_transfer import WeightRPCMixin
 from prime_rl.transports.weights.nixl.agent import (
     MemDesc,
     NixlAgent,
@@ -63,10 +63,6 @@ class LayerWeightTransferPlan:
     copies: list[TensorCopyPlan]
     persistent_copies: list[TensorCopyPlan]
 
-    @property
-    def destination_names(self) -> set[str]:
-        return {plan.recorded_copy.destination_name for plan in self.copies}
-
 
 @dataclass
 class WeightTransferGroup:
@@ -83,7 +79,7 @@ class WeightTransferPlan:
     groups: list[WeightTransferGroup]
 
 
-class NIXLWeightUpdateWorker(Worker):
+class NIXLWeightUpdateWorker(WeightRPCMixin, Worker):
     @property
     def raw_model(self) -> nn.Module:
         return cast(nn.Module, self.model_runner.get_model())
@@ -480,8 +476,7 @@ class NIXLWeightUpdateWorker(Worker):
 
         started = time.perf_counter()
         self.apply_transfer_plan(plan)
-        update_mla_absorbed_weights(self.raw_model)
-        torch.cuda.synchronize(self.device)
+        torch.accelerator.synchronize(self.device)
         logger.info(
             "Applied NIXL policy update on rank %d in %.2fs",
             self.model_express.rank,
@@ -497,7 +492,6 @@ class NIXLWeightUpdateWorker(Worker):
             initialize_layerwise_reload,
         )
         from vllm.model_executor.model_loader.reload.meta import materialize_layer
-        from vllm.model_executor.model_loader.reload.utils import get_layer_tensors
 
         model = self.raw_model
         cancelled = Event()
@@ -526,7 +520,7 @@ class NIXLWeightUpdateWorker(Worker):
             return transfer_group
 
         def prefetch_group(group_index: int) -> WeightTransferGroup:
-            torch.cuda.set_device(self.device)
+            torch.accelerator.set_device_index(self.device)
             return pull_group(group_index)
 
         def replay_group(transfer_group: WeightTransferGroup) -> None:
@@ -539,11 +533,6 @@ class NIXLWeightUpdateWorker(Worker):
 
                 info = LAYERWISE_INFO[layer]
                 materialize_layer(layer, info)
-                # Match loader semantics for destinations with unwritten padding.
-                destination_names = layer_plan.destination_names
-                for name, tensor in get_layer_tensors(layer).items():
-                    if name in destination_names and not tensor.is_meta:
-                        tensor.zero_()
                 for copy_plan in layer_plan.copies:
                     self.replay_tensor_copy(copy_plan)
                 for copy_plan in layer_plan.persistent_copies:
@@ -567,12 +556,12 @@ class NIXLWeightUpdateWorker(Worker):
                 for group_index in range(len(plan.groups)):
                     transfer_group = pull.result() if pull is not None else pull_group(group_index)
 
-                    torch.cuda.synchronize(self.device)
+                    torch.accelerator.synchronize(self.device)
                     if executor is not None and group_index + 1 < len(plan.groups):
                         pull = executor.submit(prefetch_group, group_index + 1)
 
                     replay_group(transfer_group)
-                    torch.cuda.synchronize(self.device)
+                    torch.accelerator.synchronize(self.device)
             finally:
                 cancelled.set()
                 if executor is not None:

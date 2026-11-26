@@ -1,0 +1,101 @@
+name: GPU Tests
+
+on:
+  pull_request:
+    types: [labeled]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: >-
+    ${{ github.workflow }}-${{
+      (github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name == github.repository
+        && github.event.label.name == 'gpu-ci')
+      && format('pr-{0}', github.event.pull_request.number)
+      || format('{0}-{1}', github.event_name, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  gate:
+    name: Gate
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+      || (github.event.pull_request.head.repo.full_name == github.repository
+          && github.event.label.name == 'gpu-ci')
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Remove gpu-ci label
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/labels/gpu-ci"
+
+  # The full suite runs only when the tiny one passes
+  tiny:
+    name: Tiny (GPU)
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MODAL_APP_NAME: prime-rl-ci-${{ github.run_id }}-${{ github.run_attempt }}-tiny
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+          persist-credentials: false
+      - parallel:
+          - name: Init public submodules
+            env:
+              GITHUB_TOKEN: ${{ github.token }}
+            run: |
+              git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+              git config --global url."https://github.com/".insteadOf "git@github.com:"
+              git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
+          - name: Install uv
+            uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+            with:
+              enable-cache: false
+      - name: Run tiny tests on Modal
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: uvx --from modal==1.6.4 modal run --name "$MODAL_APP_NAME" scripts/modal_ci.py --suite tiny
+      # A cancelled job kills the Modal client before it stops the app, whose containers would keep running.
+      - name: Stop the Modal app
+        if: cancelled()
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          uvx --from modal==1.6.4 modal app list --json \
+            | jq -r --arg name "$MODAL_APP_NAME" '.[] | select(.description == $name and .state != "stopped") | .app_id' \
+            | xargs -r -n1 uvx --from modal==1.6.4 modal app stop -y
+      - name: Upload run logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tiny-logs
+          path: outputs/modal-ci
+          retention-days: 7
+          if-no-files-found: ignore
+
+  full:
+    name: Full (GPU)
+    needs: tiny
+    # One full run at a time across PRs and main, so that Tiny runs keep their GPUs: a run waits for the one in
+    # progress. GitHub keeps one waiting run per group, and a newer one replaces it.
+    concurrency:
+      group: gpu-full-suite
+    uses: ./.github/workflows/gpu-full.yml
+    secrets: inherit

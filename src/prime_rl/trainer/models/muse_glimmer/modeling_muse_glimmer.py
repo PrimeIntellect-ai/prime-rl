@@ -1,11 +1,9 @@
 import torch
 from torch import Tensor, nn
-from transformers.modeling_layers import GradientCheckpointingLayer
-from transformers.modeling_outputs import BaseModelOutputWithPast
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, TextModelOutput
 from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
-from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
+from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig, apply_rotary_pos_emb
 from prime_rl.trainer.models.muse_glimmer.configuration_muse_glimmer import MuseGlimmerConfig, MuseGlimmerTextConfig
@@ -99,7 +97,7 @@ class MuseGlimmerAttention(FlashAttention):
         return self.o_proj(attn_output), None
 
 
-class MuseGlimmerDecoderLayer(GradientCheckpointingLayer):
+class MuseGlimmerDecoderLayer(nn.Module):
     def __init__(self, config: MuseGlimmerTextConfig, layer_idx: int) -> None:
         super().__init__()
         if config.hidden_activation != "silu":
@@ -135,14 +133,6 @@ class MuseGlimmerDecoderLayer(GradientCheckpointingLayer):
 
 
 class MuseGlimmerPreTrainedModel(PreTrainedModelPrimeRL):
-    config_class = MuseGlimmerConfig
-    base_model_prefix = "model"
-    supports_gradient_checkpointing = True
-    _no_split_modules = ["MuseGlimmerDecoderLayer"]
-    _supports_flash_attn = True
-    _supports_sdpa = False
-    _can_compile_fullgraph = True
-
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return True
@@ -152,13 +142,17 @@ class MuseGlimmerPreTrainedModel(PreTrainedModelPrimeRL):
         # Text weights use the checkpoint's names, so there is no separate PrimeRL format.
         return False
 
+    def _init_weights(self, module: nn.Module) -> None:
+        super()._init_weights(module)
+        if isinstance(module, MuseGlimmerRMSNorm) and module.weight is not None:
+            # The norm scales by weight + weight_offset, which starts at one.
+            nn.init.constant_(module.weight, 1.0 - module.weight_offset)
+
 
 class MuseGlimmerTextModel(MuseGlimmerPreTrainedModel):
-    config_class = MuseGlimmerTextConfig
-
     def __init__(self, config: MuseGlimmerTextConfig) -> None:
         super().__init__(config)
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         # Token embeddings are RMS-normalized (no weight) instead of scaled by sqrt(hidden_size).
         self.embed_norm = MuseGlimmerRMSNorm(eps=config.rms_norm_eps)
         self.layers = nn.ModuleList(
@@ -174,7 +168,6 @@ class MuseGlimmerTextModel(MuseGlimmerPreTrainedModel):
                 model_config=config,
             )
         )
-        self.gradient_checkpointing = False
         self.post_init()
 
     def get_input_embeddings(self) -> nn.Embedding:
@@ -191,7 +184,7 @@ class MuseGlimmerTextModel(MuseGlimmerPreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> BaseModelOutputWithPast:
+    ) -> TextModelOutput:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
@@ -215,7 +208,7 @@ class MuseGlimmerTextModel(MuseGlimmerPreTrainedModel):
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
             )
-        return BaseModelOutputWithPast(last_hidden_state=self.norm(hidden_states))
+        return TextModelOutput(last_hidden_state=self.norm(hidden_states))
 
 
 class MuseGlimmerModel(nn.Module):
@@ -229,16 +222,13 @@ class MuseGlimmerModel(nn.Module):
     def set_input_embeddings(self, embeddings: nn.Embedding) -> None:
         self.language_model.set_input_embeddings(embeddings)
 
-    def forward(self, *args, **kwargs) -> BaseModelOutputWithPast:
+    def forward(self, *args, **kwargs) -> TextModelOutput:
         return self.language_model(*args, **kwargs)
 
 
 class MuseGlimmerForCausalLM(MuseGlimmerPreTrainedModel):
     """Text-only MuseGlimmer. Built from the composite checkpoint config, its weights keep the
     checkpoint's `model.language_model.*` names; the vision tower is not loaded."""
-
-    _tp_plan = {"lm_head": "colwise_gather_output"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config: MuseGlimmerConfig | MuseGlimmerTextConfig) -> None:
         super().__init__(config)
@@ -264,7 +254,7 @@ class MuseGlimmerForCausalLM(MuseGlimmerPreTrainedModel):
         labels: torch.LongTensor | None = None,
         logits_to_keep: int | Tensor = 0,
         temperature: Tensor | None = None,
-        sampling_mask: Tensor | None = None,
+        support: TokenSupport | None = None,
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
@@ -285,7 +275,7 @@ class MuseGlimmerForCausalLM(MuseGlimmerPreTrainedModel):
             outputs.last_hidden_state[:, slice_indices],
             labels[:, slice_indices] if labels is not None else None,
             temperature=temperature[:, slice_indices] if temperature is not None else None,
-            sampling_mask=sampling_mask[:, slice_indices] if sampling_mask is not None else None,
+            support=support,
         )
 
     def init_buffers_post_meta(self) -> None:

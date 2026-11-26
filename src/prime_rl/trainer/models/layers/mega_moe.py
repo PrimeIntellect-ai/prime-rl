@@ -9,6 +9,7 @@ import torch
 from torch.distributed import ProcessGroup
 
 from prime_rl.trainer.models.kernels.mega_moe_mxfp8 import (
+    MX_BLOCK,
     cast_weight_along_rows,
     mx_cast,
     mx_weight_sf,
@@ -21,12 +22,13 @@ if TYPE_CHECKING:
     from prime_rl.trainer.models.layers.moe import GroupedExperts
 
 
-MegaMoePrecision = Literal["bf16", "mxfp8", "fp8", "fp8_bwd"]
+MegaMoePrecision = Literal["bf16", "mxfp8", "mxfp8_qat", "fp8", "fp8_bwd", "nvfp4"]
 # `deep_gemm` symbols each precision needs, named `<precision>_mega_moe[_backward]`; only the prime-mega-moe
 # build has the training kernels
 _REQUIRED_KERNELS: dict[str, tuple[str, ...]] = {
     "bf16": ("bf16_mega_moe", "bf16_mega_moe_backward"),
     "mxfp8": ("mxfp8_mega_moe", "mxfp8_mega_moe_backward"),
+    "mxfp8_qat": ("mxfp8_mega_moe", "bf16_mega_moe_backward"),
     "fp8": (
         "fp8_mega_moe",
         "fp8_mega_moe_backward",
@@ -34,12 +36,21 @@ _REQUIRED_KERNELS: dict[str, tuple[str, ...]] = {
         "quantize_l1_weight_for_fp8_mega_moe",
     ),
     "fp8_bwd": ("bf16_mega_moe", "fp8_mega_moe_backward", "quantize_weight_blockwise_fp8"),
+    "nvfp4": (
+        "nvfp4_mega_moe",
+        "nvfp4_mega_moe_backward",
+        "nvfp4_quantize_tokens",
+        "quantize_weights_for_nvfp4_mega_moe",
+        "nvfp4_weights_to_mxfp8_rows",
+    ),
 }
 _MIN_CAPABILITY: dict[str, tuple[int, int]] = {
     "bf16": (9, 0),
     "mxfp8": (10, 0),
+    "mxfp8_qat": (10, 0),
     "fp8": (9, 0),
     "fp8_bwd": (9, 0),
+    "nvfp4": (10, 0),
 }
 
 
@@ -52,25 +63,49 @@ def mega_moe_available(precision: MegaMoePrecision = "bf16") -> bool:
         return False
     if torch.cuda.get_device_capability() < _MIN_CAPABILITY[precision]:
         return False
-    return all(hasattr(deep_gemm, name) for name in _REQUIRED_KERNELS[precision])
+    if not all(hasattr(deep_gemm, name) for name in _REQUIRED_KERNELS[precision]):
+        return False
+    # `mxfp8_qat` sizes the allocation its two staging layouts share
+    return precision != "mxfp8_qat" or hasattr(deep_gemm.SymmBuffer, "num_bytes")
 
 
-def check_mega_moe_dims(hidden: int, intermediate_hidden: int) -> None:
-    if hidden % 256 or intermediate_hidden % 128:
+def check_mega_moe_dims(hidden: int, intermediate_hidden: int, precision: MegaMoePrecision = "bf16") -> None:
+    multiple = 256 if precision == "nvfp4" else 128
+    if hidden % 256 or intermediate_hidden % multiple:
         raise ValueError(
-            f"Mega MoE requires hidden ({hidden}) to be a multiple of 256 and intermediate_hidden "
-            f"({intermediate_hidden}) a multiple of 128."
+            f"Mega MoE `{precision}` requires hidden ({hidden}) to be a multiple of 256 and intermediate_hidden "
+            f"({intermediate_hidden}) a multiple of {multiple}."
         )
 
 
-def reserve_sms_for_comm(num_reserved_sms: int) -> int:
-    """SMs the Mega MoE grids run on: ``total - num_reserved_sms``"""
+def num_concurrent_nccl_kernels(dp_replicate: int) -> int:
+    """NCCL kernels FSDP can run at once: an all-gather and a reduce-scatter, plus an all-reduce under HSDP."""
+    return 3 if dp_replicate > 1 else 2
+
+
+def default_nccl_max_ctas(num_reserved_sms: int, num_concurrent: int) -> None:
+    """Set ``NCCL_MAX_CTAS`` to ``num_reserved_sms // num_concurrent`` unless it is already set, then check it. In the
+    worst case each NCCL kernel uses all ``NCCL_MAX_CTAS``, so at most ``num_reserved_sms // NCCL_MAX_CTAS`` can run
+    next to a Mega MoE grid."""
+    os.environ.setdefault("NCCL_MAX_CTAS", str(max(num_reserved_sms // num_concurrent, 1)))
+    check_nccl_max_ctas(num_reserved_sms, num_concurrent)
+
+
+def check_nccl_max_ctas(num_reserved_sms: int, num_concurrent: int) -> None:
+    """Raise unless ``num_concurrent`` NCCL kernels of ``NCCL_MAX_CTAS`` CTAs fit in the reserved SMs."""
     nccl_max_ctas = os.environ.get("NCCL_MAX_CTAS")
-    if nccl_max_ctas is None or int(nccl_max_ctas) > num_reserved_sms:
+    max_ctas = num_reserved_sms // num_concurrent
+    if max_ctas < 1 or nccl_max_ctas is None or not nccl_max_ctas.isdigit() or not 1 <= int(nccl_max_ctas) <= max_ctas:
         raise ValueError(
-            f"Mega MoE reserves {num_reserved_sms} SMs for NCCL, so `NCCL_MAX_CTAS` must be set to at most "
-            f"{num_reserved_sms} (got {nccl_max_ctas!r}); set it in `env_vars` or raise `num_reserved_sms`."
+            f"Mega MoE reserves {num_reserved_sms} SMs for NCCL, which must fit {num_concurrent} concurrent NCCL "
+            f"kernels, so `NCCL_MAX_CTAS` must be an integer in [1, {max_ctas}] (got {nccl_max_ctas!r}); unset it "
+            f"to use {max_ctas} or raise `num_reserved_sms`."
         )
+
+
+def reserve_sms_for_comm(num_reserved_sms: int, num_concurrent: int) -> int:
+    """SMs the Mega MoE grids run on: ``total - num_reserved_sms``"""
+    check_nccl_max_ctas(num_reserved_sms, num_concurrent)
     total = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
     return max(total - num_reserved_sms, 1)
 
@@ -100,8 +135,10 @@ class MegaMoeBuffers:
 _STAGING_MMA_TYPES: dict[str, tuple[str, str]] = {  # (forward, backward)
     "bf16": ("bf16xbf16", "bf16xbf16"),
     "mxfp8": ("fp8xfp8", "fp8xfp8"),
+    "mxfp8_qat": ("fp8xfp8", "bf16xbf16"),
     "fp8": ("fp8xfp8", "bf16xbf16"),
     "fp8_bwd": ("bf16xbf16", "bf16xbf16"),
+    "nvfp4": ("nvfp4", "nvfp4"),
 }
 
 
@@ -116,24 +153,34 @@ def build_mega_moe_buffers(
 ) -> MegaMoeBuffers:
     import deep_gemm
 
-    check_mega_moe_dims(hidden, intermediate_hidden)
+    check_mega_moe_dims(hidden, intermediate_hidden, precision)
     args = (group, num_experts, num_max_tokens_per_rank, top_k, hidden, intermediate_hidden)
     forward_mma_type, backward_mma_type = _STAGING_MMA_TYPES[precision]
-    backward = deep_gemm.SymmBuffer(*args, mma_type=backward_mma_type)
     if forward_mma_type == backward_mma_type:
-        return MegaMoeBuffers(forward=backward, backward=backward)
-    # Both directions restage their inputs on every call, so the forward layout can view the backward's allocation instead of allocating a second symmetric buffer
-    forward = deep_gemm.SymmBuffer(*args, mma_type=forward_mma_type, base=backward)
-    return MegaMoeBuffers(forward=forward, backward=backward)
+        buffer = deep_gemm.SymmBuffer(*args, mma_type=backward_mma_type)
+        return MegaMoeBuffers(forward=buffer, backward=buffer)
+    # Both directions restage their inputs on every call, so one layout views the other's allocation instead of
+    # allocating a second symmetric buffer: the smaller one, when the sizes are known
+    larger, smaller = backward_mma_type, forward_mma_type
+    if hasattr(deep_gemm.SymmBuffer, "num_bytes"):
+        sizes = {
+            mma_type: deep_gemm.SymmBuffer.num_bytes(*args, mma_type=mma_type)
+            for mma_type in (forward_mma_type, backward_mma_type)
+        }
+        larger, smaller = sorted((forward_mma_type, backward_mma_type), key=sizes.get, reverse=True)
+    base = deep_gemm.SymmBuffer(*args, mma_type=larger)
+    buffers = {larger: base, smaller: deep_gemm.SymmBuffer(*args, mma_type=smaller, base=base)}
+    return MegaMoeBuffers(forward=buffers[forward_mma_type], backward=buffers[backward_mma_type])
 
 
 # Custom ops take an int key: the buffers are not tensors
-_BUFFER_REGISTRY: dict[int, tuple[MegaMoePrecision, MegaMoeBuffers, int]] = {}
+_BUFFER_REGISTRY: dict[int, tuple[MegaMoePrecision, MegaMoeBuffers, int, dict]] = {}
 
 
-def register_mega_moe_buffers(buffers: MegaMoeBuffers, precision: MegaMoePrecision, num_sms: int) -> int:
+def register_mega_moe_buffers(buffers: MegaMoeBuffers, precision: MegaMoePrecision, num_sms: int, **options) -> int:
+    """``options``: keyword arguments of the precision's forward and backward (``four_over_six`` for NVFP4)."""
     key = id(buffers)
-    _BUFFER_REGISTRY[key] = (precision, buffers, num_sms)
+    _BUFFER_REGISTRY[key] = (precision, buffers, num_sms, options)
     return key
 
 
@@ -251,6 +298,20 @@ def mega_moe_forward_mxfp8(x, topk_idx, topk_weights, gate_up_proj, down_proj, b
     return y
 
 
+def mxfp8_decoded_weights(weights: MegaMoeMXFP8ExpertWeights) -> tuple[torch.Tensor, torch.Tensor]:
+    """`mxfp8_rounded_weights` decoded from an MXFP8 forward's quantized operands (``[E, 2I, H]`` natural gate/up
+    rows, ``[E, H, I]``) by a kernel, without fp32 temporaries: LLEP decodes the copies it holds."""
+    from deep_gemm.llep import dequant_mxfp8
+
+    (l1, l1_sf), (l2, l2_sf) = weights.l1, weights.l2
+    gate_up = torch.empty(l1.shape, dtype=torch.bfloat16, device=l1.device)
+    down = torch.empty(l2.shape, dtype=torch.bfloat16, device=l2.device)
+    # The scale tensors are MN-major views of `[E, K / 128, MN]` storage
+    dequant_mxfp8(l1, l1_sf.transpose(1, 2), gate_up, interleaved=True)
+    dequant_mxfp8(l2, l2_sf.transpose(1, 2), down)
+    return gate_up, down
+
+
 def mega_moe_backward_mxfp8(dy, x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, dw_dtype, activation_clamp):
     import deep_gemm
 
@@ -262,6 +323,27 @@ def mega_moe_backward_mxfp8(dy, x, topk_idx, topk_weights, gate_up_proj, down_pr
         dx, dw1, dw2, dtopk, dy, x, weights.l1, weights.l1_t, weights.l2_t, buffer, activation_clamp=activation_clamp
     )
     return dx, dw1, dw2, dtopk
+
+
+def mxfp8_rounded_weights(gate_up_proj: torch.Tensor, down_proj: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """The bf16 weights the MXFP8 forward computes with: each expert weight cast along K as
+    `MegaMoeMXFP8ExpertWeights` casts it (the gate/up interleave only reorders rows), and decoded (exact)."""
+
+    def rounded(weight: torch.Tensor) -> torch.Tensor:
+        num_experts, n, k = weight.shape
+        fp8, sf = mx_cast(weight.contiguous().view(num_experts * n, k), along_rows=False)
+        return (fp8.float().view(-1, k // MX_BLOCK, MX_BLOCK) * sf.unsqueeze(-1)).view(weight.shape).bfloat16()
+
+    return rounded(gate_up_proj), rounded(down_proj)
+
+
+def mega_moe_backward_mxfp8_qat(
+    dy, x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, dw_dtype, activation_clamp
+):
+    """MXFP8 quantization-aware training: the bf16 backward on the weights the MXFP8 forward computed with and the
+    bf16 tokens (the straight-through estimator), so the gradients carry no MXFP8 rounding."""
+    gate_up, down = mxfp8_rounded_weights(gate_up_proj, down_proj)
+    return mega_moe_backward_bf16(dy, x, topk_idx, topk_weights, gate_up, down, buffer, dw_dtype, activation_clamp)
 
 
 # FP8 (SM90): E4M3 with 128x128 fp32 block scales for weights, 1x128 for tokens
@@ -337,11 +419,81 @@ def mega_moe_backward_fp8(dy, x, topk_idx, topk_weights, gate_up_proj, down_proj
     return dx, dw1, dw2, dtopk
 
 
+# NVFP4 (SM100): vLLM's online `nvfp4_per_token` MoE numerics forward, MXFP8 backward on the forward's NVFP4 operands
+
+
+# The tag of the forward call whose stash each buffer holds (`nvfp4_mega_moe(stash_tag=...)`): the count of forward calls
+# on the buffer, the same on every rank. The backward of that call reads the stash; any other backward first runs its
+# forward again (bitwise the same), which every rank then does.
+_NVFP4_STASH_TAGS: dict[int, int] = {}
+
+
+def _nvfp4_weights(gate_up_proj: torch.Tensor, down_proj: torch.Tensor):
+    import deep_gemm
+
+    return deep_gemm.quantize_weights_for_nvfp4_mega_moe(
+        gate_up_proj.to(torch.bfloat16).contiguous(), down_proj.to(torch.bfloat16).contiguous()
+    )
+
+
+def mega_moe_forward_nvfp4(x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, activation_clamp, four_over_six):
+    import deep_gemm
+
+    l1, l2, weight_scales = _nvfp4_weights(gate_up_proj, down_proj)
+    deep_gemm.nvfp4_quantize_tokens(x, buffer, four_over_six)
+    _stage_routing(buffer, x.shape[0], topk_idx, topk_weights)
+    stash_tag = _NVFP4_STASH_TAGS.get(id(buffer), 0) + 1
+    _NVFP4_STASH_TAGS[id(buffer)] = stash_tag
+    y = torch.empty_like(x)
+    deep_gemm.nvfp4_mega_moe(
+        y,
+        l1,
+        l2,
+        weight_scales,
+        buffer,
+        activation_clamp=activation_clamp,
+        four_over_six=four_over_six,
+        stash_tag=stash_tag,
+    )
+    return y
+
+
+def mega_moe_backward_nvfp4(
+    dy, x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, dw_dtype, activation_clamp, four_over_six, stash_tag
+):
+    import deep_gemm
+
+    if _NVFP4_STASH_TAGS.get(id(buffer)) != stash_tag:
+        mega_moe_forward_nvfp4(
+            x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, activation_clamp, four_over_six
+        )
+    l1_t, l2_t = deep_gemm.nvfp4_weights_to_mxfp8_rows(*_nvfp4_weights(gate_up_proj, down_proj))
+    # The kernel writes dW1 in the natural [gate | up] row order
+    dx, dw1, dw2, dtopk = _grad_buffers(x, buffer, gate_up_proj.shape, down_proj.shape, dw_dtype)
+    deep_gemm.nvfp4_mega_moe_backward(
+        dx,
+        dw1,
+        dw2,
+        dtopk,
+        dy,
+        x,
+        l1_t,
+        l2_t,
+        buffer,
+        _NVFP4_STASH_TAGS[id(buffer)],
+        activation_clamp=activation_clamp,
+        four_over_six=four_over_six,
+    )
+    return dx, dw1, dw2, dtopk
+
+
 MEGA_MOE_IMPLS: dict[str, tuple[Callable, Callable]] = {
     "bf16": (mega_moe_forward_bf16, mega_moe_backward_bf16),
     "mxfp8": (mega_moe_forward_mxfp8, mega_moe_backward_mxfp8),
+    "mxfp8_qat": (mega_moe_forward_mxfp8, mega_moe_backward_mxfp8_qat),
     "fp8": (mega_moe_forward_fp8, mega_moe_backward_fp8),
     "fp8_bwd": (mega_moe_forward_bf16, mega_moe_backward_fp8),
+    "nvfp4": (mega_moe_forward_nvfp4, mega_moe_backward_nvfp4),
 }
 
 
@@ -358,8 +510,8 @@ def mega_moe_forward_op(
     down_proj: torch.Tensor,
     buffer_key: int,
     activation_clamp: float | None = None,
-) -> torch.Tensor:
-    precision, buffers, num_sms = _BUFFER_REGISTRY[buffer_key]
+) -> tuple[torch.Tensor, torch.Tensor]:
+    precision, buffers, num_sms, options = _BUFFER_REGISTRY[buffer_key]
     forward, _ = MEGA_MOE_IMPLS[precision]
     with _deep_gemm_num_sms(num_sms):
         y = forward(
@@ -370,8 +522,11 @@ def mega_moe_forward_op(
             down_proj,
             buffers.forward,
             activation_clamp,
+            **options,
         )
-    return y.to(x.dtype)
+    # The call's NVFP4 stash tag (0 otherwise), for its backward
+    stash_tag = _NVFP4_STASH_TAGS[id(buffers.forward)] if precision == "nvfp4" else 0
+    return y.to(x.dtype), torch.tensor(stash_tag, dtype=torch.int64)
 
 
 @mega_moe_forward_op.register_fake
@@ -383,8 +538,8 @@ def _mega_moe_forward_fake(
     down_proj: torch.Tensor,
     buffer_key: int,
     activation_clamp: float | None = None,
-) -> torch.Tensor:
-    return torch.empty_like(x)
+) -> tuple[torch.Tensor, torch.Tensor]:
+    return torch.empty_like(x), torch.empty((), dtype=torch.int64)
 
 
 @torch.library.custom_op("prime_rl::mega_moe_backward", mutates_args=())
@@ -395,11 +550,14 @@ def mega_moe_backward_op(
     topk_weights: torch.Tensor,
     gate_up_proj: torch.Tensor,
     down_proj: torch.Tensor,
+    stash_tag: torch.Tensor,
     buffer_key: int,
     activation_clamp: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    precision, buffers, num_sms = _BUFFER_REGISTRY[buffer_key]
+    precision, buffers, num_sms, options = _BUFFER_REGISTRY[buffer_key]
     _, backward = MEGA_MOE_IMPLS[precision]
+    if precision == "nvfp4":
+        options = {**options, "stash_tag": int(stash_tag)}
     with _deep_gemm_num_sms(num_sms):
         dx, dw1, dw2, dtopk = backward(
             dy.to(torch.bfloat16).contiguous(),
@@ -411,6 +569,7 @@ def mega_moe_backward_op(
             buffers.backward,
             _dw_dtype(gate_up_proj),
             activation_clamp,
+            **options,
         )
     return dx.to(x.dtype), dw1.to(gate_up_proj.dtype), dw2.to(down_proj.dtype), dtopk
 
@@ -423,6 +582,7 @@ def _mega_moe_backward_fake(
     topk_weights: torch.Tensor,
     gate_up_proj: torch.Tensor,
     down_proj: torch.Tensor,
+    stash_tag: torch.Tensor,
     buffer_key: int,
     activation_clamp: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -436,15 +596,17 @@ def _mega_moe_backward_fake(
 
 def _mega_moe_setup_context(ctx, inputs, output) -> None:
     x, topk_idx, topk_weights, gate_up_proj, down_proj, buffer_key, activation_clamp = inputs
-    ctx.save_for_backward(x, topk_idx, topk_weights, gate_up_proj, down_proj)
+    stash_tag = output[1]
+    ctx.mark_non_differentiable(stash_tag)
+    ctx.save_for_backward(x, topk_idx, topk_weights, gate_up_proj, down_proj, stash_tag)
     ctx.buffer_key = buffer_key
     ctx.activation_clamp = activation_clamp
 
 
-def _mega_moe_backward(ctx, grad_y: torch.Tensor):
-    x, topk_idx, topk_weights, gate_up_proj, down_proj = ctx.saved_tensors
+def _mega_moe_backward(ctx, grad_y: torch.Tensor, _grad_stash_tag: torch.Tensor | None):
+    x, topk_idx, topk_weights, gate_up_proj, down_proj, stash_tag = ctx.saved_tensors
     dx, dw1, dw2, dtopk = torch.ops.prime_rl.mega_moe_backward(
-        grad_y, x, topk_idx, topk_weights, gate_up_proj, down_proj, ctx.buffer_key, ctx.activation_clamp
+        grad_y, x, topk_idx, topk_weights, gate_up_proj, down_proj, stash_tag, ctx.buffer_key, ctx.activation_clamp
     )
     return dx, None, dtopk, dw1, dw2, None, None
 
@@ -475,12 +637,14 @@ class MegaMoEExpertCompute:
         max_tokens_per_rank: int,
         num_sms: int,
         precision: MegaMoePrecision = "bf16",
+        four_over_six: bool = False,
     ) -> None:
         if not mega_moe_available(precision):
-            kernels = " and ".join(f"`{name}`" for name in _REQUIRED_KERNELS[precision])
+            names = [*_REQUIRED_KERNELS[precision], *(["SymmBuffer.num_bytes"] if precision == "mxfp8_qat" else [])]
+            kernels = " and ".join(f"`{name}`" for name in names)
             raise RuntimeError(
                 f"Mega MoE `{precision}` requires an SM{_MIN_CAPABILITY[precision][0]}0+ GPU and the "
-                "prime-mega-moe `deep_gemm` wheel from Prime Intellect installed over the public one; "
+                "prime-mega-moe `deep_gemm` wheel from Prime Intellect installed as the top-level `deep_gemm` package; "
                 f"this build does not expose {kernels}."
             )
         self.num_experts = num_experts
@@ -492,7 +656,8 @@ class MegaMoEExpertCompute:
             group, num_experts, max_tokens_per_rank, top_k, hidden, intermediate_hidden, precision
         )
         # Registered once here: a registry write inside the compiled, checkpointed block is a side effect dynamo rejects.
-        self.buffer_key = register_mega_moe_buffers(buffers, precision, num_sms)
+        options = {"four_over_six": four_over_six} if precision == "nvfp4" else {}
+        self.buffer_key = register_mega_moe_buffers(buffers, precision, num_sms, **options)
 
     def validate(self, experts: "GroupedExperts") -> None:
         if experts.gate_proj is None and experts.gate_up_proj is None:
@@ -509,7 +674,7 @@ class MegaMoEExpertCompute:
             )
 
     def destroy(self) -> None:
-        _, buffers, _ = _BUFFER_REGISTRY.pop(self.buffer_key)
+        _, buffers, _, _ = _BUFFER_REGISTRY.pop(self.buffer_key)
         if buffers.forward is not buffers.backward:
             buffers.forward.destroy()
         buffers.backward.destroy()
@@ -525,7 +690,7 @@ class MegaMoEExpertCompute:
         top_scores: torch.Tensor,
         selected_experts_indices: torch.Tensor,
     ) -> torch.Tensor:
-        # The trainer configs reject a max_tokens_per_rank below the micro batch, so every rank fits;
+        # The trainer configs reject a max_tokens_per_rank below a rank's share of the micro batch, so every rank fits;
         # this only catches direct use with a smaller buffer
         num_tokens = x.shape[0]
         if num_tokens > self.max_tokens_per_rank:
@@ -537,7 +702,7 @@ class MegaMoEExpertCompute:
             gate_up_proj = to_local(experts.gate_up_proj)
         else:
             gate_up_proj = torch.cat([to_local(experts.gate_proj), to_local(experts.up_proj)], dim=1)
-        return torch.ops.prime_rl.mega_moe_forward(
+        y, _ = torch.ops.prime_rl.mega_moe_forward(
             x,
             selected_experts_indices.to(torch.int64),
             top_scores.to(torch.float32),
@@ -546,3 +711,4 @@ class MegaMoEExpertCompute:
             self.buffer_key,
             _activation_clamp(experts.activation),
         )
+        return y

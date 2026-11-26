@@ -11,11 +11,8 @@ from __future__ import annotations
 
 import torch
 from torch import Tensor, nn
-from transformers.generation import GenerationMixin
-from transformers.modeling_layers import GradientCheckpointingLayer
-from transformers.modeling_outputs import MoeModelOutputWithPast
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, TextModelOutput
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4.converting_deepseek_v4 import conversion_chain
@@ -24,14 +21,14 @@ from prime_rl.trainer.models.deepseek_v4.hyperconnections import (
     DeepseekV4HyperConnection,
     DeepseekV4HyperHead,
 )
-from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4MoE
+from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4HashRouter, DeepseekV4MoE
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 
 
-class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
+class DeepseekV4DecoderLayer(nn.Module):
     """One hyper-connected block: mHC, attention, mHC, MoE.
 
     Both sublayers read the single sequence their `DeepseekV4HyperConnection` collapsed the
@@ -93,19 +90,6 @@ KEEP_IN_FP32_MODULES = (
 
 class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     config: DeepseekV4Config
-    config_class = DeepseekV4Config
-    base_model_prefix = "model"
-    supports_gradient_checkpointing = True
-    _no_split_modules = ["DeepseekV4DecoderLayer"]
-    _skip_keys_device_placement = ["past_key_values"]
-    # V4 attention runs its own fused kernel; no transformers backend can serve it.
-    _supports_flash_attn = False
-    _supports_sdpa = False
-    _supports_flex_attn = False
-    _can_compile_fullgraph = False
-    _supports_attention_backend = True
-    _can_record_outputs = {"hidden_states": DeepseekV4DecoderLayer}
-    _keys_to_ignore_on_load_unexpected = [r"(^|\.)mtp\..*"]
 
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:
@@ -117,10 +101,10 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
         init_std = self.config.initializer_range
         if isinstance(module, (DeepseekV4Attention, DeepseekV4HyperConnection, DeepseekV4HyperHead)):
             module.init_weights(init_std)
-        elif isinstance(module, DeepseekV4MoE):
-            module.init_weights(init_std, module.tokens_per_expert.device)
         elif isinstance(module, DeepseekV4RotaryEmbedding):
             module.init_buffers_post_meta()
+        elif isinstance(module, DeepseekV4HashRouter):
+            module.init_tid2eid()
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
@@ -174,10 +158,9 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
 class DeepseekV4Model(DeepseekV4PreTrainedModel):
     def __init__(self, config: DeepseekV4Config):
         super().__init__(config)
-        self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         # Shared by every attention layer instead of passing RoPE tensors through forward, which FSDP casts to bf16.
         self.rotary_emb = DeepseekV4RotaryEmbedding(config)
         self.layers = nn.ModuleList(
@@ -188,7 +171,6 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
         )
         self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.hc_head = DeepseekV4HyperHead(config)
-        self.gradient_checkpointing = False
 
         self.post_init()
 
@@ -201,7 +183,7 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> MoeModelOutputWithPast:
+    ) -> TextModelOutput:
         """
         input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Token ids. Threaded down to every decoder layer, not just the embedding: the
@@ -253,21 +235,25 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
             routed_experts_layer = (
                 routed_experts[:, :, layer_idx, :].contiguous() if routed_experts is not None else None
             )
+            # Every input with this rank's row length must be dynamic, or the layer pins the length to a constant.
+            # Inputs that need no grad reach the compiled layer as they are, so marking them works.
+            for tensor in (input_ids, routed_experts_layer):
+                if tensor is not None:
+                    torch._dynamo.maybe_mark_dynamic(tensor, 1)
+            # By keyword: DYNAMIC_TENSOR_ARG_DIMS in trainer/model.py marks its sequence axis dynamic by name.
             mhc_states = decoder_layer(
-                mhc_states,
+                mhc_states=mhc_states,
                 input_ids=input_ids,
                 routed_experts=routed_experts_layer,
                 packed=packed,
             )
 
         hidden_states = self.norm(self.hc_head(mhc_states))
-        return MoeModelOutputWithPast(last_hidden_state=hidden_states)
+        return TextModelOutput(last_hidden_state=hidden_states)
 
 
-class DeepseekV4ForCausalLM(DeepseekV4PreTrainedModel, GenerationMixin):
-    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
-    _tp_plan = {"lm_head": "colwise_gather_output"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
+class DeepseekV4ForCausalLM(DeepseekV4PreTrainedModel):
+    supports_tied_word_embeddings = True
 
     def __init__(self, config: DeepseekV4Config):
         super().__init__(config)

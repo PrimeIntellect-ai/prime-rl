@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-import verifiers.v1 as vf
+from typing import TYPE_CHECKING
 
 from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
-from prime_rl.orchestrator.algo.routing import assign_advantages
+from prime_rl.orchestrator.algo.routing import assign_advantage
+
+if TYPE_CHECKING:
+    from prime_rl.env.heads import EpisodeHead
 
 
 class MaxRLAlgorithm(Algorithm):
@@ -18,7 +21,7 @@ class MaxRLAlgorithm(Algorithm):
     Assumes non-negative (canonically binary) rewards; a group with mean reward
     <= 0 carries no signal and gets zero advantages."""
 
-    async def score_group(self, episodes: list[vf.Episode]) -> None:
+    async def score_group(self, episodes: list[EpisodeHead]) -> None:
         import torch  # only the trainer-side extras ship torch; an eval process never scores a group
 
         traces = [trace for _, trace in iter_trainable_traces(episodes)]
@@ -26,4 +29,4 @@ class MaxRLAlgorithm(Algorithm):
         mean = rewards.mean()
         advantages = torch.zeros_like(rewards) if mean <= 0 else (rewards - mean) / mean
         for trace, advantage in zip(traces, advantages.tolist(), strict=True):
-            assign_advantages(trace, advantage)
+            assign_advantage(trace, advantage)

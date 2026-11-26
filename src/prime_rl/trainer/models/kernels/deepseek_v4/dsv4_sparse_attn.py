@@ -3,7 +3,7 @@
 # autograd rule that ties them together and forms the attention-sink gradient in torch. The
 # TileLang kernels themselves live in `dsv4_sparse_attn_fwd.py` and `dsv4_sparse_attn_bwd.py`; this
 # module is the only place that knows both exist. The `cudnn_flashmla` backend calls FlashMLA's
-# sparse prefill forward and the cuDNN frontend's DSA backward from their wheels.
+# sparse prefill forward (bundled in the vLLM wheel) and the cuDNN frontend's DSA backward.
 
 # TileLang ships a libcudart stub that proxies to the real CUDA runtime via
 # dlsym(RTLD_DEFAULT, ...).  If the stub's own symbols are the first ones found
@@ -172,7 +172,7 @@ def cudnn_flashmla_forward(
     _num_stages: int,
     _threads: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    from flash_mla import flash_mla_sparse_fwd
+    from prime_rl.trainer.models.kernels import flash_mla_sparse_fwd
 
     batch, seq_len, heads, dim = q.shape
     n_positions = kv.shape[1]
@@ -291,6 +291,9 @@ def cudnn_flashmla_backward(
     sm_scale: float | None,
     max_slots: int | None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm90 import (
+        flash_attn_bwd_sm90_workspace_size,
+    )
     from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm100 import (
         flash_attn_bwd_sm100_workspace_size,
     )
@@ -309,17 +312,23 @@ def cudnn_flashmla_backward(
         # sink-aware probability, where recovering the sinkless LSE would cancel catastrophically.
         (lse * math.log(2.0)).view(batch * seq_len, heads),
     )
+    # The kernels fold `attn_sink` into the LSE themselves, and a -inf sink folds in nothing.
+    no_sink = torch.full((heads,), float("-inf"), dtype=torch.float32, device=q.device)
     if torch.cuda.get_device_capability(q.device)[0] == 9:
-        dq, dkv = flash_attn_bwd_sm90(
+        workspace_bytes = flash_attn_bwd_sm90_workspace_size(batch * seq_len, batch * n_positions, dim, heads)
+        dq, dkv, _ = flash_attn_bwd_sm90(
             *flat_tensors,
+            no_sink,
+            flat_indices,
+            torch.empty_like(flat_tensors[0]),
+            torch.empty_like(flat_tensors[1]),
+            torch.empty_like(no_sink),
+            torch.empty(workspace_bytes, dtype=torch.uint8, device=q.device),
             softmax_scale=sm_scale,
-            topk_idxs=flat_indices,
             topk_length=topk_length,
             max_slots=cudnn_flashmla_slot_width(max_slots),
         )
     else:
-        # The SM100 kernel folds `attn_sink` into the LSE itself, and a -inf sink folds in nothing.
-        no_sink = torch.full((heads,), float("-inf"), dtype=torch.float32, device=q.device)
         workspace_bytes = flash_attn_bwd_sm100_workspace_size(batch * seq_len, batch * n_positions, dim, heads)
         dq, dkv, _ = flash_attn_bwd_sm100(
             *flat_tensors,
@@ -327,7 +336,10 @@ def cudnn_flashmla_backward(
             flat_indices,
             softmax_scale=sm_scale,
             topk_length=topk_length,
+            dq=torch.empty_like(flat_tensors[0]),
+            dkv=torch.empty_like(flat_tensors[1]),
             workspace=torch.empty(workspace_bytes, dtype=torch.uint8, device=q.device),
+            d_sink=torch.empty_like(no_sink),
             max_slots=cudnn_flashmla_slot_width(max_slots),
         )
     delta = preprocess(heads, dim)(out, grad_out)

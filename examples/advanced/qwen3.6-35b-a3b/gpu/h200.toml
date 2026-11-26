@@ -1,0 +1,28 @@
+# H200 overlay for rl.toml: 1 trainer node + 3 one-node DEP8 inference replicas. Change the replica
+# count with `--deployment.num-infer-replicas`.
+#
+#   uv run rl @ examples/advanced/qwen3.6-35b-a3b/rl.toml @ examples/advanced/qwen3.6-35b-a3b/gpu/h200.toml
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+# With one replica, the trainer waited for batches 73% of the time on scaleswe.
+num_infer_replicas = 3
+
+# --- Trainer: one 262144-token sample per micro batch fits with cp 4 at 87 GiB peak ---
+
+[trainer.model]
+ep = 8
+cp = 4
+# Offloading would save 8 GiB of the 87 GiB peak but cost 6% throughput.
+ac_offloading = "None"
+
+# --- Inference: DEP8 per node (attention data parallel, experts sharded 8 ways) ---
+
+[inference.vllm]
+# vLLM's H200 DEP recipe. Without EP, DP shards each 512-wide expert 8 ways with TP.
+tensor_parallel_size = 1
+data_parallel_size = 8
+enable_expert_parallel = true
+gpu_memory_utilization = 0.85

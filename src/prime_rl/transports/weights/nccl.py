@@ -1,4 +1,3 @@
-import pickle
 from functools import partial
 from pathlib import Path
 from typing import Callable, Generator
@@ -9,15 +8,19 @@ import torch.nn as nn
 from torch import Tensor
 from torch.distributed.tensor import DTensor, Replicate, Shard
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
-from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.configs.shared import NCCLWeightBroadcastConfig
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.utils import get_world
+from prime_rl.trainer.vlm import get_layer_prefix
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
-from prime_rl.utils.vlm import get_layer_prefix
+from prime_rl.utils.nccl import (
+    create_nccl_communicator,
+    disable_nccl_p2p_if_unavailable,
+    encode_tensor_metadata,
+    iter_tensor_buckets,
+)
 from prime_rl.utils.weights import get_chunked_conversion_ops, resolve_wire_dtype
 
 
@@ -92,7 +95,7 @@ def broadcast_state_dict(state_dict: dict[str, Tensor], communicator: PyNcclComm
         metadata[dtype] = [(key, value.shape, value.numel()) for key, value in items]
 
     # Send metadata
-    state = pickle.dumps(metadata)
+    state = encode_tensor_metadata(metadata)
     size_tensor = torch.tensor([len(state)], dtype=torch.long).cuda()
     communicator.broadcast(size_tensor, src=0)
     state_tensor = torch.ByteTensor(list(state)).cuda()
@@ -153,11 +156,7 @@ def preprocess_layer_checkpoint(
         return layer_state_dict
     if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(layer_state_dict):
         model.convert_layer_to_hf(layer_state_dict, layer_idx)
-        return layer_state_dict
-
-    from transformers.core_model_loading import revert_weight_conversion
-
-    return revert_weight_conversion(model, layer_state_dict)
+    return layer_state_dict
 
 
 class NCCLBroadcaster:
@@ -177,10 +176,7 @@ class NCCLBroadcaster:
         if self.world.is_master:
             disable_nccl_p2p_if_unavailable()
             # Trainer is on rank 0 in process group with all inference GPUs
-            pg = StatelessProcessGroup.create(
-                host=host, port=port, rank=rank, world_size=world_size, store_timeout=timeout
-            )
-            self.communicator = PyNcclCommunicator(pg, device=device)
+            self.communicator = create_nccl_communicator(host, port, rank, world_size, device, timeout)
             self.logger.debug("Initialized NCCL broadcast on master rank")
         else:
             self.logger.debug("Initialized NCCL broadcast on non-master rank (no communicator)")
@@ -189,7 +185,7 @@ class NCCLBroadcaster:
     def send(self, model: nn.Module) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL."""
         state_dict = model.state_dict()
-        layer_prefix = get_layer_prefix(model.config)
+        layer_prefix = get_layer_prefix(model)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
         chunked_ops = get_chunked_conversion_ops(model, state_dict)
         num_state_dict_to_send = num_layers + 1 + sum(op.shard_count for op in chunked_ops.values())

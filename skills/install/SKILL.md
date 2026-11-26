@@ -37,6 +37,22 @@ When bumping a package past the workspace-wide `exclude-newer = "7 days"` window
 
 ## Optional extras
 
+### GPU extras
+
+The `gpu` extra is the union of two extras:
+
+- `train`: the trainer stack (torch, torchtitan, the model kernels). Enough for `sft` and `pretrain` without online evals.
+- `inference`: vLLM, its precompiled FlashInfer kernels and the weight-broadcast transports. Needed by `rl`, `inference` and online evals.
+
+```bash
+uv sync --extra train   # SFT / pretraining only
+uv sync --extra gpu     # train + inference
+```
+
+FP8 training, MegaMoE and the `cudnn_flashmla` sparse-attention backend use kernels bundled in the vLLM wheel, so they need `inference` as well.
+
+SLURM jobs run `uv sync --all-extras --all-packages` by default. Narrow it with `[slurm] sync_args` in the TOML config, e.g. `sync_args = "--extra train"`.
+
 ### CUDA kernels
 
 Prebuilt wheels, pinned at a release in `[tool.uv.sources]`:
@@ -72,8 +88,8 @@ The `disagg` extra installs the prebuilt DeepEP wheel pinned in `[tool.uv.source
 uv sync --extra disagg
 ```
 
-The prime-kernels repository owns source builds for DeepEP, DeepGEMM, and TorchAO. Use
-its scripts when a local rebuild is required:
+The prime-kernels repository owns source builds for DeepEP and TorchAO (DeepGEMM ships with
+vLLM as `vllm.third_party.deep_gemm`). Use its scripts when a local rebuild is required:
 
 ```bash
 git submodule update --init deps/prime-kernels
@@ -95,7 +111,7 @@ Multi-node / disaggregated deployments can route through the upstream llm-d Endp
 bash scripts/install_llmd.sh   # builds epp + pd-sidecar from a pinned llm-d-router commit (vendored Go), fetches envoy
 ```
 
-Binaries land in `third_party/llmd/bin/{epp,envoy,pd-sidecar}` (a shared path, so SLURM nodes see them). `epp` is pinned to the commit that includes the `vllmhttp-parser` (PR #1248) so prime-rl's renderer/TITO `/inference/v1/generate` path routes correctly. Override the pin with `LLMD_ROUTER_REF=<sha>`. The EPP + Envoy + endpoints configs are rendered from `templates/llmd/*.yaml.j2` (included into the SLURM script); only the per-node IPv4 addresses are filled in inline at launch time.
+Binaries land in `third_party/llmd/bin/{epp,envoy,pd-sidecar}` (a shared path, so SLURM nodes see them). `epp` is pinned to the commit that includes the `vllmhttp-parser` (PR #1248) so prime-rl's renderer/TITO `/inference/v1/generate` path routes correctly. Override the pin with `LLMD_ROUTER_REF=<sha>`. The EPP + Envoy + endpoints configs are rendered from `src/prime_rl/templates/llmd/*.yaml.j2` (included into the SLURM script); only the per-node IPv4 addresses are filled in inline at launch time.
 
 ## Key files
 

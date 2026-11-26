@@ -1,7 +1,10 @@
-import logging
+import importlib.metadata
+import importlib.util
 import os
 import shutil
+import sys
 import time
+import types
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import cast
@@ -23,13 +26,12 @@ from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.fsdp._fully_shard._fsdp_common import FSDPMeshInfo, ShardPlacementResult
 from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
-from torch.distributed.tensor import Shard
-from torch.distributed.tensor.parallel import parallelize_module
+from torch.distributed.tensor import DTensor, Shard
 from transformers import AutoConfig, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
-from transformers.utils.import_utils import is_flash_attn_3_available
 
 from prime_rl.configs.trainer import (
+    MODULE_TARGET_SEPARATOR,
     ActivationCheckpointConfig,
     CompileConfig,
     FP8Config,
@@ -37,14 +39,17 @@ from prime_rl.configs.trainer import (
     MXFP8Config,
     TokenizerConfig,
 )
-from prime_rl.multimodal import ForwardPolicy
-from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
-from prime_rl.trainer.distributed.embedding_parallel import EmbeddingParallel
+from prime_rl.trainer.activation_checkpointing import (
+    TokenChunkedCheckpointWrapper,
+    get_activation_checkpoint_wrapper,
+    unmatched_module_patterns,
+)
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
-    AutoModelForCausalLMPrimeRL,
+    PreTrainedModelPrimeRL,
     PrimeLmOutput,
     cast_float_and_contiguous,
+    custom_causal_lm_from_config,
     get_custom_causal_lm_cls,
     get_custom_vlm_cls,
     supports_custom_impl,
@@ -57,52 +62,23 @@ from prime_rl.trainer.models.fusions import (
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
-from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
+from prime_rl.trainer.models.layers.lm_head import TokenSupport, inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
+from prime_rl.trainer.models.layers.ngram import NGramTable
 from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIndexer
-from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
+from prime_rl.trainer.ngram_runtime import configure_ngram_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.utils import get_dcp_group
+from prime_rl.trainer.vlm import get_language_model, get_vision_encoder
 from prime_rl.trainer.world import get_world, wait_for_master
-from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import format_time
-from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
+from prime_rl.utils.logger import format_time, get_logger
+from prime_rl.utils.pathing import has_step_dir_name, is_checkpoint_step_dir
 from prime_rl.utils.weights import (
     load_state_dict,
     load_state_dict_keys,
     save_state_dict,
-)
-
-
-def pre_download_model(model_name: str, *, skip_weights: bool = False) -> None:
-    """Pre-download model from HuggingFace Hub so all nodes have cached weights before training.
-
-    With ``skip_weights`` (random-init debug runs), only config and tokenizer files are fetched.
-    """
-    if Path(model_name).exists():
-        get_logger().info(f"Model {model_name} found at local path, skipping download")
-        return
-    t0 = time.perf_counter()
-    if skip_weights:
-        get_logger().info(f"Pre-downloading config and tokenizer for {model_name} (random init, skipping weights)")
-        path = snapshot_download(
-            repo_id=model_name, repo_type="model", allow_patterns=["*.json", "*.txt", "tokenizer*", "*.jinja"]
-        )
-    else:
-        get_logger().info(f"Pre-downloading model {model_name}")
-        path = snapshot_download(repo_id=model_name, repo_type="model")
-    get_logger().debug(
-        f"Finished pre-downloading model {model_name} to {path} in {format_time(time.perf_counter() - t0)}"
-    )
-
-
-# Add filter to the standard logging module for transformers.modeling_utils to supress the
-# flash attention dtype warnings since FSDP is used to handle mixed precision.
-transformers_modeling_utils_logger = logging.getLogger("transformers.modeling_utils")
-transformers_modeling_utils_logger.addFilter(
-    lambda record: "Flash Attention 2 only supports torch.float16 and torch.bfloat16 dtypes" not in record.getMessage()
 )
 
 DTYPE_MAP = {
@@ -119,11 +95,8 @@ torch._dynamo.config.recompile_limit = 16  # default: 8
 torch._dynamo.config.cache_size_limit = 64  # default: 8
 
 
-def freeze_vision_encoder(model: nn.Module, override_attr: str | None = None) -> None:
+def freeze_vision_encoder(vision_encoder: nn.Module) -> None:
     logger = get_logger()
-    vision_encoder = get_vision_encoder(model, override=override_attr)
-    if vision_encoder is None:
-        raise ValueError("Could not find vision encoder to freeze")
     num_frozen = 0
     for param in vision_encoder.parameters():
         param.requires_grad = False
@@ -153,10 +126,19 @@ def freeze_moe_router(model: nn.Module) -> None:
         logger.info(f"Froze {num_frozen} MoE router parameters")
 
 
+def get_fp32_modules(model: nn.Module) -> list[nn.Module]:
+    """The model's modules whose parameters stay FP32 in the forward (see `PreTrainedModelPrimeRL.fp32_modules`)."""
+    return model.fp32_modules() if isinstance(model, PreTrainedModelPrimeRL) else []
+
+
 def get_full_offload_dtype_policy(model: nn.Module) -> dict[int, tuple[torch.dtype, torch.dtype]]:
     """Return persistent parameter and reduced-gradient dtypes for full offload."""
     # FSDP casts reduced gradients back to the persistent sharded-parameter dtype.
-    return {id(param): (torch.bfloat16, torch.bfloat16) for param in model.parameters() if param.is_floating_point()}
+    policy = {id(param): (torch.bfloat16, torch.bfloat16) for param in model.parameters() if param.is_floating_point()}
+    for module in get_fp32_modules(model):
+        for param in module.parameters():
+            policy[id(param)] = (torch.float32, torch.float32)
+    return policy
 
 
 def freeze_sparse_indexer(model: nn.Module) -> None:
@@ -206,72 +188,120 @@ def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(config, "num_experts") or hasattr(config, "n_routed_experts")
 
 
-def get_load_balance_stats(
-    model: nn.Module,
-    group: dist.ProcessGroup | None = None,
-) -> dict[str, Tensor | None]:
-    """Compute routing stats after summing raw counts across the group, if given.
+def compute_max_vio_and_routing_confidence(
+    tokens_per_expert: Tensor, routing_confidence_sum: Tensor, top_k: int
+) -> tuple[Tensor, Tensor]:
+    """Max violation and routing confidence of one MoE layer's expert counts (last dimension) and confidence sum.
+    Leading dimensions are batch dimensions."""
+    num_routed_tokens = tokens_per_expert.sum(dim=-1) / top_k
+    loads = tokens_per_expert.sort(dim=-1, descending=True).values[..., top_k:]
+    balanced_load = loads.mean(dim=-1)
+    max_vio = (loads.amax(dim=-1) - balanced_load) / balanced_load
+    return max_vio, routing_confidence_sum / num_routed_tokens
 
-    Also returns this rank's raw per-layer expert counts (`[num_moe_layers, num_experts]`) for step-level stats.
-    """
-    per_layer_max_vio = []
-    per_layer_routing_confidence = []
+
+def take_moe_routing_stats(model: nn.Module) -> Tensor:
+    """This rank's routing counts since the last call, as `[num_moe_layers, num_experts + 1]` (tokens per expert,
+    then the routing confidence sum), and reset them."""
     block_mlps = list(iter_moe_blocks(model))
     if not block_mlps:
-        return {"max_vio": None, "routing_confidence": None, "tokens_per_expert": torch.empty(0, 0)}
-
-    local_tokens_per_expert = torch.stack([block_mlp.tokens_per_expert for block_mlp in block_mlps])
-    layer_stats = [(block_mlp.tokens_per_expert, block_mlp.routing_confidence_sum) for block_mlp in block_mlps]
-    if group is not None:
-        sizes = [tokens_per_expert.numel() + 1 for tokens_per_expert, _ in layer_stats]
-        packed_stats = torch.cat(
-            [torch.cat((tokens_per_expert, confidence.reshape(1))) for tokens_per_expert, confidence in layer_stats]
-        )
-        dist.all_reduce(packed_stats, op=dist.ReduceOp.SUM, group=group)
-        layer_stats = [(stats[:-1], stats[-1]) for stats in packed_stats.split(sizes)]
-
-    for block_mlp, (tokens_per_expert, routing_confidence_sum) in zip(block_mlps, layer_stats):
-        num_routed_tokens = tokens_per_expert.sum() / block_mlp.router.top_k
-        tokens_per_expert = tokens_per_expert.sort(dim=0, descending=True).values[block_mlp.router.top_k :]
-        balanced_load = tokens_per_expert.mean()
-        max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load
-        per_layer_max_vio.append(max_vio.detach())
-
-        routing_confidence = routing_confidence_sum / num_routed_tokens
-        per_layer_routing_confidence.append(routing_confidence.detach())
-
+        return torch.empty(0, 0)
+    stats = torch.stack(
+        [
+            torch.cat((block_mlp.tokens_per_expert, block_mlp.routing_confidence_sum.reshape(1)))
+            for block_mlp in block_mlps
+        ]
+    )
+    for block_mlp in block_mlps:
         block_mlp.tokens_per_expert.zero_()
         block_mlp.routing_confidence_sum.zero_()
-    return {
-        "max_vio": torch.stack(per_layer_max_vio),
-        "routing_confidence": torch.stack(per_layer_routing_confidence),
-        "tokens_per_expert": local_tokens_per_expert,
-    }
+    return stats
+
+
+def add_routing_stats(
+    sums: dict[str, Tensor],
+    maxes: dict[str, Tensor],
+    routing_stats: list[Tensor],
+    top_ks: list[int],
+    ep_group: dist.ProcessGroup | None,
+) -> None:
+    """Add the step's expert counts, and the max violation and routing confidence of every micro-batch's
+    `take_moe_routing_stats` snapshot over the EP group's tokens, to the statistics to reduce; with EP, also every
+    micro-batch's EP imbalance per layer."""
+    routing = torch.stack(routing_stats)
+    sums["expert_counts"] = routing[..., :-1].sum(dim=0)
+    if ep_group is not None:
+        dist.all_reduce(routing, group=ep_group)
+    per_layer = [
+        compute_max_vio_and_routing_confidence(layer[..., :-1], layer[..., -1], top_k)
+        for layer, top_k in zip(routing.unbind(dim=1), top_ks, strict=True)
+    ]
+    max_vio, routing_confidence = (torch.stack(stats, dim=1) for stats in zip(*per_layer))
+    maxes["max_vio"] = max_vio.amax(dim=-1)
+    sums["routing_confidence"] = routing_confidence.mean(dim=-1)
+    if ep_group is not None:
+        # Every rank of an EP group holds the same imbalances. A layer waits for the busiest rank of its EP group and,
+        # through its FSDP collectives, for the slowest group: the max over DP groups, with the DP mean beside it.
+        rank_imbalance = compute_ep_imbalance(routing[..., :-1], dist.get_world_size(ep_group))
+        maxes["ep_imbalance/rank"] = sums["ep_imbalance/rank_dp_mean"] = rank_imbalance
 
 
 def get_global_moe_stats(
     model: nn.Module,
+    routing_stats: list[Tensor],
     ep_group: dist.ProcessGroup | None,
     dp_cp_group: dist.ProcessGroup,
 ) -> tuple[dict[str, Tensor], Tensor]:
-    """Reduce one microstep's routing stats across EP, then DP and CP ranks.
+    """Reduce each micro step's `take_moe_routing_stats` across EP, then DP and CP ranks, into one value per micro step,
+    or with EP, also one EP imbalance per micro step and layer.
 
-    Also returns this rank's unreduced per-layer expert counts, to accumulate over the step for `get_expert_load_stats`.
+    Also returns this rank's unreduced per-layer expert counts summed over the micro steps, for `get_expert_load_stats`.
     """
-    stats = {}
-    load_balance_stats = get_load_balance_stats(model, group=ep_group)
-    tokens_per_expert = load_balance_stats.pop("tokens_per_expert")
-    for name, values in load_balance_stats.items():
-        if values is None:
-            continue
-        value = values.max() if name == "max_vio" else values.mean()
-        if name == "max_vio":
-            dist.all_reduce(value, op=dist.ReduceOp.MAX, group=dp_cp_group)
-        else:
-            dist.all_reduce(value, op=dist.ReduceOp.SUM, group=dp_cp_group)
-            value /= dist.get_world_size(dp_cp_group)
-        stats[name] = value
-    return stats, tokens_per_expert
+    stats = torch.stack(routing_stats)
+    tokens_per_expert = stats[..., :-1].sum(dim=0)
+    if stats.numel() == 0:
+        return {}, tokens_per_expert
+    if ep_group is not None:
+        dist.all_reduce(stats, op=dist.ReduceOp.SUM, group=ep_group)
+
+    per_layer_max_vio = []
+    per_layer_routing_confidence = []
+    for layer_stats, block_mlp in zip(stats.unbind(dim=1), iter_moe_blocks(model)):
+        max_vio, routing_confidence = compute_max_vio_and_routing_confidence(
+            layer_stats[:, :-1], layer_stats[:, -1], block_mlp.router.top_k
+        )
+        per_layer_max_vio.append(max_vio)
+        per_layer_routing_confidence.append(routing_confidence)
+
+    max_stats = [torch.stack(per_layer_max_vio, dim=1).amax(dim=1, keepdim=True)]
+    mean_stats = [torch.stack(per_layer_routing_confidence, dim=1).mean(dim=1, keepdim=True)]
+    if ep_group is not None:
+        # Every rank of an EP group holds the same `[micro_steps, layers]` imbalances. A layer waits for the busiest
+        # rank of its EP group and, through its FSDP collectives, for the slowest group: take the max over DP groups,
+        # with the DP mean beside it.
+        rank_imbalance = compute_ep_imbalance(stats[..., :-1], dist.get_world_size(ep_group))
+        max_stats.append(rank_imbalance)
+        mean_stats.append(rank_imbalance)
+    max_stats, mean_stats = torch.cat(max_stats, dim=1), torch.cat(mean_stats, dim=1)
+    dist.all_reduce(max_stats, op=dist.ReduceOp.MAX, group=dp_cp_group)
+    dist.all_reduce(mean_stats, op=dist.ReduceOp.SUM, group=dp_cp_group)
+    mean_stats /= dist.get_world_size(dp_cp_group)
+
+    moe_stats = {"max_vio": max_stats[:, 0], "routing_confidence": mean_stats[:, 0]}
+    if ep_group is not None:
+        moe_stats["ep_imbalance/rank"] = max_stats[:, 1:]
+        moe_stats["ep_imbalance/rank_dp_mean"] = mean_stats[:, 1:]
+    return moe_stats, tokens_per_expert
+
+
+def compute_ep_imbalance(tokens_per_expert: Tensor, ep: int) -> Tensor:
+    """The busiest EP rank's load over the mean rank load, from `[..., num_experts]` counts summed over the EP group.
+
+    EP rank r holds experts [r * num_experts / ep, (r + 1) * num_experts / ep) and runs the grouped GEMMs of every
+    route to them, padding routes included (they run through the GEMMs too).
+    """
+    rank_routes = tokens_per_expert.unflatten(-1, (ep, -1)).sum(dim=-1)
+    return rank_routes.amax(dim=-1) / rank_routes.mean(dim=-1)
 
 
 def compute_expert_load_stats(tokens_per_expert: Tensor) -> dict[str, Tensor]:
@@ -301,15 +331,11 @@ def get_expert_load_stats(tokens_per_expert: Tensor, group: dist.ProcessGroup) -
     return {name: value.item() for name, value in compute_expert_load_stats(tokens_per_expert).items()}
 
 
-def get_model(
-    config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
-) -> nn.Module:
+def get_model(config: ModelConfig, dtype: torch.dtype = torch.bfloat16) -> nn.Module:
     logger = get_logger()
     logger.debug(
         f"Loading model config (name={config.name}, attn={config.attn}, trust_remote_code={config.trust_remote_code})"
     )
-
-    is_vlm_training = config.vlm is not None
 
     model_config = cast(
         PretrainedConfig,
@@ -318,9 +344,8 @@ def get_model(
         ),
     )
     model_config.use_cache = False
-    is_vlm_arch = is_vlm_architecture(model_config)
 
-    if is_vlm_training:
+    if config.vlm is not None:
         logger.info(f"Detected vision-language model: {config.name}")
 
     for subconfig_key in getattr(model_config, "sub_configs", {}):
@@ -330,6 +355,7 @@ def get_model(
     model_config.dsa_backend = config.dsa_backend
     if model_config.model_type == "deepseek_v4":
         model_config.kv_precision = config.dsv4_kv_precision
+        model_config.compressor_backend = config.dsv4_compressor_backend
     # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
     # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
     indexer_types = getattr(model_config, "indexer_types", None)
@@ -379,8 +405,10 @@ def get_model(
             f"Setting the number of layers to {config.debug.num_layers} in the model config. This means {target_config.num_hidden_layers - num_hidden_layers} layers will not be loaded."
         )
         target_config.num_hidden_layers = num_hidden_layers
+        if getattr(target_config, "layer_types", None) is not None:
+            target_config.layer_types = target_config.layer_types[:num_hidden_layers]
 
-    custom_vlm_cls = get_custom_vlm_cls(model_config) if is_vlm_arch else None
+    custom_vlm_cls = get_custom_vlm_cls(model_config)
     if custom_vlm_cls is None and not supports_custom_impl(model_config):
         raise ValueError(
             f"{model_config.model_type!r} has no PrimeRL model implementation. "
@@ -399,21 +427,15 @@ def get_model(
             f"VLM training requires a registered PrimeRL VLM implementation; {model_config.model_type!r} has none."
         )
 
-    with device:
-        model_cls = custom_vlm_cls or AutoModelForCausalLMPrimeRL
+    with torch.device("meta"):
+        model_cls = custom_vlm_cls or get_custom_causal_lm_cls(model_config)
 
         load_model_start_time = time.perf_counter()
-        if device == torch.device("meta"):
-            logger.info(f"Loading model {config.name} using {model_cls.__name__} to meta device")
-            model = model_cls.from_config(model_config, trust_remote_code=config.trust_remote_code, dtype=dtype)
+        logger.info(f"Loading model {config.name} using {model_cls.__name__} to meta device")
+        if custom_vlm_cls is not None:
+            model = custom_vlm_cls.from_config(model_config, dtype=dtype)
         else:
-            logger.info(f"Loading model {config.name} using {model_cls.__name__} to CPU")
-            model = model_cls.from_pretrained(
-                pretrained_model_name_or_path=config.name,
-                config=model_config,
-                trust_remote_code=config.trust_remote_code,
-                dtype=dtype,
-            )
+            model = custom_causal_lm_from_config(model_config, dtype=dtype)
         logger.debug(f"Loaded model {config.name} in {format_time(time.perf_counter() - load_model_start_time)}")
 
     assert model.lm_head.weight.dtype == dtype, (
@@ -422,8 +444,34 @@ def get_model(
     return model
 
 
-def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
+def use_resumed_model_files(model: ModelConfig, tokenizer: TokenizerConfig, step_dir: Path) -> None:
+    """A run started from a checkpoint step directory resumes with the config.json and tokenizer of the step directory
+    it resumes, which holds copies (``ModelFiles``), so the source may be gone by then. The source is recognized by its
+    name, since it may no longer exist."""
+    if not has_step_dir_name(model.name) or not (step_dir / "config.json").exists():
+        return
+    if tokenizer.name == model.name:
+        tokenizer.name = str(step_dir)
+    model.name = str(step_dir)
+
+
+def check_ckpt_dir(config: ModelConfig) -> None:
+    """A checkpoint step directory supplies the architecture with its config.json."""
+    if is_checkpoint_step_dir(config.name) and not (Path(config.name) / "config.json").exists():
+        raise FileNotFoundError(
+            f"Checkpoint step directory {config.name} has no config.json, so the architecture is unknown; copy the "
+            "model's config.json and tokenizer files into it"
+        )
+
+
+def setup_tokenizer(config: TokenizerConfig, model_name: str) -> PreTrainedTokenizer:
     logger = get_logger()
+    # The tokenizer name defaults to the model name, a folder of which may hold only a config.json (transformers then
+    # loads an empty tokenizer).
+    model_dir = Path(model_name)
+    tokenizer_files = ("tokenizer_config.json", "tokenizer.json", "tokenizer.model")
+    if config.name == model_name and model_dir.is_dir() and not any((model_dir / f).exists() for f in tokenizer_files):
+        raise FileNotFoundError(f"No tokenizer at model.name {model_name}; set tokenizer.name")
     tokenizer = AutoTokenizer.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
     if config.chat_template is not None:
         path = Path(config.chat_template)
@@ -437,23 +485,6 @@ def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
     tokenizer.pad_token_id = tokenizer.eos_token_id
 
     return tokenizer
-
-
-def setup_processor(config: ModelConfig):
-    """Load an ``AutoProcessor`` for VLM models. Returns ``None`` for text-only models."""
-    from transformers import AutoProcessor
-
-    logger = get_logger()
-    try:
-        processor = AutoProcessor.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
-    except (ValueError, OSError, KeyError) as e:
-        logger.debug(f"No AutoProcessor available for {config.name} ({type(e).__name__}); treating as text-only.")
-        return None
-    if not (getattr(processor, "image_processor", None) or getattr(processor, "video_processor", None)):
-        logger.debug(f"AutoProcessor for {config.name} has no image/video processor; treating as text-only.")
-        return None
-    logger.info(f"Loaded multimodal processor: {type(processor).__name__}")
-    return processor
 
 
 def _expert_shard_placement_fn(
@@ -505,31 +536,56 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         expert_mesh_info = _get_mesh_info(dp_mod_ep_mesh)
         assert isinstance(expert_mesh_info, FSDPMeshInfo)
 
-    is_vlm_training = config.vlm is not None
-    if is_vlm_training:
-        vision_encoder = get_vision_encoder(model, override=config.vlm.vision_encoder_attr)
+    if config.vlm is not None:
+        vision_encoder = get_vision_encoder(model)
         if vision_encoder is None:
             raise ValueError(f"VLM model {config.name} has no recognized vision encoder")
 
         fully_shard(vision_encoder, mesh=hsdp_mesh, **fsdp_config)
         get_logger().info(f"Applied FSDP to vision encoder (frozen={config.vlm.freeze_vision_encoder})")
 
-    language_model = get_language_model(model, override=config.vlm.language_model_attr if is_vlm_training else None)
+    for table in [module for module in model.modules() if isinstance(module, NGramTable)]:
+        if isinstance(table.weight, DTensor):
+            table_mesh = (
+                parallel_dims.world_mesh["dp_replicate", "dp_shard_mod_head"]
+                if parallel_dims.dp_replicate_enabled
+                else parallel_dims.get_mesh("dp_shard_mod_head")
+            )
+        else:
+            table_mesh = hsdp_mesh
+        fully_shard(table, mesh=table_mesh, **fsdp_config)
+        table.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
+
+    language_model = get_language_model(model)
     transformer_layers = language_model.layers
 
-    for transformer_block in transformer_layers:
-        for module in transformer_block.modules():
-            if isinstance(module, NGramEmbedding) and parallel_dims.get_mesh("head").size() > 1:
-                embedding = module.ngram_embedding
-                dp_mod_head_mesh = (
-                    parallel_dims.world_mesh["dp_replicate", "dp_shard_mod_head"]
-                    if parallel_dims.dp_replicate_enabled
-                    else parallel_dims.get_mesh("dp_shard_mod_head")
-                )
-                parallelize_module(embedding, parallel_dims.get_mesh("head"), EmbeddingParallel())
-                fully_shard(embedding, mesh=dp_mod_head_mesh, **fsdp_config)
-                embedding.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
+    # Parameters kept in FP32 skip the BF16 cast: each module holding them is its own unit, gathered before the language
+    # model runs, so the compiled decoder layers only read them. The final backward callback reduces their gradients
+    # and frees them; a forward without grad frees them at its end.
+    fp32_modules = get_fp32_modules(model)
+    for module in fp32_modules:
+        fully_shard(
+            module,
+            mesh=hsdp_mesh,
+            mp_policy=MixedPrecisionPolicy(param_dtype=torch.float32, reduce_dtype=torch.float32),
+            offload_policy=offload_policy,
+            shard_placement_fn=shard_placement_fn,
+        )
+    if fp32_modules:
 
+        def unshard_fp32_modules(module: nn.Module, args: tuple) -> None:
+            for fp32_module in fp32_modules:
+                fp32_module.unshard()
+
+        def reshard_fp32_modules(module: nn.Module, args: tuple, output) -> None:
+            if not torch.is_grad_enabled():
+                for fp32_module in fp32_modules:
+                    fp32_module.reshard()
+
+        language_model.register_forward_pre_hook(unshard_fp32_modules)
+        language_model.register_forward_hook(reshard_fp32_modules)
+
+    for transformer_block in transformer_layers:
         block_mlp = getattr(transformer_block, "mlp", None)
         block_fsdp_config = fsdp_config
         if expert_mesh_info is not None and isinstance(block_mlp, MoE):
@@ -641,6 +697,37 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 transformer_block.set_modules_to_backward_prefetch([embed_module])
 
 
+@torch.no_grad()
+def initialize_from_scratch(model: nn.Module, seed: int) -> None:
+    """Initialize the weights with the model's own init (``initialize_weights``, which applies its
+    ``_init_weights``), seeded with ``seed``. Floating parameters and buffers are NaN-filled first, so any the init misses
+    raises."""
+    get_logger().info(f"Initializing the weights from scratch (seed {seed})")
+    model.to_empty(device="cuda")
+    torch.distributed.barrier()
+
+    def floating_tensors() -> dict[str, Tensor]:
+        tensors = {**dict(model.named_parameters()), **dict(model.named_buffers())}
+        return {
+            name: tensor.to_local() if isinstance(tensor, DTensor) else tensor
+            for name, tensor in tensors.items()
+            if tensor.is_floating_point()
+        }
+
+    for tensor in floating_tensors().values():
+        tensor.fill_(float("nan"))
+    model.init_buffers_post_meta()
+    torch.manual_seed(seed)
+    model.initialize_weights()
+    uninitialized = [name for name, tensor in floating_tensors().items() if tensor.isnan().any()]
+    if uninitialized:
+        more = f", +{len(uninitialized) - 3} more" if len(uninitialized) > 3 else ""
+        raise RuntimeError(
+            f'{model.config.model_type!r} does not support model.init.type = "scratch": its init does not reach '
+            f"{', '.join(uninitialized[:3])}{more}"
+        )
+
+
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     device = "cuda"
     model.to_empty(device=device)
@@ -650,10 +737,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     model.init_buffers_post_meta()
 
     logger = get_logger()
-    if config.debug.random_init:
-        logger.warning("Randomly initializing model. Skipping loading weights from HF.")
-        return
-
     if not Path(config.name).exists():
         snapshot_path = Path(snapshot_download(repo_id=config.name, repo_type="model"))
     else:
@@ -719,6 +802,10 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     state_dict = model.state_dict()
     state_dict = strip_lora_from_state_dict(state_dict)
     if model.config.tie_word_embeddings:
+        # Tied checkpoints ship no lm_head weight: the head loads through the input embedding it shares.
+        assert model.lm_head.weight is model.get_input_embeddings().weight, (
+            f"{type(model).__name__} sets tie_word_embeddings but its lm_head does not share the input embedding weight"
+        )
         state_dict.pop("lm_head.weight")
     dcp_load(
         state_dict,
@@ -740,18 +827,37 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
     # FLA's metadata cache must not skip operations during checkpoint replay.
     fla.utils.FLA_DISABLE_TENSOR_CACHE = True
     language_model = get_language_model(model)
-    wrap_block = get_activation_checkpoint_wrapper(ac_config)
-    checkpointed_layers = 0
+    matched_module_targets: set[str] = set()
+    wrap_block = get_activation_checkpoint_wrapper(ac_config, matched_module_targets)
+    checkpointed_blocks = []
 
     for layer_id, (layer_name, transformer_block) in enumerate(language_model.layers.named_children()):
         if layer_id % ac_config.freq != 0:
             continue
 
         language_model.layers.register_module(layer_name, wrap_block(transformer_block))
-        checkpointed_layers += 1
+        checkpointed_blocks.append(transformer_block)
+
+    if ac_config.mode == "selective" and ac_config.targets is not None:
+        unmatched = unmatched_module_patterns(ac_config.targets, checkpointed_blocks)
+        if unmatched:
+            raise ValueError(f"Activation checkpointing module patterns match no checkpointed submodule: {unmatched}")
+
+        module_targets = [target for target in ac_config.targets if MODULE_TARGET_SEPARATOR in target]
+        if module_targets:
+
+            def check_module_targets_after_first_training_forward(_module, _args, _output) -> None:
+                if not torch.is_grad_enabled():
+                    return
+                check_once.remove()
+                untraced = [target for target in module_targets if target not in matched_module_targets]
+                if untraced:
+                    raise ValueError(f"Activation checkpointing targets matched no traced operation: {untraced}")
+
+            check_once = language_model.register_forward_hook(check_module_targets_after_first_training_forward)
 
     get_logger().info(
-        f"Applied {ac_config.mode} activation checkpointing to {checkpointed_layers} layers (freq={ac_config.freq})"
+        f"Applied {ac_config.mode} activation checkpointing to {len(checkpointed_blocks)} layers (freq={ac_config.freq})"
     )
 
 
@@ -761,27 +867,87 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
 DYNAMIC_INT_ARGS = (
     # Longest document in the packed row. FlashAttention uses it to size the attention launch grid.
     "max_seqlen",
+    # DeepSeek V4: largest compressed-entry count of any document in the row. Sizes the HCA picks.
+    "max_entries_per_doc",
+)
+
+# Tensor args, as (name, dim), whose dim changes between calls. Marking the tensor itself does not reach a compiled
+# layer: FSDP2's pre-forward hook hands the layer a new view of its input, without the mark. A dynamic source names
+# the arg instead, so callers must pass these args by keyword.
+DYNAMIC_TENSOR_ARG_DIMS = (
+    # DeepSeek V4, GLM5-next: decoder layer input, (batch, seq, hc_mult, hidden). seq follows this rank's row length.
+    ("mhc_states", 1),
+    # Decoder layer input, (batch, seq, ...), and its rotary (cos, sin), each (batch, seq, rotary_dim), for every model
+    # that passes them to its layers by keyword.
+    ("hidden_states", 1),
+    ("position_embeddings", 1),
+    # Qwen3.8: per-layer n-gram embedding, (batch, seq, ngram_dim).
+    ("ngram_embedding", 1),
+    # GLM5-next: PoolLayout tensors, one entry per pool slot or per local query, so they follow the row length too.
+    ("pool_start_tokens", 0),
+    ("query_tokens", 0),
+    ("query_positions", 0),
+    ("first_pool", 0),
+    ("visible_pools", 0),
+    # GLM5-next, Qwen3.5, Qwen3.8 (FlaVarlen fields) and Nemotron-H (by keyword): FLA chunk indices, (chunks, 2), one
+    # entry per 64-token chunk of each document of this rank.
+    ("chunk_indices", 0),
+    # GLM5-next, Qwen3.5, Qwen3.8: FlaVarlen's document boundaries on this rank, (documents + 1,).
+    ("local_cu_seqlens", 0),
+    # Qwen3.8: each token's document start and end, one entry per token of the full row across CP ranks.
+    ("document_starts", 0),
+    ("document_ends", 0),
 )
 
 
-def mark_dynamic_int_args() -> None:
-    """Add DYNAMIC_INT_ARGS to torch.compiler.config.dynamic_sources, keeping entries already set."""
+def mark_dynamic_args() -> None:
+    """Add DYNAMIC_INT_ARGS and DYNAMIC_TENSOR_ARG_DIMS to torch.compiler.config.dynamic_sources, keeping its entries."""
     sources = [source for source in torch.compiler.config.dynamic_sources.split(",") if source]
+    patterns = []
     for arg in DYNAMIC_INT_ARGS:
-        # Matches the arg passed directly (L['max_seqlen']) or through a wrapper's kwargs (L['kwargs']['max_seqlen']).
-        pattern = rf".*\['{arg}'\]"
+        # Matches the arg passed directly (L['max_seqlen']), through a wrapper's kwargs (L['kwargs']['max_seqlen']),
+        # or as an attribute of an arg (L['kwargs']['packed'].compression_layouts[4].max_entries_per_doc).
+        patterns.append(rf".*(\['{arg}'\]|\.{arg}$)")
+    for arg, dim in DYNAMIC_TENSOR_ARG_DIMS:
+        # Matches the arg (L['kwargs']['mhc_states']) or an attribute of an arg (L['kwargs']['pool_layout'].query_tokens).
+        # Unanchored, so it also matches the FSDP view's base (L['kwargs']['mhc_states']._base), which is guarded too.
+        patterns.append(rf".*(\['{arg}'\]|\.{arg}):{dim}")
+    for pattern in patterns:
         if pattern not in sources:
             sources.append(pattern)
     torch.compiler.config.dynamic_sources = ",".join(sources)
 
 
+def load_lazy_modules() -> None:
+    """Finish loading the lazily imported modules in ``sys.modules``.
+
+    FLA reads ``sys.modules`` inside compiled code, so Dynamo wraps the whole dict and checks every module's type.
+    That check loads a lazy module (wandb's ``azure.storage.blob``), which grows ``sys.modules`` mid-iteration
+    and crashes the trace with "dictionary changed size during iteration".
+    """
+    for module in list(sys.modules.values()):
+        module_type = type(module)
+        if (
+            issubclass(module_type, types.ModuleType)
+            and module_type.__getattribute__ is not types.ModuleType.__getattribute__
+        ):
+            getattr(module, "__name__", None)
+
+
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
-    mark_dynamic_int_args()
+    # Ops whose output shape depends on input data (DeepEP dispatch) would otherwise graph-break. A graph break
+    # inside an activation-checkpointed block makes Dynamo run the whole block eagerly.
+    torch._dynamo.config.capture_dynamic_output_shape_ops = True
+    load_lazy_modules()
+    mark_dynamic_args()
     language_model = get_language_model(model)
-    for layer_id in range(len(language_model.layers)):
-        # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+    for layer in language_model.layers:
+        if isinstance(layer, TokenChunkedCheckpointWrapper):
+            layer.compile_chunk(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+        else:
+            # Doing it in-place avoids mangled fqn which can break checkpoint loading
+            layer.compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
     get_logger().info(
         f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
     )
@@ -817,7 +983,7 @@ def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.
     """Apply LoRA and identify any vision encoder that must remain frozen."""
     frozen_vision_encoder = None
     if config.vlm is not None and config.vlm.freeze_vision_encoder:
-        frozen_vision_encoder = get_vision_encoder(model, override=config.vlm.vision_encoder_attr)
+        frozen_vision_encoder = get_vision_encoder(model)
     elif config.vlm is None:
         frozen_vision_encoder = get_vision_encoder(model)
         if frozen_vision_encoder is not None:
@@ -833,6 +999,16 @@ def _reset_runtime_moe_buffers(model: nn.Module) -> None:
         if isinstance(module, MoE) and module.tokens_per_expert.device.type != "meta":
             module.tokens_per_expert.zero_()
             module.routing_confidence_sum.zero_()
+
+
+def _is_flash_attn_3_available() -> bool:
+    if importlib.util.find_spec("flash_attn_interface") is None or not torch.cuda.is_available():
+        return False
+    try:
+        importlib.metadata.distribution("flash-attn-3")
+    except importlib.metadata.PackageNotFoundError:
+        return False
+    return True
 
 
 def _validate_flash_attn_4_installed() -> None:
@@ -883,7 +1059,7 @@ def setup_model(
 ) -> nn.Module:
     resolve_auto_attn(config)
 
-    if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
+    if config.attn == "flash_attention_3" and not _is_flash_attn_3_available():
         raise ValueError(
             "Flash attention 3 is only supported if the flash_attn_3 package is installed. Install with `uv pip install 'flash-attn-3 @ git+https://github.com/Dao-AILab/flash-attention.git@main#subdirectory=hopper' --no-build-isolation`"
         )
@@ -894,7 +1070,7 @@ def setup_model(
     logger = get_logger()
 
     # Build on the meta device; weights are materialized after FSDP sharding.
-    model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
+    model = get_model(config, dtype=DTYPE_MAP[config.optimization_dtype])
 
     if config.fusions.enabled and config.lora is not None:
         logger.warning("Skipping runtime model fusions because LoRA targets the unfused projections")
@@ -924,6 +1100,7 @@ def setup_model(
         apply_force_balanced_routing(model)
 
     configure_moe_runtime(model, config, parallel_dims)
+    configure_ngram_runtime(model, parallel_dims)
     if parallel_dims.ep_enabled:
         # EP replaces params with DTensors that default to requires_grad=True,
         # re-freeze base params that LoRA froze earlier.
@@ -931,13 +1108,20 @@ def setup_model(
             freeze_all_except_lora(model)
 
     if frozen_vision_encoder is not None:
-        freeze_vision_encoder(
-            model,
-            override_attr=config.vlm.vision_encoder_attr if config.vlm is not None else None,
-        )
+        freeze_vision_encoder(frozen_vision_encoder)
+
+    # FP32 masters, so that the checkpoint's FP32 values survive loading whatever the optimization dtype
+    for module in get_fp32_modules(model):
+        module.to(torch.float32)
 
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
+        if config.ac.token_chunk_size is not None and parallel_dims.ep not in (1, parallel_dims.cp):
+            # Every chunk runs the EP all-to-alls. An EP group wider than CP spans ranks holding different rows,
+            # whose chunk counts can differ, so one rank would wait on a collective its peers never start.
+            raise ValueError(
+                f"model.ac.token_chunk_size requires ep == 1 or ep == cp, got ep={parallel_dims.ep}, cp={parallel_dims.cp}"
+            )
         apply_ac(model, config.ac)
     if config.compile is not None:
         apply_compile(model, config.compile)
@@ -952,6 +1136,8 @@ def setup_model(
         model.to_empty(device=device)
         torch.distributed.barrier()
         model.init_buffers_post_meta()
+    elif config.init.type == "scratch":
+        initialize_from_scratch(model, config.init.seed)
     else:
         load_dcp_from_hf(model, config)
 
@@ -968,10 +1154,8 @@ def forward(
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
-    sampling_mask: Int[Tensor, "batch seq mask"] | None = None,
-    topk_ids: Int[Tensor, "batch seq head"] | None = None,
+    support: TokenSupport | None = None,
     mm_kwargs: dict[str, Tensor] | None = None,
-    mm_forward_policy: ForwardPolicy | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
     # True when seq_lens holds the full pre-CP-shard document boundaries
     # (kept global because documents can straddle the shard cut).
@@ -979,27 +1163,16 @@ def forward(
 ) -> PrimeLmOutput:
     kwargs = {
         "input_ids": input_ids,
+        "position_ids": position_ids,
         "labels": labels,
         "temperature": temperature,
-        "sampling_mask": sampling_mask,
+        "support": support,
     }
-
-    if topk_ids is not None:
-        kwargs["topk_ids"] = topk_ids
 
     if mm_kwargs:
         kwargs.update(mm_kwargs)
         if mm_token_type_ids is not None:
             kwargs["mm_token_type_ids"] = mm_token_type_ids
-        # SFT still uses its existing eager processor path and does not provide
-        # an adapter policy yet, so preserve its current kwargs-based behavior.
-        policy = mm_forward_policy or ForwardPolicy(pass_position_ids="image_grid_thw" not in mm_kwargs)
-        if policy.requires_mm_token_type_ids and mm_token_type_ids is None:
-            raise ValueError("Multimodal forward policy requires mm_token_type_ids")
-        if policy.pass_position_ids:
-            kwargs["position_ids"] = position_ids
-    else:
-        kwargs["position_ids"] = position_ids
 
     kwargs["seq_lens"] = seq_lens
     kwargs["seq_lens_are_pre_shard"] = seq_lens_are_pre_shard

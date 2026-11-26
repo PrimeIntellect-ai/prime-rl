@@ -1,0 +1,562 @@
+"""Training samples kept by env worker pools: the trainer must build each sample from its
+body (tokens, routing rows, sampler support) cut, packed and padded as the orchestrator
+planned, and the store must serve and free the bodies."""
+
+import base64
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
+
+import msgspec
+import numpy as np
+import pytest
+import verifiers.v1 as vf
+from verifiers.v1 import graph
+from verifiers.v1.episode import EnvInfo, Episode
+from verifiers.v1.types import SamplerSupport, TurnTokens
+
+from prime_rl.env.heads import episode_head
+from prime_rl.orchestrator import batch as planner
+from prime_rl.orchestrator.train_sink import queued_samples
+from prime_rl.trainer.rl.data import DataLoader
+from prime_rl.transports import payload
+from prime_rl.transports.batch import materialize
+from prime_rl.transports.batch import types as wire
+from prime_rl.transports.batch.materialize import assert_token_arrays_aligned, materialize_bin, prepare_sample
+from prime_rl.transports.batch.types import PAYLOAD_INFO_KEY, UNVERSIONED, SampleRef, TrainingSample
+from prime_rl.transports.payload import (
+    PayloadHook,
+    PayloadServer,
+    RolloutStore,
+    StoreWriter,
+    delete_payloads,
+    mark_trained,
+    materialize_micro_batches,
+    payload_host,
+    persist_payloads,
+    require_rollout_store,
+    wait_for_deletes,
+)
+from prime_rl.utils import pathing
+
+
+def _episode(
+    rng: np.random.Generator, prompt_len: int, completion_len: int, *, routed: bool = True, masked: bool = False
+) -> vf.Episode:
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x")),
+    )
+    rows = rng.integers(0, 128, size=(prompt_len + completion_len - 1, 3, 2)).astype(np.uint8)
+    counts = rng.integers(1, 5, size=completion_len).astype(np.int32)
+    support = SamplerSupport(
+        ids=rng.integers(0, 1000, size=int(counts.sum())).astype(np.int32),
+        counts=counts,
+        replayed=np.full(completion_len, masked),
+        logprobs=-rng.random(int(counts.sum())).astype(np.float32),
+    )
+    graph.prepare_turn(trace, [vf.UserMessage(content="u")]).commit(
+        vf.Response(
+            id="a",
+            created=0,
+            model="t",
+            message=vf.AssistantMessage(content="a"),
+            finish_reason="stop",
+            tokens=TurnTokens.model_construct(
+                prompt_ids=list(range(prompt_len)),
+                completion_ids=list(range(completion_len)),
+                completion_logprobs=[-0.5] * completion_len,
+                message_spans=[(0, prompt_len)],
+                routed_experts={
+                    "data": base64.b64encode(rows.tobytes()).decode(),
+                    "shape": list(rows.shape),
+                    "start": 0,
+                }
+                if routed
+                else None,
+                sampler_support=support,
+            ),
+        )
+    )
+    trace.stop("agent_completed")
+    trace.ok = True
+    return Episode(env=EnvInfo(id="e"), task=trace.task, ok=True, traces=[trace])
+
+
+def _refs(episodes: list[vf.Episode], seq_len: int) -> list[SampleRef]:
+    """The orchestrator's references to the samples the episodes' worker kept."""
+    refs = []
+    for episode in episodes:
+        trace = episode_head(episode).traces[0]
+        trace.info["advantage"] = 1.0
+        refs += [
+            sample.ref
+            for sample in queued_samples(trace, env_name="env", temperature=1.0, policy_start=None, seq_len=seq_len)
+        ]
+    return refs
+
+
+def _plans(refs: list[SampleRef], **kwargs) -> list[list[wire.MicroBatchPlan]]:
+    return planner.prepare_batch(refs, trained_version=0, min_version=0, **kwargs)
+
+
+def _rows(counts: bytes, *columns: bytes | None) -> list[tuple]:
+    """Per token, its row of each column (ids, logprobs) as Python values."""
+    counts = np.frombuffer(counts, np.int32)
+    ends = np.cumsum(counts)
+    out = []
+    for start, end in zip(ends - counts, ends):
+        out.append(
+            tuple(
+                None if c is None else tuple(np.frombuffer(c, np.int32 if i == 0 else np.float32)[start:end].tolist())
+                for i, c in enumerate(columns)
+            )
+        )
+    return out
+
+
+def test_fetched_micro_batches_hold_each_branchs_arrays():
+    rng = np.random.default_rng(0)
+    episodes = [
+        _episode(rng, 40, 300),
+        _episode(rng, 5, 30, masked=True),
+        _episode(rng, 20, 90),
+        _episode(rng, 8, 12, masked=True),
+        _episode(rng, 6, 40, routed=False),
+        _episode(rng, 9, 25, routed=False, masked=True),
+    ]
+    expected = {
+        episode.traces[0].id: (
+            branch.token_ids,
+            payload._encode_routed_experts(branch.routed_experts, len(branch.token_ids)),
+            payload._encode_sampler_support(branch.sampler_support, len(branch.token_ids)),
+        )
+        for episode in episodes
+        for branch in episode.traces[0].branches
+    }
+    hook = PayloadHook()
+    for episode in episodes:
+        hook.keep(episode, "rl")
+        assert all(node.routed_experts is None for node in episode.traces[0].nodes)
+    refs = _refs(episodes, seq_len=256)
+
+    for pad in (1, 64):
+        kwargs = dict(seq_len=256, num_train_workers=2, bin_cost=sum, pad_to_multiple_of=pad)
+        with ThreadPoolExecutor(4) as pool:
+            for plans in _plans(refs, **kwargs):
+                materialized = materialize_micro_batches(plans, pool)
+                rank = materialized.micro_batches
+                assert materialized.failed == [] and materialized.urls
+                for mb, plan in zip(rank, plans, strict=True):
+                    padding = plan.padding
+                    want = [(expected[ref.trace_id], ref.num_tokens) for ref in plan.samples]
+                    tokens = np.concatenate([token_ids[:n] for (token_ids, _, _), n in want])
+                    assert mb.input_ids[: len(tokens)].tolist() == tokens.tolist()
+                    # Routing replays per micro batch: all of its samples have rows or none.
+                    assert len({routed is None for (_, routed, _), _ in want}) == 1
+                    if want[0][0][1] is None:
+                        assert mb.routed_experts is None
+                    else:
+                        rows = b"".join(
+                            routed.data[: n * len(routed.data) // routed.shape[0]] for (_, routed, _), n in want
+                        )
+                        rows += materialize._tile(rows, padding * len(rows) // len(tokens))
+                        assert mb.routed_experts.data == rows
+                    got = mb.sampler_support
+                    supports = [support for (_, _, support), _ in want]
+                    if all(support is None for support in supports):
+                        assert got is None
+                    else:
+                        got_rows = _rows(got.counts, got.ids, got.logprobs)
+                        want_rows = []
+                        want_replayed = b""
+                        for support, (_, n) in zip(supports, want):
+                            want_rows += (
+                                _rows(support.counts, support.ids, support.logprobs)[:n]
+                                if support is not None
+                                else [((), None)] * n
+                            )
+                            want_replayed += support.replayed[:n] if support is not None else bytes(n)
+                        want_rows += [((), None)] * padding
+                        assert got.replayed == want_replayed + bytes(padding)
+                        assert [ids for ids, _ in got_rows] == [ids for ids, _ in want_rows]
+                        for (_, got_lp), (ids, want_lp) in zip(got_rows, want_rows):
+                            if want_lp is not None:
+                                assert got_lp == want_lp
+                            elif got_lp is not None:
+                                assert all(np.isnan(got_lp)) and len(got_lp) == len(ids)
+
+
+def test_heads_and_masks_survive_truncation_mixed_packing_and_padding():
+    """Explicit values: a top-k head, a mask with sampler logprobs and a plain mask reach
+    the trainer cut to their slices, packed together and padded."""
+    server = PayloadServer("127.0.0.1")
+
+    def sample(key: str, support: wire.SamplerSupport | None, seq_len: int = 16) -> SampleRef:
+        body = wire.SampleBody(
+            token_ids=np.array([1, 2, 3, 4], np.int32).tobytes(),
+            mask=np.array([False, False, True, True]).tobytes(),
+            sampled=np.array([False, False, True, True]).tobytes(),
+            logprobs=np.array([0.0, 0.0, -0.1, -0.2], np.float32).tobytes(),
+            versions=np.full(4, UNVERSIONED, np.int32).tobytes(),
+            sampler_support=support,
+        )
+        server.put(key, payload._encoder.encode(body))
+        return SampleRef(
+            url=server.url,
+            id=key,
+            num_tokens=min(4, seq_len),
+            env_name="env",
+            trace_id=key,
+            branch_index=0,
+            temperature=1.0,
+            advantage=1.0,
+            fields=["sampler_support"] if support is not None else [],
+        )
+
+    head = wire.SamplerSupport(
+        ids=np.array([3, 7, 4], np.int32).tobytes(),
+        counts=np.array([0, 0, 2, 1], np.int32).tobytes(),
+        replayed=bytes(4),
+        logprobs=np.array([-0.3, -1.8, -0.2], np.float32).tobytes(),
+    )
+    replayed = wire.SamplerSupport(
+        ids=np.array([5, 6, 8], np.int32).tobytes(),
+        counts=np.array([0, 0, 1, 2], np.int32).tobytes(),
+        replayed=np.array([False, False, True, True]).tobytes(),
+        logprobs=np.log(np.array([1.0, 0.75, 0.25], np.float32)).tobytes(),
+    )
+    plain = wire.SamplerSupport(
+        ids=np.array([9], np.int32).tobytes(),
+        counts=np.array([0, 0, 0, 1], np.int32).tobytes(),
+        replayed=np.array([False, False, False, True]).tobytes(),
+    )
+    with ThreadPoolExecutor(2) as pool:
+        [[plan]] = _plans([sample("head", head, seq_len=3)], seq_len=3, num_train_workers=1, bin_cost=sum)
+        materialized = materialize_micro_batches([plan], pool)
+        [truncated] = materialized.micro_batches
+        assert materialized.failed == []
+        np.testing.assert_array_equal(np.frombuffer(truncated.sampler_support.counts, np.int32), [0, 0, 2])
+        np.testing.assert_array_equal(np.frombuffer(truncated.sampler_support.ids, np.int32), [3, 7])
+        [[plan]] = _plans([sample("replayed", replayed, seq_len=3)], seq_len=3, num_train_workers=1, bin_cost=sum)
+        materialized = materialize_micro_batches([plan], pool)
+        [truncated] = materialized.micro_batches
+        assert materialized.failed == []
+        np.testing.assert_array_equal(np.frombuffer(truncated.sampler_support.ids, np.int32), [5])
+        np.testing.assert_array_equal(np.frombuffer(truncated.sampler_support.logprobs, np.float32), [0.0])
+        assert truncated.sampler_support.replayed == np.array([False, False, True]).tobytes()
+
+        # No arrays at all: the last sample shares the micro batch and gets empty rows.
+        refs = [sample("head", head), sample("replayed", replayed), sample("plain", plain), sample("none", None)]
+        [[plan]] = _plans(refs, seq_len=16, num_train_workers=1, bin_cost=sum, pad_to_multiple_of=16)
+        plan = msgspec.msgpack.decode(msgspec.msgpack.encode(plan), type=wire.MicroBatchPlan)
+        materialized = materialize_micro_batches([plan], pool)
+        [packed] = materialized.micro_batches
+        assert materialized.failed == []
+    assert len(packed.sampler_support.ids) == 7 * 4
+    tensor = DataLoader._micro_batch_to_tensor(None, packed)
+    offsets, ids, values = tensor["support_offsets"], tensor["support_ids"], tensor["support_logprobs"]
+    assert ids.shape == values.shape
+    assert offsets.shape[0] == sum(packed.sequence_lengths) + 1
+    rows = {
+        tuple(ids[start:end].tolist()): values[start:end].tolist()
+        for start, end in zip(offsets[:-1].tolist(), offsets[1:].tolist())
+        if end > start
+    }
+    expected = {(3, 7): [-0.3, -1.8], (4,): [-0.2], (5,): [0.0], (6, 8): np.log([0.75, 0.25]), (9,): [np.nan]}
+    assert rows.keys() == expected.keys()
+    for key, value in expected.items():
+        np.testing.assert_allclose(rows[key], value, rtol=1e-6)
+    replayed_rows = {
+        tuple(ids[start:end].tolist())
+        for start, end, row_replayed in zip(offsets[:-1].tolist(), offsets[1:].tolist(), tensor["support_replayed"])
+        if row_replayed
+    }
+    assert replayed_rows == {(5,), (6, 8), (9,)}
+
+
+def test_unfetchable_micro_batches_are_reported():
+    rng = np.random.default_rng(1)
+    episode = _episode(rng, 10, 20)
+    PayloadHook().keep(episode, "rl")
+    [ref] = _refs([episode], seq_len=16)
+    ref.id = "missing"
+    [[plan]] = _plans([ref], seq_len=16, num_train_workers=1, bin_cost=sum)
+    with ThreadPoolExecutor(1) as pool:
+        materialized = materialize_micro_batches([plan], pool)
+    [micro_batch] = materialized.micro_batches
+    assert materialized.failed == [0] and materialized.unbuildable == []
+    assert len(micro_batch.input_ids) == 16 and not micro_batch.loss_mask.any()
+    # Still replayable: the model's routing shape, every top-k slot a different expert.
+    routed = micro_batch.routed_experts
+    assert routed.shape == [16, 3, 2]
+    rows = np.frombuffer(routed.data, dtype=routed.dtype).reshape(routed.shape)
+    assert (rows[..., 0] != rows[..., 1]).all()
+
+
+def _two_trace_episode(rng: np.random.Generator) -> Episode:
+    first, second = _episode(rng, 6, 8), _episode(rng, 6, 8)
+    return Episode(env=first.env, task=first.task, ok=True, traces=[first.traces[0], second.traces[0]])
+
+
+def _failing_second_encode(monkeypatch, name: str, error: Exception) -> None:
+    encode = getattr(payload, name)
+    calls = []
+
+    def flaky(*args):
+        calls.append(args)
+        if len(calls) == 2:
+            raise error
+        return encode(*args)
+
+    monkeypatch.setattr(payload, name, flaky)
+
+
+def test_keep_frees_what_it_kept_when_it_fails(monkeypatch):
+    hook = PayloadHook()
+    episode = _two_trace_episode(np.random.default_rng(3))
+    _failing_second_encode(monkeypatch, "encode_sample", MemoryError())
+    with pytest.raises(MemoryError):
+        hook.keep(episode, "rl")
+    assert not hook.server.blobs
+
+
+def test_keep_keeps_routing_when_the_sampler_evidence_does_not_encode(monkeypatch):
+    """The episode still succeeds and keeps its sample with the routing rows; a train run
+    that needs the mask or head stops at the train sink."""
+    hook = PayloadHook()
+    episode = _two_trace_episode(np.random.default_rng(4))
+    _failing_second_encode(
+        monkeypatch, "_encode_sampler_support", ValueError("Sampler support is not aligned to branch tokens")
+    )
+    hook.keep(episode, "rl")
+    first, second = episode.traces
+    assert first.info[PAYLOAD_INFO_KEY]["branches"]["0"]["fields"] == [
+        "routed_experts",
+        "sampler_support",
+        "sampler_support_logprobs",
+    ]
+    assert second.info[PAYLOAD_INFO_KEY]["branches"]["0"]["fields"] == ["routed_experts"]
+    assert all(node.routed_experts is None for node in second.nodes)
+
+
+def test_a_hook_that_keeps_nothing_starts_no_server():
+    """A pool broker installs the hook too; it must not open a payload server."""
+    hook = PayloadHook()
+    hook.discard(_episode(np.random.default_rng(5), 4, 4))
+    assert hook._server is None
+
+
+def test_fetches_bypass_http_proxies(monkeypatch):
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+    server = PayloadServer("127.0.0.1")
+    body = wire.SampleBody(token_ids=b"", mask=b"", sampled=b"", logprobs=b"", versions=b"")
+    server.put("a", payload._encoder.encode(body))
+    assert payload._fetch(f"{server.url}/a") == body
+
+
+def test_short_routing_rows_fail_the_alignment_check():
+    sample = TrainingSample(
+        token_ids=np.arange(4, dtype=np.int32),
+        mask=np.ones(4, np.bool_),
+        logprobs=np.zeros(4, np.float32),
+        temperatures=np.ones(4, np.float32),
+        env_name="env",
+        advantages=np.ones(4, np.float32),
+        routed_experts=wire.RoutedExperts(data=bytes(3 * 2 * 2), shape=[4, 2, 2], dtype="uint8"),
+    )
+    with pytest.raises(AssertionError, match="bytes"):
+        assert_token_arrays_aligned(materialize_bin([prepare_sample(sample)]))
+
+
+def test_payload_server_binds_the_env_worker_pool_host():
+    assert payload_host(None) == ("127.0.0.1", "127.0.0.1")
+    assert payload_host("tcp://10.1.2.3:0") == ("10.1.2.3", "10.1.2.3")
+    bind, url = payload_host("tcp://*:5000")
+    assert bind == "0.0.0.0" and not url.startswith("127.")
+
+
+def test_store_serves_and_deletes():
+    server = PayloadServer("127.0.0.1")
+    server.put("a", b"x" * 40)
+    server.put("b", b"y" * 40)
+    with urllib.request.urlopen(f"{server.url}/b") as response:
+        assert response.read() == b"y" * 40
+    delete_payloads([f"{server.url}/b", f"{server.url}/missing"])
+    wait_for_deletes()
+    assert server.get("b") is None and server.get("a") is not None
+
+
+def test_rollout_store_keeps_trained_arrays_until_a_checkpoint_covers_them(tmp_path):
+    store = RolloutStore(tmp_path, "127.0.0.1")
+    writer = StoreWriter(tmp_path, store.url)
+    for key in ("trained", "dropped", "queued"):
+        writer.put(key, key.encode())
+
+    # Two data ranks can mark the same blob.
+    for _ in range(2):
+        mark_trained([store.url], [f"{store.url}/trained", f"{store.url}/missing"], step=3, committed=2)
+    wait_for_deletes()
+    delete_payloads([f"{store.url}/trained", f"{store.url}/dropped"])
+    wait_for_deletes()
+    with urllib.request.urlopen(f"{store.url}/trained") as response:
+        assert response.read() == b"trained"
+    assert store.get("dropped") is None
+
+    mark_trained([store.url], [], step=4, committed=3)
+    wait_for_deletes()
+    assert store.get("trained") is None and store.get("queued") == b"queued"
+
+
+def test_a_retaining_trainer_leaves_the_arrays_of_a_checkpoint_alone(tmp_path):
+    store = RolloutStore(tmp_path / "store", "127.0.0.1")
+    resumed = tmp_path / "checkpoints" / "resumed"
+    resumed.mkdir(parents=True)
+    loader = DataLoader.__new__(DataLoader)
+    loader.retain, loader.stores, loader.step = True, set(), 3
+    loader.receiver = SimpleNamespace(committed=2)
+    loader.payload_urls = [f"{store.url}/a", (resumed / "b").as_uri()]
+    loader.release_payloads()
+    wait_for_deletes()
+    assert loader.stores == {store.url}
+
+
+def test_a_pool_without_a_rollout_store_rejects_retention(tmp_path):
+    require_rollout_store(RolloutStore(tmp_path, "127.0.0.1").url)
+    with pytest.raises(RuntimeError, match="no rollout store"):
+        require_rollout_store(PayloadServer("127.0.0.1").url)
+
+
+def test_discard_frees_what_keep_kept():
+    hook = PayloadHook()
+    episode = _episode(np.random.default_rng(2), 6, 8)
+    hook.keep(episode, "rl")
+    assert hook.server.blobs
+    hook.discard(episode)
+    assert not hook.server.blobs
+
+
+def test_an_unfetchable_multimodal_sample_borrows_a_fetched_image():
+    """A rank must not raise mid-step: the other data ranks would wait for it at the next
+    collective. A missing multimodal sample borrows another fetched one of the step, so its micro
+    batch still runs the vision encoder; with none to borrow, the step is unbuildable, which every
+    rank learns at the all-reduce."""
+    server = PayloadServer("127.0.0.1")
+    body = wire.SampleBody(
+        token_ids=np.array([10, 11, 12, 13], np.int32).tobytes(),
+        mask=np.array([False, False, True, True]).tobytes(),
+        sampled=np.array([False, False, True, True]).tobytes(),
+        logprobs=np.zeros(4, np.float32).tobytes(),
+        versions=np.full(4, UNVERSIONED, np.int32).tobytes(),
+        mm_token_type_ids=np.array([0, 1, 0, 0], np.int32).tobytes(),
+        mm_refs=wire.MMRefs(images=[wire.MMImageRef(url="data:image/png;base64,x", offset=1, length=1)]),
+    )
+    server.put("kept", payload._encoder.encode(body))
+
+    def ref(key: str) -> SampleRef:
+        return SampleRef(
+            url=server.url,
+            id=key,
+            num_tokens=4,
+            env_name="mm",
+            trace_id=key,
+            branch_index=0,
+            temperature=1.0,
+            advantage=1.0,
+            images=[[1, 1]],
+        )
+
+    with ThreadPoolExecutor(2) as pool:
+        [[plan]] = _plans([ref("kept"), ref("missing")], seq_len=16, num_train_workers=1, bin_cost=sum)
+        materialized = materialize_micro_batches([plan], pool)
+        [micro_batch] = materialized.micro_batches
+        assert materialized.failed == [0] and materialized.unbuildable == []
+        assert [image.offset for image in micro_batch.mm_refs.images] == [1, 5]
+
+        # No image fits a one-token sample, but the micro batch keeps the fetched one's.
+        short = msgspec.structs.replace(ref("missing"), num_tokens=1, images=[[0, 1]])
+        [[plan]] = _plans([ref("kept"), short], seq_len=16, num_train_workers=1, bin_cost=sum)
+        materialized = materialize_micro_batches([plan], pool)
+        assert materialized.failed == [0] and materialized.unbuildable == []
+
+        [[plan]] = _plans([ref("missing")], seq_len=16, num_train_workers=1, bin_cost=sum)
+        materialized = materialize_micro_batches([plan], pool)
+        assert materialized.failed == [0] and materialized.unbuildable == [0]
+
+
+def test_persist_writes_blobs_only_inside_the_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(pathing, "_save_root", str(tmp_path.resolve()))
+    server = PayloadServer("127.0.0.1")
+    server.put("t1-0", b"arrays")
+    server.put("evil", b"x")
+    directory = tmp_path / "ckpt" / "arrays"
+    assert server.persist(str(directory), ["t1-0", "../evil", "sub/evil", "..", "", "gone"]) == ["t1-0"]
+    assert [file.name for file in (tmp_path / "ckpt").rglob("*") if file.is_file()] == ["t1-0"]
+    assert (directory / "t1-0").read_bytes() == b"arrays"
+    for outside in ("relative/dir", str(tmp_path.parent / "other"), str(tmp_path / ".." / "other")):
+        with pytest.raises(ValueError):
+            server.persist(outside, ["t1-0"])
+    monkeypatch.setattr(pathing, "_save_root", None)
+    with pytest.raises(ValueError):
+        server.persist(str(directory), ["t1-0"])
+
+
+def test_persist_links_a_blob_an_earlier_checkpoint_holds(tmp_path, monkeypatch):
+    monkeypatch.setattr(pathing, "_save_root", str(tmp_path.resolve()))
+    server = PayloadServer("127.0.0.1")
+    server.put("t1-0", b"arrays")
+    first, second, third = tmp_path / "step_1", tmp_path / "step_2", tmp_path / "step_3"
+    assert persist_payloads(server.url, first, ["t1-0", "../evil"]) == ["t1-0"]
+    assert persist_payloads(server.url, second, ["t1-0"]) == ["t1-0"]
+    assert (second / "t1-0").samefile(first / "t1-0")
+    # The earlier checkpoints are gone (the trainer's cleanup): the blob is written again.
+    (first / "t1-0").unlink()
+    (second / "t1-0").unlink()
+    assert persist_payloads(server.url, third, ["t1-0"]) == ["t1-0"]
+    assert (third / "t1-0").read_bytes() == b"arrays"
+    # A deleted blob is in no later checkpoint.
+    server.delete("t1-0")
+    assert persist_payloads(server.url, tmp_path / "step_4", ["t1-0"]) == []
+
+
+def test_a_checkpoints_arrays_survive_a_delete(tmp_path):
+    (tmp_path / "t1-0").write_bytes(b"arrays")
+    delete_payloads([f"{tmp_path.as_uri()}/t1-0"])
+    wait_for_deletes()
+    assert (tmp_path / "t1-0").read_bytes() == b"arrays"
+    # Blobs a checkpoint holds are linked into the next one; a missing one is not.
+    assert persist_payloads(tmp_path.as_uri(), tmp_path / "next", ["t1-0", "gone"]) == ["t1-0"]
+    assert (tmp_path / "next" / "t1-0").samefile(tmp_path / "t1-0")
+
+
+def test_a_rollout_store_persists_the_files_it_holds(tmp_path, monkeypatch):
+    monkeypatch.setattr(pathing, "_save_root", str(tmp_path.resolve()))
+    store = RolloutStore(tmp_path / "store", "127.0.0.1")
+    StoreWriter(tmp_path / "store", store.url).put("t1-0", b"arrays")
+    directory = tmp_path / "ckpt" / "arrays"
+    assert persist_payloads(store.url, directory, ["t1-0", "gone", "../evil"]) == ["t1-0"]
+    assert (directory / "t1-0").read_bytes() == b"arrays"
+    # The trainer's marks still reach the store on the same port.
+    require_rollout_store(store.url)
+
+
+def test_link_or_copy_fallback_copies_atomically(tmp_path, monkeypatch):
+    import errno
+    import os
+
+    from prime_rl.transports.payload import link_or_copy
+
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src.write_bytes(b"payload-bytes")
+
+    def exdev(a, b):
+        raise OSError(errno.EXDEV, "Cross-device link")
+
+    monkeypatch.setattr(os, "link", exdev)
+    assert link_or_copy(src, dst) is True
+    assert dst.read_bytes() == b"payload-bytes"
+    assert [p.name for p in tmp_path.iterdir()] == sorted(["src", "dst"])
+    assert link_or_copy(tmp_path / "missing", tmp_path / "dst2") is False
+    assert not (tmp_path / "dst2").exists()

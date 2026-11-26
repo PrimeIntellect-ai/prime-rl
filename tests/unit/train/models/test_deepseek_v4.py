@@ -1,7 +1,10 @@
+import copy
+import os
 import re
 
 import pytest
 import torch
+import torch.distributed as dist
 from torch import nn
 
 from prime_rl.configs.trainer import ModelConfig
@@ -11,8 +14,10 @@ from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
+from prime_rl.utils.cp import CPContext
 from prime_rl.utils.utils import default_dtype
 from tests.unit.train.models.deepseek_v4_markers import requires_datacenter_gpu
+from tests.utils import assert_relative
 
 # Every layer is built through `DeepseekV4Attention.__init__`, which refuses to construct without
 # the kernel it dispatches to, so the whole file needs tilelang.
@@ -82,7 +87,7 @@ MODEL_CONFIG = DeepseekV4Config(**MODEL)
 BATCH = 1
 MODEL_SEQ = 32
 
-CSA_LAYER, HCA_LAYER = 1, 2
+SLIDING_LAYER, CSA_LAYER, HCA_LAYER = 0, 1, 2
 COMPRESS_RATE = MODEL["compress_rates"]["compressed_sparse_attention"]
 HCA_COMPRESS_RATE = MODEL["compress_rates"]["heavily_compressed_attention"]
 
@@ -102,8 +107,8 @@ def _randomize(module: nn.Module) -> None:
     """Draw non-degenerate values for every parameter and routing buffer.
 
     These modules allocate with `torch.empty`, and the values `init_weights` would write are
-    themselves degenerate for testing: norm gains default to ones and the sinks, position biases,
-    load-balancing bias and hash table all default to zeros, each of which leaves the path it
+    themselves degenerate for testing: norm gains default to ones and the sinks, position biases
+    and load-balancing bias to zeros, each of which leaves the path it
     controls indistinguishable from a no-op. The position bias is drawn wide because it is a
     softmax logit over a pooling window; at the projections' std the gate would stay near uniform.
     """
@@ -134,7 +139,7 @@ def _randomize(module: nn.Module) -> None:
 def get_prime_model(dtype: torch.dtype = torch.bfloat16) -> nn.Module:
     """A prime-rl model with non-degenerate weights and the LM head training code wraps it in."""
     with torch.device("cuda"), default_dtype(dtype):
-        model = DeepseekV4ForCausalLM._from_config(MODEL_CONFIG)
+        model = DeepseekV4ForCausalLM.from_config(MODEL_CONFIG)
     _randomize(model)
     inject_prime_lm_head(model, chunk_size=None)
     return model
@@ -157,14 +162,6 @@ def _single_doc(input_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     batch, seq_len = input_ids.shape
     position_ids = torch.arange(seq_len, device=input_ids.device).unsqueeze(0).expand(batch, -1)
     return position_ids, torch.tensor([seq_len], device=input_ids.device)
-
-
-def _assert_relative(prime: torch.Tensor, reference: torch.Tensor, rtol: float, label: str) -> None:
-    """Bound the largest absolute deviation by `rtol` times the reference's own scale."""
-    prime, reference = prime.float(), reference.float()
-    deviation = (prime - reference).abs().max()
-    scale = reference.abs().max()
-    assert deviation <= rtol * scale, f"{label}: max deviation {deviation} exceeds {rtol} * scale {scale}"
 
 
 def _packed_context(doc_lens: tuple[int, ...], dtype: torch.dtype) -> PackedContext:
@@ -271,10 +268,9 @@ def _fill_hash_tables(model: nn.Module) -> dict[int, torch.Tensor]:
 def test_deepseek_v4_hash_table_survives_the_load_path(tmp_path, monkeypatch):
     """The frozen table has to reach `mlp.router.tid2eid` from the name a real checkpoint ships.
 
-    It is the one buffer no `init_weights` can reconstruct: an all-zero table is a valid tensor
-    that routes every token to expert 0, so a rename anywhere along the loading path degrades the
-    model in silence rather than raising. `test_deepseek_v4_weight_conversion_roundtrip` only ever
-    roundtrips the zeros the constructor leaves behind, and `VLLM_MAPPED_NAMES` pins the on-disk
+    It is the one buffer no `init_weights` can reconstruct, so a rename anywhere along the loading
+    path degrades the model in silence rather than raising. `test_deepseek_v4_weight_conversion_roundtrip`
+    only ever roundtrips the table the constructor leaves behind, and `VLLM_MAPPED_NAMES` pins the on-disk
     name without saying where it lands, so this carries real values across the whole path.
 
     Three things in sequence, because they are three links in one chain. The conversion emits only
@@ -390,7 +386,7 @@ def test_deepseek_v4_on_disk_keys_map_to_the_names_vllm_expects():
     from vllm.models.deepseek_v4.nvidia.model import _make_deepseek_v4_weights_mapper
 
     with torch.device("meta"):
-        model = DeepseekV4ForCausalLM._from_config(MODEL_CONFIG)
+        model = DeepseekV4ForCausalLM.from_config(MODEL_CONFIG)
     on_disk_state_dict = model.convert_to_hf(dict(model.state_dict()))
     assert on_disk_state_dict, "vacuous probe: the model produced no weights to map"
 
@@ -483,7 +479,7 @@ def _compare_accumulated_grads(
             assert param.grad is None, f"{name} received a gradient per document but not packed"
             continue
         assert param.grad is not None, f"{name} received no gradient per document"
-        _assert_relative(param.grad, expected[name], rtol, name)
+        assert_relative(param.grad, expected[name], rtol, name)
 
 
 def _assert_layout_is_consistent(packed: PackedContext, doc_lens: tuple[int, ...], compress_rate: int) -> None:
@@ -574,3 +570,218 @@ def test_compressor_packed_matches_per_document(layer_idx, compress_rate, expect
 
     _compare_accumulated_grads(compressor, packed_grads)
     torch.testing.assert_close(alone_input.grad, packed_input.grad, rtol=PACKED_RTOL, atol=PACKED_ATOL)
+
+
+# Eight CP ranks of 24 tokens. Boundaries fall on a rank edge (48), one token either side of one (71,
+# 97), inside a halo (140) and nowhere near one, and a 1-token document compresses to nothing.
+HALO_CP_DOCS = (5, 30, 13, 1, 22, 26, 43, 3, 49)
+# Two CP ranks of 96 tokens. The rank edge falls 25 tokens into the 69-token document, inside an
+# entry at both rates, so rank 1 pools entries that start in rank 0's tokens and reads the window
+# before them from rank 0 too.
+HALO_CP2_DOCS = (5, 30, 13, 1, 22, 69, 3, 49)
+# Rows that leave each rank fewer tokens than the 15-token halo, by the CP size, so a rank's halo
+# spans several shards. `minimum` is one token per rank. `tiny_docs` packs 1- and 2-token
+# documents. `all_padding` is one document across the row, as a micro batch of nothing but padding
+# is packed.
+SHORT_HALO_ROWS = {
+    "short": lambda cp: (3, 13, 8),
+    "minimum": lambda cp: (cp,),
+    "tiny_docs": lambda cp: (1, 2, 1, 1, 2, 2, 1, 2, 1, 1, 2),
+    "all_padding": lambda cp: (24,),
+}
+HALO_ROWS = {"long": lambda cp: HALO_CP2_DOCS, **SHORT_HALO_ROWS}
+HALO_SHARD_CASES = {
+    "rank_edges-cp8": (HALO_CP_DOCS, 8),
+    **{f"{name}-cp{cp}": (row(cp), cp) for name, row in SHORT_HALO_ROWS.items() for cp in (2, 4, 8)},
+}
+# Under CP a parameter gradient is the sum of the ranks' bf16 partial gradients, which rounds
+# differently from the one-GPU sum by a few bf16 steps of the tensor's scale.
+HALO_PARAM_GRAD_RTOL = 1e-2
+# A whole layer's gradients add the query, window-key and output paths' partial sums to the
+# compressor's, and a token's gradient sums what every rank whose halo reads it sends back.
+HALO_LAYER_GRAD_RTOL = 2e-2
+
+
+def _packed_for_cp(
+    rotary: DeepseekV4RotaryEmbedding, doc_lens: tuple[int, ...], cp_rank: int, cp_world_size: int
+) -> PackedContext:
+    return PackedContext.build(
+        rotary_emb=rotary,
+        seq_lens=torch.tensor(doc_lens),
+        device=torch.device("cuda"),
+        cp_rank=cp_rank,
+        cp_world_size=cp_world_size,
+    )
+
+
+@pytest.mark.parametrize(("doc_lens", "cp_world_size"), HALO_SHARD_CASES.values(), ids=HALO_SHARD_CASES.keys())
+def test_halo_shards_give_every_entry_and_window_slot_exactly_once(doc_lens, cp_world_size):
+    """Each CP rank pools only the entries whose last token it holds and reads its window keys from
+    its own tokens plus the halo before them. Together the ranks must pool every entry of the row
+    exactly once, from the same source tokens and at the same position, and `gathered_row` must
+    find each entry in the all-gathered slots. Every window slot must name the same token it names
+    on one GPU. The cuDNN tiling must put each owned entry's tokens at its `pool_row`, with the
+    entry before it in the same tile exactly when the entry has a predecessor in its document.
+    """
+    n_queries = sum(doc_lens) // cp_world_size
+    with torch.device("cuda"):
+        rotary = DeepseekV4RotaryEmbedding(MODEL_CONFIG)
+
+    whole = _packed_for_cp(rotary, doc_lens, 0, 1)
+    assert whole.cp_halo is None
+    halo = [_packed_for_cp(rotary, doc_lens, rank, cp_world_size) for rank in range(cp_world_size)]
+    rows = halo[0].cp_halo.rows
+    assert rows == 2 * HCA_COMPRESS_RATE - 1
+
+    for rank, local in enumerate(halo):
+        key_start = rank * n_queries - rows
+        expected = whole.window_indices[rank * n_queries : (rank + 1) * n_queries]
+        valid = local.window_indices >= 0
+        assert torch.equal(valid, expected >= 0)
+        assert torch.equal(local.window_indices[valid] + key_start, expected[valid])
+        assert local.window_indices.max() < rows + n_queries
+
+    for rate, layout in whole.compression_layouts.items():
+        capacity = halo[0].cp_halo.entry_shards[rate].entry_tok_idx.shape[0]
+        assert capacity >= -(-n_queries // rate), "a rank can own more entries than it has slots for"
+        pooled_tok_idx = torch.full((cp_world_size * capacity, rate), -1, device="cuda")
+        pooled_local_idx = torch.full((cp_world_size * capacity,), -1, device="cuda")
+        for rank, local in enumerate(halo):
+            shard = local.cp_halo.entry_shards[rate]
+            assert shard.entry_tok_idx.shape == (capacity, rate)
+            assert shard.entry_tok_idx.max() < rows + n_queries
+            cudnn_pool_size = local.cp_halo.cudnn_pool_size(rate)
+            assert shard.cu_entries[-1] <= cudnn_pool_size
+            assert shard.pool_row.max() < cudnn_pool_size
+            assert shard.cu_seqlens[-1] == rows + n_queries
+            owned = shard.entry_tok_idx[:, -1] >= rows
+            tile = torch.searchsorted(shard.cu_entries, shard.pool_row, right=True) - 1
+            index_in_tile = shard.pool_row - shard.cu_entries[tile]
+            tile_first_tok = shard.cu_seqlens[tile] + index_in_tile * rate
+            assert torch.equal(tile_first_tok[owned], shard.entry_tok_idx[owned, 0])
+            assert torch.equal(index_in_tile[owned] > 0, shard.entry_local_idx[owned] > 0)
+            slots = slice(rank * capacity, (rank + 1) * capacity)
+            pooled_tok_idx[slots] = shard.entry_tok_idx + rank * n_queries - rows
+            pooled_local_idx[slots] = shard.entry_local_idx
+            assert torch.equal(shard.gathered_row, halo[0].cp_halo.entry_shards[rate].gathered_row)
+        gathered_row = halo[0].cp_halo.entry_shards[rate].gathered_row
+        assert gathered_row.unique().numel() == layout.entry_tok_idx.shape[0], "two entries share a slot"
+        assert torch.equal(pooled_tok_idx[gathered_row], layout.entry_tok_idx)
+        assert torch.equal(pooled_local_idx[gathered_row], layout.entry_local_idx)
+        owner = gathered_row // capacity
+        assert torch.equal(owner, layout.entry_tok_idx[:, -1] // n_queries), "an entry is pooled off its owner"
+
+
+@pytest.fixture(scope="module")
+def cp_process_group():
+    if int(os.environ.get("WORLD_SIZE", 1)) < 2:
+        pytest.skip("run with torchrun --nproc-per-node=2 or more")
+    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+    dist.init_process_group("nccl")
+    yield dist.group.WORLD
+    dist.destroy_process_group()
+
+
+def _halo_config(compressor_backend: str, hca_compress_rate: int) -> DeepseekV4Config:
+    config = copy.deepcopy(MODEL_CONFIG)
+    config.compressor_backend = compressor_backend
+    config.compress_rates = {**config.compress_rates, "heavily_compressed_attention": hca_compress_rate}
+    return config
+
+
+# HCA at the test config's rate 8 runs the torch pooling under either backend, and at rate 4 the
+# cuDNN pooling's one-series kernel; CSA at rate 4 runs its two-series kernel.
+HALO_COMPRESSORS = {
+    "csa-cudnn": (CSA_LAYER, "cudnn", HCA_COMPRESS_RATE),
+    "csa-torch": (CSA_LAYER, "torch", HCA_COMPRESS_RATE),
+    "hca-cudnn": (HCA_LAYER, "cudnn", 4),
+    "hca-torch": (HCA_LAYER, "torch", HCA_COMPRESS_RATE),
+}
+HALO_LAYERS = {"sliding": (SLIDING_LAYER, "torch", HCA_COMPRESS_RATE), **HALO_COMPRESSORS}
+
+
+@pytest.mark.parametrize("row", HALO_ROWS.keys())
+@pytest.mark.parametrize(
+    ("layer_idx", "compressor_backend", "hca_compress_rate"), HALO_COMPRESSORS.values(), ids=HALO_COMPRESSORS.keys()
+)
+def test_halo_compress_returns_the_whole_rows_entries(
+    cp_process_group, layer_idx, compressor_backend, hca_compress_rate, row
+):
+    """Every CP rank pools a share of the entries, and `compress` must still hand back every entry
+    of the row, as one GPU computes them from the whole row. The backward must hand this rank's
+    tokens and the compressor's parameters the one-GPU gradients too. Each rank holds every entry
+    and the entries' all-gather sums the ranks' gradients in its backward, so each rank
+    backpropagates `1 / cp_world_size` of the loss. The checks wait until every collective has
+    run, so a rank that fails one cannot leave the others hanging. Plain pytest skips it, run it
+    with `torchrun --nproc-per-node=2 -m pytest tests/unit/train/models/test_deepseek_v4.py -k
+    test_halo_compress_returns_the_whole_rows_entries`, or more ranks.
+    """
+    cp_rank, cp_world_size = dist.get_rank(), dist.get_world_size()
+    config = _halo_config(compressor_backend, hca_compress_rate)
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
+        rotary = DeepseekV4RotaryEmbedding(config)
+        compressor = DeepseekV4Attention(config, layer_idx, rotary).compressor
+    _randomize(compressor)
+    doc_lens = HALO_ROWS[row](cp_world_size)
+    hidden_states = torch.randn(1, sum(doc_lens), MODEL["hidden_size"], device="cuda", dtype=torch.bfloat16)
+    n_queries = sum(doc_lens) // cp_world_size
+
+    shard = slice(cp_rank * n_queries, (cp_rank + 1) * n_queries)
+    whole_input = hidden_states.clone().requires_grad_(True)
+    shard_input = hidden_states[:, shard].clone().requires_grad_(True)
+
+    expected = compressor.compress(whole_input, _packed_for_cp(rotary, doc_lens, 0, 1))
+    grad_output = torch.randn_like(expected)
+    (expected * grad_output).sum().backward()
+    expected_grads = _take_grads(compressor)
+
+    packed = _packed_for_cp(rotary, doc_lens, cp_rank, cp_world_size)
+    actual = compressor.compress(shard_input, packed, cp_group=cp_process_group)
+    ((actual * grad_output).sum() / cp_world_size).backward()
+    for param in compressor.parameters():
+        if param.grad is not None:
+            dist.all_reduce(param.grad, group=cp_process_group)
+
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    torch.testing.assert_close(shard_input.grad, whole_input.grad[:, shard], rtol=0, atol=0)
+    _compare_accumulated_grads(compressor, expected_grads, rtol=HALO_PARAM_GRAD_RTOL)
+
+
+@pytest.mark.parametrize("row", HALO_ROWS.keys())
+@pytest.mark.parametrize(
+    ("layer_idx", "compressor_backend", "hca_compress_rate"), HALO_LAYERS.values(), ids=HALO_LAYERS.keys()
+)
+def test_halo_attention_matches_one_gpu(cp_process_group, layer_idx, compressor_backend, hca_compress_rate, row):
+    """Each CP rank's attention output for its own queries must match one GPU running the whole
+    row, and so must the gradients the backward hands this rank's tokens and, summed over the
+    ranks, the layer's parameters. Run it as `test_halo_compress_returns_the_whole_rows_entries` is.
+    """
+    cp_rank, cp_world_size = dist.get_rank(), dist.get_world_size()
+    config = _halo_config(compressor_backend, hca_compress_rate)
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
+        rotary = DeepseekV4RotaryEmbedding(config)
+        attention = DeepseekV4Attention(config, layer_idx, rotary)
+    _randomize(attention)
+    doc_lens = HALO_ROWS[row](cp_world_size)
+    hidden_states = torch.randn(1, sum(doc_lens), MODEL["hidden_size"], device="cuda", dtype=torch.bfloat16)
+    grad_output = torch.randn_like(hidden_states)
+    n_queries = sum(doc_lens) // cp_world_size
+
+    shard = slice(cp_rank * n_queries, (cp_rank + 1) * n_queries)
+    whole_input = hidden_states.clone().requires_grad_(True)
+    shard_input = hidden_states[:, shard].clone().requires_grad_(True)
+
+    expected, _ = attention(whole_input, _packed_for_cp(rotary, doc_lens, 0, 1))
+    (expected * grad_output).sum().backward()
+    expected_grads = _take_grads(attention)
+
+    attention.cp_context = CPContext(cp_process_group, cp_rank, cp_world_size)
+    actual, _ = attention(shard_input, _packed_for_cp(rotary, doc_lens, cp_rank, cp_world_size))
+    (actual * grad_output[:, shard]).sum().backward()
+    for param in attention.parameters():
+        if param.grad is not None:
+            dist.all_reduce(param.grad, group=cp_process_group)
+
+    torch.testing.assert_close(actual, expected[:, shard], rtol=0, atol=0)
+    assert_relative(shard_input.grad, whole_input.grad[:, shard], HALO_LAYER_GRAD_RTOL, "input gradient")
+    _compare_accumulated_grads(attention, expected_grads, rtol=HALO_LAYER_GRAD_RTOL)

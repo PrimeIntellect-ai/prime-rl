@@ -10,9 +10,11 @@ from typing import TYPE_CHECKING, Any
 import verifiers.v1 as vf
 
 from prime_rl.orchestrator.curriculum.samplers.base import TaskSampler
+from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from prime_rl.configs.orchestrator import DifficultyPoolSamplerConfig
+    from prime_rl.env.heads import EpisodeHead
 
 
 class DifficultyPoolSampler(TaskSampler):
@@ -33,11 +35,12 @@ class DifficultyPoolSampler(TaskSampler):
         self.tasks = tuple(tasks)
         if not self.tasks:
             raise ValueError("DifficultyPoolSampler requires at least one task")
-        keys = [task.key for task in self.tasks]
-        duplicates = {key for key, count in Counter(keys).items() if count > 1}
+        # Task.key hashes the task data, so compute each key once.
+        self.keys = [task.key for task in self.tasks]
+        duplicates = {key for key, count in Counter(self.keys).items() if count > 1}
         if duplicates:
             raise ValueError(f"Task keys must be unique within a taskset: {sorted(duplicates)}")
-        self.tasks_by_key = dict(zip(keys, self.tasks))
+        self.tasks_by_key = dict(zip(self.keys, self.tasks))
         self.rng = random.Random(config.seed)
         self.pools = config.pools
         ordered = sorted(self.pools.items(), key=lambda item: item[1].threshold)
@@ -56,14 +59,17 @@ class DifficultyPoolSampler(TaskSampler):
 
     def __next__(self) -> vf.Task:
         weights = []
-        for task in self.tasks:
-            pool = self.task_pool(task.key)
+        for key in self.keys:
+            pool = self.task_pool(key)
             weights.append(1.0 if pool is None else self.pools[pool].weight)
         if not any(weights):
             raise RuntimeError("DifficultyPoolSampler has no tasks in a pool with positive weight")
         return self.rng.choices(self.tasks, weights=weights, k=1)[0]
 
-    def observe(self, group: list[vf.Episode]) -> None:
+    def find_task(self, key: str) -> vf.Task | None:
+        return self.tasks_by_key.get(key)
+
+    def observe(self, group: list[EpisodeHead]) -> None:
         rewards = [
             trace.reward
             for episode in group
@@ -84,8 +90,12 @@ class DifficultyPoolSampler(TaskSampler):
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        """Restore rewards of tasks still in the taskset; new tasks start unseen."""
         self.rng.setstate(state_dict["rng"])
-        self.task_rewards = dict(state_dict["task_rewards"])
+        task_rewards = state_dict["task_rewards"]
+        self.task_rewards = {key: reward for key, reward in task_rewards.items() if key in self.tasks_by_key}
+        if removed := len(task_rewards) - len(self.task_rewards):
+            get_logger().info(f"Dropped the rewards of {removed} task(s) no longer in the taskset")
 
     def metrics(self) -> dict[str, float]:
         occupancy = dict.fromkeys(self.pools, 0)

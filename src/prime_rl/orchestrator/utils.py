@@ -1,39 +1,45 @@
+from __future__ import annotations
+
 import asyncio
 import ctypes
 import logging
 import math
-from collections.abc import Iterable, Iterator
+import sys
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
-import numpy as np
 import verifiers.v1 as vf
 
+from prime_rl.transports.batch.types import UNLABELED
 from prime_rl.utils.logger import InterceptHandler, get_logger, setup_logger
 
+if TYPE_CHECKING:
+    from prime_rl.env.heads import EpisodeHead
 
-def episode_env_name(episode: vf.Episode[Any, Any, Any]) -> str:
+
+def episode_env_name(episode: EpisodeHead) -> str:
     name = episode.env.name
     if name is None:
         raise ValueError("Orchestrated episode is missing its environment name")
     return name
 
 
-def episode_group_id(episode: vf.Episode[Any, Any, Any]) -> str:
+def episode_group_id(episode: EpisodeHead) -> str:
     group = episode.group
     if group is None:
         raise ValueError("Orchestrated episode is missing its rollout group")
     return group.id
 
 
-def train_work(episode: vf.Episode[Any, Any, Any]) -> vf.TrainWorkInfo:
+def train_work(episode: EpisodeHead) -> vf.TrainWorkInfo:
     run = episode.run
     if not isinstance(run, vf.TrainRunInfo) or not isinstance(run.work, vf.TrainWorkInfo):
         raise ValueError("Train episode is missing training-work provenance")
     return run.work
 
 
-def eval_work(episode: vf.Episode[Any, Any, Any]) -> vf.EvalWorkInfo:
+def eval_work(episode: EpisodeHead) -> vf.EvalWorkInfo:
     run = episode.run
     if not isinstance(run, vf.TrainRunInfo) or not isinstance(run.work, vf.EvalWorkInfo):
         raise ValueError("Eval episode is missing evaluation-work provenance")
@@ -46,27 +52,11 @@ def min_fresh_version(step: int, max_staleness: int) -> int:
     return (step - 1) - max_staleness
 
 
-def node_policy_versions(node: vf.MessageNode, fallback: int) -> Iterator[tuple[int, int, int]]:
-    """``(start, end, version)`` runs over a node's sampled tokens, indexed into
-    ``node.token_ids``: the policy step whose weights sampled them, from the
-    engine's ``weight_versions`` labels. Tokens without a step label (engines
-    whose updates bypass ``/update_weights``, e.g. Dynamo) get ``fallback``."""
-    sampled = int(np.count_nonzero(node.mask))
-    offset = len(node.mask) - sampled
-    if not node.weight_versions:
-        if sampled:
-            yield offset, offset + sampled, fallback
-        return
-    for span in node.weight_versions:
-        version = int(span.version) if span.version.isdigit() else fallback
-        yield offset + span.start, offset + span.end, version
-
-
 class Staleness(NamedTuple):
     """Staleness of one train rollout in batch ``training_step``.
 
     A token's staleness is the version the batch trains on (v{step-1}) minus
-    the policy version that sampled it (see ``node_policy_versions``). A
+    the policy version that sampled it (``TraceHead.versions``). A
     rollout's staleness is the max staleness of its tokens. ``in_flight`` is
     its share from weight updates between the oldest token and completion;
     ``in_queue`` is its share from weight updates while it waited to ship.
@@ -80,7 +70,7 @@ class Staleness(NamedTuple):
     token_count: int
 
 
-def rollout_staleness(episode: vf.Episode[Any, Any, Any], training_step: int) -> Staleness | None:
+def rollout_staleness(episode: EpisodeHead, training_step: int) -> Staleness | None:
     """Staleness of a train episode in batch ``training_step``, or None for
     frozen-sourced episodes (no policy span), which never go stale. Tokens
     without a policy label take the episode's dispatch version, which no
@@ -91,17 +81,16 @@ def rollout_staleness(episode: vf.Episode[Any, Any, Any], training_step: int) ->
     trained_version = training_step - 1
     rollout = token_sum = token_count = 0
     for trace in episode.traces:
-        for node in trace.nodes:
-            for start, end, version in node_policy_versions(node, fallback=policy.start):
-                staleness = max(0, trained_version - version)
-                rollout = max(rollout, staleness)
-                token_sum += staleness * (end - start)
-                token_count += end - start
+        for version, count in trace.versions.items():
+            staleness = max(0, trained_version - (policy.start if version == UNLABELED else version))
+            rollout = max(rollout, staleness)
+            token_sum += staleness * count
+            token_count += count
     in_queue = min(rollout, max(0, trained_version - policy.end))
     return Staleness(rollout, rollout - in_queue, in_queue, token_sum, token_count)
 
 
-def max_rollout_staleness(episodes: Iterable[vf.Episode[Any, Any, Any]], training_step: int) -> int:
+def max_rollout_staleness(episodes: Iterable[EpisodeHead], training_step: int) -> int:
     staleness = (rollout_staleness(episode, training_step) for episode in episodes)
     return max((s.rollout for s in staleness if s is not None), default=0)
 
@@ -115,12 +104,13 @@ def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix
     vf_logger.propagate = False
 
 
-def setup_env_server_logging(log_level: str, json_logging: bool = False) -> None:
-    """Configure logging for an env-server process: prime-rl's logger + routing v1's stdlib
-    logs through it. Passed to verifiers' ``serve_env`` so it runs in the broker and in every
-    spawned worker — fresh ``spawn`` processes that otherwise have no handlers and would drop
-    their per-rollout logs."""
-    setup_logger(log_level, json_logging=json_logging)
+def setup_env_worker_pool_logging(log_level: str, json_logging: bool = False) -> None:
+    """Configure logging for an env-worker-pool process: prime-rl's logger + routing v1's stdlib
+    logs through it. Passed to ``run_env_worker_pool`` so it runs in the broker and in every spawned
+    worker — fresh ``spawn`` processes that otherwise have no handlers and would drop their
+    per-rollout logs. The launcher redirects an env worker pool's stdout to its log file, so
+    the console sink colorizes only on a terminal."""
+    setup_logger(log_level, json_logging=json_logging, colorize=sys.stdout.isatty())
     intercept_vf_logging(logger="verifiers.v1", level=log_level)
 
 

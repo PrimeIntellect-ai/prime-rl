@@ -1,50 +1,49 @@
-"""Env wrappers over a v1 env server.
+"""Clients for each source's env worker pool replicas.
 
-Each ``Env`` is an ``EnvClient`` onto its source's env server. Each server's address
-is derived from the source's position in the config
-(``OrchestratorConfig.env_addresses``); the launcher runs the servers at
-exactly those addresses, and the orchestrator connects. The
-orchestrator never *runs* an environment — the agents and their runtimes live only
-in the server — but it does own the *taskset*: a v1 env's tasks are loaded here,
-once, and each dispatched episode ships its task's data on the request
-(``task_data``); the server pydantic-validates it into the taskset's declared
-``TaskData`` type and runs it. That keeps the server (and every worker in its
-pool) stateless about data — no per-worker dataset loads, no idx-addressed task
-cache — and gives the orchestrator real tasks to sample.
+Each source has its own env configuration and one or more pool replicas
+(``OrchestratorConfig.env_worker_pool_replicas``; one per inference node on multi-node
+runs). The orchestrator routes to the least-loaded replica; its broker dispatches to
+the least-busy worker. A source's ``serve.address`` instead names one external pool.
 
-The server answers one ``Episode`` per run request, whose traces we validate into
-``Trace[WireTaskData]`` — real ``vf.Trace``\\ s (never loose dicts) whose task
-keeps the env's task-specific fields as extras (``WireTaskData`` allows them).
+The orchestrator owns task selection and loads the dataset once. Requests carry
+``task_data``; each worker validates it into the taskset's declared ``TaskData`` type
+and executes it through its own Verifiers env. Workers do not load the dataset.
+
+The pool returns the head of one ``Episode`` per run request (``prime_rl.env.heads``):
+its workers keep the episode itself and its training samples.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
+from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
 from renderers import RendererConfig
-from verifiers.v1.serve import EnvClient
 
 from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
+from prime_rl.control.types import ConfigUpdate, Reconfigurable
+from prime_rl.env import EnvClient
+from prime_rl.env.heads import EpisodeHead
+from prime_rl.env.types import RecordRequest, RestoreRef, TrainRequest
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.clients import InferenceClient, connect_frozen_client
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import env_address_file
 
-# Max wait for the env server to answer health. Generous because the launcher spawns
-# servers concurrently with the orchestrator, and a server imports its env package
-# before serving.
-ENV_SERVER_STARTUP_TIMEOUT = 600.0
+# Pool replicas start concurrently with the orchestrator. Health checks reach the
+# broker; a reply does not establish worker readiness.
+ENV_WORKER_POOL_STARTUP_TIMEOUT = 600.0
 
 
 async def wait_for_address(path: Path, timeout: float) -> str:
-    """The address a launcher-managed env server published, polling for the file the
-    server writes once it has bound (it starts concurrently with this process)."""
+    """The address a launcher-managed env worker pool published, polling for the file the
+    broker writes once it has bound (it starts concurrently with this process)."""
     deadline = time.monotonic() + timeout
     while True:
         try:
@@ -53,20 +52,20 @@ async def wait_for_address(path: Path, timeout: float) -> str:
         except FileNotFoundError:
             pass
         if time.monotonic() > deadline:
-            raise TimeoutError(f"env server never published its address to {path} within {timeout}s")
+            raise TimeoutError(f"env worker pool never published its address to {path} within {timeout}s")
         await asyncio.sleep(0.5)
 
 
 class Env:
-    """Client onto a v1 env server. The orchestrator owns the taskset (loaded once,
-    client-side); the server owns agent/harness execution."""
+    """Client onto a v1 env worker pool. The orchestrator owns the taskset (loaded once,
+    client-side); the pool's workers own agent/harness execution."""
 
-    def __init__(self, config: EnvConfig, address: str | None, address_file: Path):
+    def __init__(self, config: EnvConfig, address: str | None, address_files: list[Path]):
         self.config = config
         self.address = address
-        self.address_file = address_file
-        """Where a launcher-managed server publishes its address; read when ``address``
-        is None."""
+        self.address_files = address_files
+        """Where the replicas of a launcher-managed pool publish their addresses; read
+        when ``address`` is None."""
         self.sampling = vf.SamplingConfig()
         self.num_tasks: int | None = 0
         """Task count; ``None`` means the selected tasks never end."""
@@ -75,28 +74,44 @@ class Env:
         ``start()``. A bounded selection is materialized (``num_tasks`` is its count)
         and iterated from there; an unbounded one streams off the taskset. Consumed once — by ``TrainSource`` (train) or
         ``EvalEnv.start`` (eval)."""
-        self._env_client: EnvClient | None = None
+        self._env_clients: list[EnvClient] = []
+        self._in_flight: list[int] = []
+        """Runs in flight per replica, to route each run to the least loaded one."""
+        self.orphan_snapshots: list[dict] = []
+        self.late_restores: list[RestoreRef] = []
+        self.save_skipped: Counter[str] = Counter()
+        """Why running rollouts took no restore point at the last ``save``, counted."""
+        """Restore points of replicas that answered a ``save`` after its timeout: nothing
+        resumes from them, so their owner deletes their snapshots and files."""
+        self._late_saves: set[asyncio.Task] = set()
 
     @property
     def name(self) -> str:
         return self.config.resolved_name
 
     @property
-    def env_client(self) -> EnvClient:
-        if self._env_client is None:
+    def env_clients(self) -> list[EnvClient]:
+        if not self._env_clients:
             raise RuntimeError(f"Env {self.name} not started — call start() first.")
-        return self._env_client
+        return self._env_clients
 
     async def start(self) -> None:
-        """Connect to the env server and load the taskset client-side."""
+        """Connect to the env worker pool's replicas and load the taskset client-side."""
         t0 = time.perf_counter()
-        if self.address is None:
-            self.address = await wait_for_address(self.address_file, timeout=ENV_SERVER_STARTUP_TIMEOUT)
-        get_logger().debug(f"Connecting {self.name} to env server {self.address}")
-        self._env_client = EnvClient(address=self.address)
-        # The server may still be coming up (the launcher spawns it concurrently with
-        # the orchestrator), so poll until it answers.
-        await self.env_client.wait_for_server_startup(timeout=ENV_SERVER_STARTUP_TIMEOUT)
+        if self.address is not None:
+            addresses = [self.address]
+        else:
+            addresses = await asyncio.gather(
+                *(wait_for_address(path, timeout=ENV_WORKER_POOL_STARTUP_TIMEOUT) for path in self.address_files)
+            )
+        get_logger().debug(f"Connecting {self.name} to env worker pools {addresses}")
+        self._env_clients = [EnvClient(address=address) for address in addresses]
+        self._in_flight = [0] * len(addresses)
+        # The pools may still be coming up (the launcher spawns them concurrently with
+        # the orchestrator), so poll until they answer.
+        await asyncio.gather(
+            *(client.wait_for_pool_startup(timeout=ENV_WORKER_POOL_STARTUP_TIMEOUT) for client in self.env_clients)
+        )
         taskset = vf.load_taskset(self.config.env.taskset).select(self.config.select)
         if taskset.bounded:
             # Materialize off the event loop — iterating may pull a dataset.
@@ -109,30 +124,106 @@ class Env:
         num_tasks = self.num_tasks if self.num_tasks is not None else "infinite"
         get_logger().info(f"Env {self.name} ready in {format_time(time.perf_counter() - t0)} (num_tasks={num_tasks})")
 
-    def _sampling(self, cache_salt: str | None) -> vf.SamplingConfig:
-        sampling = self.sampling
-        if cache_salt is not None:
-            sampling = sampling.model_copy(update={"cache_salt": cache_salt})
-        return sampling
+    def sampling_at(self, step: int) -> vf.SamplingConfig:
+        """The sampling for work dispatched at ``step``."""
+        return self.sampling
 
     async def run(
         self,
         client: vf.ClientConfig,
         model_name: str,
+        sampling: vf.SamplingConfig,
         cache_salt: str | None,
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
-    ) -> vf.WireEpisode:
-        """Run and return the native typed episode.
-        ``on_delta`` sees each delta of the env server's stream — a turn or a phase
-        change of one of the episode's traces — as it lands."""
-        return await self.env_client.run(
-            task_data=task_data,
-            client=client,
-            model=model_name,
-            sampling=self._sampling(cache_salt),
-            on_delta=on_delta,
-        )
+        run: vf.RunInfo | None = None,
+        record: RecordRequest | None = None,
+        live: bool = True,
+        group_id: str | None = None,
+        restore: str | None = None,
+        request_id: str | None = None,
+    ) -> EpisodeHead:
+        """Run and return the head of the episode, holding its record when ``record`` asks
+        for it. ``on_delta`` sees each delta of the env worker pool's stream — a turn or a
+        phase change of one of the episode's traces, or only its progress without ``live`` —
+        as it lands. ``restore`` is the path of a restore file (``save``): the run continues
+        that rollout. ``request_id`` names the run in what ``save`` returns. The run goes to
+        the replica with the fewest runs in flight. A train run's worker keeps its training
+        samples."""
+        if cache_salt is not None:
+            sampling = sampling.model_copy(update={"cache_salt": cache_salt})
+        replica = min(range(len(self.env_clients)), key=self._in_flight.__getitem__)
+        self._in_flight[replica] += 1
+        try:
+            return await self.env_clients[replica].run(
+                task_data=task_data,
+                client=client,
+                model=model_name,
+                sampling=sampling,
+                on_delta=on_delta,
+                train=self.train_request(),
+                run=run,
+                record=record,
+                live=live,
+                env_name=self.name,
+                group_id=group_id,
+                restore=restore,
+                request_id=request_id,
+            )
+        finally:
+            self._in_flight[replica] -= 1
+
+    def train_request(self) -> TrainRequest | None:
+        """What a train run's worker needs to keep its samples; None for eval."""
+        return None
+
+    async def save(self, directory: str, timeout: float) -> dict[str, RestoreRef]:
+        """Take a memory checkpoint of every rollout running on every replica, each
+        written as a restore file under ``directory``. Returns the restore points by the
+        ``request_id`` of their run; the caller owns their snapshots. A replica that
+        fails contributes nothing, and neither does one that takes longer than
+        ``timeout``: what it returns later lands in ``late_restores``."""
+        saves = [asyncio.create_task(client.save(directory)) for client in self.env_clients]
+        done, pending = await asyncio.wait(saves, timeout=timeout)
+        restores: dict[str, RestoreRef] = {}
+        self.save_skipped = Counter()
+        for save in done:
+            if save.exception() is not None:
+                get_logger().warning(f"Saving the running rollouts of {self.name} failed: {save.exception()!r}")
+            else:
+                self.orphan_snapshots.extend(save.result().orphans)
+                restores |= save.result().restores
+                self.save_skipped.update(save.result().skipped)
+        for save in pending:
+            self._late_saves.add(save)
+            save.add_done_callback(self._collect_late_save)
+        if pending:
+            get_logger().warning(
+                f"{len(pending)} of {len(saves)} replicas of {self.name} did not save their running rollouts "
+                f"within {timeout:.0f}s; those rollouts start over on resume"
+            )
+        return restores
+
+    async def release(self) -> None:
+        """Let the rollouts that ``save`` holds at their restore points go on. A replica
+        that does not answer releases its rollouts by itself after two minutes."""
+        results = await asyncio.gather(*(client.release() for client in self.env_clients), return_exceptions=True)
+        failed = [result for result in results if isinstance(result, BaseException)]
+        if failed:
+            get_logger().warning(
+                f"{len(failed)} of {len(results)} replicas of {self.name} did not release their saved rollouts: "
+                f"{failed[0]!r}"
+            )
+
+    def _collect_late_save(self, save: asyncio.Task) -> None:
+        self._late_saves.discard(save)
+        if not save.cancelled() and save.exception() is None:
+            self.orphan_snapshots.extend(save.result().orphans)
+            self.late_restores.extend(save.result().restores.values())
+
+    async def discard(self, snapshots: list[dict]) -> list[str]:
+        """Delete box snapshots this run owns; returns the ids of the deleted."""
+        return await self.env_clients[0].discard(snapshots)
 
 
 class TrainEnv(Env):
@@ -142,31 +233,54 @@ class TrainEnv(Env):
         self,
         config: TrainSourceConfig,
         address: str | None,
-        address_file: Path,
+        address_files: list[Path],
         clients: InferenceClient,
         renderer_config: RendererConfig | None,
         algorithm: Algorithm,
     ):
-        super().__init__(config, address, address_file)
+        super().__init__(config, address, address_files)
         # Train rollouts are generated from `clients`: the policy, or the frozen
-        # `sampling.source` connected in setup() with the renderer (token-in/out) client.
+        # `algo.rollout_model` connected in setup() with the renderer (token-in/out) client.
         self.clients = clients
         self.renderer_config = renderer_config
         self.connected: InferenceClient | None = None
         self.algorithm = algorithm
-        self.uses_live_policy = config.algo.sampling.source == "policy"
-        self.sampling = vf.SamplingConfig(
+        self.uses_live_policy = config.algo.rollout_model == "policy"
+        self.sampling = self.build_sampling(config)
+        # Sampling by the first step it applies to; live updates add entries.
+        self.sampling_by_step: dict[int, vf.SamplingConfig] = {0: self.sampling}
+        # Truncated policy sampling must ship the sampling masks the trainer replays.
+        self.requires_sampling_masks = config.sampling.truncates_distribution() and self.uses_live_policy
+        self.requires_sampler_logprobs = config.sampling.logprobs is not None and self.uses_live_policy
+
+    def train_request(self) -> TrainRequest:
+        return TrainRequest(algo=self.config.algo.model_dump(mode="json"))
+
+    def build_sampling(self, config: TrainSourceConfig) -> vf.SamplingConfig:
+        return vf.SamplingConfig(
             **config.sampling.model_dump(exclude_none=True, exclude={"logprobs"}),
             # Only policy rollouts need sampling logprobs for importance ratios.
             logprobs=(config.sampling.logprobs or True) if self.uses_live_policy else None,
         )
-        # Truncated policy sampling must ship the sampling masks the trainer replays.
-        self.requires_sampling_masks = config.sampling.truncates_distribution() and self.uses_live_policy
-        self.requires_top_logprobs = config.sampling.logprobs is not None and self.uses_live_policy
+
+    def sampling_at(self, step: int) -> vf.SamplingConfig:
+        return self.sampling_by_step[max(start for start in self.sampling_by_step if start <= step)]
+
+    def reconfigure(self, config: TrainSourceConfig, step: int) -> None:
+        """Adopt this source's new config. Its sampling applies to work dispatched from
+        ``step`` on; earlier groups keep sampling, and train, with the old settings. Its
+        algorithm's length penalty applies to every group scored from now on, including
+        groups that started before the update."""
+        if config.sampling != self.config.sampling:
+            self.sampling = self.build_sampling(config)
+            self.sampling_by_step[step] = self.sampling
+        if config.algo != self.config.algo:
+            self.algorithm.reconfigure(config.algo)
+        self.config = config
 
     async def setup(self) -> None:
         async def connect_source() -> None:
-            source = self.config.algo.sampling.source
+            source = self.config.algo.rollout_model
             if isinstance(source, FrozenModelConfig):
                 self.connected = await connect_frozen_client(source, renderer_config=self.renderer_config)
                 self.clients = self.connected
@@ -182,8 +296,8 @@ class TrainEnv(Env):
 class EvalEnv(Env):
     config: EvalSourceConfig
 
-    def __init__(self, config: EvalSourceConfig, address: str | None, address_file: Path):
-        super().__init__(config, address, address_file)
+    def __init__(self, config: EvalSourceConfig, address: str | None, address_files: list[Path]):
+        super().__init__(config, address, address_files)
         self.sampling = config.sampling
         self.examples: list[vf.Task] = []
 
@@ -196,6 +310,12 @@ class EvalEnv(Env):
 
 
 EnvT = TypeVar("EnvT", bound=Env)
+
+
+def replica_address_files(config_dir: Path, split: str, name: str, replicas: int | None) -> list[Path]:
+    if replicas is None:
+        return [env_address_file(config_dir, split, name)]
+    return [env_address_file(config_dir, split, name, replica) for replica in range(replicas)]
 
 
 class Envs(Generic[EnvT]):
@@ -221,7 +341,7 @@ class Envs(Generic[EnvT]):
         return len(self._envs)
 
     async def start(self) -> None:
-        """Connect to all env servers in parallel — every address is known up front,
+        """Connect to all env worker pools in parallel — every address is known up front,
         so there's nothing to serialize on."""
         # When several env.start()s load_dataset() concurrently, datasets' parallel arrow read
         # (tqdm thread_map) races in ensure_lock's `del tqdm_class._lock` and crashes with
@@ -233,7 +353,7 @@ class Envs(Generic[EnvT]):
         await asyncio.gather(*(env.start() for env in self))
 
 
-class TrainEnvs(Envs[TrainEnv]):
+class TrainEnvs(Envs[TrainEnv], Reconfigurable):
     """Collection of training environments, each with its runtime
     :class:`Algorithm`, built from the env's resolved algorithm config."""
 
@@ -245,6 +365,7 @@ class TrainEnvs(Envs[TrainEnv]):
         *,
         clients,
         renderer_config=None,
+        replicas: int | None = None,
     ):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
@@ -252,22 +373,32 @@ class TrainEnvs(Envs[TrainEnv]):
             env = TrainEnv(
                 config,
                 addresses[("train", config.resolved_name)],
-                env_address_file(config_dir, "train", config.resolved_name),
+                replica_address_files(config_dir, "train", config.resolved_name, replicas),
                 clients,
                 renderer_config,
                 build_algorithm(config.algo, clients),
             )
             self._envs[env.name] = env
 
+    def reconfigure(self, update: ConfigUpdate) -> None:
+        """Every env adopts its source's applied config, so ``env.config`` is never stale."""
+        for config in update.config.train.source:
+            self.get(config.resolved_name).reconfigure(config, update.step)
+
 
 class EvalEnvs(Envs[EvalEnv]):
     """Collection of evaluation environments."""
 
     def __init__(
-        self, configs: Sequence[EvalSourceConfig], addresses: dict[tuple[str, str], str | None], config_dir: Path
+        self,
+        configs: Sequence[EvalSourceConfig],
+        addresses: dict[tuple[str, str], str | None],
+        config_dir: Path,
+        replicas: int | None = None,
     ):
         self._envs: dict[str, EvalEnv] = {}
         for config in configs:
             name = config.resolved_name
-            env = EvalEnv(config, addresses[("eval", name)], env_address_file(config_dir, "eval", name))
+            files = replica_address_files(config_dir, "eval", name, replicas)
+            env = EvalEnv(config, addresses[("eval", name)], files)
             self._envs[env.name] = env

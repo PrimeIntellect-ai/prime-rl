@@ -1,0 +1,25 @@
+# Eval regression suite: PI-TerminalBench2.1 (82 reviewed Terminal-Bench 2
+# tasks), one rollout each, with the bash harness in prime sandboxes against
+# Prime Inference. PRIME_API_KEY authenticates both the model calls and the
+# sandboxes. The regression workflow runs it once per night and compares the
+# result against tests/regression/baselines/eval/pi-terminalbench2-1.json.
+# Refresh the baseline after you change this config or the model.
+#
+#   uv run eval @ tests/regression/configs/eval/pi-terminalbench2-1.toml
+
+model = "internal/deepseek-v4.1-flash-1017-ci"
+group_size = 1
+dashboard = false
+
+# The tasks' own agent and verifier timeouts are dropped. One 4 h agent budget
+# replaces them, so the eval fits in the 6 h CI job limit. A rollout that runs
+# out of time gets no score (reward 0), so a slow endpoint lowers accuracy and
+# raises time to finish, but does not count as an error. Failed rollouts are not
+# retried: a retry would start a new 4 h budget late in the run.
+[[source]]
+env.taskset.id = "pi-terminalbench2-1"
+env.taskset.ignore_timeouts = true
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.timeout.rollout = 14400
+env.agent.scoring.skip_on_timeout = true

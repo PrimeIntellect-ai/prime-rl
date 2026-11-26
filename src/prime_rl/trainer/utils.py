@@ -1,5 +1,7 @@
 import gc
+import json
 import math
+import mmap
 import os
 import pickle
 import shutil
@@ -12,14 +14,18 @@ from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
+import triton
 from rich import print as rich_print
 from rich.text import Text
 from torch import Tensor, nn
 from torch.distributed.tensor import DTensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
+from prime_rl.configs.trainer import ModelConfig
 from prime_rl.control.controller import Controller
+from prime_rl.control.types import StepActionType
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.distributed import all_gather_bytes
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_ckpt_dir
 
@@ -28,6 +34,8 @@ if TYPE_CHECKING:
 
 DEFAULT_TIMEOUT = timedelta(seconds=600)
 DCP_TIMEOUT = timedelta(hours=4)
+STEP_ACTIONS: tuple[StepActionType | None, ...] = (None, "checkpoint", "pause")
+"""Step actions by the code ranks broadcast them as."""
 
 
 class GarbageCollection:
@@ -36,7 +44,9 @@ class GarbageCollection:
     In multi-GPU training, Python's automatic GC can trigger unpredictably on one rank
     while others wait at a synchronization point, stalling the entire step. This class
     disables automatic GC and runs deterministic collections every `interval` steps so
-    all ranks collect simultaneously.
+    all ranks collect simultaneously. It also collects right after any uncached Triton autotuning in which a
+    config failed to launch (out of shared memory): each failure leaves a reference cycle pinning the
+    Python stack that autotuned, including any compiled layer backward's buffers.
 
     Based on the approach from torchtitan (https://arxiv.org/abs/2505.05713).
     """
@@ -45,10 +55,15 @@ class GarbageCollection:
         assert interval > 0, "gc interval must be a positive integer"
         self.interval = interval
         gc.disable()
+        triton.knobs.autotuning.listener = self._collect_after_failed_autotune
         self._collect()
 
     def run(self, step: int):
         if step > 0 and step % self.interval == 0:
+            self._collect()
+
+    def _collect_after_failed_autotune(self, *, configs_timings: dict, cache_hit: bool, **_) -> None:
+        if not cache_hit and any(math.inf in timings for timings in configs_timings.values()):
             self._collect()
 
     def _collect(self, generation: int = 1):
@@ -78,13 +93,13 @@ def finish_backward(manager: "GradientOffloadManager | None", *, wait_for_copies
 
 
 @torch.no_grad()
-def scale_gradients_(manager: "GradientOffloadManager | None", model: nn.Module, factor: float) -> None:
+def scale_gradients_(manager: "GradientOffloadManager | None", model: nn.Module, factor: float | Tensor) -> None:
+    """Multiply every gradient by ``factor``, a number or a 0-dim tensor on the gradients' device (no host sync)."""
     if manager is not None:
         manager.scale_(factor)
         return
-    for param in model.parameters():
-        if param.grad is not None:
-            param.grad.mul_(factor)
+    grads = [param.grad for param in model.parameters() if param.grad is not None]
+    torch._foreach_mul_([grad.to_local() if isinstance(grad, DTensor) else grad for grad in grads], factor)
 
 
 def clip_grad_norm_(
@@ -112,6 +127,38 @@ def clip_grad_norm_(
     return grad_norm.cuda() if grad_norm.device.type == "cpu" else grad_norm
 
 
+class _PageLockedMapping(mmap.mmap):
+    """Anonymous shared mapping that stays page-locked with cudaHostRegister until it is freed.
+
+    Shared (the `mmap` default) rather than private: on fork, Linux eagerly copies page-locked private
+    pages into the child, so every forked worker would duplicate the whole buffer.
+    """
+
+    registered_ptr: int | None = None
+
+    def __del__(self):
+        if self.registered_ptr is not None:
+            torch.cuda.check_error(torch.cuda.cudart().cudaHostUnregister(self.registered_ptr))
+
+
+def empty_pinned(shape: tuple[int, ...] | torch.Size, dtype: torch.dtype) -> Tensor:
+    """Allocate a page-locked CPU tensor of exactly the requested size.
+
+    `pin_memory=True` goes through torch's caching host allocator, which rounds every block up to the
+    next power of two, so a 1.1 GiB buffer pins 2 GiB. This pins a page-aligned mapping instead. The
+    tensor owns the mapping through `torch.frombuffer`, so the memory is unregistered and unmapped
+    only when the last view of its storage is freed.
+    """
+    nbytes = torch.Size(shape).numel() * dtype.itemsize
+    if nbytes == 0:
+        return torch.empty(shape, dtype=dtype, pin_memory=True)
+    mapping = _PageLockedMapping(-1, nbytes)
+    tensor = torch.frombuffer(mapping, dtype=torch.uint8)
+    torch.cuda.check_error(torch.cuda.cudart().cudaHostRegister(tensor.data_ptr(), nbytes, 0))
+    mapping.registered_ptr = tensor.data_ptr()
+    return tensor.view(dtype).view(shape)
+
+
 def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:
     """
     Disk usage metrics for the checkpoint directory (<output_dir>/checkpoints).
@@ -134,26 +181,29 @@ def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:
 def bind_process_to_gpu_numa_node() -> None:
     """Pin this rank's CPUs to its GPU's NUMA node.
 
-    Offloaded optimizer state is pageable host memory placed by first-touch, and the
-    CPU optimizer pipeline is DRAM-bandwidth-bound; binding before the state is
-    allocated keeps slabs, OMP threads, and pinned rings local to the socket the
-    GPU hangs off. Must run before CPU optimizer state allocation and before the
-    OMP thread pool spins up.
+    Host memory is placed by first-touch, so an unbound rank's offloaded state and pinned copy
+    buffers land on whichever socket its thread ran on, and its GPU copies then cross the socket
+    interconnect. Binding before they are allocated keeps them, and the full-offload CPU
+    optimizer's OMP threads, local to the socket the GPU hangs off. Must run before any
+    offload buffer is allocated and before the OMP thread pool spins up.
     """
     import pynvml
 
     logger = get_logger()
     device_id = torch.cuda.current_device()
+    # NVML indexes every GPU on the node and CUDA only the visible ones (CUDA_VISIBLE_DEVICES): match by UUID
+    uuid = f"GPU-{torch.cuda.get_device_properties(device_id).uuid}"
     pynvml.nvmlInit()
     try:
-        bus_id = pynvml.nvmlDeviceGetPciInfo(pynvml.nvmlDeviceGetHandleByIndex(device_id)).busId
+        bus_id = pynvml.nvmlDeviceGetPciInfo(pynvml.nvmlDeviceGetHandleByUUID(uuid)).busId
     finally:
         pynvml.nvmlShutdown()
     if isinstance(bus_id, bytes):
         bus_id = bus_id.decode()
     domain, rest = bus_id.split(":", 1)
     sysfs_bus_id = f"{int(domain, 16):04x}:{rest}".lower()
-    numa_node = int(Path(f"/sys/bus/pci/devices/{sysfs_bus_id}/numa_node").read_text())
+    numa_path = Path(f"/sys/bus/pci/devices/{sysfs_bus_id}/numa_node")
+    numa_node = int(numa_path.read_text()) if numa_path.exists() else -1
     if numa_node < 0:
         logger.warning(f"GPU {device_id} ({sysfs_bus_id}) reports no NUMA node; skipping NUMA binding")
         return
@@ -165,7 +215,7 @@ def bind_process_to_gpu_numa_node() -> None:
         else:
             cpus.add(int(part))
     os.sched_setaffinity(0, cpus)
-    logger.info(f"Bound rank with GPU {device_id} to NUMA node {numa_node} ({len(cpus)} CPUs)")
+    logger.info(f"Bound rank with GPU {device_id} ({sysfs_bus_id}) to NUMA node {numa_node} ({len(cpus)} CPUs)")
 
 
 def configure_cpu_optimizer_threads() -> None:
@@ -179,9 +229,12 @@ def configure_cpu_optimizer_threads() -> None:
     )
 
 
-def setup_full_cpu_optimizer_offload() -> None:
-    bind_process_to_gpu_numa_node()
-    configure_cpu_optimizer_threads()
+def setup_cpu_offload(config: ModelConfig) -> None:
+    """NUMA-bind ranks that copy optimizer state, gradients or activations to host memory."""
+    if config.offload != "none" or config.ac_offloading is not None:
+        bind_process_to_gpu_numa_node()
+    if config.offload == "full":
+        configure_cpu_optimizer_threads()
 
 
 def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: bool = False):
@@ -200,8 +253,11 @@ def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: b
     # sub-groups (dp/cp/ep) are created via new_group without a timeout and fall
     # back to torch's 10-minute module default — dist_timeout_seconds silently
     # never reached the PGs doing the real work (watchdogs at 600s). Patch the
-    # module default so every subsequently created PG inherits it.
+    # module defaults so every subsequently created PG inherits it. NCCL groups
+    # read `default_pg_nccl_timeout`, not `default_pg_timeout` (which only
+    # covers the other backends), so both must be set.
     dist.distributed_c10d.default_pg_timeout = timeout
+    dist.distributed_c10d.default_pg_nccl_timeout = timeout
 
     dist.init_process_group(backend=backend, timeout=timeout, device_id=device_id)
     get_logger().debug(f"Initialized torch distributed in {format_time(time.perf_counter() - t0)}")
@@ -216,11 +272,22 @@ def get_dcp_group() -> dist.ProcessGroup:
     return dist.new_group(backend="gloo", timeout=DCP_TIMEOUT)
 
 
-def broadcast_pause(controller: Controller, step: int) -> bool:
-    """Whether the master's controller pauses at ``step``, applied by every rank."""
-    paused = torch.tensor(controller.update(step), device="cuda")
-    dist.broadcast(paused, src=0)
-    return bool(paused.item())
+def broadcast_step_action(controller: Controller, step: int) -> StepActionType | None:
+    """The pause or checkpoint the master's controller applies at ``step``, applied by every rank."""
+    code = torch.tensor(STEP_ACTIONS.index(controller.update(step)), device="cuda")
+    dist.broadcast(code, src=0)
+    return STEP_ACTIONS[code.item()]
+
+
+def get_peak_memory_across_ranks() -> tuple[float, float]:
+    """Peak GPU memory in GiB including memory outside the caching allocator (symmetric memory, NCCL, CUDA context), and that outside share, each maxed over ranks; every rank must call it."""
+    free_memory, total_memory = torch.cuda.mem_get_info()
+    non_torch_memory = (total_memory - free_memory - torch.cuda.memory_reserved()) / 1024**3
+    peak_memory = torch.cuda.max_memory_reserved() / 1024**3 + non_torch_memory
+    memory = torch.tensor([peak_memory, non_torch_memory], device="cuda")
+    dist.all_reduce(memory, op=dist.ReduceOp.MAX)
+    peak_memory, non_torch_memory = memory.tolist()
+    return peak_memory, non_torch_memory
 
 
 def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrainedTokenizer):
@@ -232,6 +299,11 @@ def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrai
     for token, mask in zip(tokenizer.convert_ids_to_tokens(input_ids), loss_mask):
         text.append(token.replace("Ġ", " ").replace("Ċ", "\n"), style="cyan" if mask else "white")
     rich_print(text)
+
+
+# Log2 bins over token staleness: bucketizing by the edges (``right=True``) gives each token's bin
+STALENESS_BIN_EDGES = [1, 2, 4, 8, 16, 32, 64]
+STALENESS_BINS = ["0", "1", "2-3", "4-7", "8-15", "16-31", "32-63", "64+"]
 
 
 class TensorStats:
@@ -253,9 +325,11 @@ class TensorStats:
         mask: Tensor | None = None,
         env_ids: Tensor | None = None,
         env_names: list[str] | None = None,
+        fold_all: bool = True,
     ) -> None:
         """Fold ``values`` (where ``mask`` is set) into ``key``. With ``env_ids`` (each value's index into
-        ``env_names``), fold them into ``{key}/{env}`` per env and into ``{key}/all`` instead.
+        ``env_names``), fold them into ``{key}/{env}`` per env and, with ``fold_all``, into ``{key}/all``
+        instead.
 
         Uses masked reductions instead of boolean indexing, so it never waits for the GPU."""
         # A custom loss may emit a metric on the CPU
@@ -271,7 +345,8 @@ class TensorStats:
         rows = _moments(values, members)
         for env_name, row in zip(env_names, rows):
             self._fold(f"{key}/{env_name}", row)
-        self._fold(f"{key}/all", torch.cat([rows[:, :3].sum(0), rows[:, 3:].amax(0)]))
+        if fold_all:
+            self._fold(f"{key}/all", torch.cat([rows[:, :3].sum(0), rows[:, 3:].amax(0)]))
 
     def _fold(self, key: str, row: Tensor) -> None:
         if (moments := self.moments.get(key)) is None:
@@ -282,8 +357,7 @@ class TensorStats:
 
     def compute_stats(self) -> dict[str, float]:
         """Reduce every key across all ranks and compute its statistics. Collective: every rank must call it."""
-        gathered_keys: list[list[str] | None] = [None] * dist.get_world_size()
-        dist.all_gather_object(gathered_keys, list(self.moments))
+        gathered_keys = [json.loads(payload) for payload in all_gather_bytes(json.dumps(list(self.moments)).encode())]
         keys = sorted({key for rank_keys in gathered_keys for key in rank_keys})
         if not keys:
             return {}
@@ -337,6 +411,7 @@ def filter_rl_trainer_tensor_stats_for_wandb(metrics: dict[str, float | int]) ->
     mean_max_only_prefixes = (
         "is_masked/",
         "mismatch_kl/",
+        "mismatch_kl_by_staleness/",
         "masked_mismatch_kl/",
         "unmasked_mismatch_kl/",
         "ref_kl/is_masked/",

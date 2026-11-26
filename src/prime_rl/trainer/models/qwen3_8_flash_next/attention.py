@@ -67,7 +67,8 @@ class IndexedGatedAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        cu_seqlens: torch.LongTensor,
+        document_starts: torch.Tensor,
+        document_ends: torch.Tensor,
     ) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape
         cos, sin = position_embeddings
@@ -77,7 +78,7 @@ class IndexedGatedAttention(nn.Module):
             full_cos_sin = gather_for_cp(torch.cat((cos, sin), dim=-1), self.cp_context.cp_group)
             full_position_embeddings = full_cos_sin.chunk(2, dim=-1)
 
-        indices = self.indexer(hidden_states, full_position_embeddings, cu_seqlens)
+        indices = self.indexer(hidden_states, full_position_embeddings, document_starts, document_ends)
         query_and_gate = self.q_proj(hidden_states).view(
             batch_size,
             sequence_length,

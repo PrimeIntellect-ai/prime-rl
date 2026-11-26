@@ -1,0 +1,282 @@
+"""Least-loaded expert parallelism (LLEP, https://arxiv.org/abs/2601.17111) on the Mega MoE kernels.
+
+When a rank's experts receive more routes than the others', part of those routes is computed by less loaded ranks
+on copies of the experts' weights; every token keeps its expert choice. The plan, the weight copies and the expert
+compute come from prime-mega-moe (`deep_gemm.llep`); this module wraps them in custom ops: planning is its own op, so
+a compiled backward under activation checkpointing recomputes only the plan.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import torch
+from torch.distributed import ProcessGroup
+
+from prime_rl.configs.trainer import LLEPConfig
+from prime_rl.trainer.models.kernels.mega_moe_mxfp8 import mx_cast, pack_ue8m0_k_major
+from prime_rl.trainer.models.layers.expert_compute import to_local
+from prime_rl.trainer.models.layers.mega_moe import (
+    MegaMoeMXFP8ExpertWeights,
+    _activation_clamp,
+    _dw_dtype,
+    _nvfp4_weights,
+    check_mega_moe_dims,
+    mega_moe_available,
+    mxfp8_decoded_weights,
+)
+
+if TYPE_CHECKING:
+    from deep_gemm.llep import LLEPMegaMoE
+
+    from prime_rl.trainer.models.layers.moe import GroupedExperts
+
+_STATES: dict[int, "LLEPMegaMoE"] = {}
+_PRECISIONS: dict[int, str] = {}
+_FOUR_OVER_SIX: dict[int, bool] = {}
+
+
+@torch.library.custom_op("prime_rl::llep_plan", mutates_args=())
+def llep_plan_op(topk_idx: torch.Tensor, state_key: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """The virtual expert of each route, the foreign expert table and a (host) id of the plan."""
+    return _STATES[state_key].plan(topk_idx)
+
+
+@llep_plan_op.register_fake
+def _llep_plan_fake(topk_idx, state_key):
+    state = _STATES[state_key]
+    return (
+        torch.empty_like(topk_idx, dtype=torch.int64),
+        topk_idx.new_empty((state.group.size(), state.options.max_foreign), dtype=torch.int32),
+        torch.empty(1, dtype=torch.int64),
+    )
+
+
+@torch.library.custom_op("prime_rl::llep_mega_moe_forward", mutates_args=())
+def llep_mega_moe_forward_op(
+    x: torch.Tensor,
+    vids: torch.Tensor,
+    foreign: torch.Tensor,
+    plan_id: torch.Tensor,
+    topk_weights: torch.Tensor,
+    gate_up_proj: torch.Tensor,
+    down_proj: torch.Tensor,
+    state_key: int,
+    activation_clamp: float | None = None,
+) -> torch.Tensor:
+    state = _STATES[state_key]
+    if state.precision == "bf16":
+        return state.forward(x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj, activation_clamp)
+    if state.precision == "nvfp4":
+        # Each rank quantizes its own experts; the kernel hands the quantized copies to the helpers
+        l1, l2, weight_scales = _nvfp4_weights(gate_up_proj, down_proj)
+        return state.forward_nvfp4(
+            x, vids, foreign, plan_id, topk_weights, l1, l2, weight_scales, activation_clamp, _FOUR_OVER_SIX[state_key]
+        )
+    # MXFP8: each rank quantizes its own experts; the kernel hands the quantized copies to the helpers
+    weights = MegaMoeMXFP8ExpertWeights.build(gate_up_proj, down_proj, for_backward=False)
+    x_fp8, x_sf = mx_cast(x.to(torch.bfloat16).contiguous(), along_rows=False)
+    y = state.forward_mxfp8(
+        x_fp8, pack_ue8m0_k_major(x_sf), vids, foreign, plan_id, topk_weights, weights.l1, weights.l2, activation_clamp
+    )
+    return y.to(x.dtype)
+
+
+@llep_mega_moe_forward_op.register_fake
+def _llep_mega_moe_forward_fake(
+    x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj, state_key, activation_clamp=None
+):
+    return torch.empty_like(x)
+
+
+@torch.library.custom_op("prime_rl::llep_mega_moe_backward", mutates_args=())
+def llep_mega_moe_backward_op(
+    dy: torch.Tensor,
+    x: torch.Tensor,
+    vids: torch.Tensor,
+    foreign: torch.Tensor,
+    plan_id: torch.Tensor,
+    topk_weights: torch.Tensor,
+    gate_up_proj: torch.Tensor,
+    down_proj: torch.Tensor,
+    state_key: int,
+    activation_clamp: float | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    state, precision = _STATES[state_key], _PRECISIONS[state_key]
+    if precision == "bf16":
+        return state.backward(dy, x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj, activation_clamp)
+    if precision == "nvfp4":
+        # Every GEMM in MXFP8 on the forward's NVFP4 operands, from the stash the forward left (or recomputes)
+        l1, l2, weight_scales = _nvfp4_weights(gate_up_proj, down_proj)
+        dx, dtopk, dw1, dw2 = state.backward_nvfp4(
+            dy,
+            x,
+            vids,
+            foreign,
+            plan_id,
+            topk_weights,
+            l1,
+            l2,
+            weight_scales,
+            activation_clamp,
+            _FOUR_OVER_SIX[state_key],
+            _dw_dtype(gate_up_proj),
+        )
+        return dx.to(x.dtype), dtopk, dw1, dw2
+    if precision == "mxfp8":
+        # Every GEMM in MXFP8: the kernel quantizes x, dy and dz itself; the owners push the three weight operands
+        weights = MegaMoeMXFP8ExpertWeights.build(gate_up_proj, down_proj, for_backward=True)
+        dx, dtopk, dw1, dw2 = state.backward_mxfp8(
+            dy,
+            x,
+            vids,
+            foreign,
+            plan_id,
+            topk_weights,
+            weights.l1,
+            weights.l1_t,
+            weights.l2_t,
+            activation_clamp,
+            _dw_dtype(gate_up_proj),
+        )
+        return dx.to(x.dtype), dtopk, dw1, dw2
+    # MXFP8 QAT: a bf16 backward on the weights the forward computed with (re-quantized, so bitwise the same)
+    gate_up, down = mxfp8_decoded_weights(MegaMoeMXFP8ExpertWeights.build(gate_up_proj, down_proj, for_backward=False))
+    return state.backward(
+        dy, x, vids, foreign, plan_id, topk_weights, gate_up, down, activation_clamp, _dw_dtype(gate_up_proj)
+    )
+
+
+@llep_mega_moe_backward_op.register_fake
+def _llep_mega_moe_backward_fake(
+    dy, x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj, state_key, activation_clamp=None
+):
+    return (
+        torch.empty_like(x),
+        torch.empty_like(topk_weights, dtype=torch.float32),
+        torch.empty_like(gate_up_proj),
+        torch.empty_like(down_proj),
+    )
+
+
+def _setup_context(ctx, inputs, output) -> None:
+    x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj, state_key, activation_clamp = inputs
+    ctx.save_for_backward(x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj)
+    ctx.state_key = state_key
+    ctx.activation_clamp = activation_clamp
+
+
+def _backward(ctx, grad_y):
+    x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj = ctx.saved_tensors
+    dx, dtopk, dw1, dw2 = torch.ops.prime_rl.llep_mega_moe_backward(
+        grad_y, x, vids, foreign, plan_id, topk_weights, gate_up_proj, down_proj, ctx.state_key, ctx.activation_clamp
+    )
+    return dx, None, None, None, dtopk.to(topk_weights.dtype), dw1, dw2, None, None
+
+
+llep_mega_moe_forward_op.register_autograd(_backward, setup_context=_setup_context)
+
+
+class LLEPMegaMoEExpertCompute:
+    """Fused-dispatch expert compute (pair it with `FusedTokenDispatcher`) running LLEP on the Mega MoE kernels."""
+
+    def __init__(
+        self,
+        num_experts: int,
+        top_k: int,
+        hidden: int,
+        intermediate_hidden: int,
+        group: ProcessGroup,
+        max_tokens_per_rank: int,
+        num_sms: int,
+        options: LLEPConfig,
+        precision: str = "bf16",
+        four_over_six: bool = False,
+    ) -> None:
+        major = 9 if precision == "bf16" else 10
+        if precision not in ("bf16", "mxfp8", "mxfp8_qat", "nvfp4"):
+            raise ValueError(
+                f"LLEP Mega MoE supports precision 'bf16', 'mxfp8', 'mxfp8_qat' and 'nvfp4', got {precision!r}."
+            )
+        if not mega_moe_available(precision) or torch.cuda.get_device_capability()[0] != major:
+            raise RuntimeError(
+                f"LLEP Mega MoE `{precision}` needs an SM{major}0 GPU and the prime-mega-moe `deep_gemm` build with LLEP "
+                "support."
+            )
+        try:
+            from deep_gemm.llep import LLEPMegaMoE, LLEPOptions
+        except ImportError as error:
+            raise RuntimeError(
+                "LLEP needs a prime-mega-moe `deep_gemm` build with LLEP support (`deep_gemm.llep`)."
+            ) from error
+
+        check_mega_moe_dims(hidden, intermediate_hidden, precision)
+        self.num_experts = num_experts
+        self.top_k = top_k
+        self.hidden = hidden
+        self.intermediate_hidden = intermediate_hidden
+        self.max_tokens_per_rank = max_tokens_per_rank
+        state = LLEPMegaMoE(
+            group,
+            num_experts,
+            top_k,
+            hidden,
+            intermediate_hidden,
+            max_tokens_per_rank,
+            num_sms,
+            LLEPOptions(**options.model_dump()),
+            precision={"bf16": "bf16", "nvfp4": "nvfp4"}.get(precision, "mxfp8"),
+            mxfp8_backward=precision == "mxfp8",
+        )
+        self.state_key = id(state)
+        _STATES[self.state_key] = state
+        _PRECISIONS[self.state_key] = precision
+        _FOUR_OVER_SIX[self.state_key] = four_over_six
+
+    def validate(self, experts: "GroupedExperts") -> None:
+        if experts.gate_proj is None and experts.gate_up_proj is None:
+            raise ValueError("LLEP Mega MoE requires gated experts (SwiGLU gate+up).")
+        if any(bias is not None for bias in (experts.gate_proj_bias, experts.up_proj_bias, experts.down_proj_bias)):
+            raise ValueError("LLEP Mega MoE does not support expert biases.")
+        _activation_clamp(experts.activation)
+        shape = (experts.num_experts, experts.down_proj.shape[1], experts.hidden_dim)
+        expected = (self.num_experts, self.hidden, self.intermediate_hidden)
+        if shape != expected:
+            raise ValueError(f"LLEP Mega MoE is sized for (num_experts, hidden, intermediate)={expected}; got {shape}.")
+
+    def validate_top_k(self, top_k: int) -> None:
+        if top_k != self.top_k:
+            raise ValueError(
+                f"LLEP Mega MoE's buffers are sized for top_k={self.top_k}; got a router with top_k={top_k}."
+            )
+
+    def destroy(self) -> None:
+        _PRECISIONS.pop(self.state_key)
+        _FOUR_OVER_SIX.pop(self.state_key)
+        _STATES.pop(self.state_key).destroy()
+
+    def __call__(
+        self,
+        experts: "GroupedExperts",
+        x: torch.Tensor,
+        top_scores: torch.Tensor,
+        selected_experts_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        if x.shape[0] > self.max_tokens_per_rank:
+            raise RuntimeError(f"LLEP Mega MoE buffer holds {self.max_tokens_per_rank} tokens/rank, got {x.shape[0]}.")
+        if experts.gate_up_proj is not None:
+            gate_up_proj = to_local(experts.gate_up_proj)
+        else:
+            gate_up_proj = torch.cat([to_local(experts.gate_proj), to_local(experts.up_proj)], dim=1)
+        vids, foreign, plan_id = torch.ops.prime_rl.llep_plan(selected_experts_indices.to(torch.int64), self.state_key)
+        return torch.ops.prime_rl.llep_mega_moe_forward(
+            x,
+            vids,
+            foreign,
+            plan_id,
+            top_scores.to(torch.float32),
+            gate_up_proj,
+            to_local(experts.down_proj),
+            self.state_key,
+            _activation_clamp(experts.activation),
+        )

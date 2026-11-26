@@ -4,14 +4,8 @@ from typing import Optional, Union
 import torch
 import torch.distributed as dist
 from torch import Tensor, nn
-from transformers.cache_utils import Cache
-from transformers.generation import GenerationMixin
-from transformers.modeling_layers import GradientCheckpointingLayer
-from transformers.modeling_outputs import BaseModelOutputWithPast
-from transformers.processing_utils import Unpack
-from transformers.utils import TransformersKwargs, auto_docstring
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, TextModelOutput
 from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig, _index_cache_skip_topk
 from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import conversion_chain
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import GlmMoeDsaAttention, SparseMlaAttentionArgs
@@ -45,7 +39,7 @@ def _sparse_mla_attention_args(config: GlmMoeDsaConfig, layer_idx: int) -> Spars
     )
 
 
-class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
+class GlmMoeDsaDecoderLayer(nn.Module):
     def __init__(self, config: GlmMoeDsaConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -114,21 +108,8 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
         return hidden_states, cached_indices
 
 
-@auto_docstring
 class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
     config: GlmMoeDsaConfig
-    base_model_prefix = "model"
-    supports_gradient_checkpointing = True
-    _no_split_modules = ["GlmMoeDsaDecoderLayer"]
-    _skip_keys_device_placement = ["past_key_values"]
-    _supports_flash_attn = True
-    _supports_sdpa = False
-    _supports_flex_attn = True
-    _can_compile_fullgraph = False
-    _supports_attention_backend = True
-    _can_record_outputs = {
-        "hidden_states": GlmMoeDsaDecoderLayer,
-    }
 
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:
@@ -155,15 +136,13 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
         return conversion_chain(config)
 
 
-@auto_docstring
 class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
     def __init__(self, config: GlmMoeDsaConfig):
         super().__init__(config)
 
-        self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList(
             [GlmMoeDsaDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
@@ -177,7 +156,6 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
             model_config=config,
         )
         self.rotary_emb = RotaryEmbedding(rotary_config)
-        self.gradient_checkpointing = False
 
         self.post_init()
 
@@ -191,7 +169,6 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
         dist.all_gather(gathered_position_ids, position_ids.contiguous(), group=cp_group)
         return torch.cat(gathered_position_ids, dim=1)
 
-    @auto_docstring
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -201,7 +178,7 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
         *,
         seq_lens: Optional[torch.LongTensor] = None,
         seq_lens_are_pre_shard: bool = False,
-    ) -> BaseModelOutputWithPast:
+    ) -> TextModelOutput:
         """
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
@@ -260,14 +237,11 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
             cached_indices = next_cached_indices if use_index_cache else None
 
         hidden_states = self.norm(hidden_states)
-        return BaseModelOutputWithPast(last_hidden_state=hidden_states)
+        return TextModelOutput(last_hidden_state=hidden_states)
 
 
-@auto_docstring
-class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel, GenerationMixin):
-    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
-    _tp_plan = {"lm_head": "colwise_rep"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
+class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel):
+    supports_tied_word_embeddings = True
 
     def __init__(self, config):
         super().__init__(config)
@@ -280,16 +254,12 @@ class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel, GenerationMixin):
 
         self.post_init()
 
-    @auto_docstring
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Cache] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: Optional[torch.Tensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
@@ -299,17 +269,12 @@ class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel, GenerationMixin):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-        **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
         seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
             Per-document lengths of the packed row (PrimeRL packed-batch contract).
         seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
             Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
-        cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
-            Indices of input tokens in the KV cache. Accepted only for HuggingFace API
-            compatibility — prime-rl asserts `use_cache is None` since training does not
-            perform autoregressive decoding, so this argument is unused.
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels used by PrimeRL's wrapped LM head to optionally compute per-token logprobs/entropy.
         temperature (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -317,16 +282,13 @@ class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel, GenerationMixin):
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
         """
-        assert use_cache is None, "use_cache is not supported for custom glm_moe_dsa for now"
-        assert past_key_values is None, "past_key_values is not supported for custom glm_moe_dsa for now"
-
         if position_ids is None:
             if inputs_embeds is not None:
                 position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
             else:
                 position_ids = torch.arange(input_ids.shape[1], device=input_ids.device).unsqueeze(0)
 
-        outputs: BaseModelOutputWithPast = self.model(
+        outputs: TextModelOutput = self.model(
             input_ids=input_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,

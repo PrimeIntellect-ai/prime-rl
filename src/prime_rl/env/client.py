@@ -1,0 +1,327 @@
+"""ZMQ client for the env worker pool.
+
+A DEALER socket + msgpack, with a single receive loop matching replies to
+per-request futures by `request_id` and routing a run's `delta` frames to its
+caller (`verifiers.v1.delta`). The loop drains every queued frame per wakeup and
+handles the batch in arrival order, so a busy event loop costs one turn per batch
+rather than one per delta. Speaks the typed pydantic request/response models
+(`env/types.py`) end-to-end: a request is `model_dump`ed onto the wire; a run's
+traces stream back turn by turn, and its reply carries the episode's head
+(`prime_rl.env.heads`): the worker keeps the episode. Health is just another request
+(no dedicated probe thread).
+"""
+
+import asyncio
+import contextlib
+import time
+import uuid
+from collections.abc import Callable
+from typing import TypeVar
+
+import msgpack
+import zmq
+import zmq.asyncio
+from verifiers.v1.configs.client import ClientConfig
+from verifiers.v1.configs.sampling import SamplingConfig
+from verifiers.v1.trace import RunInfo
+
+from prime_rl.env.encoding import unpack
+from prime_rl.env.heads import EpisodeHead, EpisodeRecord
+from prime_rl.env.types import (
+    BaseRequest,
+    BaseResponse,
+    CancelRequest,
+    DiscardRequest,
+    DiscardResponse,
+    HealthRequest,
+    HealthResponse,
+    RecordRequest,
+    ReleaseRequest,
+    RunRequest,
+    RunResponse,
+    SaveRequest,
+    SaveResponse,
+    TrainRequest,
+)
+from prime_rl.utils.logger import get_logger
+
+ResponseT = TypeVar("ResponseT", bound=BaseResponse)
+
+# How much of the queue one wakeup drains before the loop yields.
+MAX_BATCH_FRAMES = 512
+MAX_BATCH_BYTES = 16 << 20
+INLINE_DECODE_BYTES = 1 << 20
+"""A batch with fewer delta bytes decodes on the loop: unpacking a turn's delta takes
+microseconds, less than a worker-thread round trip on a busy loop."""
+
+
+def _unpack_all(payloads: list[memoryview]) -> list[object]:
+    """`unpack` each payload; one that fails yields its exception instead."""
+    decoded: list[object] = []
+    for payload in payloads:
+        try:
+            decoded.append(unpack(payload))
+        except Exception as e:  # noqa: BLE001 - logged by the caller, in arrival order
+            decoded.append(e)
+    return decoded
+
+
+class EnvClient:
+    """Receive streamed episodes, decoding each drained batch of frames at once."""
+
+    def __init__(self, address: str) -> None:
+        self.address = address
+        self.ctx = zmq.asyncio.Context()
+        self.socket = self.ctx.socket(zmq.DEALER)
+        self.socket.setsockopt(zmq.LINGER, 0)
+        self.socket.setsockopt(zmq.SNDHWM, 0)
+        self.socket.setsockopt(zmq.RCVHWM, 0)
+        self.socket.connect(address)
+        self._pending: dict[str, asyncio.Future[bytes]] = {}
+        self._deltas: dict[str, Callable[[dict], None]] = {}
+        # Strong refs to in-flight fire-and-forget cancels: the loop only
+        # holds weak references to tasks, so an unreferenced one can be
+        # garbage-collected before it ever sends
+        self._cancel_tasks: set[asyncio.Task] = set()
+        self._receiver: asyncio.Task | None = None
+
+    def _ensure_receiver(self) -> None:
+        if self._receiver is None:
+            self._receiver = asyncio.create_task(self._receive_loop())
+
+    async def _receive_loop(self) -> None:
+        # The one receiver serves every in-flight request. Awaiting each frame would
+        # cost a loop turn per delta, which a busy loop turns into a hard cap on how
+        # fast a pool's stream drains; so each wakeup takes everything queued.
+        while True:
+            try:
+                batch = [await self.socket.recv_multipart(copy=False)]
+            except asyncio.CancelledError:
+                break
+            size = sum(len(frame) for frame in batch[0])
+            while len(batch) < MAX_BATCH_FRAMES and size < MAX_BATCH_BYTES:
+                try:
+                    # A non-blocking recv returns an already-resolved future.
+                    frames = self.socket.recv_multipart(flags=zmq.NOBLOCK, copy=False).result()
+                except zmq.Again:
+                    break
+                batch.append(frames)
+                size += sum(len(frame) for frame in frames)
+            await self._handle_batch(batch)
+            # A recv with frames already queued resolves without yielding: give the
+            # rest of the loop a turn between batches of a deep backlog.
+            await asyncio.sleep(0)
+
+    async def _handle_batch(self, batch: list[list[zmq.Frame]]) -> None:
+        """Decode a batch's deltas, then apply each delta and resolve each reply in
+        arrival order, so a run's reply lands after its last delta. A bad frame or a
+        delta handler that raises is logged and skipped rather than allowed to end
+        the loop or lose its neighbours."""
+        # (request_id, data, delta handler) — a reply carries no handler
+        routed: list[tuple[str, zmq.Frame, Callable[[dict], None] | None]] = []
+        for frames in batch:
+            try:
+                if len(frames) != 3:
+                    raise ValueError(
+                        f"expected [request_id, kind, data], got {len(frames)} frames - "
+                        "is the env worker pool speaking the same serve protocol?"
+                    )
+                request_id_frame, kind_frame, data_frame = frames
+                request_id = request_id_frame.bytes.decode()
+                kind = kind_frame.bytes
+            except Exception:  # keep receiving for the other requests
+                get_logger().opt(exception=True).warning("Dropped malformed env worker pool frame")
+                continue
+            if kind != b"delta":
+                routed.append((request_id, data_frame, None))
+            elif (on_delta := self._deltas.get(request_id)) is not None:
+                routed.append((request_id, data_frame, on_delta))
+        # The views retain their ZMQ frames while a cancelled worker finishes.
+        payloads = [data_frame.buffer.toreadonly() for _, data_frame, on_delta in routed if on_delta is not None]
+        if sum(payload.nbytes for payload in payloads) <= INLINE_DECODE_BYTES:
+            decoded = iter(_unpack_all(payloads))
+        else:
+            decoded = iter(await asyncio.to_thread(_unpack_all, payloads))
+        for request_id, data_frame, on_delta in routed:
+            if on_delta is None:
+                future = self._pending.pop(request_id, None)
+                if future is not None and not future.done():
+                    future.set_result(data_frame.bytes)
+                continue
+            delta = next(decoded)
+            if isinstance(delta, Exception):
+                get_logger().opt(exception=delta).warning("Dropped malformed env worker pool frame")
+                continue
+            # Cancellation may remove the handler while the worker decodes.
+            if self._deltas.get(request_id) is not on_delta:
+                continue
+            try:
+                on_delta(delta)
+            except Exception:  # keep receiving for the other requests
+                get_logger().opt(exception=True).warning("Dropped malformed env worker pool frame")
+
+    async def _request(
+        self,
+        request: BaseRequest,
+        response_type: type[ResponseT],
+        timeout: float | None = None,
+        on_delta: Callable[[dict], None] | None = None,
+        request_id: str | None = None,
+        check: bool = True,
+    ) -> ResponseT:
+        """Send a typed request and validate the reply into `response_type`. Rollouts
+        run untimed; a reply that lands after a `timeout` is dropped. `on_delta`
+        receives each decoded `delta` the request streams before its reply. With
+        `check`, a reply that reports a failure raises."""
+        self._ensure_receiver()
+        request_id = request_id or uuid.uuid4().hex
+        future: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
+        self._pending[request_id] = future
+        if on_delta is not None:
+            self._deltas[request_id] = on_delta
+        payload = msgpack.packb(request.model_dump(mode="json"), use_bin_type=True)
+        await self.socket.send_multipart([request_id.encode(), request.method.encode(), payload])
+        try:
+            data = await asyncio.wait_for(future, timeout)
+        except TimeoutError:
+            self._pending.pop(request_id, None)
+            raise
+        except asyncio.CancelledError:
+            self._pending.pop(request_id, None)
+            if request.method == RunRequest.method:
+                self._cancel_run(request_id)
+            raise
+        finally:
+            self._deltas.pop(request_id, None)
+        response = response_type.model_validate(unpack(data))
+        if check and not response.success:
+            raise RuntimeError(response.error or "env worker pool request failed")
+        return response
+
+    def _cancel_run(self, run_request_id: str) -> None:
+        """Fire-and-forget: tell the pool the caller abandoned the run, so it aborts
+        the rollout (or frees what it kept for an episode already sent). A task on the
+        loop outlives the cancelled caller."""
+        task = asyncio.get_running_loop().create_task(self._send_cancel(run_request_id))
+        self._cancel_tasks.add(task)
+        task.add_done_callback(self._cancel_tasks.discard)
+
+    async def _send_cancel(self, run_request_id: str) -> None:
+        """Best-effort worker-side abort of an abandoned run."""
+        with contextlib.suppress(Exception):
+            payload = msgpack.packb(
+                CancelRequest(request_id=run_request_id).model_dump(mode="json"),
+                use_bin_type=True,
+            )
+            await self.socket.send_multipart([uuid.uuid4().hex.encode(), CancelRequest.method.encode(), payload])
+
+    async def health(self, timeout: float = 2.0) -> bool:
+        try:
+            return (await self._request(HealthRequest(), HealthResponse, timeout=timeout)).success
+        except TimeoutError:
+            return False
+
+    async def wait_for_pool_startup(self, timeout: float = 120.0, interval: float = 1.0) -> None:
+        """Poll `health` until the broker answers or `timeout` elapses."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if await self.health(timeout=min(interval, 2.0)):
+                return
+            await asyncio.sleep(interval)
+        raise TimeoutError(f"env worker pool at {self.address} did not become healthy in {timeout}s")
+
+    async def run(
+        self,
+        client: ClientConfig,
+        model: str,
+        sampling: SamplingConfig,
+        task_data: dict,
+        on_delta: Callable[[dict], None] | None = None,
+        train: TrainRequest | None = None,
+        run: RunInfo | None = None,
+        record: RecordRequest | None = None,
+        live: bool = True,
+        env_name: str | None = None,
+        group_id: str | None = None,
+        restore: str | None = None,
+        request_id: str | None = None,
+    ) -> EpisodeHead:
+        """Run one rollout; return the head of its episode, holding the episode's record
+        (`EpisodeHead.take_record`) when ``record`` asks for it. The worker takes the task
+        itself (`task_data`, its dumped `TaskData`). The traces stream as the rollout runs,
+        one delta per turn or phase change (`verifiers.v1.delta`), or only their progress
+        without ``live``; `on_delta` sees each as it lands. `restore` is the path of a restore
+        file (`save`): the run continues that rollout. `request_id` names the run on the wire,
+        which is how `save` tells the caller whose restore point is whose."""
+        request_id = request_id or uuid.uuid4().hex
+        response = await self._request(
+            RunRequest(
+                task_data=task_data,
+                client=client,
+                model=model,
+                sampling=sampling,
+                train=train,
+                run=run,
+                record=record,
+                live=live,
+                env_name=env_name,
+                group_id=group_id,
+                restore=restore,
+            ),
+            RunResponse,
+            on_delta=on_delta,
+            request_id=request_id,
+        )
+        assert response.head is not None
+        try:
+            head = EpisodeHead.model_validate(response.head)
+        except BaseException:
+            # The reply already arrived, so the worker counts the episode delivered;
+            # tell it this caller never got the episode.
+            self._cancel_run(request_id)
+            raise
+        if response.record is not None:
+            head._record = EpisodeRecord(json=response.record, index=response.index or {})
+        return head
+
+    async def save(self, directory: str, timeout: float | None = None) -> SaveResponse:
+        """Take a memory checkpoint of every rollout running on the pool's workers, each
+        written as a restore file under `directory`. The caller owns the snapshots of
+        the restore points it gets back. Each saved rollout then waits at its restore
+        point until `release`: one that finished and shipped meanwhile would be both in a
+        trained batch and in the checkpoint as in flight, and a resume would train on it
+        twice. A save that failed on some workers still returns what the others saved:
+        the caller owns their snapshots either way."""
+        response = await self._request(SaveRequest(dir=directory), SaveResponse, timeout=timeout, check=False)
+        if not response.success:
+            get_logger().warning(f"Saving the running rollouts failed on some env workers: {response.error}")
+        return response
+
+    async def release(self, timeout: float | None = 30.0) -> None:
+        """Let the rollouts the last `save` holds at their restore points go on, once the
+        caller recorded them. A worker that never gets the release ends the hold itself
+        after two minutes."""
+        await self._request(ReleaseRequest(), BaseResponse, timeout=timeout)
+
+    async def discard(self, snapshots: list[dict], timeout: float | None = 120.0) -> list[str]:
+        """Delete box snapshots; returns the ids of the deleted."""
+        response = await self._request(DiscardRequest(snapshots=snapshots), DiscardResponse, timeout=timeout)
+        return response.deleted
+
+    async def close(self) -> None:
+        if self._receiver is not None:
+            self._receiver.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._receiver
+            self._receiver = None
+        # Let scheduled fire-and-forget cancels reach the socket first, or a
+        # run cancelled right before close() leaves its worker-side rollout
+        # running. Pop before awaiting: awaiting finished tasks never yields
+        # (since CPython 3.12 a gather of them completes eagerly), so their
+        # queued `discard` callbacks cannot be what empties the set
+        while self._cancel_tasks:
+            task = self._cancel_tasks.pop()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        self.socket.close()
+        self.ctx.term()

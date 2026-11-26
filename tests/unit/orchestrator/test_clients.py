@@ -1,11 +1,12 @@
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import httpx
+import pytest
 from verifiers.v1.configs.client import EvalClientConfig
 
-from prime_rl.configs.shared import ClientConfig
+from prime_rl.configs.shared import ADMIN_TOKEN_HEADER, ClientConfig, VLLMClientConfig
 from prime_rl.orchestrator.clients import (
     AdminPlane,
     _is_retryable_lora_error,
@@ -85,6 +86,36 @@ def test_admin_plane_initializes_nccl():
             "timeout": 1200,
         },
     )
+    asyncio.run(admin_plane.aclose())
+
+
+def test_admin_plane_sends_the_admin_token_to_engines_only(monkeypatch):
+    monkeypatch.setenv("PRIME_RL_ADMIN_TOKEN", "secret")
+    config = VLLMClientConfig(base_url="http://router:8000/v1", admin_base_url=["http://engine:8100/v1"])
+    admin_plane = AdminPlane(config)
+
+    assert [client.headers.get(ADMIN_TOKEN_HEADER) for client in admin_plane.clients] == ["secret"]
+    assert [client.headers.get(ADMIN_TOKEN_HEADER) for client in admin_plane._router_clients] == [None]
+    asyncio.run(admin_plane.aclose())
+
+
+def test_update_draft_weights_fails_fast_on_a_failed_load():
+    admin_plane = AdminPlane(ClientConfig())
+    request = httpx.Request("POST", "http://engine/update_draft_weights")
+    failed = MagicMock()
+    failed.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "load failed", request=request, response=httpx.Response(500, request=request)
+    )
+    client = create_autospec(httpx.AsyncClient, instance=True)
+    client.post.return_value = failed
+    admin_plane.clients = [client]
+
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(admin_plane.update_draft_weights(Path("/drafts/v2")))
+
+    client.post.assert_awaited_once()
+    assert client.post.await_args.args == ("/update_draft_weights",)
+    assert client.post.await_args.kwargs["json"] == {"weight_dir": "/drafts/v2"}
     asyncio.run(admin_plane.aclose())
 
 

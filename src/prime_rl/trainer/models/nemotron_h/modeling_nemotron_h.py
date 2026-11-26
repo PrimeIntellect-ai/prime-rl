@@ -1,14 +1,14 @@
 import torch
 from torch import Tensor, nn
-from transformers.modeling_outputs import BaseModelOutput
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, TextModelOutput
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
-from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
+from prime_rl.trainer.models.layers.fla_ops import prepare_chunk_indices
+from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
-from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
+from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig, NemotronHOmniConfig
 from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import (
     conversion_chain,
     is_hf_state_dict,
@@ -105,10 +105,17 @@ class NemotronHDecoderLayer(nn.Module):
                     **moe_kwargs,
                 )
 
+    @property
+    def is_token_local(self) -> bool:
+        """Every op in the block is independent per position, so each token's output depends on that token alone
+        (see ``TokenChunkedCheckpointWrapper``). True for the MoE layers, which are norm, MoE and residual only."""
+        return self.layer_type == "moe"
+
     def forward(
         self,
         hidden_states: torch.Tensor,
         cu_seqlens: torch.Tensor,
+        chunk_indices: torch.Tensor,
         max_seqlen: int,
         routed_experts: torch.Tensor | None = None,
     ) -> torch.Tensor:
@@ -116,7 +123,7 @@ class NemotronHDecoderLayer(nn.Module):
         hidden_states = self.norm(hidden_states)
 
         if self.layer_type == "linear_attention":
-            hidden_states = self.mamba(hidden_states, cu_seqlens)
+            hidden_states = self.mamba(hidden_states, cu_seqlens, chunk_indices)
         elif self.layer_type == "full_attention":
             hidden_states, _ = self.self_attn(
                 hidden_states=hidden_states,
@@ -129,7 +136,7 @@ class NemotronHDecoderLayer(nn.Module):
 
 
 class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
-    config: NemotronHConfig
+    config: NemotronHConfig | NemotronHOmniConfig
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
@@ -144,8 +151,13 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
         return is_prime_state_dict(state_dict)
 
     @classmethod
-    def conversion_chain(cls, config: NemotronHConfig):
+    def conversion_chain(cls, config: NemotronHConfig | NemotronHOmniConfig):
         return conversion_chain(config)
+
+    def _init_weights(self, module: nn.Module) -> None:
+        super()._init_weights(module)
+        if isinstance(module, NemotronHMamba2):
+            module.reset_parameters()
 
     @classmethod
     def convert_adapter_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
@@ -161,7 +173,7 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
 class NemotronHModel(NemotronHPreTrainedModel):
     def __init__(self, config: NemotronHConfig) -> None:
         super().__init__(config)
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList(
             NemotronHDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)
         )
@@ -175,7 +187,7 @@ class NemotronHModel(NemotronHPreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> BaseModelOutput:
+    ) -> TextModelOutput:
         hidden_states = self.embed_tokens(input_ids)
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
@@ -183,23 +195,26 @@ class NemotronHModel(NemotronHPreTrainedModel):
             total_tokens=None if seq_lens_are_pre_shard else hidden_states.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        chunk_indices = prepare_chunk_indices(cu_seqlens)
 
         for layer_idx, decoder_layer in enumerate(self.layers):
             layer_routed_experts = routed_experts[:, :, layer_idx].contiguous() if routed_experts is not None else None
             hidden_states = decoder_layer(
-                hidden_states,
-                cu_seqlens,
-                max_seqlen,
+                hidden_states=hidden_states,
+                cu_seqlens=cu_seqlens,
+                chunk_indices=chunk_indices,
+                max_seqlen=max_seqlen,
                 routed_experts=layer_routed_experts,
             )
-        return BaseModelOutput(last_hidden_state=self.norm(hidden_states))
+        return TextModelOutput(last_hidden_state=self.norm(hidden_states))
 
 
 class NemotronHForCausalLM(NemotronHPreTrainedModel):
-    def __init__(self, config: NemotronHConfig) -> None:
+    def __init__(self, config: NemotronHConfig | NemotronHOmniConfig) -> None:
         super().__init__(config)
-        self.model = NemotronHModel(config)
-        self.lm_head = VanillaOutputLinear(config.hidden_size, config.vocab_size)
+        text_config = getattr(config, "text_config", config)
+        self.model = NemotronHModel(text_config)
+        self.lm_head = VanillaOutputLinear(text_config.hidden_size, text_config.vocab_size)
 
     def forward(
         self,
@@ -207,7 +222,7 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel):
         position_ids: torch.LongTensor | None = None,
         labels: torch.LongTensor | None = None,
         temperature: torch.Tensor | None = None,
-        sampling_mask: torch.Tensor | None = None,
+        support: TokenSupport | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
         seq_lens: torch.LongTensor,
@@ -223,7 +238,7 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel):
             outputs.last_hidden_state,
             labels,
             temperature=temperature,
-            sampling_mask=sampling_mask,
+            support=support,
         )
 
     def init_buffers_post_meta(self) -> None:

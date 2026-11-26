@@ -11,7 +11,7 @@ from prime_rl.orchestrator.types import DispatchFailure, EvalBatch, GroupCancell
 from prime_rl.orchestrator.utils import episode_env_name, eval_work
 
 if TYPE_CHECKING:
-    import verifiers.v1 as vf
+    from prime_rl.env.heads import EpisodeHead
 
 
 class EvalSink:
@@ -19,11 +19,11 @@ class EvalSink:
 
     def __init__(self, *, eval_envs: EvalEnvs) -> None:
         self.eval_envs = eval_envs
-        self.pending_batches: dict[tuple[str, int], list[vf.Episode]] = defaultdict(list)
+        self.pending_batches: dict[tuple[str, int], list[EpisodeHead]] = defaultdict(list)
         self.pending_batch_failures: dict[tuple[str, int], list[DispatchFailure]] = defaultdict(list)
         self.pending_batch_cancellations: dict[tuple[str, int], int] = defaultdict(int)
 
-    def add(self, episode: vf.Episode) -> EvalBatch | None:
+    def add(self, episode: EpisodeHead) -> EvalBatch | None:
         key = (episode_env_name(episode), eval_work(episode).step)
         self.pending_batches[key].append(episode)
         return self._complete(key)

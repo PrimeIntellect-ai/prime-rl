@@ -1,0 +1,90 @@
+{
+  "tolerance": {
+    "error_rate": 0.1
+  },
+  "date": "2026-11-04",
+  "source": "https://github.com/PrimeIntellect-ai/prime-rl/actions/runs/41763261279",
+  "commit": "791ba2d2922694b0855466986ec592c85854e85b",
+  "results": [
+    {
+      "repeat": 1,
+      "env": "pi-terminalbench2-1",
+      "model": "internal/deepseek-v4.1-flash-1017-ci",
+      "episodes": 82,
+      "tasks": 82,
+      "accuracy": 0.6463414634146342,
+      "accuracy_sem": 0.05312275280193132,
+      "error_rate": 0.024390243902439025,
+      "truncation_rate": 0.0,
+      "output_tokens_mean": 32741.98780487805,
+      "episode_p50_s": 565.3027852773666,
+      "episode_p90_s": 9916.634727478031,
+      "eval_window_s": 14426.045501232147,
+      "wall_s": 14486.0
+    },
+    {
+      "repeat": 2,
+      "env": "pi-terminalbench2-1",
+      "model": "internal/deepseek-v4.1-flash-1017-ci",
+      "episodes": 82,
+      "tasks": 82,
+      "accuracy": 0.6463414634146342,
+      "accuracy_sem": 0.05312275280193132,
+      "error_rate": 0.024390243902439025,
+      "truncation_rate": 0.0,
+      "output_tokens_mean": 35436.70121951219,
+      "episode_p50_s": 592.8727775812149,
+      "episode_p90_s": 6094.459901380544,
+      "eval_window_s": 14411.244099378586,
+      "wall_s": 14471.0
+    },
+    {
+      "repeat": 3,
+      "env": "pi-terminalbench2-1",
+      "model": "internal/deepseek-v4.1-flash-1017-ci",
+      "episodes": 82,
+      "tasks": 82,
+      "accuracy": 0.6585365853658537,
+      "accuracy_sem": 0.05268894876754358,
+      "error_rate": 0.024390243902439025,
+      "truncation_rate": 0.0,
+      "output_tokens_mean": 33895.21951219512,
+      "episode_p50_s": 456.62334191799164,
+      "episode_p90_s": 8051.194766235352,
+      "eval_window_s": 14400.01894402504,
+      "wall_s": 14460.0
+    },
+    {
+      "repeat": 4,
+      "env": "pi-terminalbench2-1",
+      "model": "internal/deepseek-v4.1-flash-1017-ci",
+      "episodes": 82,
+      "tasks": 82,
+      "accuracy": 0.7073170731707317,
+      "accuracy_sem": 0.050554900016741545,
+      "error_rate": 0.012195121951219513,
+      "truncation_rate": 0.0,
+      "output_tokens_mean": 36355.060975609755,
+      "episode_p50_s": 412.49769592285156,
+      "episode_p90_s": 7256.0312350988415,
+      "eval_window_s": 14411.206391334534,
+      "wall_s": 14471.0
+    },
+    {
+      "repeat": 5,
+      "env": "pi-terminalbench2-1",
+      "model": "internal/deepseek-v4.1-flash-1017-ci",
+      "episodes": 82,
+      "tasks": 82,
+      "accuracy": 0.6341463414634146,
+      "accuracy_sem": 0.053518747041006766,
+      "error_rate": 0.012195121951219513,
+      "truncation_rate": 0.0,
+      "output_tokens_mean": 40320.57317073171,
+      "episode_p50_s": 536.7536786794662,
+      "episode_p90_s": 8870.969523835185,
+      "eval_window_s": 14426.050255537033,
+      "wall_s": 14486.0
+    }
+  ]
+}

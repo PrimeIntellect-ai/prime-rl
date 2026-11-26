@@ -35,10 +35,10 @@ export PRL_ATTEMPT_LOG_DIR={{ log_dir }}
 cd $PROJECT_DIR
 [ -f .env ] && source .env
 source .venv/bin/activate
-uv sync --all-extras --all-packages
+uv sync {{ sync_args }}
 
 {% if pre_run_command %}
 # Pre-run command
 {{ pre_run_command }}
 {% endif %}
-uv run sft @ {{ config_path }}
+uv run {{ entrypoint }} @ {{ config_path }}

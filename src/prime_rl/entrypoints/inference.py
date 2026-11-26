@@ -1,13 +1,15 @@
 import json
 import os
+import resource
 import signal
 import subprocess
-import sys
 from pathlib import Path
 from threading import Event, Thread
 from typing import Any
 
 from prime_rl.configs.inference import InferenceConfig, MooncakeKVCacheOffloadConfig
+from prime_rl.entrypoints.slurm import load_slurm_template, submit_sbatch
+from prime_rl.utils.admin_token import digest_var
 from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
@@ -37,6 +39,16 @@ def vllm_overrides_fragment(overrides: dict[str, Any]) -> str:
     if not overrides:
         return ""
     return ", " + json.dumps(overrides)[1:-1].replace('"', '\\"')
+
+
+def prefill_uses_deepep_high_throughput(overrides: dict[str, Any]) -> bool:
+    """Whether prefill runs the P/D templates' default all2all backend, DeepEP high-throughput.
+
+    vLLM cannot capture that backend's internode dispatch in a breakable CUDA graph, so the templates turn breakable
+    graphs off for it. With any other backend prefill keeps them: without them vLLM falls back to decode-only graphs
+    and every step that carries a prompt runs the model eagerly.
+    """
+    return overrides.get("all2all_backend", "deepep_high_throughput") == "deepep_high_throughput"
 
 
 def write_config(
@@ -82,13 +94,8 @@ def mooncake_offloads(config: InferenceConfig | None) -> dict[str, MooncakeKVCac
 
 def write_slurm_script(config: InferenceConfig, config_path: Path, log_dir: Path, script_path: Path) -> None:
     """Write the SLURM script to disk."""
-    from jinja2 import Environment, FileSystemLoader
-
     assert config.slurm is not None
-    assert config.slurm.template_path is not None
-
-    env = Environment(loader=FileSystemLoader(config.slurm.template_path.parent), keep_trailing_newline=True)
-    template = env.get_template(config.slurm.template_path.name)
+    template = load_slurm_template(config.slurm)
 
     is_disaggregated = config.deployment.type == "disaggregated"
     dp_per_node = config.deployment.gpus_per_node // config.vllm.tensor_parallel_size
@@ -128,7 +135,12 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, log_dir: Path
             prefill_env_vars=config.deployment.prefill_env_vars,
             decode_env_vars=config.deployment.decode_env_vars,
             prefill_vllm_extra_json=vllm_overrides_fragment(config.deployment.prefill_vllm_overrides),
+            prefill_deepep_high_throughput=prefill_uses_deepep_high_throughput(
+                config.deployment.prefill_vllm_overrides
+            ),
             decode_vllm_extra_json=vllm_overrides_fragment(config.deployment.decode_vllm_overrides),
+            pd_bidirectional=config.deployment.bidirectional_kv_transfer,
+            nixl_nic_affinity=config.deployment.nixl_nic_affinity,
         )
     elif is_multi_node:
         template_vars.update(
@@ -170,13 +182,7 @@ def inference_slurm(config: InferenceConfig):
         logger.success(f"Dry run complete. To submit manually:\n\n  sbatch {script_path}\n\n{log_message}")
         return
 
-    logger.info(f"Submitting: sbatch {script_path}")
-    result = subprocess.run(["sbatch", str(script_path)], capture_output=True, text=True)
-    if result.returncode != 0:
-        logger.error(f"sbatch failed: {result.stderr.strip()}")
-        sys.exit(1)
-
-    logger.success(f"{result.stdout.strip()}\n\n{log_message}")
+    submit_sbatch(script_path, log_message)
 
 
 def start_router(config: InferenceConfig) -> subprocess.Popen:
@@ -202,10 +208,16 @@ def start_router(config: InferenceConfig) -> subprocess.Popen:
         str(config.router.request_timeout_secs),
         "--worker-startup-timeout-secs",
         "4200",
+        # The default of 30 s leaves a started engine idle for up to 30 s before the router admits it
+        "--worker-startup-check-interval",
+        "1",
         "--prometheus-port",
         str(config.server.port + 21000),
     ]
-    return subprocess.Popen(cmd)
+    # The router never calls the engine's admin routes.
+    token_vars = (config.server.admin_token_var, digest_var(config.server.admin_token_var))
+    env = {key: value for key, value in os.environ.items() if key not in token_vars}
+    return subprocess.Popen(cmd, env=env)
 
 
 def inference_local(config: InferenceConfig):
@@ -227,6 +239,10 @@ def inference_local(config: InferenceConfig):
     os.environ.update({**DEFAULT_COMMON_ENV_VARS, **DEFAULT_INFERENCE_ENV_VARS, **config.env_vars})
 
     setup_vllm_env(config)
+
+    # The router holds a socket per in-flight request on each side; a 1024 soft limit runs out at ~500.
+    _, hard_nofile = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (hard_nofile, hard_nofile))
 
     router_process: subprocess.Popen | None = None
     router_stopping = Event()

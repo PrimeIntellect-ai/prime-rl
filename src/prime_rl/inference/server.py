@@ -1,7 +1,22 @@
 import logging.config
 import os
 
-from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.inference import InferenceConfig, setup_dummy_load
+from prime_rl.utils.pathing import is_checkpoint_step_dir
+
+
+def setup_model_source(config: InferenceConfig) -> None:
+    """A checkpoint step directory as ``model.name`` holds no HF weights: vLLM builds the model from its config.json and
+    starts with placeholder weights, which the trainer's startup broadcast replaces."""
+    if not is_checkpoint_step_dir(config.vllm.model):
+        return
+    if config.vllm.enable_lora:
+        raise ValueError(
+            f"LoRA sends only the adapter, so inference loads the base weights from model.name, but {config.vllm.model} "
+            "is a checkpoint step directory without HF weights: export it with tools/convert_dcp_to_bf16.py and set "
+            "model.name to the export"
+        )
+    setup_dummy_load(config, dummy=True)
 
 
 def setup_vllm_env(config: InferenceConfig):
@@ -10,16 +25,7 @@ def setup_vllm_env(config: InferenceConfig):
     # spawn is more robust in vLLM nightlies and Qwen3-VL (fork can deadlock with multithreaded processes)
     os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
 
-    # vLLM captures sampling masks and routed experts only on the V2 model runner.
-    # setdefault keeps an explicit env-var choice authoritative.
-    if config.enable_return_sampling_mask or config.vllm.enable_return_routed_experts:
-        os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "1")
-
-    top_p_first = config.top_p_before_top_k and config.enable_return_sampling_mask
-    if top_p_first:
-        if os.environ.get("VLLM_USE_V2_MODEL_RUNNER") != "1":
-            raise ValueError("top_p_before_top_k requires VLLM_USE_V2_MODEL_RUNNER=1")
-    os.environ["PRL_TOP_P_BEFORE_TOP_K"] = "1" if top_p_first else "0"
+    os.environ["PRIME_SAMPLING_SUPPORT_CAPACITY"] = str(config.sampling_support_capacity)
 
     # vLLM 0.24.0 flipped VLLM_ENFORCE_STRICT_TOOL_CALLING's default to True, which
     # grammar-constrains generation (xgrammar structural tags) for tool_choice

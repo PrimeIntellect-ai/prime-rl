@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-import verifiers.v1 as vf
-
-from prime_rl.orchestrator.algo.routing import is_trainable, scalar_advantage
+from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation
 from prime_rl.orchestrator.utils import compute_pass_metrics, episode_env_name, episode_group_id
+
+if TYPE_CHECKING:
+    from prime_rl.env.heads import EpisodeHead, TraceHead
 
 Subset = Literal["all", "effective"]
 
@@ -34,15 +35,15 @@ class TraceRecord:
     ``cancelled`` marks episodes the pipeline voided (stale or shutdown) — a
     selection verdict disjoint from trace errors."""
 
-    episode: vf.Episode
-    trace: vf.Trace
+    episode: EpisodeHead
+    trace: TraceHead
     sampled: bool
     admitted: bool
     cancelled: bool
 
 
 def _records(
-    episodes: list[vf.Episode],
+    episodes: list[EpisodeHead],
     sampled_trace_ids: set[str],
     admitted: set[str],
     cancelled: set[str],
@@ -152,7 +153,7 @@ class StatGroup:
         self.records = records
 
     @property
-    def traces(self) -> list[vf.Trace]:
+    def traces(self) -> list[TraceHead]:
         return [record.trace for record in self.records]
 
     def stats(self) -> dict[str, Stat]:
@@ -316,15 +317,6 @@ class TraceMetrics(StatGroup):
                 out.count(f"{prefix}/dropped/{reason}", float(value))
             num_groups = len({episode_group_id(record.episode) for record in self.records})
             out.rate(prefix, {key: value * num_groups for key, value in self.solve_rates().items()}, num_groups)
-        for trace in self.traces:
-            for node in trace.nodes:
-                if node.sampling_mask is None:
-                    continue
-                counts = node.sampling_mask.counts
-                counts = counts[counts > 0]
-                if not len(counts):
-                    continue
-                out.rate(f"{prefix}/sampling_support/size", {"mean": int(counts.sum())}, len(counts))
         # Truncation uses all traces; named stop conditions use only recorded conditions.
         out.rate(
             f"{prefix}/stop_condition/generation_truncated",
@@ -346,7 +338,7 @@ class TraceMetrics(StatGroup):
 class EpisodeMetrics:
     def __init__(
         self,
-        episodes: list[vf.Episode],
+        episodes: list[EpisodeHead],
         records: list[TraceRecord],
         cancelled: set[str] | None = None,
     ) -> None:
@@ -463,7 +455,7 @@ def pass_at_k(records: list[TraceRecord]) -> dict[str, float]:
 
 
 class EvalMetrics(EpisodeMetrics):
-    def __init__(self, episodes: list[vf.Episode], records: list[TraceRecord], group_size: int) -> None:
+    def __init__(self, episodes: list[EpisodeHead], records: list[TraceRecord], group_size: int) -> None:
         super().__init__(episodes, records)
         self.group_size = group_size
 
@@ -484,7 +476,7 @@ class EvalMetrics(EpisodeMetrics):
 class EpisodeCollection:
     def __init__(
         self,
-        episodes: list[vf.Episode] | None = None,
+        episodes: list[EpisodeHead] | None = None,
         sampled_trace_ids: set[str] | None = None,
         admitted: set[str] | None = None,
         cancelled: set[str] | None = None,
@@ -504,7 +496,7 @@ class EpisodeCollection:
         return [record for record in records if self._predicate(record)]
 
     @property
-    def selected_episodes(self) -> list[vf.Episode]:
+    def selected_episodes(self) -> list[EpisodeHead]:
         if self._predicate is None:
             return self.episodes
         selected = {id(record.episode) for record in self.records}
@@ -519,16 +511,13 @@ class EpisodeCollection:
         return sum(record.trace.num_total_tokens for record in self.records)
 
     @property
-    def vf_episodes(self) -> list[vf.Episode]:
+    def trimmed_episodes(self) -> list[EpisodeHead]:
+        """The selected episodes, each with only its selected traces."""
         if self._predicate is None:
             return self.selected_episodes
-        by_episode: dict[int, list[vf.Trace]] = {}
+        by_episode: dict[int, list[TraceHead]] = {}
         for record in self.records:
-            trace = record.trace
-            advantage = scalar_advantage(trace)
-            if advantage is not None:
-                trace = trace.model_copy(update={"info": {**trace.info, "advantage": advantage}})
-            by_episode.setdefault(id(record.episode), []).append(trace)
+            by_episode.setdefault(id(record.episode), []).append(record.trace)
         return [
             episode.model_copy(update={"traces": by_episode[id(episode)]})
             for episode in self.selected_episodes
@@ -537,7 +526,7 @@ class EpisodeCollection:
 
     def append(
         self,
-        episode: vf.Episode,
+        episode: EpisodeHead,
         *,
         sampled_trace_ids: set[str] | None = None,
         admitted: bool = True,
@@ -552,7 +541,7 @@ class EpisodeCollection:
 
     def extend(
         self,
-        episodes: list[vf.Episode],
+        episodes: list[EpisodeHead],
         *,
         sampled_trace_ids: set[str] | None = None,
         admitted: bool = True,
@@ -568,7 +557,7 @@ class EpisodeCollection:
     def __len__(self) -> int:
         return len(self.selected_episodes)
 
-    def __iter__(self) -> Iterator[vf.Episode]:
+    def __iter__(self) -> Iterator[EpisodeHead]:
         return iter(self.selected_episodes)
 
 
@@ -591,7 +580,7 @@ class TrainEpisodes(EpisodeCollection):
         )
 
     def by_env(self) -> dict[str, TrainEpisodes]:
-        grouped: dict[str, list[vf.Episode]] = {}
+        grouped: dict[str, list[EpisodeHead]] = {}
         for episode in self.selected_episodes:
             grouped.setdefault(episode_env_name(episode), []).append(episode)
         return {
@@ -659,7 +648,7 @@ class RolloutWindow:
 class EvalEpisodes(EpisodeCollection):
     def __init__(
         self,
-        episodes: list[vf.Episode],
+        episodes: list[EpisodeHead],
         group_size: int,
         predicate: Callable[[TraceRecord], bool] | None = None,
     ) -> None:

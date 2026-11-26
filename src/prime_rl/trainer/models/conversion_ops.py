@@ -1,10 +1,8 @@
 """Declarative, invertible state-dict conversion operators.
 
 Every prime-rl model converts between the HuggingFace checkpoint layout and
-the PrimeRL training layout. Historically each model hand-wrote a pair of
-imperative ``convert_hf_*`` / ``convert_*_to_hf`` functions; this module
-replaces them with a declarative chain of small operators, each of which knows
-how to go *both* directions:
+the PrimeRL training layout. A model declares that conversion as a chain of
+small operators, each of which knows how to go *both* directions:
 
     forward  (``hf_to_prime``):  HF checkpoint  ->  PrimeRL training layout
     backward (``prime_to_hf``):  PrimeRL training layout  ->  HF checkpoint
@@ -18,18 +16,16 @@ Design constraints:
 
 * **Sharding-aware, no gathers.** Pure name ops (:class:`Rename`,
   :class:`PrefixRename`, :class:`Drop`) are value-agnostic, so they operate on
-  DTensors/local shards untouched. The only value-touching op,
-  :class:`Stack`, stacks/unstacks along a new (expert) dim and takes an
-  ``expert_offset`` so a rank can unstack just its *local* experts into
+  DTensors/local shards untouched. :class:`Stack` stacks/unstacks along a
+  new (expert) dim and takes an ``index_offset`` so a rank can unstack just its *local* experts into
   globally-numbered per-expert keys — no all-gather. Any op that genuinely
   needs a full tensor is the caller's responsibility to gather first (via the
   trainer's ``resolve_dtensors``); none of the ops here gather on their own.
 * **Every op is present-guarded** — it no-ops when its inputs are absent — so
   the same per-layer op list can be emitted for every layer and simply skips
-  dense / non-matching layers, exactly as the imperative loops did.
-* **"Backward" means "what the imperative ``*_to_hf`` did"**, not necessarily
-  a strict mathematical inverse. Value transforms can provide an explicit
-  backward through :class:`MapValue`.
+  dense / non-matching layers.
+* **"Backward" means "emit the HF checkpoint layout"**, not necessarily
+  a strict mathematical inverse.
 """
 
 from __future__ import annotations
@@ -241,10 +237,8 @@ class SplitConcat(ConvOp):
 
 @dataclass
 class MapValue(ConvOp):
-    """Apply a value transform to one key. ``forward`` runs HF->prime,
-    ``backward`` runs prime->HF. Use for genuinely non-structural conversions
-    (e.g. a bias shift). ``backward`` may be the identity when the imperative
-    converter does not undo the transform (a deliberately lossy roundtrip)."""
+    """Apply a value transform to one key: ``forward`` runs HF->prime, ``backward`` prime->HF. For non-structural
+    conversions, such as a dtype the checkpoint stores a tensor in."""
 
     prime: str  # the PrimeRL-side key the value lives under (after any rename)
     forward: Callable[[Tensor], Tensor]
@@ -288,8 +282,8 @@ class Conditional(ConvOp):
     The predicate is evaluated independently in each direction against the
     *current* state dict (``hf_to_prime`` sees HF keys, ``prime_to_hf`` sees
     PrimeRL keys), so the branch chosen on the way back can legitimately differ
-    from the way out — which is exactly what the imperative converters do (e.g.
-    accept a fused *or* per-expert HF input, but always emit per-expert)."""
+    from the way out (e.g. accept a fused *or* per-expert HF input, but always
+    emit per-expert)."""
 
     predicate: Callable[[StateDict], bool]
     then: list[ConvOp]
@@ -373,3 +367,29 @@ def routed_experts_op(
         Rename(f"{prefix}.{hf_experts}.down_proj", f"{prefix}.{prime_experts}.down_proj"),
     ]
     return Conditional(key_present(gate_up), then=fused_then, else_=stacks)
+
+
+def view_mapping(ops: list[ConvOp], shapes: dict[str, torch.Size]) -> dict[str, dict] | None:
+    """Each HF tensor of the prime -> HF conversion of a state dict with these keys and shapes, as
+    ``{"from": prime_key, "index": [...]}``, meaning ``prime[from][*index]``. Found by playing the
+    real conversion on meta tensors. None when an HF tensor is not such a view (a concat, a value
+    transform)."""
+    prime = {key: torch.empty(shape, device="meta") for key, shape in shapes.items()}
+    tensor_id_to_key = {id(tensor): key for key, tensor in prime.items()}
+    views = {}
+    for name, tensor in apply_prime_to_hf(dict(prime), ops).items():
+        base = tensor if tensor._base is None else tensor._base
+        lead = base.dim() - tensor.dim()
+        if (
+            id(base) not in tensor_id_to_key
+            or lead < 0
+            or tensor.shape != base.shape[lead:]
+            or tensor.stride() != base.stride()[lead:]
+        ):
+            return None
+        index, offset = [], tensor.storage_offset()
+        for stride in base.stride()[:lead]:
+            index.append(offset // stride)
+            offset %= stride
+        views[name] = {"from": tensor_id_to_key[id(base)], "index": index}
+    return views

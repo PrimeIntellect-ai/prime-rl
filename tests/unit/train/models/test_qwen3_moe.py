@@ -41,7 +41,7 @@ def get_model_pairs():
     hf_config._attn_implementation = "flash_attention_2"
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         hf_model = HFQwen3MoeForCausalLM._from_config(hf_config)
-        prime_model = PrimeRLQwen3MoeForCausalLM._from_config(hf_config)
+        prime_model = PrimeRLQwen3MoeForCausalLM.from_config(hf_config)
     with torch.no_grad():
         state_dict = hf_model.state_dict()
         prime_state_keys = prime_model.state_dict().keys()

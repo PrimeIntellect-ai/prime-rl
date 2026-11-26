@@ -18,8 +18,10 @@ from prime_rl.trainer.optim.base import OffloadOptimizer
 from prime_rl.trainer.optim.cpu_adam import adamw_step as native_cpu_adamw_step
 from prime_rl.trainer.optim.cpu_adam import copy_or_add_bfloat16_multi_ as native_copy_or_add_bfloat16_multi_
 from prime_rl.trainer.optim.cpu_adam import load_cpu_adamw_kernel
+from prime_rl.trainer.optim.cpu_adam import set_num_threads as set_cpu_kernel_threads
 from prime_rl.trainer.optim.cpu_adam import sign_sgd_step as native_cpu_sign_sgd_step
 from prime_rl.trainer.optim.sign_sgd import SignSGD
+from prime_rl.trainer.utils import empty_pinned
 from prime_rl.utils.logger import get_logger
 
 
@@ -96,6 +98,8 @@ class GradientOffloadManager:
         # Per-step wall-time accumulators; each key is written by exactly one pipeline thread.
         self._timings: dict[str, float] = {}
         self._cuda_device = torch.cuda.current_device()
+        # Read now: the dataloader's pin-memory thread later lowers torch's process-wide default to 1.
+        self._num_threads = torch.get_num_threads()
         self._optimizer_param_ids = {id(param) for chunk in chunks for param in chunk}
         self._chunk_param_ids = [{id(param) for param in chunk} for chunk in chunks]
         self._chunk_by_param_id = {
@@ -226,7 +230,7 @@ class GradientOffloadManager:
         slots = [
             _PinnedTransferSlot(
                 index=index,
-                tensor=torch.empty(normal_numel, dtype=dtype, device="cpu", pin_memory=True),
+                tensor=empty_pinned((normal_numel,), dtype),
                 event=torch.cuda.Event(),
             )
             for index in range(count)
@@ -235,7 +239,7 @@ class GradientOffloadManager:
             slots.append(
                 _PinnedTransferSlot(
                     index=count,
-                    tensor=torch.empty(max_numel, dtype=dtype, device="cpu", pin_memory=True),
+                    tensor=empty_pinned((max_numel,), dtype),
                     event=torch.cuda.Event(),
                 )
             )
@@ -260,6 +264,7 @@ class GradientOffloadManager:
 
     def _worker_entry(self, target: Callable[[], None], name: str) -> None:
         try:
+            set_cpu_kernel_threads(self._num_threads)
             with torch.cuda.device(self._cuda_device):
                 target()
         except BaseException as error:
@@ -709,6 +714,7 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
     _MAX_INFLIGHT_BACKWARDS = 16
     _TIMEOUT_SECONDS = 120.0
     _MASTER_WEIGHT_STATE = "prime_rl_master_weight"
+    checkpoint_weights_key = _MASTER_WEIGHT_STATE
 
     def __init__(
         self,
@@ -732,6 +738,8 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
             f"Loading native read-only-gradient multi-tensor CPU {'AdamW' if self._adamw else 'SignSGD'} kernel"
         )
         load_cpu_adamw_kernel()
+        # The synchronous step runs the kernels on this thread.
+        set_cpu_kernel_threads(torch.get_num_threads())
         self._gradient_manager = GradientOffloadManager(
             [[master_weights[id(param)].model_param for param in chunk] for chunk in self._chunks],
             dp_replicate,
@@ -1026,16 +1034,9 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
             self._gradient_manager.wait_for_output_slots()
         self._initialized = True
 
-    @torch.no_grad()
     def finish_model_only_checkpoint_load(self) -> None:
-        if self._master_weights is None:
-            raise RuntimeError("Full optimizer offload has no master weights")
-        for master in self._master_weights.values():
-            if not isinstance(master.model_param, DTensor):
-                raise TypeError(f"Expected FSDP2 DTensor parameter, got {type(master.model_param)}")
-            master.cpu_tensor.copy_(master.model_param.to_local(), non_blocking=True)
-        torch.cuda.synchronize()
-        self._initialized = True
+        # The checkpoint's model weights load into the masters
+        self.finish_checkpoint_load()
 
 
 @torch.no_grad()

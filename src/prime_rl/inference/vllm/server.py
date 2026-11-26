@@ -1,14 +1,16 @@
 import asyncio
 import gc
+import os
 from argparse import Namespace
+from typing import Literal
 
 import uvloop
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from starlette.datastructures import State
 from vllm.engine.protocol import EngineClient
+from vllm.entrypoints.common.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.entrypoints.launchers.api_server.app_state import init_app_state
-from vllm.entrypoints.launchers.cli_args import make_arg_parser, validate_parsed_serve_args
 from vllm.entrypoints.openai.models.serving import OpenAIServingModels
 from vllm.entrypoints.serve.engine.protocol import ErrorResponse
 from vllm.entrypoints.serve.lora.protocol import LoadLoRAAdapterRequest
@@ -16,11 +18,26 @@ from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.shared import ADMIN_TOKEN_HEADER
+from prime_rl.inference.server import setup_model_source
+from prime_rl.utils.admin_token import admin_token_matches, digest_var, expected_admin_digest
+from prime_rl.utils.specdec import check_draft_swap, local_draft_dir
 
 logger = init_logger("vllm.entrypoints.launchers.api_server.entry")
 
-# Create our own router for custom endpoints
+
+def require_admin_token(request: Request) -> None:
+    """Reject the request unless it carries the server's admin token. A server started without one accepts every request."""
+    expected = request.app.state.admin_token_digest
+    if expected is None:
+        return
+    if not admin_token_matches(request.headers.get(ADMIN_TOKEN_HEADER), expected):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing or invalid admin token")
+
+
+# Routes that change engine state require the admin token; probes stay on the open router.
 router = APIRouter()
+admin_router = APIRouter(dependencies=[Depends(require_admin_token)])
 
 
 def engine_client(request: Request) -> EngineClient:
@@ -37,23 +54,24 @@ WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
     "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
     "nixl": "prime_rl.inference.vllm.worker.nixl.NIXLWeightUpdateWorker",
+    "modelexpress": "prime_rl.inference.vllm.worker.modelexpress.ModelExpressWeightUpdateWorker",
 }
 
 
-@router.post("/pause")
+@admin_router.post("/pause")
 async def pause(request: Request):
     logger.debug("Received /pause request (mode=keep, clear_cache=False)")
     await engine_client(request).pause_generation(mode="keep", clear_cache=False)
     return {"status": "paused"}
 
 
-@router.post("/resume")
+@admin_router.post("/resume")
 async def resume(request: Request):
     await engine_client(request).resume_generation()
     return {"status": "resumed"}
 
 
-@router.post("/update_weights")
+@admin_router.post("/update_weights")
 async def update_weights(request: Request):
     data = await request.json()
     client = engine_client(request)
@@ -63,9 +81,45 @@ async def update_weights(request: Request):
     return {"status": "ok"}
 
 
-@router.post("/load_lora_adapter")
+@admin_router.post("/update_weights_from_modelexpress")
+async def update_weights_from_modelexpress(request: Request):
+    data = await request.json()
+    client = engine_client(request)
+    await client.collective_rpc("update_weights_from_modelexpress", args=(data["version_uid"],))
+    await client.update_weight_version(str(data["weight_version"]))
+    return {"status": "ok"}
+
+
+@admin_router.post("/update_draft_weights")
+async def update_draft_weights(request: Request):
+    """Load a draft checkpoint from disk on every engine. Cached draft KV stays; the target verifies every token."""
+    weight_dir = (await request.json())["weight_dir"]
+    client = engine_client(request)
+    speculative_config = client.vllm_config.speculative_config
+    if speculative_config is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This server runs without speculative decoding")
+    try:
+        draft = local_draft_dir(weight_dir)
+        check_draft_swap(local_draft_dir(speculative_config.model, speculative_config.revision), draft)
+    except (OSError, ValueError) as error:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error)) from error
+    await client.collective_rpc("update_draft_weights", args=(str(draft),))
+    return {"status": "ok"}
+
+
+@admin_router.get("/weight_fingerprint/{target}")
+async def weight_fingerprint(request: Request, target: Literal["model", "draft"]):
+    # vLLM's public collective RPC discards all but the first DP engine's result.
+    results = await engine_client(request).engine_core.call_utility_all_async(
+        "collective_rpc", "get_weight_fingerprint", None, (), {"target": target}
+    )
+    return {"results": [worker for engine in results for worker in engine]}
+
+
+@admin_router.post("/load_lora_adapter")
 async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request, weight_version: str):
-    """Wrapper around vLLM's /v1/load_lora_adapter.
+    """Load a LoRA adapter through the handler behind vLLM's /v1/load_lora_adapter (which
+    ``drop_unused_routes`` removes).
 
     prime-rl reloads a fixed-name adapter with fresh weights every step (the path
     changes per policy version; the name is constant — the model name every client
@@ -73,23 +127,13 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
     the base model is served as ``<model>-base``; see ``InferenceConfig.to_namespace``.)
     vLLM's native loader rejects a same-name reload unless ``load_inplace=True``, so
     we force it here — that makes the worker re-read the new weights during
-    ``add_lora``, reusing the existing ``lora_int_id``.
-
-    We then reset the stored request's flag back to ``False``. ``load_inplace`` is
-    a sticky field on the ``LoRARequest`` that ``_maybe_get_adapters`` hands to
-    every generation request; left ``True`` it would force a disk reload on each
-    scheduler step. The orchestrator awaits this endpoint before dispatching
-    rollouts for the new version, so the reset always lands before generation.
-    The reset runs regardless of success/error: vLLM only stores the adapter on
-    success today, but resetting whatever is stored keeps us correct even if a
-    future version were to leave a ``load_inplace=True`` request behind on error.
+    ``add_lora``, reusing the existing ``lora_int_id``. vLLM resets the stored
+    request's flag to ``False`` before caching it (vllm-project/vllm#41482), so it
+    does not force a disk reload on every later generation request.
     """
     handler = models(raw_request)
     lora_request.load_inplace = True
     response = await handler.load_lora_adapter(lora_request)
-    stored = handler.lora_requests.get(lora_request.lora_name)
-    if stored is not None:
-        stored.load_inplace = False
     if isinstance(response, ErrorResponse):
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
     await engine_client(raw_request).update_weight_version(weight_version)
@@ -109,7 +153,7 @@ async def liveness(raw_request: Request):
     return {"status": "ok"}
 
 
-@router.post("/init_broadcaster")
+@admin_router.post("/init_broadcaster")
 async def init_broadcaster(request: Request):
     data = await request.json()
     host = data.get("host")
@@ -118,10 +162,10 @@ async def init_broadcaster(request: Request):
     rank_offset = data.get("rank_offset")
     inference_world_size = data.get("inference_world_size")
     session_id = data.get("session_id", "default")
-    await engine_client(request).collective_rpc(
-        "init_broadcaster",
-        args=(host, port, rank_offset, inference_world_size, timeout, session_id),
-    )
+    args = (host, port, rank_offset, inference_world_size, timeout, session_id)
+    if "staging_buffer_bytes" in data:
+        args += (data["staging_buffer_bytes"], data["staging_buffers_count"])
+    await engine_client(request).collective_rpc("init_broadcaster", args=args)
     return {"status": "ok"}
 
 
@@ -142,6 +186,12 @@ async def custom_init_app_state(
     await init_app_state(engine_client, state, args, supported_tasks)
 
     state.liveness_timeout_seconds = args.liveness_timeout_seconds
+    state.admin_token_digest = expected_admin_digest(args.admin_token_var)
+    if state.admin_token_digest is None:
+        logger.warning(
+            f"${args.admin_token_var} and ${digest_var(args.admin_token_var)} are not set: the admin routes (weight updates, pause/resume, "
+            "broadcaster setup, LoRA loading) accept unauthenticated requests"
+        )
 
     # Swap in our ServingTokens subclass for /inference/v1/generate so the
     # X-data-parallel-rank header and routed_experts response field — both
@@ -167,13 +217,33 @@ import vllm.v1.utils
 from vllm.entrypoints.launchers.app import build_app as _original_build_app
 from vllm.v1.utils import run_api_server_worker_proc as _original_run_api_server_worker_proc
 
+# vLLM mounts SageMaker's hosting routes at the root path, outside the prefixes its API key
+# guards: /invocations serves the same requests as /v1, and /adapters loads and unloads LoRA
+# adapters. prime-rl uses neither.
+SAGEMAKER_ROUTE_PATHS = frozenset({"/invocations", "/adapters", "/adapters/{adapter_name}"})
+
+# vLLM mounts its own LoRA routes when VLLM_ALLOW_RUNTIME_LORA_UPDATING is set, as it is for
+# LoRA runs. They sit behind vLLM's API key only when one is set, and the launchers set none.
+# prime-rl loads adapters through its own /load_lora_adapter and never unloads them.
+LORA_ROUTE_PATHS = frozenset({"/v1/load_lora_adapter", "/v1/unload_lora_adapter"})
+
+UNUSED_ROUTE_PATHS = SAGEMAKER_ROUTE_PATHS | LORA_ROUTE_PATHS
+
+
+def drop_unused_routes(app: FastAPI) -> None:
+    app.router.routes[:] = [
+        route for route in app.router.routes if getattr(route, "path", None) not in UNUSED_ROUTE_PATHS
+    ]
+
 
 def custom_build_app(args: Namespace, supported_tasks: tuple, model_config=None):
     """
-    Wrap build_app to include our custom router.
+    Wrap build_app to include our custom router and drop the vLLM routes prime-rl does not use.
     """
     app = _original_build_app(args, supported_tasks, model_config)
+    drop_unused_routes(app)
     app.include_router(router)
+    app.include_router(admin_router)
     return app
 
 
@@ -196,8 +266,6 @@ vllm.v1.utils.run_api_server_worker_proc = custom_run_api_server_worker_proc
 # Only difference we do some config translation (i.e. pass populated namespace
 # to `parse_args`) and additional arg validation
 def server(config: InferenceConfig):
-    import os
-
     from vllm.entrypoints.cli.serve import run_headless, run_multi_api_server
     from vllm.entrypoints.launchers.api_server.entry import run_server
 
@@ -206,6 +274,11 @@ def server(config: InferenceConfig):
     if lora_target_modules and not any("expert" in m for m in lora_target_modules):
         os.environ["PRIME_NO_MOE_LORA"] = "1"
 
+    token_var = config.server.admin_token_var
+    if config.server.require_admin_token and expected_admin_digest(token_var) is None:
+        raise ValueError(f"server.require_admin_token is set but neither ${token_var} nor ${digest_var(token_var)} is")
+
+    setup_model_source(config)
     namespace = config.to_namespace()
 
     parser = FlexibleArgumentParser(description="vLLM OpenAI-Compatible RESTful API server.")

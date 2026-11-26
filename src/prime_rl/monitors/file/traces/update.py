@@ -3,7 +3,9 @@
 An episode is serialized once, when it arrives. Everything a consumer learns later
 is an update naming the trace: an ``info`` dict merged into the trace's own, plus
 per-token streams over a branch, full-length across the branch's token prefix (nulls
-mark unknown positions, so a stream never depends on the producer's loss mask).
+mark unknown positions, so a stream never depends on the producer's loss mask). A
+producer that knows only a branch's trainable tokens sends ``token_advantages``, compact
+over them.
 
 Each producer appends its own stream under the trace directory's ``annotations/``, so
 every stream has exactly one writer. Readers fold the updates onto the arrival records
@@ -12,7 +14,7 @@ in write order, newest wins.
 
 from typing import Any
 
-UPDATE_VERSION = 1
+UPDATE_VERSION = 2
 
 STREAM_FIELDS = ("advantages", "trainer_logprobs", "entropies")
 """Per-token streams an update may carry, compacted onto node fields of the same name."""
@@ -70,13 +72,46 @@ def fold_trace_updates(trace: dict, updates: list[dict]) -> int:
     Merges each ``info`` and projects every branch stream onto the branch's nodes,
     compact over each node's mask like the node's own ``logprobs``. A node takes a
     stream only when it is fully covered with non-null values at every sampled
-    position, so a truncated stream leaves the tail nodes untouched. Returns how many
-    nodes carry trainer logprobs afterwards."""
+    position, so a truncated stream leaves the tail nodes untouched. A branch's
+    ``token_advantages`` go to its sampled nodes in order, one per sampled token; a
+    sampled node shared by several branches takes them from the first. An update with
+    the trace's advantage and no advantage stream gives that advantage to every sampled
+    token on the branches it names (``advantage_branches``; all of them if it names none).
+    Returns how many nodes carry trainer logprobs afterwards."""
     nodes = trace.get("nodes") or []
     paths = branch_node_paths(nodes)
     for update in updates:
         if update.get("info"):
             trace["info"] = _deep_merge(trace.get("info") or {}, update["info"])
+        info = update.get("info") or {}
+        advantage = info.get("advantage")
+        if isinstance(advantage, (int, float)) and not any(
+            branch.get("advantages") or branch.get("token_advantages") for branch in update.get("branches") or []
+        ):
+            credited = info.get("advantage_branches")
+            node_indices = (
+                range(len(nodes))
+                if credited is None
+                else {index for branch in credited if 0 <= branch < len(paths) for index in paths[branch]}
+            )
+            for node_index in node_indices:
+                node = nodes[node_index]
+                if sampled := sum(1 for flag in node.get("mask") or [] if flag):
+                    node["advantages"] = [advantage] * sampled
+        credited_nodes: set[int] = set()
+        for branch in sorted(update.get("branches") or [], key=lambda branch: branch.get("index", -1)):
+            branch_index, stream = branch.get("index"), branch.get("token_advantages")
+            if not stream or not isinstance(branch_index, int) or not 0 <= branch_index < len(paths):
+                continue
+            cursor = 0
+            for node_index in paths[branch_index]:
+                node = nodes[node_index]
+                sampled = sum(1 for flag in node.get("mask") or [] if flag)
+                if not sampled or node_index in credited_nodes:
+                    continue
+                credited_nodes.add(node_index)
+                node["advantages"] = stream[cursor : cursor + sampled]
+                cursor += sampled
         for branch in update.get("branches") or []:
             branch_index = branch.get("index")
             if not isinstance(branch_index, int) or not 0 <= branch_index < len(paths):

@@ -1,15 +1,23 @@
 """Dispatcher: schedules rollouts under a shared permit counter.
 
 - Capacity (``max_inflight``) is shared across train + eval. One permit is
-  one episode: one ``run`` request against an env server. The cap is dynamic —
+  one episode: one ``run`` request against an env worker pool. The cap is dynamic —
   the concurrency controller moves it via ``set_limit``; refills are
   burst-capped so a raised (or drained) cap never lands all its prefills at
   once.
 - Optional rate limiting via ``AsyncLimiter(dispatch_per_minute, 60)``, one token per episode.
-- Every dispatched attempt reaches ``out_q`` exactly once: as the native
-  episode returned by the environment, as a ``DispatchFailure`` when no
-  episode was produced, or under the group's ``GroupCancellation`` when the
-  orchestrator abandons it.
+- A finished train rollout of a complete group keeps its permit until the
+  trainer takes it, past a buffer of ``BUFFERED_BATCHES`` batches
+  (``held_permits``), so the finished backlog cannot grow until its tokens age
+  past ``max_staleness``. While the
+  trainer is the bottleneck, train episodes in flight are also held to what
+  keeps it fed (``trainer_target``). Both only block opening train groups; eval
+  and open groups schedule as before, and the concurrency controller sees only
+  the episodes in flight.
+- Every dispatched attempt reaches ``out_q`` exactly once: as the head of the
+  episode the environment returned (its env worker keeps the episode), as a
+  ``DispatchFailure`` when no episode was produced, or under the group's
+  ``GroupCancellation`` when the orchestrator abandons it.
 - ``DispatcherMode.PREFER_TRAIN`` / ``PREFER_EVAL`` controls which kind to
   schedule next. Transitions are level-triggered (driven by the eval
   source's emptiness), so in-flight episodes of the opposite kind drain
@@ -23,19 +31,23 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import time
 import traceback
 import uuid
-from collections import defaultdict
-from collections.abc import Callable
+from collections import defaultdict, deque
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Literal
 
 import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
+from verifiers.v1.semantic import routing_session_id
 
 from prime_rl import monitors
+from prime_rl.env.heads import EpisodeHead
+from prime_rl.env.types import RestoreRef
 from prime_rl.orchestrator import live
 from prime_rl.orchestrator.clients import InferenceClient
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -48,16 +60,29 @@ from prime_rl.orchestrator.types import (
     GroupCancellation,
     GroupState,
     InflightEpisode,
+    OpenEpisode,
     Policy,
     Progress,
     WorkKind,
 )
+from prime_rl.transports.payload import delete_payloads, trace_payload_urls
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.logger import get_logger
 
 LIVE_INTERVAL_S = 0.5
 LIVE_EVENT_CAP = 20_000
 """Buffered live events (deltas and bookkeeping) before the oldest deltas are dropped."""
+
+BUFFERED_BATCHES = 1
+"""Batches of finished train rollouts that free their permits while they wait for the trainer: enough that the
+trainer finds its next batch ready."""
+
+TRAINER_MARGIN = 0.1
+"""Train episodes in flight beyond what a bottlenecked trainer consumes over a generation lifetime: rollouts made
+faster than it takes them only wait, while the held permits drain any surplus."""
+
+GENERATION_EWMA = 0.05
+"""Weight of each finished train episode in the generation lifetime average."""
 
 
 class DispatcherMode(Enum):
@@ -109,7 +134,7 @@ class DispatcherMetrics:
         return out
 
 
-def _validate_episode_task(episode: vf.WireEpisode, task: vf.Task) -> None:
+def _validate_episode_task(episode: EpisodeHead, task: vf.Task) -> None:
     expected = (task.key, task.hash)
     actual = (episode.task.key, episode.task.hash)
     if actual != expected:
@@ -139,7 +164,13 @@ class Dispatcher:
         run_id: str,
         run_name: str | None,
         policy_weights_change: bool = True,
-        on_episode_complete: Callable[[int], None] | None = None,
+        on_episode_complete: Callable[[int, int], None] | None = None,
+        on_call: Callable[[int, int], None] | None = None,
+        on_pause: Callable[[], None] | None = None,
+        on_resume: Callable[[], None] | None = None,
+        unconsumed_train_rollouts: Callable[[], int] | None = None,
+        batch_size: Callable[[], int] | None = None,
+        trainer_rate: Callable[[], float | None] | None = None,
     ) -> None:
         self.policy = policy
         self.policy_weights_change = policy_weights_change
@@ -153,8 +184,25 @@ class Dispatcher:
         self.eval_source = eval_source
         self.run_id = run_id
         self.run_name = run_name
-        # Called with ``total_tokens`` per completed episode
+        # Called with ``total_tokens`` and the model calls per completed episode
         self.on_episode_complete = on_episode_complete
+        # Called with the context of each live model call that extends its trace's history, and the call's number
+        # within the episode
+        self.on_call = on_call
+        # Called around each weight update: the engines pause after ``on_pause`` and are live again at ``on_resume``
+        self.on_pause = on_pause
+        self.on_resume = on_resume
+        # The consumer's finished train rollouts of complete groups not taken yet (``out_q`` excluded), the live
+        # batch size, and the rollouts per second the trainer takes while it is the bottleneck (else None); all
+        # unset without a trainer
+        self.unconsumed_train_rollouts = unconsumed_train_rollouts
+        self.batch_size = batch_size
+        self.trainer_rate = trainer_rate
+        # Rollouts of the train episodes waiting in ``out_q``, and of every train episode finished so far
+        self.queued_train_rollouts = 0
+        self.finished_train_rollouts = 0
+        # Average seconds from dispatch to completion of a train episode
+        self.generation_s: float | None = None
 
         # Starting value of the dynamic cap (the concurrency controller moves
         # it); ``max_inflight_ceiling`` is the configured hard maximum, used to
@@ -173,13 +221,18 @@ class Dispatcher:
         self.admission_window_s = 5.0
         self.admission_window_start = time.monotonic()
         self.admissions_in_window = 0
-        self.min_burst = max((env.config.group_size for env in train_envs or ()), default=8)
 
         self.inflight: dict[asyncio.Task, InflightEpisode] = {}
         self.live_events: list[dict[str, Any]] = []
         self.live_dropped = False
         self.live_task: asyncio.Task | None = None
         self.groups: dict[uuid.UUID, GroupState] = {}
+        self.resumed: deque[OpenEpisode] = deque()
+        """Episodes that were in flight in the checkpoint this run resumed from. They
+        dispatch before any other train work (``resume_open_work``)."""
+        self.emitting: list[DispatchResult] = []
+        """Results on their way into a full ``out_q``: no longer in flight, not yet
+        queued (``queued_results``)."""
         # Policy versions repeat after a resume, with weights that can differ from the
         # previous attempt's, and engines or a KV offload pool may outlive that attempt.
         self.cache_salt_prefix = uuid.uuid4().hex[:8]
@@ -230,6 +283,32 @@ class Dispatcher:
     def available_permits(self) -> int:
         return self.max_inflight - self.current_inflight
 
+    @property
+    def held_permits(self) -> int:
+        """Permits still held by finished train rollouts of complete groups: those beyond ``BUFFERED_BATCHES``
+        batches that the trainer has not taken yet."""
+        if self.unconsumed_train_rollouts is None or self.batch_size is None:
+            return 0
+        waiting = self.queued_train_rollouts + self.unconsumed_train_rollouts()
+        return max(0, waiting - BUFFERED_BATCHES * self.batch_size())
+
+    @property
+    def trainer_target(self) -> float | None:
+        """Train episodes in flight that keep a bottlenecked trainer fed, by Little's law: the rollouts per second it
+        takes times the generation lifetime, plus ``TRAINER_MARGIN``. None while the trainer is not the bottleneck."""
+        rate = self.trainer_rate() if self.trainer_rate is not None else None
+        if rate is None or self.generation_s is None:
+            return None
+        return (1 + TRAINER_MARGIN) * rate * self.generation_s
+
+    def train_admission_open(self) -> bool:
+        """Whether a train group may open: held permits count against the cap and against the trainer target."""
+        held = self.held_permits
+        if self.current_inflight + held >= self.max_inflight:
+            return False
+        target = self.trainer_target
+        return target is None or self.inflight_train_count + held < target
+
     def set_limit(self, max_inflight: int) -> None:
         """Move the in-flight cap (concurrency controller hook). A cap below
         the current in-flight count sheds nothing — admissions just stay
@@ -271,7 +350,8 @@ class Dispatcher:
         if now - self.admission_window_start >= self.admission_window_s:
             self.admission_window_start = now
             self.admissions_in_window = 0
-        burst_cap = max(self.min_burst, self.max_inflight // 10)
+        min_burst = max((env.config.group_size for env in self.train_envs or ()), default=8)
+        burst_cap = max(min_burst, self.max_inflight // 10)
         return burst_cap - self.admissions_in_window
 
     @property
@@ -388,6 +468,8 @@ class Dispatcher:
         cancels a rollout: it keeps sampling fresh tokens, and the sink masks
         the ones that age past ``max_staleness``."""
         self.policy_update_pending = True
+        if self.on_pause is not None:
+            self.on_pause()
         # Wait for a scheduling call that started before the pending update.
         # No rollout can cross the inference weight swap after this barrier.
         async with self.scheduling_lock:
@@ -396,6 +478,8 @@ class Dispatcher:
     async def on_new_version(self, step: int) -> None:
         """Resume rollout scheduling after inference applies the new policy."""
         self.policy_update_pending = False
+        if self.on_resume is not None:
+            self.on_resume()
 
     async def fill_inflight(self) -> None:
         """Schedule new rollouts up to ``max_inflight``, honoring
@@ -450,11 +534,19 @@ class Dispatcher:
         if envs is None:
             return False
 
+        while kind == "train" and self.resumed:
+            group_id = self.resumed[0].group_id
+            if group_id in self.groups:
+                return await self.schedule_group_episode(group_id, self.groups[group_id], resumed=True)
+            self.resumed.popleft()  # its group was dropped
+
         for gid, group in list(self.groups.items()):
             if group.kind != kind or group.episodes_to_schedule <= 0:
                 continue
             return await self.schedule_group_episode(gid, group)
 
+        if kind == "train" and not self.train_admission_open():
+            return False
         fresh = self.next_fresh_group(kind, envs)
         if fresh is None:
             return False
@@ -490,8 +582,10 @@ class Dispatcher:
             group_id=uuid.UUID(request.group_id) if request.group_id else None,
         )
 
-    async def schedule_group_episode(self, group_id: uuid.UUID, group: GroupState) -> bool:
-        """Dispatch one ``run`` task for this group.
+    async def schedule_group_episode(self, group_id: uuid.UUID, group: GroupState, resumed: bool = False) -> bool:
+        """Dispatch one ``run`` task for this group. With ``resumed`` it is the group's
+        episode at the head of ``self.resumed``, which continues from its restore point
+        if it has one.
 
         Returns False only if we couldn't even schedule one rollout (no clients
         ready, no permits). Returns True after issuing one task — the caller
@@ -519,9 +613,16 @@ class Dispatcher:
         else:
             cache_salt = None
 
+        # A group samples with the settings of the step it was opened at, also across a live update.
+        sampling = env.sampling_at(group.step)
+        run = self._run_info(group)
+        record = monitors.record_request(group.kind, str(group_id))
+        live_traces = monitors.wants_live(group.kind, str(group_id))
         group.episodes_to_schedule -= 1
         await self.acquire()
         self.admissions_in_window += 1
+        # Taken only now that the permit is held: until then a checkpoint still saves it.
+        restore = self.resumed.popleft().restore if resumed else None
         meta = InflightEpisode(
             kind=group.kind,
             env_name=group.env_name,
@@ -537,22 +638,36 @@ class Dispatcher:
 
         def on_delta(delta: dict) -> None:
             session_ids.add(delta["trace"])
+            # A recursive harness's sub-agents are routed as sessions of their own.
+            for call in delta.get("calls", ()):
+                if (acp := call.get("acp")) is not None:
+                    session_ids.add(routing_session_id(delta["trace"], acp.get("agent_session_id")))
             first = not meta.live
-            live.apply(meta, delta)
+            for context, call in live.apply(meta, delta):
+                if context and self.on_call is not None:
+                    self.on_call(context, call)
             self.queue_live({"delta": delta, "dispatch": live.dispatch_info(meta)})
             # after the delta, and only once a trace streams: a reader never sees the
             # episode in neither place (a discard as the first delta streams nothing)
             if first and meta.live:
                 self.live_events.append(live.dispatched_event(meta))
 
-        async def run_episode() -> vf.WireEpisode:
+        async def run_episode() -> EpisodeHead:
+            episode = None
             try:
                 episode = await env.run(
                     client=client,
                     model_name=model_name,
+                    sampling=sampling,
                     cache_salt=cache_salt,
                     task_data=group.task.data.model_dump(mode="json"),
                     on_delta=on_delta,
+                    run=run,
+                    record=record,
+                    live=live_traces,
+                    group_id=str(group_id),
+                    restore=restore.path if restore is not None else None,
+                    request_id=meta.dispatch_id,
                 )
                 session_ids.update(trace.id for trace in episode.traces)
                 return episode
@@ -561,6 +676,9 @@ class Dispatcher:
                 try:
                     await asyncio.shield(cleanup)
                 except asyncio.CancelledError:
+                    if episode is not None:
+                        # Returned, but cancelled before it could be emitted.
+                        self._release_episodes([episode])
                     await cleanup
                     raise
 
@@ -568,6 +686,87 @@ class Dispatcher:
         self.inflight[task] = meta
         self.live_events.append(live.pending_event(meta))
         return True
+
+    def _live_policy(self, kind: WorkKind, env_name: str) -> bool:
+        """Whether the episodes of this kind of work sample from the live policy."""
+        if kind == "eval":
+            return True
+        assert self.train_envs is not None
+        return self.train_envs.get(env_name).uses_live_policy
+
+    def _run_info(self, group: GroupState) -> vf.TrainRunInfo:
+        """The run identity of a group's episodes at dispatch; ``emit_episode`` closes the
+        policy span on the version current when the episode lands."""
+        start = group.policy_version_at_start
+        policy = vf.PolicySpan(start=start, end=start) if self._live_policy(group.kind, group.env_name) else None
+        work: vf.WorkInfo = (
+            vf.EvalWorkInfo(step=group.step, policy=policy)
+            if group.kind == "eval"
+            else vf.TrainWorkInfo(step=group.step, policy=policy)
+        )
+        return vf.TrainRunInfo(id=self.run_id, name=self.run_name, work=work)
+
+    def open_work(self, restores: dict[str, RestoreRef]) -> tuple[list[GroupState], list[OpenEpisode]]:
+        """The train work still owed, for a rollout checkpoint: copies of the open
+        groups, counting only their never-dispatched episodes, and the episodes in
+        flight. ``restores`` holds the restore points a ``save`` just took, by the
+        ``request_id`` of their run; each one that continues an in-flight episode is
+        taken out and goes with that episode. An episode without one starts over."""
+        groups = {
+            group_id: dataclasses.replace(group, group_id=group_id)
+            for group_id, group in self.groups.items()
+            if group.kind == "train"
+        }
+        episodes: list[OpenEpisode] = []
+        for episode in self.resumed:
+            if episode.group_id in groups:
+                # Counted as still to schedule since ``resume_open_work``.
+                groups[episode.group_id].episodes_to_schedule -= 1
+                # A copy: writing the checkpoint moves or drops its restore point,
+                # which must not change the episode still waiting here.
+                restore = episode.restore.model_copy() if episode.restore is not None else None
+                episodes.append(dataclasses.replace(episode, restore=restore))
+        for meta in self.inflight.values():
+            if meta.kind == "train" and meta.group_id in groups:
+                episodes.append(OpenEpisode(group_id=meta.group_id, restore=restores.pop(meta.dispatch_id, None)))
+        return list(groups.values()), episodes
+
+    def resume_open_work(self, groups: list[GroupState], episodes: list[OpenEpisode]) -> None:
+        """Take over a checkpoint's ``open_work``, before the dispatch loop starts: its
+        groups stay open, and the episodes that were in flight dispatch first."""
+        for group in groups:
+            assert group.group_id is not None
+            self.groups[group.group_id] = group
+        for episode in episodes:
+            if episode.group_id in self.groups:
+                self.groups[episode.group_id].episodes_to_schedule += 1
+                self.resumed.append(episode)
+
+    async def emit(self, result: DispatchResult) -> None:
+        """Queue ``result`` for the orchestrator; a full ``out_q`` waits."""
+        self.emitting.append(result)
+        try:
+            await self.out_q.put(result)
+        finally:
+            self.emitting.remove(result)
+
+    def queued_results(self) -> list[DispatchResult]:
+        """The results waiting for the orchestrator, oldest first, without taking them:
+        those in ``out_q`` and those on their way in."""
+        return [*self.out_q._queue, *self.emitting]
+
+    def _release_episodes(self, episodes: Iterable[EpisodeHead]) -> None:
+        """Delete the training arrays env workers kept for episodes no sink will see."""
+        delete_payloads(url for episode in episodes for trace in episode.traces for url in trace_payload_urls(trace))
+
+    async def _cancel_claimed(self, tasks: list[asyncio.Task]) -> None:
+        """Cancel claimed episode tasks. A task that had already returned its episode
+        before the claim is never emitted, so its arrays are deleted here."""
+        await safe_cancel_all(tasks)
+        # A task can still be pending here: `safe_cancel` also swallows a cancel aimed at us.
+        self._release_episodes(
+            task.result() for task in tasks if task.done() and not task.cancelled() and task.exception() is None
+        )
 
     async def acquire(self) -> None:
         """Reserve one permit + rate-limit it. Caller must precheck
@@ -592,6 +791,13 @@ class Dispatcher:
         self.retire(meta)
         self.release(refund_admission=True)
         group = self.groups.get(meta.group_id)
+        if meta.kind == "train" and not task.cancelled():
+            seconds = time.monotonic() - meta.started_at
+            self.generation_s = (
+                seconds
+                if self.generation_s is None
+                else self.generation_s + GENERATION_EWMA * (seconds - self.generation_s)
+            )
 
         if task.cancelled():
             return
@@ -604,7 +810,7 @@ class Dispatcher:
             get_logger().warning(f"Environment request failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
             self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
             policy_version = self.complete_group_member(meta, group)
-            await self.out_q.put(
+            await self.emit(
                 DispatchFailure(
                     kind=meta.kind,
                     env_name=meta.env_name,
@@ -622,15 +828,10 @@ class Dispatcher:
                 )
             )
             return
-        episode: vf.WireEpisode = task.result()
+        episode: EpisodeHead = task.result()
 
+        # The env worker failed timed-out train traces before building the head and the record.
         for trace in episode.traces:
-            if trace.is_timeout and not trace.has_error and meta.kind == "train":
-                # Training keeps a timed-out rollout out of the batch: an error,
-                # like any other failure. Eval keeps it as a scored outcome.
-                trace.errors.append(vf.Error(type="Timeout", message=f"Trace stopped by {trace.stop_condition}"))
-                trace.ok = False
-                episode.ok = False
             if trace.is_dropped:
                 get_logger().info(f"Trace dropped in group {meta.group_id} ({meta.env_name}) — {trace.dropped}")
             if trace.has_error:
@@ -649,7 +850,7 @@ class Dispatcher:
                 + (f" — {error.type}: {error.message}" if error is not None else "")
             )
         if self.on_episode_complete is not None and meta.started_at > 0:
-            self.on_episode_complete(episode.num_total_tokens)
+            self.on_episode_complete(episode.num_total_tokens, meta.calls)
         await self.emit_episode(meta, group, episode)
 
     def complete_group_member(self, meta: InflightEpisode, group: GroupState | None) -> int:
@@ -666,7 +867,7 @@ class Dispatcher:
         self,
         meta: InflightEpisode,
         group: GroupState | None,
-        episode: vf.WireEpisode,
+        episode: EpisodeHead,
     ) -> None:
         """Stamp one completed episode with its dispatch provenance and emit it."""
         _validate_episode_task(episode, meta.task)
@@ -674,10 +875,7 @@ class Dispatcher:
 
         episode.env.name = meta.env_name
         episode.group = vf.GroupInfo(id=str(meta.group_id))
-        live_policy = meta.kind == "eval"
-        if meta.kind == "train":
-            assert self.train_envs is not None
-            live_policy = self.train_envs.get(meta.env_name).uses_live_policy
+        live_policy = self._live_policy(meta.kind, meta.env_name)
         policy = vf.PolicySpan(start=policy_version, end=self.policy.version) if live_policy else None
         work: vf.WorkInfo = (
             vf.EvalWorkInfo(step=meta.step, policy=policy)
@@ -686,7 +884,17 @@ class Dispatcher:
         )
         run = vf.TrainRunInfo(id=self.run_id, name=self.run_name, work=work)
         episode.record_run(run)
-        await self.out_q.put(episode)
+        if meta.kind == "train":
+            self.queued_train_rollouts += len(episode.traces)
+            self.finished_train_rollouts += len(episode.traces)
+        await self.emit(episode)
+
+    async def get(self) -> DispatchResult:
+        """Take the next terminal result off ``out_q``."""
+        item = await self.out_q.get()
+        if not isinstance(item, (DispatchFailure, GroupCancellation)) and item.run.work.type == "train":
+            self.queued_train_rollouts -= len(item.traces)
+        return item
 
     async def drop_group(self, group_id: uuid.UUID, *, reason: CancelReason) -> int:
         """Cancel this group's remaining in-flight tasks and emit one
@@ -723,7 +931,7 @@ class Dispatcher:
                 f"Dropped {kind} group | group={str(group_id)[:8]} env={env_name} reason={reason} | "
                 f"cancelled={cancelled} (inflight={inflight_cancelled} unscheduled={unscheduled_cancelled})"
             )
-            await self.out_q.put(
+            await self.emit(
                 GroupCancellation(
                     kind=kind,
                     env_name=env_name,
@@ -735,7 +943,7 @@ class Dispatcher:
             )
 
         if claimed:
-            await safe_cancel_all([task for task, _ in claimed])
+            await self._cancel_claimed([task for task, _ in claimed])
         return cancelled
 
     async def cancel_inflight_episodes(self) -> None:
@@ -749,7 +957,7 @@ class Dispatcher:
         self.inflight.clear()
         self.groups.clear()
         if tasks:
-            await safe_cancel_all(tasks)
+            await self._cancel_claimed(tasks)
 
     async def cancel_inflight_train_episodes(self) -> list[GroupCancellation]:
         """Cancel in-flight train episodes, leaving eval alone. Used by the
@@ -795,7 +1003,7 @@ class Dispatcher:
                 )
             cancelled_by_group[meta.group_id].count += 1
         if train_tasks:
-            await safe_cancel_all(train_tasks)
+            await self._cancel_claimed(train_tasks)
         return [cancellation for cancellation in cancelled_by_group.values() if cancellation.count]
 
     async def cancel_eval_step(self, step: int) -> int:
@@ -824,7 +1032,7 @@ class Dispatcher:
             )
             cancelled += count
             self.metrics.record_cancellation(kind="eval", env_name=request.env_name, n=count)
-            await self.out_q.put(
+            await self.emit(
                 GroupCancellation(
                     kind="eval",
                     env_name=request.env_name,
@@ -843,6 +1051,8 @@ class Dispatcher:
         return {
             "dispatcher/inflight/train": float(self.inflight_train_count),
             "dispatcher/inflight/eval": float(self.inflight_eval_count),
+            "dispatcher/held_permits": float(self.held_permits),
+            "dispatcher/trainer_target": self.trainer_target or 0.0,
             "dispatcher/queued/eval": float(self.queued_eval_examples),
             "dispatcher/mode": float(self.mode == DispatcherMode.PREFER_EVAL),
         }
