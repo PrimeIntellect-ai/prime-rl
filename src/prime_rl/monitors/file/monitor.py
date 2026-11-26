@@ -230,6 +230,9 @@ class FileMonitor(Monitor):
         return self._value_streams[directory]
 
     def wants_record(self, kind: Kind, group_id: str | None) -> bool:
+        # Only a producer that logs episodes asks, before any of its annotations: from here it
+        # annotates only the traces it writes, also before its first sampled record lands.
+        self._logs_episodes = True
         return self._samples(kind, group_id)
 
     def wants_live(self, kind: Kind, group_id: str | None) -> bool:
