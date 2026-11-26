@@ -4,7 +4,9 @@ the trainer publishes to the broadcast dir, instead of waiting for the orchestra
 While serving, it decodes the sparse delta of the newest version the trainer is still writing. Once a version's
 broadcast finished, it pauses with the running requests kept, applies the newest finished version, labels the
 tokens sampled from then on with it, and resumes. A version it skipped needs nothing extra: the worker replays the
-deltas since the last anchor. The orchestrator only reads the version the engine serves (``GET /weight_version``).
+deltas since the last anchor. A trainer that restarts from a checkpoint drops the versions beyond it and publishes
+that one again, so the engine follows the newest finished version also back. The orchestrator only reads the
+version the engine serves (``GET /weight_version``).
 """
 
 import asyncio
@@ -46,13 +48,19 @@ class WeightPuller:
                 await asyncio.sleep(RETRY_INTERVAL_S)
             await asyncio.sleep(POLL_INTERVAL_S)
 
+    def newest_finished(self) -> int | None:
+        steps = reversed(get_all_ckpt_steps(self.broadcast_dir))
+        return next((step for step in steps if marker_exists(self.step_dir(step) / FINISHED_MARKER)), None)
+
     async def poll(self) -> None:
-        newer = [step for step in reversed(get_all_ckpt_steps(self.broadcast_dir)) if step > self.served]
-        finished = next((step for step in newer if marker_exists(self.step_dir(step) / FINISHED_MARKER)), None)
-        if finished is not None:
+        finished = self.newest_finished()
+        if finished is not None and finished != self.served:
             await self.apply(finished)
-        elif newer and newer[0] != self.prefetched and marker_exists(self.step_dir(newer[0]) / DELTA_DIR / MANIFEST):
-            await self.prefetch(newer[0])
+            return
+        newest = max(get_all_ckpt_steps(self.broadcast_dir), default=-1)
+        if newest > self.served and newest != self.prefetched:
+            if marker_exists(self.step_dir(newest) / DELTA_DIR / MANIFEST):
+                await self.prefetch(newest)
 
     async def prefetch(self, step: int) -> None:
         """Read and decode v{step}'s sparse delta while the engine serves, so its pause only applies it."""
@@ -74,11 +82,8 @@ class WeightPuller:
                 except Exception:
                     logger.exception(f"Applying policy v{step} failed; retrying while paused")
                     await asyncio.sleep(RETRY_INTERVAL_S)
-                    newer = [s for s in get_all_ckpt_steps(self.broadcast_dir) if s >= step]
-                    step = max(
-                        (s for s in newer if marker_exists(self.step_dir(s) / FINISHED_MARKER)),
-                        default=step,
-                    )
+                    newest = self.newest_finished()
+                    step = step if newest is None else newest
             await self.client.update_weight_version(str(step))
         finally:
             await self.client.resume_generation()
