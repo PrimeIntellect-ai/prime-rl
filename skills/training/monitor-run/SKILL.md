@@ -221,7 +221,7 @@ zstd -dcf {run_dir}/monitors/file/traces/stream/* | jq 'select(.ok | not) | {id,
 jq '{trace_id, info}' {run_dir}/monitors/file/traces/annotations/orchestrator.index.jsonl
 ```
 
-The batches consumed by the trainer are shipped over ZMQ by default, so nothing binary is written. With `rollout_transport.type = "filesystem"` they land at `{run_dir}/batches/step_{n}/rank_<rank>.bin` (one packed micro-batch file per trainer DP rank).
+The batches consumed by the trainer are shipped over ZMQ, so nothing binary is written unless `rollout_transport.retain` is on. Then each shipped step lands at `{run_dir}/batches/step_{n}/batch.bin` (the step's samples; every trainer rank plans its own micro batches from them) until a trainer checkpoint covers it.
 
 ### Common failure modes
 

@@ -18,9 +18,9 @@ from prime_rl.configs.shared import (
     ResumeConfig,
     RunConfig,
     SlurmConfig,
-    TransportConfig,
     VLMConfig,
     WeightBroadcastConfig,
+    ZMQTransportConfig,
 )
 from prime_rl.configs.trainer import (
     InitConfig,
@@ -239,7 +239,7 @@ class RLConfig(BaseConfig):
 
     weight_broadcast: WeightBroadcastConfig | None = None
 
-    rollout_transport: TransportConfig | None = None
+    rollout_transport: ZMQTransportConfig | None = None
 
     deployment: DeploymentConfig = SingleNodeDeploymentConfig()
 
@@ -517,21 +517,14 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_rollout_transport(self):
         """Resolve the shared ``rollout_transport`` from the sub-configs so the launcher can
-        gate multi-node ZMQ host injection on it (mirrors ``auto_setup_weight_broadcast``).
+        read ``retain`` from it (mirrors ``auto_setup_weight_broadcast``).
 
         ``rollout_transport`` may be set either as the shared block (propagated down to both
         sub-configs by ``propagate_shared_fields``) or directly on
         ``trainer.rollout_transport`` / ``orchestrator.rollout_transport`` (the documented
         fallback). Either way the shared field must reflect the resolved per-component
-        transport, otherwise the launcher would leave ZMQ trainers connecting to localhost.
+        transport.
         """
-        if self.trainer.rollout_transport.type != self.orchestrator.rollout_transport.type:
-            raise ValueError(
-                "trainer.rollout_transport.type "
-                f"({self.trainer.rollout_transport.type!r}) != orchestrator.rollout_transport.type "
-                f"({self.orchestrator.rollout_transport.type!r}); set the shared [rollout_transport] "
-                "block or make both sub-configs the same type."
-            )
         if self.trainer.rollout_transport.retain != self.orchestrator.rollout_transport.retain:
             raise ValueError(
                 "trainer.rollout_transport.retain != orchestrator.rollout_transport.retain; set the "

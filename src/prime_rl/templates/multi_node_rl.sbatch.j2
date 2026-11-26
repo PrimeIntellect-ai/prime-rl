@@ -588,8 +588,8 @@ else
             -m prime_rl.trainer.rl.train \
             @ $CONFIG_DIR/trainer.json \
             {% if uses_modelexpress_server %}--weight-broadcast.host $WEIGHT_BROADCAST_HOST \
-            {% endif %}{% if use_zmq_transport %}--rollout_transport.host $ORCH_ADDR \
-            {% endif %}2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $LOG_DIR/trainer/node_${TRAIN_NODE_RANK}.log
+            {% endif %}--rollout_transport.host $ORCH_ADDR \
+            2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $LOG_DIR/trainer/node_${TRAIN_NODE_RANK}.log
         COMPONENT_CODE=$?
         if [ "$COMPONENT_CODE" -eq 0 ] && [ "$TRAIN_NODE_RANK" -eq 0 ]; then
             touch "$TRAINER_DONE" || exit $?
@@ -615,8 +615,8 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
     (
         {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
         {% elif uses_modelexpress_server %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $WEIGHT_BROADCAST_HOST"
-        {% endif %}{% if use_zmq_transport %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --rollout_transport.host $ORCH_ADDR"
-        {% endif %}{% if admin_token.guards and admin_token.by_process.orchestrator.sends %}{{ admin_token.by_process.orchestrator.sends }}="$ADMIN_TOKEN" {% endif %}{% if admin_token.guards and admin_token.by_process.orchestrator.checks %}{{ admin_token.by_process.orchestrator.checks }}_SHA256="$ADMIN_TOKEN_DIGEST" {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
+        {% endif %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --rollout_transport.host $ORCH_ADDR"
+        {% if admin_token.guards and admin_token.by_process.orchestrator.sends %}{{ admin_token.by_process.orchestrator.sends }}="$ADMIN_TOKEN" {% endif %}{% if admin_token.guards and admin_token.by_process.orchestrator.checks %}{{ admin_token.by_process.orchestrator.checks }}_SHA256="$ADMIN_TOKEN_DIGEST" {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
             2>&1 | tee $LOG_DIR/orchestrator.log
         COMPONENT_CODE=$?
         if [ "$COMPONENT_CODE" -eq 0 ]; then

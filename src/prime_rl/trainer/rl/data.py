@@ -12,6 +12,7 @@ import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
+from prime_rl.configs.shared import ZMQTransportConfig
 from prime_rl.configs.trainer import FakeDataLoaderConfig
 from prime_rl.trainer.rl.planner import plan_digest, prepare_batch
 from prime_rl.trainer.world import get_world
@@ -19,7 +20,6 @@ from prime_rl.transports.batch import (
     BatchReceiver,
     MicroBatch,
     MMRefs,
-    TransportConfig,
     setup_batch_receiver,
 )
 from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES, SamplerSupport, StepBatch
@@ -321,7 +321,7 @@ class DataLoader:
         output_dir: Path,
         start_step: int,
         dp_world_size: int,
-        config: TransportConfig,
+        config: ZMQTransportConfig,
         seq_len: int,
         pad_to_multiple_of: int,
         bin_cost: Callable[[Sequence[int]], int],
