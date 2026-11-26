@@ -35,6 +35,7 @@ from prime_rl.orchestrator.ckpt import (
 )
 from prime_rl.orchestrator.dispatcher import Dispatcher
 from prime_rl.orchestrator.orchestrator import Orchestrator
+from prime_rl.orchestrator.step_loop import Phase, StepLoop
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
@@ -454,14 +455,10 @@ def test_results_on_their_way_into_a_full_queue_are_queued_results():
 
 def orchestrator() -> Orchestrator:
     o = Orchestrator.__new__(Orchestrator)
-    o.stopped = asyncio.Event()
-    o.draining = False
+    o.step_loop = StepLoop()
     o.component_tasks = []
     o.sink_lock = asyncio.Lock()
-    o.sink_locked = False
     o.staged = deque()
-    o.resumed_batch = None
-    o.shipping = None
     o.resume_step = 4
     return o
 
@@ -473,24 +470,25 @@ def test_a_resumed_step_loop_ships_the_batch_then_the_saved_results_then_new_one
         o.dispatcher = SimpleNamespace(out_q=out_q, get=out_q.get, is_idle=False)
         out_q.put_nowait("new")
         o.staged.extend(["saved 1", "saved 2"])
-        o.resumed_batch = "batch"
+        o.step_loop.move(Phase.SHIPPING, "batch")
         seen = []
 
-        async def handle_train_result(batch) -> None:
-            assert o.sink_lock.locked()
+        async def ship(batch) -> None:
             seen.append(batch)
+            o.step_loop.move(Phase.SHIPPED)
+            o.step_loop.move(Phase.COLLECTING)
 
         async def ingest(item) -> None:
             assert o.sink_lock.locked()
             seen.append(item)
             if item == "new":
-                o.stopped.set()
+                o.step_loop.phase = Phase.STOPPED
 
-        o.handle_train_result = handle_train_result
+        o.ship = ship
         o.ingest = ingest
         await o.main_loop()
         assert seen == ["batch", "saved 1", "saved 2", "new"]
-        assert not o.sink_lock.locked() and o.resumed_batch is None
+        assert not o.sink_lock.locked() and o.step_loop.batch is None
 
     asyncio.run(run())
 
@@ -507,7 +505,7 @@ def test_the_orchestrator_saves_and_resumes_its_unshipped_work(tmp_path):
         o = orchestrator()
         o.train_sink = s
         o.staged.append(staged)
-        o.shipping = batch
+        o.step_loop.move(Phase.SHIPPING, batch)
         o.dispatcher = SimpleNamespace(
             open_work=lambda restores: ([], []), queued_results=lambda: [evaluated, queued, failure]
         )
@@ -528,16 +526,17 @@ def test_the_orchestrator_saves_and_resumes_its_unshipped_work(tmp_path):
         resumed.resume_open_work(read_open_work(tmp_path, "file:///arrays"))
         assert [result.group.id for result in resumed.staged] == ["staged", "queued"]
         restored = [msgspec.structs.replace(sample, url="file:///arrays") for sample in batch.samples]
-        assert ENCODER.encode(resumed.resumed_batch.samples) == ENCODER.encode(restored)
-        assert [e.id for e in resumed.resumed_batch.cohort.episodes] == [e.id for e in batch.cohort.episodes]
-        assert resumed.resumed_batch.cohort.sampled_trace_ids == batch.cohort.sampled_trace_ids
+        assert resumed.step_loop.phase is Phase.SHIPPING
+        assert ENCODER.encode(resumed.step_loop.batch.samples) == ENCODER.encode(restored)
+        assert [e.id for e in resumed.step_loop.batch.cohort.episodes] == [e.id for e in batch.cohort.episodes]
+        assert resumed.step_loop.batch.cohort.sampled_trace_ids == batch.cohort.sampled_trace_ids
         assert adopted == [({"shipping": ("test", "k", 1)}, [])] and dispatched == [([], [])]
         # A checkpoint written before the step loop took the batch still holds it.
         resumed.dispatcher.open_work = lambda restores: ([], [])
         resumed.dispatcher.queued_results = lambda: []
         resumed.train_source = o.train_source
         resumed.concurrency = o.concurrency
-        assert resumed.open_work({})["batch"] is resumed.resumed_batch
+        assert resumed.open_work({})["batch"] is resumed.step_loop.batch
 
     asyncio.run(run())
 
