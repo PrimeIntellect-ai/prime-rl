@@ -4,6 +4,7 @@ import pytest
 import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import (
+    CostLengthPenaltyConfig,
     GRPOAlgoConfig,
     LinearLengthPenaltyConfig,
     LinearSubagentLengthPenaltyConfig,
@@ -212,6 +213,48 @@ def test_grpo_length_weighted_baseline():
     ]
     advs = _grpo(group, length_penalty=cfg, length_weighted_baseline=True)
     assert advs == pytest.approx([0.75 - 65 / 120, -1 / 12 - 65 / 120])
+
+
+def _cost_shaped(group: list[vf.Episode], weight: float, w_out: float, w_in: float) -> list[float]:
+    """Each rollout's reward minus its own clipped cost: weight per weighted token."""
+    shaped = []
+    for episode in group:
+        output, input, subagent_output, subagent_input = length_penalty_tokens(episode.traces[0])
+        cost = w_out * (output + subagent_output) + w_in * (input + subagent_input)
+        shaped.append(episode.traces[0].reward - min(1.0, weight * cost))
+    return shaped
+
+
+def test_cost_penalty_charges_each_rollout_its_own_cost():
+    def group():
+        return [_make_episode(1.0, 10), _make_episode(1.0, 40), _make_episode(0.0, 10), _make_episode(0.0, 40)]
+
+    lengths = [length_penalty_tokens(episode.traces[0]) for episode in group()]
+    assert lengths[0][0] < lengths[1][0] and lengths[0] == lengths[2] and lengths[1] == lengths[3]
+    cfg = CostLengthPenaltyConfig(weight=5e-3, num_output_tokens_weight=1.0, num_input_tokens_weight=0.25)
+    shaped = _cost_shaped(group(), 5e-3, 1.0, 0.25)
+    # solved and failed rollouts pay the same for the same length: no pass-rate scaling, no correctness gating
+    assert shaped[0] - shaped[1] == pytest.approx(shaped[2] - shaped[3]) and shaped[3] < shaped[2] < 0
+    assert _grpo(group(), length_penalty=cfg) == pytest.approx([s - sum(shaped) / 4 for s in shaped], abs=1e-6)
+
+    # a rollout's shaped reward does not depend on the rest of its group
+    solo = [_make_episode(1.0, 10), _make_episode(0.0, 10)]
+    shaped_solo = _cost_shaped(solo, 5e-3, 1.0, 0.25)
+    assert shaped_solo[0] == pytest.approx(shaped[0])
+
+    # the input weight only scales the input term
+    no_input = CostLengthPenaltyConfig(weight=5e-3, num_input_tokens_weight=0.0)
+    shaped_out = _cost_shaped(group(), 5e-3, 1.0, 0.0)
+    assert _grpo(group(), length_penalty=no_input) == pytest.approx(
+        [s - sum(shaped_out) / 4 for s in shaped_out], abs=1e-6
+    )
+
+    # the penalty is clipped at 1: past 1 / weight cost tokens, a success scores 0 and a failure -1
+    huge = CostLengthPenaltyConfig(weight=1e3)
+    assert _grpo(group(), length_penalty=huge) == pytest.approx([0.5, 0.5, -0.5, -0.5], abs=1e-6)
+    # weight 0 is plain GRPO
+    off = CostLengthPenaltyConfig(weight=0.0)
+    assert _grpo(group(), length_penalty=off) == pytest.approx(_grpo(group()), abs=1e-6)
 
 
 def test_max_rl_mean_normalized():
