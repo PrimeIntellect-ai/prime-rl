@@ -1,18 +1,21 @@
-"""A declined or failed D->P read under bidirectional P/D, through vLLM's real scheduler.
+"""P/D KV transfer through vLLM's real scheduler: a declined or failed D->P read under bidirectional P/D, and a P->D
+read whose lease may have lapsed.
 
-The prefill engine's kv_transfer_config comes from prime-rl's config builder, so these tests cover what the launcher
-deploys: bidirectional NIXL with ``kv_load_failure_policy = "recompute"`` on prefill, plus the
+The engines' kv_transfer_config comes from prime-rl's config builder, so these tests cover what the launcher deploys:
+bidirectional NIXL with ``kv_load_failure_policy = "recompute"`` on prefill, plus the
 ``monkey_patch_nixl_bidirectional_single_pull`` backport. The scheduler helpers are trimmed from vLLM's
 tests/v1/kv_connector/unit/utils.py (v0.34.0), which the vLLM wheel does not ship.
 """
 
 import copy
+import time
 
 import pytest
 import torch
 from vllm import SamplingParams
 from vllm.config import CacheConfig, DeviceConfig, KVTransferConfig, ModelConfig, SchedulerConfig, VllmConfig
 from vllm.distributed.kv_transfer.kv_connector.v1.nixl import pull_scheduler
+from vllm.distributed.kv_transfer.kv_connector.v1.nixl.base_scheduler import NixlBaseConnectorScheduler
 from vllm.distributed.kv_transfer.kv_connector.v1.nixl.metadata import NixlConnectorMetadata
 from vllm.utils.hashing import sha256
 from vllm.v1.core.kv_cache_utils import get_request_block_hasher, init_none_hash
@@ -23,7 +26,10 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.structured_output import StructuredOutputManager
 
 from prime_rl.configs.inference import InferenceConfig
-from prime_rl.inference.patches import monkey_patch_nixl_bidirectional_single_pull
+from prime_rl.inference.patches import (
+    monkey_patch_nixl_bidirectional_single_pull,
+    monkey_patch_nixl_prefill_lapsed_remote_kv_locally,
+)
 
 BLOCK_SIZE = 16
 EOS_TOKEN_ID = 50256
@@ -35,7 +41,7 @@ def _prefill_kv_transfer_config() -> dict:
     return config.for_pd_role("prefill").build_kv_transfer_config()
 
 
-def _scheduler(kv_transfer: dict) -> Scheduler:
+def _scheduler(kv_transfer: dict, kv_role: str = "kv_producer") -> Scheduler:
     model_config = ModelConfig(model="facebook/opt-125m", dtype="float16", seed=42)
     scheduler_config = SchedulerConfig(
         max_num_seqs=16,
@@ -53,9 +59,9 @@ def _scheduler(kv_transfer: dict) -> Scheduler:
         cache_config=cache_config,
         kv_transfer_config=KVTransferConfig(
             kv_connector=kv_transfer["kv_connector"],
-            kv_role="kv_producer",
+            kv_role=kv_role,
             kv_connector_extra_config=extra,
-            kv_load_failure_policy=kv_transfer["kv_load_failure_policy"],
+            kv_load_failure_policy=kv_transfer.get("kv_load_failure_policy", "fail"),
         ),
         device_config=DeviceConfig("cpu"),
     )
@@ -224,3 +230,58 @@ def test_keep_pause_does_not_wait_for_held_kv():
     runner_output.kv_connector_output = KVConnectorOutput(finished_sending={request.request_id})
     scheduler.update_from_output(output, runner_output)
     assert not scheduler.has_requests()
+
+
+def _decode_request(request_id: int, num_tokens: int) -> Request:
+    """A decode-side request whose prompt a prefill engine computed, and holds the blocks of for it."""
+    init_none_hash(sha256)
+    sampling_params = SamplingParams(max_tokens=8)
+    sampling_params.update_from_generation_config({}, EOS_TOKEN_ID)
+    request = Request(
+        request_id=f"id-{request_id}",
+        prompt_token_ids=[i * request_id for i in range(num_tokens)],
+        sampling_params=sampling_params,
+        pooling_params=None,
+        mm_features=None,
+        block_hasher=get_request_block_hasher(BLOCK_SIZE, sha256),
+    )
+    request.kv_transfer_params = {
+        "do_remote_prefill": True,
+        "do_remote_decode": False,
+        "remote_block_ids": [list(range(num_tokens // BLOCK_SIZE))],
+        "remote_engine_id": "prefill-engine",
+        "remote_request_id": f"prefill-{request_id}",
+        "remote_host": "prefill-host",
+        "remote_port": 5600,
+        "tp_size": 1,
+    }
+    return request
+
+
+def test_decode_prefills_locally_once_the_kv_lease_may_have_lapsed(monkeypatch):
+    """A decode engine that did not step, e.g. paused for a weight update while the prefill engines kept serving, sent
+    no heartbeats, so the prefill engine may have reused the blocks it held: decode prefills that request itself
+    instead of reading them. A request that arrived since still reads its prompt's KV from the prefill engine."""
+    for cls, name in (
+        (pull_scheduler.NixlPullConnectorScheduler, "get_num_new_matched_tokens"),
+        (NixlBaseConnectorScheduler, "on_new_request"),
+    ):
+        monkeypatch.setattr(cls, name, getattr(cls, name))
+    monkey_patch_nixl_prefill_lapsed_remote_kv_locally()
+    config = InferenceConfig(deployment={"type": "disaggregated"}, slurm={})
+    scheduler = _scheduler(config.for_pd_role("decode").build_kv_transfer_config(), kv_role="kv_both")
+    nixl = scheduler.connector.connector_scheduler
+    now = [time.perf_counter()]
+    monkeypatch.setattr(time, "perf_counter", lambda: now[0])
+
+    paused_through, arrived_since = _decode_request(1, 3 * BLOCK_SIZE), _decode_request(2, 3 * BLOCK_SIZE)
+    scheduler.add_request(paused_through)
+    now[0] += nixl._kv_lease_duration
+    scheduler.add_request(arrived_since)
+    output = scheduler.schedule()
+
+    assert paused_through.status == RequestStatus.RUNNING
+    assert output.num_scheduled_tokens[paused_through.request_id] == 3 * BLOCK_SIZE
+    assert paused_through.request_id not in nixl._heartbeat_req_engine
+    assert arrived_since.status == RequestStatus.WAITING_FOR_REMOTE_KVS
+    assert arrived_since.request_id in nixl._heartbeat_req_engine

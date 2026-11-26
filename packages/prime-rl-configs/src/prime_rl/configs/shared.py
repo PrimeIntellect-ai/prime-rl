@@ -63,9 +63,10 @@ class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
 
     pull: bool = False
     """The engines pull each version themselves: they watch the broadcast dir, decode a sparse delta while serving
-    and apply the newest finished version in a short pause of their own. The trainer then waits for no consumer and
-    the orchestrator pauses no engine: it only reads the version each engine serves. Not supported yet with LoRA,
-    disaggregated P/D or draft swaps."""
+    and apply the newest finished version in a short pause of their own. The ranks of an expert-parallel DP group
+    switch together, moved by the group's first rank; groups switch independently. The trainer then waits for no
+    consumer and the orchestrator pauses no engine: it only reads the version each engine serves. Not supported yet
+    with LoRA or draft swaps."""
 
 
 class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
