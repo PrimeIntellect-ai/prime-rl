@@ -163,6 +163,10 @@ def test_renders_what_vllm_renders(strategy):
         (STATE, QUESTIONS),
         ("Checkout fails.", {"c": {"type": "choice", "instructions": {"ask": "who?"}, "criteria": choices}}),
         ({"logs": "x" * 20000}, {"n": {"type": "noul"}, "s": {"type": "score", "criteria": ["a", "b", "c"]}}),
+        (
+            {"Kunde": "Zoë", "nachricht": "Die Zahlung schlägt fehl: 支払いエラー 🙃"},
+            {"é": {"type": "choice", "instructions": "Qui gère ça ?", "criteria": {"équipe": "Technik", "ä": None}}},
+        ),
     ]
     for state, questions in records:
         vllm_questions = [
