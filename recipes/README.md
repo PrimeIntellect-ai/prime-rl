@@ -112,6 +112,17 @@ Inkling 2 Small (TP8 + EP, online FP8 experts, 32k window, one node, synthetic a
 | 256 / 8,192 / 0.85 | 97k tokens | 2.4k tok/s, 10 s | collapses (1.0k at 256) |
 | **128 / 4,096 / 0.85** | 201k tokens | 2.5k tok/s, 10 s | 2.5k tok/s, 16 s |
 
+## SFT
+
+Each model also has an `sft.toml` (its trainer setup from `gpu/h200.toml` and sequence length from
+`rl.toml`) for SFT on `PrimeIntellect/INTELLECT-3-SFT-10K` (all six splits) with `data/sft.toml`:
+
+```bash
+uv run sft @ recipes/<model>/sft.toml @ recipes/data/sft.toml --slurm.partition <partition> --output-dir <shared-dir>
+```
+
+The SFT configs are not tested; they reuse the trainer setups fitted for RL.
+
 ## Fit a trainer
 
 `fake.toml` runs the trainer alone on fake 256k samples with random weights and balanced routing:

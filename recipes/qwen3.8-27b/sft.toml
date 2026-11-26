@@ -1,0 +1,24 @@
+# SFT for qwen3.8-27b: the model and the trainer setup of gpu/h200.toml (its trainer nodes,
+# parallelism, offload and precision), with the sequence length of rl.toml. Not tested as SFT.
+#
+#   uv run sft @ recipes/qwen3.8-27b/sft.toml @ recipes/data/sft.toml
+
+[model]
+name = "Qwen/Qwen3.8-27B"
+cp = 8
+ac_offloading = "None"
+
+[optim]
+type = "muon"
+
+[data]
+# Two packed rows per data-parallel rank per step (1 ranks at cp 8).
+batch_size = 2
+micro_batch_size = 1
+seq_len = 262144
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+
+[slurm]

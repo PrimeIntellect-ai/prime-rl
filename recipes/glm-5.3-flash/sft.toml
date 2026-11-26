@@ -1,0 +1,24 @@
+# SFT for glm-5.3-flash: the model and the trainer setup of gpu/h200.toml (its trainer nodes,
+# parallelism, offload and precision), with the sequence length of rl.toml. Not tested as SFT.
+#
+#   uv run sft @ recipes/glm-5.3-flash/sft.toml @ recipes/data/sft.toml
+
+[model]
+name = "zai-org/GLM-5.3-Flash-BF16"
+cp = 8
+ep = 8
+
+[optim]
+type = "muon"
+
+[data]
+# Two packed rows per data-parallel rank per step (6 ranks at cp 8).
+batch_size = 12
+micro_batch_size = 1
+seq_len = 262144
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 6
+
+[slurm]

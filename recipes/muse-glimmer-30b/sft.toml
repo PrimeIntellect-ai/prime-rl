@@ -1,0 +1,23 @@
+# SFT for muse-glimmer-30b: the model and the trainer setup of gpu/h200.toml (its trainer nodes,
+# parallelism, offload and precision), with the sequence length of rl.toml. Not tested as SFT.
+#
+#   uv run sft @ recipes/muse-glimmer-30b/sft.toml @ recipes/data/sft.toml
+
+[model]
+name = "meta-models/Muse-Glimmer-30B"
+cp = 4
+
+[optim]
+type = "muon"
+
+[data]
+# Two packed rows per data-parallel rank per step (2 ranks at cp 4).
+batch_size = 4
+micro_batch_size = 1
+seq_len = 262144
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+
+[slurm]
