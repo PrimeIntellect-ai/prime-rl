@@ -394,12 +394,12 @@ num_turns_weight = 0.0
 
 Subagent membership follows harness-declared `subagent_call`, `continuation`, `compaction_attempt`, and `compaction` edges, including nested subagents at the same weight. Return, cancel, message, and unknown edges do not propagate membership. Calls without subagent attribution count fully. Root coordination tokens still count. The multiplier does not change the turns term, training-token weights, or the length-weighted baseline's token counts; set `num_turns_weight = 0` to disable the turns term, as above.
 
-The `cost` penalty charges each rollout for its own cost instead of against its group: its reward becomes $r - \min(1, \lambda C / 1000)$, with $C = w_{out} \cdot \text{output} + w_{in} \cdot \text{input}$ in tokens (input is new input, counted once, as the `linear` penalty counts it) and $\lambda$ the `weight`. This is the $R = S - \lambda_e C$ of Cognition's SWE-2: set $\lambda_e$ per source to the slope of the base model's reward-vs-cost Pareto curve at that source's reasoning effort, so that moving along the curve leaves the objective unchanged to first order and only pushing the curve up raises it. It applies to every rollout, solved or not, and does not scale with the group's pass rate. The penalty is linear, so a token budget would only rescale $\lambda$.
+The `cost` penalty charges each rollout for its own cost instead of against its group: its reward becomes $r - \min(1, \lambda C)$, with $C = w_{out} \cdot \text{output} + w_{in} \cdot \text{input}$ in tokens (input is new input, counted once, as the `linear` penalty counts it; subagent tokens count like the main agent's) and $\lambda$ the `weight`, in reward per cost token. This is the $R = S - \lambda_e C$ of Cognition's SWE-2: set $\lambda_e$ per source to the slope of the base model's reward-vs-cost Pareto curve at that source's reasoning effort, so that moving along the curve leaves the objective unchanged to first order and only pushing the curve up raises it. It applies to every rollout, solved or not, and does not scale with the group's pass rate. The penalty is linear, so a token budget would only rescale $\lambda$.
 
 ```toml
 [orchestrator.train.source.algo.length_penalty]
 type = "cost"
-weight = 0.0041              # reward per 1,000 cost tokens (lambda_e)
+weight = 4e-6                # reward per cost token (lambda_e)
 num_output_tokens_weight = 1.0
 num_input_tokens_weight = 0.25
 ```

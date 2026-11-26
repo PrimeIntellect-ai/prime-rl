@@ -81,17 +81,17 @@ class GRPOAlgorithm(Algorithm):
             shaped_rewards = rewards
         elif isinstance(length_penalty, CostLengthPenaltyConfig):
             # Each rollout pays for its own cost: no group normalization, no pass-rate scaling.
-            subagent_weight = length_penalty.subagent_token_weight
+            # Subagent tokens count like the main agent's.
             lengths = [trace.length_tokens for trace in traces]
             cost = torch.tensor(
                 [
-                    length_penalty.num_output_tokens_weight * (length.output + subagent_weight * length.subagent_output)
-                    + length_penalty.num_input_tokens_weight * (length.input + subagent_weight * length.subagent_input)
+                    length_penalty.num_output_tokens_weight * (length.output + length.subagent_output)
+                    + length_penalty.num_input_tokens_weight * (length.input + length.subagent_input)
                     for length in lengths
                 ],
                 dtype=torch.float64,
             )
-            penalty = (length_penalty.weight * cost / 1000).clamp(0, 1)
+            penalty = (length_penalty.weight * cost).clamp(0, 1)
             shaped_rewards = rewards - penalty.to(rewards.dtype)
         else:
             subagent_weight = (

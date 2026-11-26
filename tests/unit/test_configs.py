@@ -348,7 +348,7 @@ def test_toml_discriminated_union_switch_variant(tmp_path):
         ({"type": "linear"}, LinearLengthPenaltyConfig),
         ({"type": "linear-subagent"}, LinearSubagentLengthPenaltyConfig),
         ({"type": "linear-subagent", "subagent_token_weight": 0.2}, LinearSubagentLengthPenaltyConfig),
-        ({"type": "cost", "weight": 0.0041, "num_input_tokens_weight": 0.25}, CostLengthPenaltyConfig),
+        ({"type": "cost", "weight": 4e-6, "num_input_tokens_weight": 0.25}, CostLengthPenaltyConfig),
     ],
 )
 def test_length_penalty_variants_are_opt_in(tmp_path, penalty, expected_type):
@@ -360,8 +360,6 @@ def test_length_penalty_variants_are_opt_in(tmp_path, penalty, expected_type):
     assert from_toml.length_penalty == direct.length_penalty
     if expected_type is LinearSubagentLengthPenaltyConfig:
         assert direct.length_penalty.subagent_token_weight == penalty.get("subagent_token_weight", 0.0)
-    elif expected_type is CostLengthPenaltyConfig:
-        assert direct.length_penalty.subagent_token_weight == 1.0
     else:
         assert "subagent_token_weight" not in direct.length_penalty.model_dump()
     with pytest.raises(ValidationError):
@@ -369,8 +367,9 @@ def test_length_penalty_variants_are_opt_in(tmp_path, penalty, expected_type):
     for bad in (
         {},
         {"weight": -1},
-        {"weight": 0.004, "num_input_tokens_weight": -0.25},
-        {"weight": 0.004, "alpha": 1.5},
+        {"weight": 4e-6, "num_input_tokens_weight": -0.25},
+        {"weight": 4e-6, "alpha": 1.5},
+        {"weight": 4e-6, "subagent_token_weight": 0.0},
     ):
         with pytest.raises(ValidationError):
             GRPOAlgoConfig.model_validate({"length_penalty": {"type": "cost", **bad}})

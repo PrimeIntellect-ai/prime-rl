@@ -98,8 +98,9 @@ class LinearSubagentLengthPenaltyConfig(LinearLengthPenaltyConfig):
 
 class CostLengthPenaltyConfig(BaseConfig):
     """Linear cost penalty subtracted from every rollout's reward before the GRPO baseline:
-    ``r - clip(weight * cost / 1000, 0, 1)``, with
-    ``cost = num_output_tokens_weight * output + num_input_tokens_weight * input`` in tokens. The reward
+    ``r - clip(weight * cost, 0, 1)``, with
+    ``cost = num_output_tokens_weight * output + num_input_tokens_weight * input`` in tokens. Subagent tokens
+    count like the main agent's, so delegating work does not lower the cost. The reward
     ``R = S - lambda_e * C`` of Cognition's SWE-2, where ``weight`` is lambda_e for the source's reasoning
     effort, set to the slope of the base model's reward-vs-cost Pareto curve at that effort so that moving
     along the curve leaves the objective unchanged to first order. It neither scales with the group's pass
@@ -108,7 +109,7 @@ class CostLengthPenaltyConfig(BaseConfig):
     type: Literal["cost"] = "cost"
 
     weight: float = Field(ge=0, allow_inf_nan=False)
-    """lambda: reward subtracted per 1,000 cost tokens, before the clip to 1. 0 disables the penalty. Each
+    """lambda: reward subtracted per cost token, before the clip to 1 (e.g. 4e-6). 0 disables the penalty. Each
     source sets its own, so sources sampled at different reasoning efforts can each use their frontier slope."""
 
     num_output_tokens_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
@@ -117,9 +118,6 @@ class CostLengthPenaltyConfig(BaseConfig):
     num_input_tokens_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
     """Weight of a new input token in the cost: tokens the model conditioned on but did not generate (prompts,
     tool responses), each counted once per trainable branch, as the ``linear`` penalty counts them."""
-
-    subagent_token_weight: float = Field(1.0, ge=0, le=1, allow_inf_nan=False)
-    """Multiplier on subagent output and input tokens, as in ``linear-subagent``. 1 counts them fully."""
 
 
 LengthPenaltyConfig: TypeAlias = Annotated[
