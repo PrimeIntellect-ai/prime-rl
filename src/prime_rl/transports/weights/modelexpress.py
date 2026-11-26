@@ -40,9 +40,11 @@ class ModelExpressWeightSender(WeightSender):
         self._trainer: ModelExpressTrainerClient | None = None
         self._control: ModelExpressControlClient | None = None
         self._mesh_id: str | None = None
+        self._tensors: dict[str, torch.Tensor] = {}
 
     def _initialize(self, model: nn.Module) -> None:
-        tensors = model.state_dict()
+        tensors = self._tensors
+        tensors.update(model.state_dict())
         keep_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
         overrides = {name: torch.float32 for name in tensors if keep_fp32 is not None and keep_fp32(name)}
         os.environ["MX_METADATA_PORT"] = str(self.config.metadata_port)
@@ -90,6 +92,11 @@ class ModelExpressWeightSender(WeightSender):
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
         if self._trainer is None:
             self._initialize(model)
+        else:
+            # The trainer client keeps the dict bound at initialization and re-reads its values on every publish.
+            # A state dict entry can be a fresh copy on each call (a packed parameter split across FSDP shards),
+            # so refresh the values in place instead of publishing the copies from the first broadcast.
+            self._tensors.update(model.state_dict())
         assert self._trainer is not None
         offered = None
         if self.world.is_master:
