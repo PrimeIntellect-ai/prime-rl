@@ -433,7 +433,7 @@ wheels = [
 
 [[package]]
 name = "apex-agents"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "deps/prime-envs/environments/tool_use/apex_agents" }
 dependencies = [
     { name = "prime-sandboxes" },
