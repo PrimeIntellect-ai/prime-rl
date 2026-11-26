@@ -40,7 +40,7 @@ def rl_sft_process(
         "run",
         "rl",
         "@",
-        "configs/ci/integration/reverse-text-rl-sft/start.toml",
+        "tests/integration/configs/reverse-text-rl-sft/start.toml",
         "--clean",
         "--monitors.wandb.project",
         wandb_project,

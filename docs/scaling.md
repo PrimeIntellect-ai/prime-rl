@@ -237,8 +237,8 @@ Then add nodes instead of CP (`cp = 1`) and run one full-length sequence per GPU
 
 Examples:
 
-- [`examples/advanced/qwen3-235b-a22b/sft-max-perf.toml`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/qwen3-235b-a22b): Qwen3-235B-A22B SFT on 4 x 8 B300 at 16k, around 46% MFU.
-- [`examples/advanced/glm-5.3/sft/h200/16k-12-node.toml`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/glm-5.3/sft/h200): the same recipe as an overlay for GLM-5.3 SFT on 12 H200 nodes.
+- [`recipes/qwen3-235b-a22b/sft-max-perf.toml`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes/qwen3-235b-a22b): Qwen3-235B-A22B SFT on 4 x 8 B300 at 16k, around 46% MFU.
+- [`recipes/glm-5.3/sft/h200/16k-12-node.toml`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes/glm-5.3/sft/h200): the same recipe as an overlay for GLM-5.3 SFT on 12 H200 nodes.
 
 ## SLURM
 
@@ -295,11 +295,11 @@ gpus_per_node = 8
 
 ### Examples
 
-Full multi-node configs ship under [`examples/advanced/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced) and [`configs/advanced/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/configs/advanced):
+Full multi-node configs ship under [`recipes/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes):
 
-- [`configs/advanced/nemotron-3-super/swe.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/configs/advanced/nemotron-3-super/swe.toml) — 4 trainer + 1 inference node RL on a 120B hybrid-Mamba MoE with NCCL weight broadcast.
-- [`glm-5.3/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/glm-5.3) — large-scale and P/D-disaggregated inference across the GLM-5 family.
-- [`glm-4.5-air/swe-2-node.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/advanced/glm-4.5-air/swe-2-node.toml) — train a 100B+ MoE on only two nodes: a single-node sign-SGD trainer (full optimizer offload) paired with one inference replica at batch size 64. An overlay on the shared `swe-budget.toml` base — launch with `uv run rl @ swe-budget.toml @ swe-2-node.toml`.
+- [`nemotron-3-super/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes/nemotron-3-super) — 2 trainer + 4 inference node RL on a 120B hybrid-Mamba MoE at 256k context.
+- [`glm-5.3/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes/glm-5.3) — large-scale and P/D-disaggregated inference across the GLM-5 family.
+- [`glm-4.5-air/swe-2-node.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/recipes/glm-4.5-air/swe-2-node.toml) — train a 100B+ MoE on only two nodes: a single-node sign-SGD trainer (full optimizer offload) paired with one inference replica at batch size 64. An overlay on the shared `swe-budget.toml` base — launch with `uv run rl @ swe-budget.toml @ swe-2-node.toml`.
 
 For inference-only multi-node, set `[deployment] type = "multi_node"` on an inference TOML — each node runs an independent vLLM replica (TP and DP must fit within one node), fronted by a single global router on node 0. Point clients at the router URL the launcher prints.
 

@@ -1,7 +1,7 @@
 # H200 overlay for rl.toml: 6 trainer nodes and 6 one-node inference replicas, FP8 on the routed
 # experts on both sides. Trainer fit on fake 16k samples (6 nodes, ep 8, full offload, Sign-SGD):
 # 41.7k tok/s (870 per GPU), 107.6 GiB peak allocated. RL not tested in this layout; the inference
-# settings come from examples/advanced/inkling2/{math-rl,swe-rl}.toml, which ran 6 trainer nodes and
+# settings come from {math-rl,swe-rl}.toml in this folder, which ran 6 trainer nodes and
 # 2 inference replicas.
 #
 #   uv run rl @ recipes/inkling-2-small/rl.toml @ recipes/inkling-2-small/gpu/h200.toml @ recipes/fake.toml --trainer.model.debug.force-balanced-routing --trainer.data.fake.batch-size 48

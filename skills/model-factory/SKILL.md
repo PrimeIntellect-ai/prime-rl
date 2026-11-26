@@ -78,7 +78,7 @@ artifacts as the default recipe.
 | --- | --- |
 | Small RL run | [examples/basic/reverse-text/rl.toml](../../examples/basic/reverse-text/rl.toml) |
 | SFT | [examples/basic/reverse-text/sft.toml](../../examples/basic/reverse-text/sft.toml) |
-| Larger model or environment | Select a matching checked-in TOML under [examples/advanced](../../examples/advanced) |
+| Larger model or environment | Select a matching checked-in TOML under [recipes](../../recipes) |
 
 ```bash
 prime train models --plain -o json
