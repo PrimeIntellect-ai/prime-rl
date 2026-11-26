@@ -159,14 +159,25 @@ def _length_penalty_tokens(trace: vf.Trace, subagent_token_weight: float) -> tup
     return output + subagent_token_weight * subagent_output, input + subagent_token_weight * subagent_input
 
 
-def _grpo(group: list[vf.Episode], length_penalty=None, length_weighted_baseline=False) -> list[float]:
+def _grpo(
+    group: list[vf.Episode], length_penalty=None, length_weighted_baseline=False, violation_reward=None
+) -> list[float]:
     """Drive ``GRPOAlgorithm.score_group`` over the group's heads and read back each per-rollout scalar."""
-    algo = GRPOAlgorithm(
-        GRPOAlgoConfig(length_penalty=length_penalty, length_weighted_baseline=length_weighted_baseline), clients=None
+    config = GRPOAlgoConfig(
+        length_penalty=length_penalty,
+        length_weighted_baseline=length_weighted_baseline,
+        violation_reward=violation_reward,
     )
     heads = [episode_head(episode) for episode in group]
-    asyncio.run(algo.score_group(heads))
+    asyncio.run(GRPOAlgorithm(config, clients=None).score_group(heads))
     return [_scalar(head) for head in heads]
+
+
+def _skip_scoring(episode: vf.Episode, reason: str) -> None:
+    """Mark the trace as verifiers leaves one whose task scoring it skipped: no rewards, the reason in info."""
+    trace = episode.traces[0]
+    trace.rewards = {}
+    trace.info["scoring_skipped"] = reason
 
 
 def _max_rl(group: list[vf.Episode]) -> list[float]:
@@ -212,6 +223,25 @@ def test_grpo_length_weighted_baseline():
     ]
     advs = _grpo(group, length_penalty=cfg, length_weighted_baseline=True)
     assert advs == pytest.approx([0.75 - 65 / 120, -1 / 12 - 65 / 120])
+
+
+def test_grpo_violation_reward():
+    def group(lengths=(1, 1, 1)):
+        # a success, a scored failure, and a rollout whose scoring was skipped
+        episodes = [_make_episode(1.0, lengths[0]), _make_episode(0.0, lengths[1]), _make_episode(0.0, lengths[2])]
+        _skip_scoring(episodes[2], "truncated")
+        return episodes
+
+    # unset, a skipped rollout scores 0 like the failure
+    assert _grpo(group()) == pytest.approx([2 / 3, -1 / 3, -1 / 3])
+    # -0.1 ranks it under the failure: b = (1 + 0 - 0.1) / 3 = 0.3
+    assert _grpo(group(), violation_reward=-0.1) == pytest.approx([0.7, -0.3, -0.4])
+    # the length penalty skips it, and its pass_rate counts it as 0:
+    # penalty = (1 / 3) * 0.5 * L / max(L) with L = [10, 20, 40], shaped = [1 - 1 / 24, -1 / 12, -0.1]
+    cfg = LinearLengthPenaltyConfig(num_output_tokens_weight=0.5, num_input_tokens_weight=0.0, num_turns_weight=0.0)
+    shaped = [1 - 1 / 24, -1 / 12, -0.1]
+    advs = _grpo(group(lengths=(10, 20, 40)), length_penalty=cfg, violation_reward=-0.1)
+    assert advs == pytest.approx([s - sum(shaped) / 3 for s in shaped])
 
 
 def test_max_rl_mean_normalized():
