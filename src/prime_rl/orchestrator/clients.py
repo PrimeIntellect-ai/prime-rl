@@ -344,6 +344,8 @@ class AdminPlane:
             for result in results:
                 if isinstance(result, BaseException):
                     raise result
+            if self.after_transfer is not None:
+                await self.after_transfer()
             resume_times = await _resume_engines(self.clients)
             self.update_times = {"pause": pause_times, "transfer": results, "resume": resume_times}
 

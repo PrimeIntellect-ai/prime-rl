@@ -119,6 +119,28 @@ def test_update_draft_weights_fails_fast_on_a_failed_load():
     asyncio.run(admin_plane.aclose())
 
 
+def test_modelexpress_update_swaps_the_draft_before_the_engines_resume():
+    events = []
+
+    async def post(path, **kwargs):
+        events.append(path)
+        return MagicMock()
+
+    async def swap_draft():
+        events.append("swap draft")
+
+    client = create_autospec(httpx.AsyncClient, instance=True)
+    client.post.side_effect = post
+    admin_plane = AdminPlane(ClientConfig())
+    admin_plane.clients = [client]
+    admin_plane.after_transfer = swap_draft
+
+    asyncio.run(admin_plane.update_modelexpress_weights(version_uid="v1", step=1))
+
+    assert events == ["/pause", "/update_weights_from_modelexpress", "swap draft", "/resume"]
+    asyncio.run(admin_plane.aclose())
+
+
 def test_pause_engines_pauses_prefill_before_decode():
     events = []
 

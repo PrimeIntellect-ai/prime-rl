@@ -13,6 +13,8 @@ from modelexpress_rl import (
 )
 from torch import nn
 
+from prime_rl.inference.vllm.worker.weight_transfer import WeightRPCMixin
+
 if TYPE_CHECKING:
     from vllm.v1.worker.gpu_worker import Worker
 else:
@@ -53,7 +55,7 @@ def keep_integer_parameters_as_buffers(model: nn.Module) -> list[str]:
     return moved
 
 
-class ModelExpressWeightUpdateWorker(Worker):
+class ModelExpressWeightUpdateWorker(WeightRPCMixin, Worker):
     def liveness_probe(self) -> None:
         return None
 

@@ -32,7 +32,8 @@ staging_buffers_count = 2          # overlap the next read with the current inst
 - Trainer rank 0 and the orchestrator must share the broadcast directory, which holds only rendezvous markers, not weights.
 - MX transfers floating-point tensors only. Integer tensors are lookup tables that training never changes, such as DeepSeek-V4's hash-routing table `tid2eid`: inference keeps the values it loaded from the checkpoint.
 - P/D deployments update like the other transports: prefill and decode GPUs form one transfer group. Each update pauses the prefill engines first, since a prefill engine's pause waits until decode has pulled the KV it holds, then the decode engines, installs the version on all of them and resumes them.
+- With speculative decoding, MX updates the target model and the draft keeps its own weights; a drafter that shares the target's embedding or LM head reads the updated ones. A draft swap (`[orchestrator.speculative_decoding] draft`, changed live) loads from disk at the next update, after the target is installed and before inference resumes.
 
 ## Limitations
 
-LoRA, speculative decoding, Dynamo discovery and SFT online evals are rejected at config validation. Pipeline parallelism is untested.
+LoRA, Dynamo discovery and SFT online evals are rejected at config validation. Pipeline parallelism is untested.
