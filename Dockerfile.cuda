@@ -58,26 +58,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends --force-yes \
     && ln -sf /usr/bin/python3.12 /usr/local/bin/python \
     && apt-get clean autoclean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-ARG UCX_VERSION=1.19.1
-RUN git clone --depth 1 --branch v${UCX_VERSION} https://github.com/openucx/ucx.git /tmp/ucx \
-    && cd /tmp/ucx \
-    && ./autogen.sh \
-    && ./configure \
-        --prefix=/opt/ucx \
-        --enable-shared \
-        --disable-static \
-        --disable-doxygen-doc \
-        --enable-optimizations \
-        --enable-cma \
-        --enable-devel-headers \
-        --enable-mt \
-        --with-verbs \
-        --with-cuda=/usr/local/cuda \
-        --with-ze=no \
-    && make -j"$(nproc)" \
-    && make install \
-    && rm -rf /tmp/ucx
-
 COPY --from=uv /uv /uvx /usr/local/bin/
 ENV PATH="/usr/local/bin:$PATH"
 # Build .venv against the system CPython, so the venv's recorded interpreter
@@ -96,46 +76,6 @@ COPY --from=manifests /manifests /app
 RUN --mount=type=cache,target=/usr/local/share/uv/cache \
     uv sync --all-packages --extra gpu --extra dashboard --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra disagg --extra quack --extra kernels --locked --no-dev \
         --no-install-local
-
-# Build NIXL from source against the UCX 1.19 baked above. The PyPI nixl wheel
-# ships its own UCX which segfaults on prefill→decode KV transfer (#2883);
-# rebuilding against our UCX is the documented fix. The rename is required: an
-# unrenamed source build is `nixl_cu12`, and the `nixl` shim imports nixl_cu13
-# (the PyPI wheel) first, so the fix would silently not apply. Libraries carry
-# RUNPATH=/opt/ucx/lib, so no LD_LIBRARY_PATH is needed at runtime.
-# Opt out via `--build-arg INCLUDE_NIXL_FROM_SOURCE=0`.
-#
-# NIXL's [build-system] requires are unpinned, so pip's build isolation picks up
-# new backends as they are released. meson-python 0.22.0 stopped keeping Meson's
-# build RPATH in wheel libraries, which dropped RUNPATH=/opt/ucx/lib and failed
-# the linkage check below on every build. Pin the validated backend. Only the
-# optional `nixl_ep` (off by default) builds against torch, so drop its pinned
-# torch from the build requires instead of downloading it into the build env.
-ARG INCLUDE_NIXL_FROM_SOURCE=1
-# NIXL tags carry a `v` prefix from 1.0 on.
-ARG NIXL_VERSION=v1.5.0
-ARG PIP_VERSION=26.3
-RUN --mount=type=cache,target=/usr/local/share/uv/cache \
-    if [ "$INCLUDE_NIXL_FROM_SOURCE" = "1" ]; then \
-        VIRTUAL_ENV=/app/.venv uv pip install "pip==${PIP_VERSION}" \
-        && git clone --depth 1 --branch ${NIXL_VERSION} https://github.com/ai-dynamo/nixl.git /tmp/nixl \
-        && cd /tmp/nixl \
-        && uv run --no-project --with tomlkit python contrib/tomlutil.py --wheel-name nixl-cu13 pyproject.toml \
-        && sed -i '/^requires = /s/, *"torch[^"]*"//' pyproject.toml \
-        && printf 'meson-python==0.21.1\n' > /tmp/nixl-build-constraints.txt \
-        && PKG_CONFIG_PATH=/opt/ucx/lib/pkgconfig \
-           /app/.venv/bin/python -m pip wheel . --no-deps --no-cache-dir --wheel-dir=/tmp/nixl-whl \
-               --build-constraint /tmp/nixl-build-constraints.txt \
-        && VIRTUAL_ENV=/app/.venv uv pip install --reinstall --no-deps /tmp/nixl-whl/nixl_cu13-*.whl \
-        && PLUGIN=/app/.venv/lib/python3.12/site-packages/.nixl_cu13.mesonpy.libs/plugins/libplugin_UCX.so \
-        && if ! ldd "$PLUGIN" | grep -q /opt/ucx/lib/libucp.so; then \
-               echo "ERROR: $PLUGIN does not link /opt/ucx/lib. RUNPATH and ldd output:" >&2; \
-               readelf -d "$PLUGIN" | grep -E 'RUNPATH|RPATH' >&2 || true; \
-               ldd "$PLUGIN" >&2; \
-               exit 1; \
-           fi \
-        && rm -rf /tmp/nixl /tmp/nixl-whl /tmp/nixl-build-constraints.txt; \
-    fi
 
 # Trim the CUDA toolkit to the nvcc-JIT essentials in a separate stage, so the runtime
 # COPY ships only the trimmed result (~1.5 GB) instead of the full ~6.6 GB. Drops the math
@@ -248,7 +188,6 @@ COPY --from=builder --chown=appuser:appuser /app/.venv/lib/python3.12/site-packa
 COPY --from=builder --chown=appuser:appuser /app/.venv/lib/python3.12/site-packages/vllm /app/.venv/lib/python3.12/site-packages/vllm
 COPY --from=builder --chown=appuser:appuser /app/.venv/lib/python3.12/site-packages/flash_attn /app/.venv/lib/python3.12/site-packages/flash_attn
 COPY --from=builder --chown=appuser:appuser /app/.venv/lib/python3.12/site-packages/flash_attn_2_cuda*.so /app/.venv/lib/python3.12/site-packages/
-COPY --from=builder /opt/ucx /opt/ucx
 
 COPY --from=builder --chown=appuser:appuser \
     --exclude=lib/python3.12/site-packages/nvidia \
@@ -261,8 +200,6 @@ RUN /app/.venv/bin/python -c 'from importlib.metadata import version; [version(n
 
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH"
-ENV UCX_HOME=/opt/ucx
-ENV LD_LIBRARY_PATH="/opt/ucx/lib:/opt/ucx/lib/ucx${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
 # HuggingFace Hub timeouts (defaults are 10s which causes issues on slow networks)
 ENV HF_HUB_ETAG_TIMEOUT=500
