@@ -496,26 +496,35 @@ def barrier_orchestrator(tmp_path, monkeypatch, events: list) -> Orchestrator:
         snapshots=ledger,
         fork_writer=lambda state, work, step, freeze: 42,
     )
-    o.open_work = lambda restores: {"restores": restores}
+    o.open_work = lambda restores: {"restores": restores, "batch": None}
     monkeypatch.setattr(orchestrator_module, "build_state", lambda *args: {})
     return o
 
 
 def test_the_publish_barrier_ends_before_the_arrays_are_written(tmp_path, monkeypatch):
-    """The hook at the publish barrier returns once the pipeline is recorded and the
-    saved rollouts go on, so the trainer's broadcast completes. The checkpoint's
-    training arrays are written afterwards, with the sink still locked."""
+    """The hook at the publish barrier returns once the pipeline is recorded, the
+    saved rollouts go on and the arrays of the cut batch are written: the trainer
+    frees those once its broadcast completes and it took the batch. The other training
+    arrays are written afterwards, with the sink still locked."""
 
     async def run():
         events: list = []
         o = barrier_orchestrator(tmp_path, monkeypatch, events)
+        batch = SimpleNamespace(samples=[SimpleNamespace(url="http://worker", id="a")])
+        o.open_work = lambda restores: {"restores": restores, "batch": batch}
         persisting, written = asyncio.Event(), asyncio.Event()
 
-        async def persist(work: dict, rollouts) -> tuple[int, int]:
+        async def persist_arrays(refs: dict, rollouts) -> int:
+            events.append(("batch", {url: sorted(ids) for url, ids in refs.items()}))
+            return 1
+
+        async def persist(work: dict, rollouts, skip) -> tuple[int, int]:
+            assert skip == {"http://worker": {"a"}}
             persisting.set()
             await written.wait()
             return 1, 1
 
+        monkeypatch.setattr(orchestrator_module, "persist_arrays", persist_arrays)
         monkeypatch.setattr(orchestrator_module, "persist_open_work", persist)
         finished = []
 
@@ -524,7 +533,7 @@ def test_the_publish_barrier_ends_before_the_arrays_are_written(tmp_path, monkey
 
         o.finish_rollout_ckpt = finish
         await asyncio.wait_for(o.checkpoint_rollouts(1), 1)
-        assert events == [("save", 5), ("record", 1), "release"]
+        assert events == [("save", 5), ("record", 1), "release", ("batch", {"http://worker": ["a"]})]
         await persisting.wait()
         assert o.sink_lock.locked() and not o.ckpt_task.done()
         written.set()

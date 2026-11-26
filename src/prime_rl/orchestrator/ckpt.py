@@ -289,19 +289,39 @@ def payload_refs(work: dict) -> dict[str, set[str]]:
     return refs
 
 
-async def persist_open_work(work: dict, rollouts: Path) -> tuple[int, int]:
-    """Bring what ``work`` references into ``rollouts``, the directory its checkpoint
-    is written to: the env workers write the training arrays they keep in memory, the
-    arrays of an earlier checkpoint are linked, and so is the restore file of an
-    episode this run resumed and has not dispatched yet (if that file is gone, the
-    episode starts over). Returns how many arrays ``work`` needs and how many were
-    written."""
+def batch_refs(work: dict) -> dict[str, set[str]]:
+    """The training arrays of the batch in ``work`` that was cut but not taken by the
+    trainer, as blob ids by the URL that serves them. The trainer frees them once it
+    fetched the batch."""
+    refs: dict[str, set[str]] = defaultdict(set)
+    if work["batch"] is not None:
+        for sample in work["batch"].samples:
+            refs[sample.url].add(sample.id)
+    return refs
+
+
+async def persist_arrays(refs: dict[str, set[str]], rollouts: Path) -> int:
+    """Have the training arrays ``refs`` names written to the checkpoint directory
+    ``rollouts``: the env workers write the ones they keep in memory, and the arrays of
+    an earlier checkpoint are linked. Returns how many were written."""
     rollouts.mkdir(parents=True, exist_ok=True)
-    refs = payload_refs(work)
     urls = sorted(refs)
     written = await asyncio.gather(
         *(asyncio.to_thread(persist_payloads, url, rollouts / ARRAYS_DIR, sorted(refs[url])) for url in urls)
     )
+    return sum(map(len, written))
+
+
+async def persist_open_work(work: dict, rollouts: Path, skip: dict[str, set[str]] | None = None) -> tuple[int, int]:
+    """Bring what ``work`` references into ``rollouts``, the directory its checkpoint
+    is written to: its training arrays (``persist_arrays``), except those in ``skip``,
+    which were written before, and the restore file of an episode this run resumed
+    and has not dispatched yet (if that file is gone, the episode starts over).
+    Returns how many arrays it needs, besides ``skip``, and how many were written."""
+    refs = payload_refs(work)
+    if skip:
+        refs = {url: ids - skip.get(url, set()) for url, ids in refs.items()}
+    written = await persist_arrays(refs, rollouts)
     for episode in work["episodes"]:
         if episode.restore is None:
             continue
@@ -311,7 +331,7 @@ async def persist_open_work(work: dict, rollouts: Path) -> tuple[int, int]:
             episode.restore.path = str(target)
         else:
             episode.restore = None
-    return sum(map(len, refs.values())), sum(map(len, written))
+    return sum(map(len, refs.values())), written
 
 
 def _dump_episode(episode: EpisodeHead) -> dict:
