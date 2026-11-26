@@ -505,10 +505,10 @@ class RLConfig(BaseConfig):
     def validate_weight_broadcast_interval(self):
         """Batches late in a broadcast interval train on rollouts at least ``interval - 1`` steps stale; past
         ``max_staleness`` every token is masked and the batch never fills."""
-        interval = self.trainer.weight_broadcast_interval
+        interval = self.weight_broadcast.interval
         if interval - 1 > self.orchestrator.max_staleness:
             raise ValueError(
-                f"trainer.weight_broadcast_interval - 1 ({interval - 1}) must not exceed "
+                f"weight_broadcast.interval - 1 ({interval - 1}) must not exceed "
                 f"orchestrator.max_staleness ({self.orchestrator.max_staleness})"
             )
         return self
@@ -520,7 +520,7 @@ class RLConfig(BaseConfig):
         if "max_policy_lag" in self.orchestrator.model_fields_set:
             return self
         self.orchestrator = self.orchestrator.model_copy(
-            update={"max_policy_lag": self.trainer.weight_broadcast_interval}
+            update={"max_policy_lag": self.weight_broadcast.interval}
         )
         return self
 

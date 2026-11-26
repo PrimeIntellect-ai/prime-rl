@@ -779,7 +779,7 @@ def train(config: TrainerConfig):
 
         # Broadcast the model just produced (policy v{progress.step}). The final
         # broadcast keeps inference synchronized with the completed trainer.
-        skip_broadcast = progress.step % config.weight_broadcast_interval != 0 and not is_last_step
+        skip_broadcast = progress.step % config.weight_broadcast.interval != 0 and not is_last_step
         if weight_sender is None or progress.step <= published or skip_broadcast:
             broadcast_weights_time = 0
         else:

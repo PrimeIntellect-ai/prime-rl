@@ -44,6 +44,11 @@ class BaseWeightBroadcastConfig(BaseConfig):
     for the trainer's startup broadcast. The trainer fails the run when no consumer acknowledges an
     offered version in time. Raise it for large models on slow shared filesystems."""
 
+    interval: int = Field(1, ge=1)
+    """RL only: broadcast the policy every ``interval`` trainer steps (and on the last step). Between broadcasts the
+    engines keep sampling from an older policy, so rollouts reach the trainer up to ``interval - 1`` steps staler: for
+    staleness experiments."""
+
 
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"

@@ -127,7 +127,7 @@ class WeightSender(ABC):
     def _clean(self, step: int) -> None:
         """Remove old broadcast dirs, keeping ``step`` and the broadcast before
         it, whatever its step (a lagging consumer may still be reading it; with
-        ``trainer.weight_broadcast_interval`` > 1 it is not ``step - 1``).
+        ``weight_broadcast.interval`` > 1 it is not ``step - 1``).
         Broadcasts are purely transitive — run state persistence is the checkpoint's job."""
         broadcast_dir = get_broadcast_dir(self.output_dir)
         old_steps = sorted(old_step for old_step in get_all_ckpt_steps(broadcast_dir) if old_step < step)

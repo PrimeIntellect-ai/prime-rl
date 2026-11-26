@@ -580,7 +580,7 @@ class OrchestratorConfig(BaseConfig):
 
     max_policy_lag: int = Field(1, ge=1)
     """Shipped batches the engines may run behind the trainer's policy before the dispatcher pauses. Unless set, the
-    rl entrypoint sets it to ``trainer.weight_broadcast_interval``, so skipped broadcasts don't starve dispatch; a
+    rl entrypoint sets it to ``weight_broadcast.interval``, so skipped broadcasts don't starve dispatch; a
     large value (with a large ``max_staleness``) keeps inference running however far the engines fall behind."""
 
     heartbeat: HeartbeatConfig | None = None
