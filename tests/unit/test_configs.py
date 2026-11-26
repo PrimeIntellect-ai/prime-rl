@@ -1889,6 +1889,23 @@ def test_shared_ckpt_rollouts_reaches_the_orchestrator(rollouts):
 def test_ckpt_rollouts_is_off_by_default():
     config = RLConfig.model_validate({"ckpt": {}, "trainer": {}, "orchestrator": {"renderer": {"name": "default"}}})
     assert config.orchestrator.ckpt.rollouts is False
+    assert config.orchestrator.ckpt.rollouts_save_timeout == 600
+
+
+def test_shared_ckpt_rollouts_save_timeout_reaches_the_orchestrator():
+    config = RLConfig.model_validate(
+        {
+            "ckpt": {"rollouts": True, "rollouts_save_timeout": 900},
+            "trainer": {},
+            "orchestrator": {"renderer": {"name": "default"}},
+        }
+    )
+    assert config.orchestrator.ckpt.rollouts_save_timeout == 900
+    assert RLConfig.model_validate_json(config.model_dump_json()) == config
+    with pytest.raises(ValueError):
+        RLConfig.model_validate(
+            {"ckpt": {"rollouts_save_timeout": 0}, "trainer": {}, "orchestrator": {"renderer": {"name": "default"}}}
+        )
 
 
 def test_shared_ckpt_reaches_trainer_and_orchestrator():

@@ -83,6 +83,7 @@ def propagate_shared_fields(data: Any) -> Any:
     for leaf in ("output_dir", "interval", "keep_last", "keep_interval"):
         propagate(f"ckpt.{leaf}", f"trainer.ckpt.{leaf}", f"orchestrator.ckpt.{leaf}")
     propagate("ckpt.rollouts", "orchestrator.ckpt.rollouts")
+    propagate("ckpt.rollouts_save_timeout", "orchestrator.ckpt.rollouts_save_timeout")
     propagate("ckpt.async_save", "trainer.ckpt.async_save")
 
     # [monitors.wandb] leaves. (Bare empty ``[monitors.wandb]`` block enablement is at the end.)
