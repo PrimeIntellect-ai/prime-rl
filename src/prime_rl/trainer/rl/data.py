@@ -293,6 +293,11 @@ class StepPrefetcher:
     def take(self) -> None:
         """Request the current step and block until the orchestrator handed it over."""
         self.taken.clear()
+        # The thread sets the error before `taken` and then exits: an error from before the
+        # clear shows here, and one from after it sets `taken` again, so this never waits on a
+        # thread that is gone.
+        if self.error is not None:
+            raise self.error
         self.take_requested.set()
         self.taken.wait()
         if self.error is not None:
