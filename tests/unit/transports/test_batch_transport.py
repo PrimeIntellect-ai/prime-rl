@@ -95,6 +95,36 @@ async def _send(sender: BatchSender, receivers: list[BatchReceiver]) -> None:
         assert _received_tokens(receiver) == [step]
 
 
+def _poll_until_offered(receiver: BatchReceiver) -> None:
+    deadline = time.monotonic() + 10
+    while not receiver.poll():
+        assert time.monotonic() < deadline, "the step was never offered"
+
+
+@pytest.mark.parametrize("setup_transport", [_filesystem, _zmq], ids=["filesystem", "zmq"])
+def test_a_step_is_offered_before_the_trainer_takes_it(
+    tmp_path: Path, setup_transport: Callable[..., tuple[BatchSender, list[BatchReceiver], object]]
+):
+    """Ranks hold the next step while they still train the last one; the step counts as sent
+    only once every rank requested it."""
+    sender, receivers, _ = setup_transport(tmp_path)
+    # The ZMQ sender offers on the connections the previous step's requests came on.
+    asyncio.run(_send(sender, receivers))
+
+    async def offer_then_take() -> None:
+        send = asyncio.create_task(sender.send(_batch(1)))
+        await asyncio.wait_for(asyncio.gather(*(asyncio.to_thread(_poll_until_offered, r) for r in receivers)), 10)
+        assert not send.done()
+        assert [receiver.batch() for receiver in receivers] == [_batch(1)] * WORLD_SIZE
+        await asyncio.wait_for(asyncio.gather(send, *(asyncio.to_thread(r.wait) for r in receivers)), 10)
+
+    asyncio.run(offer_then_take())
+    assert [receiver.receive() for receiver in receivers] == [_batch(1)] * WORLD_SIZE
+    assert sender.current_step == 2
+    for transport in [sender, *receivers]:
+        transport.close()
+
+
 @pytest.mark.parametrize(
     "setup_transport, setup_receivers",
     [(_filesystem, _filesystem_receivers), (_zmq, _zmq_receivers)],

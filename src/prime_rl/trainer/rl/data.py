@@ -1,6 +1,9 @@
+import queue
+import threading
 import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import NotRequired, TypedDict
 
@@ -19,7 +22,7 @@ from prime_rl.transports.batch import (
     TransportConfig,
     setup_batch_receiver,
 )
-from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES, SamplerSupport
+from prime_rl.transports.batch.types import MICRO_BATCH_DTYPES, SamplerSupport, StepBatch
 from prime_rl.transports.payload import (
     delete_payloads,
     mark_trained,
@@ -236,9 +239,77 @@ def drop_micro_batches(micro_batches: list[TensorMicroBatch], indices: list[int]
                 micro_batch[name] = torch.zeros_like(micro_batch[name])
 
 
+@dataclass
+class PreparedStep:
+    """One step's micro batches for this rank, planned and built from the fetched samples."""
+
+    step: int
+    digest: int
+    """The digest of the step's plans for every data rank (`plan_digest`)."""
+    micro_batches: list[MicroBatch]
+    failed: list[int]
+    unbuildable: list[int]
+    urls: list[str]
+    ahead: bool
+    """Prepared before the trainer took the step, while it trained the one before."""
+
+
+class StepPrefetcher:
+    """Prepares each step on a thread of its own, which owns the step receiver.
+
+    As soon as the orchestrator offers a step, the thread plans it and builds this rank's micro
+    batches, while the trainer still trains the step before. The trainer takes the step at its
+    boundary (`take`): that request is still when the orchestrator learns the trainer took it.
+    A step the orchestrator has not offered by then is prepared once it arrives."""
+
+    def __init__(self, receiver: BatchReceiver, prepare: Callable[[StepBatch, int, bool], PreparedStep]):
+        self.receiver = receiver
+        self.prepare = prepare
+        self.take_requested = threading.Event()
+        self.taken = threading.Event()
+        self.prepared: queue.SimpleQueue[PreparedStep | BaseException] = queue.SimpleQueue()
+        self.error: BaseException | None = None
+        threading.Thread(target=self._run, name="step-prefetch", daemon=True).start()
+
+    def _run(self) -> None:
+        try:
+            while True:
+                step, prepared = self.receiver.current_step, None
+                while not self.take_requested.is_set():
+                    if prepared is not None:
+                        self.take_requested.wait()
+                    elif self.receiver.poll():
+                        prepared = self.prepare(self.receiver.batch(), step, True)
+                self.take_requested.clear()
+                self.receiver.wait()
+                batch = self.receiver.receive()
+                self.taken.set()
+                self.prepared.put(prepared if prepared is not None else self.prepare(batch, step, False))
+        except BaseException as error:
+            self.error = error
+            self.taken.set()
+            self.prepared.put(error)
+
+    def take(self) -> None:
+        """Request the current step and block until the orchestrator handed it over."""
+        self.taken.clear()
+        self.take_requested.set()
+        self.taken.wait()
+        if self.error is not None:
+            raise self.error
+
+    def next(self) -> PreparedStep:
+        """The step `take` took, once prepared."""
+        prepared = self.prepared.get()
+        if isinstance(prepared, BaseException):
+            raise prepared
+        return prepared
+
+
 class DataLoader:
     """Receives each step's samples from the orchestrator, plans the step's micro batches
-    for every data rank and builds this rank's from the samples the env worker pools keep."""
+    for every data rank and builds this rank's from the samples the env worker pools keep,
+    the next step while the trainer still trains the current one (`StepPrefetcher`)."""
 
     def __init__(
         self,
@@ -269,6 +340,7 @@ class DataLoader:
         """Failed multimodal micro batches of the last batch that cannot run the vision encoder."""
         self.payload_urls: list[str] = []
         """The last batch's fetched samples, for `release_payloads`."""
+        self.step = start_step
 
         self.receiver: BatchReceiver = setup_batch_receiver(
             output_dir,
@@ -281,13 +353,26 @@ class DataLoader:
         self.retain = config.retain
         self.stores: set[str] = set()
         """The rollout stores holding arrays of a step no checkpoint covers yet."""
+        self.prefetcher = StepPrefetcher(self.receiver, self._prepare)
 
     def wait_for_batch(self) -> None:
-        self.receiver.wait()
+        self.prefetcher.take()
 
     def get_batch(self) -> list[TensorMicroBatch]:
-        self.step = self.receiver.current_step
-        batch = self.receiver.receive()
+        prepared = self.prefetcher.next()
+        self.step = prepared.step
+        self.plan_digest = prepared.digest
+        self.failed_micro_batches, self.unbuildable_micro_batches = prepared.failed, prepared.unbuildable
+        self.payload_urls = prepared.urls
+        get_logger().debug(
+            f"Step {prepared.step}'s micro batches were {'ready' if prepared.ahead else 'built after'} "
+            "when the trainer took it"
+        )
+        return [self._micro_batch_to_tensor(micro_batch) for micro_batch in prepared.micro_batches]
+
+    def _prepare(self, batch: StepBatch, step: int, ahead: bool) -> PreparedStep:
+        """Plan the step for every data rank and build this rank's micro batches. Runs on the
+        prefetcher's thread."""
         start = time.perf_counter()
         plans_per_rank = prepare_batch(
             batch.samples,
@@ -298,21 +383,26 @@ class DataLoader:
             min_version=batch.min_version,
             pad_to_multiple_of=self.pad_to_multiple_of,
         )
-        self.plan_digest = plan_digest(plans_per_rank)
         plans = plans_per_rank[self.dp_rank]
         get_logger().debug(
-            f"Planned {len(plans)} micro batches per data rank from {len(batch.samples)} samples "
+            f"Planned {len(plans)} micro batches per data rank from {len(batch.samples)} samples of step {step} "
             f"in {format_time(time.perf_counter() - start)}"
         )
         start = time.perf_counter()
         materialized = materialize_micro_batches(plans, self.payload_pool)
-        micro_batches = materialized.micro_batches
-        self.failed_micro_batches, self.unbuildable_micro_batches = materialized.failed, materialized.unbuildable
-        self.payload_urls = materialized.urls
         get_logger().debug(
-            f"Fetched the samples of {len(micro_batches)} micro batches in {format_time(time.perf_counter() - start)}"
+            f"Fetched the samples of {len(materialized.micro_batches)} micro batches of step {step} "
+            f"in {format_time(time.perf_counter() - start)}"
         )
-        return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
+        return PreparedStep(
+            step=step,
+            digest=plan_digest(plans_per_rank),
+            micro_batches=materialized.micro_batches,
+            failed=materialized.failed,
+            unbuildable=materialized.unbuildable,
+            urls=materialized.urls,
+            ahead=ahead,
+        )
 
     def release_payloads(self) -> None:
         """Free the last batch's samples on the env workers. Call once every rank that may

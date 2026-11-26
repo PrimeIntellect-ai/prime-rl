@@ -6,7 +6,7 @@ import msgspec
 
 from prime_rl.transports.batch.base import BatchReceiver, BatchRequest, BatchSender, last_requested_at
 from prime_rl.transports.batch.types import StepBatch
-from prime_rl.utils.pathing import get_step_path, sync_wait_for_path
+from prime_rl.utils.pathing import get_step_path
 
 REQUEST_POLL_INTERVAL_S = 0.1
 
@@ -18,9 +18,9 @@ def write_atomic(path: Path, data: bytes) -> None:
 
 
 class FileSystemBatchSender(BatchSender):
-    """Filesystem-based sender that writes each step's samples to disk. Every trainer rank drops
-    its request into the step directory, and the step is published only once every rank's
-    request is there."""
+    """Filesystem-based sender that writes each step's samples to disk, offered as soon as they
+    are written. Every trainer rank drops its request into the step directory, and the step is
+    published only once every rank's request is there."""
 
     def __init__(self, output_dir: Path, current_step: int = 0, retain: bool = False):
         super().__init__(output_dir, retain)
@@ -31,6 +31,7 @@ class FileSystemBatchSender(BatchSender):
         orchestrator event loop stays responsive, and before the wait, so only the rename sits
         between the last request and the batch."""
         await asyncio.to_thread(self._encode_and_write, batch)
+        self.log.offer(self.current_step)
         wait_start = time.perf_counter()
         committed = await self._wait_for_requests()
         send_start = time.perf_counter()
@@ -63,20 +64,33 @@ class FileSystemBatchSender(BatchSender):
 
 
 class FileSystemBatchReceiver(BatchReceiver):
-    """Filesystem-based receiver that reads each step's samples from disk."""
+    """Filesystem-based receiver that reads each step's samples from disk: its offer before
+    the step is requested, its published file after."""
 
     def __init__(self, output_dir: Path, rank: int, world_size: int, current_step: int = 0):
         super().__init__(output_dir, rank, world_size, current_step)
 
+    def poll(self) -> bool:
+        deadline = time.monotonic() + self.poll_interval
+        while self.payload is None:
+            self.payload = self.log.read(self.current_step)
+            self.published = self.payload is not None
+            if self.payload is None:
+                self.payload = self.log.read_offer(self.current_step)
+            if self.payload is not None or time.monotonic() >= deadline:
+                break
+            time.sleep(REQUEST_POLL_INTERVAL_S / 10)
+        return self.payload is not None
+
     def wait(self) -> None:
-        """Request the current step, then wait for its file to appear on disk."""
+        """Request the current step, then wait for the sender to publish it."""
+        if self.published:
+            return
         step_path = get_step_path(self.log.dir, self.current_step)
         step_path.mkdir(parents=True, exist_ok=True)
         write_atomic(step_path / f"rank_{self.rank}.request", msgspec.msgpack.encode(self.request()))
-        sync_wait_for_path(self.log.path(self.current_step))
-
-    def receive(self) -> StepBatch:
-        """Read and return the step from disk."""
-        batch: StepBatch = self.decoder.decode(self.log.read(self.current_step))
-        self.current_step += 1
-        return batch
+        path = self.log.path(self.current_step)
+        while not path.exists():
+            time.sleep(REQUEST_POLL_INTERVAL_S / 2)
+        if self.payload is None:
+            self.payload = self.log.read(self.current_step)

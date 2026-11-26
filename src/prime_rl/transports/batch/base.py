@@ -1,3 +1,4 @@
+import os
 import shutil
 import time
 from abc import ABC, abstractmethod
@@ -20,6 +21,8 @@ class BatchRequest(msgspec.Struct):
     """The newest step a trainer checkpoint covers; a retaining sender releases the steps up to it."""
     requested_at: float = 0.0
     """Wall-clock time the rank asked (0: not reported). The trainer was busy until then."""
+    offered: bool = False
+    """The rank holds the step from its offer, so the sender hands it over without the bytes."""
 
 
 def last_requested_at(requests: list[BatchRequest]) -> float | None:
@@ -32,7 +35,7 @@ def last_requested_at(requests: list[BatchRequest]) -> float | None:
 class BatchLog:
     """Shipped steps on disk, one file per step (``<batch_dir>/step_<N>/batch.bin``). A step
     is written ahead of its delivery and published with it, so every published step is one
-    the trainer was handed."""
+    the trainer was handed. An offered step is readable before that, as ``offer.bin``."""
 
     def __init__(self, output_dir: Path):
         self.dir = get_batch_dir(output_dir)
@@ -43,6 +46,27 @@ class BatchLog:
     def write(self, step: int, payload: bytes) -> None:
         get_step_path(self.dir, step).mkdir(parents=True, exist_ok=True)
         self.path(step).with_suffix(".bin.tmp").write_bytes(payload)
+
+    def offer(self, step: int) -> None:
+        """Make the written step readable ahead of its delivery, as the same file where the
+        filesystem links (``offer.bin``)."""
+        written, offer = self.path(step).with_suffix(".bin.tmp"), self.offer_path(step)
+        linked = offer.with_name(".offer.bin.tmp")
+        linked.unlink(missing_ok=True)
+        try:
+            os.link(written, linked)
+        except OSError:
+            shutil.copyfile(written, linked)
+        linked.replace(offer)
+
+    def offer_path(self, step: int) -> Path:
+        return get_step_path(self.dir, step) / "offer.bin"
+
+    def read_offer(self, step: int) -> bytes | None:
+        try:
+            return self.offer_path(step).read_bytes()
+        except FileNotFoundError:
+            return None
 
     def publish(self, step: int) -> None:
         path = self.path(step)
@@ -64,10 +88,12 @@ class BatchLog:
 class BatchSender(ABC):
     """Base class for sending a step's samples from the orchestrator to the trainer ranks.
 
-    Trainer ranks pull: a step goes out only once every trainer rank requested it, so the
-    trainer only ever holds the batch it is training on, and the last step sent is always the
-    one the trainer is on. Every rank gets the same bytes and plans its own micro batches, so
-    the sender knows nothing of the trainer's layout."""
+    Trainer ranks pull: a step counts as sent only once every trainer rank requested it, so the
+    last step sent is always the one the trainer is on. The sender offers each step's bytes as
+    soon as it has the step, so a rank can plan and build its micro batches while it still
+    trains the step before; the request still marks when the trainer took the step. Every rank
+    gets the same bytes and plans its own micro batches, so the sender knows nothing of the
+    trainer's layout."""
 
     def __init__(self, output_dir: Path, retain: bool = False):
         self.logger = get_logger()
@@ -82,8 +108,8 @@ class BatchSender(ABC):
 
     @abstractmethod
     async def send(self, batch: StepBatch) -> float:
-        """Send a step's samples to the trainer once every trainer rank requested the step.
-        Returns the seconds spent handing the step to the transport, excluding the wait."""
+        """Offer a step's samples to the trainer, and hand them over once every trainer rank
+        requested the step. Returns the seconds spent handing the step over, excluding the wait."""
         pass
 
     def close(self) -> None:
@@ -92,7 +118,12 @@ class BatchSender(ABC):
 
 
 class BatchReceiver(ABC):
-    """Base class for receiving a step's samples from the orchestrator."""
+    """Base class for receiving a step's samples from the orchestrator. ``poll`` picks up the
+    current step as soon as the sender offers it; ``wait`` requests it, which is when the
+    trainer takes it, and blocks until the sender handed it over."""
+
+    poll_interval: float = 0.05
+    """Seconds ``poll`` waits per call for a step that is not there yet."""
 
     def __init__(self, output_dir: Path, rank: int, world_size: int, current_step: int):
         self.logger = get_logger()
@@ -104,19 +135,47 @@ class BatchReceiver(ABC):
         self.committed = current_step - 1
         """The newest step a trainer checkpoint covers, sent with every request."""
         self.log = BatchLog(output_dir)
+        self.payload: bytes | memoryview | None = None
+        """The current step's bytes, once offered or handed over."""
+        self.published = False
+        """The current step was read from the log: the sender handed it over before."""
+        self._batch: StepBatch | None = None
 
     def request(self) -> BatchRequest:
-        return BatchRequest(self.world_size, self.rank, self.current_step, self.committed, requested_at=time.time())
+        return BatchRequest(
+            self.world_size,
+            self.rank,
+            self.current_step,
+            self.committed,
+            requested_at=time.time(),
+            offered=self.payload is not None,
+        )
+
+    @abstractmethod
+    def poll(self) -> bool:
+        """Whether the current step's bytes are here, without requesting the step: offered by the
+        sender, or published in the log. Waits up to ``poll_interval`` for them."""
+        pass
 
     @abstractmethod
     def wait(self) -> None:
-        """Request the current step from the orchestrator and block until it is available."""
+        """Request the current step and block until the sender handed it over."""
         pass
 
-    @abstractmethod
+    def batch(self) -> StepBatch:
+        """The current step, once ``poll`` or ``wait`` has it."""
+        if self._batch is None:
+            assert self.payload is not None, "the current step is not here yet"
+            self._batch = self.decoder.decode(self.payload)
+        return self._batch
+
     def receive(self) -> StepBatch:
-        """Receive the step ``wait`` requested."""
-        pass
+        """The step ``wait`` got, after which the receiver moves on to the next step."""
+        batch = self.batch()
+        self.payload, self.published, self._batch = None, False, None
+        self.logger.debug(f"Received {len(batch.samples)} samples for step {self.current_step}")
+        self.current_step += 1
+        return batch
 
     def close(self) -> None:
         """Clean up any resources. Override if needed."""
