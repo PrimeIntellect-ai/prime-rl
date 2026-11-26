@@ -12,7 +12,12 @@ from pydantic import BaseModel, Field, ValidationError
 from pydantic_config import ConfigFileError
 from renderers import custom_renderer_config
 
-from prime_rl.configs.algorithm import GRPOAlgoConfig, LinearLengthPenaltyConfig, LinearSubagentLengthPenaltyConfig
+from prime_rl.configs.algorithm import (
+    CostLengthPenaltyConfig,
+    GRPOAlgoConfig,
+    LinearLengthPenaltyConfig,
+    LinearSubagentLengthPenaltyConfig,
+)
 from prime_rl.configs.env_worker_pool import EnvWorkerPoolConfig
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig
@@ -48,8 +53,8 @@ CONFIG_CLASSES = [
 
 
 def get_config_files() -> list[Path]:
-    """Any TOML file inside `configs/`, `examples/` or `tests/regression/configs/`."""
-    roots = [Path("configs"), Path("examples"), Path("tests/regression/configs")]
+    """Any TOML file inside `configs/`, `examples/`, `recipes/` or `tests/regression/configs/`."""
+    roots = [Path("configs"), Path("examples"), Path("recipes"), Path("tests/regression/configs")]
     return [path for root in roots for path in root.rglob("*.toml")]
 
 
@@ -343,6 +348,7 @@ def test_toml_discriminated_union_switch_variant(tmp_path):
         ({"type": "linear"}, LinearLengthPenaltyConfig),
         ({"type": "linear-subagent"}, LinearSubagentLengthPenaltyConfig),
         ({"type": "linear-subagent", "subagent_token_weight": 0.2}, LinearSubagentLengthPenaltyConfig),
+        ({"type": "cost", "weight": 4e-6, "num_input_tokens_weight": 0.25}, CostLengthPenaltyConfig),
     ],
 )
 def test_length_penalty_variants_are_opt_in(tmp_path, penalty, expected_type):
@@ -358,6 +364,15 @@ def test_length_penalty_variants_are_opt_in(tmp_path, penalty, expected_type):
         assert "subagent_token_weight" not in direct.length_penalty.model_dump()
     with pytest.raises(ValidationError):
         GRPOAlgoConfig.model_validate({"length_penalty": {"type": "linear", "subagent_token_weight": 0.0}})
+    for bad in (
+        {},
+        {"weight": -1},
+        {"weight": 4e-6, "num_input_tokens_weight": -0.25},
+        {"weight": 4e-6, "alpha": 1.5},
+        {"weight": 4e-6, "subagent_token_weight": 0.0},
+    ):
+        with pytest.raises(ValidationError):
+            GRPOAlgoConfig.model_validate({"length_penalty": {"type": "cost", **bad}})
 
 
 def test_toml_discriminated_union_override_switch_variant(tmp_path):
@@ -992,8 +1007,6 @@ def test_single_node_nccl_resolved_json_roundtrips(tmp_path):
 @pytest.mark.parametrize(
     "overrides, match",
     [
-        ({"orchestrator": {"pad_to_multiple_of": 4}}, "orchestrator.pad_to_multiple_of"),
-        ({"orchestrator": {"num_train_workers": 3}}, "orchestrator.num_train_workers"),
         ({"orchestrator": {"weight_broadcast": {"type": "filesystem"}}}, "orchestrator.weight_broadcast"),
         ({"trainer": {"weight_broadcast": {"type": "nccl", "timeout": 60}}}, "trainer.weight_broadcast"),
     ],
@@ -1291,7 +1304,7 @@ def test_shared_monitor_disable_and_prime_propagate():
 
 @pytest.mark.parametrize(
     "monitor,trainer,orchestrator",
-    [("wandb", {"wandb": {"project": "p"}}, {}), ("prime", {}, {"prime": "None"})],
+    [("wandb", {"wandb": {"project": "p"}}, {}), ("prime", {"prime": {}}, {})],
 )
 def test_monitor_on_in_one_component_only_is_rejected(monitor, trainer, orchestrator):
     """The components log to one run per monitor, so a monitor is on in all or none."""
@@ -1500,6 +1513,8 @@ def test_pd_role_connectors():
     decode = config.for_pd_role("decode").build_kv_transfer_config()["kv_connector_extra_config"]["connectors"]
     assert [c["kv_connector"] for c in prefill] == ["NixlConnector", "MooncakeStoreConnector"]
     assert [c["kv_connector"] for c in decode] == ["NixlConnector", "MooncakeStoreConnector"]
+    # The store lookup runs off the scheduler thread.
+    assert prefill[1]["kv_connector_extra_config"]["lookup_async"] is True
     assert decode[1]["kv_connector_extra_config"]["save_decode_cache"]
 
     with pytest.raises(ValidationError, match="decode_kv_cache_offload"):
@@ -1550,6 +1565,56 @@ def test_pd_bidirectional_kv_transfer():
     config = InferenceConfig(deployment={"type": "disaggregated"}, slurm={})
     decode = config.for_pd_role("decode").build_kv_transfer_config()
     assert decode["kv_connector_extra_config"] == {"num_threads": 1}
+
+
+def test_pd_spill_to_store_runs_the_store_connector_in_capacity_only_mode():
+    store = {"type": "mooncake", "cpu": {"num_bytes": 1000}}
+    deployment = {
+        "type": "disaggregated",
+        "bidirectional_kv_transfer": {"decode_blocks_ttl_s": 20, "spill_to_store": {}},
+    }
+    config = InferenceConfig(deployment=deployment, kv_cache_offload=store, slurm={})
+    # The router keeps handles past the lease, so a late turn reaches prefill and is fetched from the store.
+    assert config.deployment.bidirectional_kv_transfer.effective_router_ttl_s == 3600
+
+    for role in ("prefill", "decode"):
+        role_config = InferenceConfig(**dump_resolved_config(config.for_pd_role(role), exclude={"deployment", "slurm"}))
+        nixl, mooncake = role_config.build_kv_transfer_config()["kv_connector_extra_config"]["connectors"]
+        assert nixl["kv_connector_extra_config"] == {
+            "num_threads": 1,
+            "bidirectional_kv_xfer": True,
+            "decoder_kv_blocks_ttl": 20,
+            "prime_rl_spill_lead_s": 10.0,
+            "prime_rl_spill_fetch_wait_s": 6.0,
+        }
+        # vLLM's store connector only mounts the client: no lookups, no loads, no saves (not even decode's).
+        assert mooncake == {
+            "kv_connector": "MooncakeStoreConnector",
+            "kv_role": "kv_consumer",
+            "kv_connector_extra_config": {"lookup_async": True, "enable_lookup": False},
+        }
+
+    with pytest.raises(ValidationError, match="needs a Mooncake kv_cache_offload"):
+        InferenceConfig(deployment=deployment, slurm={})
+    with pytest.raises(ValidationError, match="longer than"):
+        InferenceConfig(
+            deployment={
+                **deployment,
+                "bidirectional_kv_transfer": {"decode_blocks_ttl_s": 10, "spill_to_store": {}},
+            },
+            kv_cache_offload=store,
+            slurm={},
+        )
+
+    # Without the spill the store connector keeps its usual role under P/D.
+    plain = InferenceConfig(
+        deployment={"type": "disaggregated", "bidirectional_kv_transfer": {"decode_blocks_ttl_s": 480}},
+        kv_cache_offload=store,
+        slurm={},
+    )
+    mooncake = plain.for_pd_role("decode").build_kv_transfer_config()["kv_connector_extra_config"]["connectors"][1]
+    assert mooncake["kv_role"] == "kv_both" and mooncake["kv_connector_extra_config"]["save_decode_cache"] is True
+    assert "enable_lookup" not in mooncake["kv_connector_extra_config"]
 
 
 CUSTOM_RENDERER_SOURCE = """
@@ -1779,3 +1844,107 @@ def test_score_centering_replays_top_p_alone():
     assert sampling.top_k == 10000 and sampling.logprobs == 1
     assert sampling.extra_body["extra_args"]["prl_replay"]
     assert config.inference.enable_return_sampling_mask
+
+
+def test_rl_nvfp4_experts_set_up_matching_engines():
+    def rl(vllm, env_vars=None):
+        return RLConfig.model_validate(
+            {
+                "trainer": {"model": {"moe": {"compute": {"type": "nvfp4", "four_over_six": True}}}},
+                "orchestrator": {},
+                "inference": {"vllm": {"tensor_parallel_size": 1, **vllm}, "env_vars": env_vars or {}},
+                "deployment": {"type": "single_node", "gpus_per_node": 2, "num_train_gpus": 1, "num_infer_gpus": 1},
+            }
+        )
+
+    nvfp4 = {"quantization": "online", "quantization_config": {"linear": "mxfp8", "moe": "nvfp4_per_token"}}
+    config = rl(nvfp4)
+    assert config.inference.env_vars["FLASHINFER_NVFP4_4OVER6"] == "1"
+    assert config.inference.env_vars["FLASHINFER_DISABLE_FP4_QUANT_FAST_MATH"] == "1"
+    assert config.inference.vllm.moe_backend == "flashinfer_trtllm"
+    with pytest.raises(ValueError, match="moe_backend"):
+        rl({**nvfp4, "moe_backend": "flashinfer_cutedsl"})
+    with pytest.raises(ValueError, match="nvfp4_per_token"):
+        rl({"quantization": "mxfp8"})
+    with pytest.raises(ValueError, match="FLASHINFER_NVFP4_4OVER6"):
+        rl(nvfp4, {"FLASHINFER_NVFP4_4OVER6": "0"})
+
+
+@pytest.mark.parametrize("rollouts", [False, True])
+def test_shared_ckpt_rollouts_reaches_the_orchestrator(rollouts):
+    config = RLConfig.model_validate(
+        {
+            "ckpt": {"interval": 5, "rollouts": rollouts},
+            "trainer": {},
+            "orchestrator": {"renderer": {"name": "default"}},
+        }
+    )
+    assert config.orchestrator.ckpt.rollouts is rollouts
+    assert config.orchestrator.ckpt.interval == config.trainer.ckpt.interval == 5
+    assert RLConfig.model_validate_json(config.model_dump_json()) == config
+
+
+def test_ckpt_rollouts_is_off_by_default():
+    config = RLConfig.model_validate({"ckpt": {}, "trainer": {}, "orchestrator": {"renderer": {"name": "default"}}})
+    assert config.orchestrator.ckpt.rollouts is False
+    assert config.orchestrator.ckpt.rollouts_save_timeout == 600
+
+
+def test_shared_ckpt_rollouts_save_timeout_reaches_the_orchestrator():
+    config = RLConfig.model_validate(
+        {
+            "ckpt": {"rollouts": True, "rollouts_save_timeout": 900},
+            "trainer": {},
+            "orchestrator": {"renderer": {"name": "default"}},
+        }
+    )
+    assert config.orchestrator.ckpt.rollouts_save_timeout == 900
+    assert RLConfig.model_validate_json(config.model_dump_json()) == config
+    with pytest.raises(ValueError):
+        RLConfig.model_validate(
+            {"ckpt": {"rollouts_save_timeout": 0}, "trainer": {}, "orchestrator": {"renderer": {"name": "default"}}}
+        )
+
+
+def test_shared_ckpt_reaches_trainer_and_orchestrator():
+    config = RLConfig.model_validate(
+        {
+            "ckpt": {"output_dir": "/ckpts", "keep_last": 3, "keep_interval": 100},
+            "trainer": {},
+            "orchestrator": {"renderer": {"name": "default"}},
+        }
+    )
+    for ckpt in (config.trainer.ckpt, config.orchestrator.ckpt):
+        assert (ckpt.output_dir, ckpt.keep_last, ckpt.keep_interval) == (Path("/ckpts"), 3, 100)
+
+
+@pytest.mark.parametrize("leaf", [("output_dir", "/ckpts"), ("keep_last", 3), ("keep_interval", 100)])
+def test_trainer_and_orchestrator_share_one_ckpt_dir_and_policy(leaf):
+    name, value = leaf
+    with pytest.raises(ValueError, match=f"ckpt.{name}"):
+        RLConfig.model_validate(
+            {"ckpt": {}, "trainer": {"ckpt": {name: value}}, "orchestrator": {"renderer": {"name": "default"}}}
+        )
+
+
+def test_env_worker_pool_uses_ckpt_output_dir_as_save_root(tmp_path):
+    from prime_rl.entrypoints.rl import write_subconfigs
+
+    ckpt_dir = tmp_path / "external_ckpts"
+    config = RLConfig.model_validate(
+        {
+            "output_dir": str(tmp_path / "run"),
+            "ckpt": {"output_dir": str(ckpt_dir), "rollouts": True},
+            "trainer": {},
+            "orchestrator": {
+                "renderer": {"name": "default"},
+                "train": {"source": [{"env": {"taskset": {"id": "harbor"}}}]},
+            },
+        }
+    )
+    cfg_dir = tmp_path / "configs"
+    write_subconfigs(config, cfg_dir)
+    pool_configs = list((cfg_dir / "envs" / "train").glob("*.json"))
+    assert pool_configs
+    data = json.loads(pool_configs[0].read_text())
+    assert Path(data["output_dir"]) == ckpt_dir.resolve()

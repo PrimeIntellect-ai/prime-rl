@@ -37,6 +37,22 @@ When bumping a package past the workspace-wide `exclude-newer = "7 days"` window
 
 ## Optional extras
 
+### GPU extras
+
+The `gpu` extra is the union of two extras:
+
+- `train`: the trainer stack (torch, torchtitan, the model kernels). Enough for `sft` and `pretrain` without online evals.
+- `inference`: vLLM, its precompiled FlashInfer kernels and the weight-broadcast transports. Needed by `rl`, `inference` and online evals.
+
+```bash
+uv sync --extra train   # SFT / pretraining only
+uv sync --extra gpu     # train + inference
+```
+
+FP8 training, MegaMoE and the `cudnn_flashmla` sparse-attention backend use kernels bundled in the vLLM wheel, so they need `inference` as well.
+
+SLURM jobs run `uv sync --all-extras --all-packages` by default. Narrow it with `[slurm] sync_args` in the TOML config, e.g. `sync_args = "--extra train"`.
+
 ### CUDA kernels
 
 Prebuilt wheels, pinned at a release in `[tool.uv.sources]`:

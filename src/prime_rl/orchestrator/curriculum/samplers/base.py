@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import verifiers.v1 as vf
+
+if TYPE_CHECKING:
+    from prime_rl.env.heads import EpisodeHead
 
 
 class TaskSampler(Iterator[vf.Task], ABC):
@@ -21,7 +24,7 @@ class TaskSampler(Iterator[vf.Task], ABC):
         """Return the task with this key, or ``None`` if the sampler cannot find it by key."""
         return None
 
-    def observe(self, group: list[vf.Episode]) -> None:
+    def observe(self, group: list[EpisodeHead]) -> None:
         """Update sampling state from a finalized group. A resume re-runs the groups
         that had not shipped, so a group observed before the checkpoint can come back
         once more, with new rollouts."""

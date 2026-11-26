@@ -78,6 +78,7 @@ FULL_SUITE_CASES = [
     Case("deepseek_v4-cp2_ep2", "deepseek_v4", cp=2, ep=2),
     Case("glm_moe_dsa-ep2", "glm_moe_dsa", ep=2),
     Case("glm_moe_dsa-cp2_ep2", "glm_moe_dsa", cp=2, ep=2),
+    Case("glm5_next-cp2_ep2", "glm5_next", cp=2, ep=2),
 ]
 SUITES = {"tiny": CASES, "full": FULL_SUITE_CASES}
 TIMEOUTS = {"tiny": 5 * 60, "full": 20 * 60}
@@ -118,7 +119,7 @@ def run_reference(config: ModelConfig, rows: list[dict]) -> dict:
     """All rows through an unsharded model in bf16 (FSDP's compute dtype), accumulating gradients in fp32. Parameters
     that get no gradient, like the indexers, which reach the loss only through top-k indices, have no entry. Also
     returns the experts each row routed to, which the cases replay."""
-    model = get_model(config, device=torch.device("meta"), dtype=torch.float32)
+    model = get_model(config, dtype=torch.float32)
     if config.fusions.enabled:
         apply_model_fusions(model, config.fusions.enabled)
     inject_prime_lm_head(model, chunk_size=config.fused_lm_head_token_chunk_size)
@@ -126,8 +127,10 @@ def run_reference(config: ModelConfig, rows: list[dict]) -> dict:
     model.to_empty(device="cuda")
     model.tie_weights()
     load_dcp_from_hf(model, config)
+    fp32_params = {param for module in model.fp32_modules() for param in module.parameters()}
     for param in model.parameters():
-        param.data = param.data.bfloat16()
+        if param not in fp32_params:
+            param.data = param.data.bfloat16()
     routing = record_routing(model)
     grads: dict[str, torch.Tensor] = {}
     routes = []
@@ -167,7 +170,7 @@ def run_case(config: ModelConfig, parallel_dims, rows: list[dict], routes: list[
     dist.all_reduce(loss_sum, group=dp_cp_group)
     dist.all_reduce(num_tokens, group=dp_cp_group)
     scale_gradients_(None, model, parallel_dims.fsdp_gradient_divide_factor / num_tokens.item())
-    grad_norm = clip_grad_norm_(None, model, max_norm=math.inf)
+    grad_norm, _ = clip_grad_norm_(None, model, max_norm=math.inf)
     grads = {
         unwrapped_name(name): param.grad.full_tensor() if isinstance(param.grad, DTensor) else param.grad
         for name, param in model.named_parameters()

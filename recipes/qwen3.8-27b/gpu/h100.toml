@@ -1,0 +1,23 @@
+# H100 80GB overlay for rl.toml: 1 trainer node and 1 one-node inference replica. Not tested: on
+# H200, cp 8 without activation offloading peaked at 59.7 GiB allocated, so this keeps cp 8 with the
+# default activation offloading.
+#
+#   uv run rl @ recipes/qwen3.8-27b/rl.toml @ recipes/qwen3.8-27b/gpu/h100.toml @ recipes/data/math.toml
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+num_infer_replicas = 1
+
+[trainer.model]
+cp = 8
+
+[inference.vllm]
+tensor_parallel_size = 2
+data_parallel_size = 4
+
+# An H100 holds about half the KV cache of an H200 next to the same 27 GB of weights per GPU (TP2), so
+# this halves the H200 cap of 256 episodes in flight.
+[orchestrator.concurrency]
+max_inflight = 128

@@ -3,13 +3,12 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
-import verifiers.v1 as vf
-
 from prime_rl.configs.algorithm import RAEAlgoConfig
 from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
-from prime_rl.orchestrator.algo.routing import assign_advantages
+from prime_rl.orchestrator.algo.routing import assign_advantage
 
 if TYPE_CHECKING:
+    from prime_rl.env.heads import EpisodeHead
     from prime_rl.orchestrator.clients import InferenceClient
 
 
@@ -36,8 +35,8 @@ class RAEAlgorithm(Algorithm):
         self.decay = config.decay
         self.baselines: dict[str, float] = defaultdict(float)
 
-    async def score_group(self, episodes: list[vf.Episode]) -> None:
+    async def score_group(self, episodes: list[EpisodeHead]) -> None:
         for _, trace in iter_trainable_traces(episodes):
             baseline = self.baselines[trace.agent.name]
-            assign_advantages(trace, trace.reward - baseline)
+            assign_advantage(trace, trace.reward - baseline)
             self.baselines[trace.agent.name] = self.decay * baseline + (1.0 - self.decay) * trace.reward

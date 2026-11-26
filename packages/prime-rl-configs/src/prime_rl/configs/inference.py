@@ -37,7 +37,7 @@ class ServerConfig(BaseConfig):
 # not depend on vLLM, and importing it costs seconds in every config-parsing process.
 VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
 
-QuantizationType = Literal["fp8_per_block", "mxfp8"]
+QuantizationType = Literal["fp8_per_block", "mxfp8", "online"]
 
 
 class VllmConfig(BaseConfig):
@@ -95,7 +95,8 @@ class VllmConfig(BaseConfig):
     """Enable prefix caching."""
 
     quantization: QuantizationType | None = None
-    """Online inference quantization method. If None, vLLM infers it from the checkpoint."""
+    """Online inference quantization method. If None, vLLM infers it from the checkpoint. ``"online"`` takes the
+    per-layer-kind schemes from ``quantization_config``, e.g. ``{linear = "mxfp8", moe = "nvfp4_per_token"}``."""
 
     enable_lora: bool = False
     """Enable LoRA."""
@@ -287,6 +288,12 @@ class MooncakeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
     own ``kv_lease_duration``, not this lease. Under P/D the larger of the two roles' values applies, since one
     master serves both."""
 
+    lookup_async: bool = True
+    """Look up a request's prefix in the store on a background thread (``lookup_async``), starting when the request
+    arrives. A synchronous lookup blocks the scheduler for its whole duration (tens of ms for a long prompt, one key
+    per KV block and group), and with data parallelism the ranks of a node step together, so one rank's lookup
+    stalls them all."""
+
     def to_connector_dict(self) -> dict[str, Any]:
         # Addresses/sizes/tiers are realized by the per-node store launch in the sbatch
         # template (MOONCAKE_CONFIG_PATH JSON); blocks are keyed by model + parallel rank +
@@ -294,7 +301,7 @@ class MooncakeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
         return {
             "kv_connector": "MooncakeStoreConnector",
             "kv_role": "kv_both",
-            "kv_connector_extra_config": {},
+            "kv_connector_extra_config": {"lookup_async": self.lookup_async},
         }
 
 
@@ -393,6 +400,28 @@ class LlmdRouterConfig(BaseConfig):
 RouterConfig: TypeAlias = Annotated[VllmRouterConfig | LlmdRouterConfig, Field(discriminator="type")]
 
 
+class SpillToStoreConfig(BaseConfig):
+    """Write a finished turn's KV from decode to the Mooncake store shortly before its lease ends unread, and let a
+    turn that returns later fetch it from there (``prime_rl.inference.kv_spill``).
+
+    Without it, decode pins every idle session's KV for the whole ``decode_blocks_ttl_s``, and a turn that returns
+    after the lease is recomputed in full. With it the lease can be a few tens of seconds: decode's KV cache then
+    holds mostly running requests, and late turns cost one store read. Both roles need a Mooncake
+    ``kv_cache_offload``; it only provides the store, vLLM's own store lookups, loads and saves stay off."""
+
+    start_before_expiry_s: float = Field(10.0, gt=5)
+    """How long before the lease ends the put starts. Prefill stops reading from decode 5 s before the lease ends,
+    so the put must be done by then."""
+
+    fetch_wait_s: float = Field(6.0, ge=0)
+    """How long a fetch waits for the objects of a put that is still in flight before it gives up and the turn is
+    recomputed."""
+
+    fetchable_for_s: int = Field(3600, ge=1)
+    """How long the router keeps a session's handle, and so how long after a turn its KV can still be fetched from
+    the store (if the store has not evicted it)."""
+
+
 class BidirectionalKVTransferConfig(BaseConfig):
     """Bidirectional NIXL KV transfer for multi-turn P/D (vLLM ``bidirectional_kv_xfer``).
 
@@ -409,12 +438,27 @@ class BidirectionalKVTransferConfig(BaseConfig):
     """How long the router keeps a session's decode handle. Must be shorter than ``decode_blocks_ttl_s`` so the router
     never hands out blocks decode has already released. Defaults to ``decode_blocks_ttl_s`` minus 30 s."""
 
+    spill_to_store: SpillToStoreConfig | None = None
+    """Spill expiring turns to the Mooncake store. The router then keeps handles for
+    ``spill_to_store.fetchable_for_s``, past the lease: prefill finds such a handle expired and reads the store."""
+
     @property
     def effective_router_ttl_s(self) -> int:
-        return self.router_ttl_s if self.router_ttl_s is not None else max(1, self.decode_blocks_ttl_s - 30)
+        if self.router_ttl_s is not None:
+            return self.router_ttl_s
+        if self.spill_to_store is not None:
+            return self.spill_to_store.fetchable_for_s
+        return max(1, self.decode_blocks_ttl_s - 30)
 
     @model_validator(mode="after")
     def router_ttl_below_decode_ttl(self):
+        if self.spill_to_store is not None:
+            if self.decode_blocks_ttl_s <= self.spill_to_store.start_before_expiry_s:
+                raise ValueError(
+                    "bidirectional_kv_transfer.decode_blocks_ttl_s must be longer than "
+                    "spill_to_store.start_before_expiry_s: the spill would otherwise start as the turn finishes."
+                )
+            return self
         if self.effective_router_ttl_s >= self.decode_blocks_ttl_s:
             raise ValueError(
                 "bidirectional_kv_transfer.router_ttl_s must be shorter than decode_blocks_ttl_s: the router would "
@@ -545,6 +589,10 @@ class InferenceConfig(BaseConfig):
 
     pd_decode_blocks_ttl_s: int | None = None
     """Auto-set from ``deployment.bidirectional_kv_transfer``: enables bidirectional NIXL transfer with this decode block TTL. Persisted into the per-node config like ``use_pd_kv_transfer``. Not meant to be set by hand."""
+    pd_spill_to_store: SpillToStoreConfig | None = None
+    """Auto-set from ``deployment.bidirectional_kv_transfer.spill_to_store``. Persisted into the per-node config like
+    ``pd_decode_blocks_ttl_s``. Not meant to be set by hand."""
+
     kv_load_failure_policy: Literal["recompute", "fail"] | None = None
     """What vLLM does when a KV load from another instance fails or is declined (``kv_transfer_config.kv_load_failure_policy``): ``recompute`` computes the missing tokens locally, ``fail`` ends the request with an error. None keeps vLLM's default (``fail``). Under bidirectional P/D, prefill defaults to ``recompute``: it declines reading decode blocks that are about to expire, and that turn should then prefill locally instead of failing."""
 
@@ -614,6 +662,13 @@ class InferenceConfig(BaseConfig):
             raise ValueError("deployment.bidirectional_kv_transfer requires the vllm-router router.")
         if self.hisparse is not None:
             raise ValueError("deployment.bidirectional_kv_transfer does not support HiSparse decode instances.")
+        if self.deployment.bidirectional_kv_transfer.spill_to_store is not None:
+            offloads = self.kv_cache_offload_by_role
+            if any(offloads[role] is None or offloads[role].type != "mooncake" for role in ("prefill", "decode")):
+                raise ValueError(
+                    "bidirectional_kv_transfer.spill_to_store needs a Mooncake kv_cache_offload on prefill and "
+                    "decode: it provides the store that expiring turns are written to."
+                )
         return self
 
     @model_validator(mode="after")
@@ -651,6 +706,7 @@ class InferenceConfig(BaseConfig):
             self.use_pd_kv_transfer = True
             if self.deployment.bidirectional_kv_transfer is not None:
                 self.pd_decode_blocks_ttl_s = self.deployment.bidirectional_kv_transfer.decode_blocks_ttl_s
+                self.pd_spill_to_store = self.deployment.bidirectional_kv_transfer.spill_to_store
             if "enable_expert_parallel" not in self.vllm.model_fields_set:
                 self.vllm.enable_expert_parallel = True
             if "enable_eplb" not in self.vllm.model_fields_set:
@@ -707,16 +763,27 @@ class InferenceConfig(BaseConfig):
         """
         connectors: list[dict[str, Any]] = []
         bidirectional = self.use_pd_kv_transfer and self.pd_decode_blocks_ttl_s is not None
+        spill = self.pd_spill_to_store if bidirectional else None
         if self.use_pd_kv_transfer:
             nixl_extra: dict[str, Any] = {"num_threads": 1}
             if bidirectional:
                 nixl_extra |= {"bidirectional_kv_xfer": True, "decoder_kv_blocks_ttl": self.pd_decode_blocks_ttl_s}
+            if spill is not None:
+                nixl_extra |= {
+                    "prime_rl_spill_lead_s": spill.start_before_expiry_s,
+                    "prime_rl_spill_fetch_wait_s": spill.fetch_wait_s,
+                }
             connectors.append(
                 {"kv_connector": "NixlConnector", "kv_role": "kv_both", "kv_connector_extra_config": nixl_extra}
             )
         if self.kv_cache_offload is not None:
             connector = self.kv_cache_offload.to_connector_dict()
-            if self.use_pd_kv_transfer and connector["kv_connector"] == "MooncakeStoreConnector":
+            if spill is not None and connector["kv_connector"] == "MooncakeStoreConnector":
+                # Capacity-only: the connector mounts the store client for the spill and does no lookups, loads or
+                # saves of its own.
+                connector["kv_role"] = "kv_consumer"
+                connector["kv_connector_extra_config"]["enable_lookup"] = False
+            elif self.use_pd_kv_transfer and connector["kv_connector"] == "MooncakeStoreConnector":
                 # Decode instances also store the KV they generate, so the next turn's prefill can load it.
                 connector["kv_connector_extra_config"]["save_decode_cache"] = True
             connectors.append(connector)

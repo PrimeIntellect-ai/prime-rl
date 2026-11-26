@@ -174,14 +174,14 @@ source .venv/bin/activate
 # SLURM env propagation; otherwise uv would silently fall back to the shared .venv.
 srun --ntasks-per-node=1 bash -s <<'SYNC_SH'
 set -e
-cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync --all-extras --all-packages
+cd $PROJECT_DIR && { [ -f .env ] && source .env || true; } && uv sync {{ sync_args }}
 # uv sync restores the locked NIXL wheel, whose bundled UCX breaks P/D KV transfer: reinstall the source build
 # into the project environment (uv pip would otherwise pick the activated .venv, not UV_PROJECT_ENVIRONMENT).
 if compgen -G "deps/nixl_cu13-*.whl" > /dev/null; then uv pip install -q --reinstall --no-deps --python "${UV_PROJECT_ENVIRONMENT:-.venv}" deps/nixl_cu13-*.whl; fi
 SYNC_SH
 {% else %}
 # Shared (NFS) venv: one sync on the batch node populates it for all nodes.
-uv sync --all-extras --all-packages
+uv sync {{ sync_args }}
 # uv sync restores the locked NIXL wheel, whose bundled UCX breaks P/D KV transfer: reinstall the source build
 # into the project environment (uv pip would otherwise pick the activated .venv, not UV_PROJECT_ENVIRONMENT).
 if compgen -G "deps/nixl_cu13-*.whl" > /dev/null; then uv pip install -q --reinstall --no-deps --python "${UV_PROJECT_ENVIRONMENT:-.venv}" deps/nixl_cu13-*.whl; fi
@@ -518,7 +518,13 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     for k in $(seq 0 $((INFERENCE_DP_LOCAL - 1))); do
         GLOBAL_RANK=$((START_RANK + k))
         RANK_GPUS=$(seq -s, $((k * INFERENCE_TP)) $((k * INFERENCE_TP + INFERENCE_TP - 1)))
-        RANK_EXTRA="{\"data_parallel_address\": \"$DP_ADDR\", \"data_parallel_rank\": $GLOBAL_RANK, $ROLE_EXTRA}"
+        # A single-engine role (DP=1, e.g. one TP=8 engine per node) is not an external-LB DP rank: vLLM rejects
+        # data_parallel_rank/address there ("data_parallel_external_lb can only be set when data_parallel_size > 1").
+        if [ "$DP" -gt 1 ]; then
+            RANK_EXTRA="{\"data_parallel_address\": \"$DP_ADDR\", \"data_parallel_rank\": $GLOBAL_RANK, $ROLE_EXTRA}"
+        else
+            RANK_EXTRA="{$ROLE_EXTRA}"
+        fi
         launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$INFERENCE_DATA_PARALLEL_RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")"
     done
 {%- else -%}
@@ -582,8 +588,8 @@ else
             -m prime_rl.trainer.rl.train \
             @ $CONFIG_DIR/trainer.json \
             {% if uses_modelexpress_server %}--weight-broadcast.host $WEIGHT_BROADCAST_HOST \
-            {% endif %}{% if use_zmq_transport %}--rollout_transport.host $ORCH_ADDR \
-            {% endif %}2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $LOG_DIR/trainer/node_${TRAIN_NODE_RANK}.log
+            {% endif %}--rollout_transport.host $ORCH_ADDR \
+            2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $LOG_DIR/trainer/node_${TRAIN_NODE_RANK}.log
         COMPONENT_CODE=$?
         if [ "$COMPONENT_CODE" -eq 0 ] && [ "$TRAIN_NODE_RANK" -eq 0 ]; then
             touch "$TRAINER_DONE" || exit $?
@@ -609,8 +615,8 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
     (
         {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
         {% elif uses_modelexpress_server %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $WEIGHT_BROADCAST_HOST"
-        {% endif %}{% if use_zmq_transport %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --rollout_transport.host $ORCH_ADDR"
-        {% endif %}{% if admin_token.guards and admin_token.by_process.orchestrator.sends %}{{ admin_token.by_process.orchestrator.sends }}="$ADMIN_TOKEN" {% endif %}{% if admin_token.guards and admin_token.by_process.orchestrator.checks %}{{ admin_token.by_process.orchestrator.checks }}_SHA256="$ADMIN_TOKEN_DIGEST" {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
+        {% endif %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --rollout_transport.host $ORCH_ADDR"
+        {% if admin_token.guards and admin_token.by_process.orchestrator.sends %}{{ admin_token.by_process.orchestrator.sends }}="$ADMIN_TOKEN" {% endif %}{% if admin_token.guards and admin_token.by_process.orchestrator.checks %}{{ admin_token.by_process.orchestrator.checks }}_SHA256="$ADMIN_TOKEN_DIGEST" {% endif %}WANDB_SHARED_LABEL=orchestrator uv run orchestrator $ORCHESTRATOR_ARGS \
             2>&1 | tee $LOG_DIR/orchestrator.log
         COMPONENT_CODE=$?
         if [ "$COMPONENT_CODE" -eq 0 ]; then

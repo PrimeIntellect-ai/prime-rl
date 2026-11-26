@@ -1,0 +1,36 @@
+# H200 overlay for rl.toml: 6 trainer nodes and 6 one-node inference
+# replicas (inference not fitted yet). Trainer fit on fake 256k samples:
+# 6 nodes, ep 8, cp 8: 61.0k tok/s (1,270 per GPU), 94.6 GiB peak allocated. 4 and 5 nodes OOM.
+#
+#   uv run rl @ recipes/glm-5.3-flash/rl.toml @ recipes/glm-5.3-flash/gpu/h200.toml @ recipes/fake.toml --trainer.model.debug.force-balanced-routing --trainer.data.fake.batch-size 6
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 6
+num_infer_nodes = 1
+# As many inference nodes as trainer nodes.
+num_infer_replicas = 6
+# Trainer nodes peak near 3 TB host RAM with the optimizer offloaded; keep the orchestrator off them.
+orchestrator_on_inference = true
+
+[trainer.model]
+cp = 8
+ep = 8
+
+# One DEP8 replica per node: attention data parallel, experts sharded 8 ways.
+[inference.vllm]
+tensor_parallel_size = 1
+data_parallel_size = 8
+enable_expert_parallel = true
+# vLLM sizes this hybrid model's pages at 640 tokens; DeepGEMM's k-pool indexer on SM90 needs a multiple of 256.
+block_size = 768
+# At 0.75, DEP8 leaves too little KV cache for one 262144-token request. 0.85 still fits the
+# weight update (ScaleSWE RL run, 6 + 6 nodes).
+gpu_memory_utilization = 0.85
+# Each sequence holds one linear-attention state block; 0.85 leaves ~300 per DP rank.
+max_num_seqs = 256
+
+# The KV cache holds ~0.9M tokens per DP rank. At 1,536 ScaleSWE episodes in flight it filled and
+# preempted ~17k requests (steps 29-50 min); at 600 it peaked at 87-98% with no preemptions (12-17 min).
+[orchestrator.concurrency]
+max_inflight = 600

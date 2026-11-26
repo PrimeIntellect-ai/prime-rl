@@ -80,11 +80,10 @@ def propagate_shared_fields(data: Any) -> Any:
     )
 
     # [ckpt] leaves. (Bare empty ``[ckpt]`` block enablement is at the end.)
-    # ``orchestrator.ckpt`` has no ``output_dir`` field — trainer-only.
-    propagate("ckpt.output_dir", "trainer.ckpt.output_dir")
-    propagate("ckpt.interval", "trainer.ckpt.interval", "orchestrator.ckpt.interval")
-    propagate("ckpt.keep_last", "trainer.ckpt.keep_last")
-    propagate("ckpt.keep_interval", "trainer.ckpt.keep_interval")
+    for leaf in ("output_dir", "interval", "keep_last", "keep_interval"):
+        propagate(f"ckpt.{leaf}", f"trainer.ckpt.{leaf}", f"orchestrator.ckpt.{leaf}")
+    propagate("ckpt.rollouts", "orchestrator.ckpt.rollouts")
+    propagate("ckpt.rollouts_save_timeout", "orchestrator.ckpt.rollouts_save_timeout")
     propagate("ckpt.async_save", "trainer.ckpt.async_save")
 
     # [monitors.wandb] leaves. (Bare empty ``[monitors.wandb]`` block enablement is at the end.)
@@ -156,8 +155,8 @@ def propagate_shared_fields(data: Any) -> Any:
     # without this an empty shared block would be a no-op. Leaf-level conflicts
     # (e.g. shared ``ckpt.interval`` vs ``trainer.ckpt.interval``) are already
     # caught above; the bare block is exempt because ``[ckpt]`` +
-    # ``[trainer.ckpt] keep_last = 3`` is a legitimate "enable + customise per
-    # side" pattern. CLI ``--no-ckpt`` / ``--no-monitors.wandb`` land as the
+    # ``[trainer.ckpt] skip_optimizer = true`` is a legitimate "enable + customise
+    # per side" pattern. CLI ``--no-ckpt`` / ``--no-monitors.wandb`` land as the
     # *string* ``"None"`` until ``BaseConfig``'s parent-class validator converts
     # it, which happens after this one — the disable must propagate too, since
     # the monitor sub-configs default to enabled.
@@ -187,14 +186,3 @@ def propagate_shared_fields(data: Any) -> Any:
         raise ValueError("\n".join(lines))
 
     return data
-
-
-def check_derived(config: Any, field: str, value: Any, path: str) -> None:
-    """Check a field the launcher derives. An explicit value is accepted only when it
-    equals the derived one, so resolved configs re-parse but a conflicting value fails
-    instead of being silently replaced. The caller applies the derived value."""
-    if field in config.model_fields_set and getattr(config, field) != value:
-        raise ValueError(
-            f"{path} ({getattr(config, field)!r}) conflicts with the derived value ({value!r}). "
-            "It is set automatically by the launcher; remove it."
-        )

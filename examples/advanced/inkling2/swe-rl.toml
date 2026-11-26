@@ -80,13 +80,15 @@ freq = 1
 [trainer.model.moe.compute]
 type = "deepgemm_fp8"
 
+[trainer.data]
+pad_to_seq_len = true
+
 [trainer.optim]
 type = "sign_sgd"
 lr = 1e-6
 weight_decay = 0.01
 
 [orchestrator]
-pad_to_seq_len = true
 batch_size = 16
 
 [orchestrator.train]

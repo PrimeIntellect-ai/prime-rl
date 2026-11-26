@@ -13,6 +13,7 @@ from prime_rl.configs.trainer import (
     ModelConfig,
     MoERuntimeConfig,
     MXFP8MoEComputeConfig,
+    NVFP4MoEComputeConfig,
     TorchMoEDispatchConfig,
 )
 from prime_rl.trainer.distributed.expert_parallel import ExpertWeightParallel
@@ -73,6 +74,14 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
             kernel=kernel,
             high_precision_wgrad=compute.recipe == "mxfp8_rceil_wgrad_with_hp",
         )
+    if isinstance(compute, NVFP4MoEComputeConfig):
+        import prime_kernels
+
+        from prime_rl.trainer.models.layers.nvfp4_experts import NVFP4ExpertCompute
+
+        return NVFP4ExpertCompute(
+            prime_kernels.load("mxfp8_moe"), four_over_six=compute.four_over_six, flashinfer_env=compute.flashinfer_env
+        )
     raise TypeError(f"Unsupported MoE compute config: {type(compute).__name__}")
 
 
@@ -96,8 +105,10 @@ def _resolve_mega_moe_compute(
     if dispatch.llep is not None:
         from prime_rl.trainer.models.layers.llep_mega_moe import LLEPMegaMoEExpertCompute
 
-        return LLEPMegaMoEExpertCompute(**kwargs, options=dispatch.llep, precision=dispatch.precision)
-    return MegaMoEExpertCompute(**kwargs, precision=dispatch.precision)
+        return LLEPMegaMoEExpertCompute(
+            **kwargs, options=dispatch.llep, precision=dispatch.precision, four_over_six=dispatch.four_over_six
+        )
+    return MegaMoEExpertCompute(**kwargs, precision=dispatch.precision, four_over_six=dispatch.four_over_six)
 
 
 def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:

@@ -8,10 +8,19 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage
 
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
-from prime_rl.orchestrator.algo import EchoAlgorithm, assign_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo import (
+    EchoAlgorithm,
+    assign_advantage,
+    assign_advantages,
+    stamp_loss_routing,
+    token_layout,
+)
 from prime_rl.orchestrator.algo.base import iter_trainable_traces
+from prime_rl.orchestrator.algo.routing import is_trainable
+from prime_rl.orchestrator.credit import trace_advantage
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.transports.batch.types import TrainingSample
+from tests.unit.orchestrator.test_train_sink import received, train_trace, whole_episode
 
 FROZEN = {"name": "org/ref-model", "base_url": "http://ref:8001/v1"}
 
@@ -226,14 +235,6 @@ def test_trainable_traces_exclude_failed_episodes_without_changing_verdicts(fail
     assert failed.model_dump() == before
 
 
-def test_assign_advantages_full_length_stream():
-    # The advantage stream is full-length-N: 0.0 on prompt + non-trainable
-    # positions, the rl credit on trainable (mask True) tokens.
-    trace = _make_episode().traces[0]
-    assign_advantages(trace, [0.5, -0.5, 1.0])
-    assert trace_to_samples(trace)[0].advantages == pytest.approx([0.0, 0.0, 0.5, -0.5, 0.0, 1.0])
-
-
 def test_compaction_retries_train_only_causally_used_generations():
     nodes = [
         MessageNode(
@@ -305,50 +306,64 @@ def test_compaction_retries_train_only_causally_used_generations():
     assert branches["accepted summary"].trainable is True
     assert branches["answer"].trainable is True
 
-    assign_advantages(trace, 1.0)
-    assert trace.nodes[1].advantages == pytest.approx([1.0])
-    assert trace.nodes[3].advantages is None
-    assert trace.nodes[4].advantages == pytest.approx([1.0])
-    assert trace.nodes[6].advantages == pytest.approx([1.0])
-
-    trainable_ids = [
-        token_id
-        for sample in trace_to_samples(trace)
-        for token_id, trainable in zip(sample.token_ids, sample.mask, strict=True)
+    episode = vf.Episode(env=vf.EnvInfo(id="test", name="test"), task=trace.task, traces=[trace], ok=True)
+    [head] = received(episode).traces
+    assign_advantage(head, 1.0)
+    credited = {
+        int(token_id): float(advantage)
+        for sample in train_trace(head)
+        for token_id, trainable, advantage in zip(sample.token_ids, sample.mask, sample.advantages, strict=True)
         if trainable
+    }
+
+    assert credited == {2: 1.0, 5: 1.0, 7: 1.0}
+
+
+def test_uncredited_rl_tokens_do_not_train():
+    [trace] = received(_make_episode()).traces
+    with pytest.raises(ValueError, match="no advantages"):
+        train_trace(trace)
+
+
+def test_assign_advantage_broadcasts_over_mask():
+    [trace] = received(_make_episode()).traces
+    assign_advantage(trace, 1.0)
+    assert train_trace(trace)[0].advantages == pytest.approx([0.0, 0.0, 1.0, 1.0, 0.0, 1.0])
+
+
+def test_assign_advantages_credits_each_trainable_token_once():
+    """A fork after a shared answer: the shared node trains in the first branch only, so each
+    trainable token takes exactly one of the values assigned per branch, written into the
+    samples an env worker kept and built by the trainer."""
+    nodes = [
+        _node(UserMessage(content="U"), parent=None, sampled=False, token_ids=[1]),
+        _node(AssistantMessage(content="A"), parent=0, sampled=True, token_ids=[2, 3]),
+        _node(AssistantMessage(content="B1"), parent=1, sampled=True, token_ids=[4, 5]),
+        _node(AssistantMessage(content="B2"), parent=1, sampled=True, token_ids=[6]),
     ]
+    trace = vf.Trace(
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        nodes=nodes,
+        rewards={},
+        ok=True,
+    )
+    b1, b2 = (next(b.index for b in trace.branches if b.nodes[-1].message.content == leaf) for leaf in ("B1", "B2"))
+    [head] = received(whole_episode([trace])).traces
+    assert token_layout(head) == {b1: [2, 2], b2: [1]}
 
-    assert sorted(trainable_ids) == [2, 5, 7]
+    assign_advantages(head, b1, [1.0, 2.0, 3.0, 4.0])
+    assign_advantages(head, b2, [-1.0])
+    credited = {
+        (sample.branch_index, int(token_id)): float(advantage)
+        for sample in train_trace(head)
+        for token_id, trainable, advantage in zip(sample.token_ids, sample.mask, sample.advantages, strict=True)
+        if trainable
+    }
 
-
-def test_assign_advantages_slices_across_nodes():
-    trace = _make_episode().traces[0]
-    assign_advantages(trace, [1.0, 2.0, 3.0])
-    assert trace.nodes[1].advantages == pytest.approx([1.0, 2.0])
-    assert trace.nodes[3].advantages == pytest.approx([3.0])
-
-
-def test_unassigned_advantages_ship_none():
-    trace = _make_episode().traces[0]
-    assert trace_to_samples(trace)[0].advantages is None
-
-
-def test_assign_advantages_rejects_misaligned():
-    trace = _make_episode().traces[0]
-    with pytest.raises(ValueError, match="align"):
-        assign_advantages(trace, [0.5])
-
-
-def test_assign_advantages_scalar_broadcasts_over_mask():
-    trace = _make_episode().traces[0]
-    assign_advantages(trace, 1.0)
-    assert trace_to_samples(trace)[0].advantages == pytest.approx([0.0, 0.0, 1.0, 1.0, 0.0, 1.0])
-
-
-def test_assign_advantages_list_rejects_misaligned():
-    trace = _make_episode().traces[0]
-    with pytest.raises(ValueError, match="align"):
-        assign_advantages(trace, [0.5])
+    assert credited == {(b1, 2): 1.0, (b1, 3): 2.0, (b1, 4): 3.0, (b1, 5): 4.0, (b2, 6): -1.0}
+    assert is_trainable(head)
+    assert trace_advantage(head) == pytest.approx(1.8)
 
 
 # --------------------------------------------------------------------------

@@ -1,0 +1,53 @@
+# Representative tool-use agent RL: general-agent tiers 3-4 with native tool calls (null harness),
+# the agent and each task's tool server in small Prime sandboxes, scored by the task's own check of
+# the final state (no judge). 128 tasks are held out for eval. Compose it after a model's rl.toml
+# and compute overlay:
+#
+#   uv run rl @ recipes/qwen3.6-35b-a3b/rl.toml @ recipes/qwen3.6-35b-a3b/gpu/h200.toml @ recipes/data/tool-use.toml
+
+[orchestrator]
+batch_size = 128
+# Rollouts take minutes, so fresh data is cheap.
+max_staleness = 8
+
+[orchestrator.train]
+group_size = 8
+
+[orchestrator.train.algo]
+type = "grpo"
+
+[[orchestrator.train.source]]
+name = "general-agent"
+# The eval source takes the first 128 tasks of the same shuffle; skip them.
+select.shuffle = true
+select.skip = 128
+env.taskset.id = "general-agent"
+env.taskset.min_tier = 3
+env.taskset.max_tier = 4
+# Drop the tasks GLM-5.1 almost never solves.
+env.taskset.pass_rate_model = "zai-org/GLM-5.1-FP8"
+env.taskset.pass_rate_solver = "rlm"
+env.taskset.min_pass_rate = 0.05
+env.taskset.task.tools.runtime = { type = "prime", cpu = 1, memory = 2 }
+env.agent.harness.id = "null"
+env.agent.runtime = { type = "prime", cpu = 1, memory = 2 }
+env.agent.timeout.rollout = 3600
+
+[orchestrator.eval]
+interval = 25
+
+[[orchestrator.eval.source]]
+name = "general-agent-heldout"
+select.shuffle = true
+select.limit = 128
+group_size = 4
+env.taskset.id = "general-agent"
+env.taskset.min_tier = 3
+env.taskset.max_tier = 4
+env.taskset.pass_rate_model = "zai-org/GLM-5.1-FP8"
+env.taskset.pass_rate_solver = "rlm"
+env.taskset.min_pass_rate = 0.05
+env.taskset.task.tools.runtime = { type = "prime", cpu = 1, memory = 2 }
+env.agent.harness.id = "null"
+env.agent.runtime = { type = "prime", cpu = 1, memory = 2 }
+env.agent.timeout.rollout = 3600

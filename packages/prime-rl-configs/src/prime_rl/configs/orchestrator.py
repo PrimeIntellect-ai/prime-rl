@@ -17,6 +17,7 @@ from prime_rl.configs.diff import Frozen, Live
 from prime_rl.configs.env_worker_pool import ServeConfig
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
+    BaseCheckpointConfig,
     BaseModelConfig,
     ControlConfig,
     EnvVars,
@@ -26,7 +27,6 @@ from prime_rl.configs.shared import (
     LogConfig,
     PolicyClientConfig,
     ResumeConfig,
-    TransportConfig,
     WeightBroadcastConfig,
     ZMQTransportConfig,
 )
@@ -437,9 +437,20 @@ class RLOnlineEvalConfig(ScheduledEvalConfig):
     inference pool, on the policy the train rollouts see."""
 
 
-class CheckpointConfig(BaseConfig):
-    interval: int | None = Field(None, ge=1)
-    """Step interval at which to save the orchestrator checkpoint."""
+class CheckpointConfig(BaseCheckpointConfig):
+    rollouts: bool = False
+    """Also checkpoint the pipeline: the finished but unshipped train episodes, and the
+    running train rollouts, each as a memory checkpoint of its sandbox. A resumed run
+    continues them, so it starts with the batches the checkpointed run would have
+    shipped. A rollout that cannot take a memory checkpoint starts over. The checkpoint
+    of step N is then written when the trainer publishes the weights of N, not when N
+    ships. Eval rollouts are never checkpointed."""
+
+    rollouts_save_timeout: int = Field(600, ge=1)
+    """Seconds each env worker pool gets to take the memory checkpoints of its running
+    train rollouts and write their restore files. A pool that has not answered by then
+    contributes no restore points: all of its running rollouts start over on resume.
+    The trainer waits in its weight broadcast for the whole save."""
 
 
 class ConcurrencyConfig(BaseConfig):
@@ -526,7 +537,7 @@ class OrchestratorConfig(BaseConfig):
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
     """Transport used to receive updated weights from the trainer."""
 
-    rollout_transport: TransportConfig = ZMQTransportConfig()
+    rollout_transport: ZMQTransportConfig = ZMQTransportConfig()
     """Transport used to ship rollouts from orchestrator to trainer."""
 
     env_worker_pool_replicas: int | None = Field(None, ge=1)
@@ -556,15 +567,6 @@ class OrchestratorConfig(BaseConfig):
 
     seq_len: int = 2048
     """Training sequence length. Shorter samples are padded; longer samples are truncated."""
-
-    num_train_workers: int = Field(1, ge=1)
-    """Trainer data-parallel world size (trainer world size // cp). The orchestrator packs one micro-batch list per DP rank, so this must match the trainer topology. Auto-filled by the ``rl`` entrypoint; set explicitly for standalone orchestrator runs."""
-
-    pad_to_multiple_of: int = Field(1, ge=1)
-    """Pad each packed micro batch to a multiple of this value (the trainer's cp degree). Auto-filled by the ``rl`` entrypoint; set explicitly for standalone orchestrator runs with cp > 1."""
-
-    pad_to_seq_len: bool = False
-    """Pad every packed micro batch to ``seq_len`` instead of to a multiple of ``pad_to_multiple_of``. Rows then have one static shape, which avoids recompilation on dynamic sequence lengths (torch.compile, DeepGEMM JIT kernels, ...) at the cost of extra padding."""
 
     max_steps: int | None = None
     """Maximum training steps. If None, runs indefinitely."""
