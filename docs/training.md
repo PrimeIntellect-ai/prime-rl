@@ -580,9 +580,8 @@ These start over:
   - A rollout on a runtime without memory snapshots, for example the subprocess runtime.
   - A rollout of a harness that cannot continue from a memory snapshot. The null, bash and ACP harnesses (for example rlm) can.
   - A rollout of an interaction (`agent.interaction()`), for example in a user-simulation env.
-  - A rollout that runs inside another rollout's scoring in a box of its own, for example an agentic judge with isolated scoring. With shared scoring, the judge runs in the solver's box, and its memory checkpoint of that box continues both: the solver scores again in the restored box, and the judge continues in it.
   - A rollout whose task has tool servers, shared tools or services of its own.
-  - A rollout in scoring, unless a rollout of its scoring runs in its box (shared scoring, above).
+  - A rollout in scoring, unless a rollout of its scoring is running. For example, an agentic judge runs inside the solver's scoring, in the solver's box (shared scoring) or in the grading box (isolated scoring). The judge's memory checkpoint of that box continues both: the solver scores again from the restored box, and the judge continues in it.
 - A continued episode whose env program asks an agent for another task than at the save. It starts over without using a retry.
 - A running rollout whose env worker pool did not answer within `ckpt.rollouts_save_timeout` seconds (600 by default). The pool's other rollouts start over too, even those whose memory checkpoint was taken. The trainer waits in its weight broadcast for the whole save, so a longer timeout trades a longer pause at each checkpoint for fewer rollouts that start over.
 - All eval rollouts. Eval epochs are not checkpointed.
