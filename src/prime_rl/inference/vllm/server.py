@@ -2,6 +2,7 @@ import asyncio
 import gc
 import os
 from argparse import Namespace
+from pathlib import Path
 from typing import Literal
 
 import uvloop
@@ -50,6 +51,9 @@ def models(request: Request) -> OpenAIServingModels:
 
 API_SERVER_GC_THRESHOLDS = (50_000, 20, 100)
 
+API_SERVER_INDEX = 0
+"""This API server process's index among the server's API server processes."""
+
 WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
     "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
@@ -78,6 +82,18 @@ async def update_weights(request: Request):
     await client.collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
     # Label the tokens sampled from now on (``weight_versions`` spans on /inference/v1/generate).
     await client.update_weight_version(str(data["weight_version"]))
+    return {"status": "ok"}
+
+
+@admin_router.post("/prefetch_weights")
+async def prefetch_weights(request: Request):
+    """Start decoding a sparse weight delta in the workers and wait for it without
+    blocking generation: the workers decode on a background thread."""
+    data = await request.json()
+    client = engine_client(request)
+    await client.collective_rpc("prefetch_weights_from_path", args=(data.get("weight_dir"),))
+    while not all(await client.collective_rpc("prefetch_weights_done")):
+        await asyncio.sleep(0.05)
     return {"status": "ok"}
 
 
@@ -138,6 +154,13 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
     await engine_client(raw_request).update_weight_version(weight_version)
     return {"status": "ok"}
+
+
+@router.get("/weight_version")
+async def weight_version(request: Request):
+    """The policy version the engine serves: the label of the tokens it samples, None before the first update."""
+    label = await engine_client(request).get_weight_version()
+    return {"version": int(label) if label.isdigit() else None}
 
 
 @router.get("/liveness")
@@ -204,6 +227,13 @@ async def custom_init_app_state(
         prime_serving.__dict__.update(upstream.__dict__)
         state.serving_tokens = prime_serving
 
+    # Engines that pull their weights: one API server process moves the shared engine.
+    if args.weight_pull_dir is not None and API_SERVER_INDEX == 0:
+        from prime_rl.inference.vllm.weight_pull import WeightPuller
+
+        state.weight_puller = WeightPuller(engine_client, Path(args.weight_pull_dir))
+        state.weight_pull_task = asyncio.create_task(state.weight_puller.run())
+
     # Under RL load the API server holds millions of live objects, and CPython's
     # default thresholds rerun full collections over them every few seconds.
     # Move everything alive after startup out of GC and collect less often.
@@ -252,8 +282,9 @@ def custom_run_api_server_worker_proc(listen_address, sock, args, client_config=
     Re-import our module in child processes so monkey patches (custom routes,
     custom init_app_state) are applied in multi-API-server mode.
     """
-    import prime_rl.inference.vllm.server  # noqa: F401
+    import prime_rl.inference.vllm.server as server_module
 
+    server_module.API_SERVER_INDEX = (client_config or {}).get("client_index", 0)
     _original_run_api_server_worker_proc(listen_address, sock, args, client_config, **uvicorn_kwargs)
 
 
@@ -289,6 +320,8 @@ def server(config: InferenceConfig):
 
     # Set the worker extension class based on the broadcast backend
     args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
+    pull_from = config.weight_broadcast.pull_from
+    args.weight_pull_dir = pull_from.as_posix() if pull_from is not None else None
 
     if args.headless or args.api_server_count < 1:
         run_headless(args)

@@ -263,6 +263,20 @@ class AdminPlane:
             )
         )
 
+    async def prefetch_weights(self, weight_dir: Path) -> None:
+        """Have every engine read and decode a sparse weight delta while serving."""
+        await asyncio.gather(
+            *[
+                _admin_post(
+                    admin_client,
+                    "/prefetch_weights",
+                    json={"weight_dir": weight_dir.as_posix()},
+                    timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+                )
+                for admin_client in self.clients
+            ]
+        )
+
     async def update_weights(
         self,
         weight_dir: Path | None,
@@ -289,6 +303,20 @@ class AdminPlane:
         finally:
             resume_times = await _resume_engines(self.clients)
         self.update_times = {"pause": pause_times, "transfer": transfer_times, "resume": resume_times}
+
+    async def served_versions(self) -> list[int | None]:
+        """The policy version each engine serves, in client order: None for an engine that applied none yet or
+        does not answer. Read from engines that pull their weights (``weight_broadcast.pull``)."""
+
+        async def fetch(client: AsyncClient) -> int | None:
+            try:
+                response = await client.get("/weight_version", timeout=SERVED_VERSION_TIMEOUT_S)
+                response.raise_for_status()
+            except httpx.HTTPError:
+                return None
+            return response.json()["version"]
+
+        return list(await asyncio.gather(*map(fetch, self.clients)))
 
     async def update_draft_weights(self, weight_dir: Path) -> None:
         """Load a draft checkpoint from disk on every engine. Call while the engines are paused."""
@@ -573,6 +601,8 @@ def _is_retryable_admin_error(exception: BaseException) -> bool:
 # that tenacity retries. Sized for `/pause`, which drains in-flight requests
 # (mode="keep") and so can legitimately take a while.
 ADMIN_TIMEOUT_S = 300.0
+# A version read is polled: an engine that does not answer in time counts as serving none.
+SERVED_VERSION_TIMEOUT_S = 10.0
 # `/update_weights` runs a collective NCCL receive across all DP workers, which
 # can take longer than the other admin ops.
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0

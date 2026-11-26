@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import time
 from pathlib import Path
 
 import torch.nn as nn
@@ -17,6 +18,7 @@ from prime_rl.transports.weights.base import (
     WeightSender,
     marker_exists,
 )
+from prime_rl.utils.sparse_weights import DELTA_DIR, MANIFEST
 from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
     gather_weights_parallel,
@@ -72,17 +74,77 @@ class FileSystemWeightReceiver(WeightReceiver):
     live traffic — an in-place adapter reload is a vLLM-native op that needs
     no engine pause; a full checkpoint pauses the engines for the load."""
 
-    async def receive(self, step: int) -> None:
+    prepared_step: int | None = None
+
+    async def prepare(self, step: int) -> None:
+        """Acknowledge v{step} and wait for its weights while the engines keep serving: a sparse delta's manifest
+        comes first and its part files as the trainer encodes, so the engines read and decode them now and the
+        pause only applies the delta."""
+        if self.prepared_step == step:
+            return
         weights_dir = self.step_dir(step)
-        # A trainer restarted mid-broadcast offers the version again: acknowledge every offer.
-        while not marker_exists(weights_dir / FINISHED_MARKER):
-            offered = marker_exists(weights_dir / SENDER_READY_MARKER)
-            if offered and not marker_exists(weights_dir / RECEIVER_READY_MARKER):
-                # The trainer resets the directory for a new offer; the next pass acknowledges it.
-                with contextlib.suppress(FileNotFoundError):
-                    self._ack(step)
-            await asyncio.sleep(0.1)
+        manifest, finished = weights_dir / DELTA_DIR / MANIFEST, weights_dir / FINISHED_MARKER
+        while not (marker_exists(manifest) or marker_exists(finished)):
+            self._ack_offer(step)
+            await asyncio.sleep(0.05)
+        if marker_exists(manifest):
+            start = time.perf_counter()
+            await self.admin_plane.prefetch_weights(weights_dir)
+            self.logger.debug(f"Prefetched sparse weight delta v{step} in {time.perf_counter() - start:.2f}s")
+        self.prepared_step = step
+
+    def _ack_offer(self, step: int) -> bool:
+        """Acknowledge an offer of v{step} not yet acknowledged. A trainer restarted mid-broadcast offers the version
+        again, resetting the directory, so every offer is acknowledged."""
+        weights_dir = self.step_dir(step)
+        if marker_exists(weights_dir / SENDER_READY_MARKER) and not marker_exists(weights_dir / RECEIVER_READY_MARKER):
+            with contextlib.suppress(FileNotFoundError):
+                self._ack(step)
+                return True
+        return False
+
+    async def receive(self, step: int) -> None:
+        await self.prepare(step)
+        weights_dir = self.step_dir(step)
+        finished = weights_dir / FINISHED_MARKER
+        while not marker_exists(finished):
+            if self._ack_offer(step):
+                # A new offer rewrites the delta: prefetch it again rather than apply the abandoned one
+                self.prepared_step = None
+                await self.prepare(step)
+            await asyncio.sleep(0.05)
         if (weights_dir / "adapter_config.json").exists():
             await load_lora_adapter(self.admin_plane, self.model_name, weights_dir, step)
         else:
             await self.admin_plane.update_weights(weights_dir, transport="filesystem", step=step)
+
+
+class PulledFileSystemWeightReceiver(WeightReceiver):
+    """The consumer side of ``weight_broadcast.pull``: the engines watch the broadcast dir and move themselves onto
+    each version (``prime_rl.inference.vllm.weight_pull``), so receiving a version only waits until every engine
+    serves it or a newer one. Nothing is acknowledged and no engine is paused from here."""
+
+    engines_pull = True
+    poll_interval = 0.1
+
+    def serves(self, version: int | None, step: int) -> bool:
+        """Whether an engine serving ``version`` serves v{step} or a newer version of this trainer. A trainer that
+        restarted from a checkpoint drops the broadcasts beyond it, so a newer version without its broadcast is
+        from before the restart, and the engine has yet to move back."""
+        if version is None or version < step:
+            return False
+        return version == step or marker_exists(self.step_dir(version) / FINISHED_MARKER)
+
+    async def receive(self, step: int) -> None:
+        start = last_log = time.monotonic()
+        while True:
+            served = await self.admin_plane.served_versions()
+            if all(self.serves(version, step) for version in served):
+                return
+            now = time.monotonic()
+            if now - start > self.config.timeout:
+                raise TimeoutError(f"The engines did not pull policy v{step} within {self.config.timeout}s: {served}")
+            if now - last_log > 60:
+                self.logger.warning(f"Still waiting for the engines to pull policy v{step}; they serve {served}")
+                last_log = now
+            await asyncio.sleep(self.poll_interval)

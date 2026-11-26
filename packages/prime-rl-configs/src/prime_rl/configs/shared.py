@@ -45,8 +45,27 @@ class BaseWeightBroadcastConfig(BaseConfig):
     offered version in time. Raise it for large models on slow shared filesystems."""
 
 
+class DeltaWeightBroadcastConfig(BaseConfig):
+    """Between anchors, publish only the weight elements that changed since the previous broadcast. Engines patch
+    their weights in place and verify every update. Not supported with LoRA."""
+
+    interval: int = Field(50, ge=1)
+    """Publish a full checkpoint (anchor) every this many steps; the steps in between publish their delta
+    against the previous step. Engines that join or fall off the delta chain load the last anchor and replay
+    the deltas since."""
+
+
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
+
+    delta: DeltaWeightBroadcastConfig | None = None
+    """Publish sparse deltas instead of full checkpoints."""
+
+    pull: bool = False
+    """The engines pull each version themselves: they watch the broadcast dir, decode a sparse delta while serving
+    and apply the newest finished version in a short pause of their own. The trainer then waits for no consumer and
+    the orchestrator pauses no engine: it only reads the version each engine serves. Not supported yet with LoRA,
+    disaggregated P/D or draft swaps."""
 
 
 class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
