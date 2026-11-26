@@ -1,0 +1,44 @@
+# DeepSeek-V4-Flash (284B MoE, 256 experts, sparse attention over compressed KV) RL at 256k context.
+# Model settings only: compose it with a compute overlay from `gpu/` and a data config from
+# `recipes/data/`:
+#
+#   uv run rl @ recipes/deepseek-v4-flash-0731/rl.toml @ recipes/deepseek-v4-flash-0731/gpu/h200.toml @ recipes/data/swe.toml
+#   uv run rl @ recipes/deepseek-v4-flash-0731/rl.toml @ recipes/deepseek-v4-flash-0731/gpu/h200.toml @ recipes/data/math.toml
+#   uv run rl @ recipes/deepseek-v4-flash-0731/rl.toml @ recipes/deepseek-v4-flash-0731/gpu/b300.toml @ recipes/data/swe.toml
+#
+# DeepSeek V4 needs bf16 weights (below), an fp8 KV cache in vLLM, ring context parallelism in the
+# trainer (the only kind it supports; the overlays set cp), and an explicit renderer and parsers.
+
+seq_len = 262144
+
+[slurm]
+
+[model]
+# bf16 re-export of deepseek-ai/DeepSeek-V4-Flash-0731. The trainer needs bf16 weights, and the
+# inference overlays quantize them online, so both sides start from the same checkpoint.
+name = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
+
+[weight_broadcast]
+type = "nccl"
+
+[trainer.optim]
+type = "muon"
+lr = 1e-6
+
+[orchestrator.renderer]
+# The bf16 re-export is not in the renderer map, so name the renderer explicitly.
+name = "deepseek-v4"
+enable_thinking = true
+# With tools present the encoder keeps all reasoning anyway; these make the settings agree.
+drop_thinking = false
+thinking_retention = "all"
+reasoning_effort = "low"
+
+[inference.vllm]
+max_model_len = 262144
+# Required: DeepSeek V4 attention uses the fp8_ds_mla KV layout, which asserts against `auto`.
+kv_cache_dtype = "fp8"
+block_size = 256
+# Auto-detection only matches the `deepseek-ai/DeepSeek-V4` repo ids, not the bf16 re-export.
+tool_call_parser = "deepseek_v4"
+reasoning_parser = "deepseek_v4"

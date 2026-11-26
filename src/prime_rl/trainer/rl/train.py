@@ -842,7 +842,7 @@ def train(config: TrainerConfig):
         mfu_6dn = perf_counter.get_step_mfu(
             perf_counter.flop_counter.flops_per_token_6dn * num_tokens, forward_backward_time
         )
-        peak_memory, non_torch_memory = get_peak_memory_across_ranks()
+        peak_memory, non_torch_memory, peak_allocated_memory = get_peak_memory_across_ranks()
         max_peak_memory = max(max_peak_memory, peak_memory)
 
         # Log step metrics
@@ -859,7 +859,7 @@ def train(config: TrainerConfig):
             step_message += f" | Mismatch KL {tensor_metrics['mismatch_kl/all/mean']:.4f}"
         if grad_norm is not None:
             step_message += f" | Grad. Norm {grad_norm:.4f}"
-        step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | MFU 6DN {mfu_6dn:.1f}% | Peak Mem. {peak_memory:.1f} GiB"
+        step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | MFU 6DN {mfu_6dn:.1f}% | Peak Mem. {peak_memory:.1f} GiB (allocated {peak_allocated_memory:.1f})"
         if "max_vio/mean" in tensor_metrics:
             step_message += f" | Max Vio {tensor_metrics['max_vio/mean']:.4f}"
         if "ep_imbalance/rank/mean" in tensor_metrics:
@@ -876,6 +876,7 @@ def train(config: TrainerConfig):
             "perf/mfu_6dn": mfu_6dn,
             "perf/peak_memory": peak_memory,
             "perf/non_torch_memory": non_torch_memory,
+            "perf/peak_allocated_memory": peak_allocated_memory,
             "step": progress.step,
         }
         asyncio.run(monitors.log(perf_metrics, step=progress.step))

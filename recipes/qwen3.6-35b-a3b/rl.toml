@@ -1,0 +1,29 @@
+# Qwen3.6-35B-A3B (256-expert MoE, hybrid Gated DeltaNet, 10 of 40 layers full attention) RL at
+# 256k context. Model settings only: compose it with a compute overlay from `gpu/` and a data config
+# from `recipes/data/`:
+#
+#   uv run rl @ recipes/qwen3.6-35b-a3b/rl.toml @ recipes/qwen3.6-35b-a3b/gpu/h200.toml @ recipes/data/swe.toml
+#   uv run rl @ recipes/qwen3.6-35b-a3b/rl.toml @ recipes/qwen3.6-35b-a3b/gpu/h200.toml @ recipes/data/math.toml
+
+seq_len = 262144
+
+[slurm]
+
+[model]
+name = "Qwen/Qwen3.6-35B-A3B"
+
+[weight_broadcast]
+type = "nccl"
+
+[trainer.optim]
+type = "muon"
+lr = 1e-6
+
+[inference.vllm]
+max_model_len = 262144
+enable_prefix_caching = true
+
+# Text-only RL: skip the vision encoder.
+[inference.vllm.limit_mm_per_prompt]
+image = 0
+video = 0

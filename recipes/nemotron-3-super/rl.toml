@@ -1,0 +1,29 @@
+# Nemotron 3 Super 120B-A12B (hybrid Mamba + 512-expert MoE) RL at 256k context.
+# Model settings only: compose it with a compute overlay from `gpu/` and a data config from
+# `recipes/data/`:
+#
+#   uv run rl @ recipes/nemotron-3-super/rl.toml @ recipes/nemotron-3-super/gpu/h200.toml @ recipes/data/swe.toml
+#   uv run rl @ recipes/nemotron-3-super/rl.toml @ recipes/nemotron-3-super/gpu/h200.toml @ recipes/data/math.toml
+
+seq_len = 262144
+
+[slurm]
+
+[model]
+name = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"
+
+[weight_broadcast]
+type = "nccl"
+
+[trainer]
+enable_router_replay = true
+
+[trainer.optim]
+type = "muon"
+lr = 1e-6
+
+[inference.vllm]
+max_model_len = 262144
+enable_expert_parallel = true
+# vLLM disables prefix caching by default for hybrid-Mamba models; agentic turns share long prefixes.
+enable_prefix_caching = true
