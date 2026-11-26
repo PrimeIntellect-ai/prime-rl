@@ -31,7 +31,8 @@ staging_buffers_count = 2          # overlap the next read with the current inst
 - Inference is paused only after the trainer has published the version. A failed update leaves inference paused; restart the trainer and inference together, since there is no rollback.
 - Trainer rank 0 and the orchestrator must share the broadcast directory, which holds only rendezvous markers, not weights.
 - MX transfers floating-point tensors only. Integer tensors are lookup tables that training never changes, such as DeepSeek-V4's hash-routing table `tid2eid`: inference keeps the values it loaded from the checkpoint.
+- P/D deployments update like the other transports: prefill and decode GPUs form one transfer group. Each update pauses the prefill engines first, since a prefill engine's pause waits until decode has pulled the KV it holds, then the decode engines, installs the version on all of them and resumes them.
 
 ## Limitations
 
-LoRA, speculative decoding, Dynamo discovery and SFT online evals are rejected at config validation. P/D disaggregated inference is not supported, and pipeline parallelism is untested.
+LoRA, speculative decoding, Dynamo discovery and SFT online evals are rejected at config validation. Pipeline parallelism is untested.
