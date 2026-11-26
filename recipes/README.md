@@ -4,7 +4,7 @@ RL recipes per model at 256k context, in three layers:
 
 1. `<model>/rl.toml`: the model definition: the model, its optimizer, and its inference engine
    settings that do not depend on hardware (context length, parsers, prefix caching, router replay).
-2. `<model>/gpu/h200.toml`: the compute overlay (`b300.toml` for B300; its header gives the node counts): trainer nodes and parallelism, fit to one
+2. `<model>/gpu/h200.toml`: the compute overlay (`b300.toml` for B300, `h100.toml` for H100 80GB; its header gives the node counts): trainer nodes and parallelism, fit to one
    262144-token sample per micro batch, and one inference node per trainer node. The trainer keeps
    the defaults: optimizer offload, full activation checkpointing and activation offloading.
 3. `data/`: one representative data overlay per domain, updated as models get stronger: `swe.toml`
@@ -39,6 +39,10 @@ live tensors (`perf/peak_allocated_memory`). Both include memory outside the all
 context). The inference configs are not fitted yet, and no recipe has run on real weights and data yet.
 The models not tested in this layout take their settings from the configs named in their overlay
 headers.
+
+H100 80GB overlays exist for Qwen3.6-35B-A3B, Muse Glimmer 30B and Qwen3.8 27B. They keep the H200
+node counts and inference layouts and use cp 8 with activation offloading to fit in 80 GB. Only
+Qwen3.6-35B-A3B has run (math, 5 steps): 61.9 GiB peak allocated, 2.0-2.3k tok/s per GPU.
 
 ## ScaleSWE RL
 
