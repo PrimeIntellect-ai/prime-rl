@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import dataclasses
 import gc
 import json
 import os
@@ -39,10 +40,10 @@ from verifiers.v1.delta import dump
 
 from prime_rl.configs.orchestrator import CheckpointConfig
 from prime_rl.orchestrator.metrics import TrainEpisodes
+from prime_rl.orchestrator.train_sink import QueuedSample
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import DispatchFailure, DispatchResult, GroupCancellation, Progress, TrainBatch
-from prime_rl.transports.batch import TrainingSample
-from prime_rl.transports.batch.types import PAYLOAD_INFO_KEY
+from prime_rl.transports.batch.types import PAYLOAD_INFO_KEY, SampleRef
 from prime_rl.transports.payload import link_or_copy, persist_payloads
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import ckpt_output_dir, get_ckpt_dir, get_step_path
@@ -281,12 +282,11 @@ def payload_refs(work: dict) -> dict[str, set[str]]:
         for trace in episode.traces:
             if payload := trace.info.get(PAYLOAD_INFO_KEY):
                 refs[payload["url"]].update(reference["id"] for reference in payload["branches"].values())
-    samples = [sample for samples in sink["pending_batch"].values() for sample in samples]
+    samples = [sample.ref for samples in sink["pending_batch"].values() for sample in samples]
     if work["batch"] is not None:
         samples += work["batch"].samples
     for sample in samples:
-        if sample.payload is not None:
-            refs[sample.payload.url].add(sample.payload.id)
+        refs[sample.url].add(sample.id)
     return refs
 
 
@@ -326,10 +326,10 @@ def _dump_episode(episode: vf.Episode) -> dict:
     return dumped
 
 
-def _dump_sample(sample: TrainingSample) -> TrainingSample:
-    if sample.payload is None:
-        return sample
-    return msgspec.structs.replace(sample, payload=msgspec.structs.replace(sample.payload, url=PERSISTED_URL))
+def _dump_sample(sample: QueuedSample | SampleRef) -> QueuedSample | SampleRef:
+    if isinstance(sample, QueuedSample):
+        return dataclasses.replace(sample, ref=_dump_sample(sample.ref))
+    return msgspec.structs.replace(sample, url=PERSISTED_URL)
 
 
 def _load_episode(dumped: dict, arrays_url: str) -> vf.WireEpisode:
@@ -340,10 +340,10 @@ def _load_episode(dumped: dict, arrays_url: str) -> vf.WireEpisode:
     return vf.WireEpisode.model_validate(dumped)
 
 
-def _load_sample(sample: TrainingSample, arrays_url: str) -> TrainingSample:
-    if sample.payload is not None and sample.payload.url == PERSISTED_URL:
-        sample.payload.url = arrays_url
-    return sample
+def _load_sample(sample: QueuedSample | SampleRef, arrays_url: str) -> QueuedSample | SampleRef:
+    if isinstance(sample, QueuedSample):
+        return dataclasses.replace(sample, ref=_load_sample(sample.ref, arrays_url))
+    return msgspec.structs.replace(sample, url=arrays_url) if sample.url == PERSISTED_URL else sample
 
 
 def _map_open_work(work: dict, episode: Callable[[Any], Any], sample: Callable[[Any], Any], batch: Callable) -> dict:

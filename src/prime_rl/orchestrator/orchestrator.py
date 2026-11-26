@@ -90,6 +90,7 @@ from prime_rl.orchestrator.utils import (
     eval_work,
     intercept_vf_logging,
     max_rollout_staleness,
+    min_fresh_version,
     release_and_trim,
     rollout_staleness,
     set_default_executor,
@@ -824,7 +825,13 @@ class Orchestrator:
         await monitors.log_annotations(annotations)
 
         pack_start_time = time.perf_counter()
-        micro_batch_grid = await asyncio.to_thread(self.packer.pack, batch.samples)
+        micro_batch_grid = await asyncio.to_thread(
+            lambda: self.packer.pack(
+                batch.samples,
+                trained_version=step - 1,
+                min_version=min_fresh_version(step, config.max_staleness),
+            )
+        )
         pack_time = time.perf_counter() - pack_start_time
         # Sending blocks until every trainer rank requested the batch, so the wait is the time
         # the orchestrator spent waiting on the trainer for the next policy.

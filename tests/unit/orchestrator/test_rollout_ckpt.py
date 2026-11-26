@@ -2,6 +2,7 @@
 and the episodes in flight), and a resumed run continues it."""
 
 import asyncio
+import dataclasses
 import shutil
 import uuid
 from collections import deque
@@ -101,7 +102,7 @@ def kept(hook: PayloadHook) -> vf.Trace:
     t = trace()
     for node in t.nodes:
         node.routed_experts = np.ones((len(node.token_ids), 2, 2), dtype=np.uint8)
-    hook.keep(episode([t]), vf.SamplingConfig())
+    hook.keep(episode([t], keep=False), "rl")
     return t
 
 
@@ -124,7 +125,10 @@ def test_the_sink_state_round_trips_through_the_checkpoint_file(tmp_path):
         resumed.load_state_dict(loaded["sink"])
         assert list(resumed.pending_batch) == list(s.pending_batch)
         for trace_id, samples in s.pending_batch.items():
-            assert ENCODER.encode(resumed.pending_batch[trace_id]) == ENCODER.encode(samples)
+            restored = [
+                dataclasses.replace(x, ref=msgspec.structs.replace(x.ref, url="file:///arrays")) for x in samples
+            ]
+            assert ENCODER.encode(resumed.pending_batch[trace_id]) == ENCODER.encode(restored)
             assert isinstance(resumed.episode_by_trace[trace_id], vf.WireEpisode)
             assert resumed.episode_by_trace[trace_id].id == s.episode_by_trace[trace_id].id
         assert [e.id for e in resumed.pending_groups["open"]] == [e.id for e in s.pending_groups["open"]]
@@ -203,43 +207,41 @@ def test_an_unshipped_batch_keeps_its_arrays_in_the_checkpoint(tmp_path):
     async def run():
         hook = PayloadHook()
         s = sink(batch_size=1)
-        batch = await s.add(episode([kept(hook)], group="shipping"))
+        batch = await s.add(episode([kept(hook)], group="shipping", keep=False))
         assert isinstance(batch, TrainBatch)
         (sample,) = batch.samples
-        worker_url = sample.payload.url
+        worker_url = sample.url
         assert worker_url == hook.server.url
         work = open_work(batch=batch)
 
         assert await persist_open_work(work, tmp_path) == (1, 1)
         arrays = tmp_path / ARRAYS_DIR
-        assert (arrays / sample.payload.id).is_file()
+        assert (arrays / sample.id).is_file()
         write_open_work(work, tmp_path)
         # The run goes on reading from the env worker.
-        assert sample.payload.url == worker_url
+        assert sample.url == worker_url
         assert batch.cohort.episodes[0].traces[0].info[payload.PAYLOAD_INFO_KEY]["url"] == worker_url
 
         loaded = read_open_work(tmp_path, arrays.as_uri())["batch"]
         (resumed,) = loaded.samples
-        assert resumed.payload.url == arrays.as_uri() and resumed.payload.id == sample.payload.id
-        assert ENCODER.encode(msgspec.structs.replace(resumed, payload=None)) == ENCODER.encode(
-            msgspec.structs.replace(sample, payload=None)
-        )
+        assert resumed.url == arrays.as_uri() and resumed.id == sample.id
+        assert ENCODER.encode(msgspec.structs.replace(resumed, url=worker_url)) == ENCODER.encode(sample)
         assert loaded.cohort.sampled_trace_ids == batch.cohort.sampled_trace_ids
         assert [e.id for e in loaded.cohort.episodes] == [e.id for e in batch.cohort.episodes]
         assert loaded.cohort.episodes[0].traces[0].info[payload.PAYLOAD_INFO_KEY]["url"] == arrays.as_uri()
 
         # The trainer reads the file as it reads the env worker, and its DELETE leaves the file.
-        url = f"{resumed.payload.url}/{resumed.payload.id}"
+        url = f"{resumed.url}/{resumed.id}"
         fetched = payload._fetch(url)
-        assert fetched is not None and fetched == payload._fetch(f"{worker_url}/{sample.payload.id}")
+        assert fetched is not None and fetched == payload._fetch(f"{worker_url}/{sample.id}")
         delete_payloads([url])
         wait_for_deletes()
-        assert (arrays / sample.payload.id).is_file()
+        assert (arrays / sample.id).is_file()
         assert payload._fetch(f"{arrays.as_uri()}/missing") is None
 
         # The next checkpoint of the resumed run links the arrays from the files.
         assert await persist_open_work(open_work(batch=loaded), tmp_path / "next") == (1, 1)
-        assert (tmp_path / "next" / ARRAYS_DIR / sample.payload.id).samefile(arrays / sample.payload.id)
+        assert (tmp_path / "next" / ARRAYS_DIR / sample.id).samefile(arrays / sample.id)
 
     asyncio.run(run())
 
@@ -248,11 +250,30 @@ def test_arrays_a_worker_no_longer_holds_are_reported_missing(tmp_path):
     async def run():
         hook = PayloadHook()
         s = sink(batch_size=1)
-        batch = await s.add(episode([kept(hook)], group="shipping"))
-        hook.server.delete(batch.samples[0].payload.id)
+        batch = await s.add(episode([kept(hook)], group="shipping", keep=False))
+        hook.server.delete(batch.samples[0].id)
         assert await persist_open_work(open_work(batch=batch), tmp_path) == (1, 0)
 
     asyncio.run(run())
+
+
+def test_credit_for_a_resumed_sample_leaves_the_checkpoint_as_it_was(tmp_path):
+    """A group the resumed run scores credits its samples per token in the files the resumed
+    run linked from the checkpoint: the credit lands in a new file, so the checkpoint can
+    resume again as it was written."""
+    hook = PayloadHook()
+    key = kept(hook).info[payload.PAYLOAD_INFO_KEY]["branches"]["0"]["id"]
+    checkpoint, resumed = tmp_path / "step_1" / ARRAYS_DIR, tmp_path / RESUMED_DIR
+    assert payload.persist_payloads(hook.server.url, checkpoint, [key]) == [key]
+    resumed.mkdir()
+    assert payload.link_or_copy(checkpoint / key, resumed / key)
+    written = (checkpoint / key).read_bytes()
+
+    assert payload.write_advantages(f"{resumed.as_uri()}/{key}", np.array([0.5, -0.5]))
+    assert (checkpoint / key).read_bytes() == written
+    credited = payload._fetch(f"{resumed.as_uri()}/{key}")
+    assert np.frombuffer(credited.advantages, np.float32).tolist() == [0.0, 0.0, 0.5, -0.5]
+    assert not payload.write_advantages(f"{resumed.as_uri()}/gone", np.array([0.5]))
 
 
 def test_a_carried_restore_file_moves_to_the_new_checkpoint(tmp_path):
@@ -499,7 +520,8 @@ def test_the_orchestrator_saves_and_resumes_its_unshipped_work(tmp_path):
         resumed.dispatcher = SimpleNamespace(resume_open_work=lambda *args: dispatched.append(args))
         resumed.resume_open_work(read_open_work(tmp_path, "file:///arrays"))
         assert [result.group.id for result in resumed.staged] == ["staged", "queued"]
-        assert ENCODER.encode(resumed.resumed_batch.samples) == ENCODER.encode(batch.samples)
+        restored = [msgspec.structs.replace(sample, url="file:///arrays") for sample in batch.samples]
+        assert ENCODER.encode(resumed.resumed_batch.samples) == ENCODER.encode(restored)
         assert [e.id for e in resumed.resumed_batch.cohort.episodes] == [e.id for e in batch.cohort.episodes]
         assert resumed.resumed_batch.cohort.sampled_trace_ids == batch.cohort.sampled_trace_ids
         assert adopted == [({"shipping": ("test", "k", 1)}, [])] and dispatched == [([], [])]

@@ -703,32 +703,40 @@ def train(config: TrainerConfig):
         if not config.data.fake:
             # Ranks that share a data rank train the same micro batches, so they must drop
             # the same ones even when only one of them failed to fetch.
+            # 1: keep the micro batch out of the loss; 2: no rank can train this step.
             failed = torch.zeros(dataloader.dp_world_size, len(micro_batches), device="cuda")
             failed[dataloader.dp_rank, dataloader.failed_micro_batches] = 1
+            failed[dataloader.dp_rank, dataloader.unbuildable_micro_batches] = 2
             dist.all_reduce(failed, op=dist.ReduceOp.MAX)
             # An NCCL all-reduce returns once it is enqueued, not once every rank joined it.
             # Reading the result on the host waits for every rank's contribution, which each
             # rank makes only after its fetch: without this, a data master that finished
             # fetching first deleted the arrays while its CP peers were still fetching them.
             failed = failed.cpu()
-            # Every rank has fetched its arrays now, so one rank per data rank frees them
+            # Every rank has fetched its samples now, so one rank per data rank frees them
             # (dummy micro batches may reuse another data rank's, hence after the world
             # all-reduce).
             if is_data_master:
                 dataloader.release_payloads()
-            # A step where no micro batch's arrays could be fetched anywhere is not a
+            # A step where no micro batch's samples could be fetched anywhere is not a
             # transient failure (unreachable or mismatched env worker pools): stop instead of
             # training on nothing.
+            # Every rank raises together, after the all-reduce, so none waits on the others.
+            if bool((failed == 2).any()):
+                raise RuntimeError(
+                    "Could not fetch a multimodal sample, and no other multimodal sample of its rank's step could "
+                    "stand in for it to run the vision encoder; check that trainer ranks reach the env worker pools"
+                )
             if failed.numel() and bool(failed.all()):
                 raise RuntimeError(
-                    "Could not fetch the training arrays of any micro batch this step; check that "
+                    "Could not fetch the training samples of any micro batch this step; check that "
                     "trainer ranks reach the env worker pools' payload URLs (see the trainer and env-worker-pool logs)"
                 )
             dropped = failed[dataloader.dp_rank].nonzero().flatten().tolist()
             drop_micro_batches(micro_batches, dropped)
             dropped_micro_batches = int(failed.sum().item())
             if dropped:
-                logger.warning(f"Dropped {len(dropped)} micro batches whose payloads could not be fetched")
+                logger.warning(f"Dropped {len(dropped)} micro batches whose samples could not be fetched")
         load_data_time = time.perf_counter() - load_data_start_time
         logger.debug(f"Loaded batch in {format_time(load_data_time)}")
 

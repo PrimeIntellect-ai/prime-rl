@@ -30,7 +30,7 @@ from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.control.types import ConfigUpdate, Reconfigurable
 from prime_rl.env import EnvClient
-from prime_rl.env.types import RestoreRef
+from prime_rl.env.types import RestoreRef, TrainRequest
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.clients import InferenceClient, connect_frozen_client
 from prime_rl.utils.logger import format_time, get_logger
@@ -144,7 +144,7 @@ class Env:
         change of one of the episode's traces — as it lands. ``restore`` is the path of a
         restore file (``save``): the run continues that rollout. ``request_id`` names the
         run in what ``save`` returns. The run goes to the replica with the fewest runs in
-        flight."""
+        flight. A train run's worker keeps its training samples."""
         if cache_salt is not None:
             sampling = sampling.model_copy(update={"cache_salt": cache_salt})
         replica = min(range(len(self.env_clients)), key=self._in_flight.__getitem__)
@@ -156,11 +156,16 @@ class Env:
                 model=model_name,
                 sampling=sampling,
                 on_delta=on_delta,
+                train=self.train_request(),
                 restore=restore,
                 request_id=request_id,
             )
         finally:
             self._in_flight[replica] -= 1
+
+    def train_request(self) -> TrainRequest | None:
+        """What a train run's worker needs to keep its samples; None for eval."""
+        return None
 
     async def save(self, directory: str, timeout: float) -> dict[str, RestoreRef]:
         """Take a memory checkpoint of every rollout running on every replica, each
@@ -237,6 +242,9 @@ class TrainEnv(Env):
         # Truncated policy sampling must ship the sampling masks the trainer replays.
         self.requires_sampling_masks = config.sampling.truncates_distribution() and self.uses_live_policy
         self.requires_sampler_logprobs = config.sampling.logprobs is not None and self.uses_live_policy
+
+    def train_request(self) -> TrainRequest:
+        return TrainRequest(algo=self.config.algo.model_dump(mode="json"))
 
     def build_sampling(self, config: TrainSourceConfig) -> vf.SamplingConfig:
         return vf.SamplingConfig(

@@ -1,20 +1,24 @@
-"""Per-token training arrays passed by reference.
+"""Training samples passed by reference.
 
-Training arrays (routing rows, sampling masks, top-k heads) never leave an env worker
-inline. When a train episode finishes, each env worker (`PayloadHook`) encodes every
-trainable branch's arrays, keeps the blob and serves it over HTTP; the trace carries only
-references in `trace.info[PAYLOAD_INFO_KEY]`. The orchestrator packs one `PayloadSlice` per
-sample, and each trainer rank fetches its micro batches' blobs before the step and assembles
-them into the micro batch's array fields.
+A training sample never leaves the env worker that ran it inline. When a train episode finishes,
+each env worker (`PayloadHook`) builds every trainable branch's sample: its per-token columns
+(tokens, masks, logprobs, policy versions, loss weights, reference logprobs, multimodal ids)
+and training arrays (routing rows, sampling masks, top-k heads). It keeps the encoded
+`SampleBody` and serves it over HTTP; the trace carries only a reference and a small summary per
+branch in `trace.info[PAYLOAD_INFO_KEY]`. The orchestrator decides about samples from the
+summaries and ships `MicroBatchPlan`s of `SampleRef`s, and each trainer rank fetches its micro
+batches' bodies and builds them (`materialize_micro_batches`). An algorithm that credits tokens
+unevenly has the orchestrator write those advantages into the kept body (`write_advantages`)
+before the sample can ship.
 
-Every kept blob is deleted exactly once, by whoever holds it last: the trainer deletes a
-step's blobs once every rank fetched them; the orchestrator deletes the blobs of samples
-and traces it drops without shipping; the env worker deletes the blobs of episodes it
+Every kept body is deleted exactly once, by whoever holds it last: the trainer deletes a
+step's bodies once every rank fetched them; the orchestrator deletes the bodies of samples
+and traces it drops without shipping; the env worker deletes the bodies of episodes it
 kept but did not deliver (`PayloadHook.discard`).
 
-With `rollout_transport.retain`, a pool's workers write their blobs as files into the
+With `rollout_transport.retain`, a pool's workers write their bodies as files into the
 directory of one `RolloutStore`, which serves them for the whole pool. The trainer then
-marks a step's blobs as trained instead of deleting them, and the store deletes them once
+marks a step's bodies as trained instead of deleting them, and the store deletes them once
 a trainer checkpoint covers the step, so a restarted trainer fetches them again.
 
 A rollout checkpoint keeps the blobs of finished but unshipped episodes: the orchestrator
@@ -37,8 +41,9 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -48,12 +53,31 @@ import msgspec
 import numpy as np
 import verifiers.v1 as vf
 
+from prime_rl.configs.algorithm import ActionLossType
+from prime_rl.orchestrator.algo.base import iter_trainable_traces
+from prime_rl.orchestrator.algo.routing import stamp_loss_routing
+from prime_rl.orchestrator.trajectories import BranchSample, trace_to_samples
+from prime_rl.transports.batch.materialize import (
+    assert_token_arrays_aligned,
+    fill_routing,
+    make_dummy_batch,
+    materialize_bin,
+    mm_cut,
+    pad_micro_batch,
+    prepare_sample,
+    slice_routed_experts,
+    slice_sampler_support,
+    truncate_mm_refs,
+)
 from prime_rl.transports.batch.types import (
     PAYLOAD_INFO_KEY,
-    BranchArrays,
+    UNLABELED,
+    UNVERSIONED,
     MicroBatch,
-    PayloadSlice,
+    MicroBatchPlan,
     RoutedExperts,
+    SampleBody,
+    SampleRef,
     SamplerSupport,
     TrainingSample,
 )
@@ -61,12 +85,7 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import confined, is_file_name
 
 _encoder = msgspec.msgpack.Encoder()
-_decoder = msgspec.msgpack.Decoder(BranchArrays)
-
-
-def _tile(data: bytes, size: int) -> bytes:
-    """`data` repeated end to end and cut to `size` bytes."""
-    return (data * (size // len(data) + 1))[:size]
+_decoder = msgspec.msgpack.Decoder(SampleBody)
 
 
 def _encode_routed_experts(arr: np.ndarray | None, num_tokens: int) -> RoutedExperts | None:
@@ -108,98 +127,6 @@ def _encode_sampler_support(support: vf.SamplerSupport | None, num_tokens: int) 
         replayed=np.ascontiguousarray(replayed, dtype=np.bool_).tobytes(),
         logprobs=np.ascontiguousarray(logprobs, dtype=np.float32).tobytes() if logprobs is not None else None,
     )
-
-
-def encode_branch_arrays(branch: vf.Branch, num_tokens: int) -> BranchArrays:
-    """The branch's routing rows and sampler support as the trainer replays them."""
-    return BranchArrays(
-        routed_experts=_encode_routed_experts(branch.routed_experts, num_tokens),
-        sampler_support=_encode_sampler_support(branch.sampler_support, num_tokens),
-    )
-
-
-def _routed_experts_row_size(routed_experts: RoutedExperts) -> int:
-    return routed_experts.shape[1] * routed_experts.shape[2] * np.dtype(routed_experts.dtype).itemsize
-
-
-def _slice_routed_experts(routed_experts: RoutedExperts, seq_len: int) -> RoutedExperts:
-    row_size = _routed_experts_row_size(routed_experts)
-    return RoutedExperts(
-        data=routed_experts.data[: seq_len * row_size],
-        shape=[seq_len, routed_experts.shape[1], routed_experts.shape[2]],
-        dtype=routed_experts.dtype,
-    )
-
-
-def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
-    routed_experts = micro_batch.routed_experts
-    assert routed_experts is not None
-    row_size = _routed_experts_row_size(routed_experts)
-    routed_experts.data += _tile(routed_experts.data, padding_size * row_size)
-    routed_experts.shape[0] += padding_size
-
-
-def _empty_sampler_support(num_tokens: int) -> SamplerSupport:
-    return SamplerSupport(ids=b"", counts=bytes(num_tokens * 4), replayed=bytes(num_tokens))
-
-
-def _slice_sampler_support(support: SamplerSupport, seq_len: int) -> SamplerSupport:
-    counts = np.frombuffer(support.counts, dtype=np.int32)[:seq_len]
-    size = int(counts.sum()) * 4
-    return SamplerSupport(
-        ids=support.ids[:size],
-        counts=counts.tobytes(),
-        replayed=support.replayed[:seq_len],
-        logprobs=support.logprobs[:size] if support.logprobs is not None else None,
-    )
-
-
-def pack_token_arrays(parts: Sequence[tuple[int, BranchArrays]]) -> BranchArrays:
-    """Concatenate samples' routing rows and sampler supports in packing order.
-    Each part is a sample's token count and arrays. Routing must be on every part or none;
-    the support is per-token optional, so parts without one get empty rows."""
-    routed = [arrays.routed_experts for _, arrays in parts if arrays.routed_experts is not None]
-    routed_experts = None
-    if routed:
-        assert len(routed) == len(parts), "routing must be on every part or none"
-        assert all(r.dtype == routed[0].dtype and r.shape[1:] == routed[0].shape[1:] for r in routed)
-        routed_experts = RoutedExperts(
-            data=b"".join(r.data for r in routed),
-            shape=[sum(r.shape[0] for r in routed), *routed[0].shape[1:]],
-            dtype=routed[0].dtype,
-        )
-    sampler_support = None
-    if any(arrays.sampler_support is not None for _, arrays in parts):
-        supports = [
-            arrays.sampler_support if arrays.sampler_support is not None else _empty_sampler_support(num_tokens)
-            for num_tokens, arrays in parts
-        ]
-        logprobs = None
-        if any(support.logprobs is not None for support in supports):
-            # NaN marks entries that carry no sampler logprobs.
-            logprobs = b"".join(
-                support.logprobs
-                if support.logprobs is not None
-                else np.full(len(support.ids) // 4, np.nan, np.float32).tobytes()
-                for support in supports
-            )
-        sampler_support = SamplerSupport(
-            ids=b"".join(support.ids for support in supports),
-            counts=b"".join(support.counts for support in supports),
-            replayed=b"".join(support.replayed for support in supports),
-            logprobs=logprobs,
-        )
-    return BranchArrays(routed_experts=routed_experts, sampler_support=sampler_support)
-
-
-def pad_token_arrays(micro_batch: MicroBatch, padding_size: int) -> None:
-    """Extend the micro batch's routing rows and sampler support over ``padding_size`` trailing
-    padding tokens, which have no support."""
-    if micro_batch.routed_experts is not None:
-        _pad_routed_experts(micro_batch, padding_size)
-    if micro_batch.sampler_support is not None:
-        micro_batch.sampler_support.counts += bytes(padding_size * 4)
-        micro_batch.sampler_support.replayed += bytes(padding_size)
 
 
 def payload_host(bind_address: str | None) -> tuple[str, str]:
@@ -258,9 +185,9 @@ def link_or_copy(source: Path, target: Path) -> bool:
 
 
 class PayloadServer:
-    """One env worker's arrays, served at `GET <url>/<id>` and freed by
-    `DELETE <url>/<id>`. `POST <url>/persist` with `{"dir", "ids"}` writes those blobs
-    to `<dir>/<id>` and answers `{"persisted": [ids]}`."""
+    """One env worker's arrays, served at `GET <url>/<id>`, credited per token by
+    `PATCH <url>/<id>` and freed by `DELETE <url>/<id>`. `POST <url>/persist` with
+    `{"dir", "ids"}` writes those blobs to `<dir>/<id>` and answers `{"persisted": [ids]}`."""
 
     def __init__(self, bind_host: str, url_host: str | None = None):
         self.blobs: dict[str, bytes] = {}
@@ -277,6 +204,16 @@ class PayloadServer:
                 self.end_headers()
                 if blob is not None:
                     self.wfile.write(blob)
+
+            def do_PATCH(self) -> None:
+                values = self.rfile.read(int(self.headers["Content-Length"]))
+                try:
+                    kept = server.set_advantages(self.path.lstrip("/"), values)
+                except ValueError as error:
+                    self.send_error(400, str(error))
+                    return
+                self.send_response(204 if kept else 404)
+                self.end_headers()
 
             def do_DELETE(self) -> None:
                 server.delete(self.path.lstrip("/"))
@@ -309,6 +246,19 @@ class PayloadServer:
     def put(self, key: str, blob: bytes) -> None:
         with self.lock:
             self.blobs[key] = blob
+
+    def replace(self, key: str, blob: bytes) -> bool:
+        """Rewrite a kept blob; one freed meanwhile stays freed. Whether it was still kept."""
+        with self.lock:
+            if key not in self.blobs:
+                return False
+            self.blobs[key] = blob
+            return True
+
+    def set_advantages(self, key: str, values: bytes) -> bool:
+        """Credit a kept sample per token (`credited_body`). Whether it was still kept."""
+        blob = self.get(key)
+        return blob is not None and self.replace(key, credited_body(blob, values, key))
 
     def delete(self, key: str) -> None:
         with self.lock:
@@ -390,6 +340,16 @@ class RolloutStore(PayloadServer):
         except FileNotFoundError:
             return None
 
+    def replace(self, key: str, blob: bytes) -> bool:
+        # In place, never created: a blob unlinked after the open takes the write with it.
+        try:
+            fd = os.open(self.path(key), os.O_WRONLY | os.O_TRUNC)
+        except FileNotFoundError:
+            return False
+        with os.fdopen(fd, "wb") as f:
+            f.write(blob)
+        return True
+
     def delete(self, key: str) -> None:
         """Free a blob that will never ship. A trained blob stays until its step is committed."""
         path = self.path(key)
@@ -440,18 +400,74 @@ class StoreWriter:
         (self.live / key).unlink(missing_ok=True)
 
 
-def _fields(arrays: BranchArrays) -> set[str]:
-    fields = {name for name in BranchArrays.__struct_fields__ if getattr(arrays, name) is not None}
-    if arrays.sampler_support is not None:
-        if np.frombuffer(arrays.sampler_support.replayed, dtype=np.bool_).any():
+def _arrays(values: np.ndarray | None, dtype: type[np.generic]) -> bytes | None:
+    return None if values is None else np.ascontiguousarray(values, dtype=dtype).tobytes()
+
+
+def _version_counts(versions: np.ndarray, selected: np.ndarray) -> dict[str, int]:
+    """How many of the ``selected`` tokens each policy version (see ``SampleBody.versions``) sampled."""
+    values, counts = np.unique(versions[selected], return_counts=True)
+    return {str(int(value)): int(count) for value, count in zip(values, counts)}
+
+
+def encode_sample(sample: BranchSample) -> tuple[SampleBody, dict[str, Any]]:
+    """A branch sample as the body an env worker keeps, and the summary the orchestrator
+    decides with: its token count, which arrays it holds, and per loss component how many of
+    its tokens each policy version sampled."""
+    branch, num_tokens = sample.branch, len(sample.token_ids)
+    support = None
+    try:
+        support = _encode_sampler_support(branch.sampler_support, num_tokens)
+    except ValueError as error:
+        # Keep the sample and its routing rows: a train run that needs the sampler
+        # evidence stops at the train sink.
+        get_logger().warning(f"Not keeping the sampling mask and top-k head of branch {branch.index}: {error}")
+    body = SampleBody(
+        token_ids=_arrays(sample.token_ids, np.int32),
+        mask=_arrays(sample.mask, np.bool_),
+        sampled=_arrays(sample.sampled, np.bool_),
+        logprobs=_arrays(sample.logprobs, np.float32),
+        versions=_arrays(sample.versions, np.int32),
+        rl_weights=_arrays(sample.rl_weights, np.float32),
+        ce_weights=_arrays(sample.ce_weights, np.float32),
+        ref_kl_weights=_arrays(sample.ref_kl_weights, np.float32),
+        ref_logprobs=_arrays(sample.ref_logprobs, np.float32),
+        mm_token_type_ids=_arrays(sample.mm_token_type_ids, np.int32),
+        mm_refs=sample.mm_refs,
+        routed_experts=_encode_routed_experts(branch.routed_experts, num_tokens),
+        sampler_support=support,
+    )
+    rl = sample.mask if sample.rl_weights is None else sample.mask & (sample.rl_weights != 0)
+    loss = {"rl": _version_counts(sample.versions, rl)}
+    for name, weights in (("ce", sample.ce_weights), ("ref_kl", sample.ref_kl_weights)):
+        if weights is not None and weights.any():
+            loss[name] = _version_counts(sample.versions, weights != 0)
+    summary: dict[str, Any] = {
+        "num_tokens": num_tokens,
+        "fields": sorted(_fields(body)),
+        "trainable": _version_counts(sample.versions, sample.mask),
+        "loss": loss,
+    }
+    if body.routed_experts is not None:
+        summary |= {"routed_shape": body.routed_experts.shape[1:], "routed_dtype": body.routed_experts.dtype}
+    if sample.mm_refs is not None:
+        summary["images"] = [[image.offset, image.length] for image in sample.mm_refs.images]
+    return body, summary
+
+
+def _fields(body: SampleBody) -> set[str]:
+    """The optional training arrays a body holds."""
+    fields = {name for name in ("routed_experts", "sampler_support") if getattr(body, name) is not None}
+    if body.sampler_support is not None:
+        if np.frombuffer(body.sampler_support.replayed, dtype=np.bool_).any():
             fields.add("sampler_support_replayed")
-        if arrays.sampler_support.logprobs is not None:
+        if body.sampler_support.logprobs is not None:
             fields.add("sampler_support_logprobs")
     return fields
 
 
 class PayloadHook:
-    """`prime_rl.env.set_episode_hook` hook: keep a finished train episode's arrays."""
+    """`prime_rl.env.set_episode_hook` hook: keep a finished train episode's samples."""
 
     def __init__(self, bind_address: str | None = None, store: StoreWriter | None = None):
         self._hosts = payload_host(bind_address)
@@ -461,48 +477,34 @@ class PayloadHook:
     @property
     def server(self) -> PayloadServer | StoreWriter:
         """The pool's rollout store if it has one, else this worker's own server, started on
-        first use: a pool broker installs the hook too but never keeps arrays."""
+        first use: a pool broker installs the hook too but never keeps samples."""
         with self._lock:
             if self._server is None:
                 self._server = PayloadServer(*self._hosts)
             return self._server
 
-    def keep(self, episode: vf.Episode, sampling: vf.SamplingConfig) -> None:
+    def keep(self, episode: vf.Episode, action_loss_type: ActionLossType) -> None:
+        """Keep the samples of the episode's trainable traces, their action tokens routed into
+        ``action_loss_type``, and leave references to them in each trace's info. Every node's
+        training arrays and loss streams go, so the final flush streams none of them."""
         stored: list[str] = []
         try:
-            for trace in episode.traces:
+            for _, trace in iter_trainable_traces([episode]):
                 references: dict[str, dict[str, Any]] = {}
-                for branch in trace.branches:
-                    if not branch.trainable:
-                        continue
-                    try:
-                        arrays = encode_branch_arrays(branch, len(branch.token_ids))
-                    except ValueError as error:
-                        # Keep the episode and its routing rows: eval never needs the sampler
-                        # evidence, and a train run that needs it stops at the train sink.
-                        get_logger().warning(
-                            f"Not keeping the sampling mask and top-k head of trace {trace.id} "
-                            f"branch {branch.index}: {error}"
-                        )
-                        arrays = BranchArrays(
-                            routed_experts=_encode_routed_experts(branch.routed_experts, len(branch.token_ids))
-                        )
-                    fields = _fields(arrays)
-                    if not fields:
-                        continue
-                    key = f"{trace.id}-{branch.index}"
-                    self.server.put(key, _encoder.encode(arrays))
+                for sample in trace_to_samples(trace):
+                    stamp_loss_routing(sample, action_loss_type)
+                    body, summary = encode_sample(sample)
+                    key = f"{trace.id}-{sample.branch.index}"
+                    self.server.put(key, _encoder.encode(body))
                     stored.append(key)
-                    references[str(branch.index)] = {"id": key, "fields": sorted(fields)}
-                    if arrays.routed_experts is not None:
-                        references[str(branch.index)] |= {
-                            "routed_shape": arrays.routed_experts.shape[1:],
-                            "routed_dtype": arrays.routed_experts.dtype,
-                        }
-                if references:
-                    trace.info[PAYLOAD_INFO_KEY] = {"url": self.server.url, "branches": references}
+                    references[str(sample.branch.index)] = {"id": key, **summary}
+                # Every trainable trace names its samples, even none: the orchestrator tells a
+                # trace without samples from one whose worker kept nothing.
+                trace.info[PAYLOAD_INFO_KEY] = {"url": self.server.url, "branches": references}
+            for trace in episode.traces:
                 for node in trace.nodes:
                     node.routed_experts = node.sampler_support = None
+                    node.reference_logprobs = node.loss_weights = None
         except BaseException:
             # `discard` finds only references already in `trace.info`; free the rest here.
             for key in stored:
@@ -540,21 +542,25 @@ def persist_payloads(url: str, directory: Path, keys: list[str]) -> list[str]:
 
 
 def trace_payload_urls(trace: vf.Trace) -> list[str]:
-    """URLs of every blob an env worker kept for the trace."""
+    """URLs of every sample an env worker kept for the trace."""
     payload = trace.info.get(PAYLOAD_INFO_KEY)
     return [f"{payload['url']}/{reference['id']}" for reference in payload["branches"].values()] if payload else []
 
 
-def sample_payload_urls(samples: Iterable[TrainingSample]) -> list[str]:
-    return [f"{s.payload.url}/{s.payload.id}" for s in samples if s.payload is not None]
+def sample_url(ref: SampleRef) -> str:
+    return f"{ref.url}/{ref.id}"
+
+
+def sample_payload_urls(refs: Iterable[SampleRef]) -> list[str]:
+    return [sample_url(ref) for ref in refs]
 
 
 # Payload URLs are node-local addresses: never route them through an `HTTP_PROXY`.
 _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
-def _fetch(url: str, attempts: int = 3) -> BranchArrays | None:
-    """The blob at `url`, or None if it is gone (404) or every attempt failed."""
+def _fetch(url: str, attempts: int = 3) -> SampleBody | None:
+    """The body at `url`, or None if it is gone (404) or every attempt failed."""
     for attempt in range(attempts):
         try:
             with _opener.open(url, timeout=60) as response:
@@ -606,6 +612,46 @@ class _Releaser:
 _releaser = _Releaser()
 
 
+def credited_body(blob: bytes, values: bytes, key: str) -> bytes:
+    """A sample's body credited per token: ``values`` (float32) for its trainable tokens in
+    order, kept as its ``advantages`` column (0.0 on the other tokens)."""
+    body = _decoder.decode(blob)
+    mask = np.frombuffer(body.mask, np.bool_)
+    credit = np.frombuffer(values, np.float32)
+    if len(credit) != np.count_nonzero(mask):
+        raise ValueError(f"sample {key} has {np.count_nonzero(mask)} trainable tokens, got {len(credit)} advantages")
+    advantages = np.zeros(len(mask), np.float32)
+    advantages[mask] = credit
+    return _encoder.encode(msgspec.structs.replace(body, advantages=advantages.tobytes()))
+
+
+def write_advantages(url: str, values: np.ndarray) -> bool:
+    """Credit the sample at ``url`` per token, with one advantage for each of its trainable
+    tokens. Whether its store still kept it. A sample a checkpoint holds (``file://``) gets a
+    new file, since its file may be a link to the checkpoint's."""
+    data = np.ascontiguousarray(values, np.float32).tobytes()
+    if url.startswith("file://"):
+        path = Path(urllib.request.url2pathname(urlparse(url).path))
+        try:
+            blob = path.read_bytes()
+        except FileNotFoundError:
+            return False
+        tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        tmp.write_bytes(credited_body(blob, data, path.name))
+        tmp.replace(path)
+        return True
+    request = urllib.request.Request(url, data=data, method="PATCH")
+    try:
+        _opener.open(request, timeout=60).close()
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return False
+        raise
+    except urllib.error.URLError:
+        return False  # its env worker is gone, and the sample with it
+    return True
+
+
 def delete_payloads(urls: Iterable[str]) -> None:
     """Free kept arrays on their env workers, without waiting. Call only once nothing will
     read them again. Arrays a checkpoint holds (`file://`) stay."""
@@ -644,99 +690,173 @@ def wait_for_deletes() -> None:
     _releaser.queue.join()
 
 
-def resolve_payloads(micro_batches: list[MicroBatch], pool: ThreadPoolExecutor) -> tuple[list[int], list[str]]:
-    """Fetch the micro batches' arrays into their array fields: each sample's arrays cut
-    to its slice, concatenated in packing order, and extended over the padding tail.
+def build_sample(body: SampleBody, ref: SampleRef, plan: MicroBatchPlan) -> TrainingSample:
+    """The first ``ref.num_tokens`` of a kept sample, with the orchestrator's decisions applied:
+    the trace's advantage spread over the sampled tokens (or the sample's own per-token
+    advantages) and its rl weight over the trainable ones, zero-advantage tokens out of the rl
+    component, and tokens of a policy older than the step's ``min_version`` out of every
+    component."""
+    n = ref.num_tokens
+    mask = np.frombuffer(body.mask, np.bool_)[:n].copy()
+    sampled = np.frombuffer(body.sampled, np.bool_)[:n]
+    versions = np.frombuffer(body.versions, np.int32)[:n]
 
-    Returns the indices of micro batches whose arrays could not be fetched (they get
-    arrays of the right shapes, and the caller must keep them out of the loss) and the
-    fetched URLs, for `delete_payloads`."""
-    urls = {f"{s.url}/{s.id}" for mb in micro_batches for s in mb.payloads or [] if s is not None}
-    fetched = dict(zip(urls, pool.map(_fetch, urls)))
-    failed = []
-    for index, mb in enumerate(micro_batches):
-        if mb.payloads is None:
+    def stream(values: bytes | None) -> np.ndarray | None:
+        return None if values is None else np.frombuffer(values, np.float32)[:n].copy()
+
+    rl_weights, ce_weights, ref_kl_weights = (
+        stream(body.rl_weights),
+        stream(body.ce_weights),
+        stream(body.ref_kl_weights),
+    )
+    if ref.rl_weight is not None:
+        rl_weights = np.where(mask, np.float32(ref.rl_weight), np.float32(0.0))
+    advantages = None
+    if ref.advantage is not None:
+        advantages = np.where(sampled, np.float32(ref.advantage), np.float32(0.0))
+    elif body.advantages is not None:
+        advantages = stream(body.advantages)
+    if advantages is not None:
+        pruned = mask & (advantages == 0.0)
+        if rl_weights is not None:
+            pruned &= rl_weights != 0.0
+        if pruned.any():
+            rl_weights = mask.astype(np.float32) if rl_weights is None else rl_weights
+            rl_weights[pruned] = 0.0
+    staleness = None
+    if ref.policy_start is not None:
+        versioned = versions != UNVERSIONED
+        effective = np.where(versions == UNLABELED, ref.policy_start, versions)
+        stale = versioned & (effective < plan.min_version)
+        if stale.any():
+            mask[stale] = False
+            for weights in (rl_weights, ce_weights, ref_kl_weights):
+                if weights is not None:
+                    weights[stale] = 0.0
+        staleness = np.where(versioned, np.maximum(0, plan.trained_version - effective), -1).astype(np.int16)
+    return TrainingSample(
+        token_ids=np.frombuffer(body.token_ids, np.int32)[:n],
+        mask=mask,
+        logprobs=np.frombuffer(body.logprobs, np.float32)[:n],
+        temperatures=np.full(n, ref.temperature, dtype=np.float32),
+        env_name=ref.env_name,
+        ref_logprobs=None if body.ref_logprobs is None else np.frombuffer(body.ref_logprobs, np.float32)[:n],
+        mm_refs=truncate_mm_refs(body.mm_refs, n),
+        mm_token_type_ids=None
+        if body.mm_token_type_ids is None
+        else np.frombuffer(body.mm_token_type_ids, np.int32)[:n],
+        rl_weights=rl_weights,
+        ce_weights=ce_weights,
+        ref_kl_weights=ref_kl_weights,
+        advantages=advantages,
+        trace_id=ref.trace_id,
+        branch_index=ref.branch_index,
+        staleness=staleness,
+        routed_experts=None if body.routed_experts is None else slice_routed_experts(body.routed_experts, n),
+        sampler_support=None if body.sampler_support is None else slice_sampler_support(body.sampler_support, n),
+    )
+
+
+def _placeholder(ref: SampleRef, token_ids: np.ndarray) -> TrainingSample:
+    """A sample whose body could not be fetched, to keep its micro batch's shapes: tokens
+    borrowed from the micro batch's other samples (identical tokens would route to the same
+    MoE experts), nothing to train."""
+    n = ref.num_tokens
+    return TrainingSample(
+        token_ids=np.resize(token_ids if len(token_ids) else np.zeros(1, np.int32), n).astype(np.int32),
+        mask=np.zeros(n, dtype=np.bool_),
+        logprobs=np.zeros(n, dtype=np.float32),
+        temperatures=np.ones(n, dtype=np.float32),
+        env_name=ref.env_name,
+        trace_id=ref.trace_id,
+        branch_index=ref.branch_index,
+    )
+
+
+def _multimodal_placeholder(ref: SampleRef, donors: list[TrainingSample]) -> TrainingSample | None:
+    """A placeholder for a multimodal sample whose body could not be fetched: another fetched
+    multimodal sample of this rank's step, cut to the missing sample's length without splitting an
+    image, so the micro batch still runs the vision encoder the other data ranks run at this
+    step. None if no fetched sample keeps an image within that length."""
+    n = ref.num_tokens
+    for donor in donors:
+        images = [[image.offset, image.length] for image in donor.mm_refs.images]
+        cut = mm_cut(images, len(donor.token_ids), n)
+        mm_refs = truncate_mm_refs(donor.mm_refs, cut)
+        if mm_refs is None:
             continue
-        if not _assemble(mb, fetched):
-            failed.append(index)
-        mb.payloads = None
-    if failed:
-        get_logger().warning(f"Could not fetch the payloads of {len(failed)} micro batches")
-    return failed, sorted(urls)
-
-
-def _assemble(mb: MicroBatch, fetched: dict[str, BranchArrays | None]) -> bool:
-    """Set the micro batch's arrays from its fetched blobs; False if one is missing.
-    A missing blob's routing rows repeat the micro batch's other rows, so a micro batch
-    kept out of the loss still routes like real data; its masks and heads are empty."""
-    lengths = list(mb.sequence_lengths)
-    lengths[-1] -= mb.padding
-    ok = True
-    parts: list[tuple[int, BranchArrays]] = []
-    for s, num_tokens in zip(mb.payloads, lengths, strict=True):
-        if s is None:
-            parts.append((num_tokens, BranchArrays()))
-            continue
-        assert s.num_tokens == num_tokens, f"reference holds {s.num_tokens} tokens, its sequence {num_tokens}"
-        part = fetched[f"{s.url}/{s.id}"]
-        arrays = _cut(part, s, num_tokens) if part is not None else None
-        if arrays is None:
-            ok = False
-        parts.append((num_tokens, arrays or BranchArrays()))
-    routed = next((s for s in mb.payloads if s is not None and "routed_experts" in s.fields), None)
-    if routed is not None and not ok:
-        _fill_routing(parts, routed)
-    arrays = pack_token_arrays(parts)
-    mb.routed_experts, mb.sampler_support = arrays.routed_experts, arrays.sampler_support
-    pad_token_arrays(mb, mb.padding)
-    _assert_aligned(mb, sum(mb.sequence_lengths))
-    return ok
-
-
-def _assert_aligned(mb: MicroBatch, num_tokens: int) -> None:
-    """The assembled arrays must stay position-aligned with the micro batch's tokens; a
-    misaligned array would corrupt training silently."""
-    if mb.routed_experts is not None:
-        assert mb.routed_experts.shape[0] == num_tokens, f"routed_experts: {mb.routed_experts.shape} for {num_tokens}"
-        assert len(mb.routed_experts.data) == num_tokens * _routed_experts_row_size(mb.routed_experts), (
-            f"routed_experts: {len(mb.routed_experts.data)} bytes for {mb.routed_experts.shape}"
+        padding = np.zeros(n - cut, dtype=np.int32)
+        return TrainingSample(
+            token_ids=np.concatenate([donor.token_ids[:cut], padding]),
+            mask=np.zeros(n, dtype=np.bool_),
+            logprobs=np.zeros(n, dtype=np.float32),
+            temperatures=np.ones(n, dtype=np.float32),
+            env_name=ref.env_name,
+            mm_refs=mm_refs,
+            mm_token_type_ids=np.concatenate([donor.mm_token_type_ids[:cut], padding]),
+            trace_id=ref.trace_id,
+            branch_index=ref.branch_index,
         )
-    support = mb.sampler_support
-    if support is not None:
-        counts = np.frombuffer(support.counts, dtype=np.int32)
-        assert len(counts) == num_tokens, f"sampler_support counts: {len(counts)} for {num_tokens}"
-        assert len(support.replayed) == num_tokens, f"sampler_support replayed: {len(support.replayed)}"
-        assert (counts >= 0).all() and len(support.ids) == int(counts.sum()) * 4
-        assert support.logprobs is None or len(support.logprobs) == len(support.ids)
+    return None
 
 
-def _cut(part: BranchArrays, s: PayloadSlice, num_tokens: int) -> BranchArrays | None:
-    """The arrays the slice lists, cut to its first `num_tokens`; None if one is missing."""
-    cut = {
-        "routed_experts": _slice_routed_experts,
-        "sampler_support": _slice_sampler_support,
-    }
-    arrays = {}
-    for name in BranchArrays.__struct_fields__:
-        if name not in s.fields:
-            continue
-        value = getattr(part, name)
-        if value is None:
-            return None
-        arrays[name] = cut[name](value, num_tokens)
-    return BranchArrays(**arrays)
+def _fill_missing_routing(samples: list[TrainingSample], refs: list[SampleRef]) -> None:
+    """Routing rows for the placeholders of a micro batch that replays routing: the other
+    samples' rows repeated, so a micro batch kept out of the loss still routes like real data."""
+    routed = next((ref for ref in refs if "routed_experts" in ref.fields), None)
+    if routed is None:
+        return
+    rows = b"".join(sample.routed_experts.data for sample in samples if sample.routed_experts is not None)
+    for sample in samples:
+        if sample.routed_experts is None:
+            sample.routed_experts = fill_routing(len(sample.token_ids), routed.routed_shape, routed.routed_dtype, rows)
 
 
-def _fill_routing(parts: list[tuple[int, BranchArrays]], routed: PayloadSlice) -> None:
-    shape, dtype = routed.routed_shape, np.dtype(routed.routed_dtype)
-    rows = b"".join(arrays.routed_experts.data for _, arrays in parts if arrays.routed_experts is not None)
-    if not rows:
-        # Distinct expert ids per token: every top-k slot routes to a different expert.
-        rows = np.broadcast_to(np.arange(shape[-1], dtype=dtype), (1, *shape)).tobytes()
-    row_size = int(np.prod(shape)) * dtype.itemsize
-    for index, (num_tokens, arrays) in enumerate(parts):
-        if arrays.routed_experts is None:
-            routed_experts = RoutedExperts(
-                data=_tile(rows, num_tokens * row_size), shape=[num_tokens, *shape], dtype=dtype.name
-            )
-            parts[index] = (num_tokens, BranchArrays(routed_experts, arrays.sampler_support))
+@dataclass
+class Materialized:
+    """A rank's micro batches of one step, built from its plans."""
+
+    micro_batches: list[MicroBatch]
+    failed: list[int]
+    """Micro batches with a sample that could not be fetched: it holds a placeholder of the right
+    shape, and the caller must keep the micro batch out of the loss."""
+    unbuildable: list[int]
+    """Failed multimodal micro batches left without an image: they cannot run the vision encoder
+    the other data ranks run at this step, so the step cannot train."""
+    urls: list[str]
+    """The fetched samples, for `delete_payloads`."""
+
+
+def materialize_micro_batches(plans: list[MicroBatchPlan], pool: ThreadPoolExecutor) -> Materialized:
+    """Fetch the plans' sample bodies and build their micro batches. Never raises for a sample
+    that could not be fetched: every data rank must reach the step's next collective."""
+    urls = sorted({sample_url(ref) for plan in plans for ref in plan.samples})
+    bodies = dict(zip(urls, pool.map(_fetch, urls)))
+    built = [
+        [
+            build_sample(body, ref, plan) if (body := bodies[sample_url(ref)]) is not None else None
+            for ref in plan.samples
+        ]
+        for plan in plans
+    ]
+    donors = [sample for samples in built for sample in samples if sample is not None and sample.mm_refs is not None]
+    result = Materialized(micro_batches=[], failed=[], unbuildable=[], urls=urls)
+    for index, (plan, samples) in enumerate(zip(plans, built, strict=True)):
+        if any(sample is None for sample in samples):
+            result.failed.append(index)
+            token_ids = np.concatenate([s.token_ids for s in samples if s is not None] or [np.zeros(0, np.int32)])
+            for position, ref in enumerate(plan.samples):
+                if samples[position] is None:
+                    placeholder = _multimodal_placeholder(ref, donors) if ref.images else None
+                    samples[position] = placeholder or _placeholder(ref, token_ids)
+            _fill_missing_routing(samples, plan.samples)
+        micro_batch = pad_micro_batch(materialize_bin([prepare_sample(sample) for sample in samples]), plan.padding)
+        if any(ref.images for ref in plan.samples) and micro_batch.mm_refs is None:
+            result.unbuildable.append(index)
+        if plan.dummy:
+            micro_batch = make_dummy_batch(micro_batch)
+        assert_token_arrays_aligned(micro_batch)
+        result.micro_batches.append(micro_batch)
+    if result.failed:
+        get_logger().warning(f"Could not fetch the samples of {len(result.failed)} micro batches")
+    return result

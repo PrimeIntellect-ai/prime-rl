@@ -20,6 +20,7 @@ from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.credit import trace_advantage
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.transports.batch.types import TrainingSample
+from tests.unit.orchestrator.test_train_sink import train_trace
 
 FROZEN = {"name": "org/ref-model", "base_url": "http://ref:8001/v1"}
 
@@ -308,7 +309,7 @@ def test_compaction_retries_train_only_causally_used_generations():
     assign_advantage(trace, 1.0)
     credited = {
         int(token_id): float(advantage)
-        for sample in trace_to_samples(trace)
+        for sample in train_trace(trace)
         for token_id, trainable, advantage in zip(sample.token_ids, sample.mask, sample.advantages, strict=True)
         if trainable
     }
@@ -316,20 +317,22 @@ def test_compaction_retries_train_only_causally_used_generations():
     assert credited == {2: 1.0, 5: 1.0, 7: 1.0}
 
 
-def test_unassigned_advantages_ship_none():
+def test_uncredited_rl_tokens_do_not_train():
     trace = _make_episode().traces[0]
-    assert trace_to_samples(trace)[0].advantages is None
+    with pytest.raises(ValueError, match="no advantages"):
+        train_trace(trace)
 
 
 def test_assign_advantage_broadcasts_over_mask():
     trace = _make_episode().traces[0]
     assign_advantage(trace, 1.0)
-    assert trace_to_samples(trace)[0].advantages == pytest.approx([0.0, 0.0, 1.0, 1.0, 0.0, 1.0])
+    assert train_trace(trace)[0].advantages == pytest.approx([0.0, 0.0, 1.0, 1.0, 0.0, 1.0])
 
 
 def test_assign_advantages_credits_each_trainable_token_once():
     """A fork after a shared answer: the shared node trains in the first branch only, so each
-    trainable token takes exactly one of the values assigned per branch."""
+    trainable token takes exactly one of the values assigned per branch, written into the
+    samples an env worker kept and built by the trainer."""
     nodes = [
         _node(UserMessage(content="U"), parent=None, sampled=False, token_ids=[1]),
         _node(AssistantMessage(content="A"), parent=0, sampled=True, token_ids=[2, 3]),
@@ -350,7 +353,7 @@ def test_assign_advantages_credits_each_trainable_token_once():
     assign_advantages(trace, b2, [-1.0])
     credited = {
         (sample.branch_index, int(token_id)): float(advantage)
-        for sample in trace_to_samples(trace)
+        for sample in train_trace(trace)
         for token_id, trainable, advantage in zip(sample.token_ids, sample.mask, sample.advantages, strict=True)
         if trainable
     }

@@ -25,6 +25,6 @@ class DebugAlgorithm(Algorithm):
         super().__init__(config, clients)
         self.advantage = config.advantage
 
-    async def score_episode(self, episode: vf.Episode) -> None:
-        for _, trace in iter_trainable_traces([episode]):
+    async def score_group(self, episodes: list[vf.Episode]) -> None:
+        for _, trace in iter_trainable_traces(episodes):
             assign_advantage(trace, self.advantage)

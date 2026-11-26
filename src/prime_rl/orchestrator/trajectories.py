@@ -1,30 +1,25 @@
-"""Turn a v1 `Trace` (the env worker's native, typed output) into training data.
+"""Turn a v1 `Trace` into training samples, in the env worker that ran it.
 
-The orchestrator holds a real `vf.Trace` (validated in `envs.py`), so everything here is
-attribute access — no dicts. The trace is a message graph (`trace.nodes`); each `trace.branches`
-entry (a root→leaf path) is first-class and carries its own flat token sequence
-(`branch.token_ids` / `branch.sampled_mask` / `branch.logprobs`), so a branch yields one
-training sample directly. Token-length readers (`completion_len`, `total_tokens`, `num_turns`)
-live on `vf.Trace` itself.
+The trace is a message graph (`trace.nodes`); each `trace.branches` entry (a root→leaf path)
+carries its own flat token sequence (`branch.token_ids` / `branch.sampled_mask` /
+`branch.logprobs`), so a trainable branch yields one training sample directly. The worker keeps
+each sample's columns (`prime_rl.transports.payload`); the orchestrator only ever sees references
+to them, and the trainer fetches them.
 
-Training is renderer-only across every mode (RL/OPD student, SFT teacher), so every node
-always carries its tokens — no backfill needed. Multimodal RL keeps the inline image URLs on
-the messages and pairs them with vLLM's expanded image-token runs here.
+Multimodal RL keeps the inline image URLs on the messages and pairs them with vLLM's expanded
+image-token runs here.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 
 import numpy as np
 import verifiers.v1 as vf
 
-from prime_rl.orchestrator.credit import token_advantages, trace_advantage, trace_rl_weight
-from prime_rl.transports.batch import MMImageRef, MMRefs, TrainingSample
-from prime_rl.transports.batch.types import (
-    PAYLOAD_INFO_KEY,
-    PayloadSlice,
-)
+from prime_rl.transports.batch import MMImageRef, MMRefs
+from prime_rl.transports.batch.types import UNLABELED, UNVERSIONED
 from prime_rl.utils.logger import get_logger
 
 
@@ -116,6 +111,25 @@ def _loss_weights(branch: vf.Branch, name: str, trained_nodes: set[int]) -> np.n
     return weights if weights.any() else None
 
 
+def token_versions(branch: vf.Branch) -> np.ndarray:
+    """The int32 policy version that sampled each of the branch's tokens, from the engine's
+    ``weight_versions`` labels: ``UNLABELED`` on a sampled token without a step label (engines
+    whose updates bypass ``/update_weights``, e.g. Dynamo), ``UNVERSIONED`` on context."""
+    parts = []
+    for node in branch.nodes:
+        versions = np.full(len(node.token_ids), UNVERSIONED, dtype=np.int32)
+        sampled = int(np.count_nonzero(node.mask)) if node.sampled else 0
+        offset = len(node.mask) - sampled
+        if node.weight_versions:
+            for span in node.weight_versions:
+                version = int(span.version) if span.version.isdigit() else UNLABELED
+                versions[offset + span.start : offset + span.end] = version
+        elif sampled:
+            versions[offset : offset + sampled] = UNLABELED
+        parts.append(versions)
+    return np.concatenate(parts) if parts else np.zeros(0, dtype=np.int32)
+
+
 def branch_advantages(branch: vf.Branch, per_token: bool, advantage: float | None) -> np.ndarray | None:
     """The branch's advantages over its tokens: its nodes' token advantages for a trace
     credited per token, else the trace's advantage on every sampled token."""
@@ -126,25 +140,33 @@ def branch_advantages(branch: vf.Branch, per_token: bool, advantage: float | Non
     return np.where(branch.sampled_mask, np.float32(advantage), np.float32(0.0))
 
 
-def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSample]:
-    """Convert a v1 `Trace` into `TrainingSample`s — one per branch.
+@dataclass
+class BranchSample:
+    """One trainable branch's per-token columns, before the orchestrator's credit and
+    staleness: ``mask`` marks the tokens that train, ``sampled`` every model-sampled token."""
 
-    Each `trace.branches` entry is already a flat token sequence (`branch.token_ids` /
-    `branch.sampled_mask` / `branch.logprobs`), so a sample carries it directly: `mask` marks
-    the trainable (model-sampled) tokens, the context tokens between completions stay masked
-    out. Errored traces are dropped upstream (`TrainSink.process_episode`), so no error
-    handling happens here. A branch carrying images gets raw image refs paired with expanded
-    placeholder ranges and `mm_token_type_ids`. Branches with no sampled tokens yield nothing.
-    """
-    samples: list[TrainingSample] = []
-    # Set by the env worker when it keeps the arrays (`prime_rl.transports.payload`).
-    references = (trace.info.get(PAYLOAD_INFO_KEY) or {}).get("branches", {})
+    branch: vf.Branch
+    token_ids: np.ndarray
+    mask: np.ndarray
+    sampled: np.ndarray
+    logprobs: np.ndarray
+    versions: np.ndarray
+    rl_weights: np.ndarray | None
+    ce_weights: np.ndarray | None
+    ref_kl_weights: np.ndarray | None
+    ref_logprobs: np.ndarray | None
+    mm_token_type_ids: np.ndarray | None
+    mm_refs: MMRefs | None
+
+
+def trace_to_samples(trace: vf.Trace) -> list[BranchSample]:
+    """One sample per trainable branch: the branch's flat token sequence, ``mask`` marking the
+    trainable (model-sampled) tokens; the context tokens between completions stay masked out.
+    A branch carrying images gets raw image refs paired with expanded placeholder ranges and
+    ``mm_token_type_ids``. Branches with no sampled tokens yield nothing."""
+    samples: list[BranchSample] = []
     trained_loss_nodes: dict[str, set[int]] = {"rl": set(), "ce": set(), "ref_kl": set()}
-    per_token = token_advantages(trace) is not None
-    advantage = trace_advantage(trace)
-    rl_weight = trace_rl_weight(trace)
     for branch, mask in iter_trainable_branches(trace):
-        token_ids = branch.token_ids
         mm_token_type_ids: np.ndarray | None = None
         mm_refs: MMRefs | None = None
         image_urls = _image_urls(branch)
@@ -154,32 +176,19 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
                 raise ValueError("Inline images have no expanded multimodal prompt tokens")
             mm_refs = _build_mm_refs(image_urls, mm_token_type_ids)
         samples.append(
-            TrainingSample(
-                token_ids=token_ids,
+            BranchSample(
+                branch=branch,
+                token_ids=branch.token_ids,
                 mask=mask,
+                sampled=branch.sampled_mask,
                 logprobs=branch.logprobs,
-                temperatures=np.zeros(0, dtype=np.float32),  # filled by TrainSink.process_group
-                env_name=env_name,
-                ref_logprobs=branch.reference_logprobs,
-                mm_refs=mm_refs,
-                mm_token_type_ids=mm_token_type_ids,
-                rl_weights=(
-                    _loss_weights(branch, "rl", trained_loss_nodes["rl"])
-                    if rl_weight is None
-                    else np.where(mask, np.float32(rl_weight), np.float32(0.0))
-                ),
+                versions=token_versions(branch),
+                rl_weights=_loss_weights(branch, "rl", trained_loss_nodes["rl"]),
                 ce_weights=_loss_weights(branch, "ce", trained_loss_nodes["ce"]),
                 ref_kl_weights=_loss_weights(branch, "ref_kl", trained_loss_nodes["ref_kl"]),
-                advantages=branch_advantages(branch, per_token, advantage),
-                trace_id=trace.id,
-                branch_index=branch.index,
-                payload=PayloadSlice(
-                    url=trace.info[PAYLOAD_INFO_KEY]["url"],
-                    num_tokens=len(token_ids),
-                    **references[str(branch.index)],
-                )
-                if str(branch.index) in references
-                else None,
+                ref_logprobs=branch.reference_logprobs,
+                mm_token_type_ids=mm_token_type_ids,
+                mm_refs=mm_refs,
             )
         )
     if not samples:

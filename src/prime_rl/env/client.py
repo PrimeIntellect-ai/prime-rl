@@ -42,6 +42,7 @@ from prime_rl.env.types import (
     SaveRequest,
     SaveResponse,
     TraceSummary,
+    TrainRequest,
 )
 from prime_rl.utils.logger import get_logger
 
@@ -272,6 +273,7 @@ class EnvClient:
         sampling: SamplingConfig,
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
+        train: TrainRequest | None = None,
         restore: str | None = None,
         request_id: str | None = None,
     ) -> WireEpisode:
@@ -298,6 +300,7 @@ class EnvClient:
                 client=client,
                 model=model,
                 sampling=sampling,
+                train=train,
                 restore=restore,
             ),
             RunResponse,

@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
 
-from prime_rl.transports.batch import TrainingSample
+from prime_rl.transports.batch.types import SampleRef
 
 if TYPE_CHECKING:
     import verifiers.v1 as vf
@@ -152,10 +152,10 @@ class GroupState:
 
 @dataclass
 class TrainBatch:
-    """Exactly the shipped cohort and its trainer payload."""
+    """Exactly the shipped cohort and its samples, by reference."""
 
     cohort: TrainEpisodes
-    samples: list[TrainingSample]
+    samples: list[SampleRef]
 
 
 @dataclass

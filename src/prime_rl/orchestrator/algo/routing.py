@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import ActionLossType
-from prime_rl.orchestrator.credit import ADVANTAGE_KEY, RL_WEIGHT_KEY, advantage_values
+from prime_rl.orchestrator.credit import ADVANTAGE_KEY, RL_WEIGHT_KEY, advantage_values, token_advantages
 from prime_rl.orchestrator.trajectories import iter_trainable_branches
-from prime_rl.transports.batch import TrainingSample
+
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.trajectories import BranchSample
 
 
 def trainable_nodes(trace: vf.Trace) -> list[vf.MessageNode]:
@@ -64,6 +68,27 @@ def assign_advantages(trace: vf.Trace, branch: int, values: list[float] | np.nda
             taken += count
 
 
+def branch_token_advantages(trace: vf.Trace) -> dict[int, np.ndarray] | None:
+    """The advantages of a trace credited per token, by branch index: one per trainable token
+    of each training sample, in order (0.0 on a node assigned none); None for a trace credited
+    with one advantage or none."""
+    if token_advantages(trace) is None:
+        return None
+    values: dict[int, np.ndarray] = {}
+    for branch, mask in iter_trainable_branches(trace):
+        parts, offset = [], 0
+        for node in branch.nodes:
+            count = int(np.count_nonzero(mask[offset : offset + len(node.mask)]))
+            offset += len(node.mask)
+            if count:
+                part = np.zeros(count, np.float32)
+                assigned = np.asarray(node.advantages if node.advantages is not None else [], np.float32)[:count]
+                part[: len(assigned)] = assigned
+                parts.append(part)
+        values[branch.index] = np.concatenate(parts) if parts else np.zeros(0, np.float32)
+    return values
+
+
 def assign_rl_weight(trace: vf.Trace, value: float) -> None:
     """Weight the rl loss of every sampled token on the trace's trainable branches by ``value``."""
     trace.info[RL_WEIGHT_KEY] = float(value)
@@ -91,7 +116,7 @@ def is_trainable(trace: vf.Trace) -> bool:
     return values is not None and bool(np.any(values != 0.0))
 
 
-def stamp_loss_routing(sample: TrainingSample, action_loss_type: ActionLossType) -> None:
+def stamp_loss_routing(sample: BranchSample, action_loss_type: ActionLossType) -> None:
     """Route action tokens into the algorithm's declared loss component."""
     if action_loss_type == "rl":
         return

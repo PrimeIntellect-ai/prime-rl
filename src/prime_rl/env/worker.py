@@ -1,18 +1,20 @@
+from __future__ import annotations
+
 import asyncio
+import json
 import os
 import pickle
 import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import msgpack
 import zmq
 import zmq.asyncio
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.env import EnvConfig
-from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.delta import DeltaStreamer, dump
 from verifiers.v1.env import RunSlot
 from verifiers.v1.episode import Episode
@@ -39,14 +41,19 @@ from prime_rl.env.types import (
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import confined, is_file_name
 
+if TYPE_CHECKING:
+    from prime_rl.configs.algorithm import ActionLossType
+    from prime_rl.orchestrator.algo import Algorithm
+
 
 class EpisodeHook(Protocol):
-    """Takes finished episodes' per-token training arrays (routing rows, sampling masks,
-    top-k heads) before the episodes leave the worker."""
+    """Takes finished train episodes' training samples (per-token columns, routing rows,
+    sampling masks, top-k heads) before the episodes leave the worker."""
 
-    def keep(self, episode: Episode, sampling: SamplingConfig) -> None:
-        """Keep the episode's arrays; may leave references to them in `trace.info`.
-        Runs off the event loop, before the episode's final flush."""
+    def keep(self, episode: Episode, action_loss_type: ActionLossType) -> None:
+        """Keep the episode's samples, their action tokens routed into `action_loss_type`;
+        may leave references to them in `trace.info`. Runs off the event loop, before the
+        episode's final flush."""
 
     def discard(self, episode: Episode) -> None:
         """Free what `keep` kept for an episode that was not delivered."""
@@ -63,8 +70,8 @@ _SHUTDOWN_DRAIN_SECONDS = 5.0
 
 
 def set_episode_hook(hook: EpisodeHook | None) -> None:
-    """Install a hook that keeps finished episodes' training arrays. Streamed nodes never
-    carry them, so the hook is the only way they leave the worker. Every episode it
+    """Install a hook that keeps finished train episodes' training samples. Streamed nodes
+    never carry their training arrays, so the hook is the only way they leave the worker. Every episode it
     keeps is either delivered in its run's reply or handed back to `discard`, and so is
     a delivered one whose client cancels the run within `LATE_CANCEL_SECONDS`."""
     global _episode_hook
@@ -83,9 +90,9 @@ class _Keeping:
         self._kept = False
         self._abandoned = False
 
-    def run(self, sampling: SamplingConfig) -> None:
+    def run(self, action_loss_type: ActionLossType) -> None:
         try:
-            self.hook.keep(self.episode, sampling)
+            self.hook.keep(self.episode, action_loss_type)
         except BaseException:
             self.hook.discard(self.episode)
             raise
@@ -167,6 +174,8 @@ class EnvWorker:
         self._slots: dict[str, RunSlot] = {}
         # Episodes the hook kept, by run request, until their reply is sent.
         self._kept: dict[bytes, tuple[EpisodeHook, Episode]] = {}
+        # Train sources' algorithms by config and policy endpoint, bound to this worker.
+        self._algorithms: dict[str, Algorithm] = {}
         self._delivered: dict[str, tuple[float, EpisodeHook, Episode]] = {}
         """Recently delivered kept episodes, oldest first, for a cancel that arrives late."""
         self.ctx = zmq.asyncio.Context()
@@ -188,6 +197,20 @@ class EnvWorker:
         don't each pull the dataset."""
         data = self.data_cls.model_validate(task_data)
         return self.task_cls(data, self.env.config.taskset.task)
+
+    def _algorithm(self, req: RunRequest) -> Algorithm:
+        """The train source's algorithm, built and bound once per config and policy endpoint."""
+        from pydantic import TypeAdapter
+
+        from prime_rl.configs.algorithm import AlgoConfig
+        from prime_rl.orchestrator.algo import build_algorithm
+
+        key = json.dumps([req.train.algo, req.client.model_dump(mode="json"), req.model], sort_keys=True)
+        if key not in self._algorithms:
+            algorithm = build_algorithm(TypeAdapter(AlgoConfig).validate_python(req.train.algo), clients=None)
+            algorithm.bind(req.client, req.model)
+            self._algorithms[key] = algorithm
+        return self._algorithms[key]
 
     async def _run(self, req: RunRequest, client_id: bytes, request_id: bytes) -> RunResponse:
         # No client is built or cached here — each rollout constructs its own from
@@ -211,12 +234,16 @@ class EnvWorker:
         try:
             async with DeltaStreamer(lambda: slot.traces, send_delta) as streamer:
                 episode = await self.env.run_slot(slot, ctx, self._gate, on_trace=streamer.watch)
-                if hook is not None:
+                if hook is not None and req.train is not None:
+                    algorithm = self._algorithm(req)
+                    # Rollout-local scoring (reference logprobs, observation weights) annotates the
+                    # nodes the hook keeps.
+                    await algorithm.finalize_episode(episode)
                     # Before the final flush, so what the hook writes to the traces streams.
                     keeping = _Keeping(hook, episode)
                     try:
                         # The thread runs to the end even when this await is cancelled.
-                        await asyncio.shield(asyncio.to_thread(keeping.run, ctx.sampling))
+                        await asyncio.shield(asyncio.to_thread(keeping.run, algorithm.action_loss_type))
                     except asyncio.CancelledError:
                         keeping.abandon()
                         raise
