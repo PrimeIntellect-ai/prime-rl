@@ -49,7 +49,7 @@ def _sample(**fields) -> TrainingSample:
     )
 
 
-@pytest.mark.parametrize("corruption", [None, "missing", "duplicate", "vocab", "mass", "support_mass", "sampled"])
+@pytest.mark.parametrize("corruption", [None, "missing", "duplicate", "vocab", "support_mass", "sampled"])
 def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
     import torch
 
@@ -73,6 +73,8 @@ def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
     head = [(3, 0.75), (7, 0.25)]
     clean = batch([[], head, [(6, 1.0)]], [False, False, True])
     validate_score_centering_data(clean, vocab_size=9)
+    # Sampler draws may repeat ids and sum past one
+    validate_score_centering_data(batch([[], [(3, 0.75), (3, 0.75)], []], [False, False, False]), vocab_size=9)
     if corruption is None:
         validate_score_centering_data(batch([[], head, [(6, 1.0)]], [False, True, True]), vocab_size=9)
         return
@@ -80,11 +82,9 @@ def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
         case "missing":
             corrupt = batch([[], head, [(6, 1.0)]], [False, False, True], with_logprobs=False)
         case "duplicate":
-            corrupt = batch([[], [(3, 0.75), (3, 0.25)], []], [False, False, False])
+            corrupt = batch([[], [(3, 0.75), (3, 0.25)], []], [False, True, False])
         case "vocab":
             corrupt = batch([[], [(3, 0.75), (9, 0.25)], []], [False, False, False])
-        case "mass":
-            corrupt = batch([[], [(3, 1.0), (7, 1.0)], []], [False, False, False])
         case "support_mass":
             corrupt = batch([[], [(3, 0.5), (7, 0.25)], []], [False, True, False])
         case "sampled":

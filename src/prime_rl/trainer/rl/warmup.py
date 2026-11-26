@@ -78,7 +78,7 @@ def synthetic_micro_batch(
         support_logprobs=None,
         support_offsets=None,
         support_replayed=None,
-        # Score centering supports are heads of the sampler's distribution, which take the dense backward
+        # Score centering supports are sampler draws, which take the dense backward
         sparse_head_backward=False,
         mm_refs=None,
         mm_kwargs=None,
@@ -88,8 +88,8 @@ def synthetic_micro_batch(
         ref_kl_weights=None,
         staleness=None,
     )
-    if config.loss.type == "icepop" and config.loss.score_centering:
-        k = config.loss.score_centering_topk
+    if getattr(config.loss, "captures_sampler_head", False):
+        k = config.loss.score_centering_k
         first = torch.randint(0, vocab_size, (num_tokens, 1), generator=generator, dtype=torch.int32)
         micro_batch["support_ids"] = ((first + torch.arange(k, dtype=torch.int32)) % vocab_size).flatten()
         micro_batch["support_logprobs"] = -torch.rand(num_tokens * k, generator=generator)

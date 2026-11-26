@@ -179,10 +179,10 @@ def _importance_ratio_metrics(log_ratio: Tensor, keep_mask: Tensor) -> dict[str,
 def _sampler_support_distribution(
     inputs: LossInputs,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Callable[[Tensor], Tensor]]:
-    """Trainer logprobs of every sampler support entry with the sampler distribution they center on:
-    ``q_hat = q`` on the support and ``rho * p`` on the tail, ``rho`` the sampler-to-trainer tail mass
-    ratio per token. Returns the support logprobs, the detached ``p``, ``q`` and per-token ``rho``, and
-    the per-token row sum over support entries; ``rho`` is 0 on a replayed support, which has no tail."""
+    """Trainer logprobs of every sampler support entry with weights ``u`` that estimate ``E_q[f]`` per token as
+    ``sum_v u_v f(v)``: exact over the replayed support of truncated sampling (``u_v = q_v``), a K-sample estimate
+    over K i.i.d. sampler draws of untruncated sampling (``u_v = 1/K``). Returns the support logprobs, the
+    detached ``p``, ``log q`` and ``u``, and the per-token row sum over support entries."""
     if inputs.support_rows is None:
         raise ValueError("Score centering and the exact sampler KL need sampler support logprobs on every RL token")
     rows = inputs.support_rows.long()
@@ -193,12 +193,12 @@ def _sampler_support_distribution(
     head = inputs.trainer_support_logprobs
     with torch.no_grad():
         p = head.exp()
-        q = inputs.sampler_support_logprobs.exp()
-        if not bool((row_sum(torch.ones_like(q)) > 0)[inputs.loss_mask].all()):
-            raise ValueError("Score centering is missing sampler heads on RL tokens")
-        rho = (1.0 - row_sum(q)).clamp_min(1e-6) / (1.0 - row_sum(p)).clamp_min(1e-6)
-        rho = rho.masked_fill(inputs.support_replayed, 0.0)
-    return head, p, q, rho, row_sum
+        log_q = inputs.sampler_support_logprobs.detach()
+        count = row_sum(torch.ones_like(log_q))
+        if not bool((count > 0)[inputs.loss_mask].all()):
+            raise ValueError("Score centering is missing sampler supports on RL tokens")
+        u = torch.where(inputs.support_replayed[rows], log_q.exp(), 1.0 / count[rows].clamp_min(1.0))
+    return head, p, log_q, u, row_sum
 
 
 def _logit_correction_l1(mass: Tensor, p: Tensor, rows: Tensor, row_sum: Callable[[Tensor], Tensor]) -> Tensor:
@@ -229,16 +229,11 @@ class SamplerKL:
             kl = (inputs.inference_logprobs[mask] - trainer_logprobs).detach()
             surrogate = -trainer_logprobs
         else:
-            head, p, q, rho, row_sum = _sampler_support_distribution(inputs)
-            rows = inputs.support_rows.long()
+            head, _, log_q, u, row_sum = _sampler_support_distribution(inputs)
             with torch.no_grad():
-                # KL(q_hat || p) = sum_support q (log q - log p) + q_tail log(q_tail / p_tail), and
-                # its gradient is -sum_support (q - rho * p) grad log p.
-                q_tail = (1.0 - row_sum(q)).clamp_min(1e-6)
-                support_kl = row_sum(torch.where(q > 0, q * (inputs.sampler_support_logprobs - head), 0.0))
-                kl = (support_kl + torch.where(rho > 0, q_tail * rho.clamp_min(1e-30).log(), 0.0))[mask]
-                coefficients = q - rho[rows] * p
-            surrogate = -row_sum(coefficients * head)[mask]
+                # KL(q || p) = E_q[log q - log p], and its gradient is -E_q[grad log p].
+                kl = row_sum(torch.where(u > 0, u * (log_q - head), 0.0))[mask]
+            surrogate = -row_sum(u * head)[mask]
         per_token_loss = self.coef * surrogate * active
         if weights is not None:
             per_token_loss = per_token_loss * weights
@@ -334,40 +329,20 @@ class IcePopLoss:
         loss = per_token_loss.sum()
         centering_metrics = {}
         if loss_config.score_centering and log_importance_ratio.numel():
-            if inputs.support_rows is None:
-                raise ValueError("Score centering requires sampler top logprobs on every RL token")
             mask = inputs.loss_mask
+            head, p, log_q, u, row_sum = _sampler_support_distribution(inputs)
             rows = inputs.support_rows.long()
-
-            def row_sum(values: Tensor) -> Tensor:
-                return values.new_zeros(mask.shape[0]).index_add(0, rows, values)
-
-            head = inputs.trainer_support_logprobs
-            sampler = inputs.sampler_support_logprobs.detach()
-            if not bool((row_sum(torch.ones_like(sampler)) > 0)[mask].all()):
-                raise ValueError("Score centering is missing sampler heads on RL tokens")
             with torch.no_grad():
-                p = head.exp()
-                p_head, q_head = row_sum(p), row_sum(sampler.exp())
-                head_log_ratio = head - sampler
+                head_log_ratio = head - log_q
                 accepted = (head_log_ratio >= log_ratio_low) & (head_log_ratio <= log_ratio_high)
-                # q * (p/q) * mask = p * mask, without unstable exponentiation.
-                mass = p * accepted
-                rho = (1.0 - q_head).clamp_min(1e-6) / (1.0 - p_head).clamp_min(1e-6)
-                tail_log_ratio = -rho.log()
-                # The proportional tail has one ratio; MIS accepts all or none.
-                alpha = ((tail_log_ratio >= log_ratio_low) & (tail_log_ratio <= log_ratio_high)).to(p.dtype)
-                # A replayed support has no sampler tail: its centering is exact.
-                replayed = inputs.support_replayed
-                alpha = alpha.masked_fill(replayed, 0.0)
-                mass = mass - alpha[rows] * p
-                total_mass = row_sum(mass)
-                centering_metrics["score_centering/replayed"] = replayed[mask].to(p.dtype)
-                centering_metrics["score_centering/tail_scale"] = alpha[mask]
-                centering_metrics["score_centering/head_mass"] = q_head[mask]
-                centering_metrics["score_centering/logit_correction_l1"] = (
-                    row_sum((mass - p * total_mass[rows]).abs()) + (1.0 - p_head).clamp_min(0.0) * total_mass.abs()
-                )[mask]
+                # E_q[(p/q) * accepted * grad log p] ~ sum_v u_v (p_v / q_v) accepted_v grad log p_v
+                ratio = head_log_ratio.exp()
+                mass = u * ratio * accepted
+                centering_metrics["score_centering/replayed"] = inputs.support_replayed[mask].to(p.dtype)
+                centering_metrics["score_centering/support_mass"] = row_sum(u * ratio)[mask]
+                centering_metrics["score_centering/logit_correction_l1"] = _logit_correction_l1(mass, p, rows, row_sum)[
+                    mask
+                ]
             correction = loss_config.adv_tau * advantages.detach() * row_sum(mass * head)[mask]
             if weights is not None:
                 correction = correction * weights
@@ -407,19 +382,16 @@ class ReinforceLoss:
         per_token_loss = -loss_config.adv_tau * advantages * trainer_logprobs
         metrics = {}
         if loss_config.score_centering and trainer_logprobs.numel():
-            head, p, q, rho, row_sum = _sampler_support_distribution(inputs)
+            head, p, log_q, u, row_sum = _sampler_support_distribution(inputs)
             rows = inputs.support_rows.long()
             with torch.no_grad():
-                # E_q_hat[grad log p] = sum_support (q - rho * p) grad log p, as the tail sums to
-                # minus the support under the trainer.
-                mass = q - rho[rows] * p
+                # E_q[grad log p] ~ sum_v u_v grad log p_v
                 metrics["score_centering/replayed"] = inputs.support_replayed[inputs.loss_mask].to(p.dtype)
-                metrics["score_centering/tail_scale"] = rho[inputs.loss_mask]
-                metrics["score_centering/head_mass"] = row_sum(q)[inputs.loss_mask]
-                metrics["score_centering/logit_correction_l1"] = _logit_correction_l1(mass, p, rows, row_sum)[
+                metrics["score_centering/support_mass"] = row_sum(u * (head - log_q).exp())[inputs.loss_mask]
+                metrics["score_centering/logit_correction_l1"] = _logit_correction_l1(u, p, rows, row_sum)[
                     inputs.loss_mask
                 ]
-            per_token_loss = per_token_loss + loss_config.adv_tau * advantages * row_sum(mass * head)[inputs.loss_mask]
+            per_token_loss = per_token_loss + loss_config.adv_tau * advantages * row_sum(u * head)[inputs.loss_mask]
         if weights is not None:
             per_token_loss = per_token_loss * weights
         loss = per_token_loss.sum()

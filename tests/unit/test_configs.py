@@ -187,7 +187,7 @@ def test_rl_launcher_config_roundtrip(tmp_path):
             "--trainer.loss.type",
             "icepop",
             "--trainer.loss.score-centering",
-            "--trainer.loss.score-centering-topk",
+            "--trainer.loss.score-centering-k",
             "4",
         ],
     )
@@ -196,6 +196,7 @@ def test_rl_launcher_config_roundtrip(tmp_path):
     assert reloaded.run_dir == config.run_dir
     assert reloaded.trainer.weight_broadcast == config.trainer.weight_broadcast
     assert reloaded.orchestrator.train.source[0].sampling.logprobs == 4
+    assert reloaded.orchestrator.train.source[0].sampling.extra_body["extra_args"]["prl_sampler_draws"] == 4
     assert reloaded.inference.enable_return_sampling_mask
     assert reloaded.orchestrator.train.source[0].sampling.top_k is None
 
@@ -426,13 +427,13 @@ def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
 
     config = TrainerConfig.model_validate({"loss": {"type": "icepop", "ratio_low": 0.2, "ratio_high": 5.0}})
     assert config.loss.type == "icepop"
-    assert config.loss.score_centering_topk == 128
+    assert config.loss.score_centering_k == 16
     assert not config.loss.score_centering
     for unsupported in (
         {"type": "ipo_tis"},
         {"type": "score_centering"},
         {"type": "ipo", "score_centering": True},
-        {"type": "icepop", "score_centering_topk": None},
+        {"type": "icepop", "score_centering_k": None},
     ):
         with pytest.raises(ValidationError):
             TrainerConfig.model_validate({"loss": unsupported})
@@ -1716,7 +1717,10 @@ def test_sampler_kl_configures_head_capture_and_pruning(loss, captures_head):
             "inference": {},
         }
     )
-    assert config.orchestrator.train.source[0].sampling.logprobs == (128 if captures_head else None)
+    sampling = config.orchestrator.train.source[0].sampling
+    assert sampling.logprobs == (16 if captures_head else None)
+    assert sampling.extra_body.get("extra_args", {}).get("prl_sampler_draws") == (16 if captures_head else None)
+    assert sampling.extra_body.get("extra_args", {}).get("prl_compact_logprobs", False) == captures_head
     assert not config.orchestrator.prune_zero_advantages
     assert RLConfig.model_validate_json(config.model_dump_json()) == config
 

@@ -19,7 +19,7 @@ def test_warmup_micro_batches(seq_len: int, multiple: int) -> None:
 @pytest.mark.parametrize("score_centering", [False, True])
 def test_synthetic_micro_batch(score_centering: bool) -> None:
     model = SimpleNamespace(config=SimpleNamespace(vocab_size=1000))
-    loss = SimpleNamespace(type="icepop", score_centering=score_centering, score_centering_topk=4)
+    loss = SimpleNamespace(captures_sampler_head=score_centering, score_centering_k=4)
     config = SimpleNamespace(enable_router_replay=False, loss=loss)
     doc_lens = [5, 3, 8]
     micro_batch = synthetic_micro_batch(doc_lens, model, config, torch.Generator().manual_seed(0))

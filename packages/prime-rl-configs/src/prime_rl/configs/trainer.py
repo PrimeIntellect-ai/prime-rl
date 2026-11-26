@@ -700,10 +700,10 @@ class SamplerKLConfig(BaseConfig):
     """KL coefficient. With ``adaptive`` set, its initial value."""
 
     estimator: Literal["exact", "k1"] = "exact"
-    """``exact`` sums the captured head plus one aggregate tail bin. This is a lower bound
-    on full-vocabulary KL, exact under the proportional-tail model or on complete replay
-    support; it cannot detect redistribution within the uncaptured tail. ``k1`` uses ``log q(y) - log p(y)``
-    on the sampled token and needs no captured head."""
+    """``exact`` sums ``u_v (log q_v - log p_v)`` over each token's sampler support: exact over the replayed
+    support of truncated sampling (``u_v = q_v``), a K-sample estimate over ``score_centering_k`` i.i.d. sampler
+    draws of untruncated sampling (``u_v = 1/K``). ``k1`` uses ``log q(y) - log p(y)`` on the sampled token and
+    needs no captured support."""
 
     min_staleness: int = Field(1, ge=0)
     """Only tokens at least this many policy versions stale train the KL. The default leaves
@@ -726,10 +726,10 @@ class ReinforceLossConfig(BaseConfig):
     score_centering: bool = False
     """Center the score under the sampler."""
 
-    score_centering_topk: int = Field(128, ge=1)
-    """Captured head size for an untruncated sampler with a proportional tail, used by score
-    centering and the exact sampler KL. With sampling replay, the complete recorded support
-    is captured instead."""
+    score_centering_k: int = Field(16, ge=1)
+    """K: sampler draws per token under untruncated sampling, where score centering and the exact sampler KL
+    are a K-sample estimate (``u_v = 1/K`` per draw). Truncated sampling replays its full support with
+    ``u_v = q_v``, where both are exact."""
 
     sampler_kl: SamplerKLConfig | None = None
     """KL(sampler || trainer) penalty. If None, no penalty."""
@@ -754,10 +754,10 @@ class IcePopLossConfig(BaseConfig):
     score_centering: bool = False
     """Center the ratio-masked importance-weighted score under the sampler."""
 
-    score_centering_topk: int = Field(128, ge=1)
-    """Captured head size for an untruncated sampler with a proportional tail, used by score
-    centering and the exact sampler KL. Probabilities retain full-vocabulary normalization.
-    With sampling replay, the complete recorded support is captured instead."""
+    score_centering_k: int = Field(16, ge=1)
+    """K: sampler draws per token under untruncated sampling, where score centering and the exact sampler KL
+    are a K-sample estimate (``u_v = 1/K`` per draw). Truncated sampling replays its full support with
+    ``u_v = q_v``, where both are exact."""
 
     sampler_kl: SamplerKLConfig | None = None
     """KL(sampler || trainer) penalty, applied to accepted and rejected tokens alike. If None,
