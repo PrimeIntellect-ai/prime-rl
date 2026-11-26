@@ -10,6 +10,7 @@ version the engine serves (``GET /weight_version``).
 """
 
 import asyncio
+import time
 from pathlib import Path
 
 from vllm.engine.protocol import EngineClient
@@ -73,6 +74,7 @@ class WeightPuller:
         """Move the engine onto v{step}. The running requests stay in the engine across the pause and go on
         sampling with the new weights; new requests queue. A failed update leaves the weights unknown, so the engine
         stays paused and retries with the newest finished version until one applies."""
+        start = time.perf_counter()
         await self.client.pause_generation(mode="keep", clear_cache=False)
         try:
             while True:
@@ -88,4 +90,4 @@ class WeightPuller:
         finally:
             await self.client.resume_generation()
         self.served = step
-        logger.info(f"Pulled policy v{step}")
+        logger.info(f"Pulled policy v{step}, paused for {time.perf_counter() - start:.3f}s")
