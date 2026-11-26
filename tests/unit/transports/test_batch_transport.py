@@ -3,9 +3,8 @@ import time
 from pathlib import Path
 
 from prime_rl.configs.shared import ZMQTransportConfig
-from prime_rl.transports.batch.base import BatchReceiver, BatchSender
+from prime_rl.transports.batch import BatchReceiver, BatchSender
 from prime_rl.transports.batch.types import SampleRef, StepBatch
-from prime_rl.transports.batch.zmq import ZMQBatchReceiver, ZMQBatchSender
 from prime_rl.utils.utils import get_free_port
 
 
@@ -23,14 +22,14 @@ WORLD_SIZE = 4
 
 def _zmq_receivers(output_dir: Path, transport: ZMQTransportConfig) -> list[BatchReceiver]:
     return [
-        ZMQBatchReceiver(output_dir, rank, world_size=WORLD_SIZE, current_step=0, transport=transport)
+        BatchReceiver(output_dir, rank, world_size=WORLD_SIZE, current_step=0, transport=transport)
         for rank in range(WORLD_SIZE)
     ]
 
 
 def _zmq(output_dir: Path, retain: bool = False) -> tuple[BatchSender, list[BatchReceiver], ZMQTransportConfig]:
     transport = ZMQTransportConfig(host="127.0.0.1", port=get_free_port(), retain=retain)
-    sender = ZMQBatchSender(output_dir, current_step=0, transport=transport)
+    sender = BatchSender(output_dir, current_step=0, transport=transport)
     return sender, _zmq_receivers(output_dir, transport), transport
 
 
@@ -89,7 +88,7 @@ def test_a_step_is_offered_before_the_trainer_takes_it(tmp_path: Path):
     """Ranks hold the next step while they still train the last one; the step counts as sent
     only once every rank requested it."""
     sender, receivers, _ = _zmq(tmp_path)
-    # The ZMQ sender offers on the connections the previous step's requests came on.
+    # The sender offers on the connections the previous step's requests came on.
     asyncio.run(_send(sender, receivers))
 
     async def offer_then_take() -> None:

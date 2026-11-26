@@ -8,9 +8,12 @@ import zmq
 import zmq.asyncio
 
 from prime_rl.configs.shared import ZMQTransportConfig
-from prime_rl.transports.batch.base import BatchReceiver, BatchRequest, BatchSender, last_requested_at
+from prime_rl.transports.batch.log import BatchLog
 from prime_rl.transports.batch.types import StepBatch
+from prime_rl.utils.logger import get_logger
 
+POLL_INTERVAL_MS = 5
+"""Milliseconds ``BatchReceiver.poll`` waits per call for a step that is not there yet."""
 LOG_POLL_INTERVAL_MS = 1000
 
 OFFER, STEP = b"offer", b"step"
@@ -18,27 +21,67 @@ OFFER, STEP = b"offer", b"step"
 for a rank that holds the offer)."""
 
 
-class ZMQBatchSender(BatchSender):
+class BatchRequest(msgspec.Struct):
+    """A trainer rank asking for its micro batches of one step."""
+
+    world_size: int
+    rank: int
+    step: int
+    committed: int
+    """The newest step a trainer checkpoint covers; a retaining sender releases the steps up to it."""
+    requested_at: float = 0.0
+    """Wall-clock time the rank asked (0: not reported). The trainer was busy until then."""
+    offered: bool = False
+    """The rank holds the step from its offer, so the sender hands it over without the bytes."""
+
+
+def last_requested_at(requests: list[BatchRequest]) -> float | None:
+    """When the last of a step's ranks asked for it, None if any rank did not report it."""
+    if not requests or any(request.requested_at <= 0 for request in requests):
+        return None
+    return max(request.requested_at for request in requests)
+
+
+class BatchSender:
+    """Sends a step's samples from the orchestrator to the trainer ranks.
+
+    Trainer ranks pull: a step counts as sent only once every trainer rank requested it, so the
+    last step sent is always the one the trainer is on. The sender offers each step's bytes as
+    soon as it has the step, so a rank can plan and build its micro batches while it still
+    trains the step before; the request still marks when the trainer took the step. Every rank
+    gets the same bytes and plans its own micro batches, so the sender knows nothing of the
+    trainer's layout.
+
+    One ROUTER socket in the orchestrator answers the DEALER socket of every trainer rank,
+    replying to each rank on the connection it asked on, and offers each step on the
+    connections the previous step's requests came on."""
+
     def __init__(self, output_dir: Path, current_step: int, transport: ZMQTransportConfig):
-        """ZMQ step sender. One ROUTER socket in the orchestrator answers the DEALER socket of
-        every trainer rank, replying to each rank on the connection it asked on, and offers
-        each step on the connections the previous step's requests came on."""
-        super().__init__(output_dir, transport.retain)
+        self.logger = get_logger()
+        self.encoder = msgspec.msgpack.Encoder()
+        self.request_decoder = msgspec.msgpack.Decoder(type=BatchRequest)
+        self.current_step = current_step
+        self.retain = transport.retain
+        """Keep every delivered step in the ``BatchLog`` until a trainer checkpoint covers it."""
+        self.log = BatchLog(output_dir)
+        # Seconds the last send waited for the trainer to request its step, and when its last rank asked
+        self.last_wait_s = 0.0
+        self.last_requested_at: float | None = None
+        self.identities: dict[int, bytes] = {}
+        """Each rank's connection, from its last request."""
         # Async context so ``send`` yields instead of blocking the orchestrator event loop
         self.context = zmq.asyncio.Context.instance()
         self.socket: zmq.asyncio.Socket = self.context.socket(zmq.ROUTER)
         # Replying to a rank that went away raises instead of dropping silently
         self.socket.setsockopt(zmq.ROUTER_MANDATORY, 1)
         self.socket.bind(f"tcp://{transport.host}:{transport.port}")
-        self.request_decoder = msgspec.msgpack.Decoder(type=BatchRequest)
-        self.identities: dict[int, bytes] = {}
-        """Each rank's connection, from its last request."""
-        self.current_step = current_step
         self.logger.debug(f"Initialized ZMQ step sender (endpoint=tcp://{transport.host}:{transport.port})")
 
     async def send(self, batch: StepBatch) -> float:
-        """Send a step's samples to the trainer. Encoding happens before the wait, so only the
-        hand-off sits between the last request and the batch."""
+        """Offer a step's samples to the trainer, and hand them over once every trainer rank
+        requested the step. Returns the seconds spent handing the step over, excluding the wait.
+        Encoding happens before the wait, so only the hand-off sits between the last request and
+        the batch."""
         payload = await asyncio.to_thread(self.encoder.encode, batch)
         if self.retain:
             await asyncio.to_thread(self.log.write, self.current_step, payload)
@@ -138,7 +181,16 @@ class ZMQBatchSender(BatchSender):
         return rank_to_request
 
 
-class ZMQBatchReceiver(BatchReceiver):
+class BatchReceiver:
+    """Receives a step's samples from the orchestrator. ``poll`` picks up the current step as
+    soon as the sender offers it; ``wait`` requests it, which is when the trainer takes it, and
+    blocks until the sender handed it over.
+
+    Every trainer rank owns one DEALER socket, on which the sender offers each step ahead of the
+    rank's request, and requests each step before training it. With ``transport.retain``, a step
+    the sender already published is read from the log instead, which is how a restarted trainer
+    gets the steps since its checkpoint."""
+
     def __init__(
         self,
         output_dir: Path,
@@ -147,28 +199,46 @@ class ZMQBatchReceiver(BatchReceiver):
         current_step: int,
         transport: ZMQTransportConfig,
     ):
-        """ZMQ step receiver. Every trainer rank owns one DEALER socket, on which the sender offers
-        each step ahead of the rank's request, and requests each step before training it. With
-        ``transport.retain``, a step the sender already published is read from the log instead,
-        which is how a restarted trainer gets the steps since its checkpoint."""
-        super().__init__(output_dir, rank, world_size, current_step)
+        self.logger = get_logger()
+        self.decoder = msgspec.msgpack.Decoder(type=StepBatch)
+        self.request_encoder = msgspec.msgpack.Encoder()
+        self.rank = rank
+        self.world_size = world_size
+        self.current_step = current_step
+        self.committed = current_step - 1
+        """The newest step a trainer checkpoint covers, sent with every request."""
+        self.retain = transport.retain
+        self.log = BatchLog(output_dir)
+        self.payload: bytes | memoryview | None = None
+        """The current step's bytes, once offered or handed over."""
+        self.published = False
+        """The current step was read from the log: the sender handed it over before."""
+        self._batch: StepBatch | None = None
+        self._log_checked: int | None = None
         self.context = zmq.Context.instance()
         self.socket: zmq.Socket = self.context.socket(zmq.DEALER)
         self.socket.connect(f"tcp://{transport.host}:{transport.port}")
-        self.request_encoder = msgspec.msgpack.Encoder()
-        self.retain = transport.retain
-        self._log_checked: int | None = None
         self.logger.debug(f"Initialized ZMQ step receiver (endpoint=tcp://{transport.host}:{transport.port})")
 
-    poll_interval = 0.005
+    def request(self) -> BatchRequest:
+        return BatchRequest(
+            self.world_size,
+            self.rank,
+            self.current_step,
+            self.committed,
+            requested_at=time.time(),
+            offered=self.payload is not None,
+        )
 
     def poll(self) -> bool:
+        """Whether the current step's bytes are here, without requesting the step: offered by the
+        sender, or published in the log. Waits up to ``POLL_INTERVAL_MS`` for them."""
         # A step is published before its request only for a restarted trainer: once per step is enough.
         if self.payload is None and self.retain and self._log_checked != self.current_step:
             self._log_checked = self.current_step
             self.payload = self.log.read(self.current_step)
             self.published = self.payload is not None
-        if self.payload is None and self.socket.poll(timeout=int(self.poll_interval * 1000)):
+        if self.payload is None and self.socket.poll(timeout=POLL_INTERVAL_MS):
             kind, step, payload = self.socket.recv_multipart(copy=False)
             # Anything else is a late reply to a request for a step that was then read from the log.
             if kind.bytes == OFFER and int.from_bytes(step.bytes, "big") == self.current_step:
@@ -176,6 +246,7 @@ class ZMQBatchReceiver(BatchReceiver):
         return self.payload is not None
 
     def wait(self) -> None:
+        """Request the current step and block until the sender handed it over."""
         if self.published:
             return
         requested = False
@@ -201,6 +272,21 @@ class ZMQBatchReceiver(BatchReceiver):
                     self.payload = payload
                 if self.payload is not None:
                     return
+
+    def batch(self) -> StepBatch:
+        """The current step, once ``poll`` or ``wait`` has it."""
+        if self._batch is None:
+            assert self.payload is not None, "the current step is not here yet"
+            self._batch = self.decoder.decode(self.payload)
+        return self._batch
+
+    def receive(self) -> StepBatch:
+        """The step ``wait`` got, after which the receiver moves on to the next step."""
+        batch = self.batch()
+        self.payload, self.published, self._batch = None, False, None
+        self.logger.debug(f"Received {len(batch.samples)} samples for step {self.current_step}")
+        self.current_step += 1
+        return batch
 
     def close(self) -> None:
         try:

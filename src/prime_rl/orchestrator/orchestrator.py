@@ -39,7 +39,6 @@ if TYPE_CHECKING:
 
     from prime_rl.env.types import RestoreRef
     from prime_rl.orchestrator.ckpt import CheckpointManager
-    from prime_rl.transports.batch.base import BatchSender
 import prime_rl._compat  # noqa: F401
 from prime_rl import monitors
 from prime_rl.configs.diff import ConfigChange, diff_config, merge_resumed_config
@@ -97,7 +96,7 @@ from prime_rl.orchestrator.utils import (
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
-from prime_rl.transports.batch import StepBatch, setup_batch_sender
+from prime_rl.transports.batch import BatchSender, StepBatch
 from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.config import dump_resolved_config
@@ -335,7 +334,7 @@ class Orchestrator:
 
         # Transports are local setup — initialize them before the env and inference waits.
         get_logger().info(f"Initializing batch sender ({config.rollout_transport})")
-        self.sender = setup_batch_sender(config.output_dir, self.progress.step, config.rollout_transport)
+        self.sender = BatchSender(config.output_dir, self.progress.step, config.rollout_transport)
 
         # Wait phase: envs, then inference, then the trainer's startup broadcast —
         # the last things before the main loop starts.
