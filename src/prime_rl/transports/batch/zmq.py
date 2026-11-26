@@ -1,5 +1,6 @@
 import asyncio
 import time
+from collections.abc import Collection
 from pathlib import Path
 
 import msgspec
@@ -42,9 +43,11 @@ class ZMQBatchSender(BatchSender):
         if self.retain:
             await asyncio.to_thread(self.log.write, self.current_step, payload)
         step = self.current_step.to_bytes(8, "big")
-        await self._offer(step, payload)
+        # A rank that asked already waits for the step itself: an offer would send it twice.
+        rank_to_request = await self._queued_requests()
+        await self._offer(step, payload, asked=rank_to_request.keys())
         wait_start = time.perf_counter()
-        rank_to_request = await self._wait_for_requests()
+        rank_to_request = await self._wait_for_requests(rank_to_request)
         send_start = time.perf_counter()
         self.last_wait_s = send_start - wait_start
         if self.retain:
@@ -69,10 +72,12 @@ class ZMQBatchSender(BatchSender):
         self.current_step += 1
         return send_end - send_start
 
-    async def _offer(self, step: bytes, payload: bytes) -> None:
-        """Hand the step's bytes to every rank ahead of its request. A rank gone since (a
-        restarted trainer) gets the step when it asks."""
+    async def _offer(self, step: bytes, payload: bytes, asked: Collection[int]) -> None:
+        """Hand the step's bytes to every rank that has not ``asked`` for it yet. A rank gone
+        since (a restarted trainer) gets the step when it asks."""
         for rank, identity in self.identities.items():
+            if rank in asked:
+                continue
             try:
                 await self.socket.send_multipart([identity, OFFER, step, payload], copy=False)
             except zmq.ZMQError as error:
@@ -86,28 +91,47 @@ class ZMQBatchSender(BatchSender):
         finally:
             self.logger.debug("Closed ZMQ step sender")
 
+    def _current_request(self, payload: bytes) -> BatchRequest | None:
+        """The request, if it is for the current step. A rank requests the next step only after
+        receiving this one, so a later step means the orchestrator and trainer resumed from
+        different steps. A retaining sender skips requests for earlier steps (None): a restarted
+        rank reads those from the log."""
+        request = self.request_decoder.decode(payload)
+        if request.step == self.current_step:
+            return request
+        if not self.retain or request.step > self.current_step:
+            raise RuntimeError(
+                f"A trainer rank requested step {request.step}, but the orchestrator is on step "
+                f"{self.current_step}. Resume both from the same checkpoint step."
+            )
+        return None
+
     async def _receive_request(self) -> tuple[bytes, BatchRequest]:
-        """A rank requests the next step only after receiving this one, so any other step means the
-        orchestrator and trainer resumed from different steps. A retaining sender skips requests
-        for earlier steps: a restarted rank reads those from the log."""
         while True:
             identity, payload = await self.socket.recv_multipart()
-            request = self.request_decoder.decode(payload)
-            if request.step == self.current_step:
+            if (request := self._current_request(payload)) is not None:
                 return identity, request
-            if not self.retain or request.step > self.current_step:
-                raise RuntimeError(
-                    f"A trainer rank requested step {request.step}, but the orchestrator is on step "
-                    f"{self.current_step}. Resume both from the same checkpoint step."
-                )
 
-    async def _wait_for_requests(self) -> dict[int, tuple[bytes, BatchRequest]]:
-        """Collect one request per trainer rank for the current step. Each request carries the
-        trainer world size, so the first one says how many to wait for. A rank that asks again
-        (a restarted trainer) replaces its earlier request."""
-        identity, request = await self._receive_request()
-        rank_to_request = {request.rank: (identity, request)}
-        while len(rank_to_request) < request.world_size:
+    async def _queued_requests(self) -> dict[int, tuple[bytes, BatchRequest]]:
+        """The requests for the current step that arrived already, without waiting for more."""
+        queued: dict[int, tuple[bytes, BatchRequest]] = {}
+        while await self.socket.poll(timeout=0):
+            identity, payload = await self.socket.recv_multipart()
+            if (request := self._current_request(payload)) is not None:
+                queued[request.rank] = (identity, request)
+        return queued
+
+    async def _wait_for_requests(
+        self, rank_to_request: dict[int, tuple[bytes, BatchRequest]]
+    ) -> dict[int, tuple[bytes, BatchRequest]]:
+        """Collect one request per trainer rank for the current step, on top of those already
+        here. Each request carries the trainer world size, so the first one says how many to wait
+        for. A rank that asks again (a restarted trainer) replaces its earlier request."""
+        if not rank_to_request:
+            identity, request = await self._receive_request()
+            rank_to_request = {request.rank: (identity, request)}
+        world_size = next(iter(rank_to_request.values()))[1].world_size
+        while len(rank_to_request) < world_size:
             identity, request = await self._receive_request()
             rank_to_request[request.rank] = (identity, request)
         self.last_requested_at = last_requested_at([request for _, request in rank_to_request.values()])
