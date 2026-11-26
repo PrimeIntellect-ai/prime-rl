@@ -65,7 +65,7 @@ class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     """The engines pull each version themselves: they watch the broadcast dir, decode a sparse delta while serving
     and apply the newest finished version in a short pause of their own. The trainer then waits for no consumer and
     the orchestrator pauses no engine: it only reads the version each engine serves. Not supported yet with LoRA,
-    disaggregated P/D, draft swaps or rollout checkpoints."""
+    disaggregated P/D or draft swaps."""
 
 
 class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):

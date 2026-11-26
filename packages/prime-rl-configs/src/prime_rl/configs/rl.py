@@ -515,9 +515,6 @@ class RLConfig(BaseConfig):
                 self.inference.deployment.type == "disaggregated"
             ),
             "draft swaps (orchestrator.speculative_decoding)": self.orchestrator.speculative_decoding is not None,
-            "rollout checkpoints (their consistency point is the orchestrator's weight update)": (
-                self.orchestrator.ckpt is not None and self.orchestrator.ckpt.rollouts
-            ),
         }
         if blocked := [name for name, hit in unsupported.items() if hit]:
             raise ValueError(f"weight_broadcast.pull does not support {', '.join(blocked)} yet")
