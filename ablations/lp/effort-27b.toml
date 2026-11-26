@@ -3,7 +3,7 @@
 # model's three efforts. Per effort it gives pass rate and cost (output and input tokens,
 # turns), i.e. the points of the base model's Pareto curve. Setup matches the training eval
 # source: null harness, small Prime sandboxes, deterministic scoring, 3600 s rollout limit.
-# The effort reaches the chat template through vLLM's reasoning_effort request field.
+# The effort goes in chat_template_kwargs: the vllm-router rejects reasoning_effort = "xhigh".
 #
 #   uv run eval @ ablations/lp/effort-27b.toml --client.base-url http://<router host>:8000/v1
 
@@ -30,7 +30,7 @@ env.taskset.task.tools.runtime = { type = "prime", cpu = 1, memory = 2 }
 env.agent.harness.id = "null"
 env.agent.runtime = { type = "prime", cpu = 1, memory = 2 }
 env.agent.timeout.rollout = 3600
-env.agent.sampling.reasoning_effort = "low"
+env.agent.sampling.chat_template_kwargs = { reasoning_effort = "low" }
 
 [[source]]
 name = "ga-medium"
@@ -45,7 +45,7 @@ env.taskset.task.tools.runtime = { type = "prime", cpu = 1, memory = 2 }
 env.agent.harness.id = "null"
 env.agent.runtime = { type = "prime", cpu = 1, memory = 2 }
 env.agent.timeout.rollout = 3600
-env.agent.sampling.reasoning_effort = "medium"
+env.agent.sampling.chat_template_kwargs = { reasoning_effort = "medium" }
 
 [[source]]
 name = "ga-xhigh"
@@ -60,4 +60,4 @@ env.taskset.task.tools.runtime = { type = "prime", cpu = 1, memory = 2 }
 env.agent.harness.id = "null"
 env.agent.runtime = { type = "prime", cpu = 1, memory = 2 }
 env.agent.timeout.rollout = 3600
-env.agent.sampling.reasoning_effort = "xhigh"
+env.agent.sampling.chat_template_kwargs = { reasoning_effort = "xhigh" }
