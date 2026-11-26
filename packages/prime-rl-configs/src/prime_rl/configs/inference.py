@@ -214,12 +214,20 @@ class WeightBroadcastConfig(BaseConfig):
 
     pull_from: Path | None = None
     """Broadcast dir to pull the policy weights from (``filesystem`` only): the server applies each version the
-    trainer publishes there itself, while serving. Set by ``rl`` with ``weight_broadcast.pull``."""
+    trainer publishes there itself, while serving. Set by ``rl`` with ``weight_broadcast.pull``: on every server of a
+    single-node deployment, and on the first rank of each DP group of a multi-node one."""
+
+    pull_group: list[str] | None = None
+    """Admin URL of every engine in this server's DP group, its own included. The ranks of an expert-parallel DP
+    group share every forward pass, so they switch versions together: the group's first rank pulls for all of them,
+    through their admin routes, and groups switch independently. Unset, the server moves only itself."""
 
     @model_validator(mode="after")
     def validate_pull_transport(self):
         if self.pull_from is not None and self.type != "filesystem":
             raise ValueError("Engines pull their weights only from a filesystem broadcast")
+        if self.pull_group is not None and self.pull_from is None:
+            raise ValueError("weight_broadcast.pull_group needs weight_broadcast.pull_from")
         return self
 
 

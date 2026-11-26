@@ -282,23 +282,34 @@ class AdminPlane:
         on_paused: Callable[[], None] | None = None,
     ) -> None:
         """Update every inference engine through its configured weight transport."""
-        weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
-
-        pause_times = await _pause_engines(self.clients, step=step, roles=self.roles)
+        pause_times = await self.pause(step)
         try:
             if on_paused is not None:
                 on_paused()
-            transfer_times = await _post_all(
-                self.clients,
-                "/update_weights",
-                json={"weight_dir": weight_dir_posix, "weight_version": step},
-                timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
-            )
+            transfer_times = await self.transfer(weight_dir, step)
             if self.after_transfer is not None:
                 await self.after_transfer()
         finally:
-            resume_times = await _resume_engines(self.clients)
+            resume_times = await self.resume()
         self.update_times = {"pause": pause_times, "transfer": transfer_times, "resume": resume_times}
+
+    async def pause(self, step: int) -> list[float]:
+        """Pause every engine for the update to v{step}, prefill engines first. Returns each engine's pause time."""
+        return await _pause_engines(self.clients, step=step, roles=self.roles)
+
+    async def transfer(self, weight_dir: Path | None, step: int) -> list[float]:
+        """Move every paused engine onto v{step} and label the tokens it samples from then on with it. Returns each
+        engine's transfer time."""
+        return await _post_all(
+            self.clients,
+            "/update_weights",
+            json={"weight_dir": weight_dir.as_posix() if weight_dir is not None else None, "weight_version": step},
+            timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+        )
+
+    async def resume(self) -> list[float]:
+        """Resume every engine. Returns each engine's resume time."""
+        return await _resume_engines(self.clients)
 
     async def served_versions(self) -> list[int | None]:
         """The policy version each engine serves, in client order: None for an engine that applied none yet or

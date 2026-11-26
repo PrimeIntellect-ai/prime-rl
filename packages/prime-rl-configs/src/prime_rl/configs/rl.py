@@ -201,6 +201,14 @@ class RLConfig(BaseConfig):
         assert self.run.dir is not None  # resolved at construction
         return self.output_dir / self.run.dir
 
+    @property
+    def weight_pull_dir(self) -> Path | None:
+        """The broadcast dir the engines pull the policy weights from, None unless ``weight_broadcast.pull``."""
+        broadcast = self.weight_broadcast
+        if broadcast is None or broadcast.type != "filesystem" or not broadcast.pull:
+            return None
+        return self.run_dir / "broadcasts"
+
     def _resolve_run_name(self) -> None:
         """Fill the auto-generated run name and directory (idempotent — called by every
         validator that reads them, so it does not depend on validator ordering)."""
@@ -501,9 +509,10 @@ class RLConfig(BaseConfig):
             update={"weight_broadcast": self.weight_broadcast.model_copy()}
         )
         if self.inference is not None:
-            pull = self.weight_broadcast.type == "filesystem" and self.weight_broadcast.pull
+            # A multi-node launcher gives the broadcast dir to the first rank of each DP group, which moves the group
+            single_node = self.deployment.type == "single_node"
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(
-                type=self.weight_broadcast.type, pull_from=self.run_dir / "broadcasts" if pull else None
+                type=self.weight_broadcast.type, pull_from=self.weight_pull_dir if single_node else None
             )
         return self
 
@@ -519,9 +528,6 @@ class RLConfig(BaseConfig):
             )
         unsupported = {
             "LoRA": self.trainer.model.lora is not None,
-            "disaggregated P/D (prefill and decode must switch versions together)": (
-                self.inference.deployment.type == "disaggregated"
-            ),
             "draft swaps (orchestrator.speculative_decoding)": self.orchestrator.speculative_decoding is not None,
             "rollout checkpoints (their consistency point is the orchestrator's weight update)": (
                 self.orchestrator.ckpt is not None and self.orchestrator.ckpt.rollouts

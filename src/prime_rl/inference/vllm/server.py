@@ -227,11 +227,17 @@ async def custom_init_app_state(
         prime_serving.__dict__.update(upstream.__dict__)
         state.serving_tokens = prime_serving
 
-    # Engines that pull their weights: one API server process moves the shared engine.
+    # Engines that pull their weights: one API server process moves the shared engine, or, on the first rank of a
+    # multi-node DP group, every rank of the group.
     if args.weight_pull_dir is not None and API_SERVER_INDEX == 0:
-        from prime_rl.inference.vllm.weight_pull import WeightPuller
+        from prime_rl.inference.vllm.weight_pull import EngineGroup, LocalEngine, WeightPuller
 
-        state.weight_puller = WeightPuller(engine_client, Path(args.weight_pull_dir))
+        group = args.weight_pull_group
+        if group is None:
+            engines = LocalEngine(engine_client)
+        else:
+            engines = EngineGroup(group, args.admin_token_var)
+        state.weight_puller = WeightPuller(engines, Path(args.weight_pull_dir))
         state.weight_pull_task = asyncio.create_task(state.weight_puller.run())
 
     # Under RL load the API server holds millions of live objects, and CPython's
@@ -322,6 +328,7 @@ def server(config: InferenceConfig):
     args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
     pull_from = config.weight_broadcast.pull_from
     args.weight_pull_dir = pull_from.as_posix() if pull_from is not None else None
+    args.weight_pull_group = config.weight_broadcast.pull_group
 
     if args.headless or args.api_server_count < 1:
         run_headless(args)

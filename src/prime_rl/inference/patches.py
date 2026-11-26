@@ -44,6 +44,7 @@ def apply_shared_vllm_patches():
     monkey_patch_nixl_bidirectional_spec_decode_coverage()
     monkey_patch_keep_pause_ignores_held_kv()
     monkey_patch_freeze_nixl_leases_during_keep_pause()
+    monkey_patch_nixl_prefill_lapsed_remote_kv_locally()
     monkey_patch_drop_reservation_of_failed_kv_load()
     monkey_patch_skip_store_lookup_after_match()
     monkey_patch_release_failed_kv_loads()
@@ -304,6 +305,54 @@ def monkey_patch_freeze_nixl_leases_during_keep_pause():
 
     resume_scheduler._prime_rl_freeze_leases = True
     EngineCore.resume_scheduler = resume_scheduler
+
+
+def monkey_patch_nixl_prefill_lapsed_remote_kv_locally():
+    """A decode engine prefills a request itself when the blocks its prefill engine held for it may be gone.
+
+    The prefill engine holds a finished prefill's blocks under a lease, which decode renews with heartbeats it sends as
+    it steps: every ``kv_lease_duration / 6`` s, each extending the lease to ``2/3 * kv_lease_duration`` s from then. A
+    decode engine that does not step renews nothing, e.g. one paused for a weight update while the prefill engines go on
+    serving (engines that pull their weights switch per DP group). Once a lease runs out, prefill frees the blocks and
+    reuses them, and a decode engine that reads them afterwards decodes from another request's KV.
+
+    So when decode is about to start a request's read, and the lease was last renewed (by a heartbeat, or when the
+    request arrived) more than half the lease duration ago, decode drops the remote prefill and prefills the prompt
+    itself. The prefill engine releases the blocks when the lease runs out.
+    """
+    import time
+
+    from vllm.distributed.kv_transfer.kv_connector.v1.nixl.base_scheduler import NixlBaseConnectorScheduler
+    from vllm.distributed.kv_transfer.kv_connector.v1.nixl.pull_scheduler import NixlPullConnectorScheduler
+    from vllm.logger import init_logger
+
+    original_matched = NixlPullConnectorScheduler.get_num_new_matched_tokens
+    if getattr(original_matched, "_prime_rl_lapsed_lease", False):
+        return
+    original_new_request = NixlBaseConnectorScheduler.on_new_request
+    logger = init_logger("vllm.distributed.kv_transfer.kv_connector.v1.nixl.pull_scheduler")
+
+    def on_new_request(self, request) -> None:
+        original_new_request(self, request)
+        request._prime_rl_kv_lease_renewed = time.perf_counter()
+
+    def get_num_new_matched_tokens(self, request, num_computed_tokens: int) -> tuple[int, bool]:
+        params = request.kv_transfer_params
+        if params is not None and params.get("do_remote_prefill"):
+            renewed = max(getattr(request, "_prime_rl_kv_lease_renewed", 0.0), self._last_heartbeat_time)
+            waited = time.perf_counter() - renewed
+            if waited > self._kv_lease_duration / 2:
+                logger.warning(
+                    f"Prefilling {request.request_id} locally: its KV lease on the prefill engine was last renewed "
+                    f"{waited:.0f}s ago, so the prefill engine may have released the blocks"
+                )
+                params["do_remote_prefill"] = False
+                self._stop_heartbeat(request.request_id)
+        return original_matched(self, request, num_computed_tokens)
+
+    get_num_new_matched_tokens._prime_rl_lapsed_lease = True
+    NixlBaseConnectorScheduler.on_new_request = on_new_request
+    NixlPullConnectorScheduler.get_num_new_matched_tokens = get_num_new_matched_tokens
 
 
 def monkey_patch_release_failed_kv_loads():

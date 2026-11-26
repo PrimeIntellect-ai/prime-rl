@@ -342,6 +342,24 @@ interval = 50  # full checkpoint (anchor) every N steps
 - Anchors (full checkpoints) are written every `interval` steps, from the optimizer step. They slow that step down, so prefer a larger `interval`. An engine that joins, restarts or fails an update loads the latest complete anchor, reading only the rows it holds, and replays the deltas since.
 - Not supported: LoRA, fp8 tensors whose columns are not a multiple of 128, and engines that transform weights after loading other than online `fp8_per_block` (e.g. FlashInfer TRTLLM/CUTLASS MoE, Marlin). fp8 deltas need the same vLLM and torch versions on the trainer and the engines.
 
+### Engines that pull their weights
+
+With `weight_broadcast.pull` on the filesystem broadcast, the engines move themselves onto each version the trainer publishes: they watch the broadcast dir, read and decode a sparse delta while they serve, and apply the newest finished version in a short pause of their own. The trainer publishes and goes on without waiting for a consumer. The orchestrator pauses no engine: it only reads the version each engine serves (`GET /weight_version`).
+
+```toml
+[weight_broadcast]
+type = "filesystem"
+pull = true
+
+[weight_broadcast.delta]
+interval = 50
+```
+
+- Running requests stay in the engine across the pause and go on sampling with the new weights; new requests queue. An engine that skipped versions replays the deltas since the last anchor, and an engine whose update fails stays paused and retries.
+- On several nodes, every DP rank is its own server. The ranks of an expert-parallel DP group share every forward pass, so the group's first rank moves all of them through their admin routes, and gets the admin token for it ([Admin Routes](inference.md#admin-routes)). Each group switches as soon as it is ready, independently of the others: a slow or dead group holds up no other, and nothing pauses the whole deployment at once. Under P/D, a request can be prefilled on one version and decoded on the next, as a running request already is across any pause.
+- A prefill engine holds a finished prefill's KV blocks for decode under a lease that decode renews as it steps. A decode engine that did not step for half of `kv_lease_duration` (15 s by default), e.g. paused for a long update while the prefill engines kept serving, prefills its queued requests itself: their prefill engine may have reused those blocks.
+- Not supported: LoRA and draft swaps (`orchestrator.speculative_decoding`).
+
 ### Custom Templates
 
 For unusual partitions, module loads, or environment setup, supply your own Jinja2 template:

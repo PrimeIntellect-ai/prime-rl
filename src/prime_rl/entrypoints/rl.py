@@ -99,10 +99,14 @@ def rl_config_components(config: RLConfig, config_dir: Path) -> list[tuple[str, 
 
 def admin_token_uses(config: RLConfig) -> AdminTokenUses:
     """The orchestrator calls the engines' admin routes, so it gets the token; the inference
-    server and the control APIs only check it, so they get its digest."""
+    server and the control APIs only check it, so they get its digest. When the engines pull
+    their weights on several nodes, the first rank of each DP group moves the group's ranks
+    onto each version through their admin routes, so it gets the token."""
+    token_var = config.inference.server.admin_token_var if config.inference else None
+    group_pull = config.weight_pull_dir is not None and config.deployment.type != "single_node"
     return AdminTokenUses(
         {
-            "inference": TokenUse(checks=config.inference.server.admin_token_var if config.inference else None),
+            "inference": TokenUse(checks=token_var, sends=token_var if group_pull else None),
             "orchestrator": TokenUse(
                 sends=config.orchestrator.model.client.admin_token_var,
                 checks=config.orchestrator.control.admin_token_var if config.orchestrator.control else None,
@@ -483,6 +487,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             train_env_names=train_env_names,
             eval_env_names=eval_env_names,
             admin_token=admin_token_uses(config),
+            weight_pull_dir=config.weight_pull_dir,
             **modelexpress_vars,
         )
     else:
@@ -525,6 +530,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             train_env_names=train_env_names,
             eval_env_names=eval_env_names,
             admin_token=admin_token_uses(config),
+            weight_pull_dir=config.weight_pull_dir,
             **modelexpress_vars,
         )
 
