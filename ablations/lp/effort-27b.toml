@@ -1,0 +1,63 @@
+# Reasoning-effort calibration for the multi-effort LP work: Qwen3.8-27B on the general-agent
+# held-out set of the LP ablations (the 128 tasks in ga_eval_idx.txt), avg@4, at each of the
+# model's three efforts. Per effort it gives pass rate and cost (output and input tokens,
+# turns), i.e. the points of the base model's Pareto curve. Setup matches the training eval
+# source: null harness, small Prime sandboxes, deterministic scoring, 3600 s rollout limit.
+# The effort reaches the chat template through vLLM's reasoning_effort request field.
+#
+#   uv run eval @ ablations/lp/effort-27b.toml --client.base-url http://<router host>:8000/v1
+
+model = "Qwen/Qwen3.8-27B"
+group_size = 4
+
+[run]
+name = "lp-effort-27b"
+
+[concurrency]
+min_inflight = 128
+max_inflight = 512
+
+[[source]]
+name = "ga-low"
+select.include.idx = [2, 33, 41, 65, 81, 95, 101, 112, 155, 156, 169, 179, 192, 198, 217, 220, 221, 225, 228, 236, 240, 257, 270, 273, 288, 289, 300, 321, 322, 329, 337, 338, 348, 393, 420, 428, 434, 435, 438, 440, 469, 471, 495, 504, 505, 508, 512, 542, 548, 556, 561, 565, 583, 606, 608, 609, 633, 641, 642, 655, 670, 677, 679, 704, 710, 726, 738, 742, 748, 757, 759, 771, 776, 777, 781, 829, 836, 838, 873, 906, 923, 939, 954, 985, 988, 1004, 1021, 1040, 1046, 1055, 1062, 1117, 1128, 1129, 1150, 1151, 1157, 1165, 1167, 1191, 1201, 1211, 1234, 1235, 1242, 1258, 1262, 1276, 1277, 1282, 1290, 1291, 1294, 1299, 1302, 1321, 1337, 1350, 1353, 1365, 1372, 1381, 1382, 1390, 1406, 1417, 1418, 1422]
+env.taskset.id = "general-agent"
+env.taskset.min_tier = 3
+env.taskset.max_tier = 4
+env.taskset.pass_rate_model = "zai-org/GLM-5.1-FP8"
+env.taskset.pass_rate_solver = "rlm"
+env.taskset.min_pass_rate = 0.05
+env.taskset.task.tools.runtime = { type = "prime", cpu = 1, memory = 2 }
+env.agent.harness.id = "null"
+env.agent.runtime = { type = "prime", cpu = 1, memory = 2 }
+env.agent.timeout.rollout = 3600
+env.agent.sampling.reasoning_effort = "low"
+
+[[source]]
+name = "ga-medium"
+select.include.idx = [2, 33, 41, 65, 81, 95, 101, 112, 155, 156, 169, 179, 192, 198, 217, 220, 221, 225, 228, 236, 240, 257, 270, 273, 288, 289, 300, 321, 322, 329, 337, 338, 348, 393, 420, 428, 434, 435, 438, 440, 469, 471, 495, 504, 505, 508, 512, 542, 548, 556, 561, 565, 583, 606, 608, 609, 633, 641, 642, 655, 670, 677, 679, 704, 710, 726, 738, 742, 748, 757, 759, 771, 776, 777, 781, 829, 836, 838, 873, 906, 923, 939, 954, 985, 988, 1004, 1021, 1040, 1046, 1055, 1062, 1117, 1128, 1129, 1150, 1151, 1157, 1165, 1167, 1191, 1201, 1211, 1234, 1235, 1242, 1258, 1262, 1276, 1277, 1282, 1290, 1291, 1294, 1299, 1302, 1321, 1337, 1350, 1353, 1365, 1372, 1381, 1382, 1390, 1406, 1417, 1418, 1422]
+env.taskset.id = "general-agent"
+env.taskset.min_tier = 3
+env.taskset.max_tier = 4
+env.taskset.pass_rate_model = "zai-org/GLM-5.1-FP8"
+env.taskset.pass_rate_solver = "rlm"
+env.taskset.min_pass_rate = 0.05
+env.taskset.task.tools.runtime = { type = "prime", cpu = 1, memory = 2 }
+env.agent.harness.id = "null"
+env.agent.runtime = { type = "prime", cpu = 1, memory = 2 }
+env.agent.timeout.rollout = 3600
+env.agent.sampling.reasoning_effort = "medium"
+
+[[source]]
+name = "ga-xhigh"
+select.include.idx = [2, 33, 41, 65, 81, 95, 101, 112, 155, 156, 169, 179, 192, 198, 217, 220, 221, 225, 228, 236, 240, 257, 270, 273, 288, 289, 300, 321, 322, 329, 337, 338, 348, 393, 420, 428, 434, 435, 438, 440, 469, 471, 495, 504, 505, 508, 512, 542, 548, 556, 561, 565, 583, 606, 608, 609, 633, 641, 642, 655, 670, 677, 679, 704, 710, 726, 738, 742, 748, 757, 759, 771, 776, 777, 781, 829, 836, 838, 873, 906, 923, 939, 954, 985, 988, 1004, 1021, 1040, 1046, 1055, 1062, 1117, 1128, 1129, 1150, 1151, 1157, 1165, 1167, 1191, 1201, 1211, 1234, 1235, 1242, 1258, 1262, 1276, 1277, 1282, 1290, 1291, 1294, 1299, 1302, 1321, 1337, 1350, 1353, 1365, 1372, 1381, 1382, 1390, 1406, 1417, 1418, 1422]
+env.taskset.id = "general-agent"
+env.taskset.min_tier = 3
+env.taskset.max_tier = 4
+env.taskset.pass_rate_model = "zai-org/GLM-5.1-FP8"
+env.taskset.pass_rate_solver = "rlm"
+env.taskset.min_pass_rate = 0.05
+env.taskset.task.tools.runtime = { type = "prime", cpu = 1, memory = 2 }
+env.agent.harness.id = "null"
+env.agent.runtime = { type = "prime", cpu = 1, memory = 2 }
+env.agent.timeout.rollout = 3600
+env.agent.sampling.reasoning_effort = "xhigh"

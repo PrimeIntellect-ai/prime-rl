@@ -1,0 +1,27 @@
+# Two-node server for the Qwen3.8-27B reasoning-effort calibration: one vLLM replica per node
+# (tp1 dp8, one engine per GPU) behind one router. Dev partition, so the job ends after 4 h.
+#
+#   uv run inference @ ablations/lp/serve-27b-2n.toml
+
+output_dir = "outputs/lp-effort-serve-27b"
+
+[slurm]
+job_name = "lp-effort-serve-27b"
+partition = "dev"
+time = "04:00:00"
+
+[deployment]
+type = "multi_node"
+num_nodes = 2
+
+[vllm]
+model = "Qwen/Qwen3.8-27B"
+max_model_len = 131072
+enable_prefix_caching = true
+tensor_parallel_size = 1
+data_parallel_size = 8
+gpu_memory_utilization = 0.85
+
+[vllm.limit_mm_per_prompt]
+image = 0
+video = 0
