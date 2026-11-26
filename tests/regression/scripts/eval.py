@@ -69,6 +69,8 @@ TRACE_FAILED = re.compile(r"Trace failed in group \S+ \(.*?\) — (.+)$")
 # Request ids and JSON bodies make each message unique. Cut them, so equal errors group.
 ERROR_BODY = re.compile(r":? \{.*$")
 ERROR_ID = re.compile(r"\b[0-9a-f]{8,}(-[0-9a-f]{4,})*\b")
+# The logger colors its console output even when it is piped.
+ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
 def quantile(values: list[float], q: float) -> float:
@@ -304,7 +306,8 @@ def console_tail(console: Path | None) -> list[str]:
     """Return the last lines of the eval's console output, without the box drawing of rich panels."""
     if console is None or not console.exists():
         return []
-    lines = [line.strip(" │╭╮╰╯─") for line in console.read_text(errors="replace").splitlines()]
+    text = ANSI.sub("", console.read_text(errors="replace"))
+    lines = [line.strip(" │╭╮╰╯─") for line in text.splitlines()]
     return [line for line in lines if line][-CONSOLE_TAIL:]
 
 
