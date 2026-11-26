@@ -1081,6 +1081,23 @@ def test_disaggregated_inference_inherits_deployment_gpus_per_node():
         RLConfig.model_validate(config)
 
 
+def test_modelexpress_under_pd_transfers_to_every_prefill_and_decode_gpu():
+    config = RLConfig.model_validate(
+        {
+            "weight_broadcast": {"type": "modelexpress"},
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {"deployment": {"type": "disaggregated"}},
+            "deployment": {"type": "multi_node", "num_train_nodes": 1, "num_infer_nodes": 2},
+            "slurm": {},
+        }
+    )
+
+    assert config.trainer.weight_broadcast.inference_world_size == 16
+    assert config.orchestrator.weight_broadcast.inference_world_size == 16
+    assert config.orchestrator.inference_metrics_roles == ["prefill"] * 8 + ["decode"] * 8
+
+
 def test_ac_none_disables_ac_offloading():
     config = TrainerModelConfig.model_validate({"ac": None})
     assert config.ac is None
