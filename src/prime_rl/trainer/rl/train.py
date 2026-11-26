@@ -258,21 +258,6 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing scheduler ({config.scheduler})")
     scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr, checkpoint_step)
 
-    # Set up weight broadcast (skip when using fake data since there's no inference server)
-    if config.data.fake:
-        weight_sender = None
-        logger.info("Skipping weight broadcast setup (fake data mode)")
-    else:
-        logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
-        t0 = time.perf_counter()
-        weight_sender = setup_weight_sender(
-            config.output_dir,
-            config.weight_broadcast,
-            config.model.lora,
-            model_name=config.model.name,
-        )
-        logger.debug(f"Initialized weight broadcast in {format_time(time.perf_counter() - t0)}")
-
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
 
@@ -306,6 +291,22 @@ def train(config: TrainerConfig):
         ckpt_manager.load_weights(Path(config.model.name) / "trainer", model, [optimizer])
     else:
         logger.info("Starting from scratch")
+
+    # Set up weight broadcast after the checkpoint load: the NCCL sender blocks until every inference
+    # engine joins, and the engines take longer to start than the load. Skip with fake data (no inference).
+    if config.data.fake:
+        weight_sender = None
+        logger.info("Skipping weight broadcast setup (fake data mode)")
+    else:
+        logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
+        t0 = time.perf_counter()
+        weight_sender = setup_weight_sender(
+            config.output_dir,
+            config.weight_broadcast,
+            config.model.lora,
+            model_name=config.model.name,
+        )
+        logger.debug(f"Initialized weight broadcast in {format_time(time.perf_counter() - t0)}")
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
