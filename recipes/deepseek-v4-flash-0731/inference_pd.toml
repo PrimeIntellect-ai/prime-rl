@@ -5,8 +5,6 @@
 #   back over NIXL, so prefill computes only the new tokens (tool output, user message) instead of the conversation.
 # - Each rank's NIXL traffic stays on the RDMA port nearest its GPU (deployment.nixl_nic_affinity, on by default).
 #
-# Requires NIXL built against UCX 1.19 (docs/advanced.md, "Disaggregated Prefill/Decode Inference").
-#
 #   uv run inference @ recipes/deepseek-v4-flash-0731/inference_pd.toml
 use_deep_gemm = true
 
