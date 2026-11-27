@@ -5,6 +5,9 @@
   the concurrency controller moves it via ``set_limit``; refills are
   burst-capped so a raised (or drained) cap never lands all its prefills at
   once.
+- An overload cut sheds train episodes by pausing them (``pause_inflight``): a paused
+  episode sends no new model call and gives back its permit, but keeps its progress.
+  Paused episodes resume, oldest pause first, before any new work is admitted.
 - Optional rate limiting via ``AsyncLimiter(dispatch_per_minute, 60)``, one token per episode.
 - A finished train rollout of a complete group keeps its permit until the
   trainer takes it, past a buffer of ``BUFFERED_BATCHES`` batches
@@ -223,6 +226,12 @@ class Dispatcher:
         self.admissions_in_window = 0
 
         self.inflight: dict[asyncio.Task, InflightEpisode] = {}
+        self.paused: dict[asyncio.Task, float] = {}
+        """In-flight episodes an overload cut paused, in pause order, with when they paused.
+        They hold no permit."""
+        self.pausing: dict[asyncio.Task, asyncio.Task] = {}
+        """The last pause or resume sent for an episode: the next one waits for it, so the
+        env worker sees them in order."""
         self.live_events: list[dict[str, Any]] = []
         self.live_dropped = False
         self.live_task: asyncio.Task | None = None
@@ -307,7 +316,7 @@ class Dispatcher:
         if self.current_inflight + held >= self.max_inflight:
             return False
         target = self.trainer_target
-        return target is None or self.inflight_train_count + held < target
+        return target is None or self.inflight_train_count - len(self.paused) + held < target
 
     def set_limit(self, max_inflight: int) -> None:
         """Move the in-flight cap (concurrency controller hook). A cap below
@@ -315,34 +324,101 @@ class Dispatcher:
         blocked until enough episodes finish."""
         self.max_inflight = max_inflight
 
-    def cancel_inflight(self, n: int) -> None:
-        """Cancel roughly ``n`` in-flight train episodes, youngest groups
-        first (least inference spend so far). Called on an overload cut so
-        the working set shrinks immediately instead of waiting for the
-        over-admitted episodes to finish at thrashed throughput."""
-        asyncio.create_task(self._cancel_inflight(n))
-
-    async def _cancel_inflight(self, n: int) -> None:
+    def pause_inflight(self, n: int) -> None:
+        """Pause roughly ``n`` running train episodes, youngest groups first (least
+        inference spend so far). Called on an overload cut so the working set shrinks
+        at once instead of waiting for the over-admitted episodes to finish at thrashed
+        throughput. A paused episode keeps its progress: it sends no new model call
+        (its call under way finishes) and frees its permit until ``resume_paused``."""
+        members: dict[uuid.UUID, list[tuple[asyncio.Task, InflightEpisode]]] = defaultdict(list)
+        for task, meta in self.inflight.items():
+            if meta.kind == "train" and task not in self.paused:
+                members[meta.group_id].append((task, meta))
         # A group's age is its OLDEST member's start: max() would make a
         # long-running group look young the moment it schedules another
-        # member, cancelling the most sunk cost instead of the least
-        group_age: dict[uuid.UUID, float] = {}
-        for meta in self.inflight.values():
-            if meta.kind != "train":
-                continue
-            age = group_age.get(meta.group_id)
-            group_age[meta.group_id] = meta.started_at if age is None else min(age, meta.started_at)
-        shed = 0
-        for group_id in sorted(group_age, key=lambda gid: group_age[gid], reverse=True):
+        # member, pausing the most sunk cost instead of the least
+        youngest = sorted(members, key=lambda gid: min(meta.started_at for _, meta in members[gid]), reverse=True)
+        now = time.monotonic()
+        shed = calls = 0
+        for group_id in youngest:
             if shed >= n:
                 break
-            # Count only live cancellations toward the excess: drop_group's
-            # return includes never-dispatched episodes, which free no permits
-            live = sum(1 for meta in self.inflight.values() if meta.group_id == group_id)
-            await self.drop_group(group_id, reason="overload")
-            shed += live
+            for task, meta in members[group_id]:
+                self.paused[task] = now
+                self.release()
+                self.send_pause(task, meta, paused=True)
+                shed += 1
+                calls += meta.calls
         if shed:
-            get_logger().warning(f"Cancelled {shed} youngest in-flight episodes after overload cut")
+            get_logger().warning(
+                f"Paused {shed} youngest in-flight episodes after overload cut, keeping their {calls} model calls"
+            )
+
+    def resume_paused(self) -> None:
+        """Resume paused episodes, oldest pause first, into free permits. A resumed
+        episode counts against the admission burst like a new one: its next calls
+        land on the engines at once."""
+        resumed = 0
+        while self.paused and self.available_permits > 0 and self.admission_budget() > 0:
+            task, paused_at = next(iter(self.paused.items()))
+            self.unpause(task)
+            self.admissions_in_window += 1
+            self.send_pause(task, self.inflight[task], paused=False)
+            resumed += 1
+        if resumed and not self.paused:
+            get_logger().info(f"Resumed every paused episode, the last one after {time.monotonic() - paused_at:.0f}s")
+
+    def unpause(self, task: asyncio.Task) -> None:
+        """Count a paused episode as running again: it takes a permit back."""
+        paused_at = self.paused.pop(task, None)
+        if paused_at is None:
+            return
+        self.current_inflight += 1
+        meta = self.inflight.get(task)
+        if meta is not None:
+            meta.paused_s += time.monotonic() - paused_at
+
+    def send_pause(self, task: asyncio.Task, meta: InflightEpisode, *, paused: bool) -> None:
+        """Tell the episode's env worker to pause or resume it, after any earlier such
+        message for the episode. A pause the worker did not apply (its run was not there
+        yet) leaves the episode running, so it takes its permit back; one whose answer
+        was lost is undone with a resume. A resume is repeated until the worker answers:
+        an episode left paused on its worker would hold its group open for good."""
+        assert self.train_envs is not None
+        env = self.train_envs.get(meta.env_name)
+        previous = self.pausing.get(task)
+
+        async def send() -> None:
+            if previous is not None:
+                await asyncio.wait({previous})
+            verb = "pause" if paused else "resume"
+            delay = 1.0
+            while True:
+                try:
+                    applied = await env.pause(meta.dispatch_id, paused)
+                    break
+                except Exception as e:  # noqa: BLE001 - a lost message must not crash the dispatcher
+                    get_logger().warning(f"Could not {verb} episode {meta.dispatch_id} ({meta.env_name}) - {e!r}")
+                    if paused:
+                        applied = None
+                        break
+                    if task.done():
+                        return
+                    await asyncio.sleep(delay)
+                    delay = min(2 * delay, 15.0)
+            # A later message for the episode already set what the dispatcher counts and
+            # what the worker gets: the recovery is that message's
+            if paused and not applied and self.pausing.get(task) is asyncio.current_task():
+                self.unpause(task)
+                if applied is None and not task.done():
+                    self.send_pause(task, meta, paused=False)
+
+        def forget(done: asyncio.Task) -> None:
+            if self.pausing.get(task) is done:
+                del self.pausing[task]
+
+        sent = self.pausing[task] = asyncio.create_task(send())
+        sent.add_done_callback(forget)
 
     def admission_budget(self) -> int:
         """Admissions still allowed in the current burst window."""
@@ -483,13 +559,14 @@ class Dispatcher:
 
     async def fill_inflight(self) -> None:
         """Schedule new rollouts up to ``max_inflight``, honoring
-        ``self.mode``. Eval scheduling ignores the orchestrator's dispatch
+        ``self.mode``, after resuming paused episodes. Eval scheduling ignores the orchestrator's dispatch
         gate (evals are version-pinned measurements); only train scheduling
         respects it. When ``PREFER_EVAL``'s source exhausts we flip back to
         ``PREFER_TRAIN`` so the eval tail drains alongside fresh train."""
         while True:
             if self.policy_update_pending:
                 return
+            self.resume_paused()
             if self.available_permits <= 0 or self.admission_budget() <= 0:
                 return
 
@@ -783,16 +860,25 @@ class Dispatcher:
         if refund_admission:
             self.admissions_in_window = max(0, self.admissions_in_window - 1)
 
+    def leave(self, task: asyncio.Task, *, refund_admission: bool = False) -> None:
+        """An episode left the in-flight set: free its permit, which a paused one gave
+        back already."""
+        if self.paused.pop(task, None) is None:
+            self.release(refund_admission=refund_admission)
+
     async def handle_completed_request(self, task: asyncio.Task) -> None:
         """Emit the terminal result of one dispatched environment request."""
         meta = self.inflight.pop(task, None)
         if meta is None:
             return  # already handled by drop_group / cancel_inflight_episodes
+        now = time.monotonic()
+        # The trainer target sizes the pool by how long an episode generates, which a pause is not
+        paused_s = meta.paused_s + (now - self.paused[task] if task in self.paused else 0.0)
         self.retire(meta)
-        self.release(refund_admission=True)
+        self.leave(task, refund_admission=True)
         group = self.groups.get(meta.group_id)
         if meta.kind == "train" and not task.cancelled():
-            seconds = time.monotonic() - meta.started_at
+            seconds = now - meta.started_at - paused_s
             self.generation_s = (
                 seconds
                 if self.generation_s is None
@@ -912,7 +998,7 @@ class Dispatcher:
             if meta.group_id != group_id:
                 continue
             del self.inflight[task]
-            self.release()
+            self.leave(task)
             self.retire(meta)
             claimed.append((task, meta))
 
@@ -949,9 +1035,9 @@ class Dispatcher:
     async def cancel_inflight_episodes(self) -> None:
         """Cancel all in-flight episodes. Used on shutdown — doesn't emit
         markers since the sinks are being torn down anyway."""
-        for meta in self.inflight.values():
+        for task, meta in self.inflight.items():
             self.metrics.record_cancellation(kind=meta.kind, env_name=meta.env_name)
-            self.release()
+            self.leave(task)
             self.retire(meta)
         tasks = list(self.inflight.keys())
         self.inflight.clear()
@@ -988,7 +1074,7 @@ class Dispatcher:
             if meta.kind != "train":
                 continue
             self.inflight.pop(task, None)
-            self.release()
+            self.leave(task)
             self.retire(meta)
             self.metrics.record_cancellation(kind="train", env_name=meta.env_name)
             train_tasks.append(task)
@@ -1051,6 +1137,7 @@ class Dispatcher:
         return {
             "dispatcher/inflight/train": float(self.inflight_train_count),
             "dispatcher/inflight/eval": float(self.inflight_eval_count),
+            "dispatcher/paused/train": float(len(self.paused)),
             "dispatcher/held_permits": float(self.held_permits),
             "dispatcher/trainer_target": self.trainer_target or 0.0,
             "dispatcher/queued/eval": float(self.queued_eval_examples),

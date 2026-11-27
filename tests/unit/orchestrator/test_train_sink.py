@@ -267,7 +267,7 @@ def test_failures_and_cancellations_accumulate_until_reporting():
             assert s.take_rollout_window() is None
             assert not s.pending_group_failures
         for i in range(4):
-            await s.cancel(GroupCancellation("train", "test", f"cancel{i}", 1, 1, "overload"))
+            await s.cancel(GroupCancellation("train", "test", f"cancel{i}", 1, 1, "superseded"))
         assert s.take_rollout_window() is None
         window = s.take_rollout_window(force=True)
         assert window.attempts == window.discarded == 12
@@ -326,7 +326,7 @@ def test_groups_close_when_they_finalize_without_shipping():
 
         s = sink(batch_size=2, closed=closed)
         await s.add(episode([trace(ok=False)], group="failed"))
-        await s.cancel(GroupCancellation("train", "test", "overload", 1, 1, "overload"))
+        await s.cancel(GroupCancellation("train", "test", "overload", 1, 1, "superseded"))
         assert closed == ["rejected", "failed", "overload"]
 
         # A shutdown drop re-runs on resume, so the group stays open.

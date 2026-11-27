@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -21,7 +22,7 @@ from prime_rl.orchestrator.concurrency import (
 from prime_rl.orchestrator.dispatcher import Dispatcher
 from prime_rl.orchestrator.live import context
 from prime_rl.orchestrator.trainer_capacity import TrainerCapacity
-from prime_rl.orchestrator.types import LiveTrace, Policy
+from prime_rl.orchestrator.types import InflightEpisode, LiveTrace, Policy
 
 POLL_SECONDS = 5.0
 DROP_WINDOW_POLLS = int(DWELL_SECONDS / POLL_SECONDS)
@@ -71,7 +72,7 @@ class Pool:
         self.inflight = inflight
         self.finished = 0.0
         self.limits: list[int] = []
-        self.cancelled: list[int] = []
+        self.shed: list[int] = []
 
 
 def controller(inflight: int = 100, trainer: TrainerCapacity | None = None) -> tuple[ConcurrencyController, Pool]:
@@ -80,7 +81,7 @@ def controller(inflight: int = 100, trainer: TrainerCapacity | None = None) -> t
     ctl.bind(
         set_limit=pool.limits.append,
         get_inflight=lambda: pool.inflight,
-        on_overload=pool.cancelled.append,
+        on_overload=pool.shed.append,
         get_train_finished=lambda: pool.finished,
         trainer=trainer,
     )
@@ -215,11 +216,11 @@ def test_queue_does_not_hold_growth_that_pays():
     assert ctl.paying and ctl.max_inflight > 200
 
 
-def test_queue_trims_then_cancels_when_a_drained_trim_did_not_clear_it():
+def test_queue_trims_then_sheds_when_a_drained_trim_did_not_clear_it():
     ctl, pool = controller()
     for _ in range(LOAD_WINDOW_POLLS):
         ctl.observe([engine(waiting=30)])
-    assert pool.limits == [trimmed(100, 0.3)] and pool.cancelled == []
+    assert pool.limits == [trimmed(100, 0.3)] and pool.shed == []
 
     ctl.observe([engine(waiting=30)])
     assert len(pool.limits) == 1  # no repeat before the pool drained to the cap
@@ -229,7 +230,7 @@ def test_queue_trims_then_cancels_when_a_drained_trim_did_not_clear_it():
     for _ in range(LOAD_WINDOW_POLLS):
         ctl.observe([engine(waiting=int(0.6 * pool.inflight))])
     target = trimmed(pool.inflight, 0.6)
-    assert pool.limits[1:] == [target] and pool.cancelled == [pool.inflight - target]
+    assert pool.limits[1:] == [target] and pool.shed == [pool.inflight - target]
 
 
 def test_weight_update_pause_freezes_and_skips_the_backlog():
@@ -261,36 +262,36 @@ def settle(ctl: ConcurrencyController, pool: Pool, healthy: EngineLoadSample = H
 
 
 def degrade(ctl: ConcurrencyController, pool: Pool, sample: EngineLoadSample, windows: int) -> None:
-    """The engines report ``sample`` for up to ``windows`` drop windows, until the controller cancels."""
+    """The engines report ``sample`` for up to ``windows`` drop windows, until the controller sheds."""
     for _ in range(windows * DROP_WINDOW_POLLS):
         ctl.observe([sample])
-        if pool.cancelled:
+        if pool.shed:
             break
 
 
-def test_throughput_drop_trims_then_cancels():
+def test_throughput_drop_trims_then_sheds():
     ctl, pool = controller()
     settle(ctl, pool)
     thrashing = engine(waiting=5, finished=4, generated=400, latency=4 * 10.0)  # 10 s per call
     degrade(ctl, pool, thrashing, windows=2)
-    assert pool.limits == [50] and pool.cancelled == []  # trimmed in proportion, to half at most
+    assert pool.limits == [50] and pool.shed == []  # trimmed in proportion, to half at most
 
     degrade(ctl, pool, thrashing, windows=1)  # still thrashing: units finish too slowly to drain
-    assert pool.cancelled == [50]
+    assert pool.shed == [50]
 
 
 def test_slower_environment_is_not_a_cliff():
     ctl, pool = controller()
     settle(ctl, pool)
     degrade(ctl, pool, engine(waiting=5, finished=4, generated=400, latency=8.0), windows=4)  # fewer calls, as fast
-    assert pool.cancelled == [] and pool.limits  # trimmed, never cancelled
+    assert pool.shed == [] and pool.limits  # trimmed, never shed
 
 
-def test_throughput_drop_without_the_latency_metric_cancels_on_a_standing_queue():
+def test_throughput_drop_without_the_latency_metric_sheds_on_a_standing_queue():
     ctl, pool = controller()
     settle(ctl, pool, engine(waiting=5, finished=10, generated=1000))  # no e2e latency histogram exported
     degrade(ctl, pool, engine(waiting=80, finished=1, generated=100), windows=4)  # most units stuck in the queue
-    assert pool.cancelled
+    assert pool.shed
 
 
 def test_projection_counts_running_units_to_the_max_context():
@@ -405,7 +406,7 @@ def test_starvation_after_a_throughput_drop_respects_its_ceiling():
     ctl.trainer.shipped(24, requested_at=430.0, now=500.0)
     ctl.trainer_shipped()
     assert ctl.max_inflight == 90
-    ctl.trim(70, 80, reason="queue", cancel=False)
+    ctl.trim(70, 80, reason="queue", shed=False)
     assert not ctl.fed_cut  # a trim set the cap, so a later wait does not undo it
 
 
@@ -429,3 +430,201 @@ def test_rollouts_that_never_ship_do_not_feed_the_trainer():
     shipped = lambda: setattr(capacity, "rollouts_shipped", (ctl.finished or 0) // 2)
     run(ctl, pool, lambda inflight: 10 * inflight, polls=600, each=shipped)
     assert min(pool.limits) >= 100
+
+
+def test_overload_pauses_the_youngest_groups_and_resumes_them_first():
+    sent: list[tuple[str, bool]] = []
+
+    class Env:
+        async def pause(self, request_id: str, paused: bool) -> bool:
+            sent.append((request_id, paused))
+            return True
+
+    class Envs:
+        def get(self, name: str) -> Env:
+            return Env()
+
+        def __iter__(self):
+            return iter(())
+
+    async def run() -> None:
+        dispatcher = Dispatcher(
+            train_envs=Envs(),
+            eval_envs=None,
+            train_source=None,
+            eval_source=None,
+            policy_clients=None,
+            policy=Policy(version=0, model_name="policy"),
+            progress=None,
+            initial_max_inflight=6,
+            max_inflight_ceiling=None,
+            dispatch_per_minute=None,
+            run_id="run",
+            run_name=None,
+        )
+        groups = {name: uuid.uuid4() for name in "abc"}
+        tasks = {}
+        for i, (name, started) in enumerate([("a", 1.0), ("a", 5.0), ("b", 2.0), ("b", 3.0), ("c", 4.0), ("c", 4.5)]):
+            meta = InflightEpisode(
+                kind="train",
+                env_name="env",
+                group_id=groups[name],
+                task=None,
+                policy_version=0,
+                step=0,
+                started_at=started,
+                dispatch_id=f"{name}{i}",
+            )
+            tasks[meta.dispatch_id] = asyncio.get_running_loop().create_future()
+            dispatcher.inflight[tasks[meta.dispatch_id]] = meta
+        dispatcher.current_inflight = 6
+
+        # Group a started first; c is the youngest by its oldest member, then b
+        dispatcher.set_limit(3)
+        dispatcher.pause_inflight(3)
+        assert dispatcher.current_inflight == 2 and len(dispatcher.paused) == 4
+        await asyncio.gather(*dispatcher.pausing.values())
+        assert sent == [("c4", True), ("c5", True), ("b2", True), ("b3", True)]
+
+        # Free permits go to the paused episodes first, oldest pause first
+        sent.clear()
+        dispatcher.resume_paused()
+        assert dispatcher.current_inflight == 3 and len(dispatcher.paused) == 3
+        await asyncio.gather(*dispatcher.pausing.values())
+        assert sent == [("c4", False)]
+
+        # A paused episode that ends gave its permit back already
+        dispatcher.leave(tasks["b3"])
+        assert dispatcher.current_inflight == 3 and len(dispatcher.paused) == 2
+        dispatcher.leave(tasks["c4"])
+        assert dispatcher.current_inflight == 2
+
+    asyncio.run(run())
+
+
+def test_a_pause_the_worker_missed_gives_the_permit_back_and_a_resume_is_repeated():
+    sent: list[tuple[str, bool]] = []
+    # A run still on the wire (missed), a pause whose answer was lost, a resume that fails once
+    answers = {("a0", True): [False], ("a1", True): [ConnectionError("lost")], ("a1", False): [True]}
+    answers[("a2", True)] = [True]
+    answers[("a2", False)] = [ConnectionError("down"), True]
+
+    class Env:
+        async def pause(self, request_id: str, paused: bool) -> bool:
+            sent.append((request_id, paused))
+            answer = answers[(request_id, paused)].pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+    class Envs:
+        def get(self, name: str) -> Env:
+            return Env()
+
+        def __iter__(self):
+            return iter(())
+
+    async def run() -> None:
+        dispatcher = Dispatcher(
+            train_envs=Envs(),
+            eval_envs=None,
+            train_source=None,
+            eval_source=None,
+            policy_clients=None,
+            policy=Policy(version=0, model_name="policy"),
+            progress=None,
+            initial_max_inflight=3,
+            max_inflight_ceiling=None,
+            dispatch_per_minute=None,
+            run_id="run",
+            run_name=None,
+        )
+        group = uuid.uuid4()
+        tasks = {}
+        for i in range(3):
+            meta = InflightEpisode(
+                kind="train",
+                env_name="env",
+                group_id=group,
+                task=None,
+                policy_version=0,
+                step=0,
+                started_at=float(i),
+                dispatch_id=f"a{i}",
+            )
+            tasks[meta.dispatch_id] = asyncio.get_running_loop().create_future()
+            dispatcher.inflight[tasks[meta.dispatch_id]] = meta
+        dispatcher.current_inflight = 3
+
+        dispatcher.pause_inflight(3)
+        assert dispatcher.current_inflight == 0
+        while dispatcher.pausing:
+            await asyncio.gather(*dispatcher.pausing.values())
+        # a0 and a1 run on: a0 was never paused, and a1's pause was undone by a resume
+        assert dispatcher.current_inflight == 2 and list(dispatcher.paused) == [tasks["a2"]]
+        assert ("a1", False) in sent
+
+        dispatcher.set_limit(3)
+        dispatcher.resume_paused()
+        while dispatcher.pausing:
+            await asyncio.gather(*dispatcher.pausing.values())
+        assert sent.count(("a2", False)) == 2 and dispatcher.current_inflight == 3
+
+    asyncio.run(run())
+
+
+def test_a_missed_pause_does_not_undo_a_later_pause():
+    """A pause that misses after a resume and a new pause were already queued leaves
+    them alone: the dispatcher still counts the episode paused, as the worker will."""
+    sent: list[tuple[str, bool]] = []
+    first_answer = asyncio.Event()
+
+    class Env:
+        async def pause(self, request_id: str, paused: bool) -> bool:
+            sent.append((request_id, paused))
+            if len(sent) == 1:
+                await first_answer.wait()
+                return False
+            return True
+
+    class Envs:
+        def get(self, name: str) -> Env:
+            return Env()
+
+        def __iter__(self):
+            return iter(())
+
+    async def run() -> None:
+        dispatcher = Dispatcher(
+            train_envs=Envs(),
+            eval_envs=None,
+            train_source=None,
+            eval_source=None,
+            policy_clients=None,
+            policy=Policy(version=0, model_name="policy"),
+            progress=None,
+            initial_max_inflight=1,
+            max_inflight_ceiling=None,
+            dispatch_per_minute=None,
+            run_id="run",
+            run_name=None,
+        )
+        meta = InflightEpisode(
+            kind="train", env_name="env", group_id=uuid.uuid4(), task=None, policy_version=0, step=0, dispatch_id="a0"
+        )
+        task = asyncio.get_running_loop().create_future()
+        dispatcher.inflight[task] = meta
+        dispatcher.current_inflight = 1
+
+        dispatcher.pause_inflight(1)
+        await asyncio.sleep(0)
+        dispatcher.resume_paused()
+        dispatcher.pause_inflight(1)
+        assert dispatcher.current_inflight == 0 and task in dispatcher.paused
+        first_answer.set()
+        while dispatcher.pausing:
+            await asyncio.gather(*dispatcher.pausing.values())
+        assert sent == [("a0", True), ("a0", False), ("a0", True)]
+        assert dispatcher.current_inflight == 0 and task in dispatcher.paused
+
+    asyncio.run(run())

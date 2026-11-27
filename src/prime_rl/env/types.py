@@ -38,6 +38,20 @@ class CancelResponse(BaseResponse):
     """Whether a live run was found and aborted."""
 
 
+class PauseRequest(BaseRequest):
+    """Pause or resume an in-flight run by its wire ``request_id``. A paused run sends no
+    new model call until it resumes (``verifiers.v1.pause``)."""
+
+    method: ClassVar[str] = "pause"
+    request_id: str
+    paused: bool
+
+
+class PauseResponse(BaseResponse):
+    found: bool = False
+    """Whether a live run was found."""
+
+
 class TrainRequest(BaseModel):
     """What a train rollout needs beyond the rollout itself: the source's algorithm, whose
     rollout-local scoring runs in the worker before it keeps the episode's samples."""

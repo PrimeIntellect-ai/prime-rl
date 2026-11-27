@@ -18,6 +18,7 @@ from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.delta import DeltaStreamer
 from verifiers.v1.env import RunSlot
 from verifiers.v1.episode import Episode, GroupInfo
+from verifiers.v1.pause import Pause
 from verifiers.v1.restore import arm_hold_watchdogs, release_all, restore_entry, save_all
 from verifiers.v1.runtimes import PrimeBackend, Snapshot
 from verifiers.v1.task import Task
@@ -34,6 +35,8 @@ from prime_rl.env.types import (
     DiscardRequest,
     DiscardResponse,
     HealthResponse,
+    PauseRequest,
+    PauseResponse,
     RestoreRef,
     RunRequest,
     RunResponse,
@@ -229,6 +232,9 @@ class EnvWorker:
         # The slot of each run in flight by wire request_id, so a `save` can tell which
         # run a restore point continues.
         self._slots: dict[str, RunSlot] = {}
+        # The pause switch of each run in flight by wire request_id, made by whichever
+        # comes first: the run, or a `pause` that overtook it.
+        self._pauses: dict[str, Pause] = {}
         # Episodes the hook kept, by run request, until their reply is sent.
         self._kept: dict[bytes, tuple[EpisodeHook, Episode]] = {}
         # Train sources' algorithms by config, for their rollout-local work on episodes.
@@ -296,6 +302,7 @@ class EnvWorker:
             slot = RunSlot(task, id=episode_id, restore=trace)
         else:
             (slot,) = self.env.slots(task)
+        slot.pause = self._pauses.setdefault(request_id.decode(), slot.pause)
 
         async def send_delta(delta: dict) -> None:
             if not req.live and (delta := progress_delta(delta)) is None:
@@ -417,6 +424,7 @@ class EnvWorker:
                     response = await self._run(RunRequest.model_validate(raw), client_id, request_id)
                 finally:
                     self._running.pop(request_id.decode(), None)
+                    self._pauses.pop(request_id.decode(), None)
             elif route == "cancel":
                 target = CancelRequest.model_validate(raw).request_id
                 running = self._running.get(target)
@@ -432,6 +440,16 @@ class EnvWorker:
                     hook, episode = kept
                     hook.discard(episode)
                 response = CancelResponse(cancelled=running is not None)
+            elif route == "pause":
+                req = PauseRequest.model_validate(raw)
+                found = req.request_id in self._running
+                if found:
+                    pause = self._pauses.setdefault(req.request_id, Pause())
+                    if req.paused:
+                        pause.pause()
+                    else:
+                        pause.resume()
+                response = PauseResponse(found=found)
             elif route == "save":
                 response = await self._save(SaveRequest.model_validate(raw))
             elif route == "release":

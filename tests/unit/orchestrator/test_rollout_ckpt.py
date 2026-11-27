@@ -170,7 +170,7 @@ def test_open_work_round_trips_through_the_checkpoint_file(tmp_path):
         task_hash=task.hash,
         error=vf.Error(type="Boom", message="failed"),
     )
-    cancellation = GroupCancellation(kind="train", env_name="test", group_id="gc", step=2, count=2, reason="overload")
+    cancellation = GroupCancellation(kind="train", env_name="test", group_id="gc", step=2, count=2, reason="superseded")
     # A result the orchestrator has not taken yet still holds the record it logs on arrival.
     queued = recorded_head(whole_episode([trace()], group="gq"))
     record = queued._record

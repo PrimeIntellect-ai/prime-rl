@@ -35,6 +35,8 @@ from prime_rl.env.types import (
     DiscardResponse,
     HealthRequest,
     HealthResponse,
+    PauseRequest,
+    PauseResponse,
     RecordRequest,
     ReleaseRequest,
     RunRequest,
@@ -283,6 +285,14 @@ class EnvClient:
         if response.record is not None:
             head._record = EpisodeRecord(json=response.record, index=response.index or {})
         return head
+
+    async def pause(self, request_id: str, paused: bool, timeout: float | None = 30.0) -> bool:
+        """Pause or resume the run named ``request_id``: a paused run sends no new model
+        call until it resumes. Returns whether the run was still in flight."""
+        response = await self._request(
+            PauseRequest(request_id=request_id, paused=paused), PauseResponse, timeout=timeout
+        )
+        return response.found
 
     async def save(self, directory: str, timeout: float | None = None) -> SaveResponse:
         """Take a memory checkpoint of every rollout running on the pool's workers, each

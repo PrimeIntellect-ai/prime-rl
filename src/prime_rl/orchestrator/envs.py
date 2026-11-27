@@ -83,6 +83,8 @@ class Env:
         self._env_clients: list[EnvClient] = []
         self._in_flight: list[int] = []
         """Runs in flight per replica, to route each run to the least loaded one."""
+        self._replica_of: dict[str, int] = {}
+        """The replica of each run in flight by ``request_id``, for ``pause``."""
         self.orphan_snapshots: list[dict] = []
         self.late_restores: list[RestoreRef] = []
         self.save_skipped: Counter[str] = Counter()
@@ -160,6 +162,8 @@ class Env:
             sampling = sampling.model_copy(update={"cache_salt": cache_salt})
         replica = min(range(len(self.env_clients)), key=self._in_flight.__getitem__)
         self._in_flight[replica] += 1
+        if request_id is not None:
+            self._replica_of[request_id] = replica
         try:
             return await self.env_clients[replica].run(
                 task_data=task_data,
@@ -178,6 +182,16 @@ class Env:
             )
         finally:
             self._in_flight[replica] -= 1
+            if request_id is not None:
+                self._replica_of.pop(request_id, None)
+
+    async def pause(self, request_id: str, paused: bool) -> bool:
+        """Pause or resume the run named ``request_id`` (``EnvClient.pause``). Returns
+        whether the run was still in flight."""
+        replica = self._replica_of.get(request_id)
+        if replica is None:
+            return False
+        return await self.env_clients[replica].pause(request_id, paused)
 
     def train_request(self) -> TrainRequest | None:
         """What a train run's worker needs to keep its samples; None for eval."""
