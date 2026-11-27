@@ -110,9 +110,10 @@ from prime_rl.utils.pathing import (
 from prime_rl.utils.utils import clean_exit
 
 
-def sparse_head_backward(micro_batch: TensorMicroBatch) -> bool:
+def sparse_head_backward(micro_batch: TensorMicroBatch, cp_rank: int = 0, cp_size: int = 1) -> bool:
     """Whether the LM head may skip its dense softmax backward: only rl tokens carry gradient (no ce / ref_kl
-    stream), and each is replayed against a support holding its label."""
+    stream), and each is replayed against a support holding its label. Under CP a rank's LM head only sees the
+    labels of its own shard, so it checks only those tokens."""
     if (
         micro_batch["support_offsets"] is None
         or micro_batch["ce_weights"] is not None
@@ -125,8 +126,13 @@ def sparse_head_backward(micro_batch: TensorMicroBatch) -> bool:
     rl_tokens = micro_batch["loss_mask"][0]
     if micro_batch["rl_weights"] is not None:
         rl_tokens = rl_tokens & (micro_batch["rl_weights"][0] != 0)
-    replay = support_replay_mask(support, micro_batch["input_ids"][0], support.row_index())
-    return bool(replay[rl_tokens].all())
+    tokens = micro_batch["input_ids"][0]
+    # The labels of shard r are the tokens one past its positions.
+    shard_len = tokens.numel() // cp_size
+    start, end = cp_rank * shard_len + 1, min((cp_rank + 1) * shard_len + 1, tokens.numel())
+    support = support.rows(start, end)
+    replay = support_replay_mask(support, tokens[start:end], support.row_index())
+    return bool(replay[rl_tokens[start:end]].all())
 
 
 class ForwardBackwardResult(NamedTuple):
@@ -238,9 +244,17 @@ def train(config: TrainerConfig):
     # A custom loss may put gradient on any token, so only the built-in losses take the sparse head backward
     sparse_backward_allowed = config.loss.type != "custom"
 
+    prep_cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if parallel_dims.cp_enabled else 0
+
     def prepare(micro_batch: TensorMicroBatch) -> TensorMicroBatch:
         micro_batch = prepare_micro_batch(micro_batch, materialize_images)
-        micro_batch["sparse_head_backward"] = sparse_backward_allowed and sparse_head_backward(micro_batch)
+        micro_batch["sparse_head_backward"] = sparse_backward_allowed and sparse_head_backward(
+            micro_batch, prep_cp_rank, parallel_dims.cp
+        )
+        # Pinned here, on the worker thread, so the training loop copies the support to the GPU without blocking.
+        for key in ("support_ids", "support_logprobs", "support_replayed"):
+            if micro_batch[key] is not None:
+                micro_batch[key] = micro_batch[key].pin_memory()
         return micro_batch
 
     micro_batch_workers = WorkerPool(config.data.num_workers)
@@ -461,7 +475,7 @@ def train(config: TrainerConfig):
                     replayed=micro_batch["support_replayed"],
                     logprobs=micro_batch["support_logprobs"],
                     sparse_backward=micro_batch["sparse_head_backward"],
-                ).to("cuda")
+                ).to("cuda", non_blocking=True)
                 label_support = support.shift_left()
             if score_centering:
                 vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
