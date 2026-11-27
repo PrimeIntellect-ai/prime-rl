@@ -278,6 +278,13 @@ def test_head_logits_are_fp32_from_bf16_operands(head):
             torch.testing.assert_close(grad.float(), expected_grad, atol=1e-2, rtol=3e-2)
 
 
+@pytest.mark.parametrize("head", [VanillaOutputLinear(8, 12), FusedOutputLinear(8, 12, chunk_size=4)])
+def test_num_logits_leaves_out_the_padding_rows(head):
+    assert head.num_logits == 12
+    head.unpadded_vocab_size = 10
+    assert head.num_logits == head.projection_weight().shape[0] == 10
+
+
 def test_fused_lm_head_requires_labels():
     """Test that FusedOutputLinear raises assertion error when labels is None."""
     torch.manual_seed(0)

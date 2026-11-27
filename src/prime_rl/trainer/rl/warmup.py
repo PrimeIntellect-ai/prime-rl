@@ -58,7 +58,7 @@ def synthetic_micro_batch(
     """A micro batch with no token in any loss component, so it trains nothing, like a dropped micro batch. It
     carries the inputs that the trainer config makes real micro batches carry."""
     num_tokens = sum(doc_lens)
-    vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
+    vocab_size = model.lm_head.num_logits
     micro_batch = TensorMicroBatch(
         input_ids=torch.randint(0, vocab_size, (1, num_tokens), generator=generator),
         position_ids=torch.cat([torch.arange(doc_len) for doc_len in doc_lens]).unsqueeze(0),

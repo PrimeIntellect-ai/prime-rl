@@ -103,6 +103,11 @@ class _OutputLinear(torch.nn.Linear):
     # Checkpoints may store padding rows above the sampler's vocabulary.
     unpadded_vocab_size: int | None = None
 
+    @property
+    def num_logits(self) -> int:
+        """The size of the distribution the head gives: its rows without the padding rows."""
+        return self.out_features if self.unpadded_vocab_size is None else self.unpadded_vocab_size
+
     def projection_weight(self) -> Tensor:
         if self.unpadded_vocab_size is None:
             return self.weight
