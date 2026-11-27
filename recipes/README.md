@@ -38,6 +38,7 @@ checkpointing and activation offloading.
 | [DeepSeek-V4-Flash](deepseek-v4-flash-0731/rl.toml) | 4 | | | | not tested in this layout; FP8 trainer and inference, also on B300 (MXFP8) |
 | [Nemotron 3.5 Super](nemotron-3.5-super/rl.toml) | 4 | | | | not tested in this layout |
 | [Inkling 2 Small](inkling-2-small/rl.toml) | 6 | 20.3k tok/s | 424 tok/s | 107.6 GiB allocated | real weights, FP8 routed experts, full offload, Sign-SGD, no activation offloading; RL not tested in this layout |
+| [Inkling 2 Mini](inkling-2-mini/rl.toml) | 1 | 7.0k tok/s | 873 tok/s | 59.8 GiB allocated | real weights, AdamW, no activation offloading |
 
 "Reserved" includes PyTorch's allocator cache, so real use is lower; "allocated" is the peak of
 live tensors (`perf/peak_allocated_memory`). Both include memory outside the allocator (NCCL, CUDA
@@ -82,6 +83,7 @@ Real weights, `data/swe.toml` (batch 128, group 8), steady steps after warm-up:
 | Qwen3.8 Flash Next | 3 (cp 8) + 3 (DEP8), 768 episodes in flight | 15-35 min (median ~21) | ~85% | 1.5-4k tok/s | 98 GiB | 0.0035 |
 | Nemotron 3 Super | 2 (cp 8, no AC offload) + 4 (DEP8) | 5-6.5 min | ~75% | 3.5k tok/s | 105 GiB | 0.0005 |
 | Qwen3.8 27B | 1 (cp 8, no AC offload) + 1 (TP2 × DP4) | 1-2.5 h | 85-90% | 3k tok/s | 52 GiB | 0.0001 |
+| Inkling 2 Mini | 1 (cp 8, no AC offload) + 1 (DP8) | 4.5-6 min | 64-80% | 3.5k tok/s | 67 GiB | 0.0005 |
 
 The hybrid linear-attention and Mamba models decode several times slower per inference node than
 Muse, so their trainers wait for rollouts most of each step; they need more inference nodes per
@@ -111,6 +113,20 @@ Inkling 2 Small (TP8 + EP, online FP8 experts, 32k window, one node, synthetic a
 | 32 / 2,048 / 0.72 (source config) | 242k tokens | 1.4k tok/s, 23 s | – |
 | 256 / 8,192 / 0.85 | 97k tokens | 2.4k tok/s, 10 s | collapses (1.0k at 256) |
 | **128 / 4,096 / 0.85** | 201k tokens | 2.5k tok/s, 10 s | 2.5k tok/s, 16 s |
+
+Inkling 2 Mini (bf16 experts, 270k window, 128 seqs / 4,096 batched tokens / 0.85, routed experts
+returned as for router replay, one node, synthetic agentic load):
+
+| Layout | KV cache per node | 256 sessions | 512 sessions |
+|---|---|---|---|
+| **DP8 (8 engines of 1 GPU)** | 9.2M tokens | 5.8k tok/s, 8 s | 4.3k tok/s, 20 s |
+| TP2 × DP4 | 9.0M tokens | 5.3k tok/s, 9 s | 4.7k tok/s, 18 s |
+| DEP8 | 14.4M tokens | 3.5k tok/s, 15 s | 5.0k tok/s, 22 s |
+
+At 512 sessions the DP8 and TP2 caches fill: prefix-cache hits fall and the engines re-prefill whole
+contexts. TP2 holds about as much KV per node as DP8, since its short-convolution pages outgrow the
+attention pages. On `main` the plugin loads Mini only at TP1 (vLLM rejects the unfilled alignment
+shard of the fused `qkvr` weight); the TP2 row ran with that shard filled locally.
 
 ## Fit a trainer
 
