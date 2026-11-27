@@ -30,6 +30,23 @@ staging_buffers_count = 2          # overlap the next read with the current inst
 - P/D deployments update like the other transports: prefill and decode GPUs form one transfer group. Each update pauses the prefill engines first, since a prefill engine's pause waits until decode has pulled the KV it holds, then the decode engines, installs the version on all of them and resumes them.
 - With speculative decoding, MX updates the target model and the draft keeps its own weights; a drafter that shares the target's embedding or LM head reads the updated ones. A draft swap (`[orchestrator.speculative_decoding] draft`, changed live) loads from disk at the next update, after the target is installed and before inference resumes.
 
+## Verifying updates
+
+`tools/check_weight_update_bit_exact.py` checks that updates install exactly what vLLM's own loader produces:
+
+1. An engine cold-loads `MODEL_DIR`, a checkpoint holding the trainer's initial weights W0. The per-tensor digests it then reports (`GET /weight_fingerprint/model?buffers=true`: parameters, buffers and bare tensors such as fused or post-processed copies) are the reference.
+2. The trainer loads the same checkpoint and checks that its weights, converted back, equal it bit for bit.
+3. Instead of optimizer steps, the trainer publishes W0, W0 + D1, W0, W0 + D2 and W0 through the real transport, where D1 and D2 are seeded perturbations of every floating-point tensor it publishes. After each install the engine's digests are compared with the reference: every W0 install must restore every engine tensor bit for bit, and every perturbed install must change every floating-point engine parameter.
+
+A pass shows that each update is installed, and that the install reproduces the loader's result for the same trainer weights, including fused, permuted and post-processed tensors (such as Mamba's `A = -exp(A_log)`) and dtypes. It runs no forward pass, and integer tensors are not perturbed, so they are only checked for equality.
+
+```bash
+uv run python tools/check_weight_update_bit_exact.py MODEL_DIR OUTPUT_DIR \
+  --trainer-gpus 0,1 --inference-gpus 2,3 --vllm '{"max_model_len": 4096}'
+```
+
+`--trainer-gpus` sets the FSDP ranks, `--inference-gpus` the engine's tensor parallelism, `--transport filesystem` checks the filesystem transport instead, and `OUTPUT_DIR/report.json` lists every mismatching tensor by version. The integration test `tests/integration/test_modelexpress_bit_exact.py` runs the check on a tiny checkpoint of every architecture in the vLLM parity test, on two GPUs; cases that fail today are strict xfails that name the fix they wait for.
+
 ## Limitations
 
 LoRA and Dynamo discovery are rejected at config validation. Pipeline parallelism is untested.

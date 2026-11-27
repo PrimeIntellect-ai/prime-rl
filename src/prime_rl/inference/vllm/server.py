@@ -107,10 +107,10 @@ async def update_draft_weights(request: Request):
 
 
 @admin_router.get("/weight_fingerprint/{target}")
-async def weight_fingerprint(request: Request, target: Literal["model", "draft"]):
+async def weight_fingerprint(request: Request, target: Literal["model", "draft"], buffers: bool = False):
     # vLLM's public collective RPC discards all but the first DP engine's result.
     results = await engine_client(request).engine_core.call_utility_all_async(
-        "collective_rpc", "get_weight_fingerprint", None, (), {"target": target}
+        "collective_rpc", "get_weight_fingerprint", None, (), {"target": target, "buffers": buffers}
     )
     return {"results": [worker for engine in results for worker in engine]}
 
