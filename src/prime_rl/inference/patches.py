@@ -23,6 +23,7 @@ def apply_shared_vllm_patches():
     monkey_patch_routed_experts_with_pd_connectors()
     monkey_patch_clamp_kv_offload_loads_for_routed_experts()
     monkey_patch_routed_experts_cut_loaded_prefix_hits()
+    monkey_patch_routed_experts_layer_visits()
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_strip_routed_experts_from_chat()
     monkey_patch_skip_prompt_routing_for_chat()
@@ -1074,6 +1075,28 @@ def monkey_patch_routed_experts_cut_loaded_prefix_hits():
     _get_local_prefix_cache_hit._prime_rl_routed_experts_cut = True
     Scheduler.__init__ = __init__
     Scheduler._get_local_prefix_cache_hit = _get_local_prefix_cache_hit
+
+
+def monkey_patch_routed_experts_layer_visits():
+    """Size the routed-experts capture buffer by layer visits when a model defines them.
+
+    The buffer has one row per hidden layer. A looped model (Inkling 2 Mini) runs some layers several
+    times and routes anew each time, so its text config exposes ``num_layer_visits`` and its MoE layers
+    capture to one row per visit.
+    """
+    from vllm.model_executor.layers.fused_moe import routed_experts_capturer
+
+    original = routed_experts_capturer._get_routed_experts_shape
+    if getattr(original, "_prime_rl_layer_visits", False):
+        return
+
+    def _get_routed_experts_shape(vllm_config):
+        num_layers, num_experts, num_experts_per_tok = original(vllm_config)
+        num_visits = getattr(vllm_config.model_config.hf_text_config, "num_layer_visits", None)
+        return num_visits or num_layers, num_experts, num_experts_per_tok
+
+    _get_routed_experts_shape._prime_rl_layer_visits = True
+    routed_experts_capturer._get_routed_experts_shape = _get_routed_experts_shape
 
 
 def monkey_patch_strip_routed_experts_from_chat():

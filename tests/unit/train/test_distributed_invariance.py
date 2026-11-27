@@ -26,6 +26,7 @@ import re
 import sys
 import time
 import traceback
+from collections import defaultdict
 from collections.abc import Callable
 from pathlib import Path
 
@@ -79,6 +80,9 @@ FULL_SUITE_CASES = [
     Case("glm_moe_dsa-ep2", "glm_moe_dsa", ep=2),
     Case("glm_moe_dsa-cp2_ep2", "glm_moe_dsa", cp=2, ep=2),
     Case("glm5_next-cp2_ep2", "glm5_next", cp=2, ep=2),
+    # Inkling 2's compiled flex attention does not run under activation offloading
+    Case("inkling2_loop-ep2", "inkling2_loop", ep=2, overrides={"ac_offloading": None}),
+    Case("inkling2_loop-ep2-compile", "inkling2_loop", ep=2, compile=True, overrides={"ac_offloading": None}),
 ]
 SUITES = {"tiny": CASES, "full": FULL_SUITE_CASES}
 TIMEOUTS = {"tiny": 5 * 60, "full": 20 * 60}
@@ -90,22 +94,32 @@ COMPILE_TOLERANCES = {"loss": 1e-4, "grad_norm": 3e-3, "grad": 1e-1}
 
 
 def record_routing(model: torch.nn.Module) -> Callable[[], torch.Tensor | None]:
-    """Hooks every MoE router of `model`. The returned function gives the experts the routers picked in the last
-    forward, as the `[1, seq, layers, top_k]` tensor that `routed_experts` takes, or None for a dense model."""
+    """Return expert picks as `[1, seq, layer visits, top_k]`, including repeated loop visits."""
+    language_model = get_language_model(model)
+    visits_of_layer = getattr(language_model.config, "layer_visit_ids", lambda layer: (layer,))
+    num_visits = getattr(language_model.config, "num_layer_visits", len(language_model.layers))
     picked: dict[int, torch.Tensor] = {}
+    calls: dict[int, int] = defaultdict(int)
+
+    def record(layer: int):
+        def hook(module, args, output):
+            picked[visits_of_layer(layer)[calls[layer]]] = output[1]
+            calls[layer] += 1
+
+        return hook
+
     for name, module in model.named_modules():
         if isinstance(module, TokenChoiceTopKRouter):
-            layer = int(re.search(r"layers\.(\d+)\.", name).group(1))
-            module.register_forward_hook(lambda module, args, output, layer=layer: picked.__setitem__(layer, output[1]))
-    num_layers = len(get_language_model(model).layers)
+            module.register_forward_hook(record(int(re.search(r"layers\.(\d+)\.", name).group(1))))
 
     def routing() -> torch.Tensor | None:
+        calls.clear()
         if not picked:
             return None
         num_tokens, top_k = next(iter(picked.values())).shape
-        routed_experts = torch.zeros(1, num_tokens, num_layers, top_k, dtype=torch.long)
-        for layer, experts in picked.items():
-            routed_experts[0, :, layer] = experts.cpu()
+        routed_experts = torch.zeros(1, num_tokens, num_visits, top_k, dtype=torch.long)
+        for visit, experts in picked.items():
+            routed_experts[0, :, visit] = experts.cpu()
         return routed_experts
 
     return routing

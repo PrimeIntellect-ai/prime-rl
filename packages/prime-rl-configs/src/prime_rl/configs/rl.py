@@ -25,6 +25,7 @@ from prime_rl.configs.shared import (
 from prime_rl.configs.trainer import (
     InitConfig,
     NVFP4MoEComputeConfig,
+    RemoteCheckpointConfig,
     TokenizerConfig,
     TrainerConfig,
 )
@@ -105,6 +106,9 @@ class SharedCheckpointConfig(BaseConfig):
 
     async_save: bool | None = None
     """Write trainer checkpoints in the background (see ``trainer.ckpt.async_save``). If None, uses the trainer's default."""
+
+    remote: RemoteCheckpointConfig | None = None
+    """Mirror the trainer checkpoints to an object store (see ``trainer.ckpt.remote``)."""
 
 
 class SharedModelConfig(BaseConfig):
