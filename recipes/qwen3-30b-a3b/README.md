@@ -1,6 +1,6 @@
 # Qwen3-30B-A3B
 
-RL on the 30B-A3B MoE across three domains: math, SWE, and agentic tool use. The Thinking checkpoint trains math and SWE; the tool config trains the Instruct checkpoint with colocated tools on Prime Intellect Sandboxes. All configs use the custom MoE trainer implementation with expert parallelism (`ep = 8`), the AdamW optimizer, NCCL weight broadcast, and W&B logging. `swe.toml` adds `cp = 2` context parallelism for its 131k context; the other two run at 32k.
+RL on the 30B-A3B MoE across three domains: math, SWE, and agentic tool use. The Thinking checkpoint trains math and SWE; the tool config trains the Instruct checkpoint with colocated tools on Prime Intellect Sandboxes. All configs use the custom MoE trainer implementation with expert parallelism (`ep = 8`), the AdamW optimizer, ModelExpress weight broadcast, and W&B logging. `swe.toml` adds `cp = 2` context parallelism for its 131k context; the other two run at 32k.
 
 | Config | Trains on | Evals on | Runtime | Topology |
 |---|---|---|---|---|

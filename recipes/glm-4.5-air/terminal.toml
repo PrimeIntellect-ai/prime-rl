@@ -12,6 +12,12 @@ partition = "all"
 # Clean up this run's orphaned prime sandboxes before launch (hardcoded label, matches the harness labels below).
 pre_run_command = 'timeout 120 prime sandbox delete --label "glm45air-terminal" -y || true'
 
+[weight_broadcast]
+type = "modelexpress"
+# Each inference GPU stages at most 2 x 4 GiB of an update instead of a full copy of its shard.
+staging_buffer_bytes = 4294967296
+staging_buffers_count = 2
+
 [deployment]
 type = "multi_node"
 num_train_nodes = 2
