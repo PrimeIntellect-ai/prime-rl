@@ -1,13 +1,25 @@
 import torch
 import torch.distributed as dist
 
+from prime_rl.utils.device import DEVICE_TYPE, DIST_BACKEND, device_module
+
 MAX_COLLECTIVE_BYTES = 256 * 1024**2
 
 
+def accelerator_collective_device(group: dist.ProcessGroup | None) -> torch.device | None:
+    """The accelerator ``group``'s collectives run on, or None when they take CPU tensors.
+
+    An XPU default group initialized without a bound device reports its backend as "undefined",
+    though it runs XCCL alone.
+    """
+    backend = dist.get_backend(group)
+    if backend == DIST_BACKEND or (DEVICE_TYPE == "xpu" and backend == "undefined"):
+        return torch.device(DEVICE_TYPE, device_module.current_device())
+    return None
+
+
 def _collective_device(group: dist.ProcessGroup | None) -> torch.device:
-    if dist.get_backend(group) == "nccl":
-        return torch.device("cuda", torch.cuda.current_device())
-    return torch.device("cpu")
+    return accelerator_collective_device(group) or torch.device("cpu")
 
 
 def _validate_size(size: int, max_bytes: int) -> None:
