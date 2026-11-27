@@ -40,7 +40,7 @@ from prime_rl.trainer.ckpt_sync import METADATA_FILE, get_remote_steps, remove_r
 from prime_rl.trainer.data import with_workers
 from prime_rl.trainer.lora import has_lora_layers
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-from prime_rl.trainer.models.conversion_ops import view_mapping
+from prime_rl.trainer.models.conversion_ops import tensor_mapping
 from prime_rl.trainer.models.fusions import (
     get_model_packed_parameters,
     join_loaded_optimizer_state_for_runtime,
@@ -719,15 +719,15 @@ class CheckpointManager:
         dcp_save(staging.wait(), storage_writer=writer, process_group=self.write_group)
 
     def _save_mapping(self, path: Path, model: nn.Module) -> None:
-        """Write the prime -> HF conversion of the saved model weights as views, so a reader can
-        serve the checkpoint in HF names without converting it."""
+        """Write the prime -> HF conversion of the saved model weights as views and concatenations of
+        views, so a reader can serve the checkpoint in HF names without converting it."""
         if not isinstance(model, PreTrainedModelPrimeRL) or has_lora_layers(model):
             self.logger.info("Not writing mapping.json: only full-weight PrimeRL models declare their HF conversion")
             return
         shapes = {key: value.shape for key, value in get_model_state_dict(model).items()}
-        tensors = view_mapping(model.conversion_chain(model.config), shapes)
+        tensors = tensor_mapping(model.conversion_chain(model.config), shapes)
         if tensors is None:
-            self.logger.info("Not writing mapping.json: the conversion to HF is more than views")
+            self.logger.info("Not writing mapping.json: the conversion to HF is more than views and concatenations")
             return
         if self.world.is_master:
             path.mkdir(parents=True, exist_ok=True)
