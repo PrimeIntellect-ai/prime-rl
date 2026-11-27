@@ -477,7 +477,7 @@ def barrier_orchestrator(tmp_path, monkeypatch, events: list) -> Orchestrator:
     o.control_steps = set()
     o.progress = o.train_source = None
     o.config_state = lambda: {}
-    restore = RestoreRef(trace_id="t1", path=str(tmp_path / "t1.restore"), snapshot={"id": "s1"})
+    restore = RestoreRef(episode_id="e1", path=str(tmp_path / "e1.restore"), snapshots=[{"id": "s1"}])
 
     class Env:
         orphan_snapshots: list = []
