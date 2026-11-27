@@ -41,7 +41,7 @@ pytestmark = [
 TOOL = Path(__file__).parents[2] / "tools" / "check_weight_update_bit_exact.py"
 TIMEOUT = 1500
 
-MX_CAPTURE_FIX = "ai-dynamo/modelexpress#1089 (capture of linear-attention views, concatenated sources, epilogue replay)"
+MX_CAPTURE_FIX = "ai-dynamo/modelexpress#1089 (linear-attention views, concatenated sources, epilogue replay)"
 KNOWN_FAILURES = {
     "qwen3_5": MX_CAPTURE_FIX,
     "qwen3_5_moe": MX_CAPTURE_FIX,
@@ -49,7 +49,7 @@ KNOWN_FAILURES = {
     "nemotron_h": MX_CAPTURE_FIX,
     "gpt_oss": "#4804 (traceable interleave) and ai-dynamo/modelexpress#1089 (concatenated sources)",
     "inkling2": "#4804 (traceable interleave) and ai-dynamo/modelexpress#1089 (concatenated sources)",
-    "afmoe": "#4804 (fp32 router bias), #4814 (interim vLLM reload patches) and ai-dynamo/modelexpress#1089 (aliased bias)",
+    "afmoe": "#4804 (fp32 router bias), #4814 (vLLM reload patches) and ai-dynamo/modelexpress#1089 (aliased bias)",
     "laguna": "#4804 (fp32 router bias) and #4814 (interim vLLM reload patches)",
     "minimax_m2": "#4804 (fp32 router bias) and #4814 (interim vLLM reload patches)",
 }
