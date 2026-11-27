@@ -56,6 +56,19 @@ class PrefillScorer:
             await self._client.close()
 
 
+class ModelScorer:
+    """Prefill-scores token ids under one model of one endpoint."""
+
+    def __init__(self, config: vf.ClientConfig, model: str) -> None:
+        self.config = config
+        self.model = model
+        self._scorer = PrefillScorer()
+
+    async def score(self, token_ids: list[int]) -> list[float]:
+        """One logprob per token, 0.0 for the leading token."""
+        return await self._scorer.score(self.config, self.model, token_ids)
+
+
 # Concurrent session releases per endpoint. The release client has one connection per slot, so
 # requests never wait in httpx's pool, where a pool timeout can leak connections for good
 # (encode/httpcore#1099). A release that waits longer than the queue timeout for a slot is
@@ -160,6 +173,10 @@ class InferenceClient:
         }
 
 
+# An engine-wide update must not stall on a stale connection from an earlier request.
+ENGINE_ADMIN_LIMITS = httpx.Limits(max_connections=4, max_keepalive_connections=0)
+
+
 class AdminPlane:
     """Admin plane of the policy inference deployment: one httpx client per
     engine process. The router serves no admin routes (pause/resume,
@@ -181,7 +198,7 @@ class AdminPlane:
     """Runs after each policy transfer while the engines are still paused (a draft swap)."""
 
     def __init__(self, client_config: ClientConfig, roles: list[str | None] | None = None):
-        self.clients = setup_admin_clients(client_config, send_admin_token=True)
+        self.clients = setup_admin_clients(client_config, limits=ENGINE_ADMIN_LIMITS, send_admin_token=True)
         self.roles = roles
         # When admin URLs bypass a router, also health-check the client-facing
         # (router) endpoint - it only starts serving once its workers are healthy.
@@ -250,7 +267,7 @@ class AdminPlane:
         self,
         weight_dir: Path | None,
         *,
-        transport: Literal["filesystem", "nccl", "nixl"],
+        transport: Literal["filesystem", "nccl"],
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
     ) -> None:
@@ -327,6 +344,8 @@ class AdminPlane:
             for result in results:
                 if isinstance(result, BaseException):
                     raise result
+            if self.after_transfer is not None:
+                await self.after_transfer()
             resume_times = await _resume_engines(self.clients)
             self.update_times = {"pause": pause_times, "transfer": results, "resume": resume_times}
 
@@ -681,38 +700,6 @@ async def load_lora_adapter(admin_plane: AdminPlane, lora_name: str, lora_path: 
         response.raise_for_status()
 
     await asyncio.gather(*[_load_lora_adapter(client) for client in admin_plane.clients])
-
-
-async def init_nixl_broadcast(
-    admin_plane: AdminPlane,
-    host: str,
-    port: int,
-    timeout: int,
-    inference_world_size: int,
-    session_id: str,
-) -> None:
-    """Configure every vLLM worker for NIXL + ModelExpress pulls."""
-    admin_clients = admin_plane.clients
-    workers_per_server = inference_world_size // len(admin_clients)
-
-    async def initialize(admin_client: AsyncClient, rank_offset: int) -> None:
-        await _admin_post(
-            admin_client,
-            "/init_broadcaster",
-            timeout_s=max(ADMIN_TIMEOUT_S, timeout),
-            json={
-                "host": host,
-                "port": port,
-                "rank_offset": rank_offset,
-                "inference_world_size": inference_world_size,
-                "timeout": timeout,
-                "session_id": session_id,
-            },
-        )
-
-    await asyncio.gather(
-        *[initialize(admin_client, index * workers_per_server) for index, admin_client in enumerate(admin_clients)]
-    )
 
 
 async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]) -> list[float]:

@@ -103,6 +103,26 @@ def test_modelexpress_worker_uses_stage_apply_release(fail_install):
     assert calls == ["stage", "apply", "release"]
 
 
+def test_modelexpress_worker_initializes_once_per_worker_id():
+    from prime_rl.inference.vllm.worker.modelexpress import ModelExpressWeightUpdateWorker
+
+    closed = []
+    running = SimpleNamespace(worker_id="session-7:0", close=lambda: closed.append(True))
+    worker = ModelExpressWeightUpdateWorker()
+    worker.rank = 0
+    worker._generator = running
+
+    # The same worker id keeps the running client without touching the engine.
+    worker.init_broadcaster("trainer", 8001, 0, 1, 60, "session-7")
+    assert worker._generator is running and not closed
+
+    # A new worker id closes the running client before initializing another one from the engine.
+    worker.model_runner = SimpleNamespace()
+    with pytest.raises(AttributeError, match="model_config"):
+        worker.init_broadcaster("trainer", 8001, 0, 1, 60, "session-8")
+    assert closed == [True]
+
+
 def test_modelexpress_worker_forwards_generator_buffer_config():
     source = ast.parse((ROOT / "src/prime_rl/inference/vllm/worker/modelexpress.py").read_text())
     config = next(
@@ -183,3 +203,44 @@ def test_modelexpress_installation_outcome_reaches_non_master_without_shared_sto
     assert calls == ([(0, "release"), (0, "barrier"), (1, "release"), (1, "barrier")] if outcome == "success" else [])
     if errors:
         assert errors[1] == "Inference weight installation failed on trainer rank zero"
+
+
+def test_integer_parameters_keep_their_values_through_a_layerwise_reload():
+    """DeepSeek-V4's hash gate: an integer routing table beside a float weight, which the routed experts alias.
+
+    ModelExpress refits through vLLM's layerwise reload and writes only floating-point tensors. After the conversion,
+    the table is outside the parameters a refit must cover, the reload installs the new float weight, and the table
+    (and the experts' alias of it) keeps the values loaded at startup.
+    """
+    import torch
+    from torch import nn
+    from vllm.model_executor.model_loader.reload.layerwise import (
+        finalize_layerwise_reload,
+        initialize_layerwise_reload,
+        record_metadata_for_reloading,
+    )
+
+    from prime_rl.inference.vllm.worker.modelexpress import keep_integer_parameters_as_buffers
+
+    gate = nn.Module()
+    gate.weight = nn.Parameter(torch.zeros(4, 8), requires_grad=False)
+    gate.tid2eid = nn.Parameter(torch.arange(12).reshape(6, 2), requires_grad=False)
+    experts = nn.Module()
+    object.__setattr__(experts, "hash_indices_table", gate.tid2eid)
+    model = nn.Module()
+    model.gate, model.experts = gate, experts
+    table = gate.tid2eid.detach().clone()
+    record_metadata_for_reloading(model)
+
+    assert keep_integer_parameters_as_buffers(model) == ["gate.tid2eid"]
+    assert [name for name, _ in model.named_parameters()] == ["gate.weight"]
+    assert "tid2eid" in gate._non_persistent_buffers_set
+    assert experts.hash_indices_table is gate.tid2eid and not isinstance(experts.hash_indices_table, nn.Parameter)
+
+    initialize_layerwise_reload(model)
+    gate.weight.weight_loader(gate.weight, torch.ones(4, 8))
+    finalize_layerwise_reload(model, model_config=None)
+
+    assert torch.equal(gate.weight, torch.ones(4, 8))
+    assert torch.equal(gate.tid2eid, table)
+    assert experts.hash_indices_table is gate.tid2eid

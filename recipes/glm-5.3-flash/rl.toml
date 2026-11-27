@@ -1,0 +1,35 @@
+# GLM-5.3 Flash (288-expert MoE, hybrid linear attention + DSA) RL at 256k context.
+# Model settings only: compose it with a compute overlay from `gpu/` and a data config from
+# `recipes/data/`:
+#
+#   uv run rl @ recipes/glm-5.3-flash/rl.toml @ recipes/glm-5.3-flash/gpu/h200.toml @ recipes/data/swe.toml
+#   uv run rl @ recipes/glm-5.3-flash/rl.toml @ recipes/glm-5.3-flash/gpu/h200.toml @ recipes/data/math.toml
+
+seq_len = 262144
+
+[slurm]
+
+[model]
+name = "zai-org/GLM-5.3-Flash-BF16"
+
+[weight_broadcast]
+type = "nccl"
+timeout = 12000
+
+[trainer]
+# The 8th and 9th expert scores are often near-tied, so vLLM and the trainer route ~15% of
+# token-layers differently. Without replay the mismatch KL stayed at 0.005-0.006 in ScaleSWE RL;
+# replaying vLLM's experts brings it to ~0.0004 on the same rollouts. Also turns on
+# inference.vllm.enable_return_routed_experts.
+enable_router_replay = true
+
+[trainer.optim]
+type = "muon"
+lr = 1e-6
+
+[inference.vllm]
+max_model_len = 262144
+tool_call_parser = "glm47"
+reasoning_parser = "glm45"
+# vLLM's KDA decode kernel puts num_seqs * 64 on a grid axis capped at 65535.
+max_num_seqs = 512

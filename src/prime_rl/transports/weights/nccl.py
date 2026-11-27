@@ -137,7 +137,7 @@ def resolve_dtensors(
 
     Only DTensors are touched, since only they need gathering. A buffer is never sharded, so it
     goes on the wire in whatever dtype it already holds and its fp32 declaration, if it has one,
-    is never consulted. TODO: NIXL transport does not use this function; unify logic.
+    is never consulted.
     """
     for key, value in list(state_dict.items()):
         if isinstance(value, DTensor):
@@ -156,11 +156,7 @@ def preprocess_layer_checkpoint(
         return layer_state_dict
     if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(layer_state_dict):
         model.convert_layer_to_hf(layer_state_dict, layer_idx)
-        return layer_state_dict
-
-    from transformers.core_model_loading import revert_weight_conversion
-
-    return revert_weight_conversion(model, layer_state_dict)
+    return layer_state_dict
 
 
 class NCCLBroadcaster:

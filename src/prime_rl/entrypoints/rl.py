@@ -1,9 +1,7 @@
 import json
 import os
-import socket
 import sys
 import tempfile
-import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -19,11 +17,13 @@ from prime_rl.entrypoints.inference import (
     vllm_overrides_fragment,
     write_pd_configs,
 )
+from prime_rl.entrypoints.modelexpress_server import modelexpress_template_vars, start_modelexpress
 from prime_rl.entrypoints.slurm import load_slurm_template, submit_sbatch
 from prime_rl.utils.admin_token import AdminTokenUses, TokenUse
 from prime_rl.utils.config import check_mode, cli, dump_resolved_config, dump_rl_components
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
+    ckpt_output_dir,
     clean_future_steps,
     format_config_message,
     format_log_message,
@@ -46,7 +46,6 @@ from prime_rl.utils.process import (
     set_proc_title,
     torchrun_cmd,
 )
-from prime_rl.utils.utils import get_free_port
 
 RL_CONFIG = "rl.json"
 RL_SBATCH = "rl.sbatch"
@@ -57,9 +56,6 @@ INFERENCE_CONFIG = "inference.json"
 
 ENVS_DIR = "envs"
 ROLLOUT_STORE_DIR = Path(tempfile.gettempdir()) / "prime-rl-rollout-store"
-
-MODELEXPRESS_BIN_DIR = Path(__file__).resolve().parents[3] / "third_party" / "modelexpress" / "bin"
-MODELEXPRESS_READY_TIMEOUT_S = 120
 
 
 def env_worker_pools(config: RLConfig) -> list[tuple[str, EnvConfig]]:
@@ -111,75 +107,6 @@ def admin_token_uses(config: RLConfig) -> AdminTokenUses:
     )
 
 
-def wait_for_port(host: str, port: int, processes: ProcessGroup, name: str, timeout: float) -> None:
-    """Block until ``host:port`` accepts TCP connections; fail if ``name`` exits first."""
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            with socket.create_connection((host, port), timeout=1):
-                return
-        except OSError:
-            pass
-        if processes.stop_events[name].is_set():
-            raise RuntimeError(f"{name} exited before listening on {host}:{port}")
-        if time.monotonic() >= deadline:
-            raise TimeoutError(f"{name} did not listen on {host}:{port} within {timeout}s")
-        time.sleep(0.5)
-
-
-def start_modelexpress(processes: ProcessGroup, port: int, log_dir: Path, base_env: dict[str, str]) -> None:
-    """Start a run-scoped ModelExpress server backed by its own Redis."""
-    server, redis = MODELEXPRESS_BIN_DIR / "modelexpress-server", MODELEXPRESS_BIN_DIR / "redis-server"
-    if not (server.is_file() and redis.is_file()):
-        raise FileNotFoundError(
-            f"ModelExpress server binaries are missing in {MODELEXPRESS_BIN_DIR}; run scripts/install_modelexpress.sh"
-        )
-    state_dir = log_dir / "modelexpress"
-    (state_dir / "cache").mkdir(parents=True, exist_ok=True)
-
-    redis_port = get_free_port()
-    processes.start(
-        "redis",
-        [
-            str(redis),
-            "--port",
-            str(redis_port),
-            "--bind",
-            "127.0.0.1",
-            "--save",
-            "",
-            "--appendonly",
-            "no",
-            "--dir",
-            str(state_dir),
-        ],
-        env=base_env,
-        log_path=state_dir / "redis.log",
-    )
-    wait_for_port("127.0.0.1", redis_port, processes, "redis", MODELEXPRESS_READY_TIMEOUT_S)
-
-    processes.start(
-        "modelexpress",
-        [
-            str(server),
-            "--port",
-            str(port),
-            "--metrics-port",
-            "0",
-            "--cache-directory",
-            str(state_dir / "cache"),
-        ],
-        env={
-            **base_env,
-            "MX_METADATA_BACKEND": "redis",
-            "REDIS_URL": f"redis://127.0.0.1:{redis_port}",
-            "MX_HEARTBEAT_TIMEOUT_SECS": "31536000",
-        },
-        log_path=state_dir / "server.log",
-    )
-    wait_for_port("127.0.0.1", port, processes, "modelexpress", MODELEXPRESS_READY_TIMEOUT_S)
-
-
 def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     """Write resolved subconfigs to disk as JSON files."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -195,9 +122,10 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     # orchestrator picks it up.
     # Train pools of a retaining run keep their arrays on node-local disk, not in memory.
     retain = config.rollout_transport is not None and config.rollout_transport.retain
+    save_dir = ckpt_output_dir(config.orchestrator.output_dir, config.orchestrator.ckpt)
     for split, source in env_worker_pools(config):
         store_dir = ROLLOUT_STORE_DIR if retain and split == "train" else None
-        write_env_worker_pool_config(output_dir, split, source, config.orchestrator.log, store_dir)
+        write_env_worker_pool_config(output_dir, split, source, config.orchestrator.log, save_dir, store_dir)
 
 
 def rl_local(config: RLConfig):
@@ -310,7 +238,13 @@ def rl_local(config: RLConfig):
             processes.start(
                 f"{split} env worker pool {name}",
                 ["env-worker-pool", "@", (config_dir / ENVS_DIR / split / f"{name}.json").as_posix()],
-                env={**base_env, **DEFAULT_COMMON_ENV_VARS, **config.env_vars, **config.orchestrator.env_vars},
+                env={
+                    **base_env,
+                    **DEFAULT_COMMON_ENV_VARS,
+                    **config.env_vars,
+                    **config.orchestrator.env_vars,
+                    **attempt_env,
+                },
                 log_path=log_dir / ENVS_DIR / split / f"{name}.log",
             )
 
@@ -397,20 +331,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
     train_env_names = env_worker_pool_names(config, "train")
     eval_env_names = env_worker_pool_names(config, "eval")
 
-    # NIXL and ModelExpress weight broadcasts both rendezvous through a ModelExpress server.
-    mx_broadcast = (
-        config.weight_broadcast
-        if config.weight_broadcast is not None and config.weight_broadcast.type in ("nixl", "modelexpress")
-        else None
-    )
-    modelexpress_vars = {
-        "use_nixl_broadcast": mx_broadcast is not None and mx_broadcast.type == "nixl",
-        "uses_modelexpress_server": mx_broadcast is not None,
-        "launch_modelexpress": mx_broadcast is not None and config.slurm.launch_modelexpress,
-        "modelexpress_host": mx_broadcast.host if mx_broadcast is not None else "",
-        "modelexpress_port": mx_broadcast.port if mx_broadcast is not None else 0,
-        "modelexpress_redis_port": 6380 if mx_broadcast is not None and mx_broadcast.port == 6379 else 6379,
-    }
+    modelexpress_vars = modelexpress_template_vars(config.weight_broadcast, config.slurm.launch_modelexpress)
 
     ckpt_dir = get_ckpt_dir(config.trainer.ckpt.output_dir or config.run_dir) if config.trainer.ckpt else None
 
@@ -470,7 +391,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             dp_per_node=config.deployment.gpus_per_node // config.inference.vllm.tensor_parallel_size,
             **mooncake_vars,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
-            use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
             train_env_names=train_env_names,
@@ -510,7 +430,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             else 1,
             **mooncake_vars,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
-            use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
             trainer_env_vars=trainer_env_vars,
@@ -604,7 +523,7 @@ def rl(config: RLConfig):
             resume_step = config.resume.step
             if resume_step is None:
                 ckpt_base = ckpt_output_dir if ckpt_output_dir is not None else config.run_dir
-                resume_step = resolve_latest_ckpt_step(get_ckpt_dir(ckpt_base))
+                resume_step = resolve_latest_ckpt_step(get_ckpt_dir(ckpt_base), get_ckpt_dir(ckpt_base))
 
     if resume_step is not None:
         get_logger().info(f"Resuming from step {resume_step}, cleaning future rollouts and broadcasts")

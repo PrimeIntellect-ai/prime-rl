@@ -1,0 +1,649 @@
+import itertools
+from concurrent.futures import ThreadPoolExecutor
+
+import msgspec
+import numpy as np
+import pytest
+
+from prime_rl.trainer.rl import planner
+from prime_rl.transports.batch.materialize import mm_cut, pad_micro_batch, prepare_sample
+from prime_rl.transports.batch.types import (
+    UNVERSIONED,
+    MicroBatch,
+    MMImageRef,
+    MMRefs,
+    SampleBody,
+    SampleRef,
+    TrainingSample,
+)
+from prime_rl.transports.payload import PayloadServer, materialize_micro_batches
+
+# The env worker that keeps the test samples, and the step their batches train.
+STORE = PayloadServer("127.0.0.1")
+POOL = ThreadPoolExecutor(8)
+TRAINED_VERSION = 10
+_ids = itertools.count()
+
+SAMPLE_DTYPES = {
+    "token_ids": np.int32,
+    "mask": np.bool_,
+    "logprobs": np.float32,
+    "temperatures": np.float32,
+    "advantages": np.float32,
+    "ref_logprobs": np.float32,
+    "mm_token_type_ids": np.int32,
+    "rl_weights": np.float32,
+    "ce_weights": np.float32,
+    "ref_kl_weights": np.float32,
+    "staleness": np.int16,
+}
+
+
+def _sample(**fields) -> TrainingSample:
+    """A sample with typed per-token streams, as `trace_to_samples` builds it."""
+    return TrainingSample(
+        **{
+            name: np.asarray(value, SAMPLE_DTYPES[name]) if name in SAMPLE_DTYPES and value is not None else value
+            for name, value in fields.items()
+        }
+    )
+
+
+@pytest.mark.parametrize("corruption", [None, "missing", "duplicate", "vocab", "mass", "support_mass", "sampled"])
+def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
+    import torch
+
+    from prime_rl.trainer.rl.data import (
+        raise_score_centering_data_errors,
+        score_centering_data_errors,
+        validate_score_centering_data,
+    )
+
+    def batch(rows, replayed, input_ids=(0, 3, 6), with_logprobs=True):
+        return {
+            "input_ids": torch.tensor([input_ids]),
+            "loss_mask": torch.tensor([[False, True, True]]),
+            "rl_weights": torch.tensor([[0.0, 1.0, 0.0]]),
+            "support_ids": torch.tensor([i for row in rows for i, _ in row], dtype=torch.int32),
+            "support_logprobs": torch.tensor([q for row in rows for _, q in row]).log() if with_logprobs else None,
+            "support_offsets": torch.tensor([0, *itertools.accumulate(len(row) for row in rows)]),
+            "support_replayed": torch.tensor(replayed),
+        }
+
+    head = [(3, 0.75), (7, 0.25)]
+    clean = batch([[], head, [(6, 1.0)]], [False, False, True])
+    validate_score_centering_data(clean, vocab_size=9)
+    if corruption is None:
+        validate_score_centering_data(batch([[], head, [(6, 1.0)]], [False, True, True]), vocab_size=9)
+        return
+    match corruption:
+        case "missing":
+            corrupt = batch([[], head, [(6, 1.0)]], [False, False, True], with_logprobs=False)
+        case "duplicate":
+            corrupt = batch([[], [(3, 0.75), (3, 0.25)], []], [False, False, False])
+        case "vocab":
+            corrupt = batch([[], [(3, 0.75), (9, 0.25)], []], [False, False, False])
+        case "mass":
+            corrupt = batch([[], [(3, 1.0), (7, 1.0)], []], [False, False, False])
+        case "support_mass":
+            corrupt = batch([[], [(3, 0.5), (7, 0.25)], []], [False, True, False])
+        case "sampled":
+            corrupt = batch([[], head, []], [False, True, False], input_ids=(0, 4, 6))
+    with pytest.raises(ValueError) as error:
+        validate_score_centering_data(corrupt, vocab_size=9)
+    if corruption == "missing":
+        return
+
+    # The trainer flags each micro batch on its device and raises the first failure once per step
+    def errors(batch, device):
+        counts = batch["support_offsets"].diff()
+        rows = torch.repeat_interleave(torch.arange(len(counts)), counts)
+        rl_mask = batch["loss_mask"][0] & (batch["rl_weights"][0] != 0)
+        tensors = (batch["input_ids"][0], rl_mask, batch["support_ids"], batch["support_logprobs"], rows)
+        return score_centering_data_errors(
+            *(x.to(device) for x in tensors), batch["support_replayed"].to(device), vocab_size=9
+        )
+
+    for device in ["cpu"] + (["cuda"] if torch.cuda.is_available() else []):
+        raise_score_centering_data_errors([errors(clean, device)])
+        with pytest.raises(ValueError, match=f"^{error.value}$"):
+            raise_score_centering_data_errors([errors(clean, device), errors(corrupt, device)])
+
+
+@pytest.fixture
+def make_training_example():
+    def _make_training_example(
+        temperature: float = 1.0,
+        ce_weights: list[float] | None = None,
+        rl_weights: list[float] | None = None,
+        env_name: str = "test-env",
+    ) -> TrainingSample:
+        return _sample(
+            token_ids=[1, 2, 3, 4],
+            mask=[False, False, True, True],
+            logprobs=[0.0, 0.0, -0.1, -0.2],
+            temperatures=[temperature, temperature, temperature, temperature],
+            advantages=[0.0, 0.0, 1.0, 1.0],
+            env_name=env_name,
+            ce_weights=ce_weights,
+            rl_weights=rl_weights,
+        )
+
+    return _make_training_example
+
+
+def make_sized_training_example(length: int, env_name: str = "test-env") -> TrainingSample:
+    assert length >= 1
+    prompt_len = length - 1
+    return _sample(
+        token_ids=[1] * prompt_len + [2],
+        mask=[False] * prompt_len + [True],
+        logprobs=[0.0] * prompt_len + [-0.1],
+        temperatures=[1.0] * length,
+        advantages=[0.0] * prompt_len + [1.0],
+        env_name=env_name,
+    )
+
+
+def _keep(sample: TrainingSample, seq_len: int) -> SampleRef:
+    """Keep a sample as an env worker does, and reference it as the orchestrator does: one
+    advantage spread over its trainable tokens, its staleness as the policy versions that
+    sampled them, cut to ``seq_len``."""
+    key = f"sample-{next(_ids)}"
+
+    def raw(values, dtype):
+        return None if values is None else np.asarray(values, dtype).tobytes()
+
+    versions = np.full(len(sample.token_ids), UNVERSIONED, np.int32)
+    if sample.staleness is not None:
+        versions = np.where(sample.staleness >= 0, TRAINED_VERSION - sample.staleness, UNVERSIONED).astype(np.int32)
+    body = SampleBody(
+        token_ids=raw(sample.token_ids, np.int32),
+        mask=raw(sample.mask, np.bool_),
+        sampled=raw(sample.mask, np.bool_),
+        logprobs=raw(sample.logprobs, np.float32),
+        versions=versions.tobytes(),
+        rl_weights=raw(sample.rl_weights, np.float32),
+        ce_weights=raw(sample.ce_weights, np.float32),
+        ref_kl_weights=raw(sample.ref_kl_weights, np.float32),
+        ref_logprobs=raw(sample.ref_logprobs, np.float32),
+        mm_token_type_ids=raw(sample.mm_token_type_ids, np.int32),
+        mm_refs=sample.mm_refs,
+    )
+    STORE.put(key, msgspec.msgpack.encode(body))
+    images = [[image.offset, image.length] for image in sample.mm_refs.images] if sample.mm_refs else []
+    num_tokens = mm_cut(images, len(sample.token_ids), seq_len)
+    advantage = None
+    if sample.advantages is not None:
+        advantage = float(sample.advantages[sample.mask][0]) if sample.mask.any() else 0.0
+    return SampleRef(
+        url=STORE.url,
+        id=key,
+        num_tokens=num_tokens,
+        env_name=sample.env_name,
+        trace_id=sample.trace_id or "",
+        branch_index=sample.branch_index if sample.branch_index is not None else -1,
+        temperature=float(sample.temperatures[0]),
+        advantage=advantage,
+        policy_start=0 if sample.staleness is not None else None,
+        images=[image for image in images if image[0] + image[1] <= num_tokens] or None,
+    )
+
+
+def prepare_batch(
+    rollouts: list[TrainingSample], seq_len: int, num_data_ranks: int, bin_cost, pad_to_multiple_of: int = 1
+) -> list[list[MicroBatch]]:
+    """The micro batches each data rank trains on: the orchestrator plans them over the kept
+    samples' references, and each trainer rank builds its plans from the fetched samples."""
+    plans_per_gpu = planner.prepare_batch(
+        [_keep(sample, seq_len) for sample in rollouts],
+        seq_len=seq_len,
+        num_data_ranks=num_data_ranks,
+        bin_cost=bin_cost,
+        trained_version=TRAINED_VERSION,
+        min_version=0,
+        pad_to_multiple_of=pad_to_multiple_of,
+    )
+    return [materialize_micro_batches(plans, POOL).micro_batches for plans in plans_per_gpu]
+
+
+def _flatten_batches(batches_per_gpu):
+    return [batch for worker_batches in batches_per_gpu for batch in worker_batches]
+
+
+def _worker_token_sums(batches_per_gpu) -> list[int]:
+    return [sum(len(batch.input_ids) for batch in worker_batches) for worker_batches in batches_per_gpu]
+
+
+def _has_loss_tokens(batch: MicroBatch) -> bool:
+    return any(batch.loss_mask)
+
+
+def flop_cost(seq_lens: list[int]) -> int:
+    """A FlopCounter-shaped cost: a per-token term plus a per-document attention term."""
+    return sum(64 * n + n * n for n in seq_lens)
+
+
+def test_training_sample_requires_env_name():
+    with pytest.raises(TypeError, match="env_name"):
+        _sample(
+            token_ids=[1, 2, 3, 4],
+            mask=[False, False, True, True],
+            logprobs=[0.0, 0.0, -0.1, -0.2],
+            temperatures=[1.0, 1.0, 1.0, 1.0],
+            advantages=[0.0, 0.0, 1.0, 1.0],
+        )
+
+
+@pytest.mark.parametrize(
+    ("rollout_count", "num_data_ranks", "expected_batches_per_worker"), [(4, 2, 2), (5, 2, 3), (7, 1, 7), (11, 4, 3)]
+)
+def test_prepare_batch_balances_micro_batches_across_workers(
+    make_training_example, rollout_count, num_data_ranks, expected_batches_per_worker
+):
+    examples = [make_training_example() for i in range(rollout_count)]
+
+    batches_per_gpu = prepare_batch(
+        rollouts=examples,
+        seq_len=4,
+        num_data_ranks=num_data_ranks,
+        bin_cost=sum,
+    )
+
+    assert all(len(worker_batches) == expected_batches_per_worker for worker_batches in batches_per_gpu)
+
+    flat_batches = _flatten_batches(batches_per_gpu)
+    assert len(examples) <= len(flat_batches) < len(examples) + num_data_ranks
+
+    # Identify real vs padding batches by content, not position — the packer
+    # distributes by workload, so a dummy can land anywhere in the order.
+    real_batches = [batch for batch in flat_batches if _has_loss_tokens(batch)]
+    dummy_batches = [batch for batch in flat_batches if not _has_loss_tokens(batch)]
+    assert len(real_batches) == len(examples)
+
+    # Verify real rollouts have expected non-zero advantages and loss mask
+    # (the advantage stream is 0.0 on prompt positions, the scalar on completion)
+    for batch in real_batches:
+        assert sum(1 for advantage in batch.advantages if advantage != 0.0) == 2
+        assert sum(1 for loss_mask in batch.loss_mask if loss_mask) == 2
+
+    # Verify padded batches have zero advantages and loss mask
+    for batch in dummy_batches:
+        assert sum(1 for advantage in batch.advantages if advantage != 0.0) == 0
+        assert sum(1 for loss_mask in batch.loss_mask if loss_mask) == 0
+
+
+def test_prepare_batch_preserves_branch_identity(make_training_example):
+    examples = []
+    for i in range(5):
+        example = make_training_example()
+        example.trace_id = f"trace-{i}"
+        example.branch_index = i
+        examples.append(example)
+    examples.append(make_training_example())  # no identity -> sentinels
+
+    batches_per_gpu = prepare_batch(
+        rollouts=examples,
+        seq_len=4,
+        num_data_ranks=2,
+        bin_cost=sum,
+        pad_to_multiple_of=8,
+    )
+
+    seen: set[tuple[str, int]] = set()
+    for batch in _flatten_batches(batches_per_gpu):
+        if not _has_loss_tokens(batch):
+            # Dummies are copies of real batches; identity must not survive the copy.
+            assert batch.trace_ids is None and batch.branch_indices is None
+            continue
+        assert len(batch.trace_ids) == len(batch.branch_indices) == len(batch.sequence_lengths)
+        seen.update(zip(batch.trace_ids, batch.branch_indices))
+    assert seen == {(f"trace-{i}", i) for i in range(5)} | {("", -1)}
+
+
+def test_prepare_sample_truncation_keeps_identity():
+    sample = make_sized_training_example(10)
+    sample.trace_id = "trace-x"
+    sample.branch_index = 2
+    [[micro_batch]] = prepare_batch([sample], seq_len=4, num_data_ranks=1, bin_cost=sum)
+    assert len(micro_batch.input_ids) == 4
+    assert micro_batch.trace_ids == ["trace-x"]
+    assert micro_batch.branch_indices == [2]
+
+
+def test_randomized_packing_invariants():
+    rng = np.random.default_rng(0)
+
+    for case_idx in range(80):
+        seq_len = int(rng.choice([8, 16, 32, 64]))
+        num_data_ranks = int(rng.choice([1, 2, 4, 8]))
+        num_samples = int(rng.integers(1, 65))
+        lengths = [int(x) for x in rng.integers(1, seq_len + 1, size=num_samples)]
+        examples = [make_sized_training_example(length, env_name=f"env-{case_idx}") for length in lengths]
+        bin_cost = flop_cost if case_idx % 2 == 0 else sum
+
+        batches_per_gpu = prepare_batch(
+            rollouts=examples,
+            seq_len=seq_len,
+            num_data_ranks=num_data_ranks,
+            bin_cost=bin_cost,
+        )
+        flat_batches = _flatten_batches(batches_per_gpu)
+        real_batches = [batch for batch in flat_batches if _has_loss_tokens(batch)]
+        dummy_batches = [batch for batch in flat_batches if not _has_loss_tokens(batch)]
+
+        assert all(len(worker_batches) == len(batches_per_gpu[0]) for worker_batches in batches_per_gpu)
+        assert sorted(length for batch in real_batches for length in batch.sequence_lengths) == sorted(lengths)
+
+        for batch in flat_batches:
+            assert len(batch.input_ids) <= seq_len
+            assert sum(batch.sequence_lengths) == len(batch.input_ids)
+            assert batch.seq_lens == batch.sequence_lengths
+            assert len(batch.env_names) == len(batch.sequence_lengths)
+
+        for batch in dummy_batches:
+            assert not batch.loss_mask.any()
+            assert not batch.advantages.any()
+
+
+def test_pad_micro_batch_preserves_explicit_sequence_lengths():
+    micro_batch = prepare_sample(make_sized_training_example(4))
+
+    padded = pad_micro_batch(micro_batch, padding_size=2)
+
+    assert len(padded.input_ids) == 6
+    assert padded.sequence_lengths == [6]
+    assert padded.seq_lens == [6]
+    assert sum(padded.sequence_lengths) == len(padded.input_ids)
+    assert padded.loss_mask[-2:].tolist() == [False, False]
+
+
+def test_split_to_align_avoids_dummy_micro_batches():
+    examples = [make_sized_training_example(length) for length in [6, 6, 5, 5, 4, 4]]
+
+    batches_per_gpu = prepare_batch(
+        rollouts=examples,
+        seq_len=12,
+        num_data_ranks=4,
+        bin_cost=sum,
+    )
+
+    assert all(_has_loss_tokens(batch) for batch in _flatten_batches(batches_per_gpu))
+    assert len(_flatten_batches(batches_per_gpu)) == 4
+
+
+def test_pack_first_then_balance_distributes_micro_batches_by_tokens_without_model_config():
+    examples = [make_sized_training_example(length) for length in [100, 90, 80, 70]]
+
+    balanced = prepare_batch(
+        rollouts=examples,
+        seq_len=100,
+        num_data_ranks=2,
+        bin_cost=sum,
+    )
+
+    assert _worker_token_sums(balanced) == [170, 170]
+
+
+def test_flop_aware_balancing_pairs_long_and_short_sequence_workloads():
+    examples = [make_sized_training_example(length) for length in [32, 32, 16, 16, 16, 16]]
+    bin_cost = flop_cost
+
+    balanced = prepare_batch(
+        rollouts=examples,
+        seq_len=32,
+        num_data_ranks=2,
+        bin_cost=bin_cost,
+    )
+
+    assert sorted([sorted(batch.sequence_lengths) for batch in balanced[0]]) == [[16, 16], [32]]
+    assert sorted([sorted(batch.sequence_lengths) for batch in balanced[1]]) == [[16, 16], [32]]
+    assert bin_cost([32]) > bin_cost([16, 16])
+
+
+def test_flop_aware_split_to_align_splits_heaviest_flop_bin():
+    examples = [make_sized_training_example(length) for length in [20, 18, 9, 9, 8, 8, 8]]
+
+    batches_per_gpu = prepare_batch(
+        rollouts=examples,
+        seq_len=64,
+        num_data_ranks=4,
+        bin_cost=flop_cost,
+    )
+
+    real_batches = [batch for batch in _flatten_batches(batches_per_gpu) if _has_loss_tokens(batch)]
+    assert len(real_batches) == 4
+    assert sorted(length for batch in real_batches for length in batch.sequence_lengths) == [8, 8, 8, 9, 9, 18, 20]
+    assert sum(len(batch.sequence_lengths) > 1 for batch in real_batches) == 3
+
+
+def test_prepare_batch_packs_different_temperatures(make_training_example):
+    """With per-token temperatures, samples can be packed together regardless of their temperature values."""
+    example1 = make_training_example(temperature=0.7, env_name="env-a")
+    example2 = make_training_example(temperature=1.1, env_name="env-b")
+
+    batches_per_gpu = prepare_batch(
+        rollouts=[example1, example2],
+        seq_len=16,
+        num_data_ranks=1,
+        bin_cost=sum,
+    )
+
+    flat_batches = _flatten_batches(batches_per_gpu)
+    # With per-token temperatures, samples can now be packed together
+    assert len(flat_batches) == 1
+    # Each sample has 4 tokens, so 8 total tokens
+    assert len(flat_batches[0].temperatures) == 8
+    # First sample (4 tokens): all get temp 0.7
+    assert flat_batches[0].temperatures[:4] == pytest.approx([0.7, 0.7, 0.7, 0.7])
+    # Second sample (4 tokens): all get temp 1.1
+    assert flat_batches[0].temperatures[4:8] == pytest.approx([1.1, 1.1, 1.1, 1.1])
+    assert flat_batches[0].env_names == ["env-a", "env-b"]
+    assert flat_batches[0].seq_lens == [4, 4]
+
+
+def test_prepare_sample_propagates_weight_streams(make_training_example):
+    example = make_training_example(ce_weights=[0.0, 0.0, 1.0, 1.0], rl_weights=[0.0, 0.0, 0.0, 0.0])
+
+    micro_batch = prepare_sample(example)
+
+    assert micro_batch.ce_weights == pytest.approx([0.0, 0.0, 1.0, 1.0])
+    assert micro_batch.rl_weights == pytest.approx([0.0, 0.0, 0.0, 0.0])
+
+
+def test_prepare_sample_uniform_rl_keeps_streams_none(make_training_example):
+    micro_batch = prepare_sample(make_training_example())
+
+    assert micro_batch.rl_weights is None
+    assert micro_batch.ce_weights is None
+    assert micro_batch.ref_kl_weights is None
+
+
+@pytest.mark.parametrize("streams_on_longer", [True, False])
+def test_prepare_batch_packs_mixed_components(make_training_example, streams_on_longer):
+    """Component membership is per token, so samples feeding different
+    components pack together. The stream-less sample's positions must backfill
+    with the stream defaults (rl 1.0, ce 0.0) on whichever side of the pack
+    boundary it lands — a wrong-side backfill silently reroutes tokens between
+    components while keeping every array length-aligned."""
+    longer = _sample(
+        token_ids=[1, 2, 3, 4, 5, 6],
+        mask=[False, False, False, True, True, True],
+        logprobs=[0.0, 0.0, 0.0, -0.1, -0.1, -0.1],
+        temperatures=[1.0] * 6,
+        advantages=[0.0] * 3 + [1.0] * 3,
+        env_name="test-env",
+        ce_weights=[0.0, 0.0, 0.0, 1.0, 1.0, 1.0] if streams_on_longer else None,
+        rl_weights=[0.0] * 6 if streams_on_longer else None,
+    )
+    shorter = make_training_example(
+        ce_weights=None if streams_on_longer else [0.0, 0.0, 1.0, 1.0],
+        rl_weights=None if streams_on_longer else [0.0, 0.0, 0.0, 0.0],
+    )
+
+    batches_per_gpu = prepare_batch(
+        rollouts=[longer, shorter],
+        seq_len=16,
+        num_data_ranks=1,
+        bin_cost=sum,
+    )
+
+    flat_batches = _flatten_batches(batches_per_gpu)
+    assert len(flat_batches) == 1
+    batch = flat_batches[0]
+    # FFD places the longer sample first; every stream value must sit at its
+    # sample's offset, with the stream-less side backfilled.
+    if streams_on_longer:
+        assert batch.rl_weights == pytest.approx([0.0] * 6 + [1.0] * 4)
+        assert batch.ce_weights == pytest.approx([0.0, 0.0, 0.0, 1.0, 1.0, 1.0] + [0.0] * 4)
+    else:
+        assert batch.rl_weights == pytest.approx([1.0] * 6 + [0.0] * 4)
+        assert batch.ce_weights == pytest.approx([0.0] * 6 + [0.0, 0.0, 1.0, 1.0])
+
+
+def test_prepare_batch_backfills_and_pads_staleness(make_training_example):
+    """Samples without a staleness stream (frozen-sourced) and padding read as unknown (-1)."""
+    longer = _sample(
+        token_ids=[1, 2, 3, 4, 5, 6],
+        mask=[False, False, True, True, True, True],
+        logprobs=[0.0, 0.0, -0.1, -0.1, -0.1, -0.1],
+        temperatures=[1.0] * 6,
+        advantages=[0.0] * 2 + [1.0] * 4,
+        env_name="test-env",
+        staleness=[-1, -1, 0, 1, 3, 3],
+    )
+    shorter = make_training_example()
+
+    [batch] = _flatten_batches(
+        prepare_batch(rollouts=[longer, shorter], seq_len=16, pad_to_multiple_of=4, num_data_ranks=1, bin_cost=sum)
+    )
+    assert batch.staleness.tolist() == [-1, -1, 0, 1, 3, 3] + [-1] * 4 + [-1] * 2
+
+
+@pytest.mark.parametrize("refs_on_longer", [True, False])
+def test_prepare_batch_aligns_ref_logprobs_in_mixed_bins(make_training_example, refs_on_longer):
+    """Packing a ref-bearing sample (e.g. OPD) with a ref-less one (e.g. GRPO)
+    must keep ``ref_logprobs`` position-aligned with ``input_ids`` — placeholder
+    0.0s on the ref-less tokens, both when the bin gains refs after ref-less
+    content (backfill) and when ref-less content lands in a ref-bearing bin."""
+    longer = _sample(
+        token_ids=[1, 2, 3, 4, 5, 6],
+        mask=[False, False, False, True, True, True],
+        logprobs=[0.0, 0.0, 0.0, -0.1, -0.1, -0.1],
+        temperatures=[1.0] * 6,
+        ref_logprobs=[-1.5] * 6 if refs_on_longer else None,
+        advantages=[0.0] * 3 + [1.0] * 3,
+        env_name="test-env",
+    )
+    shorter = make_training_example()
+    shorter.ref_logprobs = None if refs_on_longer else np.full(4, -1.5, np.float32)
+
+    batches_per_gpu = prepare_batch(
+        rollouts=[longer, shorter],
+        seq_len=16,
+        pad_to_multiple_of=1,
+        num_data_ranks=1,
+        bin_cost=sum,
+    )
+    flat_batches = _flatten_batches(batches_per_gpu)
+    assert len(flat_batches) == 1  # both samples share one bin
+    bin_content = flat_batches[0]
+    assert len(bin_content.ref_logprobs) == len(bin_content.input_ids)
+    # FFD places the longer sample first; refs must sit at their sample's offset
+    if refs_on_longer:
+        assert bin_content.ref_logprobs == pytest.approx([-1.5] * 6 + [0.0] * 4)
+    else:
+        assert bin_content.ref_logprobs == pytest.approx([0.0] * 6 + [-1.5] * 4)
+
+
+def test_prepare_sample_truncates_mm_at_image_boundary():
+    """Truncation never splits an image's expanded placeholder block."""
+    mm_token_type_ids = [0, 1, 1, 0, 1, 1, 0]
+    sample = _sample(
+        token_ids=[10, 11, 12, 13, 14, 15, 16],
+        mask=[False, False, False, False, False, True, True],
+        logprobs=[0.0] * 7,
+        temperatures=[1.0] * 7,
+        advantages=[0.0] * 6 + [1.0],
+        env_name="test-env",
+        mm_token_type_ids=mm_token_type_ids,
+        mm_refs=MMRefs(
+            images=[
+                MMImageRef(url="data:image/png;base64,first", offset=1, length=2),
+                MMImageRef(url="data:image/png;base64,second", offset=4, length=2),
+            ]
+        ),
+    )
+
+    # seq_len=5 falls inside img1 (one of its two placeholders survives) -> drop img1 entirely.
+    [[mb]] = prepare_batch([sample], seq_len=5, num_data_ranks=1, bin_cost=sum)
+    assert len(mb.input_ids) == 4  # cut back to img1's first placeholder (index 4)
+    assert len(mb.mm_token_type_ids) == len(mb.input_ids)
+    n_placeholders = sum(1 for t in mb.mm_token_type_ids if t)
+    assert n_placeholders == 2  # only img0's two placeholders remain
+    assert mb.mm_refs is not None
+    assert [(ref.url, ref.offset, ref.length) for ref in mb.mm_refs.images] == [("data:image/png;base64,first", 1, 2)]
+
+
+def test_prepare_batch_packs_multimodal_with_text():
+    mm_sample = _sample(
+        token_ids=[10, 11, 12],
+        mask=[False, True, True],
+        logprobs=[0.0, -0.1, -0.2],
+        temperatures=[1.0, 1.0, 1.0],
+        advantages=[0.0, 1.0, 1.0],
+        env_name="mm-env",
+        mm_token_type_ids=[0, 1, 0],
+        mm_refs=MMRefs(images=[MMImageRef(url="data:image/png;base64,image", offset=1, length=1)]),
+    )
+    text_sample = _sample(
+        token_ids=[20, 21],
+        mask=[False, True],
+        logprobs=[0.0, -0.3],
+        temperatures=[0.7, 0.7],
+        advantages=[0.0, 1.0],
+        env_name="text-env",
+    )
+
+    batches_per_gpu = prepare_batch(
+        rollouts=[mm_sample, text_sample],
+        seq_len=8,
+        num_data_ranks=1,
+        bin_cost=sum,
+    )
+
+    real_batches = [batch for batch in _flatten_batches(batches_per_gpu) if _has_loss_tokens(batch)]
+    assert len(real_batches) == 1
+    batch = real_batches[0]
+    assert batch.seq_lens == [3, 2]
+    assert batch.sequence_lengths == [3, 2]
+    assert batch.position_ids.tolist() == [0, 1, 2, 0, 1]
+    assert batch.mm_token_type_ids.tolist() == [0, 1, 0, 0, 0]
+    assert batch.mm_refs is not None
+    assert [(ref.offset, ref.length) for ref in batch.mm_refs.images] == [(1, 1)]
+    assert batch.env_names == ["mm-env", "text-env"]
+
+
+def test_split_to_align_splits_multimodal_bins():
+    def make_mm_sample(token: int) -> TrainingSample:
+        return _sample(
+            token_ids=[token, token + 1, token + 2],
+            mask=[False, True, True],
+            logprobs=[0.0, -0.1, -0.2],
+            temperatures=[1.0, 1.0, 1.0],
+            advantages=[0.0, 1.0, 1.0],
+            env_name=f"mm-{token}",
+            mm_token_type_ids=[0, 1, 0],
+            mm_refs=MMRefs(images=[MMImageRef(url=f"data:image/png;base64,{token}", offset=1, length=1)]),
+        )
+
+    batches_per_gpu = prepare_batch(
+        rollouts=[make_mm_sample(10), make_mm_sample(20)],
+        seq_len=8,
+        num_data_ranks=2,
+        bin_cost=sum,
+    )
+
+    batches = _flatten_batches(batches_per_gpu)
+    assert len(batches) == 2
+    assert all(_has_loss_tokens(batch) and batch.mm_refs is not None for batch in batches)

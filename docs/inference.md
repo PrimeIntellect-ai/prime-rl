@@ -314,7 +314,7 @@ prime-rl adds vLLM's `HiSparseConnector` to the KV transfer config. Under disagg
 
 ### Speculative Decoding
 
-Serve a draft model with vLLM's speculative config. `examples/specdecode/deepseek-v4/dspark.toml` serves a DSpark draft against DeepSeek-V4-Flash with 3 draft tokens and an FP8 draft KV cache; it caps each engine at 512 sequences and 2048-token CUDA graphs, which DeepGEMM's sparse-attention indexer needs with several draft tokens per sequence. On DeepSeek-V4's packed KV layout, a sliding-window draft's KV group is resized to fit within the target's widest group so it does not widen every KV block.
+Serve a draft model with vLLM's speculative config. `recipes/deepseek-v4-flash-0731/dspark.toml` serves a DSpark draft against DeepSeek-V4-Flash with 3 draft tokens and an FP8 draft KV cache; it caps each engine at 512 sequences and 2048-token CUDA graphs, which DeepGEMM's sparse-attention indexer needs with several draft tokens per sequence. On DeepSeek-V4's packed KV layout, a sliding-window draft's KV group is resized to fit within the target's widest group so it does not widen every KV block.
 
 ```toml
 [inference.vllm.speculative_config]
@@ -354,7 +354,34 @@ decode_blocks_ttl_s = 480   # how long decode keeps a finished turn's blocks
 
 A handle is used at most once. Decode frees the blocks after the first read, so reading them a second time (a retried turn, a client retry after an error) would load whatever KV has since been written there, and the model would continue from corrupted context. The router therefore drops the handle when a turn starts, and a retried turn runs a plain prefill. Requires the `vllm-router` router. HiSparse decode instances are not supported.
 
-> **Required:** The pip-wheel NIXL's bundled UCX segfaults on the prefill→decode KV transfer. You must build NIXL against UCX 1.19.x from source — see [Disaggregated Prefill/Decode Inference](advanced.md#disaggregated-prefilldecode-inference) in the Advanced docs for the full setup.
+##### Spilling idle turns to a store
+
+Decode pins a finished turn's blocks for the whole `decode_blocks_ttl_s`, so sessions that pause between turns fill decode's KV cache with KV nobody is using, and a turn that returns after the lease (or within the router's 30 s margin before it) is recomputed in full. `spill_to_store` removes that trade-off:
+
+1. Shortly before a lease ends unread, decode writes the turn's blocks to a Mooncake store from a background thread, then lets the lease expire.
+2. The router keeps the handle for `fetchable_for_s`. When such a turn comes back, prefill finds the handle expired and fetches the blocks it lacks from the store, in place of the read from decode.
+3. If the store no longer has them, the load fails and the turn is recomputed (`kv_load_failure_policy`, which bidirectional transfer sets to `recompute` by default), as for a declined read.
+
+```toml
+[inference.deployment.bidirectional_kv_transfer]
+decode_blocks_ttl_s = 20          # short: active sessions return within seconds
+
+[inference.deployment.bidirectional_kv_transfer.spill_to_store]
+# start_before_expiry_s = 10      # when the put starts; must leave it time to finish 5 s before the lease ends
+# fetch_wait_s = 6                # how long a fetch waits for a put still in flight
+# fetchable_for_s = 3600          # how long the router keeps the handle
+
+# The store itself. Both roles need it; vLLM's own store lookups, loads and saves stay off.
+[inference.kv_cache_offload]
+type = "mooncake"
+
+[inference.kv_cache_offload.cpu]
+num_bytes = 600_000_000_000       # per node
+```
+
+Full blocks of the main KV group are stored under their content hash, so a session's unchanged prefix is written once and each later spill adds only its new blocks. Nothing runs on the engines' stepping threads.
+
+> **Size the store for every session that can be idle at once.** It ends up holding about one copy of each live session's context, at roughly the bytes per token the KV takes on the GPU (measured: ~1.5 TB for 2,000 sessions of 113k-250k tokens). The store evicts least recently used objects when it is full, and a turn whose objects were evicted is recomputed in full. A store smaller than the idle working set is therefore not a slower version of this feature but a failure mode: with a third of the needed capacity, throughput fell from ~37k to ~2k output tokens/s, the same collapse as a short lease with no store at all. Watch the engines' `KV spill: fetch miss` log lines: they should be rare.
 
 For configuring various knobs with environment variables, we enable you to configure prefill and decode environment variables separately. This is useful if you want to configure different environment variables for the prefill and decode stages.
 

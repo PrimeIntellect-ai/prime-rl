@@ -14,6 +14,7 @@ from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from prime_rl.configs.orchestrator import DifficultyPoolSamplerConfig
+    from prime_rl.env.heads import EpisodeHead
 
 
 class DifficultyPoolSampler(TaskSampler):
@@ -34,11 +35,12 @@ class DifficultyPoolSampler(TaskSampler):
         self.tasks = tuple(tasks)
         if not self.tasks:
             raise ValueError("DifficultyPoolSampler requires at least one task")
-        keys = [task.key for task in self.tasks]
-        duplicates = {key for key, count in Counter(keys).items() if count > 1}
+        # Task.key hashes the task data, so compute each key once.
+        self.keys = [task.key for task in self.tasks]
+        duplicates = {key for key, count in Counter(self.keys).items() if count > 1}
         if duplicates:
             raise ValueError(f"Task keys must be unique within a taskset: {sorted(duplicates)}")
-        self.tasks_by_key = dict(zip(keys, self.tasks))
+        self.tasks_by_key = dict(zip(self.keys, self.tasks))
         self.rng = random.Random(config.seed)
         self.pools = config.pools
         ordered = sorted(self.pools.items(), key=lambda item: item[1].threshold)
@@ -57,8 +59,8 @@ class DifficultyPoolSampler(TaskSampler):
 
     def __next__(self) -> vf.Task:
         weights = []
-        for task in self.tasks:
-            pool = self.task_pool(task.key)
+        for key in self.keys:
+            pool = self.task_pool(key)
             weights.append(1.0 if pool is None else self.pools[pool].weight)
         if not any(weights):
             raise RuntimeError("DifficultyPoolSampler has no tasks in a pool with positive weight")
@@ -67,7 +69,7 @@ class DifficultyPoolSampler(TaskSampler):
     def find_task(self, key: str) -> vf.Task | None:
         return self.tasks_by_key.get(key)
 
-    def observe(self, group: list[vf.Episode]) -> None:
+    def observe(self, group: list[EpisodeHead]) -> None:
         rewards = [
             trace.reward
             for episode in group

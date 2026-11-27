@@ -10,7 +10,7 @@ from torch import nn
 
 from prime_rl.trainer.models.fusions import fuse_qkv_projections
 from prime_rl.trainer.models.gpt_oss.configuration_gpt_oss import GptOssConfig
-from prime_rl.trainer.models.layers.attn import flash_attn_4_varlen_func, quadratic_attention_flops
+from prime_rl.trainer.models.layers.attn import flash_attn_4_varlen_op, quadratic_attention_flops
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
 
 
@@ -49,7 +49,7 @@ class GptOssAttention(nn.Module):
         )
         self.sinks = nn.Parameter(torch.empty(config.num_attention_heads))
         nn.init.normal_(self.sinks, mean=0.0, std=config.initializer_range)
-        self.flash_attn = flash_attn_4_varlen_func
+        self.flash_attn = flash_attn_4_varlen_op
 
     def attention_flops(self, seq_len: int) -> int:
         return quadratic_attention_flops(

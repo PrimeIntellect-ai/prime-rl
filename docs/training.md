@@ -74,9 +74,11 @@ single-node runs start one, and multi-node RL runs start one per inference node.
 Orchestrator
 └── Source (env configuration)
     ├── Pool replica 1: PRL::EnvBroker
+    │   ├── PRL::SampleServer
     │   ├── PRL::EnvWorker
     │   └── PRL::EnvWorker
     └── Pool replica 2: PRL::EnvBroker
+        ├── PRL::SampleServer
         └── PRL::EnvWorker
 ```
 
@@ -84,6 +86,16 @@ The orchestrator selects the least-loaded replica; its broker dispatches to the 
 worker. Each worker loads its own Verifiers env and can execute multiple episodes concurrently.
 The orchestrator loads the dataset and sends task data with each request. Even a one-worker
 pool has a broker and a separate worker process.
+
+Env workers keep the training samples of the train rollouts they run, and the orchestrator
+gets only a short record of each rollout, so its memory does not grow with rollout length.
+The samples live in the replica's sample server, which trainer ranks fetch them from. The
+orchestrator ships each step's samples by reference to every trainer rank, and each rank
+packs them into micro batches of at most `trainer.model.seq_len` tokens, balanced by
+training FLOPs across the data ranks, and fetches its own. The sample server also runs the
+algorithm's model calls on them, such as `opd`'s teacher prefills, for every env worker of
+the replica. `[serve.scoring]` bounds those calls in flight per replica (`max_concurrent`)
+and how often each is tried before its rollout fails (`attempts`).
 
 `[serve]` configures the pool's address, static/elastic worker count and per-worker episode
 concurrency. Each broker publishes its bound address under
@@ -123,7 +135,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 |---|---|
 | `log.level` | Process log level for trainer + orchestrator (`info` default; falls back to `$PRIME_LOG_LEVEL`). Set per-process via `trainer.log.level` / `orchestrator.log.level`, or globally on the `rl` entrypoint to propagate to both. The orchestrator's env servers and its [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) logs use the same level. |
 | `--monitors.wandb` (+ `--monitors.wandb.project`, `--monitors.wandb.name`) | Enable Weights & Biases logging. See [Weights & Biases](#weights--biases). |
-| `--no-monitors.prime` | Stop streaming metrics and episodes to the Prime Intellect platform (Prime Lab), on by default. See [Prime](#prime). |
+| `--monitors.prime` | Stream metrics and episodes to the Prime Intellect platform (Prime Lab), off by default. See [Prime](#prime). |
 
 **Run management:**
 
@@ -325,7 +337,7 @@ num_train_gpus = 1  # trainer
 num_infer_gpus = 1  # inference
 ```
 
-The launcher starts the inference server, one env worker pool per eval source, and an online-eval process next to the trainer (it logs to `logs/attempt_<n>/eval.log`). NCCL is the default weight transport. The trainer broadcasts weights at startup (fail-fast) and at every step an eval env is due, Every broadcast runs the same four-stage handshake in `broadcasts/step_{n}`: the trainer offers the version (`.sender_ready`) and blocks, the online-eval process acknowledges (`.receiver_ready`), then the trainer transfers (`.started`) and commits (`.finished`). It runs the due envs sequentially per broadcast, so every epoch measures exactly one policy version. Set `[weight_broadcast] type = "filesystem"` to reload weights from disk instead. LoRA and externally managed inference use filesystem broadcast automatically. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final broadcast always fires every env. In-flight eval episodes are cancelled by default when the next checkpoint is ready, so stale evals do not delay a weight update. Set `eval.cancel_on_new_checkpoint = false` to drain every triggered epoch instead. The trainer can idle while it waits for slow evals. They are sized by the same adaptive concurrency controller as the orchestrator; bound it with `[eval.concurrency]` (`min_inflight` / `max_inflight`; set them equal for fixed concurrency).
+The launcher starts the inference server, one env worker pool per eval source, and an online-eval process next to the trainer (it logs to `logs/attempt_<n>/eval.log`). NCCL is the default weight transport; set `[weight_broadcast] type = "modelexpress"` to send the weights through [ModelExpress](model-express.md) instead. The trainer broadcasts weights at startup (fail-fast) and at every step an eval env is due, Every broadcast runs the same four-stage handshake in `broadcasts/step_{n}`: the trainer offers the version (`.sender_ready`) and blocks, the online-eval process acknowledges (`.receiver_ready`), then the trainer transfers (`.started`) and commits (`.finished`). It runs the due envs sequentially per broadcast, so every epoch measures exactly one policy version. Set `[weight_broadcast] type = "filesystem"` to reload weights from disk instead. LoRA and externally managed inference use filesystem broadcast automatically. The base model is evaluated before the first step (disable with `eval.skip_first_step`), and the final broadcast always fires every env. In-flight eval episodes are cancelled by default when the next checkpoint is ready, so stale evals do not delay a weight update. Set `eval.cancel_on_new_checkpoint = false` to drain every triggered epoch instead. The trainer can idle while it waits for slow evals. They are sized by the same adaptive concurrency controller as the orchestrator; bound it with `[eval.concurrency]` (`min_inflight` / `max_inflight`; set them equal for fixed concurrency).
 
 #### Multi-Node Trainer and Inference Pool
 
@@ -344,7 +356,7 @@ tensor_parallel_size = 8
 job_name = "my-run"
 ```
 
-The shared script passes the trainer rank-0 hostname directly to the online-eval process for NCCL weight broadcasts. Each transfer is synchronous, but eval rollout execution overlaps with later training steps. The allocation remains active while the final eval finishes. Without `max_steps`, online-eval never sees a final broadcast, so the job remains active until walltime. Trainer and online-eval log to one shared W&B run. The trainer creates it, and online-eval finalizes it.
+The shared script passes the trainer rank-0 hostname directly to the online-eval process for NCCL weight broadcasts. With ModelExpress, it starts the server on the trainer head node and points the trainer and the online-eval process at it. Each transfer is synchronous, but eval rollout execution overlaps with later training steps. The allocation remains active while the final eval finishes. Without `max_steps`, online-eval never sees a final broadcast, so the job remains active until walltime. Trainer and online-eval log to one shared W&B run. The trainer creates it, and online-eval finalizes it.
 
 ### SFT-Specific Knobs
 
@@ -373,6 +385,7 @@ Pulled from the console log and mirrored to W&B.
 **Stability and optimization:**
 
 - `optim/grad_norm` — spikes precede divergence.
+- `optim/grad_norm/{group}` — the same norm per module group, to locate a spike: the block in a decoder layer (`self_attn`, `linear_attn`, `mlp`, or a MoE's `mlp.experts`, `mlp.router`, `mlp.shared_expert`), `norm` for every norm, and `embed_tokens`, `lm_head`. Their squares sum to the square of `optim/grad_norm`. Not logged with gradient offloading.
 - `optim/lr` — LR schedule.
 - For MoE: `max_vio/mean`, `max_vio/max` — mean and max over the step's microsteps of the largest load-balancing violation across layers and EP groups, computed from expert token counts summed across each EP group. `routing_confidence/mean` — mean routing confidence.
 - For MoE: `expert_load/{cv,max_mean,cold_frac}/{mean,max}` — expert load per layer over the whole step, from token counts summed across all ranks, as the mean and max over MoE layers. `cv` is std/mean of the per-expert token counts, `max_mean` the busiest expert's count over the mean, and `cold_frac` the fraction of experts receiving under 0.1x the mean. A trainable router that drifts shows up as a rising `cv`/`cold_frac` (MiMo-V2.6 §5.4).
@@ -470,8 +483,8 @@ Checkpointing is split across processes because the orchestrator and trainer can
 
 | Process | What's saved | Where |
 |---|---|---|
-| Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<run_dir>/checkpoints/step_{n}/trainer/` |
-| Orchestrator | Progress, per-env data state | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
+| Trainer | FSDP-sharded model (DCP), optimizer, progress | `<run_dir>/checkpoints/step_{n}/trainer/` |
+| Orchestrator | Progress, per-env data state, and with `ckpt.rollouts` the rollouts | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
 | Trainer, orchestrator, inference | The model's `config.json` and `generation_config.json`, the tokenizer files and a VLM's processor files | `<run_dir>/checkpoints/step_{n}/` |
 
@@ -530,11 +543,55 @@ A resume checks that the checkpoint's `config.json` describes the same architect
 
 A fork continues the other run, so both runs must be of the same kind. To start a new stage from another run's weights, such as RL from an SFT checkpoint, set `model.name` to the checkpoint's step directory instead (see [Model Initialization](#model-initialization)).
 
+#### The trainer's hyperparameters on resume
+
+A trainer resume loads only state from the checkpoint: the weights, the optimizer's moments and step counts, the training step and the data position. Every hyperparameter and the learning rate schedule come from the resumed run's config, so a changed `optim.lr`, weight decay, betas, eps, `max_steps` or `scheduler.decay_steps` applies from the first resumed step. When the loaded optimizer settings differ from the config's, the trainer logs one warning listing each change as `group <index>: <key> <old> -> <new>`; with `ckpt.skip_optimizer`, which loads no optimizer state, there is nothing to compare and no warning.
+
+A resume that loads the optimizer state stops with an error when the number of param groups or a group's algorithm changed since the checkpoint, since the saved optimizer state no longer fits. Resume such a run with `ckpt.skip_optimizer`.
+
+To start a fresh schedule at a resume, set `scheduler.start_step` to the resume step and keep it in later resumes: the warmup and decay then span the `max_steps - start_step` steps after it. With a bare `--resume`, that is the latest checkpoint's step; with `--resume.dir`, the step in the directory name. The trainer stops at startup if `start_step` is after the resume step or nonzero without a resume, and if the checkpoint's step differs from the resume step (for example, a renamed `--resume.dir`).
+
 #### What a resume restores
 
 - The curriculum of each train source, and the live config (see [Updating the Config Live](#updating-the-config-live)).
 - The open train groups: groups that were drawn but not shipped at the checkpoint. The checkpoint saves no partial groups, so a resume re-runs each one whole, before it draws new tasks. A re-run group goes through the curriculum again, with its new rollouts. A group that finished without training (for example, rejected by the curriculum) does not re-run.
 - A resume drops the open groups of a removed source or task. It also drops those of a streaming taskset, which cannot find a task by key.
+
+#### Checkpointing rollouts
+
+By default a resumed run starts with an empty pipeline. Set `--ckpt.rollouts` to also checkpoint the train rollouts:
+
+```bash
+uv run rl @ rl.toml --ckpt.interval 25 --ckpt.rollouts
+```
+
+The orchestrator then saves step N when the trainer publishes the weights of N, before inference applies them. The checkpoint holds the pipeline of that moment, so a resumed run ships the batches that the first run would have shipped.
+
+A resume restores:
+
+- The finished episodes that did not ship: the episodes in the result queue, the groups that still collect episodes, the traces queued for a batch, and a batch that the trainer did not take yet. Their training arrays are in `step_{n}/orchestrator/rollouts/arrays/`.
+- The open train groups, with the number of episodes that each group still owes. A resume does not re-run them whole.
+- The running rollouts. Each env worker takes a memory checkpoint of the sandbox of each running rollout and writes a restore file to `step_{n}/orchestrator/rollouts/`. The resumed run continues each rollout in a new sandbox, before it starts new work. An env worker pool reads and writes these files only in its `--output-dir`. The launchers set it to the run directory. If you start a pool yourself, set it to the run directory too.
+- The in-flight limit of the concurrency controller.
+
+These start over:
+
+- A running rollout that cannot take a memory checkpoint. The resumed run runs its task from the start, in the same group. Restore points cover single-agent episodes with one harness on Prime sandboxes. These rollouts take none:
+  - A rollout on a runtime without memory snapshots, for example the subprocess runtime.
+  - A rollout of a harness that cannot continue from a memory snapshot. The null, bash and ACP harnesses (for example rlm) can.
+  - A rollout of an episode with more than one agent run.
+  - A rollout whose task has tool servers, shared tools or services of its own.
+  - A rollout that has not booted its sandbox yet, or that is in setup or scoring.
+- A running rollout that did not take its memory checkpoint within `ckpt.rollouts_save_timeout` seconds (120 by default). The trainer waits in its weight broadcast for the whole save, so a longer timeout trades a longer pause at each checkpoint for fewer rollouts that start over. A rollout's memory checkpoint ends when the sandbox provider accepts the snapshot, not when the sandbox has stopped or runs again.
+- A running rollout whose sandbox did not stop for its snapshot, or whose program ended while it stopped. The owner learns this only when it restores the rollout: the snapshot is gone, so the rollout starts over.
+- A running rollout whose env worker pool did not answer within 600 seconds after the timeout. The pool's other rollouts start over too, even those whose memory checkpoint was taken.
+- All eval rollouts. Eval epochs are not checkpointed.
+
+The orchestrator logs one line per checkpoint with the episode counts, the time of each phase and the size on disk. The same values are in the `ckpt/rollouts/*` metrics.
+
+The memory checkpoints are sandbox snapshots, and the run that takes them owns them. The file `checkpoints/rollout_snapshots.json` records the snapshots of each checkpoint step. After each checkpoint and at a clean shutdown, the orchestrator deletes the snapshots of the steps whose directory is gone (`keep_last` and `keep_interval` remove whole step directories). At a clean shutdown it also deletes the snapshots of the steps that `keep_last` and `keep_interval` remove once the trainer has written its last checkpoint. The snapshots of a checkpoint that stays on disk stay too. If you delete a run directory by hand, delete its snapshots on the sandbox provider as well. A run that forks another run's checkpoint with `--resume.dir` never deletes the snapshots of that run.
+
+A checkpoint that has rollouts resumes without them when `ckpt.rollouts` is off: the open groups re-run whole.
 
 #### Changing sources on resume
 
@@ -557,7 +614,7 @@ A resume can add, remove or change train and eval sources.
 | `scratch` | The model's own random init, seeded with `model.init.seed` | `model.name` | `uv run pretrain` |
 | `pretrained` | The weights stored at `model.name`: an HF model (Hub id or local directory), or the trainer checkpoint in a step directory (`.../step_<N>`) of another run | `model.name`; for a step directory, its `config.json` and tokenizer files | `uv run sft`, `uv run rl` |
 
-Both types work with every entrypoint, and a `[model.init]` table without `type` keeps the entrypoint's default. In RL, set `name` and `init` in the shared `[model]`. The trainer recognizes a step directory by its `trainer/` directory when it loads the weights. A step directory supplies only the weights: the run starts at step 0 with a fresh optimizer, scheduler and data. To continue a run with its optimizer, scheduler and data state, use `[resume]` instead, or `--resume.dir` to fork another run of the same kind (see [Resuming a Run](#resuming-a-run)). A model without a from-scratch init fails at startup with `scratch`, naming the parameters its init does not reach. The renderer cannot be picked from a step directory, so a run from one sets it explicitly; inference's `"auto"` tool-call and reasoning parsers try `tokenizer.name` first, so setting it to the HF model name keeps them. A resumed trainer and the export read the `config.json` and tokenizer from the run's own checkpoint, which holds copies; the RL orchestrator and the inference servers still read `model.name`, so to resume once the source step directory is gone, set `model.name` to one of the run's own step directories.
+Both types work with every entrypoint, and a `[model.init]` table without `type` keeps the entrypoint's default. In RL, set `name` and `init` in the shared `[model]`. The trainer recognizes a step directory by its `trainer/` directory when it loads the weights. A step directory supplies only the weights: the run starts at step 0 with a fresh optimizer, scheduler and data. To continue a run with its optimizer state, step and data position, use `[resume]` instead, or `--resume.dir` to fork another run of the same kind (see [Resuming a Run](#resuming-a-run)). A model without a from-scratch init fails at startup with `scratch`, naming the parameters its init does not reach. The renderer cannot be picked from a step directory, so a run from one sets it explicitly; inference's `"auto"` tool-call and reasoning parsers try `tokenizer.name` first, so setting it to the HF model name keeps them. A resumed trainer and the export read the `config.json` and tokenizer from the run's own checkpoint, which holds copies; the RL orchestrator and the inference servers still read `model.name`, so to resume once the source step directory is gone, set `model.name` to one of the run's own step directories.
 
 The trainer sends its weights to inference (RL, SFT online evals) at startup. When those weights are not HF weights stored at `model.name` (`scratch`, or a checkpoint step directory as `model.name`, which the inference server recognizes when it starts), the inference server starts with placeholder weights (`inference.vllm.load_format = "dummy"`) instead of loading them from disk.
 
@@ -591,6 +648,8 @@ curl -X POST localhost:8041/v1/actions -H "$AUTH" -H 'content-type: application/
 ```
 
 Once paused, both keep serving the API until the run is stopped, so its owner can read the committed step first.
+
+With `ckpt.rollouts`, the orchestrator saves N with its rollouts when the trainer publishes the weights of N. Send the orchestrator its request before that moment. A later request saves the state as of shipping N, without rollouts.
 
 A `checkpoint` action takes the same two calls and saves step N without stopping the run. Since the trainer keeps going, the orchestrator has to receive its request before the trainer finishes N and requests N + 1; a later request gets a 409 because the orchestrator no longer has the state of N:
 
@@ -700,11 +759,13 @@ A coding agent on the same machine can drive the open dashboard: `POST /api/view
 
 ## Monitors
 
-Monitors receive the run's metrics and episodes. The file and Prime monitors are on by default; W&B is opt-in.
+Monitors receive the run's metrics and episodes. The file monitor is on by default; W&B and Prime are opt-in.
 
 ### File
 
 The file monitor writes the run's metrics (`metrics.jsonl`) and trace stream under `<run_dir>/monitors/file/`, and feeds the local [dashboard](#dashboard). Turn it off with `--no-monitors.file`.
+
+On a large run the traces dominate what the monitor writes. `--monitors.file.trace-sample 0.1` keeps the traces (episodes, live traces, and the orchestrator's annotations) of one train group in ten, chosen by group id so each written group is complete; metrics and eval episodes are always written. `--no-monitors.file.live` stops the live traces: one file per in-flight trace under `traces/live/`, appended on every turn, which feed the dashboard's live view. Episodes are then written once, when they finish, and the env worker pools stream only each rollout's progress to the orchestrator, not its messages.
 
 ### Weights & Biases
 
@@ -721,23 +782,23 @@ prime-rl deliberately logs a **large number of metrics** for maximum observabili
 
 ### Prime
 
-Every `rl` and `sft` run registers on the Prime Intellect platform (Prime Lab) and streams training metrics and episodes to the platform dashboard. The launcher prints the Prime run's link next to the local dashboard link (and the W&B run's, with `--monitors.wandb`) once the run registers. Turn it off with `--no-monitors.prime`:
+The Prime monitor is off by default. With `--monitors.prime`, an `rl` or `sft` run registers on the Prime Intellect platform (Prime Lab) and streams training metrics and episodes to the platform dashboard. The launcher prints the Prime run's link next to the local dashboard link (and the W&B run's, with `--monitors.wandb`) once the run registers:
 
 ```bash
-uv run rl @ rl.toml --no-monitors.prime
-uv run sft @ sft.toml --no-monitors.prime   # same flag on the SFT trainer
+uv run rl @ rl.toml --monitors.prime
+uv run sft @ sft.toml --monitors.prime   # same flag on the SFT trainer
 ```
 
-Name the Prime run in TOML:
+Or turn it on with a `[monitors.prime]` table, which can also name the Prime run:
 
 ```toml
 [monitors.prime]
 name = "my-experiment"
 ```
 
-The process that supervises the launch registers the run before the components start, and every component logs to it. That is the `rl` or `sft` launcher, also inside a single-node SLURM job, or the run owner that wraps a multi-node SLURM job's step. The run's id is also the run identity (`PRL_RUN_ID`) and the W&B run id. On `rl` the orchestrator uploads the episodes and its metrics, and the trainer uploads its per-step metrics. A trainer started without the `rl` launcher needs `--no-monitors.prime`. On `sft` the run carries the dataset-batched training fields (`max_steps`, `batch_size`, `seq_len`) and the trainer's per-step metrics and validation losses. Online evals log to the same run, like an `rl` run's: the online-eval process uploads its eval metrics and every eval episode. The components only flush their uploads; the process that registered the run finishes it once every component exited. A launch that fails marks the run failed, and so does a SLURM job that SLURM cancels or stops at its time limit.
+The process that supervises the launch registers the run before the components start, and every component logs to it. That is the `rl` or `sft` launcher, also inside a single-node SLURM job, or the run owner that wraps a multi-node SLURM job's step. The run's id is also the run identity (`PRL_RUN_ID`) and the W&B run id. On `rl` the orchestrator uploads the episodes and its metrics, and the trainer uploads its per-step metrics. A trainer started without the `rl` launcher has no Prime run to log to, so it fails with the monitor on. On `sft` the run carries the dataset-batched training fields (`max_steps`, `batch_size`, `seq_len`) and the trainer's per-step metrics and validation losses. Online evals log to the same run, like an `rl` run's: the online-eval process uploads its eval metrics and every eval episode. The components only flush their uploads; the process that registered the run finishes it once every component exited. A launch that fails marks the run failed, and so does a SLURM job that SLURM cancels or stops at its time limit.
 
-The platform run needs `PRIME_API_KEY` (`prime login` or the env var) and a team (`PRIME_TEAM_ID`, or the team selected with `prime login`) enabled for external runs. Like the W&B monitor, a run without a key, or one whose registration fails (no team, a team outside the allowlist), fails at launch: authenticate, select a team with `prime switch`, or pass `--no-monitors.prime`. `PRIME_RUNS_MODE=disabled` keeps the monitor configured but opens no platform run; `RUN_ID=<id>` attaches to an external run a launcher already created instead of registering a new one. Currently internal-only.
+The platform run needs `PRIME_API_KEY` (`prime login` or the env var) and a team (`PRIME_TEAM_ID`, or the team selected with `prime login`) enabled for external runs. Like the W&B monitor, an enabled monitor without a key, or one whose registration fails (no team, a team outside the allowlist), fails the launch: authenticate, select a team with `prime switch`, or leave the monitor off. `PRIME_RUNS_MODE=disabled` keeps the monitor configured but opens no platform run; `RUN_ID=<id>` attaches to an external run a launcher already created instead of registering a new one. Hosted runs log to their platform run without `--monitors.prime`: `RUN_ID`, or `PRIME_RUNS_EVAL_ID` for a hosted eval, turns the monitor on. `PRIME_RUNS_MODE=disabled` turns that off too. Currently internal-only.
 
 ## Rules of Thumb
 

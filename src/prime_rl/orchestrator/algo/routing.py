@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import ActionLossType
-from prime_rl.transports.batch import TrainingSample
+from prime_rl.orchestrator.credit import ADVANTAGE_KEY, RL_WEIGHT_KEY, advantage_values
+
+if TYPE_CHECKING:
+    from prime_rl.env.heads import TraceHead
+    from prime_rl.orchestrator.trajectories import BranchSample
 
 
 def trainable_nodes(trace: vf.Trace) -> list[vf.MessageNode]:
@@ -15,65 +21,48 @@ def trainable_nodes(trace: vf.Trace) -> list[vf.MessageNode]:
     return [node for node in trace.nodes if id(node) in on_trainable_branch and np.any(node.mask)]
 
 
-def assign_advantages(trace: vf.Trace, values: float | list[float] | np.ndarray) -> None:
-    """Assign credit in compact sampled-token order across trainable graph paths, as float32
-    arrays (views into one array per trace)."""
-    nodes = trainable_nodes(trace)
-    for node in nodes:
-        if len(node.mask) != len(node.token_ids):
-            raise ValueError(
-                f"node masks must align with token ids in trace {trace.id!r}: "
-                f"got {len(node.mask)}, expected {len(node.token_ids)}"
-            )
-    counts = [int(np.count_nonzero(node.mask)) for node in nodes]
-    total = sum(counts)
-    if isinstance(values, (int, float, np.floating)):
-        advantages = np.full(total, values, dtype=np.float32)
-    else:
-        if len(values) != total:
-            raise ValueError(
-                f"advantages must align with trace {trace.id!r}'s sampled tokens: got {len(values)}, expected {total}"
-            )
-        advantages = np.asarray(values, dtype=np.float32)
-
-    offset = 0
-    for node, count in zip(nodes, counts, strict=True):
-        node.advantages = advantages[offset : offset + count]
-        offset += count
+def assign_advantage(trace: TraceHead, value: float) -> None:
+    """Credit every sampled token on the trace's trainable branches with ``value``. A trace
+    with no such token gets no credit."""
+    if trace.trainable_tokens:
+        trace.info[ADVANTAGE_KEY] = float(value)
 
 
-def assign_reference_logprobs(branch: vf.Branch, values: list[float] | np.ndarray) -> None:
-    """Project branch-aligned reference logprobs onto sampled graph nodes."""
-    if len(values) != len(branch.token_ids):
-        raise ValueError(
-            f"reference logprobs must align with branch tokens: got {len(values)}, expected {len(branch.token_ids)}"
-        )
+def token_layout(trace: TraceHead) -> dict[int, list[int]]:
+    """The trainable tokens of each of the trace's training samples, by branch index: one
+    count per sampled node of the branch that trains in it, in order. A sampled node shared
+    by several branches trains only in the first."""
+    return trace.token_layout
+
+
+def assign_advantages(trace: TraceHead, branch: int, values: list[float] | np.ndarray) -> None:
+    """Credit each trainable token of one of the trace's branches with its own advantage:
+    ``values`` holds one per token, ``sum(token_layout(trace)[branch])`` in order. A trace
+    credited per token uses token advantages on every branch; a branch assigned none gets 0.0."""
+    if branch not in trace.token_layout:
+        raise ValueError(f"trace {trace.id!r} has no training sample for branch {branch}")
     values = np.asarray(values, dtype=np.float32)
-    offset = 0
-    for node in branch.nodes:
-        end = offset + len(node.token_ids)
-        mask = np.asarray(node.mask, dtype=bool)
-        if mask.any() and node.reference_logprobs is None:
-            node.reference_logprobs = values[offset:end][mask]
-        offset = end
+    expected = sum(trace.token_layout[branch])
+    if len(values) != expected:
+        raise ValueError(
+            f"advantages must align with the trainable tokens of branch {branch} of trace {trace.id!r}: "
+            f"got {len(values)}, expected {expected}"
+        )
+    trace.branch_advantages[branch] = values
 
 
-def scalar_advantage(trace: vf.Trace) -> float | None:
-    """Mean nonzero token advantage, or zero for an assigned-zero trace."""
-    parts = [np.asarray(node.advantages, dtype=np.float32) for node in trace.nodes if node.advantages is not None]
-    advantages = np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
-    if not len(advantages):
-        return None
-    nonzero = advantages[advantages != 0.0]
-    return float(nonzero.mean(dtype=np.float64)) if len(nonzero) else 0.0
+def assign_rl_weight(trace: TraceHead, value: float) -> None:
+    """Weight the rl loss of every sampled token on the trace's trainable branches by ``value``."""
+    trace.info[RL_WEIGHT_KEY] = float(value)
 
 
-def is_trainable(trace: vf.Trace) -> bool:
-    """Whether any sampled token carries nonzero RL credit."""
-    return any(np.any(np.asarray(node.advantages) != 0.0) for node in trace.nodes if node.advantages is not None)
+def is_trainable(trace: TraceHead) -> bool:
+    """Whether the trace's sampled tokens carry nonzero RL credit."""
+    values = advantage_values(trace)
+    return values is not None and bool(np.any(values != 0.0))
 
 
-def stamp_loss_routing(sample: TrainingSample, action_loss_type: ActionLossType) -> None:
+def stamp_loss_routing(sample: BranchSample, action_loss_type: ActionLossType) -> None:
     """Route action tokens into the algorithm's declared loss component."""
     if action_loss_type == "rl":
         return

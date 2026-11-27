@@ -1,9 +1,7 @@
 import torch
 from torch import Tensor, nn
-from transformers.modeling_layers import GradientCheckpointingLayer
-from transformers.modeling_outputs import BaseModelOutputWithPast
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, TextModelOutput
 from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -99,7 +97,7 @@ class MuseGlimmerAttention(FlashAttention):
         return self.o_proj(attn_output), None
 
 
-class MuseGlimmerDecoderLayer(GradientCheckpointingLayer):
+class MuseGlimmerDecoderLayer(nn.Module):
     def __init__(self, config: MuseGlimmerTextConfig, layer_idx: int) -> None:
         super().__init__()
         if config.hidden_activation != "silu":
@@ -135,9 +133,6 @@ class MuseGlimmerDecoderLayer(GradientCheckpointingLayer):
 
 
 class MuseGlimmerPreTrainedModel(PreTrainedModelPrimeRL):
-    config_class = MuseGlimmerConfig
-    base_model_prefix = "model"
-
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return True
@@ -155,8 +150,6 @@ class MuseGlimmerPreTrainedModel(PreTrainedModelPrimeRL):
 
 
 class MuseGlimmerTextModel(MuseGlimmerPreTrainedModel):
-    config_class = MuseGlimmerTextConfig
-
     def __init__(self, config: MuseGlimmerTextConfig) -> None:
         super().__init__(config)
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
@@ -175,7 +168,6 @@ class MuseGlimmerTextModel(MuseGlimmerPreTrainedModel):
                 model_config=config,
             )
         )
-        self.gradient_checkpointing = False
         self.post_init()
 
     def get_input_embeddings(self) -> nn.Embedding:
@@ -192,7 +184,7 @@ class MuseGlimmerTextModel(MuseGlimmerPreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> BaseModelOutputWithPast:
+    ) -> TextModelOutput:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
@@ -216,7 +208,7 @@ class MuseGlimmerTextModel(MuseGlimmerPreTrainedModel):
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
             )
-        return BaseModelOutputWithPast(last_hidden_state=self.norm(hidden_states))
+        return TextModelOutput(last_hidden_state=self.norm(hidden_states))
 
 
 class MuseGlimmerModel(nn.Module):
@@ -230,7 +222,7 @@ class MuseGlimmerModel(nn.Module):
     def set_input_embeddings(self, embeddings: nn.Embedding) -> None:
         self.language_model.set_input_embeddings(embeddings)
 
-    def forward(self, *args, **kwargs) -> BaseModelOutputWithPast:
+    def forward(self, *args, **kwargs) -> TextModelOutput:
         return self.language_model(*args, **kwargs)
 
 

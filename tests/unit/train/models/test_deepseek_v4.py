@@ -139,7 +139,7 @@ def _randomize(module: nn.Module) -> None:
 def get_prime_model(dtype: torch.dtype = torch.bfloat16) -> nn.Module:
     """A prime-rl model with non-degenerate weights and the LM head training code wraps it in."""
     with torch.device("cuda"), default_dtype(dtype):
-        model = DeepseekV4ForCausalLM._from_config(MODEL_CONFIG)
+        model = DeepseekV4ForCausalLM.from_config(MODEL_CONFIG)
     _randomize(model)
     inject_prime_lm_head(model, chunk_size=None)
     return model
@@ -386,7 +386,7 @@ def test_deepseek_v4_on_disk_keys_map_to_the_names_vllm_expects():
     from vllm.models.deepseek_v4.nvidia.model import _make_deepseek_v4_weights_mapper
 
     with torch.device("meta"):
-        model = DeepseekV4ForCausalLM._from_config(MODEL_CONFIG)
+        model = DeepseekV4ForCausalLM.from_config(MODEL_CONFIG)
     on_disk_state_dict = model.convert_to_hf(dict(model.state_dict()))
     assert on_disk_state_dict, "vacuous probe: the model produced no weights to map"
 

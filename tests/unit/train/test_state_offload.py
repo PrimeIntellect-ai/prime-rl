@@ -148,11 +148,11 @@ def test_checkpoint_resume_restores_param_groups(tmp_path) -> None:
 
     model, optimizer = setup()
     run_steps(model, optimizer, num_steps=3, seed=1)
-    dcp_save({"app": AppState(model, [optimizer], None, None)}, checkpoint_id=tmp_path)
+    dcp_save({"app": AppState(model, [optimizer], progress=None)}, checkpoint_id=tmp_path)
     run_steps(model, optimizer, num_steps=2, seed=2)
 
     resumed_model, resumed_optimizer = setup()
-    dcp_load({"app": AppState(resumed_model, [resumed_optimizer], None, None)}, checkpoint_id=tmp_path)
+    dcp_load({"app": AppState(resumed_model, [resumed_optimizer], progress=None)}, checkpoint_id=tmp_path)
     assert [group["step"] for group in resumed_optimizer.param_groups] == [3, 3]
     run_steps(resumed_model, resumed_optimizer, num_steps=2, seed=2)
     assert_params_equal(model, resumed_model)
@@ -174,7 +174,7 @@ def test_offloaded_async_save_writes_after_it_returned(tmp_path) -> None:
         release = threading.Event()
         manager.writer.submit(release.wait)
 
-        manager.save(1, model, [optimizer], None, Progress(step=1))
+        manager.save(1, model, [optimizer], Progress(step=1))
         release.set()
         manager.wait()
 

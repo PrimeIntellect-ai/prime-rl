@@ -1,0 +1,115 @@
+# Inkling 2 Small math RL on H200: 6 trainer nodes (FP8 MoE experts only, dense layers stay
+# bf16; sign-SGD full CPU offload) + 2 single-node vLLM replicas (bf16, online fp8_per_block MoE).
+# Data: i3-math, difficulty band where Qwen3-4B avg@8 solves 0.25-0.5 (2146 rows), 8K sequence.
+max_steps = 200
+seq_len = 8192
+output_dir = "<output dir>"
+clean = true
+
+[run]
+name = "inkling2-math-rl"
+
+[log]
+level = "info"
+
+[monitors.file]
+
+[weight_broadcast]
+type = "nccl"
+port = 29502
+timeout = 12000
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 6
+gpus_per_node = 8
+num_infer_nodes = 1
+num_infer_replicas = 2
+
+[inference.deployment]
+type = "multi_node"
+num_nodes = 1
+
+[inference]
+use_deep_gemm = false
+enable_fp32_lm_head = true
+
+[inference.vllm]
+model = "PrimeIntellect/Inkling-2-Small-bf16"
+dtype = "bfloat16"
+quantization = "fp8_per_block"
+tensor_parallel_size = 8
+enable_expert_parallel = true
+max_model_len = 16384
+gpu_memory_utilization = 0.72
+max_num_seqs = 64
+# Short math prompts: chunk 1024 doubles KV concurrency and keeps bs64 decode at ~4.2K tok/s.
+max_num_batched_tokens = 1024
+async_scheduling = true
+block_size = 128
+enable_prefix_caching = true
+
+[model]
+name = "PrimeIntellect/Inkling-2-Small-bf16"
+
+[trainer]
+dist_timeout_seconds = 1800
+
+[trainer.model]
+attn = "flash_attention_2"
+seq_len = 8192
+ep = 8
+offload = "full"
+# Activation offloading stays off: compiled flex attention hits the saved-tensor tracker assertion.
+ac_offloading = "None"
+
+[trainer.model.ac]
+mode = "full"
+freq = 1
+
+[trainer.model.moe.compute]
+type = "deepgemm_fp8"
+
+[trainer.data]
+pad_to_seq_len = true
+
+[trainer.optim]
+type = "sign_sgd"
+lr = 1e-6
+weight_decay = 0.01
+
+[ckpt]
+# One checkpoint is ~3.3 TB; keep only the newest.
+interval = 50
+keep_last = 1
+
+[orchestrator]
+batch_size = 64
+
+[orchestrator.train]
+group_size = 8
+
+[orchestrator.train.sampling]
+temperature = 1.0
+max_completion_tokens = 8192
+
+[orchestrator.concurrency]
+initial_inflight = 128
+
+[orchestrator.renderer]
+name = "inkling-2"
+reasoning_effort = "low"
+
+[[orchestrator.train.source]]
+name = "math"
+env.taskset.id = "i3-math"
+env.taskset.filter.column = "avg@8_qwen3_4b_instruct_2507"
+env.taskset.filter.min = 0.25
+env.taskset.filter.max = 0.5
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[slurm]
+job_name = "inkling2-math-rl"
+partition = "<partition>"
+time = "08:00:00"

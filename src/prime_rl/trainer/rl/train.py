@@ -18,10 +18,10 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
-from prime_rl.trainer.ckpt import Progress, ckpt_output_dir, setup_ckpt_manager, setup_model_files
+from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager, setup_model_files
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
-from prime_rl.configs.trainer import TrainerConfig
+from prime_rl.configs.trainer import TrainerConfig, rl_micro_batch_multiple
 from prime_rl.trainer.rl.data import (
     DataLoader,
     FakeDataLoader,
@@ -99,6 +99,7 @@ from prime_rl.control.server import ControlServer
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
 from prime_rl.utils.pathing import (
+    ckpt_output_dir,
     get_ckpt_dir,
     get_step_path,
     is_checkpoint_step_dir,
@@ -178,7 +179,9 @@ def train(config: TrainerConfig):
                 # A trainer restarted on its own: the orchestrator may be steps ahead.
                 checkpoint_step = resolve_latest_trainer_ckpt_step(ckpt_dir)
             elif checkpoint_step is None:
-                checkpoint_step = resolve_latest_ckpt_step(ckpt_dir)
+                # Fake data runs without an orchestrator, so there is no second half to wait for.
+                orchestrator_ckpt_dir = None if config.data.fake else ckpt_dir
+                checkpoint_step = resolve_latest_ckpt_step(ckpt_dir, orchestrator_ckpt_dir)
     if checkpoint_step is not None:
         resume_step_dir = config.resume.dir or get_step_path(ckpt_dir, checkpoint_step)
         use_resumed_model_files(config.model, config.tokenizer, resume_step_dir)
@@ -253,23 +256,7 @@ def train(config: TrainerConfig):
     logger.debug(f"Initialized optimizer in {format_time(time.perf_counter() - t0)}")
 
     logger.info(f"Initializing scheduler ({config.scheduler})")
-    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
-
-    # Set up weight broadcast (skip when using fake data since there's no inference server)
-    if config.data.fake:
-        weight_sender = None
-        logger.info("Skipping weight broadcast setup (fake data mode)")
-    else:
-        logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
-        t0 = time.perf_counter()
-        weight_sender = setup_weight_sender(
-            config.output_dir,
-            config.weight_broadcast,
-            parallel_dims,
-            config.model.lora,
-            model_name=config.model.name,
-        )
-        logger.debug(f"Initialized weight broadcast in {format_time(time.perf_counter() - t0)}")
+    scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr, checkpoint_step)
 
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
@@ -291,7 +278,6 @@ def train(config: TrainerConfig):
             checkpoint_step,
             model,
             [optimizer],
-            scheduler,
             progress,
             path=resume_dir / "trainer" if resume_dir is not None else None,
         )
@@ -306,6 +292,22 @@ def train(config: TrainerConfig):
     else:
         logger.info("Starting from scratch")
 
+    # Set up weight broadcast after the checkpoint load: the NCCL sender blocks until every inference
+    # engine joins, and the engines take longer to start than the load. Skip with fake data (no inference).
+    if config.data.fake:
+        weight_sender = None
+        logger.info("Skipping weight broadcast setup (fake data mode)")
+    else:
+        logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
+        t0 = time.perf_counter()
+        weight_sender = setup_weight_sender(
+            config.output_dir,
+            config.weight_broadcast,
+            config.model.lora,
+            model_name=config.model.name,
+        )
+        logger.debug(f"Initialized weight broadcast in {format_time(time.perf_counter() - t0)}")
+
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
     t0 = time.perf_counter()
@@ -317,6 +319,12 @@ def train(config: TrainerConfig):
             progress.step,
             parallel_dims.get_mesh("dp").size(),
             config.rollout_transport,
+            seq_len=config.model.seq_len,
+            # Rows hold at most `seq_len` tokens, so padding to a multiple of it pads every row to exactly `seq_len`
+            pad_to_multiple_of=config.model.seq_len
+            if config.data.pad_to_seq_len
+            else rl_micro_batch_multiple(config.model),
+            bin_cost=get_perf_counter(model).flop_counter,
         )
     logger.debug(f"Initialized data loader in {format_time(time.perf_counter() - t0)}")
 
@@ -699,34 +707,48 @@ def train(config: TrainerConfig):
         micro_batches = dataloader.get_batch()
         dropped_micro_batches = 0
         if not config.data.fake:
+            # Every rank plans the step from the same samples, so all plan the same; ranks that
+            # did not would run collectives of different sizes and hang, so they stop here.
+            digests = torch.tensor([dataloader.plan_digest, -dataloader.plan_digest], device="cuda")
+            dist.all_reduce(digests, op=dist.ReduceOp.MAX)
+            if digests.tolist() != [dataloader.plan_digest, -dataloader.plan_digest]:
+                raise RuntimeError(f"Trainer ranks planned step {progress.step} differently")
             # Ranks that share a data rank train the same micro batches, so they must drop
             # the same ones even when only one of them failed to fetch.
+            # 1: keep the micro batch out of the loss; 2: no rank can train this step.
             failed = torch.zeros(dataloader.dp_world_size, len(micro_batches), device="cuda")
             failed[dataloader.dp_rank, dataloader.failed_micro_batches] = 1
+            failed[dataloader.dp_rank, dataloader.unbuildable_micro_batches] = 2
             dist.all_reduce(failed, op=dist.ReduceOp.MAX)
             # An NCCL all-reduce returns once it is enqueued, not once every rank joined it.
             # Reading the result on the host waits for every rank's contribution, which each
             # rank makes only after its fetch: without this, a data master that finished
             # fetching first deleted the arrays while its CP peers were still fetching them.
             failed = failed.cpu()
-            # Every rank has fetched its arrays now, so one rank per data rank frees them
+            # Every rank has fetched its samples now, so one rank per data rank frees them
             # (dummy micro batches may reuse another data rank's, hence after the world
             # all-reduce).
             if is_data_master:
                 dataloader.release_payloads()
-            # A step where no micro batch's arrays could be fetched anywhere is not a
+            # A step where no micro batch's samples could be fetched anywhere is not a
             # transient failure (unreachable or mismatched env worker pools): stop instead of
             # training on nothing.
+            # Every rank raises together, after the all-reduce, so none waits on the others.
+            if bool((failed == 2).any()):
+                raise RuntimeError(
+                    "Could not fetch a multimodal sample, and no other multimodal sample of its rank's step could "
+                    "stand in for it to run the vision encoder; check that trainer ranks reach the env worker pools"
+                )
             if failed.numel() and bool(failed.all()):
                 raise RuntimeError(
-                    "Could not fetch the training arrays of any micro batch this step; check that "
+                    "Could not fetch the training samples of any micro batch this step; check that "
                     "trainer ranks reach the env worker pools' payload URLs (see the trainer and env-worker-pool logs)"
                 )
             dropped = failed[dataloader.dp_rank].nonzero().flatten().tolist()
             drop_micro_batches(micro_batches, dropped)
             dropped_micro_batches = int(failed.sum().item())
             if dropped:
-                logger.warning(f"Dropped {len(dropped)} micro batches whose payloads could not be fetched")
+                logger.warning(f"Dropped {len(dropped)} micro batches whose samples could not be fetched")
         load_data_time = time.perf_counter() - load_data_start_time
         logger.debug(f"Loaded batch in {format_time(load_data_time)}")
 
@@ -751,8 +773,9 @@ def train(config: TrainerConfig):
 
         # Optionally, clip the gradients
         grad_norm: torch.Tensor | None = None
+        group_grad_norms: dict[str, torch.Tensor] = {}
         if config.optim.max_norm is not None:
-            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
+            grad_norm, group_grad_norms = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
 
         # An async checkpoint must finish copying the state before the optimizer step mutates it
         ckpt_manager.wait_for_staging()
@@ -762,9 +785,9 @@ def train(config: TrainerConfig):
         optimizer.zero_grad()
 
         # Update learning rate scheduler
+        current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
 
-        current_lr = optimizer.param_groups[0]["lr"]
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
         # Broadcast the model just produced (policy v{progress.step}). The final
@@ -799,7 +822,7 @@ def train(config: TrainerConfig):
         if (is_ckpt_step or step_action == "checkpoint") and not is_last_step:
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
-            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+            ckpt_manager.save(progress.step, model, [optimizer], progress)
             if step_action == "checkpoint" or config.rollout_transport.retain:
                 # The action and the release of retained rollouts both need the checkpoint on storage
                 ckpt_manager.wait()
@@ -831,7 +854,7 @@ def train(config: TrainerConfig):
         mfu_6dn = perf_counter.get_step_mfu(
             perf_counter.flop_counter.flops_per_token_6dn * num_tokens, forward_backward_time
         )
-        peak_memory, non_torch_memory = get_peak_memory_across_ranks()
+        peak_memory, non_torch_memory, peak_allocated_memory = get_peak_memory_across_ranks()
         max_peak_memory = max(max_peak_memory, peak_memory)
 
         # Log step metrics
@@ -848,7 +871,7 @@ def train(config: TrainerConfig):
             step_message += f" | Mismatch KL {tensor_metrics['mismatch_kl/all/mean']:.4f}"
         if grad_norm is not None:
             step_message += f" | Grad. Norm {grad_norm:.4f}"
-        step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | MFU 6DN {mfu_6dn:.1f}% | Peak Mem. {peak_memory:.1f} GiB"
+        step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | MFU 6DN {mfu_6dn:.1f}% | Peak Mem. {peak_memory:.1f} GiB (allocated {peak_allocated_memory:.1f})"
         if "max_vio/mean" in tensor_metrics:
             step_message += f" | Max Vio {tensor_metrics['max_vio/mean']:.4f}"
         if "ep_imbalance/rank/mean" in tensor_metrics:
@@ -865,6 +888,7 @@ def train(config: TrainerConfig):
             "perf/mfu_6dn": mfu_6dn,
             "perf/peak_memory": peak_memory,
             "perf/non_torch_memory": non_torch_memory,
+            "perf/peak_allocated_memory": peak_allocated_memory,
             "step": progress.step,
         }
         asyncio.run(monitors.log(perf_metrics, step=progress.step))
@@ -876,6 +900,9 @@ def train(config: TrainerConfig):
         }
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
+        if group_grad_norms:
+            values = torch.stack(list(group_grad_norms.values())).tolist()
+            optim_metrics.update({f"optim/grad_norm/{group}": value for group, value in zip(group_grad_norms, values)})
         asyncio.run(monitors.log(optim_metrics, step=progress.step))
 
         # Compute derived metrics
@@ -924,7 +951,7 @@ def train(config: TrainerConfig):
     # Write final checkpoint
     if config.ckpt is not None or step_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
-        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+        ckpt_manager.save(progress.step, model, [optimizer], progress)
         ckpt_manager.wait()
         dataloader.commit(progress.step, release=is_data_master)
         if step_action is not None:

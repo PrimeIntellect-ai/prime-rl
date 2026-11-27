@@ -15,16 +15,19 @@ and drives the pipeline. Components are single-purpose:
   pipeline log, a time-keyed row through the monitors.
 
 Components don't reference the orchestrator. The orchestrator wires them
-in ``setup()`` and drives them from ``main_loop()``.
+in ``setup()`` and drives them from ``main_loop()``, the step loop, which is
+always in one ``Phase`` of its ``StepLoop`` (``step_loop.py``).
 """
 
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import os
 import time
 import uuid
+from collections import Counter, deque
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -35,8 +38,8 @@ from verifiers.v1.runtimes import set_base_sandbox_labels
 if TYPE_CHECKING:
     from transformers.tokenization_utils import PreTrainedTokenizer
 
+    from prime_rl.env.types import RestoreRef
     from prime_rl.orchestrator.ckpt import CheckpointManager
-    from prime_rl.transports.batch.base import BatchSender
 import prime_rl._compat  # noqa: F401
 from prime_rl import monitors
 from prime_rl.configs.diff import ConfigChange, diff_config, merge_resumed_config
@@ -44,10 +47,23 @@ from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.control.controller import Controller, validate_update
 from prime_rl.control.server import ControlServer
 from prime_rl.control.types import ConfigUpdate, InvalidConfigError, Reconfigurable
+from prime_rl.env.sandbox_owners import reap_previous_sandbox_pools
 from prime_rl.orchestrator.algo.routing import is_trainable
-from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
-from prime_rl.orchestrator.batch import BatchPacker
-from prime_rl.orchestrator.ckpt import build_state, setup_ckpt_manager
+from prime_rl.orchestrator.annotations import log_arrival, stamp_batch
+from prime_rl.orchestrator.ckpt import (
+    ROLLOUTS_DIR,
+    batch_refs,
+    build_state,
+    count_open_work,
+    directory_size,
+    is_train_result,
+    owned_snapshots,
+    persist_arrays,
+    persist_open_work,
+    result_env_name,
+    setup_ckpt_manager,
+    wait_for_writer,
+)
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
 from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
@@ -59,11 +75,13 @@ from prime_rl.orchestrator.gc import GarbageCollector
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metrics
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
+from prime_rl.orchestrator.step_loop import Phase, StepLoop
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.trainer_capacity import TrainerCapacity
 from prime_rl.orchestrator.types import (
     DispatchFailure,
+    DispatchResult,
     EvalBatch,
     GroupCancellation,
     Policy,
@@ -74,6 +92,7 @@ from prime_rl.orchestrator.utils import (
     eval_work,
     intercept_vf_logging,
     max_rollout_staleness,
+    min_fresh_version,
     release_and_trim,
     rollout_staleness,
     set_default_executor,
@@ -81,15 +100,17 @@ from prime_rl.orchestrator.utils import (
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
-from prime_rl.transports.batch import setup_batch_sender
+from prime_rl.transports.batch import BatchSender, StepBatch
 from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.pathing import (
+    get_all_ckpt_steps,
     get_broadcast_dir,
     get_config_dir,
+    kept_ckpt_steps,
     resolve_latest_ckpt_step,
     write_resolved_config,
 )
@@ -115,8 +136,7 @@ class Orchestrator:
     config: OrchestratorConfig
     progress: Progress
     policy: Policy
-    stopped: asyncio.Event
-    draining: bool
+    step_loop: StepLoop
     last_batch_at: float | None
     eval_triggered_at: dict[tuple[str, int], float]
     ckpt_manager: CheckpointManager
@@ -129,7 +149,6 @@ class Orchestrator:
     clients: InferenceClient | None
     admin_plane: AdminPlane | None
     sender: BatchSender | None
-    packer: BatchPacker
     train_envs: TrainEnvs
     train_source: TrainSource
     train_sink: TrainSink
@@ -174,12 +193,23 @@ class Orchestrator:
         self.control_requested = asyncio.Event()
         # The state as of shipping the last step, which a pause at that step saves.
         self.shipped_state = None
+        # Held by the step loop while it moves between phases, and by a rollout checkpoint
+        # while it reads the pipeline.
+        self.sink_lock = asyncio.Lock()
+        self.step_loop = StepLoop()
+        # Results the step loop takes before ``out_q``'s: those a resumed checkpoint
+        # held, and the one result on its way from ``out_q`` into the sink.
+        self.staged: deque[DispatchResult] = deque()
+        # The newest policy version whose publish barrier a rollout checkpoint has seen.
+        self.barrier_step = self.resume_step or 0
+        # Steps a pause or checkpoint saves at their barrier.
+        self.control_steps: set[int] = set()
+        # The last rollout checkpoint: its step, and the task that ends when it is
+        # complete (None until its writer is forked).
+        self.ckpt_step: int | None = None
+        self.ckpt_task: asyncio.Task | None = None
         self.policy = Policy(version=0, model_name="")
         self.gc = GarbageCollector(config.gc.interval) if config.gc else None
-        self.stopped = asyncio.Event()
-        # True after the final train step ships — pipeline winds down without
-        # scheduling new train rollouts
-        self.draining = False
         # Previous ``TrainBatch`` arrival timestamp; reset every ship so
         # ``step_time`` in the success log is real sink-to-sink cycle time
         self.last_batch_at = None
@@ -190,8 +220,6 @@ class Orchestrator:
         self.eval_triggered_steps: set[int] = set()
         self.component_tasks = []
         self.release_future: asyncio.Future | None = None
-        # Rollouts of the batch cut and waiting for the trainer to request it
-        self.unsent_rollouts = 0
         # Batches shipped by this process, when the last one shipped, and the rollouts per second the trainer took
         # over the step before it if that batch waited for the trainer (the trainer is the bottleneck), else None
         self.ships = 0
@@ -269,6 +297,8 @@ class Orchestrator:
             self.heart = Heartbeat(config.heartbeat)
 
         config_dir = get_config_dir(config.output_dir)
+        if config.resume is not None and config.resume.dir is None:
+            await reap_previous_sandbox_pools(config_dir)
         self.train_envs = TrainEnvs(
             config.train.source,
             config.env_addresses,
@@ -295,11 +325,8 @@ class Orchestrator:
             get_logger().info("Starting from scratch")
 
         # Transports are local setup — initialize them before the env and inference waits.
-        self.packer = BatchPacker(config)
-        get_logger().info(f"Initializing micro batch sender ({config.rollout_transport})")
-        self.sender = setup_batch_sender(
-            config.output_dir, config.num_train_workers, self.progress.step, config.rollout_transport
-        )
+        get_logger().info(f"Initializing batch sender ({config.rollout_transport})")
+        self.sender = BatchSender(config.output_dir, self.progress.step, config.rollout_transport)
 
         # Wait phase: envs, then inference, then the trainer's startup broadcast —
         # the last things before the main loop starts.
@@ -314,9 +341,16 @@ class Orchestrator:
             await self.eval_envs.start()
             get_logger().success(f"Eval environments ready in {format_time(time.perf_counter() - t0)}")
 
+        if config.resume is not None and config.resume.dir is None:
+            ledger = self.ckpt_manager.snapshots
+            for step in list(ledger.steps):
+                if not (self.ckpt_manager.get_ckpt_path(step) / "progress.pt").is_file():
+                    ledger.record(step, [])
+            await self.sweep_snapshots()
         self.train_source = TrainSource(self.train_envs)
+        open_work = None
         if self.resume_step is not None:
-            self.ckpt_manager.load(
+            open_work = self.ckpt_manager.load(
                 self.progress, self.train_source, step=self.resume_step, path=resume_path(self.config)
             )
             self.progress.step = self.resume_step + 1
@@ -372,6 +406,8 @@ class Orchestrator:
             group_size=self.train_source.group_size,
         )
         self.concurrency = ConcurrencyController(config.concurrency, fallback_cost=config.seq_len)
+        if open_work is not None:
+            self.concurrency.restore(open_work["max_inflight"])
         self.dispatcher = Dispatcher(
             train_envs=self.train_envs,
             eval_envs=self.eval_envs,
@@ -389,7 +425,7 @@ class Orchestrator:
             on_call=self.concurrency.record_call,
             on_pause=self.concurrency.pause,
             on_resume=self.concurrency.resume,
-            unconsumed_train_rollouts=lambda: self.train_sink.batchable_rollouts() + self.unsent_rollouts,
+            unconsumed_train_rollouts=lambda: self.train_sink.batchable_rollouts() + self.step_loop.unshipped_rollouts,
             batch_size=lambda: self.train_sink.batch_size,
             trainer_rate=lambda: self.trainer_rate,
         )
@@ -413,6 +449,9 @@ class Orchestrator:
         # initial limit before the loop-start line; failures are tolerated.
         await self.inference_metrics.probe()
 
+        if open_work is not None:
+            self.resume_open_work(open_work)
+
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
         self.watcher = WeightWatcher(
             self.receiver,
@@ -423,6 +462,7 @@ class Orchestrator:
         if self.eval_source is not None:
             self.watcher.on_update(self.trigger_eval)
         self.watcher.on_update(self.on_policy_update)
+        self.watcher.on_pending(self.checkpoint_rollouts)
         # Single periodic logger for the whole pipeline. It's the only
         # consumer of ``dispatcher.metrics.drained()`` (which clears on read)
         self.lag_monitor = EventLoopLagMonitor()
@@ -490,10 +530,8 @@ class Orchestrator:
         # CancelledError, KeyboardInterrupt, or a real error), so the teardown
         # logs a forced-cleanup warning instead of a clean-exit success.
         clean_exit = False
-        loop_done = False
         try:
             await self.main_loop()
-            loop_done = True
             await self.wait_for_final_broadcast()
             clean_exit = True
         except asyncio.CancelledError:
@@ -507,9 +545,10 @@ class Orchestrator:
             # ``progress.step`` points at the next (unshipped) step; the last finished step is
             # ``progress.step - 1``. Checkpoint it as ``step_{progress.step - 1}`` (no-op before the
             # first ship). Saved before finalize, which tells the launcher the run is done. Only once the
-            # step loop finished (the last step is fully shipped); a crash mid-loop leaves no consistent
+            # step loop stopped (the last step is fully shipped); a crash mid-loop leaves no consistent
             # state for that step, and the trainer has no checkpoint for it.
-            if loop_done and self.config.ckpt is not None and self.progress.step > 1:
+            stopped = self.step_loop.phase is Phase.STOPPED
+            if stopped and self.config.ckpt is not None and self.progress.step > 1:
                 self.progress.step -= 1
                 get_logger().info(f"Saving final checkpoint at step {self.progress.step}")
                 self.ckpt_manager.save(self.progress, self.train_source, self.config_state(), step=self.progress.step)
@@ -567,79 +606,104 @@ class Orchestrator:
         await self.wait_for_version(self.config.max_steps, reason="before shutdown")
 
     async def main_loop(self) -> None:
-        """Consume dispatcher results and route them to the train / eval sink.
-
-        Native episodes are persisted as verifier artifacts. Dispatch failures
-        and group cancellations remain internal accounting events.
-
-        The sinks return a finalized batch (or ``None``); we just dispatch on
-        the result."""
-        while not self.stopped.is_set():
+        """Run the step loop until it stops. Each phase waits for one thing, then moves on
+        (``step_loop.py``)."""
+        while self.step_loop.phase is not Phase.STOPPED:
             self._raise_if_component_stopped()
-            if self.draining and self.dispatcher.is_idle:
-                get_logger().info("Pipeline drained, exiting main loop")
-                self.stopped.set()
-                break
+            match self.step_loop.phase:
+                case Phase.COLLECTING | Phase.DRAINING:
+                    await self.collect()
+                case Phase.SHIPPING:
+                    await self.ship(self.step_loop.batch)
+                case Phase.FINISHING:
+                    await self.finish()
+                case phase:
+                    raise RuntimeError(f"The step loop stalled in {phase}")
 
+    async def collect(self) -> None:
+        """``COLLECTING`` / ``DRAINING``: take the next result in, those a resumed checkpoint
+        held first. Native episodes are persisted as verifier artifacts; dispatch failures and
+        group cancellations remain internal accounting events. A draining loop stops once
+        nothing is left."""
+        if self.step_loop.phase is Phase.DRAINING and self.dispatcher.is_idle and not self.staged:
+            get_logger().info("Pipeline drained, exiting main loop")
+            self.step_loop.move(Phase.STOPPED)
+            return
+        if not self.staged:
             try:
-                item = await asyncio.wait_for(self.dispatcher.get(), timeout=0.5)
+                # Staged until the sink lock is held: a rollout checkpoint written
+                # before then still saves the result.
+                self.staged.append(await asyncio.wait_for(self.dispatcher.get(), timeout=0.5))
             except asyncio.TimeoutError:
-                self._raise_if_component_stopped()
-                continue
+                return
+        async with self.sink_lock:
+            await self.ingest(self.staged.popleft())
 
-            if isinstance(item, GroupCancellation):
-                assert item.kind == "train"  # eval groups are never dropped
-                train_batch = await self.train_sink.cancel(item)
-                await self.handle_train_result(train_batch)
-                continue
-            if isinstance(item, DispatchFailure):
-                if item.kind == "eval":
-                    assert self.eval_sink is not None
-                    eval_batch = self.eval_sink.fail(item)
-                    if eval_batch is not None:
-                        await self.finalize_eval_batch(eval_batch)
-                else:
-                    train_batch = await self.train_sink.fail(item)
-                    await self.handle_train_result(train_batch)
-                continue
-            episode = item
-
-            # Every completed rollout — errored, rejected, or never batched — lands in the
-            # ``all`` trace file the moment it arrives, so it survives crashes and drains.
-            # Train rollouts belong to the batch window currently collecting (``progress.step``),
-            # eval rollouts to the step whose eval triggered them.
-            if episode.run is None:
-                raise ValueError("Dispatched episode is missing run identity")
-            if not isinstance(episode.run, vf.TrainRunInfo):
-                raise ValueError("Orchestrated episode is missing training-run provenance")
-            kind = episode.run.work.type
-            step = episode.run.work.step if kind == "eval" else self.progress.step
-            stamp_arrival([episode], kind, step)
-            await monitors.log([episode], step, kind, "all")
-
-            if kind == "eval":
-                assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
-                eval_batch = self.eval_sink.add(episode)
+    async def ingest(self, item: DispatchResult) -> None:
+        """Route one dispatcher result to its sink."""
+        if isinstance(item, GroupCancellation):
+            assert item.kind == "train"  # eval groups are never dropped
+            train_batch = await self.train_sink.cancel(item)
+            await self.handle_train_result(train_batch)
+            return
+        if isinstance(item, DispatchFailure):
+            if item.kind == "eval":
+                assert self.eval_sink is not None
+                eval_batch = self.eval_sink.fail(item)
                 if eval_batch is not None:
                     await self.finalize_eval_batch(eval_batch)
-                continue
+            else:
+                train_batch = await self.train_sink.fail(item)
+                await self.handle_train_result(train_batch)
+            return
+        episode = item
 
-            train_batch = await self.train_sink.add(episode)
-            await self.handle_train_result(train_batch)
+        # Every completed rollout — errored, rejected, or never batched — lands in the
+        # trace stream the moment it arrives, so it survives crashes and drains.
+        # Train rollouts belong to the batch window currently collecting (``progress.step``),
+        # eval rollouts to the step whose eval triggered them. The record is the episode as
+        # its env worker serialized it; the orchestrator holds it only until it is logged.
+        if episode.run is None:
+            raise ValueError("Dispatched episode is missing run identity")
+        if not isinstance(episode.run, vf.TrainRunInfo):
+            raise ValueError("Orchestrated episode is missing training-run provenance")
+        kind = episode.run.work.type
+        step = episode.run.work.step if kind == "eval" else self.progress.step
+        await log_arrival(episode, kind, step)
+
+        if kind == "eval":
+            assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
+            eval_batch = self.eval_sink.add(episode)
+            if eval_batch is not None:
+                await self.finalize_eval_batch(eval_batch)
+            return
+
+        train_batch = await self.train_sink.add(episode)
+        await self.handle_train_result(train_batch)
 
     async def handle_train_result(self, batch: TrainBatch | None) -> None:
+        """Ship the batch a train sink cut, unless the loop drains: then it never ships."""
         if self.heart is not None:
             self.heart.beat()
-        while batch is not None and not self.draining and not self.stopped.is_set():
-            await self.finalize_train_batch(batch)
-            if self.draining or self.stopped.is_set():
-                return
-            batch = await self.train_sink.take_batch()
-        if self.draining or self.stopped.is_set():
-            if batch is not None:
-                self.train_sink.rollout_window.metrics.count("rollout/queued/cancelled", float(batch.cohort.num_traces))
-                self.train_sink.release_samples(batch.samples)
-            self.train_sink.discard_queued()
+        if self.step_loop.draining:
+            self.discard(batch)
+        elif batch is not None:
+            self.step_loop.move(Phase.SHIPPING, batch)
+
+    def discard(self, batch: TrainBatch | None) -> None:
+        """Release a batch and the traces queued for later ones, which never ship."""
+        if batch is not None:
+            self.train_sink.rollout_window.metrics.count("rollout/queued/cancelled", float(batch.cohort.num_traces))
+            self.train_sink.release_samples(batch.samples)
+        self.train_sink.discard_queued()
+
+    async def take_queued_batch(self) -> None:
+        """Ship the next batch the sink has queued for the current step, or collect one."""
+        batch = await self.train_sink.take_batch()
+        if batch is not None:
+            self.step_loop.move(Phase.SHIPPING, batch)
+        elif self.step_loop.phase is not Phase.COLLECTING:
+            self.step_loop.move(Phase.COLLECTING)
 
     def take_rollout_metrics(self) -> dict[str, float]:
         window = self.train_sink.take_rollout_window(force=True)
@@ -696,62 +760,65 @@ class Orchestrator:
                 raise error
             raise RuntimeError(f"{task.get_name()} exited unexpectedly")
 
-    async def finalize_train_batch(self, batch: TrainBatch) -> None:
-        """Ship one ``TrainBatch`` out to the trainer and handle the I/O
-        side-effects (ckpt, monitors.log, reference scoring, sender.send,
-        metrics, heartbeat, progress, eval trigger). The sink has already
-        done all data-transformation work."""
+    async def ship(self, batch: TrainBatch) -> None:
+        """``SHIPPING``: hand the cut batch to the trainer. Once it took the batch, the loop moves
+        on and does the step's I/O (ckpt, monitors.log, metrics, heartbeat, control) as part of the
+        move. The sink has already done all data-transformation work."""
         config = self.config
         step = self.progress.step
+        async with self.sink_lock:
+            # A resume can start past the end (checkpoint written at the final
+            # step, or a lowered ``max_steps``): never ship beyond the budget.
+            if config.max_steps is not None and step > config.max_steps:
+                await self.start_draining(f"Step {step} exceeds max_steps={config.max_steps}")
+                self.discard(batch)
+                return
 
-        # A resume can start past the end (checkpoint written at the final
-        # step, or a lowered ``max_steps``): never ship beyond the budget.
-        if config.max_steps is not None and step > config.max_steps:
-            self.train_sink.rollout_window.metrics.count("rollout/queued/cancelled", float(batch.cohort.num_traces))
-            self.train_sink.release_samples(batch.samples)
-            await self.start_draining(f"Step {step} exceeds max_steps={config.max_steps}")
-            return
+            if not batch.samples:
+                get_logger().warning(f"Step {step}: skipping empty train batch after zero-advantage pruning")
+                await self.take_queued_batch()
+                return
+            # Sink-to-sink cycle time — the actual time between batches, not
+            # including the orchestrator's ship I/O (overlapped with the
+            # dispatcher producing the next batch)
+            now = time.perf_counter()
+            step_time = (now - self.last_batch_at) if self.last_batch_at is not None else 0.0
+            self.last_batch_at = now
 
-        if not batch.samples:
-            get_logger().warning(f"Step {step}: skipping empty train batch after zero-advantage pruning")
-            return
-        # Sink-to-sink cycle time — the actual time between batches, not
-        # including the orchestrator's ship I/O (overlapped with the
-        # dispatcher producing the next batch)
-        now = time.perf_counter()
-        step_time = (now - self.last_batch_at) if self.last_batch_at is not None else 0.0
-        self.last_batch_at = now
+            effective = batch.cohort.effective
+            n_trainable = await asyncio.to_thread(
+                lambda: sum(is_trainable(record.trace) for record in effective.records)
+            )
+            if effective.num_traces and n_trainable / effective.num_traces <= 0.1:
+                get_logger().warning(
+                    f"Only {n_trainable}/{effective.num_traces} effective traces are trainable "
+                    f"({n_trainable / effective.num_traces:.1%}) — consider reviewing task difficulty"
+                )
 
-        effective = batch.cohort.effective
-        n_trainable = await asyncio.to_thread(lambda: sum(is_trainable(record.trace) for record in effective.records))
-        if effective.num_traces and n_trainable / effective.num_traces <= 0.1:
-            get_logger().warning(
-                f"Only {n_trainable}/{effective.num_traces} effective traces are trainable "
-                f"({n_trainable / effective.num_traces:.1%}) — consider reviewing task difficulty"
+            # Update arrival totals before checkpointing; publish all and effective
+            # statistics together in one scalar record for this training batch.
+            rollout_metrics = self.take_rollout_metrics()
+
+            # The effective (clean, trained-on) subset is logged at ship time as annotation
+            # records against each trace's arrival record - membership, advantage, the step
+            # it shipped at - never a second episode copy.
+            effective_episodes = await asyncio.to_thread(lambda: effective.trimmed_episodes)
+            annotations = stamp_batch(effective_episodes, step)
+            await monitors.log_annotations(annotations)
+
+            # Every trainer rank plans the step's micro batches from the same samples.
+            step_batch = StepBatch(
+                samples=batch.samples,
+                trained_version=step - 1,
+                min_version=min_fresh_version(step, config.max_staleness),
             )
 
-        # Update arrival totals before checkpointing; publish all and effective
-        # statistics together in one scalar record for this training batch.
-        rollout_metrics = self.take_rollout_metrics()
-
-        # The effective (clean, trained-on) subset is logged at ship time as annotation
-        # records against each trace's arrival record - membership, advantages, the step
-        # it shipped at - never a second episode copy.
-        effective_episodes = await asyncio.to_thread(lambda: effective.vf_episodes)
-        # Monitors may retain the list for asynchronous upload after publication.
-        await monitors.log(effective_episodes.copy(), step, "train", "effective")
-        annotations = await asyncio.to_thread(stamp_batch, effective_episodes, step)
-        await monitors.log_annotations(annotations)
-
-        pack_start_time = time.perf_counter()
-        micro_batch_grid = await asyncio.to_thread(self.packer.pack, batch.samples)
-        pack_time = time.perf_counter() - pack_start_time
         # Sending blocks until every trainer rank requested the batch, so the wait is the time
-        # the orchestrator spent waiting on the trainer for the next policy.
+        # the orchestrator spent waiting on the trainer for the next policy. The trainer requests
+        # it only after the orchestrator applied the previous policy, so a rollout checkpoint
+        # written before that finds the batch here, unshipped.
         send_start_time = time.perf_counter()
-        self.unsent_rollouts = batch.cohort.num_traces
-        send_batch_time = await self.sender.send(micro_batch_grid)
-        self.unsent_rollouts = 0
+        send_batch_time = await self.sender.send(step_batch)
         shipped_at = time.perf_counter()
         # The trainer's first step in a process includes its warmup, so its pace counts from the second one
         self.ships += 1
@@ -761,92 +828,104 @@ class Orchestrator:
         self.trainer_capacity.shipped(batch.cohort.num_traces, self.sender.last_requested_at)
         self.concurrency.trainer_shipped()
         wait_for_policy_time = shipped_at - send_start_time - send_batch_time
+        # No await since the trainer took the batch: a rollout checkpoint finds the
+        # batch either unshipped or shipped.
         self.train_sink.shipped(batch)
         self.progress.step += 1
-        self.update_dispatch_gate()
-        self.revert_rejected_draft()
-        if self.controller is not None:
-            self.apply_config_update()
-            self.shipped_state = (step, build_state(self.progress, self.train_source, self.config_state()))
-            self.apply_control()
-        # Checkpoint the step we just shipped (resume point: continue at step + 1).
-        save_ckpt_time = await self.maybe_save_ckpt(step)
+        final = config.max_steps is not None and step >= config.max_steps
+        self.step_loop.move(Phase.FINISHING if final else Phase.COLLECTING)
 
-        def shipped_metrics() -> dict[str, float]:
-            metrics = effective.metrics.to_wandb(prefix="train/agg", subset="effective")
-            for env_name, env_pool in effective.by_env().items():
-                metrics |= env_pool.metrics.to_wandb(prefix=f"train/{env_name}", subset="effective")
-            num_input = sum(record.trace.num_input_tokens for record in effective.records)
-            num_output = sum(record.trace.num_output_tokens for record in effective.records)
-            metrics |= {
-                "progress/input_tokens": num_input,
-                "progress/output_tokens": num_output,
-                "time/step": step_time,
-                "time/pack": pack_time,
-                "time/save_ckpt": save_ckpt_time,
-                "time/send_batch": send_batch_time,
-                "step": step,
-            }
-            # Token and rollout staleness of the shipped cohort. Queue drops and
-            # masked tokens are reported with rollout windows.
-            staleness = [s for episode in effective if (s := rollout_staleness(episode, step)) is not None]
-            if staleness:
-                rollouts = [s.rollout for s in staleness]
-                in_flight = [s.in_flight for s in staleness]
-                in_queue = [s.in_queue for s in staleness]
+        async with self.sink_lock:
+            self.update_dispatch_gate()
+            self.revert_rejected_draft()
+            if self.controller is not None:
+                self.apply_config_update()
+                self.shipped_state = (step, build_state(self.progress, self.train_source, self.config_state()))
+                self.apply_control()
+            # Checkpoint the step we just shipped (resume point: continue at step + 1).
+            save_ckpt_time = await self.maybe_save_ckpt(step)
+
+            def shipped_metrics() -> dict[str, float]:
+                metrics = effective.metrics.to_wandb(prefix="train/agg", subset="effective")
+                for env_name, env_pool in effective.by_env().items():
+                    metrics |= env_pool.metrics.to_wandb(prefix=f"train/{env_name}", subset="effective")
+                num_input = sum(record.trace.num_input_tokens for record in effective.records)
+                num_output = sum(record.trace.num_output_tokens for record in effective.records)
                 metrics |= {
-                    "staleness/rollout/mean": sum(rollouts) / len(rollouts),
-                    "staleness/rollout/max": float(max(rollouts)),
-                    "staleness/rollout/in_flight/mean": sum(in_flight) / len(in_flight),
-                    "staleness/rollout/in_flight/max": float(max(in_flight)),
-                    "staleness/rollout/in_queue/mean": sum(in_queue) / len(in_queue),
-                    "staleness/rollout/in_queue/max": float(max(in_queue)),
+                    "progress/input_tokens": num_input,
+                    "progress/output_tokens": num_output,
+                    "time/step": step_time,
+                    "time/save_ckpt": save_ckpt_time,
+                    "time/send_batch": send_batch_time,
+                    "step": step,
                 }
-                if num_tokens := sum(s.token_count for s in staleness):
-                    metrics["staleness/token/mean"] = sum(s.token_sum for s in staleness) / num_tokens
-            for env_name, env_pool in effective.by_env().items():
-                metrics[f"batch/{env_name}"] = env_pool.num_traces / effective.num_traces
-            return metrics
+                # Token and rollout staleness of the shipped cohort. Queue drops and
+                # masked tokens are reported with rollout windows.
+                staleness = [s for episode in effective if (s := rollout_staleness(episode, step)) is not None]
+                if staleness:
+                    rollouts = [s.rollout for s in staleness]
+                    in_flight = [s.in_flight for s in staleness]
+                    in_queue = [s.in_queue for s in staleness]
+                    metrics |= {
+                        "staleness/rollout/mean": sum(rollouts) / len(rollouts),
+                        "staleness/rollout/max": float(max(rollouts)),
+                        "staleness/rollout/in_flight/mean": sum(in_flight) / len(in_flight),
+                        "staleness/rollout/in_flight/max": float(max(in_flight)),
+                        "staleness/rollout/in_queue/mean": sum(in_queue) / len(in_queue),
+                        "staleness/rollout/in_queue/max": float(max(in_queue)),
+                    }
+                    if num_tokens := sum(s.token_count for s in staleness):
+                        metrics["staleness/token/mean"] = sum(s.token_sum for s in staleness) / num_tokens
+                for env_name, env_pool in effective.by_env().items():
+                    metrics[f"batch/{env_name}"] = env_pool.num_traces / effective.num_traces
+                return metrics
 
-        source_metrics = self.train_source.metrics()
-        metrics = await asyncio.to_thread(shipped_metrics)
-        metrics = rollout_metrics | metrics | source_metrics
-        metrics["time/wait_for_policy"] = wait_for_policy_time
-        await monitors.log(metrics, step=step)
+            source_metrics = self.train_source.metrics()
+            metrics = await asyncio.to_thread(shipped_metrics)
+            metrics = rollout_metrics | metrics | source_metrics
+            metrics["time/wait_for_policy"] = wait_for_policy_time
+            await monitors.log(metrics, step=step)
 
-        active_step_time = max(step_time - wait_for_policy_time, 0.0)
-        if step_time > 0 and wait_for_policy_time >= active_step_time:
-            get_logger().warning(
-                f"Orchestrator waited {format_time(wait_for_policy_time)} for policy updates, at least as long "
-                f"as its {format_time(active_step_time)} active step time. Train-inference compute is imbalanced; "
-                "add more trainer nodes."
-            )
+            active_step_time = max(step_time - wait_for_policy_time, 0.0)
+            if step_time > 0 and wait_for_policy_time >= active_step_time:
+                get_logger().warning(
+                    f"Orchestrator waited {format_time(wait_for_policy_time)} for policy updates, at least as long "
+                    f"as its {format_time(active_step_time)} active step time. Train-inference compute is "
+                    "imbalanced; add more trainer nodes."
+                )
 
-        if self.heart is not None:
-            self.heart.beat()
+            if self.heart is not None:
+                self.heart.beat()
 
-        await asyncio.to_thread(self.log_train_batch, batch, step=step, step_time=step_time)
+            await asyncio.to_thread(self.log_train_batch, batch, step=step, step_time=step_time)
 
-        if config.max_steps is not None and step >= config.max_steps:
-            await self.wait_for_version(step, reason="before shutdown")
-        # Drain right after shipping the final batch. Waiting for a further
-        # batch to fill would burn inference on data that can never train —
-        # and with a tight ``max_staleness`` it never fills at all (the
-        # versions it would need are never broadcast).
-        if config.max_steps is not None and step >= config.max_steps:
+            # Shielded so cancelling the loop does not cancel the release, which teardown still awaits.
+            if self.release_future is not None:
+                await asyncio.shield(self.release_future)
+            # A full collection writes to every object, which would copy the memory this
+            # process shares with a checkpoint writer.
+            if self.gc is not None and (self.ckpt_task is None or self.ckpt_task.done()):
+                self.gc.run(step)
+            payload = (batch.samples, batch.cohort.episodes, effective_episodes)
+            self.release_future = asyncio.get_running_loop().run_in_executor(None, release_and_trim, *payload)
+
+            if not final:
+                await self.take_queued_batch()
+
+    async def finish(self) -> None:
+        """``FINISHING``: wait for inference to apply the policy the trainer trains on the
+        final step, which triggers the final evals, then drain right away. Waiting for a further
+        batch to fill would burn inference on data that can never train — and with a tight
+        ``max_staleness`` it never fills at all (the versions it would need are never
+        broadcast)."""
+        await self.wait_for_version(self.progress.step - 1, reason="before shutdown")
+        async with self.sink_lock:
             await self.start_draining("Shipped the final batch")
-        # Shielded so cancelling the loop does not cancel the release, which teardown still awaits.
-        if self.release_future is not None:
-            await asyncio.shield(self.release_future)
-        if self.gc is not None:
-            self.gc.run(step)
-        payload = (batch.samples, batch.cohort.episodes, effective_episodes, *micro_batch_grid)
-        self.release_future = asyncio.get_running_loop().run_in_executor(None, release_and_trim, *payload)
 
     async def start_draining(self, reason: str) -> None:
         """Stop scheduling train work and let the pipeline empty; triggered
         eval epochs still run to completion."""
-        self.draining = True
+        self.step_loop.move(Phase.DRAINING)
         self.train_sink.discard_queued()
         self.dispatcher.disable_train_scheduling()
         cancellations = await self.dispatcher.cancel_inflight_train_episodes()
@@ -934,7 +1013,11 @@ class Orchestrator:
             inflight_part += " | " + ", ".join(f"{n}={v}" for n, v in env_pairs)
         inflight_part += ")"
 
-        body = train_batch_part + eval_batch_part + "; " + inflight_part
+        phase_part = (
+            f"Step {self.progress.step} {self.step_loop.phase} for "
+            f"{format_time(time.perf_counter() - self.step_loop.since)}"
+        )
+        body = phase_part + " | " + train_batch_part + eval_batch_part + "; " + inflight_part
 
         payload: dict[str, float] = {
             **disp_gauges,
@@ -943,6 +1026,7 @@ class Orchestrator:
             **self.concurrency.gauges(),
             **self.trainer_capacity.gauges(),
             **self.clients.session_release_gauges(),
+            **self.ckpt_manager.gauges(),
         }
         if self.draft_loader is not None:
             payload |= self.draft_loader.gauges()
@@ -1007,11 +1091,9 @@ class Orchestrator:
         # ``env_name``); the full returned cohort already streamed into ``all`` on arrival.
         episodes = batch.episodes
         effective = episodes.effective
-        effective_episodes = await asyncio.to_thread(lambda: effective.vf_episodes)
+        effective_episodes = await asyncio.to_thread(lambda: effective.trimmed_episodes)
         if effective_episodes:
-            await monitors.log(effective_episodes, batch.step, "eval", "effective")
-            annotations = await asyncio.to_thread(stamp_batch, effective_episodes, batch.step)
-            await monitors.log_annotations(annotations)
+            await monitors.log_annotations(stamp_batch(effective_episodes, batch.step))
         policy_spans = [eval_work(episode).policy for episode in episodes]
         if any(span is None for span in policy_spans):
             raise ValueError(f"Eval {batch.env_name} step {batch.step} is missing policy provenance")
@@ -1058,6 +1140,9 @@ class Orchestrator:
         elapsed time (0.0 when no save happened)."""
         if self.config.ckpt is None or not self.config.ckpt.interval:
             return 0.0
+        # With its rollouts, a step is saved when its weights are published (``checkpoint_rollouts``).
+        if self.saves_rollouts:
+            return 0.0
         # The final step's checkpoint is written once in ``start()``'s teardown; skip it here so
         # we don't double-save. This mirrors the trainer (its is_last_step skips the in-loop save).
         if self.config.max_steps is not None and step >= self.config.max_steps:
@@ -1074,16 +1159,270 @@ class Orchestrator:
     def apply_control(self) -> None:
         """Save the state as of shipping the last step if a pause or checkpoint is due at it. A
         trainer paused there never requests the next step, so this stays the last shipped step. A
-        checkpoint must arrive before the trainer finishes the step and requests the next one."""
+        checkpoint must arrive before the trainer finishes the step and requests the next one.
+
+        With ``ckpt.rollouts`` the step is saved with its rollouts at the publish barrier of its
+        weights (``checkpoint_rollouts``). A request that arrives after that barrier saves the
+        state as of shipping, without rollouts, unless the barrier already saved the step."""
         if self.shipped_state is None:
             return
         step, state = self.shipped_state
         action_type = self.controller.update(step)
         if action_type is None:
             return
+        is_final = self.config.max_steps is not None and step >= self.config.max_steps
+        if self.saves_rollouts and step > self.barrier_step and not is_final:
+            self.control_steps.add(step)
+            get_logger().info(f"A {action_type} saves step {step} with its rollouts once its weights are published")
+            return
+        if self.ckpt_step == step:
+            if self.ckpt_task is None or not self.ckpt_task.done():
+                self.control_steps.add(step)
+                return
+            if self.ckpt_task.exception() is None:
+                self.controller.mark_saved(step)
+                return
         self.ckpt_manager.save_state(state, step)
         self.controller.mark_saved(step)
         get_logger().info(f"Saved the state of step {step} for a {action_type}")
+
+    @property
+    def saves_rollouts(self) -> bool:
+        return self.config.ckpt is not None and self.config.ckpt.rollouts
+
+    def rollout_ckpt_due(self, step: int) -> bool:
+        """Whether the publish barrier of v{step} saves ``step``. The final step never
+        does: its checkpoint is written once the pipeline has drained."""
+        if self.step_loop.draining or (self.config.max_steps is not None and step >= self.config.max_steps):
+            return False
+        interval = self.config.ckpt.interval
+        return bool(interval and step % interval == 0) or step in self.control_steps
+
+    async def checkpoint_rollouts(self, step: int) -> None:
+        """Watcher hook at the publish barrier of v{step}: save ``step`` with the pipeline
+        as it is now. Nothing is dispatched during the barrier and the trainer waits in
+        its broadcast, so every token sampled so far used v{step - 1} or older, and a
+        run that resumes from ``step`` continues exactly this pipeline with v{step}.
+
+        The env workers first take a memory checkpoint of each running train rollout.
+        Then, with the sink locked, progress, train source, configs and open work are
+        read at one instant, and the saved rollouts go on. The training arrays of the
+        cut batch are written next, since the trainer frees them once it took the
+        batch. The hook returns there, so the trainer's broadcast completes.
+        ``ckpt_task`` then writes the other training arrays of the open work. It keeps
+        the sink locked meanwhile, so the sink deletes none of them. Last, it forks a
+        writer that gets the rest to disk. The checkpoint is complete when
+        ``ckpt_task`` ends."""
+        if not self.saves_rollouts:
+            return
+        if self.controller is not None:
+            self.apply_control()
+        self.barrier_step = step
+        if not self.rollout_ckpt_due(step):
+            return
+        if self.ckpt_task is not None:
+            # One writer at a time; a failed one fails the run here.
+            await self.ckpt_task
+        self.ckpt_step, self.ckpt_task = step, None
+        get_logger().info(f"Saving checkpoint at step {step} with its rollouts")
+        rollouts = (self.ckpt_manager.get_ckpt_path(step) / ROLLOUTS_DIR).resolve()
+        await asyncio.to_thread(self.ckpt_manager.clear, step)
+
+        start = time.perf_counter()
+        try:
+            restores = await self.save_inflight(rollouts)
+            # In the ledger from the moment this run owns them: if the orchestrator dies
+            # before the writer finishes, this step has no progress.pt, and a resume
+            # deletes its snapshots.
+            self.ckpt_manager.snapshots.record(step, [restore.snapshot for restore in restores.values()])
+            seconds = {"save": time.perf_counter() - start}
+            recorded = asyncio.get_running_loop().create_future()
+            self.ckpt_task = asyncio.create_task(
+                self.write_rollout_ckpt(step, rollouts, restores, seconds, recorded), name="rollout_ckpt"
+            )
+            await asyncio.shield(recorded)
+        except BaseException:
+            await asyncio.shield(asyncio.gather(*(env.release() for env in self.train_envs), return_exceptions=True))
+            raise
+
+    async def write_rollout_ckpt(
+        self,
+        step: int,
+        rollouts: Path,
+        restores: dict[str, RestoreRef],
+        seconds: dict[str, float],
+        recorded: asyncio.Future[None],
+    ) -> None:
+        """Record the pipeline for ``step``'s rollout checkpoint and let the saved
+        rollouts go on. Set ``recorded``, then write the checkpoint
+        (``finish_rollout_ckpt``)."""
+        try:
+            async with self.sink_lock:
+                locked = time.perf_counter()
+                work = self.open_work(restores)
+                state = build_state(self.progress, self.train_source, self.config_state())
+                snapshotted = time.perf_counter()
+                # The saved rollouts wait at their restore points until here: each one
+                # is either in the open work with its restore point, or finished before.
+                await asyncio.gather(*(env.release() for env in self.train_envs))
+                # The trainer takes the cut batch once its broadcast completes. It frees
+                # the batch's arrays after it fetched them, so they go to the checkpoint
+                # first.
+                batch = batch_refs(work)
+                persisted = await persist_arrays(batch, rollouts)
+                recorded.set_result(None)
+                # Under the lock, so the sink deletes none of the other arrays meanwhile.
+                needed, rest = await persist_open_work(work, rollouts, skip=batch)
+                needed, persisted = needed + sum(map(len, batch.values())), persisted + rest
+                forked = time.perf_counter()
+                pid = self.ckpt_manager.fork_writer(state, work, step, freeze=self.gc is None)
+        except BaseException as error:
+            if not recorded.done():
+                recorded.set_exception(error)
+            raise
+        if persisted < needed:
+            get_logger().warning(
+                f"{needed - persisted} of {needed} training arrays of the unshipped episodes were not written "
+                f"to the checkpoint of step {step}; their samples are left out of the loss after a resume"
+            )
+        seconds |= {"snapshot": snapshotted - locked, "persist": forked - snapshotted}
+        # What is left in ``restores`` continues no episode in flight: those finished meanwhile.
+        await self.finish_rollout_ckpt(step, pid, work, list(restores.values()), seconds)
+
+    async def save_inflight(self, directory: Path) -> dict[str, RestoreRef]:
+        """Have the env workers of every train env take a memory checkpoint of their
+        running rollouts, written as restore files to ``directory``. Returns the restore
+        points by the ``request_id`` of their run. Bounded by ``ckpt.rollouts_save_timeout``
+        (the trainer waits in its broadcast meanwhile); a rollout whose env worker failed or
+        was too slow has none and starts over."""
+        if not self.dispatcher.inflight_train_count:
+            return {}
+        timeout = self.config.ckpt.rollouts_save_timeout
+        replies = await asyncio.gather(*(env.save(str(directory), timeout) for env in self.train_envs))
+        for env in self.train_envs:
+            self.ckpt_manager.snapshots.orphan(env.orphan_snapshots)
+            env.orphan_snapshots.clear()
+        return {request_id: restore for reply in replies for request_id, restore in reply.items()}
+
+    def open_work(self, restores: dict[str, RestoreRef]) -> dict:
+        """The train pipeline as it is now, for a rollout checkpoint: the finished
+        episodes that have not shipped (in the sink, in the results not yet consumed,
+        and in a batch that was cut but not taken by the trainer), the open groups, and
+        the episodes in flight, each with the restore point that ``restores`` holds for
+        it. Call with the sink locked. The containers are copies, the episodes are not:
+        write it from a fork."""
+        groups, episodes = self.dispatcher.open_work(restores)
+        results = [*self.staged, *self.dispatcher.queued_results()]
+        return {
+            "sink": self.train_sink.state_dict(),
+            "results": [result for result in results if is_train_result(result)],
+            "batch": self.step_loop.batch,
+            "groups": groups,
+            "episodes": episodes,
+            "open_groups": dict(self.train_source.open_groups),
+            "reopened": [(env_name, task.key, size) for env_name, task, size in self.train_source.reopened],
+            "max_inflight": int(self.concurrency.max_inflight),
+        }
+
+    def resume_open_work(self, work: dict) -> None:
+        """Take a checkpoint's ``open_work`` back, before the dispatcher starts: the
+        unshipped batch ships first, then the saved results reach the sink in their
+        order, and the episodes that were in flight dispatch before any new work. What
+        belongs to an env this run does not train on is dropped."""
+        names = set(self.train_envs.names)
+        self.train_sink.load_state_dict(work["sink"])
+        self.train_source.adopt_open_groups(work["open_groups"], work["reopened"])
+        self.dispatcher.resume_open_work(
+            [group for group in work["groups"] if group.env_name in names], work["episodes"]
+        )
+        self.staged.extend(result for result in work["results"] if result_env_name(result) in names)
+        batch: TrainBatch | None = work["batch"]
+        if batch is not None:
+            cohort = batch.cohort
+            episodes = [episode for episode in cohort.episodes if episode.env.name in names]
+            resumed = TrainBatch(
+                cohort=TrainEpisodes(episodes, cohort.sampled_trace_ids, cohort.admitted, cohort.cancelled),
+                samples=[sample for sample in batch.samples if sample.env_name in names],
+            )
+            self.step_loop.move(Phase.SHIPPING, resumed)
+        counts = count_open_work(work)
+        get_logger().info(
+            f"Resumed the rollouts of step {self.resume_step}: {counts['in_queue']} in-queue episodes, "
+            f"{counts['restorable']} in-flight continue from a restore point, {counts['restart']} in-flight start over"
+        )
+
+    async def finish_rollout_ckpt(
+        self, step: int, pid: int, work: dict, unused: list[RestoreRef], seconds: dict[str, float]
+    ) -> None:
+        """Wait for the forked writer of ``step``'s rollout checkpoint, which completes
+        the checkpoint, then report it and delete the snapshots nothing restores from
+        anymore. ``unused`` are restore points the checkpoint does not reference."""
+        # The snapshots of ``unused`` were recorded for this step at the save; recording
+        # only those the checkpoint references orphans them.
+        self.ckpt_manager.snapshots.record(step, owned_snapshots(work))
+        counts = count_open_work(work)
+        start = time.perf_counter()
+        try:
+            cpu = await wait_for_writer(pid)
+        finally:
+            if self.gc is None:
+                gc.unfreeze()
+        seconds = seconds | {"write": time.perf_counter() - start, "write_cpu": cpu}
+        rollouts = self.ckpt_manager.get_ckpt_path(step) / ROLLOUTS_DIR
+        for restore in unused:
+            Path(restore.path).unlink(missing_ok=True)
+        size = await asyncio.to_thread(directory_size, rollouts)
+        self.ckpt_manager.rollout_stats = {
+            "step": float(step),
+            **{name: float(count) for name, count in counts.items()},
+            **{f"time/{name}": value for name, value in seconds.items()},
+            "bytes": float(size),
+        }
+        get_logger().info(
+            f"Saved checkpoint at step {step} with {counts['in_queue']} in-queue episodes, "
+            f"{counts['restorable']} in-flight with a restore point, {counts['restart']} in-flight starting over | "
+            + " ".join(f"{name}={format_time(value)}" for name, value in seconds.items())
+            + f" | {size / 2**20:.1f} MiB"
+        )
+        skipped = sum((env.save_skipped for env in self.train_envs), Counter())
+        if counts["restart"]:
+            reasons = "; ".join(f"{count}x {reason}" for reason, count in skipped.most_common())
+            get_logger().warning(
+                f"{counts['restart']} in-flight rollouts of step {step} have no restore point and start over on "
+                f"resume: {reasons or 'they were dispatched after the env workers saved, or their worker did not reply'}"
+            )
+        if step in self.control_steps:
+            self.controller.mark_saved(step)
+        await self.sweep_snapshots()
+
+    async def sweep_snapshots(self, final: bool = False) -> None:
+        """Delete the box snapshots this run owns that nothing restores from anymore
+        (``SnapshotLedger.sweep``). Best effort: what an env worker did not delete stays
+        in the ledger for the next sweep. ``final`` is the sweep of a run that ends: no
+        later sweep sees the step directories the trainer removes after its last
+        checkpoint, so the snapshots of those steps go now."""
+        ledger = self.ckpt_manager.snapshots
+        kept = None
+        if final and self.config.ckpt is not None:
+            ckpt = self.config.ckpt
+            steps = get_all_ckpt_steps(self.ckpt_manager.ckpt_dir)
+
+            def kept(recorded: list[int]) -> set[int]:
+                return kept_ckpt_steps(sorted({*steps, *recorded}), ckpt.keep_last, ckpt.keep_interval)
+
+        for env in self.train_envs:
+            late, env.late_restores = env.late_restores, []
+            ledger.orphan([*env.orphan_snapshots, *(restore.snapshot for restore in late)])
+            env.orphan_snapshots.clear()
+            for restore in late:
+                Path(restore.path).unlink(missing_ok=True)
+        try:
+            deleted = await ledger.sweep(self.ckpt_manager.ckpt_dir, next(iter(self.train_envs)).discard, kept)
+        except Exception as error:  # noqa: BLE001 - the snapshots stay in the ledger
+            get_logger().warning(f"Deleting unused rollout snapshots failed: {error!r}")
+            return
+        if deleted:
+            get_logger().debug(f"Deleted {deleted} rollout snapshots that no checkpoint restores from")
 
     def apply_config_update(self) -> None:
         """Apply a queued config update from the step about to be collected. Runs right after
@@ -1220,9 +1559,18 @@ class Orchestrator:
         timeout so a wedged peer can't keep the process alive forever —
         training artifacts are already persisted before this is reached."""
 
+        async def finish_ckpt() -> None:
+            if self.ckpt_task is not None:
+                try:
+                    await self.ckpt_task
+                except Exception as error:  # noqa: BLE001 - the teardown goes on without that checkpoint
+                    get_logger().error(f"The rollout checkpoint of step {self.ckpt_step} failed: {error!r}")
+                self.ckpt_task = None
+
         async def teardown() -> None:
-            get_logger().debug("Closing micro batch sender")
+            get_logger().debug("Closing batch sender")
             self.sender.close()
+            await finish_ckpt()
             if self.release_future is not None:
                 await self.release_future
             if self.dispatcher is not None:
@@ -1231,6 +1579,10 @@ class Orchestrator:
             if self.watcher is not None:
                 get_logger().debug("Stopping weight watcher")
                 await self.watcher.stop()
+                # The stop lets a running pending hook finish, which may start a checkpoint.
+                await finish_ckpt()
+            if clean_exit and self.saves_rollouts:
+                await self.sweep_snapshots(final=True)
             if self.periodic_logger is not None:
                 await self.periodic_logger.stop()
             if self.lag_task is not None:
@@ -1273,7 +1625,7 @@ def resolve_resume_step(config: OrchestratorConfig, ckpt_manager: CheckpointMana
         return config.resume.dir_step
     if config.resume.step is not None:
         return config.resume.step
-    return resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+    return resolve_latest_ckpt_step(ckpt_manager.ckpt_dir, ckpt_manager.ckpt_dir)
 
 
 def resume_path(config: OrchestratorConfig) -> Path | None:

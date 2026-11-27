@@ -1,8 +1,10 @@
 from pathlib import Path
 from typing import Callable
 
+import orjson
 import pytest
 
+from prime_rl.monitors.file.traces import get_index_path, get_trace_stream
 from tests.conftest import ProcessResult
 from tests.utils import check_avg_mismatch_kl_in_range, check_avg_reward_in_range, check_no_error, strip_escape_codes
 
@@ -30,13 +32,12 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "configs/ci/integration/reverse-text-tiny/start.toml",
+        "tests/integration/configs/reverse-text-tiny/start.toml",
         "--clean",
         "--monitors.wandb.project",
         wandb_project,
         "--monitors.wandb.name",
         f"test-reverse-text-tiny:{branch_name}",
-        "--no-monitors.prime",
         "--output-dir",
         output_dir.as_posix(),
         "--run.name",
@@ -62,3 +63,11 @@ def test_mismatch_kl_in_range(rl_process: ProcessResult, test_no_error, run_dir:
     with open(run_dir / "logs" / "latest" / "trainer.log", "r") as f:
         trainer_stdout = strip_escape_codes(f.read()).splitlines()
     check_avg_mismatch_kl_in_range(trainer_stdout, last_n_steps=3, max_threshold=0.01)
+
+
+def test_trace_records_name_their_source_and_group(rl_process: ProcessResult, test_no_error, run_dir: Path):
+    """Env workers write the records: each names the source and the rollout group it was dispatched for."""
+    rows = [orjson.loads(line) for line in get_index_path(get_trace_stream(run_dir)).read_bytes().splitlines()]
+    assert rows
+    assert {row["env"] for row in rows} == {"reverse-text"}
+    assert all(row["group"] for row in rows)

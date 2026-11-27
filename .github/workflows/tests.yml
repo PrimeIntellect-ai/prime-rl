@@ -107,7 +107,7 @@ jobs:
           # The slim wheel intentionally excludes taskset packages, so validate a real
           # SFT config here. RL recipes are covered by the full config suite.
           for cfg_cls, args in [
-              (SFTConfig, ["@", "configs/ci/slim_sft.toml"]),
+              (SFTConfig, ["@", "tests/integration/configs/slim_sft.toml"]),
           ]:
               cfg = cli(cfg_cls, args=args)
               assert cfg.slurm is not None, f"expected [slurm] in {args}"
@@ -146,7 +146,7 @@ jobs:
               - 'src/prime_rl/{control,eval,orchestrator,monitors}/**'
               - 'src/prime_rl/entrypoints/{eval,env_worker_pool}.py'
               - 'tests/integration/test_gsm8k_eval.py'
-              - 'configs/ci/integration/gsm8k-eval.toml'
+              - 'tests/integration/configs/gsm8k-eval.toml'
 
   integration-eval:
     name: Integration / GSM8K Eval

@@ -169,9 +169,9 @@ def plan_buckets(
 ) -> list[list[tuple[int, int]]]:
     """Cut the matrices, in order, into buckets of about ``bucket_bytes`` per rank, and give each matrix an owner
     rank: (matrix, owner) pairs per bucket. Within a bucket, owners balance the Newton-Schulz cost, longest
-    first onto the least loaded rank, so every bucket keeps all ranks equally busy (and the whole step, since
-    each bucket breaks ties starting from another rank). Keeping the order keeps a bucket to a few consecutive
-    layers."""
+    first onto the least loaded rank, so every bucket keeps all ranks equally busy. Bucket k's owners are shifted
+    by k ranks, so the ranks that win the ties (the largest matrices) differ from bucket to bucket and the whole
+    step stays balanced too. Keeping the order keeps a bucket to a few consecutive layers."""
     buckets, bucket, size = [], [], 0
     for i, n in enumerate(nbytes):
         if bucket and size + n > world_size * bucket_bytes:
@@ -182,12 +182,12 @@ def plan_buckets(
     buckets += [bucket] * bool(bucket)
     owned = []
     for k, bucket in enumerate(buckets):
-        # Ties go to the first rank of the heap: rotating it per bucket spreads the largest matrices over the ranks
-        loads = [(0.0, (rank + k) % world_size) for rank in range(world_size)]
+        loads = [(0.0, rank) for rank in range(world_size)]
         pairs = []
         for i in sorted(bucket, key=lambda i: (-costs[i], i)):
             load, rank = heapq.heappop(loads)
-            pairs.append((i, rank))
+            # The heap breaks ties by rank: shift the owner, not the heap, so bucket k's ties land on other ranks
+            pairs.append((i, (rank + k) % world_size))
             heapq.heappush(loads, (load + costs[i], rank))
         owned.append(sorted(pairs))
     return owned

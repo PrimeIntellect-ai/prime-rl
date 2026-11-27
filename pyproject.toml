@@ -55,13 +55,12 @@ prime_rl = "prime_rl.inference.patches:apply_shared_vllm_patches"
 inkling2 = "prime_rl.inference.vllm.models.inkling2.plugin:register"
 
 [project.optional-dependencies]
-gpu = [
+# The trainer stack: enough for `sft`, `pretrain` and the `trainer` process when nothing
+# is served alongside them.
+train = [
     "torch>=2.14.0 ; sys_platform == 'linux'",
     "torchvision ; sys_platform == 'linux'",
-    "torchaudio ; sys_platform == 'linux'",
     "torchdata>=0.11.0 ; sys_platform == 'linux'",
-    "vllm>=0.34.0 ; sys_platform == 'linux'",
-    "mooncake-transfer-engine>=0.3.10.post2 ; sys_platform == 'linux'",
     "torchtitan ; sys_platform == 'linux'",
     "tilelang>=0.1.8 ; sys_platform == 'linux'",
     # DSA sparse MLA backward kernel (CuTe DSL). FlashInfer 0.7.3 (vLLM 0.34) requires >=1.32. `cudnn_dsa_patch`
@@ -72,18 +71,30 @@ gpu = [
     "mamba-ssm>=2.3.0 ; sys_platform == 'linux'",
     "nvidia-ml-py>=12.575.51 ; sys_platform == 'linux'",
     "torchao>=0.18.0 ; sys_platform == 'linux'",
+]
+# The vLLM server and the transports that carry trainer weights to it. vLLM also bundles
+# kernels the trainer borrows (DeepGEMM for FP8 and MegaMoE, FlashMLA for sparse attention).
+inference = [
+    "vllm>=0.34.0 ; sys_platform == 'linux'",
+    "torchaudio ; sys_platform == 'linux'",
+    "mooncake-transfer-engine>=0.3.10.post2 ; sys_platform == 'linux'",
     "nixl-cu13==1.5.0 ; sys_platform == 'linux'",
     # Precompiled FlashInfer kernels for vLLM's flashinfer-python pin. Without them every fresh node
     # downloads the trtllm-gen cubins and JIT-builds its modules into its node-local cache at startup.
     "flashinfer-cubin==0.7.3 ; sys_platform == 'linux'",
     "flashinfer-jit-cache==0.7.3+cu130 ; sys_platform == 'linux'",
-    "modelexpress==0.8.0.dev20261022 ; sys_platform == 'linux'",
+    "modelexpress==0.8.0 ; sys_platform == 'linux'",
+    "modelexpress-server==0.8.0 ; sys_platform == 'linux'",
+]
+gpu = [
+    "prime-rl[train]",
+    "prime-rl[inference]",
 ]
 dashboard = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
 ]
-dynamo = ["ai-dynamo==1.4.2 ; sys_platform == 'linux'"]
+dynamo = ["ai-dynamo==1.7.0 ; sys_platform == 'linux'"]
 # Both wheels are the same flash-attn 2.8.3 / cu130 / torch 2.14 / cp312 build and carry
 # sm_80 / sm_90 / sm_100 / sm_120 cubins. `attn="auto"` picks FA4 on sm_100 and FA3 on
 # sm_90, so FA2 is the resolved backend on sm_120 (see `_resolve_attn_impl` in
@@ -190,7 +201,6 @@ members = [
     "deps/verifiers/environments/wordle",
 ]
 # Tau tasksets require litellm<1.82.7, while Harbor requires litellm>=1.92.0.
-# Apex pins a verifiers git revision instead of the editable workspace member.
 # AutomationBench-AA needs upstream automation-bench 1.0.6, which conflicts with pi_automationbench's fork 1.1.1.
 # ALE CLI requires numpy>=2.4.4, while vLLM 0.34.0 (via mistral-common) requires numpy<2.4.
 # IFBench requires setuptools<78, while vLLM 0.34.0 requires setuptools>=78.1.1.
@@ -201,17 +211,27 @@ exclude = [
     "deps/prime-envs/environments/tool_use/tau2_bench",
     "deps/prime-envs/environments/tool_use/tau2_synth",
     "deps/prime-envs/environments/tool_use/tau3_bench",
-    "deps/prime-envs/environments/tool_use/apex_agents",
     "deps/prime-envs/environments/tool_use/automationbench_aa_env",
 ]
 
-# Mirror the upstream Pydantic compatibility correction until the next release.
+# ai-dynamo requires aisim, a JAX simulator for Dynamo's planner, replay and mocker. Its JAX closure
+# would downgrade torchtitan's tyro; the frontend and vLLM sidecar never import it.
 [[tool.uv.dependency-metadata]]
-name = "ai-dynamo-runtime"
-version = "1.4.2"
+name = "ai-dynamo"
+version = "1.7.0"
 requires-dist = [
-    "pydantic>=2.10.6,<=2.13.5",
-    "uvloop>=0.21.0",
+    "ai-dynamo-runtime==1.7.0",
+    "aiohttp>=3.14.3,<4.0",
+    "certifi>=2026.10.23",
+    "kubernetes>=32.0.1,<33.0.0",
+    "msgspec>=0.19.0",
+    "prometheus-client>=0.23.1,<1.0",
+    "pyzmq>=26.0.0",
+    "redis>=6.2.0,<9.0.0",
+    "tqdm>=4.0.0",
+    "transformers>=4.56.0",
+    "typing-extensions>=4.10.0",
+    "zstandard>=0.23.0,<1.0",
 ]
 
 # NIXL publishes its CUDA 12 package as a base dependency even when the
@@ -247,6 +267,9 @@ instanttensor = false
 humming-kernels = false
 fastokens = false
 flash_attn_3 = false
+# The Dynamo pin (its vLLM sidecar serves RL discovery and worker admin routes), published inside the rolling window
+ai-dynamo = false
+ai-dynamo-runtime = false
 # PrimeIntellect-published packages in this project's dependency closure —
 # fast-track so first-party releases can land same-day. Only packages that
 # appear in `uv tree` need to be listed; the resolver ignores entries for
@@ -261,6 +284,7 @@ prime-pydantic-config = false
 # Trusted git/URL sources pinned by rev or wheel URL (defensive: belt-and-suspenders)
 vllm-router = false
 deep-ep = false
+modelexpress-server = false
 nixl-cu13 = false
 torchao = false
 prime-kernels = false
@@ -284,6 +308,10 @@ torchao = [
 sonic-moe = { git = "https://github.com/S1ro1/sonic-moe", rev = "0bf06ac" }
 quack-kernels = { git = "https://github.com/S1ro1/quack", rev = "f62009f" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "0251105" }
+modelexpress-server = [
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-8387229/modelexpress_server-0.8.0-py3-none-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-8387229/modelexpress_server-0.8.0-py3-none-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+]
 vllm-router = [
     { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.8/vllm_router-0.2.8-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
     { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.8/vllm_router-0.2.8-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },

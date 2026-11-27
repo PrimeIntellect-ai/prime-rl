@@ -1,0 +1,51 @@
+# ECHO on the multi-turn alphabet-sort V1 taskset: GRPO on
+# action tokens + weighted CE on the env's observation tokens.
+#   uv run rl @ dev/algo/echo.toml
+
+max_steps = 20
+seq_len = 4096
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[monitors.wandb]
+project = "algorithms-debug"
+name = "debug-echo"
+
+[orchestrator]
+batch_size = 32
+
+[orchestrator.train]
+group_size = 4
+
+# alphabet-sort's feedback arrives as user messages, so train the user role
+# instead of echo's tool default.
+[orchestrator.train.algo]
+type = "echo"
+
+[orchestrator.train.algo.roles.user]
+alpha = 0.1
+
+[[orchestrator.train.source]]
+name = "alphabet-sort"
+env.taskset.id = "alphabet-sort"
+env.taskset.min_turns = 3
+env.taskset.max_turns = 5
+env.taskset.task.power_per_turn = false
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 512
+
+# Fine-tune inherits the PrimeIntellect Qwen3 template byte-for-byte.
+[orchestrator.renderer]
+name = "prime-qwen3"
+
+[trainer.optim]
+lr = 1e-6
+
+[inference]
+
+[inference.vllm]
+gpu_memory_utilization = 0.5

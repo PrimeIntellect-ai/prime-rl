@@ -23,7 +23,7 @@ By default the model is served by Prime Inference; authenticate with `PRIME_API_
 
 ```bash
 uv run eval gsm8k -n 32 -r 4 -c 8                                   # Prime Inference
-uv run eval @ configs/debug/eval/single-turn.toml                   # the same shape as a TOML
+uv run eval @ dev/eval/single-turn.toml                   # the same shape as a TOML
 ```
 
 The default endpoint comes from `PRIME_INFERENCE_URL`, then the Prime CLI's `inference_url`, then the standard Prime Inference URL. An explicit `client.base_url` wins. API keys and environment-backed headers are resolved when clients are built; Prime CLI credential and team fallbacks apply only to Prime Inference hosts, including for a separate admin URL.
@@ -116,7 +116,7 @@ To intentionally reuse episodes despite changed settings or missing snapshots, p
 
 ## Monitors
 
-Monitors receive the run's metrics and episodes through one abstraction. The file and Prime monitors are on by default; `--monitors.wandb` logs the run to Weights & Biases.
+Monitors receive the run's metrics and episodes through one abstraction. The file monitor is on by default; `--monitors.wandb` logs the run to Weights & Biases, and `--monitors.prime` streams it to the Prime platform.
 
 ### File
 
@@ -126,10 +126,10 @@ The dashboard's overview tab reads the trace stream directly. It shows one env a
 
 ### Prime
 
-Each source's epoch streams as an evaluation on the Prime platform. The launcher prints each evaluation's link next to the local dashboard link (and the W&B run's, with `--monitors.wandb`) once the evaluation opens. It needs `PRIME_API_KEY` (`prime login` or the env var); without one, the eval fails at launch and says so:
+With `--monitors.prime`, each source's epoch streams as an evaluation on the Prime platform. The launcher prints each evaluation's link next to the local dashboard link (and the W&B run's, with `--monitors.wandb`) once the evaluation opens. The monitor needs `PRIME_API_KEY` (`prime login` or the env var); without one, the eval fails at launch and says so:
 
 ```bash
-uv run eval gsm8k -n 32 -r 4 -c 8
+uv run eval gsm8k -n 32 -r 4 -c 8 --monitors.prime
 ```
 
 The monitor opens one Prime evaluation per env when its epoch starts, streams every episode to it as it lands, and closes it with the epoch's aggregates. The run leaves its Prime identity in `monitors/prime/run.json` (one entry per evaluation), and the dashboard's top bar shows a `View on Prime` link from the moment the evaluation opens: a direct link for a training run or a single evaluation, a menu when a run has several.

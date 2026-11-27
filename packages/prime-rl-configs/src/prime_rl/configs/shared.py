@@ -67,19 +67,6 @@ class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     """Port for the NCCL broadcast rendezvous."""
 
 
-class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
-    type: Literal["nixl"] = "nixl"
-
-    port: int = 8001
-    """ModelExpress gRPC port."""
-
-    session_id: str = "default"
-    """ModelExpress session ID."""
-
-    overlap_transfer_and_replay: bool = False
-    """Allocate two transfer arenas so inference can replay one weight group while receiving the next."""
-
-
 class ModelExpressWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     type: Literal["modelexpress"] = "modelexpress"
 
@@ -100,10 +87,7 @@ class ModelExpressWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig
-    | NCCLWeightBroadcastConfig
-    | NIXLWeightBroadcastConfig
-    | ModelExpressWeightBroadcastConfig,
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | ModelExpressWeightBroadcastConfig,
     Field(discriminator="type"),
 ]
 """Weight transfer from trainer to inference. ``rl`` copies its ``[weight_broadcast]`` to the trainer and orchestrator."""
@@ -137,6 +121,22 @@ class RunConfig(BaseConfig):
 
     dir: str | None = None
     """Run directory name — the run writes all its artifacts to ``output_dir / dir``. Defaults to ``run.name``; set it only when the directory should differ from the display name."""
+
+
+class BaseCheckpointConfig(BaseConfig):
+    output_dir: Path | None = None
+    """Override directory for checkpoints. If set, checkpoints are written here instead of under the run's
+    ``output_dir``, e.g. on a separate storage volume. In an RL run the trainer and the orchestrator each write
+    their half of a step here."""
+
+    interval: int | None = Field(None, ge=1)
+    """Step interval at which to save checkpoints."""
+
+    keep_last: int | None = Field(None, ge=1)
+    """Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency."""
+
+    keep_interval: int | None = Field(None, ge=1)
+    """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
 
 
 class ControlConfig(BaseConfig):
@@ -206,13 +206,16 @@ class SlurmConfig(BaseConfig):
     """Shell command to run on the head node after cd, .env sourcing, and venv activation. Useful for cleanup like ``sudo pkill -f vllm``; wrap with ``srun bash -c '...'`` to fan out to all nodes."""
 
     launch_modelexpress: bool = True
-    """Start a job-scoped ModelExpress server for NIXL and ModelExpress weight broadcasts on multi-node jobs."""
+    """Start a job-scoped ModelExpress server for ModelExpress weight broadcasts on multi-node jobs."""
 
     cleanup_grace_period: int = Field(3600, ge=0)
     """Maximum seconds a multi-node RL job that hit a non-zero exit waits for an in-flight trainer checkpoint to finish before tearing down. Without an in-flight checkpoint (or without ``[ckpt]``) it tears down immediately. Set to 0 to never wait."""
 
     shared_fs: bool = True
     """Whether the project filesystem (including the venv) is shared across nodes (e.g. NFS). When True, a single ``uv sync`` on the batch node suffices. Set to False when the venv is node-local (e.g. ``UV_PROJECT_ENVIRONMENT`` on ``/tmp``) so ``uv sync`` runs on every node via srun."""
+
+    sync_args: str = "--all-extras --all-packages"
+    """Arguments of the ``uv sync`` the job runs before it starts. Narrow them to install less, e.g. ``--extra train`` for an SFT job without online evals. Set it in a TOML file: on the command line a value starting with ``--`` is read as a flag."""
 
     @property
     def template_vars(self) -> dict:
@@ -228,6 +231,7 @@ class SlurmConfig(BaseConfig):
             "pre_run_command": self.pre_run_command,
             "cleanup_grace_period": self.cleanup_grace_period,
             "shared_fs": self.shared_fs,
+            "sync_args": self.sync_args,
         }
 
     @model_validator(mode="after")
@@ -324,7 +328,13 @@ class HeartbeatConfig(BaseConfig):
     rate limit. Size it well under the monitor's period."""
 
 
-class BaseTransportConfig(BaseConfig):
+class ZMQTransportConfig(BaseConfig):
+    host: str = "localhost"
+    """Host address for ZMQ transport."""
+
+    port: int = 5555
+    """Port for ZMQ transport."""
+
     retain: bool = False
     """Keep every shipped step, and the training arrays the env worker pools hold for it,
     until a trainer checkpoint covers it, so a restarted trainer resumes from its newest
@@ -332,23 +342,6 @@ class BaseTransportConfig(BaseConfig):
     weight broadcast, a run directory the orchestrator and trainer share, and a rollout store
     in every train env worker pool: the ``rl`` launcher sets ``store_dir`` for the pools it
     starts, a pool started separately needs it in its own config."""
-
-
-class FileSystemTransportConfig(BaseTransportConfig):
-    type: Literal["filesystem"] = "filesystem"
-
-
-class ZMQTransportConfig(BaseTransportConfig):
-    type: Literal["zmq"] = "zmq"
-
-    host: str = "localhost"
-    """Host address for ZMQ transport."""
-
-    port: int = 5555
-    """Port for ZMQ transport."""
-
-
-TransportConfig: TypeAlias = Annotated[FileSystemTransportConfig | ZMQTransportConfig, Field(discriminator="type")]
 
 
 def validate_step_dir(path: Path, *, field: str) -> None:

@@ -54,6 +54,7 @@ Both skip `lm_head`, the router and a few gate/projection modules by default (`i
 - `type = "bf16"` (default), with `backend = "torch"` (default) or `"sonicmoe"`.
 - `type = "deepgemm_fp8"` (uses the DeepGEMM bundled with vLLM, `vllm.third_party.deep_gemm`; requires SM90 or SM100)
 - `type = "mxfp8"` (requires `prime-kernels`, torchao, and SM100)
+- `type = "nvfp4"`: the numerics of vLLM's online `nvfp4_per_token` experts (SM100). The forward quantizes with the engines' own quantizers (FlashInfer's per-token activation quantizer, vLLM's load-time weight quantizer) and runs the GEMMs on the FP4 tensor cores with FP32 output; the backward requantizes the NVFP4 operands to MXFP8 and runs MXFP8 gradient GEMMs. `four_over_six` picks each activation block's scale with 4/6, on the trainer and, in `rl`, on the engines. `rl` requires engines with `quantization = "online"`, `quantization_config.moe = "nvfp4_per_token"` and the `flashinfer_trtllm` MoE backend.
 
 SonicMoE uses the upstream `sonic-moe` package (`uv sync --extra sonic-moe`) for fused BF16 expert computation. The supported model is Qwen3 MoE with the `gate_up` model fusion enabled. Backend selection requires fused gate/up weights, standard SwiGLU, and bias-free experts; incompatible expert structures raise an error during setup. It uses the same router and local, torch EP, or DeepEP dispatch as other compute backends:
 
@@ -124,6 +125,10 @@ kernels and does not share this accumulation guarantee.
 ### LM head precision
 
 The LM head computes FP32 logits from its BF16 operands: one GEMM writes the logits in FP32 instead of rounding them to BF16 (fused and vanilla head). Gradients stay BF16. This matches inference, whose `enable_fp32_lm_head` defaults to `true` (vLLM's FP32 head), and lowers the trainer–inference mismatch.
+
+### FP32 parameters
+
+A model can keep parameters out of FSDP's BF16 cast when its checkpoint stores them, and vLLM computes them, in FP32 (`fp32_modules` on the model class): GLM-5.3 Flash's hyper-connections and KDA decay (`A_log`, `dt_bias`). Each module holding them is its own FSDP unit with FP32 masters, gathered in FP32 before the decoder layers run, and inference receives them in FP32.
 
 ### Expert Parallelism Backends
 
@@ -219,7 +224,7 @@ For large MoE serving, splitting prefill and decode onto separate vLLM groups ca
 | Agentic (SWE, Lean) | 3:1 | Long growing contexts → prefill-heavy |
 | Non-agentic (math, chat) | 1:2 | Short prompts, long generations → decode-heavy |
 
-Example config: [`examples/advanced/glm-5.3/swe.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/advanced/glm-5.3/swe.toml) — full RL run on `GLM-5` with P/D disaggregation behind a `vllm-router`, FP8 inference, and NCCL weight broadcast, paired with an inference config from [`examples/advanced/glm-5.3/infer/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/glm-5.3/infer).
+Example config: [`recipes/glm-5.3/swe.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/recipes/glm-5.3/swe.toml) — full RL run on `GLM-5` with P/D disaggregation behind a `vllm-router`, FP8 inference, and NCCL weight broadcast, paired with an inference config from [`recipes/glm-5.3/infer/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes/glm-5.3/infer).
 
 Monitor live queue depths to detect imbalance:
 
@@ -230,11 +235,4 @@ curl -s http://<decode_node>:8200/metrics | grep num_requests_waiting
 
 If prefill queues and decode is idle, add prefill nodes (and vice versa).
 
-**Required setup for disaggregated P/D (NIXL/UCX).** The pip-wheel NIXL's bundled UCX segfaults on the prefill→decode KV transfer (`signal 11: invalid permissions for mapped object` in `libucs.so`) — reproduced on vLLM 0.22 and 0.23, with/without mooncake, with/without llm-d. Building NIXL against UCX 1.19.x from source is therefore **required** (not optional) for disaggregated P/D.
-
-```bash
-salloc -N 1 --gres=gpu:1 bash -c 'bash scripts/install_nixl_from_source.sh'
-uv pip install --reinstall --no-deps deps/nixl_cu13-*.whl
-```
-
-The script writes UCX 1.19 to `third_party/ucx/`; the bundled sbatch templates prepend it to `LD_LIBRARY_PATH` so it overrides the system version. Re-run both commands after every `uv sync`, since the lock pins the wheel.
+The KV transfer uses the NIXL wheel that `uv sync` installs. It needs no source-built UCX.

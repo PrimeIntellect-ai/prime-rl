@@ -26,7 +26,7 @@ uv run eval @ eval.toml --no-monitors.prime                         # keep the r
 - Shorthands (single-source runs): `<taskset-id>`, `--env.<field> <value>`, `-n` `select.limit`, `-s` `select.shuffle`, `-r` `group_size`, `-m` `model`, `-c N` pins `concurrency.min_inflight = max_inflight = N`. `<taskset-id>` cannot be combined with a TOML that defines `[[source]]` blocks; next to such a TOML, `--env.<field>` sets the shared `env` block.
 - Concurrency: an API exposes no vLLM `/metrics`, so run pinned there; against `uv run inference` set `min_inflight < max_inflight` in `[concurrency]` to adapt to the engines' load (queued share and measured throughput; `docs/inference.md`).
 - Env worker pools: spawned per source on OS-assigned ports (published to `configs/attempt_N/resolved/envs/eval/<name>.address`) unless the source sets `serve.address`.
-- Ready-made configs: `configs/debug/eval/*.toml`, one per shape (single turn, multi turn, resume, multi env, aime2026, tb2).
+- Ready-made configs: `dev/eval/*.toml`, one per shape (single turn, multi turn, resume, multi env, aime2026, tb2).
 
 Minimal multi-source TOML (the eval block is flattened to the top level; per-source `select`, `group_size`, `sampling` override the top level):
 
@@ -107,6 +107,6 @@ uv run python -m prime_rl.monitors.file.traces {run_dir} [<trace_id>]   # live r
 
 The progress line in `eval.log` counts live rollouts by phase (`- boot 1 · running 3`). A rollout stuck in `boot` for minutes is waiting on its sandbox; one in `running` with a frozen turn count is waiting on a model call or tool.
 
-Metrics live under `eval/<env>/all/<agent>/…` (`reward/mean`, `is_truncated/mean` — raise `sampling.max_completion_tokens` when high, or score cut-off runs as 0 with `env.agent.scoring.skip_on_truncated` / `skip_on_timeout` (`env.agent.max_turn_tokens` caps each response and stops the run once one hits it, even in harnesses like RLM that continue past a capped turn), `has_error/mean`, the taskset's own metrics). Validate a result by reading a few traces in the dashboard rather than trusting the mean alone.
+Metrics live under `eval/<env>/all/<agent>/…` (`reward/mean`, `is_truncated/mean` — raise `sampling.max_completion_tokens` when high, or score cut-off runs as 0 with `env.agent.scoring.skip.truncated = 0.0` / `skip.timeout = 0.0` (`env.agent.max_turn_tokens` caps each response and stops the run once one hits it, even in harnesses like RLM that continue past a capped turn), `has_error/mean`, the taskset's own metrics). Validate a result by reading a few traces in the dashboard rather than trusting the mean alone.
 
 Stop a run with SIGINT/SIGTERM to the eval PID (`ps aux | grep PRL::Eval`); `--resume` restores the landed episodes from the trace stream and runs only the rollouts still owed. Any config may be overridden on resume (`select`/`group_size` change what is owed); keep the model, sampling and env config the same to keep the landed episodes comparable. Env worker pools are children of the eval process and exit with it.
