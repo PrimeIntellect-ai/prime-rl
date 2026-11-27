@@ -270,6 +270,10 @@ class LagunaPreTrainedModel(PreTrainedModelPrimeRL):
     def conversion_chain(cls, config):
         return conversion_chain(config)
 
+    @classmethod
+    def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
+        return name.endswith("mlp.router.selection_bias")
+
 
 class LagunaModel(LagunaPreTrainedModel):
     def __init__(self, config: LagunaConfig):

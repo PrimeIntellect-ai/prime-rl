@@ -63,12 +63,9 @@ class InterleavedGateUp(ConvOp):
             return
         gate = sd.pop(self.gate)
         up = sd.pop(self.up)
-        shape = list(gate.shape)
-        shape[self.dim] *= 2
-        w13 = gate.new_empty(shape)
-        w13[self._sl(0)] = gate
-        w13[self._sl(1)] = up
-        sd[self.hf] = w13
+        # Stack-then-flatten interleaves the rows in one op that ModelExpress can trace back to the separately
+        # published gate and up sources (a filled `new_empty` cannot be traced).
+        sd[self.hf] = torch.stack((gate, up), dim=self.dim + 1).flatten(self.dim, self.dim + 1)
 
     def _sl(self, offset: int):
         return (slice(None),) * self.dim + (slice(offset, None, 2),)

@@ -93,6 +93,10 @@ class MiniMaxM2PreTrainedModel(PreTrainedModelPrimeRL):
     def conversion_chain(cls, config):
         return conversion_chain(config)
 
+    @classmethod
+    def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
+        return name.endswith("mlp.router.selection_bias")
+
 
 class MiniMaxM2Model(MiniMaxM2PreTrainedModel):
     def __init__(self, config: MiniMaxM2Config):

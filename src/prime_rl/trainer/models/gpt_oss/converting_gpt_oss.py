@@ -1,5 +1,6 @@
 """HF <-> PrimeRL weight conversion for GPT-OSS."""
 
+import torch
 from torch import Tensor
 
 from prime_rl.trainer.models.conversion_ops import ConvOp, Rename
@@ -31,14 +32,10 @@ class GptOssExperts(ConvOp):
         up = state_dict.pop(f"{self.prefix}.up_proj").transpose(-2, -1)
         gate_bias = state_dict.pop(f"{self.prefix}.gate_proj_bias")
         up_bias = state_dict.pop(f"{self.prefix}.up_proj_bias")
-        state_dict[f"{self.prefix}.gate_up_proj"] = gate.new_empty((*gate.shape[:-1], 2 * gate.shape[-1]))
-        state_dict[f"{self.prefix}.gate_up_proj"][..., ::2] = gate
-        state_dict[f"{self.prefix}.gate_up_proj"][..., 1::2] = up
-        state_dict[f"{self.prefix}.gate_up_proj_bias"] = gate_bias.new_empty(
-            (*gate_bias.shape[:-1], 2 * gate_bias.shape[-1])
-        )
-        state_dict[f"{self.prefix}.gate_up_proj_bias"][..., ::2] = gate_bias
-        state_dict[f"{self.prefix}.gate_up_proj_bias"][..., 1::2] = up_bias
+        # HF alternates gate and up columns. Stack-then-flatten builds that layout in one op that ModelExpress can
+        # trace back to the separately published gate and up sources (a filled `new_empty` cannot be traced).
+        state_dict[f"{self.prefix}.gate_up_proj"] = torch.stack((gate, up), dim=-1).flatten(-2)
+        state_dict[f"{self.prefix}.gate_up_proj_bias"] = torch.stack((gate_bias, up_bias), dim=-1).flatten(-2)
         state_dict[f"{self.prefix}.down_proj"] = state_dict[f"{self.prefix}.down_proj"].transpose(-2, -1)
 
 
