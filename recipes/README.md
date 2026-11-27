@@ -62,6 +62,8 @@ These configs run without overlays. Each header or README gives its launch comma
 - [`glm-5.3-flash/swe.toml`](glm-5.3-flash/swe.toml): SWE RL at 128k on 2 trainer nodes + 4 replicas.
 - [`inkling-2-small/`](inkling-2-small): `math-rl.toml` and `swe-rl.toml`, 6 trainer nodes + 2
   replicas at 8k and 16k.
+- [`inkling-2-mini/math-rl.toml`](inkling-2-mini/math-rl.toml): math RL on one node, 4 trainer GPUs + 4
+  single-GPU replicas at 8k.
 - [`deepseek-v4-flash-0731/`](deepseek-v4-flash-0731): `sft.toml`, the vLLM serving pre-flight
   `inference.toml`, P/D inference `inference_pd.toml`, and the DSpark draft overlay `dspark.toml`.
 - [`minimax-m2.5/swe.toml`](minimax-m2.5/swe.toml): `MiniMax-M2.5` SWE RL.

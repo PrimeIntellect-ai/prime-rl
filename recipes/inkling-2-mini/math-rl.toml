@@ -68,7 +68,6 @@ weight_decay = 0.1
 [ckpt]
 
 [orchestrator]
-pad_to_seq_len = true
 batch_size = 64
 
 [orchestrator.train]
