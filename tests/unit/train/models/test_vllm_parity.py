@@ -7,7 +7,7 @@ prime-rl, so any difference becomes trainer/inference mismatch.
   reach an in-process vLLM engine (`load_format="dummy"`) through prime-rl's weight-update path.
 - Metrics, over the same two conversations on both sides: the largest |logprob difference| and the mean mismatch KL.
 - MoE cases first require that at least 85% of (token, MoE layer) pairs pick the same top-k experts, then compare
-  logprobs with the trainer replaying vLLM's routing.
+  logprobs with the trainer replaying vLLM's routing. A looped model routes once per layer visit, and replays by visit.
 - Tolerances are 2.4-3.5x the clean value measured on Hopper and SM120 (Hopper only where SM120 lacks the kernels),
   and at least 0.02 and 1e-5.
 - Adding an arch is one `Case`: a tiny config with every layer kind of the arch and the architecture vLLM serves it as.
@@ -32,7 +32,7 @@ from vllm.inputs import TokensPrompt
 from vllm.plugins import load_general_plugins
 
 from prime_rl.configs.trainer import ModelConfig
-from prime_rl.inference.vllm.models.inkling2.configs import Inkling2MMConfig
+from prime_rl.inference.vllm.models.inkling2.configs import Inkling2LoopMMConfig, Inkling2MMConfig
 from prime_rl.inference.vllm.worker.weight_transfer import get_weight_model, load_weights_checkpoint_layerwise
 from prime_rl.trainer.model import forward, get_model, resolve_auto_attn
 from prime_rl.trainer.models.afmoe import AfmoeConfig
@@ -52,6 +52,7 @@ from prime_rl.trainer.models.nemotron_h import NemotronHConfig
 from prime_rl.trainer.models.qwen3_5 import Qwen3_5MoeTextConfig, Qwen3_5TextConfig
 from prime_rl.trainer.models.qwen3_8_flash_next import Qwen3_8FlashNextTextConfig
 from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig
+from prime_rl.trainer.vlm import get_language_model
 from prime_rl.utils.weights import convert_state_dict_to_hf, resolve_wire_dtype
 
 pytestmark = [pytest.mark.gpu]
@@ -109,6 +110,8 @@ class Case:
     """vLLM engine arguments on top of ENGINE_ARGS."""
     post_init: Callable[[torch.nn.Module], None] | None = None
     """Runs after `randomize`, for weights and buffers whose random values need a structure or scale."""
+    min_route_agreement: float = MIN_ROUTE_AGREEMENT
+    """Share of (token, MoE layer visit) pairs that must pick the same top-k experts."""
     tiny: bool = False
     known_bug: str | None = None
     """Why the case fails today. It runs as a strict xfail, so a fix shows up as a failure until this is removed."""
@@ -146,17 +149,20 @@ def weigh_sinks(model: torch.nn.Module) -> None:
 @torch.no_grad()
 def shape_inkling2(model: torch.nn.Module) -> None:
     """At std 0.02, Inkling 2's attention sinks, relative bias, short-conv taps and multi-query block-residual queries
-    barely move the output. Draw them large enough to matter, and the relative projection large enough to clip."""
+    barely move the output, and neither do the gates of a looped model's messages. Draw them large enough to matter,
+    and the relative projection large enough to clip."""
     for name, param in model.named_parameters():
         if name.endswith("sink_proj.weight"):
             param.normal_(0.0, 0.2)
+        elif ".controllers." in name:
+            param.normal_(0.0, 0.5 * param.shape[1] ** -0.5)
         elif name.endswith("r_proj.weight"):
             param.normal_(0.0, 0.15)
         elif name.endswith("rel_logits_proj"):
             param.normal_(0.0, 0.25)
         elif name.endswith(("conv1d.weight", "static_weight")):
             param.normal_(0.0, 0.5)
-        elif name.startswith("model.attn_res.") and param.ndim == 2:
+        elif name.startswith(("model.attn_res.", "model.middle_cycle_cross_pass_")) and param.ndim == 2:
             param.normal_(0.0, 1.0)
 
 
@@ -558,6 +564,39 @@ CASES = [
         post_init=shape_inkling2,
     ),
     Case(
+        "inkling2_loop",
+        # Layers 2 to 5 run three times. The loop core covers two blocks of attention residuals, so a later pass
+        # reads two of them. It holds sliding-window layers that start a block (2, 4) and one that does not (5),
+        # and a global layer (3); layers 6 and 7 run after the last pass.
+        Inkling2LoopMMConfig(
+            text_config=dict(
+                vocab_size=151936,
+                hidden_size=256,
+                num_hidden_layers=8,
+                num_attention_heads=4,
+                num_key_value_heads=2,
+                head_dim=64,
+                d_rel=16,
+                rel_extent=128,
+                sliding_window_size=128,
+                local_layer_ids=[0, 1, 2, 4, 5, 6],
+                n_layers_per_attn_res_block=2,
+                log_scaling_n_floor=64,
+                n_routed_experts=8,
+                num_experts_per_tok=2,
+                intermediate_size=128,
+                loop_config=dict(core_start=2, core_end=6, num_passes=3, gate_rank=16, is_varloop=False),
+            ),
+            architectures=["Inkling2LoopForConditionalGeneration"],
+        ),
+        max_abs=0.15,
+        mismatch_kl=1e-4,
+        post_init=shape_inkling2,
+        # A flipped route changes the input of every later visit, so agreement falls with depth: 0.87 over these
+        # 16 layer visits, and 0.86 for a 16-layer model without a loop.
+        min_route_agreement=0.7,
+    ),
+    Case(
         "gpt_oss",
         # Layer 0 is sliding-window attention, layer 1 full attention, both with sinks
         GptOssConfig(
@@ -650,12 +689,16 @@ def moe_routers(model: torch.nn.Module) -> dict[int, TokenChoiceTopKRouter]:
 
 
 def trainer_routing(model: torch.nn.Module, rows: list[list[int]]) -> dict[int, torch.Tensor]:
-    """The experts the trainer's own routers pick for every token, by layer."""
+    """The experts the trainer's own routers pick for every token, by layer visit: a looped model runs some layers
+    several times, and routes anew each time."""
     routes = {}
+    visits_of_layer = getattr(get_language_model(model).config, "layer_visit_ids", lambda layer: (layer,))
 
     def record(layer: int):
+        visits = iter(visits_of_layer(layer))
+
         def hook(module, args, output):
-            routes[layer] = output[1].cpu()
+            routes[next(visits)] = output[1].cpu()
 
         return hook
 
@@ -667,10 +710,10 @@ def trainer_routing(model: torch.nn.Module, rows: list[list[int]]) -> dict[int, 
 
 
 def route_agreement(routes: dict[int, torch.Tensor], vllm_routes: torch.Tensor) -> float:
-    """Share of (token, MoE layer) pairs for which both forwards pick the same top-k experts."""
+    """Share of (token, MoE layer visit) pairs for which both forwards pick the same top-k experts."""
     same = [
-        (experts.sort(dim=-1).values == vllm_routes[:, layer].sort(dim=-1).values).all(dim=-1)
-        for layer, experts in routes.items()
+        (experts.sort(dim=-1).values == vllm_routes[:, visit].sort(dim=-1).values).all(dim=-1)
+        for visit, experts in routes.items()
     ]
     return torch.cat(same).float().mean().item()
 
@@ -805,7 +848,7 @@ def test_matches_vllm(
 
     if moe:
         agreement = route_agreement(trainer_routing(model, rows), vllm_routes)
-        assert agreement >= MIN_ROUTE_AGREEMENT, f"top-k experts agree on {agreement:.0%} of tokens"
+        assert agreement >= case.min_route_agreement, f"top-k experts agree on {agreement:.0%} of tokens"
     trainer = trainer_logprobs(model, rows, vllm_routes.unsqueeze(0).cuda() if moe else None)
 
     log_ratio = torch.cat(trainer) - torch.cat(vllm)

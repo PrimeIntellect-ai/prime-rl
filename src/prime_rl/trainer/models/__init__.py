@@ -13,7 +13,14 @@ from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig, Glm4MoeForCausalLM
 from prime_rl.trainer.models.glm5_next import Glm5NextConfig, Glm5NextForCausalLM, Glm5NextTextConfig
 from prime_rl.trainer.models.glm_moe_dsa import GlmMoeDsaConfig, GlmMoeDsaForCausalLM
 from prime_rl.trainer.models.gpt_oss import GptOssConfig, GptOssForCausalLM
-from prime_rl.trainer.models.inkling2 import Inkling2Config, Inkling2ForCausalLM, Inkling2TextConfig
+from prime_rl.trainer.models.inkling2 import (
+    Inkling2Config,
+    Inkling2ForCausalLM,
+    Inkling2LoopConfig,
+    Inkling2LoopForCausalLM,
+    Inkling2LoopTextConfig,
+    Inkling2TextConfig,
+)
 from prime_rl.trainer.models.laguna import LagunaConfig, LagunaForCausalLM
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, cast_float_and_contiguous
 from prime_rl.trainer.models.llama import LlamaForCausalLM
@@ -46,6 +53,8 @@ AutoConfig.register("glm_moe_dsa", GlmMoeDsaConfig, exist_ok=True)
 AutoConfig.register("gpt_oss", GptOssConfig, exist_ok=True)
 AutoConfig.register("inkling2", Inkling2Config, exist_ok=True)
 AutoConfig.register("inkling2_text", Inkling2TextConfig, exist_ok=True)
+AutoConfig.register("inkling2_loop", Inkling2LoopConfig, exist_ok=True)
+AutoConfig.register("inkling2_loop_text", Inkling2LoopTextConfig, exist_ok=True)
 AutoConfig.register("laguna", LagunaConfig, exist_ok=True)
 AutoConfig.register("minimax_m2", MiniMaxM2Config, exist_ok=True)
 AutoConfig.register("muse_glimmer", MuseGlimmerConfig, exist_ok=True)
@@ -89,6 +98,8 @@ _CUSTOM_CAUSAL_LM_MODELS: tuple[
     (GptOssConfig, GptOssForCausalLM),
     (Inkling2TextConfig, Inkling2ForCausalLM),
     (Inkling2Config, Inkling2ForCausalLM),
+    (Inkling2LoopTextConfig, Inkling2LoopForCausalLM),
+    (Inkling2LoopConfig, Inkling2LoopForCausalLM),
 )
 _CUSTOM_CAUSAL_LM_MAPPING: dict[type[PretrainedConfig], type[PreTrainedModelPrimeRL]] = dict(_CUSTOM_CAUSAL_LM_MODELS)
 

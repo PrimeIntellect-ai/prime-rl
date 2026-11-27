@@ -8,6 +8,8 @@ from typing import Any, ClassVar
 
 from transformers.configuration_utils import PreTrainedConfig
 
+LOOP_CONFIG_KEYS = {"core_start", "core_end", "num_passes", "gate_rank", "is_varloop"}
+
 
 class Inkling2ModelConfig(PreTrainedConfig):
     model_type = "inkling2_model"
@@ -51,11 +53,17 @@ class Inkling2ModelConfig(PreTrainedConfig):
         mlp_up_softcap: float = 25.0,
         route_scale: float = 8.0,
         use_gate_bias: bool = True,
+        loop_config: dict[str, Any] | None = None,
         tie_word_embeddings: bool = False,
         **kwargs: Any,
     ) -> None:
         if pre_norm_pre_affine or final_norm_pre_affine:
             raise ValueError("Inkling2 pre-affine norms are not supported")
+        if loop_config is not None and (unknown := set(loop_config) - LOOP_CONFIG_KEYS):
+            raise ValueError(f"Unsupported Inkling2 loop_config keys {sorted(unknown)}")
+        # Looped checkpoints (Inkling 2 Mini) run layers [core_start, core_end)
+        # num_passes times with shared weights.
+        self.loop_config = dict(loop_config) if loop_config is not None else None
         if "n_layers_per_attnres_block" in kwargs:
             raise ValueError("n_layers_per_attnres_block was renamed to n_layers_per_attn_res_block")
         self.padded_vocab_size = vocab_size
@@ -100,10 +108,60 @@ class Inkling2ModelConfig(PreTrainedConfig):
         self.use_gate_bias = use_gate_bias
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
 
+    @property
+    def loop_core_layers(self) -> range:
+        """Layers that run once per loop pass (none without a loop)."""
+        if self.loop_config is None:
+            return range(0)
+        return range(self.loop_config["core_start"], self.loop_config["core_end"])
+
+    @property
+    def num_loop_passes(self) -> int:
+        return 1 if self.loop_config is None else self.loop_config["num_passes"]
+
+    @property
+    def num_layer_visits(self) -> int:
+        """Layer calls of one forward; the routed experts hold one row per visit."""
+        return self.num_hidden_layers + (self.num_loop_passes - 1) * len(self.loop_core_layers)
+
+    def layer_visit_ids(self, layer_id: int) -> tuple[int, ...]:
+        """The visits of a layer, one per pass it runs in, in forward order."""
+        core = self.loop_core_layers
+        if layer_id in core:
+            return tuple(layer_id + pass_idx * len(core) for pass_idx in range(self.num_loop_passes))
+        if layer_id < core.start:
+            return (layer_id,)
+        return (layer_id + (self.num_loop_passes - 1) * len(core),)
+
+    def check_loop_options(self) -> None:
+        """Validate the loop against the layers; `hf_overrides` change them after the constructor."""
+        if self.loop_config is None:
+            return
+        if self.loop_config.get("is_varloop", False):
+            raise ValueError("Inkling2 checkpoints with a variable number of loop passes are not supported")
+        core, block = self.loop_core_layers, self.n_layers_per_attn_res_block
+        if not 0 < core.start < core.stop <= self.num_hidden_layers:
+            raise ValueError(
+                f"The loop core [{core.start}, {core.stop}) must start after layer 0 and end within the "
+                f"{self.num_hidden_layers} layers of the model (a truncated model must keep the whole core)"
+            )
+        # A pass restarts from the block the first core layer seals, and its
+        # messages read the blocks of the previous pass: at least two.
+        if core.start % block or core.stop % block or len(core) < 2 * block:
+            raise ValueError(
+                f"The loop core [{core.start}, {core.stop}) must cover two or more blocks of {block} layers"
+            )
+        if self.num_loop_passes < 1 or self.loop_config["gate_rank"] < 1:
+            raise ValueError("Inkling2 loop num_passes and gate_rank must be at least 1")
+        if not self.attn_res_normalize_values:
+            raise ValueError("Inkling2 loop messages need attn_res_normalize_values")
+
 
 class Inkling2MMConfig(PreTrainedConfig):
     model_type = "inkling2"
     keys_to_ignore_at_inference = ["past_key_values"]
+    # Whether the checkpoint has a loop: `inkling2_loop` checkpoints do.
+    looped: ClassVar[bool] = False
     sub_configs: ClassVar[dict[str, type[PreTrainedConfig]]] = {
         "text_config": Inkling2ModelConfig,
     }
@@ -120,6 +178,11 @@ class Inkling2MMConfig(PreTrainedConfig):
             text_config if isinstance(text_config, Inkling2ModelConfig) else Inkling2ModelConfig(**(text_config or {}))
         )
         self.vision_config = vision_config
+        if (self.text_config.loop_config is not None) != self.looped:
+            raise ValueError(
+                f"Inkling2 model_type {self.model_type!r} {'needs' if self.looped else 'does not take'} a loop_config: "
+                "looped checkpoints are model_type 'inkling2_loop'"
+            )
         # The checkpoint's unembedding runs in BF16 with an FP32 output.
         kwargs.setdefault("head_dtype", "float32")
         kwargs.setdefault("torch_dtype", "bfloat16")
@@ -130,6 +193,16 @@ class Inkling2MMConfig(PreTrainedConfig):
 
     def get_text_config(self, *args: Any, **kwargs: Any) -> Inkling2ModelConfig:
         return self.text_config
+
+
+class Inkling2LoopMMConfig(Inkling2MMConfig):
+    """Looped Inkling2 checkpoints (Inkling 2 Mini)."""
+
+    model_type = "inkling2_loop"
+    looped: ClassVar[bool] = True
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
 
 
 class Inkling2DSparkConfig(PreTrainedConfig):
