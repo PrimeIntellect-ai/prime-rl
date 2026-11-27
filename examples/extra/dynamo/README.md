@@ -71,3 +71,15 @@ uv run rl @ examples/extra/dynamo/rl.toml
 ```
 
 The example stops after five optimizer steps. Outputs are written under `outputs/` unless `output_dir` is overridden.
+
+## ModelExpress weight transfer
+
+To transfer weights through [ModelExpress](../../../docs/model-express.md) instead of NCCL, start each Dynamo vLLM worker with the ModelExpress extension, `--worker-extension-cls prime_rl.inference.vllm.worker.modelexpress.ModelExpressWeightUpdateWorker`, and set:
+
+```toml
+[weight_broadcast]
+type = "modelexpress"
+port = 8011  # the default ModelExpress port, 8001, is the Dynamo discovery port here
+```
+
+`uv run rl` starts the ModelExpress server. With ModelExpress, Prime-RL accepts any number of discovered workers and any worker `world_size`, and rediscovers them before every weight update: a worker that joins is initialized and receives the next update, and a worker that leaves is dropped. A worker that joins between updates serves its launch weights until then.

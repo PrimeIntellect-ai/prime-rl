@@ -103,6 +103,26 @@ def test_modelexpress_worker_uses_stage_apply_release(fail_install):
     assert calls == ["stage", "apply", "release"]
 
 
+def test_modelexpress_worker_initializes_once_per_worker_id():
+    from prime_rl.inference.vllm.worker.modelexpress import ModelExpressWeightUpdateWorker
+
+    closed = []
+    running = SimpleNamespace(worker_id="session-7:0", close=lambda: closed.append(True))
+    worker = ModelExpressWeightUpdateWorker()
+    worker.rank = 0
+    worker._generator = running
+
+    # The same worker id keeps the running client without touching the engine.
+    worker.init_broadcaster("trainer", 8001, 0, 1, 60, "session-7")
+    assert worker._generator is running and not closed
+
+    # A new worker id closes the running client before initializing another one from the engine.
+    worker.model_runner = SimpleNamespace()
+    with pytest.raises(AttributeError, match="model_config"):
+        worker.init_broadcaster("trainer", 8001, 0, 1, 60, "session-8")
+    assert closed == [True]
+
+
 def test_modelexpress_worker_forwards_generator_buffer_config():
     source = ast.parse((ROOT / "src/prime_rl/inference/vllm/worker/modelexpress.py").read_text())
     config = next(

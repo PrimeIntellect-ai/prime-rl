@@ -486,12 +486,6 @@ class RLConfig(BaseConfig):
                     f"{name}.weight_broadcast conflicts with the shared weight_broadcast. Under the rl "
                     "entrypoint it is copied from [weight_broadcast]; set that instead."
                 )
-        if self.weight_broadcast.type == "modelexpress":
-            dynamo = self.orchestrator.model.client.dynamo
-            if dynamo is not None and dynamo.enabled:
-                raise ValueError(
-                    "modelexpress requires static inference admin endpoints; Dynamo discovery is not supported."
-                )
         self.trainer.weight_broadcast = self.weight_broadcast.model_copy()
         self.orchestrator = self.orchestrator.model_copy(
             update={"weight_broadcast": self.weight_broadcast.model_copy()}
