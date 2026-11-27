@@ -165,6 +165,13 @@ def train(config: SFTConfig | PretrainConfig):
     model_files = setup_model_files(config.model, tokenizer, processor)
     ckpt_manager = setup_ckpt_manager(config.run_dir, config.ckpt, model_files, resume=config.resume)
 
+    # The remote may hold a later step than the disk, and a remote-only step downloads while the trainer starts up
+    if config.resume is not None and config.resume.dir is None:
+        if config.resume.step is None:
+            checkpoint_step = ckpt_manager.resolve_latest_step(checkpoint_step)
+        if checkpoint_step is not None:
+            ckpt_manager.prefetch(checkpoint_step)
+
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")
     from_checkpoint = config.model.init.type == "pretrained" and is_checkpoint_step_dir(config.model.name)
@@ -206,6 +213,7 @@ def train(config: SFTConfig | PretrainConfig):
         # A resume sizes the subsets from the checkpoint's data state.
         resume = None
         if checkpoint_step is not None and not (config.ckpt and config.ckpt.skip_dataloader):
+            ckpt_manager.finish_pull()
             path = config.resume.dir / "trainer" if config.resume.dir else ckpt_manager.get_ckpt_path(checkpoint_step)
             # Without the files, loading the checkpoint fails with its own error.
             if (path / "dataloader" / "rank_0.pt").exists():
@@ -737,6 +745,7 @@ def train(config: SFTConfig | PretrainConfig):
             controller.mark_saved(progress.step)
         if not paused:
             ckpt_manager.maybe_clean()
+        ckpt_manager.close()
 
     # Broadcast the final weights so the evals process can run its forced final epoch. A paused
     # run has no final epoch.
