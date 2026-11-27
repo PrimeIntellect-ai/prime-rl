@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from prime_rl.inference.patches import (
     _emit_floors,
@@ -17,6 +18,29 @@ def _kv_cache_manager(block_size=4):
     spec = FullAttentionSpec(block_size=block_size, num_kv_heads=1, head_size=8, dtype=torch.float16)
     config = KVCacheConfig(num_blocks=12, kv_cache_tensors=[], kv_cache_groups=[KVCacheGroupSpec(["l0"], spec)])
     return KVCacheManager(config, max_model_len=1024, scheduler_block_size=block_size, hash_block_size=block_size)
+
+
+@pytest.fixture
+def output_worker(monkeypatch):
+    """A patched AuxOutput worker with its output storage, built by the calls vLLM's model runner makes."""
+    from vllm.distributed.aux_output_connector import worker as aux_worker
+
+    monkey_patch_routed_experts_with_pd_connectors()
+    # The capturer reads a loaded MoE model, and only TP rank 0 owns the output storage.
+    capturer = SimpleNamespace(shape_per_token=(3, 2), output_dtype_name="uint8")
+    monkeypatch.setattr(aux_worker, "RoutedExpertsCapturer", lambda **kwargs: capturer)
+    monkeypatch.setattr(aux_worker, "bind_routed_experts_capturer", lambda model, capturer: None)
+    monkeypatch.setattr(aux_worker, "get_tp_group", lambda: SimpleNamespace(is_first_rank=True))
+    monkeypatch.setattr(aux_worker, "resolve_kv_cache_block_sizes", lambda kv_cache_config, vllm_config: (4, 4))
+    vllm_config = SimpleNamespace(
+        scheduler_config=SimpleNamespace(max_num_batched_tokens=8, max_num_seqs=1),
+        aux_output_config=SimpleNamespace(max_bytes=None),
+        max_concurrent_batches=2,
+    )
+    worker = aux_worker.get_aux_output_connector(None, vllm_config)
+    worker.initialize_output_storage(SimpleNamespace(num_blocks=12))
+    yield worker
+    worker.close()
 
 
 def test_remote_prefill_rows_start_at_first_forward():
@@ -95,3 +119,12 @@ def test_remote_prefill_partial_first_block_is_not_buffered():
     [(start, block)] = buffer.capture("r", 9, rows[9:12])
     assert start == 8
     np.testing.assert_array_equal(block, rows[8:12])
+
+
+def test_worker_does_not_buffer_remote_prefill_partial_first_block(output_worker):
+    from vllm.distributed.aux_output_connector.worker import _WorkerRequestState
+
+    rows = np.arange(12 * 3 * 2, dtype=np.uint8).reshape(12, 3, 2)
+    output_worker._requests["r"] = _WorkerRequestState(emit_cursor=6)
+    # The worker's own buffer skips the mid-block start at token 6; unpatched, it asserts.
+    assert output_worker._buffer.capture("r", 6, rows[6:7]) == []

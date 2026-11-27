@@ -116,7 +116,12 @@ def test_generate_response_post_process_preserves_prompt_metadata():
     payload = processed.model_dump(mode="json")
     assert payload["choices"][0]["routed_experts"] == compact_routed_experts
     assert payload["prompt_token_ids"] == [10, 11, 12, 13]
-    assert payload["mm_placeholders"] == {"image": [{"offset": 1, "length": 2}]}
+    # Optional placeholder fields that vLLM leaves unset dump as None.
+    placeholders = {
+        modality: [{key: value for key, value in item.items() if value is not None} for item in items]
+        for modality, items in payload["mm_placeholders"].items()
+    }
+    assert placeholders == {"image": [{"offset": 1, "length": 2}]}
     assert payload["usage"]["total_tokens"] == 7
 
 

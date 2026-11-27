@@ -56,6 +56,52 @@ def apply_shared_vllm_patches():
         monkey_patch_no_moe_lora()
 
 
+def _is_full_attention_group(group) -> bool:
+    """Whether every layer of a KV cache group is full attention.
+
+    vLLM's KV-cache refactor (vllm-project/vllm#61452) moved a group's kind from its spec's class to its manager's
+    and its block size onto the group. These helpers read either form.
+    """
+    if hasattr(group, "manager_cls"):
+        from vllm.v1.core.single_type_kv_cache_manager import FullAttentionManager
+
+        return issubclass(group.manager_cls, FullAttentionManager)
+    from vllm.v1.kv_cache_interface import is_full_attention_spec
+
+    return is_full_attention_spec(group.kv_cache_spec)
+
+
+def _sliding_window_group_test():
+    """Return a test for sliding-window KV cache groups, for the form the installed vLLM has.
+
+    The class the test needs is resolved here. A patch calls this when it is applied, so that a vLLM without the
+    class fails when the plugin loads instead of at the first request that reaches the patch.
+    """
+    from vllm.v1 import kv_cache_interface
+
+    if hasattr(kv_cache_interface, "KVCacheGroup"):
+        from vllm.v1.core.single_type_kv_cache_manager import SlidingWindowManager
+
+        return lambda group: issubclass(group.manager_cls, SlidingWindowManager)
+    from vllm.v1.kv_cache_interface import SlidingWindowSpec
+
+    return lambda group: isinstance(group.kv_cache_spec, SlidingWindowSpec)
+
+
+def _is_mamba_group(group) -> bool:
+    if hasattr(group, "manager_cls"):
+        from vllm.v1.core.single_type_kv_cache_manager import MambaManager
+
+        return issubclass(group.manager_cls, MambaManager)
+    from vllm.v1.kv_cache_interface import MambaSpec
+
+    return isinstance(group.kv_cache_spec, MambaSpec)
+
+
+def _group_block_size(group) -> int:
+    return group.block_size if hasattr(group, "manager_cls") else group.kv_cache_spec.block_size
+
+
 def monkey_patch_nixl_bidirectional_single_pull():
     """Bidirectional NIXL: a prefill request that comes back through the connector lookup after its D->P pull
     prefills locally instead of waiting for a second read.
@@ -99,8 +145,8 @@ def monkey_patch_nixl_sliding_window_backoff():
     caches are sliding-window specs). Backport of vllm-project/vllm#65584 (NIXL side).
     """
     from vllm.distributed.kv_transfer.kv_connector.v1.nixl import base_scheduler
-    from vllm.v1.kv_cache_interface import SlidingWindowSpec
 
+    is_sliding_window_group = _sliding_window_group_test()
     cls = base_scheduler.NixlBaseConnectorScheduler
     original = cls._prefill_backoff
     if getattr(original, "_prime_rl_sliding_window", False):
@@ -109,9 +155,7 @@ def monkey_patch_nixl_sliding_window_backoff():
     def _prefill_backoff(self) -> int:
         has_sliding_window = getattr(self, "_prime_rl_has_sliding_window", None)
         if has_sliding_window is None:
-            has_sliding_window = any(
-                isinstance(group.kv_cache_spec, SlidingWindowSpec) for group in self.kv_cache_config.kv_cache_groups
-            )
+            has_sliding_window = any(is_sliding_window_group(group) for group in self.kv_cache_config.kv_cache_groups)
             self._prime_rl_has_sliding_window = has_sliding_window
         return max(original(self), 1 if has_sliding_window else 0)
 
@@ -126,15 +170,12 @@ def trim_block_ids_to_tokens(block_ids, kv_cache_groups, num_tokens: int):
     positions with null blocks), so the blocks to keep are the first ``cdiv(num_tokens, block_size)``. SSM groups hold
     one running state, not positions, and stay as they are.
     """
-    from vllm.v1.kv_cache_interface import MambaSpec
-
     trimmed = []
     for group, blocks in zip(kv_cache_groups, block_ids, strict=True):
-        spec = group.kv_cache_spec
-        if isinstance(spec, MambaSpec):
+        if _is_mamba_group(group):
             trimmed.append(blocks)
             continue
-        keep = -(-num_tokens // spec.block_size)
+        keep = -(-num_tokens // _group_block_size(group))
         trimmed.append(list(blocks)[:keep])
     return tuple(trimmed)
 
@@ -457,6 +498,12 @@ def monkey_patch_block_outermost_mla_stride():
     if getattr(original, "_prime_rl_aligns_mla_stride", False):
         return
 
+    def layer_specs(group):
+        # A group holds its layers' specs itself since vllm-project/vllm#61452.
+        if hasattr(group, "kv_cache_specs"):
+            return group.kv_cache_specs.values()
+        return (kv_cache_planning._get_per_layer_spec(group, name) for name in group.layer_names)
+
     def _get_kv_cache_bytes_per_block(kv_cache_groups, layout):
         bytes_per_block = original(kv_cache_groups, layout)
         if not layout.is_block_outermost:
@@ -464,8 +511,8 @@ def monkey_patch_block_outermost_mla_stride():
         alignments = {
             alignment
             for group in kv_cache_groups
-            for name in group.layer_names
-            if (alignment := getattr(kv_cache_planning._get_per_layer_spec(group, name), "alignment", None))
+            for spec in layer_specs(group)
+            if (alignment := getattr(spec, "alignment", None))
         }
         return round_up(bytes_per_block, math.lcm(*alignments)) if alignments else bytes_per_block
 
@@ -483,39 +530,59 @@ def monkey_patch_fit_sliding_window_pages():
     window's blocks. Halving the group's block size until it fits under the widest other group
     restores the target's capacity at the cost of more window blocks per request.
     """
+    from vllm.v1 import kv_cache_interface
     from vllm.v1.core import kv_cache_planning
-    from vllm.v1.kv_cache_interface import SlidingWindowSpec, UniformTypeKVCacheSpecs
 
+    is_sliding_window_group = _sliding_window_group_test()
     original = kv_cache_planning._get_packed_kv_cache_groups
     if getattr(original, "_prime_rl_fits_sliding_window_pages", False):
         return
 
+    # Since vllm-project/vllm#61452 a group holds its layers' specs and its block size itself, and a sliding-window
+    # layer is a plain AttentionSpec that a sliding-window manager allocates. Such a group has `manager_cls`.
+
     def layer_specs(group):
+        if hasattr(group, "manager_cls"):
+            return dict(group.kv_cache_specs)
         spec = group.kv_cache_spec
-        if isinstance(spec, UniformTypeKVCacheSpecs):
+        if isinstance(spec, kv_cache_interface.UniformTypeKVCacheSpecs):
             return dict(spec.kv_cache_specs)
         return {name: spec for name in group.layer_names}
 
     def group_bytes(group):
         return sum(spec.page_size_bytes for spec in layer_specs(group).values())
 
-    def _get_packed_kv_cache_groups(vllm_config, kv_cache_spec):
-        groups = original(vllm_config, kv_cache_spec)
+    def is_plain_sliding_window(group, specs):
+        if not hasattr(group, "manager_cls"):
+            plain_spec = kv_cache_interface.SlidingWindowSpec
+        elif is_sliding_window_group(group):
+            plain_spec = kv_cache_interface.AttentionSpec
+        else:
+            return False
+        return all(type(s) is plain_spec and s.page_size_padded is None for s in specs.values())
+
+    def with_block_size(group, specs, block_size):
+        specs = {name: replace(s, block_size=block_size) for name, s in specs.items()}
+        if hasattr(group, "manager_cls"):
+            return replace(group, kv_cache_specs=specs, block_size=block_size)
+        return replace(group, kv_cache_spec=kv_cache_interface.UniformTypeKVCacheSpecs.from_specs(specs))
+
+    def _get_packed_kv_cache_groups(*args, **kwargs):
+        groups = original(*args, **kwargs)
         if not groups or len(groups) == 1:
             return groups
         fitted = []
         for i, group in enumerate(groups):
             specs = layer_specs(group)
             widest_other = max(group_bytes(other) for j, other in enumerate(groups) if j != i)
-            plain_swa = all(type(s) is SlidingWindowSpec and s.page_size_padded is None for s in specs.values())
+            plain_swa = is_plain_sliding_window(group, specs)
             block_size = next(iter(specs.values())).block_size
             if plain_swa and group_bytes(group) > widest_other:
                 # An unpadded sliding-window page is linear in the block size.
                 bytes_per_token = group_bytes(group) // block_size
                 while block_size > 16 and bytes_per_token * block_size > widest_other:
                     block_size //= 2
-                specs = {name: replace(s, block_size=block_size) for name, s in specs.items()}
-                group = replace(group, kv_cache_spec=UniformTypeKVCacheSpecs.from_specs(specs))
+                group = with_block_size(group, specs, block_size)
             fitted.append(group)
         return fitted
 
@@ -555,8 +622,8 @@ def monkey_patch_dspark_dp_compile_cache():
         return
 
     @wraps(original)
-    def _get_dspark_parallel_config(parallel_config, tensor_parallel_size, draft_model_config):
-        draft = original(parallel_config, tensor_parallel_size, draft_model_config)
+    def _get_dspark_parallel_config(parallel_config, *args, **kwargs):
+        draft = original(parallel_config, *args, **kwargs)
         # Config replacement reconstructs this init=False field from the local rank.
         draft.data_parallel_index = parallel_config.data_parallel_index
         return draft
@@ -933,8 +1000,11 @@ def monkey_patch_clamp_kv_offload_loads_for_routed_experts():
     cut (`monkey_patch_routed_experts_cut_loaded_prefix_hits`) keeps later requests from reading.
     """
     from vllm.distributed.aux_output_connector.connector import AuxOutputSchedulerConnector
-    from vllm.distributed.kv_transfer.kv_connector.v1.mooncake.store.connector import MooncakeStoreConnector
+    from vllm.distributed.kv_transfer.kv_connector.factory import KVConnectorFactory
     from vllm.distributed.kv_transfer.kv_connector.v1.offloading_connector import OffloadingConnector
+
+    # By its registered name: the module path differs between vLLM versions (vllm-project/vllm#65877).
+    MooncakeStoreConnector = KVConnectorFactory.get_connector_class_by_name("MooncakeStoreConnector")
 
     if getattr(OffloadingConnector._max_loadable_tokens, "_prime_rl_routed_experts_clamp", False):
         return
@@ -1029,7 +1099,6 @@ def monkey_patch_routed_experts_cut_loaded_prefix_hits():
     after preemption) and decode-side P/D requests need no prompt rows from the store.
     """
     from vllm.v1.core.sched.scheduler import Scheduler
-    from vllm.v1.kv_cache_interface import is_full_attention_spec
 
     if getattr(Scheduler._get_local_prefix_cache_hit, "_prime_rl_routed_experts_cut", False):
         return
@@ -1043,8 +1112,8 @@ def monkey_patch_routed_experts_cut_loaded_prefix_hits():
         if self.aux_output_connector is None or self.connector is None:
             return
         groups = self.kv_cache_config.kv_cache_groups
-        gid = next(i for i, g in enumerate(groups) if not g.host_resident and is_full_attention_spec(g.kv_cache_spec))
-        block_size = groups[gid].kv_cache_spec.block_size
+        gid = next(i for i, g in enumerate(groups) if not g.host_resident and _is_full_attention_group(g))
+        block_size = _group_block_size(groups[gid])
         self._prime_rl_loaded_blocks = (
             gid,
             block_size,
