@@ -1,7 +1,7 @@
 # Terminal-Bench 2 at avg@4: every task 4 times with the bash harness in prime
 # sandboxes (PRIME_API_KEY authenticates sandbox creation) against Prime Inference.
 #
-#   uv run eval @ configs/eval/tb2.toml
+#   uv run eval @ dev/eval/tb2.toml
 
 group_size = 4
 

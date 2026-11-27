@@ -168,7 +168,7 @@ image = (
         " && rm src/prime_rl/_stub.py"
     )
 )
-for directory in ("src", "tests", "configs", "examples", "tools"):
+for directory in ("src", "tests", "dev", "examples", "recipes", "tools"):
     image = image.add_local_dir(REPO / directory, f"{REMOTE_REPO}/{directory}", ignore=IGNORE)
 
 app = modal.App("prime-rl-ci", image=image)

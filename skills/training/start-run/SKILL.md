@@ -113,7 +113,7 @@ Standalone evals (`uv run eval`) are covered by the `eval` skill.
 
 - `src/prime_rl/entrypoints/` — `rl`, `sft`, `inference` (+ `trainer`, `orchestrator` for direct launches)
 - `packages/prime-rl-configs/src/prime_rl/configs/` — all config classes
-- `configs/` — minimal debug configs
+- `dev/` — minimal debug configs
 - `recipes/` — frontier-model configs, one folder per model
 - `examples/` — full example configs (e.g. `reverse-text/`)
 

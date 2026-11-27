@@ -252,7 +252,7 @@ The repo ships TOMLs in three places:
 
 - [`examples/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples) — end-to-end walkthroughs on 1–8 GPUs, each with a README that covers the full launch story.
 - [`recipes/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes) — frontier-model configs, one folder per model.
-- [`configs/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/configs) — smoke configs for developing the framework. They may drift.
+- [`dev/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/dev) — smoke configs for developing the framework. They may drift.
 
 **Basic** (1–8 GPUs):
 

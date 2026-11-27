@@ -1,8 +1,9 @@
-# Self-distillation (SDFT, https://arxiv.org/abs/2601.19897) against the live
-# policy itself: the reference for each completion is the current model
-# conditioned on the expert demonstration — no extra deployment needed.
-# reverse-text carries the demonstration in its top-level `answer` field.
-#   uv run rl @ configs/algo/self_distill.toml
+# Start the frozen reference server first (on a separate GPU):
+#   CUDA_VISIBLE_DEVICES=1 uv run inference \
+#     --vllm.model PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
+#     --server.port 8001 --vllm.gpu-memory-utilization 0.5 --vllm.enforce-eager
+# Then:
+#   uv run rl @ dev/algo/opd.toml
 
 max_steps = 20
 seq_len = 2048
@@ -12,19 +13,22 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [monitors.wandb]
 project = "algorithms-debug"
-name = "debug-self-distill"
+name = "debug-opd"
 
 [orchestrator]
-batch_size = 32
+batch_size = 128
 
 [orchestrator.train]
-group_size = 1
+group_size = 16
 
-# reverse-text's demo lives in the "answer" column.
 [orchestrator.train.algo]
-type = "opsd"
-demo_key = "answer"
+type = "opd"
 
+[orchestrator.train.algo.teacher]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+base_url = "http://localhost:8001/v1"
+
+# Teacher rolls out over plain chat-completions (no tokens); the renderer backfills them.
 [orchestrator.renderer]
 name = "prime-qwen3"
 
@@ -54,6 +58,8 @@ env.agent.runtime.type = "subprocess"
 
 [trainer.optim]
 lr = 3e-6
+
+[ckpt]
 
 [inference]
 

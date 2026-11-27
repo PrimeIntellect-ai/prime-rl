@@ -53,9 +53,9 @@ CONFIG_CLASSES = [
 
 
 def get_config_files() -> list[Path]:
-    """Any TOML file inside `configs/`, `examples/`, `recipes/`, `tests/integration/configs/` or `tests/regression/configs/`."""
+    """Any TOML file inside `dev/`, `examples/`, `recipes/`, `tests/integration/configs/` or `tests/regression/configs/`."""
     roots = [
-        Path("configs"),
+        Path("dev"),
         Path("examples"),
         Path("recipes"),
         Path("tests/integration/configs"),
