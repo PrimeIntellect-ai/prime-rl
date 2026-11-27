@@ -51,7 +51,6 @@ def models(request: Request) -> OpenAIServingModels:
 API_SERVER_GC_THRESHOLDS = (50_000, 20, 100)
 
 WORKER_EXTENSION_CLS = {
-    "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
     "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
     "modelexpress": "prime_rl.inference.vllm.worker.modelexpress.ModelExpressWeightUpdateWorker",
 }
@@ -155,15 +154,16 @@ async def liveness(raw_request: Request):
 @admin_router.post("/init_broadcaster")
 async def init_broadcaster(request: Request):
     data = await request.json()
-    host = data.get("host")
-    port = data.get("port")
-    timeout = data.get("timeout")
-    rank_offset = data.get("rank_offset")
-    inference_world_size = data.get("inference_world_size")
-    session_id = data.get("session_id", "default")
-    args = (host, port, rank_offset, inference_world_size, timeout, session_id)
-    if "staging_buffer_bytes" in data:
-        args += (data["staging_buffer_bytes"], data["staging_buffers_count"])
+    args = (
+        data["host"],
+        data["port"],
+        data["rank_offset"],
+        data["inference_world_size"],
+        data["timeout"],
+        data["session_id"],
+        data["staging_buffer_bytes"],
+        data["staging_buffers_count"],
+    )
     await engine_client(request).collective_rpc("init_broadcaster", args=args)
     return {"status": "ok"}
 

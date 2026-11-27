@@ -17,10 +17,9 @@ from prime_rl.utils.pathing import get_all_ckpt_steps, get_broadcast_dir, get_st
 
 # Broadcast-dir sentinels. Every transport goes through the same four stages:
 # the trainer resets the step dir and raises ``.sender_ready``, the consumer
-# joins the transfer and replies ``.receiver_ready`` (for NCCL with the
-# engines paused inside the receive RPC), the trainer raises ``.started`` and
-# moves the weights, then raises ``.finished`` — for filesystem, the weights
-# are fully on disk.
+# joins the transfer and replies ``.receiver_ready``, the trainer raises
+# ``.started`` and moves the weights, then raises ``.finished`` — for
+# filesystem, the weights are fully on disk.
 SENDER_READY_MARKER = ".sender_ready"
 RECEIVER_READY_MARKER = ".receiver_ready"
 STARTED_MARKER = ".started"

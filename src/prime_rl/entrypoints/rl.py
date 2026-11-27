@@ -390,7 +390,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             nixl_nic_affinity=infer_deploy.nixl_nic_affinity,
             dp_per_node=config.deployment.gpus_per_node // config.inference.vllm.tensor_parallel_size,
             **mooncake_vars,
-            use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
             train_env_names=train_env_names,
@@ -429,7 +428,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             if config.inference
             else 1,
             **mooncake_vars,
-            use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
             orchestrator_on_inference=config.deployment.orchestrator_on_inference,
             trainer_env_vars=trainer_env_vars,

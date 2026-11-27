@@ -19,11 +19,6 @@ def get_language_model(model: nn.Module) -> nn.Module:
     return getattr(model.model, "language_model", model.model)
 
 
-def get_layer_prefix(model: nn.Module) -> str:
-    """Weight key prefix of the decoder layers."""
-    return "model.language_model.layers." if hasattr(model.model, "language_model") else "model.layers."
-
-
 def load_image(data_url: str) -> Image.Image:
     header, separator, payload = data_url.partition(",")
     if not separator or not header.startswith("data:image/") or ";base64" not in header:

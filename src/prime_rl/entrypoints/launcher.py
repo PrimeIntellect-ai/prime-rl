@@ -239,11 +239,6 @@ def write_slurm_script(
             run_name=config.run.name,
             online_eval=online_eval,
             admin_token=admin_token_uses(config),
-            use_nccl_broadcast=(
-                config.eval is not None
-                and config.weight_broadcast is not None
-                and config.weight_broadcast.type == "nccl"
-            ),
             entrypoint=entrypoint,
             **eval_vars,
             **modelexpress_vars,
