@@ -61,7 +61,7 @@ class LoRAGroupedExperts(LoRAModule):
         lora = _grouped_mm(
             _grouped_mm(lora_x, getattr(self, f"{proj}_lora_A"), offsets), getattr(self, f"{proj}_lora_B"), offsets
         )
-        return base + self.scaling * lora
+        return torch.add(base, lora, alpha=self.scaling)
 
     def forward(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
         offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
@@ -130,10 +130,11 @@ class LoRAGptOssGroupedExperts(LoRAModule):
         up = up + bias(base.up_proj_bias, up)
 
         gate_up_lora = lora(lora_x, self.gate_up_lora_A, self.gate_up_lora_B)
-        gate = gate + self.scaling * gate_up_lora[..., ::2]
-        up = up + self.scaling * gate_up_lora[..., 1::2]
+        gate = torch.add(gate, gate_up_lora[..., ::2], alpha=self.scaling)
+        up = torch.add(up, gate_up_lora[..., 1::2], alpha=self.scaling)
 
         h = base.activation.apply(gate, up)
         out = _grouped_mm(h, base.down_proj, offsets)
         out = out + bias(base.down_proj_bias, out)
-        return (out + self.scaling * lora(self.lora_dropout(h), self.down_lora_A, self.down_lora_B)).type_as(x)
+        down_lora = lora(self.lora_dropout(h), self.down_lora_A, self.down_lora_B)
+        return torch.add(out, down_lora, alpha=self.scaling).type_as(x)
