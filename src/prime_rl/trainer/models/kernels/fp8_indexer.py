@@ -13,6 +13,7 @@ import torch.distributed as dist
 import triton
 import triton.language as tl
 
+from prime_rl.trainer.models.kernels.indexer_topk import exact_topk_bf16, exact_topk_bf16_supported
 from prime_rl.utils.logger import get_logger
 
 FP8_MAX = 448.0
@@ -354,6 +355,8 @@ def _select_topk(q_fp8, k_fp8, k_scales, w, ks, ke, S_k, chunk_rows, indices, wi
         q_scales = torch.full(q_fp8.shape[:-1], UNIT_UE8M0_X4, dtype=torch.int32, device=q_fp8.device)
         w = w.to(logits_dtype)
     lengths = (ke - ks).clamp_min(0)
+    # BF16 logits go to DeepSelect's BF16 kernel, which picks what its FP32 kernel picks on their FP32 copy
+    exact_bf16 = logits_dtype == torch.bfloat16 and _deep_select_supported(q_fp8.device)
     for chunk, start in enumerate(range(0, q_fp8.shape[0], chunk_rows)):
         end = min(start + chunk_rows, q_fp8.shape[0])
         # Row i holds the logits of keys [ks[i], ke[i]) from column 0; columns past ke[i] - ks[i] are not cleaned.
@@ -365,8 +368,13 @@ def _select_topk(q_fp8, k_fp8, k_scales, w, ks, ke, S_k, chunk_rows, indices, wi
             ke[start:end],
             k_fp8.shape[0] if widths is None else widths[chunk],
             logits_dtype,
-        ).float()
+        )
         row_lengths = lengths[start:end]
+        if exact_bf16 and exact_topk_bf16_supported(indices.shape[1], logits.shape[1]):
+            exact_topk_bf16(logits, row_lengths, ks[start:end], indices.shape[1], S_k, indices[start:end])
+            del logits
+            continue
+        logits = logits.float()
         chunk_indices = select_topk(logits, row_lengths, indices.shape[1], S_k) + ks[start:end, None]
         del logits
         # Replace cross-sequence indices with sentinel S_k (maps to zero-valued KV)
