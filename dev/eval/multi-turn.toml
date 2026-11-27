@@ -2,7 +2,7 @@
 # prime sandboxes (PRIME_API_KEY authenticates sandbox creation), one rollout
 # each, against Prime Inference on the default model.
 #
-#   uv run eval @ configs/eval/multi-turn.toml
+#   uv run eval @ dev/eval/multi-turn.toml
 
 [select]
 limit = 16

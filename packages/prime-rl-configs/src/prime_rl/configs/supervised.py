@@ -173,8 +173,9 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     does not start a server and evals connect to ``eval.client.base_url``."""
 
     weight_broadcast: WeightBroadcastConfig | None = None
-    """Trainer-to-inference weight transport for online evals. Defaults to NCCL.
-    LoRA and external inference use filesystem broadcast."""
+    """Trainer-to-inference weight transport for online evals. Defaults to NCCL; set
+    ``type = "modelexpress"`` to send weights through ModelExpress. LoRA and external
+    inference use filesystem broadcast."""
 
     resume: ResumeConfig | None = None
     """Resume the run from a checkpoint (point at it with the previous run's ``run.name``). Without ``[ckpt]`` the run loads the checkpoint but saves no new ones. The checkpoint supplies the training state; the hyperparameters and the learning rate schedule come from this config. If None, does not resume."""
@@ -286,14 +287,11 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
                 self.weight_broadcast = FileSystemWeightBroadcastConfig()
             else:
                 self.weight_broadcast = NCCLWeightBroadcastConfig()
-        if self.weight_broadcast.type != "filesystem":
-            if self.weight_broadcast.type == "modelexpress":
-                raise ValueError("ModelExpress weight broadcast is not supported for SFT online evals.")
-            if self.model.lora is not None:
-                raise ValueError(
-                    "LoRA training is not yet supported with in-memory weight broadcast. "
-                    "Set weight_broadcast.type = 'filesystem'."
-                )
+        if self.weight_broadcast.type != "filesystem" and self.model.lora is not None:
+            raise ValueError(
+                "LoRA training is not yet supported with in-memory weight broadcast. "
+                "Set weight_broadcast.type = 'filesystem'."
+            )
 
         if self.deployment.type == "multi_node":
             # Dedicated nodes in the SFT allocation run the inference pool, router,
@@ -320,7 +318,8 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
                     f"deployment.gpus_per_node ({self.deployment.gpus_per_node}) must be divisible by "
                     f"inference.vllm.tensor_parallel_size ({self.inference.vllm.tensor_parallel_size})."
                 )
-            if self.weight_broadcast.type == "nccl":
+            if self.weight_broadcast.type != "filesystem":
+                # Every inference GPU is an in-memory transfer worker.
                 self.weight_broadcast.inference_world_size = (
                     self.deployment.num_infer_nodes * self.deployment.gpus_per_node
                 )
@@ -373,7 +372,7 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
             vllm.data_parallel_size = num_infer_gpus // vllm.tensor_parallel_size
         if vllm.api_server_count < vllm.data_parallel_size and not vllm.enable_lora:
             vllm.api_server_count = vllm.data_parallel_size
-        if self.weight_broadcast.type == "nccl":
+        if self.weight_broadcast.type != "filesystem":
             self.weight_broadcast.inference_world_size = vllm.data_parallel_size * vllm.tensor_parallel_size
         self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
 

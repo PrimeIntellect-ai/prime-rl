@@ -286,13 +286,14 @@ class EnvClient:
 
     async def save(self, directory: str, timeout: float | None = None) -> SaveResponse:
         """Take a memory checkpoint of every rollout running on the pool's workers, each
-        written as a restore file under `directory`. The caller owns the snapshots of
+        written as a restore file under `directory`. Each rollout gets `timeout` seconds
+        for its memory checkpoint; one that takes longer starts over. The caller owns the snapshots of
         the restore points it gets back. Each saved rollout then waits at its restore
         point until `release`: one that finished and shipped meanwhile would be both in a
         trained batch and in the checkpoint as in flight, and a resume would train on it
         twice. A save that failed on some workers still returns what the others saved:
         the caller owns their snapshots either way."""
-        response = await self._request(SaveRequest(dir=directory), SaveResponse, timeout=timeout, check=False)
+        response = await self._request(SaveRequest(dir=directory, timeout=timeout), SaveResponse, check=False)
         if not response.success:
             get_logger().warning(f"Saving the running rollouts failed on some env workers: {response.error}")
         return response

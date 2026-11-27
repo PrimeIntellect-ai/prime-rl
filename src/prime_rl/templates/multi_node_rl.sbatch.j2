@@ -146,7 +146,7 @@ export WEIGHT_BROADCAST_HOST="$MASTER_ADDR"
 export WEIGHT_BROADCAST_HOST="{{ modelexpress_host }}"
 {% endif -%}
 export MODEL_EXPRESS_PORT={{ modelexpress_port }}
-export MODEL_EXPRESS_REDIS_PORT={{ modelexpress_redis_port }}
+export MODEL_EXPRESS_VALKEY_PORT={{ modelexpress_valkey_port }}
 echo "WEIGHT_BROADCAST_HOST=${WEIGHT_BROADCAST_HOST}"
 echo "MODEL_EXPRESS_PORT=${MODEL_EXPRESS_PORT}"
 {% endif %}
@@ -221,7 +221,7 @@ srun bash -s <<'CLEANUP_SH'
     pkill -9 -x mooncake_client 2>/dev/null
 {% if launch_modelexpress %}
     pkill -9 -f "[m]odelexpress-server" 2>/dev/null
-    pkill -9 -x redis-server 2>/dev/null
+    pkill -9 -x valkey-server 2>/dev/null
 {% endif %}
     sleep 2
     rm -rf /dev/shm/vllm-* /dev/shm/vllm_* /tmp/vllm-* /tmp/vllm_* /tmp/torch-* /tmp/torchelastic_* 2>/dev/null
@@ -274,67 +274,7 @@ python -m prime_rl.entrypoints.run_owner rl $CONFIG_DIR/rl.json srun --kill-on-b
     IB_HCA=$(ibv_devinfo | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" |paste -sd,)
     export NCCL_IB_HCA=$IB_HCA
 
-{% if uses_modelexpress_server -%}
-{% if launch_modelexpress %}
-
-    if [ "$SLURM_PROCID" -eq "$NUM_INFER_NODES" ]; then
-        MX_BIN="$PROJECT_DIR/third_party/modelexpress/bin"
-        if [ ! -x "$MX_BIN/modelexpress-server" ] || [ ! -x "$MX_BIN/redis-server" ]; then
-            echo "ModelExpress server dependencies are missing; run scripts/install_modelexpress.sh" >&2
-            exit 1
-        fi
-
-        MX_STATE_DIR="$LOG_DIR/modelexpress"
-        mkdir -p "$MX_STATE_DIR/cache"
-        "$MX_BIN/redis-server" \
-            --port "$MODEL_EXPRESS_REDIS_PORT" \
-            --bind 127.0.0.1 \
-            --protected-mode no \
-            --save "" \
-            --appendonly no \
-            --dir "$MX_STATE_DIR" \
-            > "$MX_STATE_DIR/redis.log" 2>&1 &
-        REDIS_PID=$!
-        trap '[ -z "${MODEL_EXPRESS_PID:-}" ] || kill -TERM "$MODEL_EXPRESS_PID" 2>/dev/null; kill -TERM "$REDIS_PID" 2>/dev/null || true' EXIT
-
-        for _ in $(seq 1 60); do
-            timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/$MODEL_EXPRESS_REDIS_PORT" 2>/dev/null && break
-            kill -0 "$REDIS_PID" 2>/dev/null || {
-                tail -50 "$MX_STATE_DIR/redis.log" >&2
-                exit 1
-            }
-            sleep 1
-        done
-        timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/$MODEL_EXPRESS_REDIS_PORT" 2>/dev/null || {
-            echo "Redis did not become ready on port $MODEL_EXPRESS_REDIS_PORT" >&2
-            exit 1
-        }
-
-        MX_METADATA_BACKEND=redis \
-        REDIS_URL="redis://127.0.0.1:$MODEL_EXPRESS_REDIS_PORT" \
-        MX_HEARTBEAT_TIMEOUT_SECS=31536000 \
-            "$MX_BIN/modelexpress-server" \
-            --port "$MODEL_EXPRESS_PORT" \
-            --metrics-port 0 \
-            --cache-directory "$MX_STATE_DIR/cache" \
-            > "$MX_STATE_DIR/server.log" 2>&1 &
-        MODEL_EXPRESS_PID=$!
-    fi
-{% endif %}
-
-    for _ in $(seq 1 120); do
-        timeout 1 bash -c "echo > /dev/tcp/$WEIGHT_BROADCAST_HOST/$MODEL_EXPRESS_PORT" 2>/dev/null && break
-        if [ -n "${MODEL_EXPRESS_PID:-}" ] && ! kill -0 "$MODEL_EXPRESS_PID" 2>/dev/null; then
-            tail -50 "$MX_STATE_DIR/server.log" >&2
-            exit 1
-        fi
-        sleep 1
-    done
-    timeout 1 bash -c "echo > /dev/tcp/$WEIGHT_BROADCAST_HOST/$MODEL_EXPRESS_PORT" 2>/dev/null || {
-        echo "ModelExpress is not reachable at $WEIGHT_BROADCAST_HOST:$MODEL_EXPRESS_PORT" >&2
-        exit 1
-    }
-{% endif %}
+{% include '_launch_modelexpress.sh.j2' %}
 
 {% if num_infer_nodes > 0 -%}
 

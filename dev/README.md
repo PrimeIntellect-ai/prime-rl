@@ -1,4 +1,4 @@
-# Configs
+# Dev
 
 Throwaway configs for developing the framework itself. They are not guaranteed functional or up to
 date. For walkthroughs, see [`examples/`](../examples); for frontier-model configs, see
@@ -11,7 +11,7 @@ date. For walkthroughs, see [`examples/`](../examples); for frontier-model confi
   the adaptive band), `resume`, `multi-env`.
 
 ```bash
-uv run rl   @ configs/algo/<algo>.toml
-uv run sft  @ configs/fake/sft.toml
-uv run eval @ configs/eval/<shape>.toml
+uv run rl   @ dev/algo/<algo>.toml
+uv run sft  @ dev/fake/sft.toml
+uv run eval @ dev/eval/<shape>.toml
 ```

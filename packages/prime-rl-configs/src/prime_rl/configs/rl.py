@@ -101,8 +101,8 @@ class SharedCheckpointConfig(BaseConfig):
     rollouts: bool = False
     """Also checkpoint the orchestrator's finished but unshipped episodes and its running rollouts, so a resumed run continues them (``orchestrator.ckpt.rollouts``)."""
 
-    rollouts_save_timeout: int = Field(600, ge=1)
-    """Seconds each env worker pool gets to save its running rollouts at a rollout checkpoint (``orchestrator.ckpt.rollouts_save_timeout``)."""
+    rollouts_save_timeout: int = Field(120, ge=1)
+    """Seconds each running rollout gets to take its memory checkpoint at a rollout checkpoint (``orchestrator.ckpt.rollouts_save_timeout``)."""
 
     async_save: bool | None = None
     """Write trainer checkpoints in the background (see ``trainer.ckpt.async_save``). If None, uses the trainer's default."""
@@ -490,16 +490,6 @@ class RLConfig(BaseConfig):
                     f"{name}.weight_broadcast conflicts with the shared weight_broadcast. Under the rl "
                     "entrypoint it is copied from [weight_broadcast]; set that instead."
                 )
-        if self.weight_broadcast.type == "modelexpress":
-            dynamo = self.orchestrator.model.client.dynamo
-            if dynamo is not None and dynamo.enabled:
-                raise ValueError(
-                    "modelexpress requires static inference admin endpoints; Dynamo discovery is not supported."
-                )
-            if self.inference is not None:
-                extra = self.inference.vllm.model_extra or {}
-                if extra.get("speculative_config") is not None:
-                    raise ValueError("modelexpress does not support speculative decoding.")
         self.trainer.weight_broadcast = self.weight_broadcast.model_copy()
         self.orchestrator = self.orchestrator.model_copy(
             update={"weight_broadcast": self.weight_broadcast.model_copy()}
@@ -663,6 +653,14 @@ class RLConfig(BaseConfig):
             return sampling.model_copy(update={"logprobs": max(sampling.logprobs or 0, k)})
 
         self.orchestrator.update_policy_samplings(request_logprobs)
+        return self
+
+    @model_validator(mode="after")
+    def validate_dynamo_sampling(self):
+        """Score centering requests a logprob head after the orchestrator validated, so check again."""
+        dynamo = self.orchestrator.model.client.dynamo
+        if dynamo is not None and dynamo.enabled and (conflict := self.orchestrator.dynamo_sampling_conflict()):
+            raise ValueError(f"Dynamo engines cannot serve {conflict}: their sidecar rejects prime-rl's extra_args")
         return self
 
     @model_validator(mode="after")

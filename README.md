@@ -135,7 +135,7 @@ uv run python -c "import flash_attn"
 3. Check that you can run SFT trainer  (*this requires 1 GPU*)
 
 ```bash
-uv run sft @ configs/fake/sft.toml
+uv run sft @ dev/fake/sft.toml
 ```
 
 4. Check that you can run the inference server (*this requires 1 GPU*)

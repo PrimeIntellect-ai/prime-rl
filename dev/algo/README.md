@@ -36,27 +36,27 @@ Every config writes to the default `outputs/` directory, so running two back-to-
 
 ```bash
 # GRPO (no frozen model)
-uv run rl @ configs/algo/grpo.toml --output-dir outputs/grpo
+uv run rl @ dev/algo/grpo.toml --output-dir outputs/grpo
 
 # MaxRL (no frozen model)
-uv run rl @ configs/algo/max_rl.toml --output-dir outputs/max_rl
+uv run rl @ dev/algo/max_rl.toml --output-dir outputs/max_rl
 
 # OPD (needs the frozen model on port 8001)
-uv run rl @ configs/algo/opd.toml --output-dir outputs/opd
-uv run rl @ configs/algo/opd_lora.toml --output-dir outputs/opd_lora
+uv run rl @ dev/algo/opd.toml --output-dir outputs/opd
+uv run rl @ dev/algo/opd_lora.toml --output-dir outputs/opd_lora
 
 # SFT distillation (needs the frozen model on port 8001)
-uv run rl @ configs/algo/sft_distill.toml --output-dir outputs/sft_distill
-uv run rl @ configs/algo/sft_distill_lora.toml --output-dir outputs/sft_distill_lora
+uv run rl @ dev/algo/sft_distill.toml --output-dir outputs/sft_distill
+uv run rl @ dev/algo/sft_distill_lora.toml --output-dir outputs/sft_distill_lora
 
 # Self-distillation against the live policy (no frozen model)
-uv run rl @ configs/algo/self_distill.toml --output-dir outputs/self_distill
+uv run rl @ dev/algo/self_distill.toml --output-dir outputs/self_distill
 
 # ECHO (no frozen model; multi-turn env)
-uv run rl @ configs/algo/echo.toml --output-dir outputs/echo
+uv run rl @ dev/algo/echo.toml --output-dir outputs/echo
 
 # Mixed per-env algorithms: GRPO + OPD in one run (needs the frozen model on port 8001)
-uv run rl @ configs/algo/mixed_grpo_opd.toml --output-dir outputs/mixed_grpo_opd
+uv run rl @ dev/algo/mixed_grpo_opd.toml --output-dir outputs/mixed_grpo_opd
 ```
 
 See [docs/algorithms.md](../../docs/algorithms.md) for what each algorithm does and how to author your own.

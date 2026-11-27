@@ -46,7 +46,7 @@ uv run rl @ examples/basic/reverse-text/rl.toml --dry-run                       
 - Entrypoint: `src/prime_rl/entrypoints/rl.py`
 - SLURM: single- and multi-node
 - Multi-node SLURM stops after `.trainer.done` for trainer-only fake-data runs. Runs with inference stop after both `.trainer.done` and `.orchestrator.done`.
-- ModelExpress on SLURM: run `scripts/install_modelexpress.sh` once. The job starts ModelExpress and Redis unless `slurm.launch_modelexpress = false`.
+- ModelExpress on SLURM: the job starts ModelExpress and Valkey from the environment unless `slurm.launch_modelexpress = false`.
 - Environment packages: before launching a config with a non-core verifier env id,
   verify the package imports under `uv run` (for example
   `uv run python -c "import importlib.util; print(importlib.util.find_spec('r2e_gym'))"`).
@@ -113,7 +113,7 @@ Standalone evals (`uv run eval`) are covered by the `eval` skill.
 
 - `src/prime_rl/entrypoints/` — `rl`, `sft`, `inference` (+ `trainer`, `orchestrator` for direct launches)
 - `packages/prime-rl-configs/src/prime_rl/configs/` — all config classes
-- `configs/` — minimal debug configs
+- `dev/` — minimal debug configs
 - `recipes/` — frontier-model configs, one folder per model
 - `examples/` — full example configs (e.g. `reverse-text/`)
 

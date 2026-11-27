@@ -44,7 +44,7 @@ Each config folder has one audience. Put a new TOML in the folder that matches i
 
 - `examples/`: onboarding. End-to-end walkthroughs on 1-8 GPUs, each with a README (`basic/` for the eval → SFT → RL loop, `extra/` for the rest).
 - `recipes/`: configs for frontier models, one folder per model (`recipes/<model>/`). A layered recipe composes `<model>/rl.toml` (model settings), `<model>/gpu/<hw>.toml` (compute) and `recipes/data/<domain>.toml` (data). Keep `rl.toml` for the model layer; give a self-contained config another name. When you add a model, also add it to the recipes table in `README.md`.
-- `configs/`: internal smoke configs for developing the framework (`algo/`, `fake/`, `eval/`). They may drift.
+- `dev/`: internal smoke configs for developing the framework (`algo/`, `fake/`, `eval/`). They may drift.
 - `tests/integration/configs/` and `tests/regression/configs/`: configs that CI runs. Put a config here only if a test uses it.
 
 ## Docs

@@ -3,7 +3,7 @@
 # a ten-minute budget, against Prime Inference on the default model. One env worker pool
 # per source; the sources share the taskset, so each carries its own name.
 #
-#   uv run eval @ configs/eval/multi-env.toml
+#   uv run eval @ dev/eval/multi-env.toml
 
 [select]
 limit = 16

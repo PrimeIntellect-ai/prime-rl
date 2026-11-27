@@ -17,6 +17,8 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
+ai-dynamo = false
+ai-dynamo-runtime = false
 certifi = false
 deep-ep = false
 deep-select = false
@@ -28,6 +30,7 @@ harbor = "2026-10-08T00:00:00Z"
 humming-kernels = false
 instanttensor = false
 modelexpress = false
+modelexpress-server = false
 nixl-cu13 = false
 prime-kernels = false
 prime-pydantic-config = false
@@ -178,9 +181,9 @@ overrides = [
 ]
 
 [[manifest.dependency-metadata]]
-name = "ai-dynamo-runtime"
-version = "1.4.2"
-requires-dist = ["pydantic>=2.10.6,<=2.13.5", "uvloop>=0.21.0"]
+name = "ai-dynamo"
+version = "1.7.0"
+requires-dist = ["ai-dynamo-runtime==1.7.0", "aiohttp>=3.14.3,<4.0", "certifi>=2026.10.23", "kubernetes>=32.0.1,<33.0.0", "msgspec>=0.19.0", "prometheus-client>=0.23.1,<1.0", "pyzmq>=26.0.0", "redis>=6.2.0,<9.0.0", "tqdm>=4.0.0", "transformers>=4.56.0", "typing-extensions>=4.10.0", "zstandard>=0.23.0,<1.0"]
 
 [[manifest.dependency-metadata]]
 name = "nixl"
@@ -203,34 +206,37 @@ wheels = [
 
 [[package]]
 name = "ai-dynamo"
-version = "1.4.2"
+version = "1.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ai-dynamo-runtime" },
     { name = "aiohttp" },
+    { name = "certifi", version = "2026.11.20", source = { registry = "https://pypi.org/simple" } },
     { name = "kubernetes", version = "32.0.1", source = { registry = "https://pypi.org/simple" } },
     { name = "msgspec" },
     { name = "prometheus-client" },
     { name = "pyzmq" },
+    { name = "redis" },
+    { name = "tqdm" },
     { name = "transformers" },
     { name = "typing-extensions" },
     { name = "zstandard" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/34/21/2c5f23ebcd3d1bcad8c46cd0b25bcfe485acba46935ec30576bafa50179c/ai_dynamo-1.4.2-py3-none-any.whl", hash = "sha256:02b3d386b71c0830254ab0878602b5ea77246cedcd731d0078e863cd4b0dabd2", size = 2943529, upload-time = "2026-08-28T19:03:53.336Z" },
+    { url = "https://files.pythonhosted.org/packages/bb/90/41613b0e41c8d12a2e633c55e5c22e9744f45b8b27681ba64bb3c7f62cdf/ai_dynamo-1.7.0-py3-none-any.whl", hash = "sha256:51e8d29c7199c6c23aed2c4f222b9d6a237b0845ae546c33e858202f73af19bc", size = 5084442, upload-time = "2026-11-24T07:03:23.901Z" },
 ]
 
 [[package]]
 name = "ai-dynamo-runtime"
-version = "1.4.2"
+version = "1.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
     { name = "uvloop" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9f/22/86780714d43ef43aaea4579a6e1e30b83a08445adf4b2f9bd7aa109cd312/ai_dynamo_runtime-1.4.2-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:195683380b86ce25c4d1316b38359bad1e5a8ec25a2cf8b70ec2c408217f6d15", size = 55694568, upload-time = "2026-08-28T19:04:44.002Z" },
-    { url = "https://files.pythonhosted.org/packages/cd/27/e73597ebd48ce7b8a2a8ff0392af1a7d97040ed967d075a0d821ad1758f7/ai_dynamo_runtime-1.4.2-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:1d0a62998f5d182c7ff7819f9d7d451bbe4c6f7a063f2ff7af662fa0e86e98b9", size = 56273981, upload-time = "2026-08-28T19:05:24.748Z" },
+    { url = "https://files.pythonhosted.org/packages/a3/e2/6edf4470087a3778b985cb2f383ab45b736f9c9e379cabb1f779acc8147a/ai_dynamo_runtime-1.7.0-cp311-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:462c937efb7f68b284508ab692209e1375b954d4a55422f3a6e011ee515a531d", size = 83661165, upload-time = "2026-11-24T07:04:17.892Z" },
+    { url = "https://files.pythonhosted.org/packages/71/96/73810cdfdb2561b5a6449ab873d8a92ab95137c1bb7fd58063870c3b7c7c/ai_dynamo_runtime-1.7.0-cp311-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:b49cd6865e87f96764faa8089d9b16113cd8d09ade43adc76906c85013ffccfc", size = 85300103, upload-time = "2026-11-24T07:05:14.238Z" },
 ]
 
 [[package]]
@@ -871,9 +877,25 @@ wheels = [
 name = "certifi"
 version = "2026.10.19"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "platform_machine == 'arm64' and sys_platform == 'darwin'",
+]
 sdist = { url = "https://files.pythonhosted.org/packages/a6/bd/1436c50cc46699de0230fbaacc1d1de7bfec413176099949e9d5112e88f2/certifi-2026.10.19.tar.gz", hash = "sha256:035c1e85572b141bf1c3a3eff0e33a8eb74917522f2559075ff8d2fea780a1ae", size = 137598, upload-time = "2026-10-20T02:24:16.604Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c4/51/29046e48f693c54e5b7412216d447a1d8362c9653148d98c02cdf65fa733/certifi-2026.10.19-py3-none-any.whl", hash = "sha256:42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b", size = 136464, upload-time = "2026-10-20T02:24:15.072Z" },
+]
+
+[[package]]
+name = "certifi"
+version = "2026.11.20"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "platform_machine == 'x86_64' and sys_platform == 'linux'",
+    "platform_machine == 'aarch64' and sys_platform == 'linux'",
+]
+sdist = { url = "https://files.pythonhosted.org/packages/51/33/4cd27639502f010084bcef7a2036391dd637439901341ce1a530f36f6e51/certifi-2026.11.20.tar.gz", hash = "sha256:af1cb240a8133f105aa52684a3a3258339d7f2fd0bd4e2812698ff5cf5588c4e", size = 128901, upload-time = "2026-11-20T23:37:49.522Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6d/39/5eec3296860b94ac20bb8ed807725b88f6adfab3f343df592afd975f5f86/certifi-2026.11.20-py3-none-any.whl", hash = "sha256:7422df25243767b9877031a2248cb14d09ddac9beee846f4cef3d5c9191d488f", size = 127913, upload-time = "2026-11-20T23:37:48.117Z" },
 ]
 
 [[package]]
@@ -1261,7 +1283,8 @@ version = "1.26.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
-    { name = "certifi" },
+    { name = "certifi", version = "2026.10.19", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "certifi", version = "2026.11.20", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "cryptography" },
     { name = "httpx" },
     { name = "httpx-sse" },
@@ -2608,7 +2631,8 @@ name = "httpcore"
 version = "1.0.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "certifi" },
+    { name = "certifi", version = "2026.10.19", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "certifi", version = "2026.11.20", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "h11" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/06/94/82699a10bca87a5556c9c59b5963f2d039dbd239f25bc2a63907a05a14cb/httpcore-1.0.9.tar.gz", hash = "sha256:6e34463af53fd2ab5d807f399a9b45ea31c3dfa2276f15a2c3f00afff6e176e8", size = 85484, upload-time = "2025-04-24T22:06:22.219Z" }
@@ -2649,7 +2673,8 @@ version = "0.28.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
-    { name = "certifi" },
+    { name = "certifi", version = "2026.10.19", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "certifi", version = "2026.11.20", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "httpcore" },
     { name = "idna" },
 ]
@@ -3280,7 +3305,7 @@ resolution-markers = [
     "platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
 dependencies = [
-    { name = "certifi" },
+    { name = "certifi", version = "2026.11.20", source = { registry = "https://pypi.org/simple" } },
     { name = "durationpy" },
     { name = "google-auth" },
     { name = "oauthlib" },
@@ -3306,7 +3331,7 @@ resolution-markers = [
 ]
 dependencies = [
     { name = "aiohttp" },
-    { name = "certifi" },
+    { name = "certifi", version = "2026.10.19", source = { registry = "https://pypi.org/simple" } },
     { name = "durationpy" },
     { name = "python-dateutil" },
     { name = "pyyaml" },
@@ -3396,7 +3421,7 @@ resolution-markers = [
 dependencies = [
     { name = "aiohttp" },
     { name = "boto3" },
-    { name = "certifi" },
+    { name = "certifi", version = "2026.11.20", source = { registry = "https://pypi.org/simple" } },
     { name = "click" },
     { name = "fastuuid" },
     { name = "httpx", extra = ["http2"] },
@@ -3428,7 +3453,7 @@ resolution-markers = [
 dependencies = [
     { name = "aiohttp" },
     { name = "boto3" },
-    { name = "certifi" },
+    { name = "certifi", version = "2026.10.19", source = { registry = "https://pypi.org/simple" } },
     { name = "click" },
     { name = "fastuuid" },
     { name = "filelock" },
@@ -3957,7 +3982,8 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
     { name = "cbor2" },
-    { name = "certifi" },
+    { name = "certifi", version = "2026.10.19", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "certifi", version = "2026.11.20", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "click" },
     { name = "grpclib" },
     { name = "protobuf" },
@@ -3994,7 +4020,7 @@ wheels = [
 
 [[package]]
 name = "modelexpress"
-version = "0.8.0.dev20261022"
+version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "boto3" },
@@ -4011,10 +4037,33 @@ dependencies = [
     { name = "torch", version = "2.14.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
     { name = "zstandard" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/0f/c8/33d08978e622ddfbeae27888550606863a70d45a160e04140d16850a7448/modelexpress-0.8.0.tar.gz", hash = "sha256:84fcf2b45d6f1f901d28d0587373376b0335fd9e251072089befcdae4241d9db", size = 1013038, upload-time = "2026-11-13T01:03:56.327Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e0/27/2d6726066c7c2518c0e1abc565cd84a94e13f44e3a66792d3e61709cbfc2/modelexpress-0.8.0.dev20261022-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:2b2b5c10e68d16cf7a664b71803dba86c88321cf412991bee0f1316671ce4ee8", size = 633586, upload-time = "2026-10-22T09:38:35.838Z" },
-    { url = "https://files.pythonhosted.org/packages/3d/c5/a264e8c6e569327f7aa04409a7ccd3131eaadcb931d23680e52506c99f42/modelexpress-0.8.0.dev20261022-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:39f3b69af85a9ca89aabb83c0bbaf2e30cbf958c063534fded7d4e00bc2f6612", size = 633143, upload-time = "2026-10-22T09:38:47.062Z" },
-    { url = "https://files.pythonhosted.org/packages/04/8a/ec4e6ad3201413365f5f858a2e6869dffbeb00e9b97a532936b49f06844b/modelexpress-0.8.0.dev20261022-py3-none-any.whl", hash = "sha256:ea8632566c23813fb28e9c02fa0086f30b40711e068fd3215c70a597c131afc5", size = 547296, upload-time = "2026-10-22T09:39:22.418Z" },
+    { url = "https://files.pythonhosted.org/packages/20/b7/949e852a0d251757d14540c4e9b96b2a52bdd95c466bdaee54d8a32b90d0/modelexpress-0.8.0-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:3236d12b60d7e60c805aadbae4613b8ddcdb2dff7abc11bfd9d1797a4f45fd3b", size = 700877, upload-time = "2026-11-13T01:02:11.858Z" },
+    { url = "https://files.pythonhosted.org/packages/de/97/eef90742699c88a3e82416575d530449e57f0b2cc165eed885d44da4dd4a/modelexpress-0.8.0-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:4b188e8ee149882675bd8638f2430e9613c8529d9dbaef2114b79b8d8bf0a192", size = 700432, upload-time = "2026-11-13T00:59:22.897Z" },
+    { url = "https://files.pythonhosted.org/packages/9d/03/04faa697d98612e9751fdcbbe8062cf0a8d96c773354d229128f91a3861d/modelexpress-0.8.0-py3-none-any.whl", hash = "sha256:d4eb15390f9850c623cb67f00b8d061c5b14cdc393c24108bbe6bafb9f09a88e", size = 614473, upload-time = "2026-11-13T01:03:36.661Z" },
+]
+
+[[package]]
+name = "modelexpress-server"
+version = "0.8.0"
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-8387229/modelexpress_server-0.8.0-py3-none-manylinux_2_28_aarch64.whl" }
+resolution-markers = [
+    "platform_machine == 'aarch64' and sys_platform == 'linux'",
+]
+wheels = [
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-8387229/modelexpress_server-0.8.0-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:0c0b95e1adaba26c82c20b4bd2ee2270f52bcf96380f92f56caf76da7090de13" },
+]
+
+[[package]]
+name = "modelexpress-server"
+version = "0.8.0"
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-8387229/modelexpress_server-0.8.0-py3-none-manylinux_2_28_x86_64.whl" }
+resolution-markers = [
+    "platform_machine == 'x86_64' and sys_platform == 'linux'",
+]
+wheels = [
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-8387229/modelexpress_server-0.8.0-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:d95863c1628c7660077decd3ab403a0c4e031f0772f6db469b02458205ab1459" },
 ]
 
 [[package]]
@@ -5451,6 +5500,8 @@ all = [
     { name = "flashinfer-jit-cache", version = "0.7.3+cu130", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache-0.7.3%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "mamba-ssm", marker = "sys_platform == 'linux'" },
     { name = "modelexpress", marker = "sys_platform == 'linux'" },
+    { name = "modelexpress-server", version = "0.8.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-8387229/modelexpress_server-0.8.0-py3-none-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "modelexpress-server", version = "0.8.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-8387229/modelexpress_server-0.8.0-py3-none-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux'" },
     { name = "nixl", marker = "sys_platform == 'linux'" },
     { name = "nixl-cu13", marker = "sys_platform == 'linux'" },
@@ -5506,6 +5557,8 @@ gpu = [
     { name = "flashinfer-jit-cache", version = "0.7.3+cu130", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache-0.7.3%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "mamba-ssm", marker = "sys_platform == 'linux'" },
     { name = "modelexpress", marker = "sys_platform == 'linux'" },
+    { name = "modelexpress-server", version = "0.8.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-8387229/modelexpress_server-0.8.0-py3-none-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "modelexpress-server", version = "0.8.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-8387229/modelexpress_server-0.8.0-py3-none-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux'" },
     { name = "nixl-cu13", marker = "sys_platform == 'linux'" },
     { name = "nvidia-cudnn-frontend", marker = "sys_platform == 'linux'" },
@@ -5527,6 +5580,8 @@ inference = [
     { name = "flashinfer-jit-cache", version = "0.7.3+cu130", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache-0.7.3%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
     { name = "flashinfer-jit-cache", version = "0.7.3+cu130", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.3/flashinfer_jit_cache-0.7.3%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "modelexpress", marker = "sys_platform == 'linux'" },
+    { name = "modelexpress-server", version = "0.8.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-8387229/modelexpress_server-0.8.0-py3-none-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "modelexpress-server", version = "0.8.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-8387229/modelexpress_server-0.8.0-py3-none-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux'" },
     { name = "nixl-cu13", marker = "sys_platform == 'linux'" },
     { name = "torchaudio", marker = "sys_platform == 'linux'" },
@@ -5574,7 +5629,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "ai-dynamo", marker = "sys_platform == 'linux' and extra == 'dynamo'", specifier = "==1.4.2" },
+    { name = "ai-dynamo", marker = "sys_platform == 'linux' and extra == 'dynamo'", specifier = "==1.7.0" },
     { name = "aiolimiter", specifier = ">=1.2.1" },
     { name = "beartype", specifier = ">=0.21.0" },
     { name = "datasets", specifier = ">=4.0.0" },
@@ -5599,7 +5654,10 @@ requires-dist = [
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "mamba-ssm", marker = "sys_platform == 'linux' and extra == 'train'", git = "https://github.com/state-spaces/mamba?rev=f577286" },
-    { name = "modelexpress", marker = "sys_platform == 'linux' and extra == 'inference'", specifier = "==0.8.0.dev20261022" },
+    { name = "modelexpress", marker = "sys_platform == 'linux' and extra == 'inference'", specifier = "==0.8.0" },
+    { name = "modelexpress-server", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'inference'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-8387229/modelexpress_server-0.8.0-py3-none-manylinux_2_28_aarch64.whl" },
+    { name = "modelexpress-server", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'inference'", specifier = "==0.8.0" },
+    { name = "modelexpress-server", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'inference'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-8387229/modelexpress_server-0.8.0-py3-none-manylinux_2_28_x86_64.whl" },
     { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux' and extra == 'inference'", specifier = ">=0.3.10.post2" },
     { name = "msgpack", specifier = ">=1.2.3" },
     { name = "msgspec", specifier = ">=0.18" },
@@ -5723,7 +5781,8 @@ version = "0.5.18"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
-    { name = "certifi" },
+    { name = "certifi", version = "2026.10.19", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "certifi", version = "2026.11.20", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "connectrpc" },
     { name = "httpx" },
     { name = "protobuf" },
@@ -6545,6 +6604,15 @@ requires-dist = [
 ]
 
 [[package]]
+name = "redis"
+version = "8.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a8/99/604f0b666d4c616d891cf77ebb9db6bb21601344c051aebf1b72b9ff915f/redis-8.1.0.tar.gz", hash = "sha256:6e1a19beef9225c83efd689c7e6b7da2d5215b1f42cd13b7fc3714d0a09c7b25", size = 5254356, upload-time = "2026-07-30T08:51:00.269Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/66/9d/c5731f6e3608663d4d3656fd8d3aecee8b509c3082818f5a13eae925baea/redis-8.1.0-py3-none-any.whl", hash = "sha256:a4fe1aac3d3b3cc791d4b3d5931c5a956045dc951ee74d1c913ee3ac4d2ee9fb", size = 560618, upload-time = "2026-07-30T08:50:58.497Z" },
+]
+
+[[package]]
 name = "redsearcher"
 version = "0.1.0"
 source = { editable = "deps/prime-envs/environments/search/redsearcher" }
@@ -6637,7 +6705,8 @@ name = "requests"
 version = "2.34.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "certifi" },
+    { name = "certifi", version = "2026.10.19", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "certifi", version = "2026.11.20", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "charset-normalizer" },
     { name = "idna" },
     { name = "urllib3" },
@@ -6974,7 +7043,8 @@ name = "sentry-sdk"
 version = "2.60.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "certifi" },
+    { name = "certifi", version = "2026.10.19", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "certifi", version = "2026.11.20", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
     { name = "urllib3" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/54/a2/2e6c090db384cc515069f4f85542bd5baf6786852073020ea73d4a76d3ea/sentry_sdk-2.60.0.tar.gz", hash = "sha256:0bd25e54e78ca02d0be512529fa644bbbf9e8470d7b26371294012d4ca93c978", size = 452946, upload-time = "2026-05-13T13:34:52.516Z" }
@@ -8436,7 +8506,7 @@ dependencies = [
     { name = "blake3" },
     { name = "cachetools" },
     { name = "cbor2" },
-    { name = "certifi" },
+    { name = "certifi", version = "2026.11.20", source = { registry = "https://pypi.org/simple" } },
     { name = "cloudpickle" },
     { name = "compressed-tensors" },
     { name = "depyf" },
@@ -8636,7 +8706,7 @@ dependencies = [
     { name = "blake3" },
     { name = "cachetools" },
     { name = "cbor2" },
-    { name = "certifi" },
+    { name = "certifi", version = "2026.11.20", source = { registry = "https://pypi.org/simple" } },
     { name = "cloudpickle" },
     { name = "compressed-tensors" },
     { name = "depyf" },

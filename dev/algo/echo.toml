@@ -1,6 +1,6 @@
 # ECHO on the multi-turn alphabet-sort V1 taskset: GRPO on
 # action tokens + weighted CE on the env's observation tokens.
-#   uv run rl @ configs/algo/echo.toml
+#   uv run rl @ dev/algo/echo.toml
 
 max_steps = 20
 seq_len = 4096
