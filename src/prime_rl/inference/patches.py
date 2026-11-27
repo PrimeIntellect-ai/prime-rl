@@ -531,6 +531,12 @@ def monkey_patch_flashinfer_fp8_ds_mla_draft():
     (``speculative_config.kv_cache_dtype = "fp8"``). FlashInfer never serves DeepSeek V4's layers,
     so for it the format can only mean the draft's per-tensor fp8 e4m3 rows.
     """
+    from vllm.platforms import current_platform
+
+    # FlashInfer is CUDA-only: XPU builds of vLLM ship without the flashinfer package it imports.
+    if current_platform.is_xpu():
+        return
+
     from vllm.v1.attention.backends.flashinfer import FlashInferBackend
 
     original = FlashInferBackend.get_dtype_for_flashinfer

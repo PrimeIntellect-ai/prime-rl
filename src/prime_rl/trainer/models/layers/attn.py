@@ -16,6 +16,25 @@ try:
 except ImportError:
     _flash_attn_varlen_backward = _flash_attn_varlen_forward = None  # type: ignore
 
+# Without the flash_attn package (e.g. on Intel XPU), FA2 comes from the Kernel Hub build that
+# transformers falls back to for attn_implementation="flash_attention_2".
+FLASH_ATTN_2_HUB_KERNEL = "kernels-community/flash-attn2"
+FLASH_ATTN_2_HUB_KERNEL_VERSION = 3
+
+
+def load_flash_attn_2_hub_kernel() -> None:
+    """Bind the FA2 entry points to the Kernel Hub build when the flash_attn package is absent."""
+    global flash_attn_varlen_func, _flash_attn_varlen_forward, _flash_attn_varlen_backward
+    if _flash_attn_varlen_forward is not None:
+        return
+    from kernels import get_kernel
+
+    kernel = get_kernel(FLASH_ATTN_2_HUB_KERNEL, version=FLASH_ATTN_2_HUB_KERNEL_VERSION)
+    flash_attn_varlen_func = kernel.flash_attn_varlen_func
+    _flash_attn_varlen_forward = kernel.flash_attn_interface._flash_attn_varlen_forward
+    _flash_attn_varlen_backward = kernel.flash_attn_interface._flash_attn_varlen_backward
+
+
 # flash-attention-3
 try:
     from flash_attn_interface import _flash_attn_backward as _flash_attn_3_bwd
@@ -319,6 +338,10 @@ def _flash_attn_2_varlen(
         window_size_left=window_size_left,
         window_size_right=window_size_right,
     )
+    # The XPU build of the kernel returns a contiguous output whatever q's layout is. Compiled graphs check the
+    # strides the fake promises, so give the output q's layout when the kernel did not.
+    if out_padded.stride() != q.stride():
+        out_padded = torch.empty_like(q).copy_(out_padded)
     return out_padded[..., :head_dim], lse
 
 

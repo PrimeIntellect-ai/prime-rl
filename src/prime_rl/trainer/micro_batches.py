@@ -20,6 +20,7 @@ from prime_rl.trainer.optim.offload import GradientOffloadManager
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.perf import PerfCounter
 from prime_rl.trainer.utils import begin_backward, finish_backward
+from prime_rl.utils.device import DEVICE_TYPE
 
 
 @dataclass
@@ -57,7 +58,7 @@ def run_micro_batches(
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
     moes = list(iter_moe_blocks(model))
 
-    zero = torch.zeros((), device="cuda", dtype=torch.float64)
+    zero = torch.zeros((), device=DEVICE_TYPE, dtype=torch.float64)
     loss_sum, nan_count = zero.clone(), zero.clone()
     num_tokens, num_flops = 0, 0
     routing_stats = []

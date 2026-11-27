@@ -15,6 +15,7 @@ from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.trainer.ckpt import AppState, CheckpointManager, ModelFiles, PinnedStager, Progress
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 from prime_rl.trainer.utils import get_dcp_group
+from prime_rl.utils.device import DEVICE_TYPE
 
 pytestmark = [pytest.mark.gpu]
 
@@ -29,13 +30,13 @@ class TrainedPair(NamedTuple):
 def make_model(seed: int) -> torch.nn.Sequential:
     torch.manual_seed(seed)
     model = torch.nn.Sequential(torch.nn.Linear(64, 128), torch.nn.GELU(), torch.nn.Linear(128, 32))
-    return model.cuda()
+    return model.to(DEVICE_TYPE)
 
 
 def run_steps(model: torch.nn.Module, optimizer: Optimizer, num_steps: int, seed: int) -> None:
     torch.manual_seed(seed)
     for _ in range(num_steps):
-        batch = torch.randn(16, 64, device="cuda")
+        batch = torch.randn(16, 64, device=DEVICE_TYPE)
         loss = model(batch).square().mean()
         loss.backward()
         optimizer.step()
@@ -109,9 +110,10 @@ def test_state_dict_round_trip_is_exact_and_training_continues(trained_pair: Tra
     assert_params_equal(trained_pair.reference_model, trained_pair.offloaded_model)
 
 
+@pytest.mark.skipif(DEVICE_TYPE != "cuda", reason="sync debug mode is CUDA-only")
 def test_offloaded_step_does_not_synchronize(trained_pair: TrainedPair) -> None:
     model, optimizer = trained_pair.offloaded_model, trained_pair.offloaded_optimizer
-    model(torch.randn(16, 64, device="cuda")).square().mean().backward()
+    model(torch.randn(16, 64, device=DEVICE_TYPE)).square().mean().backward()
     torch.cuda.set_sync_debug_mode("error")
     try:
         optimizer.step()
