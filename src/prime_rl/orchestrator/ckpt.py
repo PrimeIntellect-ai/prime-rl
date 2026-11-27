@@ -4,11 +4,11 @@ and the train rollouts in flight. Layout under ``<output_dir>/checkpoints``::
 
     step_N/orchestrator/progress.pt                 progress, train source, configs; written last
     step_N/orchestrator/rollouts/open_work.pkl      the unshipped episodes and the open groups
-    step_N/orchestrator/rollouts/<trace id>.restore an in-flight rollout's restore point (env workers write it)
+    step_N/orchestrator/rollouts/<episode id>.restore an in-flight episode's restore point (env workers write it)
     step_N/orchestrator/rollouts/arrays/<blob id>   the training arrays of the unshipped episodes
     rollout_snapshots.json                          the box snapshots each step's restore points hold
     resumed/<blob id>                               the arrays of the checkpoint this run resumed from
-    resumed/<trace id>.restore                      its restore points
+    resumed/<episode id>.restore                    its restore points
 """
 
 from __future__ import annotations
@@ -266,7 +266,7 @@ def count_open_work(work: dict) -> dict[str, int]:
 
 def owned_snapshots(work: dict) -> list[dict]:
     """The box snapshots the checkpoint of ``work`` restores from and this run deletes."""
-    return [e.restore.snapshot for e in work["episodes"] if e.restore is not None and e.owned]
+    return [s for e in work["episodes"] if e.restore is not None and e.owned for s in e.restore.snapshots]
 
 
 def payload_refs(work: dict) -> dict[str, set[str]]:

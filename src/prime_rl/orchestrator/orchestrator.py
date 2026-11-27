@@ -1234,7 +1234,7 @@ class Orchestrator:
             # In the ledger from the moment this run owns them: if the orchestrator dies
             # before the writer finishes, this step has no progress.pt, and a resume
             # deletes its snapshots.
-            self.ckpt_manager.snapshots.record(step, [restore.snapshot for restore in restores.values()])
+            self.ckpt_manager.snapshots.record(step, [s for restore in restores.values() for s in restore.snapshots])
             seconds = {"save": time.perf_counter() - start}
             recorded = asyncio.get_running_loop().create_future()
             self.ckpt_task = asyncio.create_task(
@@ -1412,7 +1412,7 @@ class Orchestrator:
 
         for env in self.train_envs:
             late, env.late_restores = env.late_restores, []
-            ledger.orphan([*env.orphan_snapshots, *(restore.snapshot for restore in late)])
+            ledger.orphan([*env.orphan_snapshots, *(s for restore in late for s in restore.snapshots)])
             env.orphan_snapshots.clear()
             for restore in late:
                 Path(restore.path).unlink(missing_ok=True)

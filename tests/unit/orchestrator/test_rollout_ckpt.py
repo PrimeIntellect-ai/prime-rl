@@ -110,8 +110,10 @@ def kept(hook: PayloadHook) -> vf.Trace:
     return t
 
 
-def restore_ref(trace_id: str, directory="/ckpt") -> RestoreRef:
-    return RestoreRef(trace_id=trace_id, path=f"{directory}/{trace_id}.restore", snapshot={"id": f"s-{trace_id}"})
+def restore_ref(episode_id: str, directory="/ckpt") -> RestoreRef:
+    return RestoreRef(
+        episode_id=episode_id, path=f"{directory}/{episode_id}.restore", snapshots=[{"id": f"s-{episode_id}"}]
+    )
 
 
 def test_the_sink_state_round_trips_through_the_checkpoint_file(tmp_path):
@@ -417,14 +419,14 @@ def test_open_work_holds_the_open_groups_and_the_inflight_episodes():
     by_id = {g.group_id: g for g in groups}
     assert set(by_id) == {a_id, b.group_id}
     assert by_id[a_id].episodes_to_schedule == 1 and by_id[b.group_id].episodes_to_schedule == 0
-    assert [(e.group_id, e.restore and e.restore.trace_id) for e in episodes] == [
+    assert [(e.group_id, e.restore and e.restore.episode_id) for e in episodes] == [
         (a_id, "t0"),
         (a_id, "t1"),
         (a_id, None),
         (b.group_id, "t3"),
     ]
     # What continues no train episode in flight is left for the caller to delete.
-    assert {ref.trace_id for ref in restores.values()} == {"t4", "t5"}
+    assert {ref.episode_id for ref in restores.values()} == {"t4", "t5"}
     # Writing the checkpoint moves or drops a restore point: the waiting episode keeps its own.
     episodes[0].restore.path = "/elsewhere"
     episodes[0].restore = None
@@ -475,7 +477,7 @@ def barrier_orchestrator(tmp_path, monkeypatch, events: list) -> Orchestrator:
     o.control_steps = set()
     o.progress = o.train_source = None
     o.config_state = lambda: {}
-    restore = RestoreRef(trace_id="t1", path=str(tmp_path / "t1.restore"), snapshot={"id": "s1"})
+    restore = RestoreRef(episode_id="e1", path=str(tmp_path / "e1.restore"), snapshots=[{"id": "s1"}])
 
     class Env:
         orphan_snapshots: list = []

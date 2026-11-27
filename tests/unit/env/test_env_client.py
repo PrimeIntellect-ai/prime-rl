@@ -207,7 +207,7 @@ async def test_a_save_that_failed_on_some_workers_keeps_what_the_others_saved():
     """The pool merges the workers' save replies and marks the merge failed if any one
     failed. The client still returns the others' restore points and orphans: their
     snapshots are the caller's either way."""
-    ref = RestoreRef(trace_id="t1", path="/ckpt/t1.restore", snapshot={"id": "s1"})
+    ref = RestoreRef(episode_id="e1", path="/ckpt/e1.restore", snapshots=[{"id": "s1"}])
     reply = SaveResponse(success=False, error="worker 2 failed", restores={"r1": ref}, orphans=[{"id": "s2"}])
     async with fake_server() as (router, client):
         save = asyncio.create_task(client.save("/ckpt", timeout=10))

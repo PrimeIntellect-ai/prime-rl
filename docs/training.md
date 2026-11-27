@@ -589,17 +589,18 @@ A resume restores:
 
 - The finished episodes that did not ship: the episodes in the result queue, the groups that still collect episodes, the traces queued for a batch, and a batch that the trainer did not take yet. Their training arrays are in `step_{n}/orchestrator/rollouts/arrays/`.
 - The open train groups, with the number of episodes that each group still owes. A resume does not re-run them whole.
-- The running rollouts. Each env worker takes a memory checkpoint of the sandbox of each running rollout and writes a restore file to `step_{n}/orchestrator/rollouts/`. The resumed run continues each rollout in a new sandbox, before it starts new work. An env worker pool reads and writes these files only in its `--output-dir`. The launchers set it to the run directory. If you start a pool yourself, set it to the run directory too.
+- The running episodes. Each env worker takes a memory checkpoint of the sandbox of each running rollout and writes one restore file per episode to `step_{n}/orchestrator/rollouts/`. The resumed run continues each episode before it starts new work: it runs the env's program again, and each agent run of the episode replays. An agent run that had finished returns its saved trace without running again. A running one continues in a new sandbox from its memory checkpoint. One that had not started runs fresh. An env worker pool reads and writes these files only in its `--output-dir`. The launchers set it to the run directory. If you start a pool yourself, set it to the run directory too.
 - The in-flight limit of the concurrency controller.
 
 These start over:
 
-- A running rollout that cannot take a memory checkpoint. The resumed run runs its task from the start, in the same group. Restore points cover single-agent episodes with one harness on Prime sandboxes. These rollouts take none:
+- A running episode with a rollout that cannot take a memory checkpoint. The resumed run runs the episode's task from the start, in the same group. A rollout that has not made its first turn does not count: it runs fresh in the continued episode. These rollouts take no memory checkpoint:
   - A rollout on a runtime without memory snapshots, for example the subprocess runtime.
   - A rollout of a harness that cannot continue from a memory snapshot. The null, bash and ACP harnesses (for example rlm) can.
-  - A rollout of an episode with more than one agent run.
+  - A rollout of an interaction (`agent.interaction()`), for example in a user-simulation env.
   - A rollout whose task has tool servers, shared tools or services of its own.
-  - A rollout that has not booted its sandbox yet, or that is in setup or scoring.
+  - A rollout in scoring, unless a rollout of its scoring is running. For example, an agentic judge runs inside the solver's scoring, in the solver's box (shared scoring) or in the grading box (isolated scoring). The judge's memory checkpoint of that box continues both: the solver scores again from the restored box, and the judge continues in it.
+- A continued episode whose env program asks an agent for another task than at the save. It starts over without using a retry.
 - A running rollout that did not take its memory checkpoint within `ckpt.rollouts_save_timeout` seconds (120 by default). The trainer waits in its weight broadcast for the whole save, so a longer timeout trades a longer pause at each checkpoint for fewer rollouts that start over. A rollout's memory checkpoint ends when the sandbox provider accepts the snapshot, not when the sandbox has stopped or runs again.
 - A running rollout whose sandbox did not stop for its snapshot, or whose program ended while it stopped. The owner learns this only when it restores the rollout: the snapshot is gone, so the rollout starts over.
 - A running rollout whose env worker pool did not answer within 600 seconds after the timeout. The pool's other rollouts start over too, even those whose memory checkpoint was taken.
