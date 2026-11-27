@@ -652,6 +652,14 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_dynamo_sampling(self):
+        """Score centering requests a logprob head after the orchestrator validated, so check again."""
+        dynamo = self.orchestrator.model.client.dynamo
+        if dynamo is not None and dynamo.enabled and (conflict := self.orchestrator.dynamo_sampling_conflict()):
+            raise ValueError(f"Dynamo engines cannot serve {conflict}: their sidecar rejects prime-rl's extra_args")
+        return self
+
+    @model_validator(mode="after")
     def validate_speculative_sampler_logprobs(self):
         """Speculative verification captures replayed supports, not untruncated sampler rows."""
         if self.inference is None or not getattr(self.inference.vllm, "speculative_config", None):

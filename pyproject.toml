@@ -95,7 +95,7 @@ dashboard = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
 ]
-dynamo = ["ai-dynamo==1.4.2 ; sys_platform == 'linux'"]
+dynamo = ["ai-dynamo==1.7.0 ; sys_platform == 'linux'"]
 # Both wheels are the same flash-attn 2.8.3 / cu130 / torch 2.14 / cp312 build and carry
 # sm_80 / sm_90 / sm_100 / sm_120 cubins. `attn="auto"` picks FA4 on sm_100 and FA3 on
 # sm_90, so FA2 is the resolved backend on sm_120 (see `_resolve_attn_impl` in
@@ -215,13 +215,24 @@ exclude = [
     "deps/prime-envs/environments/tool_use/automationbench_aa_env",
 ]
 
-# Mirror the upstream Pydantic compatibility correction until the next release.
+# ai-dynamo requires aisim, a JAX simulator for Dynamo's planner, replay and mocker. Its JAX closure
+# would downgrade torchtitan's tyro; the frontend and vLLM sidecar never import it.
 [[tool.uv.dependency-metadata]]
-name = "ai-dynamo-runtime"
-version = "1.4.2"
+name = "ai-dynamo"
+version = "1.7.0"
 requires-dist = [
-    "pydantic>=2.10.6,<=2.13.5",
-    "uvloop>=0.21.0",
+    "ai-dynamo-runtime==1.7.0",
+    "aiohttp>=3.14.3,<4.0",
+    "certifi>=2026.10.23",
+    "kubernetes>=32.0.1,<33.0.0",
+    "msgspec>=0.19.0",
+    "prometheus-client>=0.23.1,<1.0",
+    "pyzmq>=26.0.0",
+    "redis>=6.2.0,<9.0.0",
+    "tqdm>=4.0.0",
+    "transformers>=4.56.0",
+    "typing-extensions>=4.10.0",
+    "zstandard>=0.23.0,<1.0",
 ]
 
 # NIXL publishes its CUDA 12 package as a base dependency even when the
@@ -257,6 +268,9 @@ instanttensor = false
 humming-kernels = false
 fastokens = false
 flash_attn_3 = false
+# The Dynamo pin (its vLLM sidecar serves RL discovery and worker admin routes), published inside the rolling window
+ai-dynamo = false
+ai-dynamo-runtime = false
 # PrimeIntellect-published packages in this project's dependency closure —
 # fast-track so first-party releases can land same-day. Only packages that
 # appear in `uv tree` need to be listed; the resolver ignores entries for

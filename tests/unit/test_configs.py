@@ -850,6 +850,25 @@ def test_group_defaults_match_source_defaults(group):
             assert default(field) == default(source.model_fields[name]), f"{group.__name__}.{name}"
 
 
+def test_only_truncated_policy_sources_request_replay():
+    config = OrchestratorConfig.model_validate(
+        {
+            "renderer": {"name": "qwen3"},
+            "train": {
+                "source": [
+                    {"name": "full", "env": {"taskset": {"id": "reverse-text"}}},
+                    {"name": "nucleus", "env": {"taskset": {"id": "reverse-text"}}, "sampling": {"top_p": 0.95}},
+                ]
+            },
+        }
+    )
+
+    full, nucleus = config.train.source
+    assert "extra_args" not in full.sampling.extra_body
+    assert nucleus.sampling.extra_body["extra_args"] == {"prl_replay": True}
+    assert OrchestratorConfig.model_validate(config.model_dump(mode="json")) == config
+
+
 def test_policy_sources_accept_different_top_p_values():
     config = OrchestratorConfig.model_validate(
         {
@@ -2047,3 +2066,39 @@ def test_env_worker_pool_uses_ckpt_output_dir_as_save_root(tmp_path):
     assert pool_configs
     data = json.loads(pool_configs[0].read_text())
     assert Path(data["output_dir"]) == ckpt_dir.resolve()
+
+
+def _dynamo_orchestrator(sampling: dict, dynamo: bool = True) -> dict:
+    return {
+        "model": {"client": {"dynamo": {"enabled": dynamo, "discovery_url": "http://frontend:8001"}}},
+        "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}, "sampling": sampling}]},
+        "renderer": {"name": "qwen3"},
+    }
+
+
+@pytest.mark.parametrize(
+    ("sampling", "match"),
+    [
+        ({"top_p": 0.9}, "truncated sampling"),
+        ({"top_k": 20}, "truncated sampling"),
+        ({"logprobs": 5}, "a logprob head"),
+    ],
+)
+def test_dynamo_rejects_sampling_its_sidecar_cannot_serve(sampling: dict, match: str):
+    with pytest.raises(ValidationError, match=f"Dynamo engines cannot serve {match}"):
+        OrchestratorConfig.model_validate(_dynamo_orchestrator(sampling))
+
+
+def test_dynamo_serves_plain_sampling_and_other_engines_serve_truncated_sampling():
+    OrchestratorConfig.model_validate(_dynamo_orchestrator({"temperature": 0.7}))
+    OrchestratorConfig.model_validate(_dynamo_orchestrator({"top_p": 0.9}, dynamo=False))
+
+
+def test_dynamo_rejects_score_centering_at_launch():
+    with pytest.raises(ValidationError, match="Dynamo engines cannot serve a logprob head"):
+        RLConfig.model_validate(
+            {
+                "trainer": {"loss": {"type": "icepop", "score_centering": True}},
+                "orchestrator": _dynamo_orchestrator({}),
+            }
+        )

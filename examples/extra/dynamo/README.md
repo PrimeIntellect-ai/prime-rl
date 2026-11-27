@@ -6,32 +6,46 @@ Prime-RL does not launch Dynamo from this configuration. Run the frontend, worke
 
 ## Start Dynamo
 
-Install Dynamo with its vLLM backend and activate its environment. Then start the RL-enabled frontend in the first terminal:
+Dynamo's frontend and vLLM sidecar come with the `dynamo` extra, and vLLM's Rust frontend, `vllm-rs`, ships in the vLLM wheel. `uv sync --all-extras` installs both. Dynamo needs three processes on the inference host: the frontend, a vLLM engine served by `vllm-rs`, and a sidecar that registers the engine with Dynamo. File-based discovery keeps them on one host without etcd or NATS. Export the same settings in every terminal:
 
 ```bash
-DYN_HTTP_HOST=127.0.0.1 DYN_ENABLE_RL=true DYN_RL_PORT=8001 python -m dynamo.frontend
+export DYN_DISCOVERY_BACKEND=file DYN_FILE_KV=/tmp/dynamo-discovery
 ```
 
-Start the RL-enabled vLLM worker on GPU 1 in a second terminal:
+Start the frontend with RL worker discovery and the token-in, token-out route Prime-RL samples from:
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 DYN_SYSTEM_HOST=127.0.0.1 DYN_SYSTEM_PORT=8081 python -m dynamo.vllm \
-  --model Qwen/Qwen3-0.6B \
-  --enable-rl
+DYN_HTTP_HOST=127.0.0.1 DYN_HTTP_PORT=8000 DYN_ENABLE_RL=true DYN_RL_PORT=8001 \
+DYN_VLLM_ENABLE_INFERENCE_V1_GENERATE=1 uv run python -m dynamo.frontend
 ```
 
-The `--enable-rl` flag enables worker discovery and the administration routes used for NCCL weight updates. Keep GPU 0 out of `CUDA_VISIBLE_DEVICES` for this process so it remains available to the Prime-RL trainer.
+Start the engine on GPU 1 with the Prime-RL weight-update extension. `VLLM_SERVER_DEV_MODE=1` enables the `/pause`, `/resume` and `/collective_rpc` administration routes on its HTTP port:
 
-These commands bind the HTTP, discovery, and worker administration endpoints to loopback. If Prime-RL and Dynamo run on different hosts, expose these endpoints only on a trusted control network; configured client headers are also sent to the discovery endpoint.
+```bash
+VLLM_RS=$(uv run python -c "import os, vllm; print(os.path.join(os.path.dirname(vllm.__file__), 'vllm-rs'))")
+CUDA_VISIBLE_DEVICES=1 VLLM_SERVER_DEV_MODE=1 uv run "$VLLM_RS" serve Qwen/Qwen3-0.6B \
+  --host 127.0.0.1 --port 8100 --grpc-port 50051 --max-model-len 4096 --reasoning-parser none \
+  -- --worker-extension-cls prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker
+```
+
+Arguments after `--` go to the vLLM engine. Keep GPU 0 out of `CUDA_VISIBLE_DEVICES` so it remains available to the Prime-RL trainer.
+
+Start the sidecar. It serves the engine through the frontend and advertises the engine's HTTP origin as the worker's administration URL:
+
+```bash
+DYN_SYSTEM_HOST=127.0.0.1 DYN_SYSTEM_PORT=8081 uv run python -m dynamo.vllm.sidecar --enable-rl \
+  --grpc-endpoint 127.0.0.1:50051 --vllm-http-endpoint http://127.0.0.1:8100 --vllm-rl-world-size 1
+```
+
+These commands bind the frontend, discovery, and worker administration endpoints to loopback. If Prime-RL and Dynamo run on different hosts, expose these endpoints only on a trusted control network; configured client headers are also sent to the discovery endpoint.
 
 ## Endpoint contract
 
 The default configuration expects:
 
-- The Dynamo OpenAI-compatible frontend at `http://127.0.0.1:8000/v1`.
-- The Dynamo RL discovery endpoint at `http://127.0.0.1:8001/v1/rl/workers`.
-- Exactly one discovered worker for `Qwen/Qwen3-0.6B` with an admin URL and `world_size = 1`.
-- A vLLM worker with the Prime-RL NCCL weight-update extension enabled.
+- The Dynamo frontend at `http://127.0.0.1:8000/v1`, serving `/inference/v1/generate`.
+- The Dynamo RL discovery endpoint at `http://127.0.0.1:8001/v1/rl/workers`, listing each worker for `Qwen/Qwen3-0.6B` with its `admin_base_url` and `world_size`.
+- With NCCL, exactly one worker with `world_size = 1`, running the Prime-RL NCCL weight-update extension.
 
 Verify both endpoints before starting training:
 
@@ -72,9 +86,13 @@ uv run rl @ examples/extra/dynamo/rl.toml
 
 The example stops after five optimizer steps. Outputs are written under `outputs/` unless `output_dir` is overridden.
 
+## Sampling
+
+Dynamo's sidecar rejects Prime-RL's request extensions (`extra_args`), so train sources that sample from the policy must use plain sampling: no truncation (`top_p` below 1 or `top_k`, which need sampling replay) and no logprob head (`sampling.logprobs`, which score centering sets). Config validation rejects these with Dynamo. Tokens carry no weight versions, so staleness counts each rollout as old as its dispatch version.
+
 ## ModelExpress weight transfer
 
-To transfer weights through [ModelExpress](../../../docs/model-express.md) instead of NCCL, start each Dynamo vLLM worker with the ModelExpress extension, `--worker-extension-cls prime_rl.inference.vllm.worker.modelexpress.ModelExpressWeightUpdateWorker`, and set:
+To transfer weights through [ModelExpress](../../../docs/model-express.md) instead of NCCL, start each engine with `--worker-extension-cls prime_rl.inference.vllm.worker.modelexpress.ModelExpressWeightUpdateWorker` and set:
 
 ```toml
 [weight_broadcast]
