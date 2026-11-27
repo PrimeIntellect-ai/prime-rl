@@ -406,7 +406,9 @@ class Dispatcher:
                         return
                     await asyncio.sleep(delay)
                     delay = min(2 * delay, 15.0)
-            if paused and not applied:
+            # A later message for the episode already set what the dispatcher counts and
+            # what the worker gets: the recovery is that message's
+            if paused and not applied and self.pausing.get(task) is asyncio.current_task():
                 self.unpause(task)
                 if applied is None and not task.done():
                     self.send_pause(task, meta, paused=False)

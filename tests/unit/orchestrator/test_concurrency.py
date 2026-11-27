@@ -571,3 +571,60 @@ def test_a_pause_the_worker_missed_gives_the_permit_back_and_a_resume_is_repeate
         assert sent.count(("a2", False)) == 2 and dispatcher.current_inflight == 3
 
     asyncio.run(run())
+
+
+def test_a_missed_pause_does_not_undo_a_later_pause():
+    """A pause that misses after a resume and a new pause were already queued leaves
+    them alone: the dispatcher still counts the episode paused, as the worker will."""
+    sent: list[tuple[str, bool]] = []
+    first_answer = asyncio.Event()
+
+    class Env:
+        async def pause(self, request_id: str, paused: bool) -> bool:
+            sent.append((request_id, paused))
+            if len(sent) == 1:
+                await first_answer.wait()
+                return False
+            return True
+
+    class Envs:
+        def get(self, name: str) -> Env:
+            return Env()
+
+        def __iter__(self):
+            return iter(())
+
+    async def run() -> None:
+        dispatcher = Dispatcher(
+            train_envs=Envs(),
+            eval_envs=None,
+            train_source=None,
+            eval_source=None,
+            policy_clients=None,
+            policy=Policy(version=0, model_name="policy"),
+            progress=None,
+            initial_max_inflight=1,
+            max_inflight_ceiling=None,
+            dispatch_per_minute=None,
+            run_id="run",
+            run_name=None,
+        )
+        meta = InflightEpisode(
+            kind="train", env_name="env", group_id=uuid.uuid4(), task=None, policy_version=0, step=0, dispatch_id="a0"
+        )
+        task = asyncio.get_running_loop().create_future()
+        dispatcher.inflight[task] = meta
+        dispatcher.current_inflight = 1
+
+        dispatcher.pause_inflight(1)
+        await asyncio.sleep(0)
+        dispatcher.resume_paused()
+        dispatcher.pause_inflight(1)
+        assert dispatcher.current_inflight == 0 and task in dispatcher.paused
+        first_answer.set()
+        while dispatcher.pausing:
+            await asyncio.gather(*dispatcher.pausing.values())
+        assert sent == [("a0", True), ("a0", False), ("a0", True)]
+        assert dispatcher.current_inflight == 0 and task in dispatcher.paused
+
+    asyncio.run(run())
