@@ -70,7 +70,9 @@ class ModelExpressWeightUpdateWorker(WeightRPCMixin, Worker):
         staging_buffer_bytes=None,
         staging_buffers_count=1,
     ):
-        worker_id = f"{session_id}:{rank_offset + self.rank}"
+        # The id names this worker's MX registration, version leases and NIXL agent, so it must be unique per
+        # inference GPU. `self.rank` restarts at 0 in every data-parallel engine of a server; the device index does not.
+        worker_id = f"{session_id}:{rank_offset + self.device.index}"
         # Admin planes that discover engines call this before every update; the client the engine runs stays.
         previous = getattr(self, "_generator", None)
         if previous is not None and previous.worker_id == worker_id:

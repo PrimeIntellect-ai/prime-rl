@@ -141,6 +141,9 @@ class ModelExpressWeightSender(WeightSender):
                 raise installation_error
             raise RuntimeError("Inference weight installation failed on trainer rank zero")
         self._trainer.release_version(version=version)
+        # Drop the state dict until the next broadcast refreshes it. Its copied entries (the packed parameters'
+        # splits) would otherwise stay allocated through every training step.
+        self._tensors.clear()
         dist.barrier()
 
 

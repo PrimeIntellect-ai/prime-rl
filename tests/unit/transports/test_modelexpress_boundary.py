@@ -104,12 +104,14 @@ def test_modelexpress_worker_uses_stage_apply_release(fail_install):
 
 
 def test_modelexpress_worker_initializes_once_per_worker_id():
+    import torch
+
     from prime_rl.inference.vllm.worker.modelexpress import ModelExpressWeightUpdateWorker
 
     closed = []
     running = SimpleNamespace(worker_id="session-7:0", close=lambda: closed.append(True))
     worker = ModelExpressWeightUpdateWorker()
-    worker.rank = 0
+    worker.device = torch.device("cuda", 0)
     worker._generator = running
 
     # The same worker id keeps the running client without touching the engine.
@@ -121,6 +123,141 @@ def test_modelexpress_worker_initializes_once_per_worker_id():
     with pytest.raises(AttributeError, match="model_config"):
         worker.init_broadcaster("trainer", 8001, 0, 1, 60, "session-8")
     assert closed == [True]
+
+
+@pytest.mark.parametrize(
+    "servers",
+    [
+        # One server running four data-parallel engines: every engine's worker has rank 0.
+        [(0, [(0, 0), (0, 1), (0, 2), (0, 3)])],
+        # One server running two data-parallel engines of TP=2.
+        [(0, [(0, 0), (1, 1), (0, 2), (1, 3)])],
+        # Two external-LB servers of TP=2, each seeing only its own two GPUs.
+        [(0, [(0, 0), (1, 1)]), (2, [(0, 0), (1, 1)])],
+    ],
+    ids=["dp4", "tp2-dp2", "external-lb-tp2"],
+)
+def test_modelexpress_worker_ids_are_unique_across_data_parallel_engines(monkeypatch, servers):
+    """Each inference GPU registers with MX under its own id, which also names its version leases and NIXL agent."""
+    import torch
+    import transformers
+    from torch import nn
+
+    import prime_rl.inference.vllm.worker.modelexpress as worker_module
+    import prime_rl.trainer.models as models
+
+    registered = []
+
+    class FakeGeneratorClient:
+        @staticmethod
+        def initialize(config):
+            registered.append(config.worker_id)
+            return SimpleNamespace(close=lambda: None)
+
+    monkeypatch.setattr(worker_module, "ModelExpressGeneratorClient", FakeGeneratorClient)
+    monkeypatch.setattr(worker_module, "VllmGeneratorContext", lambda **kwargs: kwargs)
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        models, "get_custom_causal_lm_cls", lambda config: SimpleNamespace(conversion_chain=lambda config: None)
+    )
+    monkeypatch.setattr(worker_module.atexit, "register", lambda *args: None)
+
+    inference_world_size = sum(len(workers) for _, workers in servers)
+    for rank_offset, workers in servers:
+        for rank, device_index in workers:
+            worker = worker_module.ModelExpressWeightUpdateWorker()
+            worker.rank = rank
+            worker.device = torch.device("cuda", device_index)
+            worker.vllm_config = None
+            worker.model_runner = SimpleNamespace(
+                model_config=SimpleNamespace(model="model-a", trust_remote_code=False), get_model=nn.Module
+            )
+            worker.init_broadcaster("host", 8001, rank_offset, inference_world_size, 60, "session")
+
+    assert sorted(registered) == [f"session:{index}" for index in range(inference_world_size)]
+
+
+def test_modelexpress_sender_publishes_current_values_of_state_dict_copies(tmp_path, monkeypatch):
+    """MX stages each version from the dict bound at the first update. A state-dict entry that is a copy of its
+    parameter, as a fused qkv split along its FSDP-sharded dimension is, must still carry each update's values, and
+    the copies must not stay allocated between updates."""
+    import gc
+    import weakref
+
+    import torch
+    from torch import nn
+
+    import prime_rl.transports.weights.modelexpress as sender_module
+    from prime_rl.configs.shared import ModelExpressWeightBroadcastConfig
+
+    class PackedModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.packed = nn.Parameter(torch.zeros(4))
+            self.plain = nn.Parameter(torch.zeros(2))
+            self.register_state_dict_post_hook(PackedModel.split_into_copies)
+
+        @staticmethod
+        def split_into_copies(module, state_dict, prefix, local_metadata):
+            packed = state_dict.pop(f"{prefix}packed")
+            state_dict[f"{prefix}q"], state_dict[f"{prefix}k"] = packed.clone().split(2)
+
+    published = []
+
+    class FakeTrainer:
+        worker_id = "trainer-0"
+
+        def bind_tensors(self, tensors):
+            self.bound = tensors
+            return SimpleNamespace(logical_shard_id="shard-0", metadata_endpoint="host:5655")
+
+        def publish_version(self, *, version):
+            published.append({name: tensor.clone() for name, tensor in self.bound.items()})
+            self.copies = [weakref.ref(self.bound[name]) for name in ("q", "k")]
+            (tmp_path / f"step_{len(published)}" / ".installed").write_text(version.version_id)
+
+        def release_version(self, *, version):
+            pass
+
+        def close(self):
+            pass
+
+    versions = iter(range(100))
+    control = SimpleNamespace(
+        create_trainer_mesh=lambda **kwargs: SimpleNamespace(mesh_id="mesh-0"),
+        create_weight_version=lambda **kwargs: SimpleNamespace(version_id=f"version-{next(versions)}"),
+        delete_trainer_mesh=lambda mesh_id: None,
+        close=lambda: None,
+    )
+    monkeypatch.setattr(sender_module.ModelExpressTrainerClient, "initialize", lambda config: FakeTrainer())
+    monkeypatch.setattr(sender_module.ModelExpressControlClient, "connect", lambda **kwargs: control)
+    monkeypatch.setattr(sender_module, "ModelExpressTrainerConfig", lambda **kwargs: kwargs)
+    monkeypatch.setattr(sender_module, "FSDPTrainerContext", lambda **kwargs: kwargs)
+    monkeypatch.setattr(sender_module, "all_gather_bytes", lambda payload: [payload])
+    monkeypatch.setattr(sender_module, "broadcast_bytes", lambda payload: payload)
+    monkeypatch.setattr(sender_module.dist, "barrier", lambda: None)
+    monkeypatch.setattr(sender_module.atexit, "register", lambda *args: None)
+    monkeypatch.delenv("MX_METADATA_PORT", raising=False)
+
+    sender = sender_module.ModelExpressWeightSender(
+        tmp_path, ModelExpressWeightBroadcastConfig(timeout=5), model_name="model-a"
+    )
+    sender.world = SimpleNamespace(is_master=True, local_rank=0)
+
+    model = PackedModel()
+    for step in (1, 2, 3):
+        with torch.no_grad():
+            model.packed.copy_(torch.arange(4.0) + step)
+            model.plain.fill_(step)
+        (tmp_path / f"step_{step}").mkdir()
+        sender._broadcast(model, step, tmp_path / f"step_{step}")
+        gc.collect()
+        assert all(copy() is None for copy in sender._trainer.copies)
+
+    for step, tensors in enumerate(published, start=1):
+        assert torch.equal(tensors["q"], torch.tensor([0.0, 1.0]) + step)
+        assert torch.equal(tensors["k"], torch.tensor([2.0, 3.0]) + step)
+        assert torch.equal(tensors["plain"], torch.full((2,), float(step)))
 
 
 def test_modelexpress_worker_forwards_generator_buffer_config():
@@ -190,6 +327,7 @@ def test_modelexpress_installation_outcome_reaches_non_master_without_shared_sto
             world=SimpleNamespace(is_master=rank == 0),
             timeout=0,
             _trainer=SimpleNamespace(release_version=lambda **kwargs: calls.append((rank, "release"))),
+            _tensors={},
         )
         step_dir = tmp_path if rank == 0 else tmp_path / "non_master_local_fs"
         if outcome == "success":
