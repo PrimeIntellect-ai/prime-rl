@@ -45,6 +45,24 @@ def test_gpt_oss_checkpoint_conversion_roundtrip():
         torch.testing.assert_close(tensor, expected_prime[name])
 
 
+def test_gpt_oss_hf_gate_up_alternates_gate_and_up_columns():
+    with torch.device("meta"):
+        model = PrimeRLGptOssForCausalLM(_config())
+
+    prime_state_dict = {name: torch.randn(tensor.shape) for name, tensor in model.state_dict().items()}
+    prefix = "model.layers.0.mlp.experts"
+    gate, up = prime_state_dict[f"{prefix}.gate_proj"].clone(), prime_state_dict[f"{prefix}.up_proj"].clone()
+    gate_bias, up_bias = (prime_state_dict[f"{prefix}.{name}"].clone() for name in ("gate_proj_bias", "up_proj_bias"))
+    hf_state_dict = model.convert_to_hf(prime_state_dict)
+
+    gate_up, gate_up_bias = hf_state_dict[f"{prefix}.gate_up_proj"], hf_state_dict[f"{prefix}.gate_up_proj_bias"]
+    assert gate_up.shape == (*gate.shape[:-2], gate.shape[-1], 2 * gate.shape[-2])
+    torch.testing.assert_close(gate_up[..., ::2], gate.transpose(-2, -1), rtol=0, atol=0)
+    torch.testing.assert_close(gate_up[..., 1::2], up.transpose(-2, -1), rtol=0, atol=0)
+    torch.testing.assert_close(gate_up_bias[..., ::2], gate_bias, rtol=0, atol=0)
+    torch.testing.assert_close(gate_up_bias[..., 1::2], up_bias, rtol=0, atol=0)
+
+
 @pytest.mark.gpu
 @pytest.mark.parametrize("layer_type", ["sliding_attention", "full_attention"])
 def test_gpt_oss_attention_matches_flash_attention_4(layer_type: str):

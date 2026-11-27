@@ -73,6 +73,10 @@ class Inkling2MoE(nn.Module):
         the router holds the object it was built with.
         """
         bias = self.gate.expert_bias
+        if bias.is_meta:
+            # A load-layout capture runs the loader on meta skeletons. The router
+            # keeps the live bias, which installation updates in place.
+            return
         self.experts.routed_experts.e_score_correction_bias = bias
         router = getattr(self.experts, "router", None)
         if router is not None and hasattr(router, "e_score_correction_bias"):
