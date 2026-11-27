@@ -7,11 +7,13 @@ from .configuration_qwen3_5 import (
 )
 from .modeling_clef_flash import ClefFlashForJointSchema
 from .modeling_qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5Model, Qwen3_5PreTrainedModel
+from .modeling_qwen3_5_slot import Qwen3_5ForSlotDecision
 
 __all__ = [
     "ClefFlashForJointSchema",
     "Qwen3_5Config",
     "Qwen3_5ForCausalLM",
+    "Qwen3_5ForSlotDecision",
     "Qwen3_5Model",
     "Qwen3_5MoeConfig",
     "Qwen3_5MoeTextConfig",

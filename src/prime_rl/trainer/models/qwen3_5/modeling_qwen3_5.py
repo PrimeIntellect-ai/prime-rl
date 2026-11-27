@@ -8,7 +8,7 @@ from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, TokenSupport, 
 from prime_rl.trainer.models.layers.mlp import FeedForward, SigmoidGatedFeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.norms import ZeroCenteredRMSNorm
-from prime_rl.trainer.models.qwen3_5.attention import Qwen3_5Attention
+from prime_rl.trainer.models.qwen3_5.attention import Qwen3_5Attention, TwoBlockLayout, prepare_two_block_layout
 from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import (
     Qwen3_5MoeTextConfig,
     Qwen3_5TextConfig,
@@ -93,7 +93,9 @@ class Qwen3_5DecoderLayer(nn.Module):
         fla_varlen: FlaVarlen,
         max_seqlen: int,
         routed_experts: torch.LongTensor | None = None,
+        two_block: TwoBlockLayout | None = None,
     ) -> torch.Tensor:
+        """``two_block`` reaches the full attention only: linear attention stays causal."""
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         if self.layer_type == "linear_attention":
@@ -104,6 +106,7 @@ class Qwen3_5DecoderLayer(nn.Module):
                 position_embeddings,
                 cu_seqlens,
                 max_seqlen,
+                two_block,
             )
         hidden_states = residual + hidden_states
 
@@ -162,7 +165,14 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
+        prefix_lens: torch.LongTensor | None = None,
     ) -> TextModelOutput:
+        """With ``prefix_lens``, one integer per segment of ``seq_lens``, the segment's first ``prefix_lens[s]`` tokens
+        are its prefix and the rest its second block, and in the full-attention layers a token attends the tokens at
+        or before it and the tokens of its own block (see ``TwoBlockLayout``). The linear-attention layers stay
+        causal, and the positions are ``position_ids`` either way."""
+        if prefix_lens is not None and self.cp_context.cp_enabled:
+            raise ValueError("prefix_lens (two-block attention) is not supported with context parallelism")
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
         if position_ids is None:
@@ -174,6 +184,9 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
         fla_varlen = prepare_fla_varlen(cu_seqlens, self.cp_context)
+        two_block = None
+        if prefix_lens is not None:
+            two_block = prepare_two_block_layout(cu_seqlens, prefix_lens.to(inputs_embeds.device))
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
 
         hidden_states = inputs_embeds
@@ -186,6 +199,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
                 fla_varlen=fla_varlen,
                 max_seqlen=max_seqlen,
                 routed_experts=layer_routed_experts,
+                two_block=two_block,
             )
         return TextModelOutput(last_hidden_state=self.norm(hidden_states))
 
@@ -264,6 +278,7 @@ class Qwen3_5VLMModel(nn.Module):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
+        prefix_lens: torch.LongTensor | None = None,
     ) -> TextModelOutput:
         if self.visual is None:
             return self.language_model(
@@ -272,6 +287,7 @@ class Qwen3_5VLMModel(nn.Module):
                 routed_experts=routed_experts,
                 seq_lens=seq_lens,
                 seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+                prefix_lens=prefix_lens,
             )
         inputs_embeds, position_ids = self.prepare_inputs(
             input_ids,
@@ -295,6 +311,7 @@ class Qwen3_5VLMModel(nn.Module):
             routed_experts=routed_experts,
             seq_lens=seq_lens,
             seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+            prefix_lens=prefix_lens,
         )
 
 
@@ -347,6 +364,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
+        prefix_lens: torch.LongTensor | None = None,
     ) -> PrimeLmOutput:
         if self.is_vlm:
             outputs = self.model(
@@ -358,6 +376,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
                 routed_experts=routed_experts,
                 seq_lens=seq_lens,
                 seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+                prefix_lens=prefix_lens,
             )
         else:
             outputs = self.model(
@@ -367,6 +386,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
                 routed_experts=routed_experts,
                 seq_lens=seq_lens,
                 seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+                prefix_lens=prefix_lens,
             )
 
         return self.lm_head(

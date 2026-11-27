@@ -176,6 +176,7 @@ def train(config: SFTConfig | PretrainConfig):
     strategy_cls = raw_datasets = val_raw_datasets = None
     if system_one:
         strategy_cls = get_system_one_strategy_cls(model_files.config, model_files.selection)
+        logger.info(f"Training on System One data with {strategy_cls.__name__}")
         if config.model.vlm is not None and "image" not in strategy_cls.modalities:
             raise ValueError(f"[model.vlm] is set, but {strategy_cls.__name__} reads no images. Remove [model.vlm].")
         raw_datasets = load_sft_dataset(config.data)

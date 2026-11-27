@@ -20,6 +20,7 @@ def decision_forward(
 ) -> DecisionLossOutput:
     """The micro-batch's decision loss, computed inside the model's forward on ``device``."""
     input_ids = micro_batch["input_ids"].to(device, non_blocking=True)
+    prefix_lens = micro_batch["prefix_lens"]
     mm_kwargs, mm_token_type_ids = micro_batch["mm_kwargs"], micro_batch["mm_token_type_ids"]
     if mm_kwargs is not None:
         mm_kwargs = {key: value.to(device, non_blocking=True) for key, value in mm_kwargs.items()}
@@ -41,4 +42,5 @@ def decision_forward(
         mm_kwargs=mm_kwargs,
         mm_token_type_ids=mm_token_type_ids,
         hidden_states_fn=loss_fn,
+        prefix_lens=None if prefix_lens is None else prefix_lens.to(device, non_blocking=True),
     )

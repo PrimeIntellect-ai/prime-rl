@@ -128,14 +128,15 @@ def list_shards(model_dir: Path) -> list[str]:
 
 
 def check_no_export_files(input_dir: Path) -> None:
-    """Refuse a checkpoint whose class, selected by an extra config file, has export files the conversion drops."""
+    """Refuse a checkpoint whose class, selected by an extra config file or key, has export files the conversion
+    drops."""
     if not {path.name for path in input_dir.glob("*.safetensors")} - set(list_shards(input_dir)):
         return
     # Export files sit outside the weight index, so only such checkpoints need prime-rl
     from prime_rl.trainer.model import select_by_extra_config
 
     config = json.loads((input_dir / "config.json").read_text())
-    selection = select_by_extra_config(config.get("model_type"), config.get("architectures"), str(input_dir))
+    selection = select_by_extra_config(config, str(input_dir))
     if selection is not None and selection.cls.export_files:
         raise ValueError(
             f"{input_dir} holds {selection.cls.__name__}, whose export files FP8 conversion does not support"

@@ -31,6 +31,9 @@ class RenderedRequest(TypedDict):
     segment."""
     options: NotRequired[list[list[str]]]
     """Per question, its option ids in logit order, when that differs from ``Question.options``."""
+    prefix_lens: NotRequired[list[int]]
+    """Per segment, the tokens of its prefix, for a model with two-block attention (see ``forward``); without it,
+    attention is the model's own. A strategy gives it for every request or for none."""
     mm_kwargs: NotRequired[dict[str, Tensor]]
     """The images' inputs to the model's forward, in prompt order, for a request with images."""
     mm_token_type_ids: NotRequired[list[int]]
@@ -80,8 +83,9 @@ class SystemOneStrategy(ABC):
     ) -> Float[Tensor, "options"]:
         """Every question's option logits, concatenated in ``questions`` order, each in its ``options`` order. Runs
         once per micro-batch inside the forward: call the same head modules, once each, on every micro-batch, rather
-        than reading their weights; the model class freezes parameters this never uses. An untied LM head's weight
-        may be read: it stays gathered with the final norm through the forward."""
+        than reading their weights; the model class freezes parameters this never uses. The LM head's weight may be
+        read, as ``lm_head_logits`` does: FSDP holds it whole through the forward, an untied head's with the final
+        norm and a tied head's with the root unit."""
 
 
 def _is_int(value) -> bool:
@@ -95,7 +99,7 @@ def _find_violation(
     if not isinstance(rendered, dict) or not required <= set(rendered) <= required | optional:
         got = sorted(rendered) if isinstance(rendered, dict) else type(rendered).__name__
         return (
-            "expected a dict with input_ids, seq_lens, read_spans and optionally options, mm_kwargs and "
+            "expected a dict with input_ids, seq_lens, read_spans and optionally options, prefix_lens, mm_kwargs and "
             f"mm_token_type_ids, got {got}"
         )
 
@@ -143,6 +147,12 @@ def _find_violation(
             same_length = isinstance(order, (list, tuple)) and len(order) == len(question.options)
             if not same_length or not all(option in order for option in question.options):
                 return f"question {question.id!r}: options {order!r} must be a permutation of {question.options}"
+
+    if "prefix_lens" in rendered:
+        prefix_lens = rendered["prefix_lens"]
+        same_length = isinstance(prefix_lens, list) and len(prefix_lens) == len(seq_lens)
+        if not same_length or any(not _is_int(p) or not 0 < p <= s for p, s in zip(prefix_lens, seq_lens)):
+            return f"prefix_lens must hold an int from 1 to its length per segment of {seq_lens}, got {prefix_lens!r}"
 
     if ("mm_kwargs" in rendered) != ("mm_token_type_ids" in rendered):
         return "mm_kwargs and mm_token_type_ids go together"
@@ -200,6 +210,9 @@ def build_sample(rendered: RenderedRequest, request: SystemOneRequest, targets: 
                 "target": target,
             }
         )
+    sample_data = {"id": request.id, "questions": questions}
+    if "prefix_lens" in rendered:
+        sample_data["prefix_lens"] = rendered["prefix_lens"]
     return {
         "input_ids": np.array(rendered["input_ids"], dtype=np.int64),
         "position_ids": np.concatenate([np.arange(seq_len) for seq_len in rendered["seq_lens"]]),
@@ -211,7 +224,7 @@ def build_sample(rendered: RenderedRequest, request: SystemOneRequest, targets: 
         "mm_token_type_ids": np.array(rendered["mm_token_type_ids"], dtype=np.int64)
         if "mm_token_type_ids" in rendered
         else None,
-        "sample_data": {"id": request.id, "questions": questions},
+        "sample_data": sample_data,
     }
 
 

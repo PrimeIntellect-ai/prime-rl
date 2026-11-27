@@ -212,9 +212,10 @@ def train(config: TrainerConfig):
     model_files = setup_model_files(config.model, tokenizer, processor)
     if model_files.selection is not None:
         cls = model_files.selection.cls
+        selector = cls.extra_config_file or f"config.json's {cls.extra_config_key}"
         raise ValueError(
-            f"{config.model.name} selects {cls.__name__} by its {cls.extra_config_file}: RL's weight transfer does not "
-            "support classes selected by an extra config file yet"
+            f"{config.model.name} selects {cls.__name__} by its {selector}: RL does not support classes "
+            "selected by an extra config file or key yet"
         )
     # A model cut to model.debug.num_layers lacks the other layers of its checkpoints
     ckpt_manager = setup_ckpt_manager(

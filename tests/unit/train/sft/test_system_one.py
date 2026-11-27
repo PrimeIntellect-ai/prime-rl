@@ -31,10 +31,12 @@ from prime_rl.trainer.sft.system_one.data import (
     check_rendered_request,
 )
 from prime_rl.trainer.sft.system_one.forward import decision_forward
+from prime_rl.trainer.sft.system_one.lm_head import lm_head_logits
 from prime_rl.trainer.sft.system_one.loss import (
     DecisionLossInputs,
     SystemOneBatch,
     build_decision_loss_inputs,
+    build_prefix_lens,
     decision_loss,
     system_one_collate,
 )
@@ -274,6 +276,23 @@ def test_check_rendered_request_rejects_broken_renderings(input_ids, seq_lens, r
         check_rendered_request(rendered, request, vocab_size=32)
 
 
+class TwoBlockStrategy(StubStrategy):
+    """StubStrategy with a prefix in each segment; the second segment is all prefix."""
+
+    prefix_lens = [1, 6]
+
+    def render_request(self, request, max_tokens):
+        return {**super().render_request(request, max_tokens), "prefix_lens": self.prefix_lens}
+
+
+@pytest.mark.parametrize("prefix_lens", [[1], [0, 6], [5, 6], [True, 6], (1, 6), [1, 6, 1]])
+def test_check_rendered_request_rejects_broken_prefix_lens(monkeypatch, prefix_lens):
+    monkeypatch.setattr(TwoBlockStrategy, "prefix_lens", prefix_lens)
+    source = SystemOneSource(Dataset.from_list([ROW]), TwoBlockStrategy(None, CONFIG, READ_SPANS))
+    with pytest.raises(ValueError, match="prefix_lens must hold an int from 1 to its length per segment of"):
+        source._process(ROW)
+
+
 def test_process_skips_record_without_labels():
     assert _source()._process(row()) is None
 
@@ -315,7 +334,7 @@ def test_get_system_one_strategy_cls_looks_up_the_architecture(monkeypatch):
         get_system_one_strategy_cls(PretrainedConfig(architectures=["Qwen3ForCausalLM", "StubDecisionModel"]))
     with pytest.raises(ValueError, match=r"architectures \[\] do not start with one"):
         get_system_one_strategy_cls(PretrainedConfig())
-    # A class selected by an extra config file is looked up by its name
+    # A class selected by an extra config file or key is looked up by its name
     stock = PretrainedConfig(architectures=["Qwen3ForCausalLM"])
     selection = ExtraConfigSelection(type("StubDecisionModel", (), {}), {})
     assert get_system_one_strategy_cls(stock, selection) is StubStrategy
@@ -345,6 +364,37 @@ def _micro_batch(source: SystemOneSource, rows: list[dict]) -> SystemOneBatch:
 
 def _decision_loss_inputs(rows: list[dict] = [ROW, SECOND]) -> DecisionLossInputs:
     return _micro_batch(_source(), rows)["decision_loss_inputs"].to("cpu")
+
+
+def test_a_row_has_a_prefix_per_segment_and_its_padding_is_one_block():
+    source = SystemOneSource(Dataset.from_list([ROW]), TwoBlockStrategy(None, CONFIG, READ_SPANS))
+    batch = _micro_batch(source, [ROW, SECOND])
+    assert batch["seq_lens"].tolist() == [4, 6, 4, 6, 4]
+    assert batch["prefix_lens"].tolist() == [1, 6, 1, 6, 4]
+    # Without prefixes, attention is the model's own
+    assert _micro_batch(_source(), [ROW, SECOND])["prefix_lens"] is None
+    with pytest.raises(ValueError, match="for every request or for none"):
+        build_prefix_lens([4, 6, 4, 6], [{"prefix_lens": [1, 6]}, {}])
+
+
+def test_decision_forward_hands_the_rows_prefixes_to_the_model():
+    class Backbone(nn.Module):
+        def forward(self, input_ids, position_ids, *, seq_lens, seq_lens_are_pre_shard=False, prefix_lens=None):
+            self.prefix_lens = prefix_lens
+            return SimpleNamespace(last_hidden_state=torch.zeros(1, input_ids.shape[1], 4))
+
+    model = nn.Module()
+    model.model = Backbone()
+    model.lm_head = nn.Linear(4, 8, bias=False)
+    inject_prime_lm_head(model)
+    model.logits, model.seen = torch.zeros(14), []
+    for strategy_cls, prefix_lens in ((TwoBlockStrategy, [1, 6, 1, 6, 4]), (StubStrategy, None)):
+        strategy = strategy_cls(None, CONFIG, READ_SPANS)
+        batch = _micro_batch(SystemOneSource(Dataset.from_list([ROW]), strategy), [ROW, SECOND])
+        out = decision_forward(model, batch, strategy=strategy, brier_weight=0.1, device="cpu")
+        given = model.model.prefix_lens
+        assert (given if given is None else given.tolist()) == prefix_lens
+        assert out["ce"].shape == (batch["decision_loss_inputs"].num_labelled,)
 
 
 def test_build_decision_loss_inputs_maps_reads_into_the_row():
@@ -544,6 +594,27 @@ def test_decision_loss_equals_a_per_record_reference():
     assert not torch.allclose(merged, loss)
 
 
+def test_lm_head_logits_are_float32_from_the_rows_of_the_tokens():
+    torch.manual_seed(0)
+    model = nn.Module()
+    model.lm_head = nn.Linear(8, 32, bias=False).to(torch.bfloat16)
+    hidden_states = torch.randn(6, 8).to(torch.bfloat16)
+    positions, token_ids = [5, 2], [[7, 3, 20], [3]]
+
+    logits = lm_head_logits(model, hidden_states, positions, token_ids)
+
+    weight = model.lm_head.weight.double()
+    exact = [hidden_states[p].double() @ weight[t] for p, tokens in zip(positions, token_ids) for t in tokens]
+    assert logits.dtype == torch.float32
+    # Closer than a logit rounded to bf16 would be
+    torch.testing.assert_close(logits, torch.stack(exact).float())
+
+    # A softcap of the LM head caps these logits too
+    model.lm_head.softcap = 0.5
+    capped = lm_head_logits(model, hidden_states, positions, token_ids)
+    torch.testing.assert_close(capped, 0.5 * torch.tanh(logits / 0.5))
+
+
 class HeadsConfig(PretrainedConfig):
     model_type = "decision_loss_heads_test"
 
@@ -585,6 +656,17 @@ class LMHeadStrategy(TokenStrategy):
                 for question in questions
             ]
         )
+
+
+class LMHeadRowsStrategy(TokenStrategy):
+    """LMHeadStrategy, with the options' logits read by ``lm_head_logits`` from their rows of the LM head's weight."""
+
+    def option_logits(self, model, hidden_states, input_ids, questions):
+        positions = [question.reads[0][0] for question in questions]
+        lm_logits = lm_head_logits(model, hidden_states, positions, [range(len(q.options)) for q in questions])
+        scores = model.score_head(hidden_states)[:, 0].float()
+        means = [scores[slice(*question.reads[0])].mean().expand(len(question.options)) for question in questions]
+        return lm_logits + torch.cat(means)
 
 
 class ScoreHeadStrategy(TokenStrategy):
@@ -659,7 +741,7 @@ def fsdp_worker(rank: int, world: int, tied: bool, strategy, init_file: str, out
     dist.destroy_process_group()
 
 
-@pytest.mark.parametrize("strategy", [LMHeadStrategy, ScoreHeadStrategy])
+@pytest.mark.parametrize("strategy", [LMHeadStrategy, LMHeadRowsStrategy, ScoreHeadStrategy])
 @pytest.mark.parametrize("tied", [True, False])
 def test_decision_loss_under_fsdp(tied, strategy, tmp_path):
     world = 2
@@ -671,7 +753,7 @@ def test_decision_loss_under_fsdp(tied, strategy, tmp_path):
     sum(heads_loss(model, rank, strategy) for rank in range(world)).div(world).backward()
     expected = {name: param.grad.float() for name, param in model.named_parameters() if param.grad is not None}
     if not tied:  # a tied LM head's weight is listed as the embeddings'
-        assert ("lm_head.weight" in expected) == (strategy is LMHeadStrategy)
+        assert ("lm_head.weight" in expected) == (strategy is not ScoreHeadStrategy)
     for rank in range(world):
         for grads in torch.load(tmp_path / f"{rank}.pt"):
             assert grads.keys() == expected.keys()

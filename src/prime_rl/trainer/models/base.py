@@ -73,15 +73,21 @@ class PreTrainedModelPrimeRL(nn.Module):
     cp_context: CPContext = CPContext()
     supports_tied_word_embeddings: ClassVar[bool] = False
 
-    # A class selected by an extra config file next to its family's stock config.json sets these four.
+    # A class selected instead of its family's sets the stock config.json it extends (stock_model_type and
+    # stock_architecture) and what selects it: an extra config file next to that config.json (extra_config_file and
+    # extra_config_attr), or one of its keys (extra_config_key).
     extra_config_file: ClassVar[str | None] = None
     """The JSON file next to config.json that selects this class."""
 
     extra_config_attr: ClassVar[str | None] = None
     """The config attribute that holds the file's content."""
 
+    extra_config_key: ClassVar[str | None] = None
+    """The config.json key that selects this class, in place of a file, when its value is not null. The config holds
+    the value under the key's name."""
+
     stock_model_type: ClassVar[str | None] = None
-    """The model_type of the config.json the file extends."""
+    """The model_type of the config.json the file or the key extends."""
 
     stock_architecture: ClassVar[str | None] = None
     """The only architecture of that config.json."""

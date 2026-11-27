@@ -34,6 +34,7 @@ jobs:
           - {group: reverse_text_sft_lora, name: Integration / Reverse Text SFT LoRA}
           - {group: pretrain, name: Integration / Pretrain}
           - {group: clef_flash_sft, name: Integration / Clef-Flash SFT}
+          - {group: lm_head_sft, name: Integration / LM-head SFT}
           - {group: vllm-parity, name: Unit (GPU) / vLLM parity}
           - {group: dsv4-kernels, name: Unit (GPU) / DeepSeek-V4 kernels}
           - {group: dsv4, name: Unit (GPU) / DeepSeek-V4}

@@ -30,10 +30,11 @@ JOINT_HEAD_CONFIG = {
 }
 
 
-def tokenizer() -> PreTrainedTokenizerFast:
-    """One token per byte, plus Qwen's chat tokens."""
+def tokenizer(merges: tuple[tuple[str, str], ...] = ()) -> PreTrainedTokenizerFast:
+    """One token per byte, plus one per merge of two tokens and Qwen's chat tokens."""
     alphabet = sorted(pre_tokenizers.ByteLevel.alphabet())
-    model = Tokenizer(models.BPE(vocab={char: i for i, char in enumerate(alphabet)}, merges=[]))
+    vocab = {token: i for i, token in enumerate([*alphabet, *(left + right for left, right in merges)])}
+    model = Tokenizer(models.BPE(vocab=vocab, merges=list(merges)))
     model.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=False)
     model.decoder = decoders.ByteLevel()
     tokens = PreTrainedTokenizerFast(
@@ -47,8 +48,9 @@ def tokenizer() -> PreTrainedTokenizerFast:
     return tokens
 
 
-def tiny_config() -> Qwen3_5Config:
-    vision_start, vision_end, image, video = tokenizer().convert_tokens_to_ids(VISION_TOKENS)
+def tiny_config(merges: tuple[tuple[str, str], ...] = ()) -> Qwen3_5Config:
+    """``merges`` is the tokenizer's, as they move the ids of its vision tokens."""
+    vision_start, vision_end, image, video = tokenizer(merges).convert_tokens_to_ids(VISION_TOKENS)
     text_config = Qwen3_5TextConfig(
         vocab_size=VOCAB,
         hidden_size=HIDDEN,
@@ -117,14 +119,12 @@ def write_processor(directory: Path) -> None:
     tokenizer().save_pretrained(directory)
 
 
-def write_release(directory: Path) -> dict[str, torch.Tensor]:
-    """Cloudflare/clef-flash's layout: a stock Qwen3.5 config.json with an untied LM head, the backbone (language model,
-    vision encoder and LM head, no MTP weights) in shards with an index, joint_head_config.json and
-    joint_head.safetensors. Returns the weights as stored."""
+def write_backbone(directory: Path, merges: tuple[tuple[str, str], ...] = ()) -> dict[str, torch.Tensor]:
+    """A stock Qwen3.5 config.json with an untied LM head, and the backbone (language model, vision encoder and LM
+    head, no MTP weights) in shards with an index. Returns the weights as stored."""
     directory.mkdir(parents=True, exist_ok=True)
-    config = tiny_config()
+    config = tiny_config(merges)
     config.save_pretrained(directory)
-    (directory / "joint_head_config.json").write_text(json.dumps(JOINT_HEAD_CONFIG))
     torch.manual_seed(0)
     model = hf_modeling.Qwen3_5ForConditionalGeneration(hf_configuration.Qwen3_5Config(**config.to_dict()))
     backbone = {name: tensor.detach().to(torch.bfloat16).clone() for name, tensor in model.state_dict().items()}
@@ -135,6 +135,14 @@ def write_release(directory: Path) -> dict[str, torch.Tensor]:
         save_file(tensors, directory / file, metadata={"format": "pt"})
     index = {"metadata": {}, "weight_map": {name: file for file, tensors in shards.items() for name in tensors}}
     (directory / "model.safetensors.index.json").write_text(json.dumps(index))
+    return backbone
+
+
+def write_release(directory: Path) -> dict[str, torch.Tensor]:
+    """Cloudflare/clef-flash's layout: the backbone of a stock Qwen3.5, joint_head_config.json and
+    joint_head.safetensors. Returns the weights as stored."""
+    backbone = write_backbone(directory)
+    (directory / "joint_head_config.json").write_text(json.dumps(JOINT_HEAD_CONFIG))
     head = head_weights()
     save_file(head, directory / "joint_head.safetensors", metadata={"format": "pt"})
     tokenizer().save_pretrained(directory)
