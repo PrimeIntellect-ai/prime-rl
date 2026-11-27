@@ -61,28 +61,35 @@ class QueuedSample:
     zero_advantage: bool = False
     """Its every token has advantage 0.0, so pruning takes it out of the rl component whole."""
 
-    def is_fresh(self, version: int, min_version: int | None) -> bool:
-        """Whether this sample's tokens of ``version`` train in a batch whose oldest policy is
-        ``min_version`` (None: no version is too old)."""
-        if min_version is None or version == UNVERSIONED or self.ref.policy_start is None:
+    def is_fresh(self, version: int, min_version: int | None, max_version: int | None = None) -> bool:
+        """Whether this sample's tokens of ``version`` train in a batch whose policies lie in
+        ``[min_version, max_version]`` (None: unbounded on that side)."""
+        if (min_version is None and max_version is None) or version == UNVERSIONED or self.ref.policy_start is None:
             return True
-        return (self.ref.policy_start if version == UNLABELED else version) >= min_version
+        effective = self.ref.policy_start if version == UNLABELED else version
+        if min_version is not None and effective < min_version:
+            return False
+        if max_version is not None and effective > max_version:
+            return False
+        return True
 
-    def has_loss(self, min_version: int | None) -> bool:
-        """Whether any of its tokens still trains once tokens older than ``min_version`` are out."""
+    def has_loss(self, min_version: int | None, max_version: int | None = None) -> bool:
+        """Whether any of its tokens still trains once tokens outside ``[min_version, max_version]`` are out."""
         for component, counts in self.loss.items():
             if component == "rl":
                 if self.pruned and self.zero_advantage:
                     continue
                 if self.ref.rl_weight is not None:
                     counts = self.trainable
-            if any(count and self.is_fresh(version, min_version) for version, count in counts.items()):
+            if any(count and self.is_fresh(version, min_version, max_version) for version, count in counts.items()):
                 return True
         return False
 
-    def stale_tokens(self, min_version: int) -> int:
-        """Trainable tokens older than ``min_version``."""
-        return sum(count for version, count in self.trainable.items() if not self.is_fresh(version, min_version))
+    def stale_tokens(self, min_version: int, max_version: int | None = None) -> int:
+        """Trainable tokens outside ``[min_version, max_version]``."""
+        return sum(
+            count for version, count in self.trainable.items() if not self.is_fresh(version, min_version, max_version)
+        )
 
     @property
     def num_trainable(self) -> int:
@@ -315,13 +322,19 @@ class TrainSink(Reconfigurable):
         """Mask queued tokens past ``max_staleness`` out of the loss and
         void the samples left with nothing to train. The batch being collected
         is ``progress.step`` and trains policy v{step-1}, so a token sampled by
-        v{k} would ship at staleness ``(step-1) - k``. Tokens without a policy
-        label take their episode's dispatch version, which no token of the
-        episode predates. Queued tokens only age when ``progress.step``
-        advances, so the full sweep runs once per step; ``trace_ids`` scopes
-        the check to a freshly inserted group. Frozen-sourced episodes (no
-        policy span) never go stale. The trainer masks the same tokens when it
-        builds the batch.
+        v{k} would ship at staleness ``(step-1) - k``. Every trace is checked by
+        its token labels, not its dispatch version: an engine still installing
+        the version an episode was dispatched under samples it with the
+        previous one. Tokens without a policy label take the dispatch version.
+        Queued tokens only age when ``progress.step`` advances, so the full
+        sweep runs once per step; ``trace_ids`` scopes the check to a freshly
+        inserted group. Frozen-sourced episodes (no policy span) never go stale.
+        The trainer masks the same tokens when it builds the batch.
+
+        Tokens of a version newer than v{step-1}, which the trainer cannot have
+        published yet, are masked too: an engine that outlived a trainer restart
+        from an earlier checkpoint samples them with the dead trainer's weights
+        until it installs the new trainer's.
 
         Queue outcomes are counted separately from completed groups; observing
         the episode again here would double-count rollout statistics."""
@@ -331,17 +344,19 @@ class TrainSink(Reconfigurable):
             self._swept_step = self.progress.step
             trace_ids = list(self.pending_batch)
         min_version = min_fresh_version(self.progress.step, self.config.max_staleness)
-        if min_version <= 0:
-            return
+        max_version = self.progress.step - 1
         dropped = 0
         dropped_groups: set[str] = set()
         for trace_id in trace_ids:
             episode = self.episode_by_trace[trace_id]
             policy = train_work(episode).policy
-            if policy is None or policy.start >= min_version:
+            if policy is None:
                 continue
             samples = self.pending_batch[trace_id]
-            trainable = [not sample.stale_tokens(min_version) or sample.has_loss(min_version) for sample in samples]
+            trainable = [
+                not sample.stale_tokens(min_version, max_version) or sample.has_loss(min_version, max_version)
+                for sample in samples
+            ]
             self.release_samples(sample.ref for sample, keep in zip(samples, trainable) if not keep)
             if samples := [sample for sample, keep in zip(samples, trainable) if keep]:
                 self.pending_batch[trace_id] = samples
@@ -354,8 +369,8 @@ class TrainSink(Reconfigurable):
         if dropped:
             self.rollout_window.metrics.count("staleness/rollout/dropped", float(dropped))
             get_logger().warning(
-                f"Dropped {dropped} queued traces with every token past "
-                f"max_staleness={self.config.max_staleness}. Consider increasing it to avoid this."
+                f"Dropped {dropped} queued traces with every token past max_staleness={self.config.max_staleness} "
+                "or sampled by a policy newer than the trainer's. Consider increasing max_staleness if the former."
             )
 
     async def process_group(self, group_id: str) -> None:
@@ -568,12 +583,14 @@ class TrainSink(Reconfigurable):
         )
 
     @staticmethod
-    def _prune(samples: list[QueuedSample], min_version: int | None = None) -> list[QueuedSample]:
+    def _prune(
+        samples: list[QueuedSample], min_version: int | None = None, max_version: int | None = None
+    ) -> list[QueuedSample]:
         """Take zero-advantage tokens out of the samples' rl component, and the samples left
-        with nothing to train (tokens older than ``min_version`` already out) out of the queue."""
+        with nothing to train (tokens outside ``[min_version, max_version]`` already out) out of the queue."""
         for sample in samples:
             sample.pruned = True
-        return [sample for sample in samples if sample.has_loss(min_version)]
+        return [sample for sample in samples if sample.has_loss(min_version, max_version)]
 
     async def process_batch(self) -> TrainBatch:
         selected = list(self.pending_batch.items())[: self.batch_size]
@@ -584,8 +601,9 @@ class TrainSink(Reconfigurable):
             del self.pending_batch[trace_id]
 
         min_version = min_fresh_version(self.progress.step, self.config.max_staleness)
+        max_version = self.progress.step - 1
         if not self.config.constant_trainer_batch_size:
-            pruned = {trace_id: self._prune(samples, min_version) for trace_id, samples in selected}
+            pruned = {trace_id: self._prune(samples, min_version, max_version) for trace_id, samples in selected}
             selected_by_trace = {trace_id: samples for trace_id, samples in pruned.items() if samples}
         samples = [sample for trace_samples in selected_by_trace.values() for sample in trace_samples]
         shipped = set(sample_payload_urls(sample.ref for sample in samples))
@@ -597,7 +615,7 @@ class TrainSink(Reconfigurable):
         )
 
         # Shared fork prefixes train only in their first branch, so each trainable token counts once.
-        masked = sum(sample.stale_tokens(min_version) for sample in samples)
+        masked = sum(sample.stale_tokens(min_version, max_version) for sample in samples)
         kept = sum(sample.num_trainable for sample in samples) - masked
         self.rollout_window.metrics.rate("staleness/token/masked", {"": float(masked)}, kept + masked)
 

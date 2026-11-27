@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[3]
     [
         "src/prime_rl/transports/weights/modelexpress.py",
         "src/prime_rl/inference/vllm/worker/modelexpress.py",
+        "src/prime_rl/inference/vllm/weight_pull.py",
     ],
 )
 def test_modelexpress_adapter_uses_only_public_clients(relative_path):
@@ -26,6 +27,7 @@ def test_modelexpress_adapter_uses_only_public_clients(relative_path):
             "create_trainer_mesh",
             "create_weight_version",
             "get_weight_version",
+            "list_weight_versions",
             "delete_weight_version",
             "delete_trainer_mesh",
             "close",
@@ -94,6 +96,7 @@ def test_modelexpress_worker_uses_stage_apply_release(fail_install):
 
     worker = ModelExpressWeightUpdateWorker()
     worker._generator = SimpleNamespace(stage_weight=stage_weight, apply_weight=apply_weight)
+    worker._staged = None
     if fail_install:
         with pytest.raises(RuntimeError, match="installation failed"):
             worker.update_weights_from_modelexpress(version_uid="version-a")
@@ -150,10 +153,10 @@ def test_modelexpress_installation_outcome_reaches_non_master_without_shared_sto
     publication = next(
         index
         for index, node in enumerate(broadcast.body)
-        if isinstance(node, ast.Expr)
+        if isinstance(node, ast.Assign)
         and isinstance(node.value, ast.Call)
         and isinstance(node.value.func, ast.Attribute)
-        and node.value.func.attr == "publish_version"
+        and node.value.func.attr == "_publish"
     )
     # Execute the real acknowledgment block without importing the GPU runtime.
     module = ast.parse("def acknowledge(self, step_dir, version): pass")

@@ -39,11 +39,12 @@ def setup_weight_sender(
     elif config.type == "filesystem":
         return FileSystemWeightSender(output_dir, config, lora_config)
     elif config.type == "modelexpress":
-        from prime_rl.transports.weights.modelexpress import ModelExpressWeightSender
+        from prime_rl.transports.weights.modelexpress import ModelExpressPullWeightSender, ModelExpressWeightSender
 
         if model_name is None:
             raise ValueError("modelexpress requires model_name")
-        return ModelExpressWeightSender(output_dir, config, model_name=model_name)
+        sender_cls = ModelExpressPullWeightSender if config.mode == "pull" else ModelExpressWeightSender
+        return sender_cls(output_dir, config, model_name=model_name)
     else:
         raise ValueError(f"Invalid weight broadcast type: {config.type}")
 
@@ -61,8 +62,9 @@ def setup_weight_receiver(
     elif config.type == "filesystem":
         return FileSystemWeightReceiver(broadcast_dir, config, admin_plane, model_name)
     elif config.type == "modelexpress":
-        from prime_rl.transports.weights.modelexpress import ModelExpressWeightReceiver
+        from prime_rl.transports.weights.modelexpress import ModelExpressPullWeightReceiver, ModelExpressWeightReceiver
 
-        return ModelExpressWeightReceiver(broadcast_dir, config, admin_plane, model_name)
+        receiver_cls = ModelExpressPullWeightReceiver if config.mode == "pull" else ModelExpressWeightReceiver
+        return receiver_cls(broadcast_dir, config, admin_plane, model_name)
     else:
         raise ValueError(f"Invalid weight broadcast type: {config.type}")

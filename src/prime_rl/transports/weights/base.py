@@ -68,7 +68,11 @@ class WeightSender(ABC):
     offered (``.sender_ready``), acknowledged by the consumer
     (``.receiver_ready``), transferred (``.started``), and committed
     (``.finished``). The trainer therefore runs in lockstep with its consumer
-    on every transport — a broadcast nobody receives blocks and then fails."""
+    on every transport — a broadcast nobody receives blocks and then fails.
+    A transport whose consumers fetch versions on their own sets
+    ``waits_for_receiver`` to False and skips the acknowledgement."""
+
+    waits_for_receiver: bool = True
 
     def __init__(self, output_dir: Path, timeout: int):
         self.logger = get_logger()
@@ -87,7 +91,8 @@ class WeightSender(ABC):
             shutil.rmtree(step_dir, ignore_errors=True)
             step_dir.mkdir(parents=True)
             (step_dir / SENDER_READY_MARKER).touch()
-            self._wait_for_receiver_ready(step_dir)
+            if self.waits_for_receiver:
+                self._wait_for_receiver_ready(step_dir)
             (step_dir / STARTED_MARKER).touch()
         wait_for_master(f"weight_broadcast/{step}", self.timeout)
         self._broadcast(model, step, step_dir)
@@ -124,6 +129,10 @@ class WeightSender(ABC):
         """Move v{step}'s weights to the consumer. All ranks enter only after
         the master finished the handshake."""
 
+    def close(self) -> None:
+        """Release what the transport still holds once training ends. Every
+        rank calls it."""
+
     def _clean(self, step: int) -> None:
         """Remove old broadcast dirs, keeping ``step`` and ``step - 1`` (a
         lagging consumer may still be reading it). Broadcasts are purely
@@ -141,7 +150,10 @@ class WeightReceiver(ABC):
     watcher, the orchestrator's startup rendezvous, and the evals process all
     drive the same object instead of hand-rolling transport branches. The
     engines' in-process receive hooks are its data plane, reached through the
-    admin plane."""
+    admin plane. A transport whose trainer does not wait for its consumer sets
+    ``sender_waits`` to False."""
+
+    sender_waits: bool = True
 
     def __init__(
         self,
@@ -175,8 +187,7 @@ class WeightReceiver(ABC):
         """Block until the trainer offers v{step}. Runs before the orchestrator
         advances ``policy.version`` — the version must never move ahead of a
         confirmed offer."""
-        sender_ready = self.step_dir(step) / SENDER_READY_MARKER
-        while not marker_exists(sender_ready):
+        while not self.is_published(step):
             if cancelled is not None and cancelled():
                 raise asyncio.CancelledError
             await asyncio.sleep(0.1)

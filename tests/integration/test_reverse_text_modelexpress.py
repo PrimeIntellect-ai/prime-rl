@@ -14,14 +14,28 @@ pytestmark = [
     pytest.mark.skipif(not Path("/sys/class/net").exists(), reason="UCX finds no TCP interface: no /sys/class/net"),
 ]
 
-RUN_NAME = "reverse-text-modelexpress"
-
 TIMEOUT = 900
+
+# Pull streams each version from the trainer through bounded host buffers into vLLM's loader.
+MODE_ARGS = {
+    "push": [],
+    "pull": ["--weight-broadcast.mode", "pull", "--weight-broadcast.staging-buffer-bytes", "1073741824"],
+}
+
+
+@pytest.fixture(scope="module", params=sorted(MODE_ARGS))
+def mode(request) -> str:
+    return request.param
 
 
 @pytest.fixture(scope="module")
-def run_dir(output_dir: Path) -> Path:
-    return output_dir / RUN_NAME
+def run_name(mode: str) -> str:
+    return f"reverse-text-modelexpress-{mode}"
+
+
+@pytest.fixture(scope="module")
+def run_dir(output_dir: Path, run_name: str) -> Path:
+    return output_dir / run_name
 
 
 @pytest.fixture(scope="module")
@@ -30,6 +44,8 @@ def rl_process(
     output_dir: Path,
     wandb_project: str,
     branch_name: str,
+    mode: str,
+    run_name: str,
 ) -> ProcessResult:
     cmd = [
         "uv",
@@ -39,15 +55,16 @@ def rl_process(
         "tests/integration/configs/reverse-text/start.toml",
         "--weight-broadcast.type",
         "modelexpress",
+        *MODE_ARGS[mode],
         "--clean",
         "--monitors.wandb.project",
         wandb_project,
         "--monitors.wandb.name",
-        f"test-reverse-text-modelexpress:{branch_name}",
+        f"test-{run_name}:{branch_name}",
         "--output-dir",
         output_dir.as_posix(),
         "--run.name",
-        RUN_NAME,
+        run_name,
     ]
     return run_process(cmd, timeout=TIMEOUT)
 

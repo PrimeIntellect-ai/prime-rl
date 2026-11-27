@@ -753,7 +753,7 @@ def build_sample(body: SampleBody, ref: SampleRef, plan: MicroBatchPlan) -> Trai
     if ref.policy_start is not None:
         versioned = versions != UNVERSIONED
         effective = np.where(versions == UNLABELED, ref.policy_start, versions)
-        stale = versioned & (effective < plan.min_version)
+        stale = versioned & ((effective < plan.min_version) | (effective > plan.trained_version))
         if stale.any():
             mask[stale] = False
             for weights in (rl_weights, ce_weights, ref_kl_weights):
