@@ -1,5 +1,6 @@
 import importlib.metadata
 import importlib.util
+import inspect
 import os
 import shutil
 import sys
@@ -1160,7 +1161,10 @@ def forward(
     # True when seq_lens holds the full pre-CP-shard document boundaries
     # (kept global because documents can straddle the shard cut).
     seq_lens_are_pre_shard: bool = False,
-) -> PrimeLmOutput:
+    hidden_states_fn: Callable[[Tensor], dict[str, Tensor]] | None = None,
+) -> PrimeLmOutput | dict[str, Tensor]:
+    """With ``hidden_states_fn``, the LM head is skipped and the function's dict of tensors, computed on the final
+    hidden states inside the forward, is returned."""
     kwargs = {
         "input_ids": input_ids,
         "position_ids": position_ids,
@@ -1179,5 +1183,14 @@ def forward(
 
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts
+
+    if hidden_states_fn is not None:
+        assert labels is None and temperature is None and support is None, "hidden_states_fn replaces the LM head"
+        # A model's own forward may take **kwargs and drop hidden_states_fn
+        assert "hidden_states_fn" in inspect.signature(model.forward).parameters, (
+            "hidden_states_fn needs the forward patched in by inject_prime_lm_head"
+        )
+        kwargs["hidden_states_fn"] = hidden_states_fn
+        return model(**kwargs)
 
     return cast_float_and_contiguous(model(**kwargs))

@@ -1,8 +1,9 @@
 import itertools
 import json
 import uuid
+from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Callable, Literal, cast
+from typing import TYPE_CHECKING, Any, Callable, Literal, cast
 
 import numpy as np
 import torch
@@ -13,7 +14,7 @@ from torch import Tensor
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.sft import LossMaskConfig, SFTColumnsConfig, SFTDataConfig
+from prime_rl.configs.sft import DataConfig, HFDataConfig, LossMaskConfig, SFTColumnsConfig
 from prime_rl.trainer.data import (
     Sample,
     StatefulIterableDataset,
@@ -24,6 +25,9 @@ from prime_rl.trainer.data import (
 )
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from prime_rl.trainer.sft.system_one.data import SystemOneStrategy
 
 
 class FakeSource:
@@ -178,9 +182,51 @@ class RendererResolver:
         return renderer
 
 
-class HFSource:
-    """Rows of a HF dataset with prompt/completion or messages columns, rendered into samples. The ``k``-th sample is
-    row ``k % size`` of pass ``k // size``, each pass in its own seeded order."""
+class HFRowSource(ABC):
+    """Rows of a HF dataset, processed into samples one at a time. The ``k``-th sample is row ``k % size`` of pass
+    ``k // size``, each pass in its own seeded order."""
+
+    def __init__(
+        self,
+        dataset: Dataset,
+        name: str = "train",
+        shuffle: bool = True,
+        seed: int = 0,
+        max_examples: int | None = None,
+    ):
+        self.logger = get_logger()
+        self.name = name
+        self.dataset = dataset
+        self.size = len(self.dataset)
+        self.shuffle = shuffle
+        self.seed = seed
+        if max_examples is not None:
+            self.size = min(self.size, max_examples)
+            self.dataset = self.dataset.take(max_examples)
+        self.order, self.order_pass = self.dataset, None
+
+    @abstractmethod
+    def _process(self, example: dict) -> Sample | None:
+        """The sample of a row, or None to skip the row."""
+
+    def sample(self, k: int) -> Sample | None:
+        """The ``k``-th sample, or None if its row is skipped (e.g. no trainable tokens within ``seq_len``)."""
+        pass_, index = divmod(k, self.size)
+        if pass_ != self.order_pass:
+            self.order = self.dataset.shuffle(seed=self.seed + pass_) if self.shuffle else self.dataset
+            self.order_pass = pass_
+        example = cast(dict, self.order[index])
+        sample = self._process(example)
+        if sample is not None:
+            self.logger.debug(
+                f"Yield example {example.get('__index', '')} from {self.name} with {len(sample['input_ids'])} tokens "
+                f"({sample['loss_mask'].sum()} trainable tokens)"
+            )
+        return sample
+
+
+class HFSource(HFRowSource):
+    """Rows of a HF dataset with prompt/completion or messages columns, rendered into samples."""
 
     def __init__(
         self,
@@ -195,10 +241,7 @@ class HFSource:
         multimodal: bool = False,
         columns: SFTColumnsConfig = SFTColumnsConfig(),
     ):
-        self.logger = get_logger()
-        self.name = name
-        self.dataset = dataset
-        self.size = len(self.dataset)
+        super().__init__(dataset, name=name, shuffle=shuffle, seed=seed, max_examples=max_examples)
         self.renderers = renderers
         self.columns = columns
         # Default names are optional: a dataset carries either messages or
@@ -208,15 +251,9 @@ class HFSource:
             column = getattr(columns, field)
             if column != field and column not in dataset.column_names:
                 raise ValueError(f"data.columns.{field} is {column!r}, but the dataset has only {dataset.column_names}")
-        self.shuffle = shuffle
-        self.seed = seed
         self.seq_len = seq_len
         self.loss_mask_config = loss_mask_config
         self.multimodal = multimodal
-        if max_examples is not None:
-            self.size = min(self.size, max_examples)
-            self.dataset = self.dataset.take(max_examples)
-        self.order, self.order_pass = self.dataset, None
 
     def _process(self, example: dict) -> dict | None:
         def resolve_messages(example: dict) -> list[dict]:
@@ -349,21 +386,6 @@ class HFSource:
             "mm_token_type_ids": np.array(mm_token_type_ids, dtype=np.int64) if mm_token_type_ids is not None else None,
         }
 
-    def sample(self, k: int) -> Sample | None:
-        """The ``k``-th sample, or None if the row has no trainable tokens within ``seq_len``."""
-        pass_, index = divmod(k, self.size)
-        if pass_ != self.order_pass:
-            self.order = self.dataset.shuffle(seed=self.seed + pass_) if self.shuffle else self.dataset
-            self.order_pass = pass_
-        example = cast(dict, self.order[index])
-        sample = self._process(example)
-        if sample is not None:
-            self.logger.debug(
-                f"Yield example {example.get('__index', '')} from {self.name} with {len(sample['input_ids'])} tokens "
-                f"({sample['loss_mask'].sum()} trainable tokens)"
-            )
-        return sample
-
 
 class SFTDataset(StatefulIterableDataset):
     """Samples drawn from one or more sources by weight.
@@ -377,7 +399,7 @@ class SFTDataset(StatefulIterableDataset):
 
     def __init__(
         self,
-        sources: list[HFSource | FakeSource],
+        sources: list[HFRowSource | FakeSource],
         weights: list[float] | None = None,
         max_epochs: int | None = None,
         dp_rank: int = 0,
@@ -507,6 +529,7 @@ class SFTDataset(StatefulIterableDataset):
 
     def __iter__(self):
         self._setup_world_info()
+        num_skipped = 0
         while self.max_epochs is None or self.step < self.max_epochs * self.num_rows:
             index = self.next_source()
             source, k = self.sources[index], self.draws[index]
@@ -522,13 +545,21 @@ class SFTDataset(StatefulIterableDataset):
 
             sample = source.sample(k)
             if sample is None:
+                num_skipped += 1
+                # Across a reshuffle, two usable rows can be almost two passes apart
+                if num_skipped > 2 * self.num_rows:
+                    raise RuntimeError(
+                        f"Data rank {self.data_rank} skipped {num_skipped} rows in a row, more than twice the "
+                        f"sources' {self.num_rows}, without yielding a sample: every row it reads is skipped."
+                    )
                 continue
+            num_skipped = 0
             self.num_samples[source.name] += 1
             self.num_tokens[source.name] += len(sample["input_ids"])
             yield sample
 
 
-def load_sft_dataset(config: SFTDataConfig) -> dict[str, Dataset]:
+def load_sft_dataset(config: HFDataConfig) -> dict[str, Dataset]:
     """Load the rows of every HF source, by source name. This is the expensive I/O step."""
     datasets = {}
     for source in config.source:
@@ -544,7 +575,7 @@ def load_sft_dataset(config: SFTDataConfig) -> dict[str, Dataset]:
 
 def setup_sft_dataset(
     tokenizer: PreTrainedTokenizer,
-    config: SFTDataConfig,
+    config: DataConfig,
     *,
     dp_rank: int,
     dp_size: int,
@@ -553,7 +584,37 @@ def setup_sft_dataset(
     renderer_config: RendererConfig | None = None,
     processor: Any | None = None,
     multimodal: bool = False,
+    strategy: "SystemOneStrategy | None" = None,
 ) -> SFTDataset:
+    if config.type == "system_one":
+        # Lazy: system_one.data imports this module
+        from prime_rl.trainer.sft.system_one.data import SystemOneSource
+
+        if strategy is None:
+            raise ValueError("System One data requires the model's strategy.")
+        if raw_datasets is None:
+            raw_datasets = load_sft_dataset(config)
+        sources = [
+            SystemOneSource(
+                raw_datasets[source.name],
+                strategy,
+                name=source.name,
+                split=source.split,
+                columns=source.columns,
+                shuffle=config.shuffle,
+                seed=config.seed,
+                seq_len=config.seq_len,
+            )
+            for source in config.source
+        ]
+        weights = [source.weight for source in config.source]
+        return SFTDataset(
+            sources,
+            weights=None if None in weights else weights,
+            max_epochs=max_epochs,
+            dp_rank=dp_rank,
+            dp_size=dp_size,
+        )
     if config.fake is not None:
         fake = FakeSource(
             tokenizer.vocab_size,
