@@ -215,6 +215,13 @@ def train(config: TrainerConfig):
     model_files = setup_model_files(config.model, tokenizer, processor)
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt, model_files, resume=config.resume)
 
+    # The remote may hold a later step than the disk, and a remote-only step downloads while the trainer starts up
+    if config.resume is not None and config.resume.dir is None:
+        if config.resume.step is None:
+            checkpoint_step = ckpt_manager.resolve_latest_step(checkpoint_step)
+        if checkpoint_step is not None:
+            ckpt_manager.prefetch(checkpoint_step)
+
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")
     t0 = time.perf_counter()
@@ -958,6 +965,7 @@ def train(config: TrainerConfig):
             controller.mark_saved(progress.step)
         if not paused:
             ckpt_manager.maybe_clean()
+        ckpt_manager.close()
 
     if gradient_manager is not None:
         gradient_manager.close()

@@ -645,7 +645,21 @@ class SignSGDConfig(BaseOptimizerConfig):
 OptimizerConfig: TypeAlias = Annotated[AdamWConfig | MuonConfig | SignSGDConfig, Field(discriminator="type")]
 
 
+class RemoteCheckpointConfig(BaseConfig):
+    dir: str
+    """Object store URL checkpoints are mirrored to, e.g. ``s3://bucket/run/checkpoints`` (credentials and endpoint from the ``AWS_*`` environment)."""
+
+    keep_last: int | None = Field(None, ge=1)
+    """Keep at most this many recent step checkpoints in the remote. If None, never clean old remote checkpoints based on recency."""
+
+    keep_interval: int | None = Field(None, ge=1)
+    """Keep remote checkpoints at every N steps permanently. If None, no interval-based keeping."""
+
+
 class CheckpointConfig(BaseCheckpointConfig):
+    remote: RemoteCheckpointConfig | None = None
+    """Mirror checkpoints to an object store. A sync process per node uploads each step once it is on disk, with ``.metadata`` last; ``keep_last``/``keep_interval`` apply to the disk and ``remote.keep_last``/``remote.keep_interval`` to the remote. Resume pulls a step that is not complete on disk while the trainer starts up."""
+
     skip_dataloader: bool = False
     """Skip loading the dataloader from checkpoint."""
 

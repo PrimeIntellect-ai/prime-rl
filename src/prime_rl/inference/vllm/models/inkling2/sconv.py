@@ -108,22 +108,27 @@ class Inkling2ShortConv(nn.Module):
         addend: torch.Tensor | None = None,
         residual: torch.Tensor | None = None,
         out: torch.Tensor | None = None,
+        owner: InklingConvState | None = None,
     ) -> torch.Tensor:
         """Static conv of `x`; with `addend`, returns `(residual + addend)
-        + conv(x)` accumulated in fp32 (written to `out` if given)."""
+        + conv(x)` accumulated in fp32 (written to `out` if given).
+
+        `owner` is the conv state to run on: a loop pass after the first has
+        its own (default: the layer's)."""
         assert not self.dynamic
-        m = conv_metadata(self.owner)
+        owner = owner or self.owner
+        m = conv_metadata(owner)
         if m is None:
             # No conv state (profile run): skip the conv, keep the residual sum.
             if addend is not None:
                 acc = addend.float() if residual is None else residual + addend.float()
                 x = (acc + x.to(addend.dtype).float()).to(addend.dtype)
             return x if out is None else out.copy_(x)
-        offset, width = self.owner.stream_ranges[self.stream]
+        offset, width = owner.stream_ranges[self.stream]
         return short_conv(
             x,
             self.conv_weight,
-            self.owner.kv_cache,
+            owner.kv_cache,
             positions,
             m.block_table,
             m.seq_idx,

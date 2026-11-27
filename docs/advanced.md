@@ -36,9 +36,27 @@ The trainer only runs `prime-rl`'s own model implementations, selected from the 
 | GLM-4 / GLM-4.5 / INTELLECT-3 | `THUDM/GLM-4-9B-0414`, `zai-org/GLM-4.5`, `PrimeIntellect/INTELLECT-3`, … | ✅ | ✅ |
 | GPT-OSS | `unsloth/gpt-oss-20b-BF16`, … | ✅ | ✅ |
 | DeepSeek V4 | `deepseek-ai/DeepSeek-V4-Flash-0731` | ✅ | ✅ |
+| Inkling 2 (text only) | `thinkingmachines/Inkling-2-Small`, `thinkingmachines/Inkling-2-Mini` | ✅ | ❌ |
 
 GPT-OSS uses FlashAttention 4 with learned attention sinks. Training requires SM90 or SM100/SM110 GPUs
 and a BF16 checkpoint such as `unsloth/gpt-oss-20b-BF16`; the original MXFP4 checkpoints are not supported.
+
+Inkling 2 releases store their routed experts in NVFP4 or MXFP8. Convert a release to BF16 once and point
+`model.name` and `inference.vllm.model` at the output:
+
+```bash
+uv run python tools/convert_inkling2_to_bf16.py <release_dir> [<output_dir>]
+```
+
+Training covers the text tower; the vision tower and the DSpark drafter are not loaded. Rollouts use the
+`inkling2` vLLM plugin that ships with `prime-rl`, which serves BF16 experts and takes weight updates from the
+trainer.
+
+Inkling 2 Mini (`inkling2_loop`) runs layers 6 to 17 three times with shared weights, so a token goes through
+48 layer visits and is routed 48 times: router replay carries one slot per layer visit. `debug.num_layers` must
+keep the whole loop (18 layers or more), and so must a truncated vLLM model
+(`inference.vllm.hf_overrides = { text_config = { num_hidden_layers = 18 } }`). See
+`examples/advanced/inkling2/` for RL configs.
 
 ### Low-precision training
 

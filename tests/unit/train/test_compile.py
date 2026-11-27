@@ -4,6 +4,7 @@ Each case builds a tiny seeded model with `setup_model` on its layout (activatio
 torch.compile per layer, then FSDP, CP or EP) and runs one forward and backward. A case passes when the loss and grad
 norm are finite, Dynamo counted no graph break, and Dynamo compiled exactly one graph per kind of decoder layer, so no
 kind of layer runs eagerly or compiles twice (as PR #4609 fixed for layers whose inputs differed in their view base).
+The layers of a loop core take two graphs: they run without a message in the first pass and with one after it.
 One `torchrun` launch runs every selected case, and each case reports as its own test. A case that crashes or hangs the
 launch fails, and a relaunch runs the cases it did not reach.
 
@@ -142,13 +143,13 @@ def isolated(run, *args) -> dict:
 
 def layer_kinds(
     model: torch.nn.Module,
-) -> set[tuple[str | None, tuple[tuple[str, str], ...], tuple[tuple[str, bool], ...]]]:
-    """The decoder layers' distinct triples of config layer type, named submodule classes and bool flags. Layers of
+) -> list[tuple[str | None, tuple[tuple[str, str], ...], tuple[tuple[str, bool], ...]]]:
+    """Every decoder layer's triple of config layer type, named submodule classes and bool flags. Layers of
     different kinds cannot share a compiled graph."""
     language_model = get_language_model(model)
     layers = [getattr(layer, "_checkpoint_wrapped_module", layer) for layer in language_model.layers]
     layer_types = getattr(language_model.config, "layer_types", None) or [None] * len(layers)
-    return {
+    return [
         (
             layer_type,
             tuple(sorted((name, type(module).__name__) for name, module in layer.named_modules())),
@@ -161,17 +162,27 @@ def layer_kinds(
             ),
         )
         for layer, layer_type in zip(layers, layer_types, strict=True)
-    }
+    ]
+
+
+def num_layer_graphs(model: torch.nn.Module) -> int:
+    """Graphs the decoder layers compile to: one per kind of layer, and a second one for the kinds in the core of a
+    looped model, whose layers take a message of the previous pass in every pass after the first."""
+    kinds = layer_kinds(model)
+    config = get_language_model(model).config
+    core_kinds = {kinds[layer] for layer in getattr(config, "loop_core_layers", ())}
+    return len(set(kinds)) + (len(core_kinds) if getattr(config, "loop_num_passes", 1) > 1 else 0)
 
 
 def run_step(config: ModelConfig, parallel_dims: ParallelDims, rows: list[dict], progress: dict) -> dict:
     """One forward and backward of this rank's row through the trainer's model, with its summed loss and grad norm.
-    `progress` holds the stage reached and the number of decoder layer kinds, also when the step raises."""
+    `progress` holds the stage reached and the number of graphs the decoder layers compile to, also when the step
+    raises."""
     progress["stage"] = "setup"
     model = setup_model(config, parallel_dims)
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config, parallel_dims)
-    progress["layer_kinds"] = len(layer_kinds(model))
+    progress["layer_graphs"] = num_layer_graphs(model)
     progress["stage"] = "step"
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if parallel_dims.cp_enabled else 0
     row = rows[parallel_dims.get_mesh("dp").get_local_rank()]
@@ -190,8 +201,8 @@ def failures(result: dict) -> list[str]:
         if metric in result and not math.isfinite(result[metric]):
             found.append(f"{metric} is {result[metric]}")
     num_graphs = sum(bool(frame["ops"]) for frame in result.get("frames", []))
-    if "error" not in result and num_graphs != result["layer_kinds"]:
-        found.append(f"{num_graphs} compiled graphs for {result['layer_kinds']} decoder layer kinds")
+    if "error" not in result and num_graphs != result["layer_graphs"]:
+        found.append(f"{num_graphs} compiled graphs, {result['layer_graphs']} expected from the decoder layer kinds")
     if result.get("graph_breaks"):
         found.append(f"graph breaks: {result['graph_breaks']}")
     return found
