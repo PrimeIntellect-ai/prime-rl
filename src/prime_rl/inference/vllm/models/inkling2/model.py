@@ -685,6 +685,14 @@ class Inkling2ForCausalLM(nn.Module):
             else:
                 loader(param, weight, shard_id)
                 loaded_shards.add((name, shard_id))
+        # When qkvr's rows per TP rank are not a multiple of 8, a padding shard (6) aligns them. No
+        # checkpoint tensor fills it, and vLLM rejects a stacked weight with an unfilled shard.
+        tp_size = get_tensor_model_parallel_world_size()
+        for module in self.modules():
+            if isinstance(module, Inkling2Attention) and len(module.split_sizes) > 6:
+                weight = module.qkvr.weight
+                padding = weight.new_zeros(module.split_sizes[6] * tp_size, weight.shape[1])
+                weight.weight_loader(weight, padding, 6)
         num_shards = Counter(new for new, _ in self._shards.values())
         for name, count in Counter(name for name, _ in loaded_shards).items():
             fused = next(f for f in num_shards if f in name)
