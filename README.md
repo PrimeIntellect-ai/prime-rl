@@ -192,6 +192,7 @@ The [`recipes`](recipes) directory holds the configs for frontier RL, one folder
 | `GLM-5.3` | [`glm-5.3`](recipes/glm-5.3/) |
 | `GLM-5.3-Flash` | [`glm-5.3-flash`](recipes/glm-5.3-flash/) |
 | `INTELLECT-3.1` | [`intellect-3.1`](recipes/intellect-3.1/) |
+| `Inkling-2-Mini` | [`inkling-2-mini`](recipes/inkling-2-mini/) |
 | `Inkling-2-Small` | [`inkling-2-small`](recipes/inkling-2-small/) |
 | `MiniMax-M2.5` | [`minimax-m2.5`](recipes/minimax-m2.5/) |
 | `Muse-Glimmer-30B` | [`muse-glimmer-30b`](recipes/muse-glimmer-30b/) |

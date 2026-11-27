@@ -55,7 +55,8 @@ trainer.
 Inkling 2 Mini (`inkling2_loop`) runs layers 6 to 17 three times with shared weights, so a token goes through
 48 layer visits and is routed 48 times: router replay carries one slot per layer visit. `debug.num_layers` must
 keep the whole loop (18 layers or more), and so must a truncated vLLM model
-(`inference.vllm.hf_overrides = { text_config = { num_hidden_layers = 18 } }`).
+(`inference.vllm.hf_overrides = { text_config = { num_hidden_layers = 18 } }`). See
+[`recipes/inkling-2-mini/`](../recipes/inkling-2-mini/) for an RL recipe.
 
 ### Low-precision training
 
