@@ -336,7 +336,7 @@ def test_call_context_is_the_history_it_extends():
 
 
 def test_train_admission_holds_permits_and_feeds_a_bottlenecked_trainer():
-    unbatched, rate = [0], [None]
+    unbatched, rate, shipped = [0], [None], [0]
     dispatcher = Dispatcher(
         train_envs=None,
         eval_envs=None,
@@ -353,6 +353,7 @@ def test_train_admission_holds_permits_and_feeds_a_bottlenecked_trainer():
         unconsumed_train_rollouts=lambda: unbatched[0],
         batch_size=lambda: 8,
         trainer_rate=lambda: rate[0],
+        shipped_train_rollouts=lambda: shipped[0],
     )
     dispatcher.current_inflight = 10
     dispatcher.inflight = {object(): SimpleNamespace(kind="train") for _ in range(10)}
@@ -373,6 +374,10 @@ def test_train_admission_holds_permits_and_feeds_a_bottlenecked_trainer():
     assert dispatcher.train_admission_open()
     unbatched[0] = 6
     assert not dispatcher.train_admission_open()
+    # Only a quarter of the finished rollouts ship (the rest fail or carry no signal): four times as many in flight
+    dispatcher.finished_train_rollouts, shipped[0] = 40, 10
+    assert dispatcher.trainer_target == pytest.approx(44.0)
+    assert dispatcher.train_admission_open()
     rate[0] = None
     assert dispatcher.train_admission_open()
 
