@@ -1,10 +1,10 @@
 # H200 overlay for rl.toml: 6 trainer nodes and 6 one-node inference replicas, FP8 on the routed
-# experts on both sides. Trainer fit on fake 16k samples (6 nodes, ep 8, full offload, Sign-SGD):
-# 41.7k tok/s (870 per GPU), 107.6 GiB peak allocated. RL not tested in this layout; the inference
-# settings come from {math-rl,swe-rl}.toml in this folder, which ran 6 trainer nodes and
-# 2 inference replicas.
+# experts on both sides. Trainer fit on fake 256k samples (real weights, 6 nodes, cp 8, ep 8, full
+# offload, Sign-SGD): 20.3k tok/s (424 per GPU), 107.6 GiB peak allocated; with --seq-len 131072,
+# 24.1k tok/s (503 per GPU) and 76.4 GiB. RL not tested in this layout; the inference settings come
+# from {math-rl,swe-rl}.toml in this folder, which ran 6 trainer nodes and 2 inference replicas.
 #
-#   uv run rl @ recipes/inkling-2-small/rl.toml @ recipes/inkling-2-small/gpu/h200.toml @ recipes/fake.toml --trainer.model.debug.force-balanced-routing --trainer.data.fake.batch-size 48
+#   uv run rl @ recipes/inkling-2-small/rl.toml @ recipes/inkling-2-small/gpu/h200.toml @ recipes/fake.toml --trainer.model.init.type pretrained --trainer.model.debug.force-balanced-routing --trainer.data.fake.batch-size 6
 
 [deployment]
 type = "multi_node"
@@ -17,6 +17,7 @@ num_infer_replicas = 6
 dist_timeout_seconds = 1800
 
 [trainer.model]
+cp = 8
 ep = 8
 offload = "full"
 
@@ -26,10 +27,11 @@ type = "deepgemm_fp8"
 
 # TP8: DEP8 needs ~100 GiB of KV per rank for one 32k request. The plugin supports only a bf16 KV
 # cache (~0.9 MB per token), so KV room is the limit: max_num_seqs and the step budget reserve memory
-# that comes out of the KV cache. Under a synthetic agentic load (one node), these settings decode
-# ~2.5k tok/s from 128 to 192 sessions (KV 201k tokens); swe-rl.toml's 32 seqs / 2048 tokens at 0.72
-# peaked at 1.4k, and 256 seqs / 8192 tokens collapsed above 128 sessions. 0.85 is untested with the
-# RL weight update; lower it if the first update runs out of memory.
+# that comes out of the KV cache. Under a synthetic agentic load (one node, 32k window), these settings
+# decode ~2.5k tok/s from 128 to 192 sessions (KV 201k tokens); swe-rl.toml's 32 seqs / 2048 tokens at
+# 0.72 peaked at 1.4k, and 256 seqs / 8192 tokens collapsed above 128 sessions. At rl.toml's 270k
+# window, vLLM reports a 1.44M-token KV cache (5.3 full-length requests). 0.85 is untested with the RL
+# weight update; lower it if the first update runs out of memory.
 [inference.vllm]
 tensor_parallel_size = 8
 enable_expert_parallel = true

@@ -81,8 +81,13 @@ FULL_SUITE_CASES = [
     Case("glm_moe_dsa-cp2_ep2", "glm_moe_dsa", cp=2, ep=2),
     Case("glm5_next-cp2_ep2", "glm5_next", cp=2, ep=2),
     # Inkling 2's compiled flex attention does not run under activation offloading
+    Case("inkling2-ep2", "inkling2", ep=2, overrides={"ac_offloading": None}),
+    Case("inkling2-cp2_ep2", "inkling2", cp=2, ep=2, overrides={"ac_offloading": None}),
+    Case("inkling2-cp2_ep2-compile", "inkling2", cp=2, ep=2, compile=True, overrides={"ac_offloading": None}),
     Case("inkling2_loop-ep2", "inkling2_loop", ep=2, overrides={"ac_offloading": None}),
     Case("inkling2_loop-ep2-compile", "inkling2_loop", ep=2, compile=True, overrides={"ac_offloading": None}),
+    Case("inkling2_loop-cp2_ep2", "inkling2_loop", cp=2, ep=2, overrides={"ac_offloading": None}),
+    Case("inkling2_loop-cp2_ep2-compile", "inkling2_loop", cp=2, ep=2, compile=True, overrides={"ac_offloading": None}),
 ]
 SUITES = {"tiny": CASES, "full": FULL_SUITE_CASES}
 TIMEOUTS = {"tiny": 5 * 60, "full": 20 * 60}

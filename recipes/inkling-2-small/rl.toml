@@ -1,27 +1,22 @@
 # Inkling 2 Small (594B-A17B MoE, 384 experts; sliding-window and global relative attention, short
-# convolutions) RL at 16k context. Model settings only: compose it with a compute overlay from `gpu/`
+# convolutions) RL at 256k context. Model settings only: compose it with a compute overlay from `gpu/`
 # and a data config from `recipes/data/`:
 #
 #   uv run rl @ recipes/inkling-2-small/rl.toml @ recipes/inkling-2-small/gpu/h200.toml @ recipes/data/swe.toml
-#   uv run rl @ recipes/inkling-2-small/rl.toml @ recipes/inkling-2-small/gpu/h200.toml @ recipes/data/math.toml --orchestrator.train.sampling.max-completion-tokens 8192
-#
-# The data overlays target 256k models. At 16k, set `env.agent.harness.compaction.summarize_at_tokens
-# = 12000` on the SWE source so the harness compacts before the trainer cap, and give math a completion
-# budget that fits the window, as the tested recipes do.
 #
 # RL not tested in this layout. The settings come from {math-rl,swe-rl}.toml in this folder,
 # which ran end to end at 8k and 16k (#4551).
 
-# The model takes 1M tokens, but the trainer has no context parallelism for Inkling 2, so each sample
-# must fit on one GPU. 16k is the longest tested (swe-rl.toml in this folder).
-seq_len = 16384
+seq_len = 262144
 
 [slurm]
 
 [model]
 # bf16 export of thinkingmachines/Inkling-2-Small-MXFP8. Without access to this repo, convert the
 # release locally and pass the folder as --model.name:
-#   uv run python tools/convert_inkling2_mxfp8_to_bf16.py <Inkling-2-Small-MXFP8 dir> <out dir>
+#   uv run python tools/convert_inkling2_to_bf16.py <Inkling-2-Small-MXFP8 dir> <out dir>
+# The trainer's first start converts the weights to its own format once, in one process (44 min on
+# our shared filesystem), and writes the 1.2 TB result next to them; later starts load it in ~2 min.
 name = "PrimeIntellect/Inkling-2-Small-bf16"
 
 [weight_broadcast]
@@ -53,7 +48,7 @@ tool_parser = "inkling2"
 
 [inference.vllm]
 # Server window above the trainer seq_len so the harness can compact before the cap.
-max_model_len = 32768
+max_model_len = 270336
 enable_prefix_caching = true
 # The plugin pads the short-convolution state to the attention page; 128-token pages raised
 # concurrency 1.7-6x (#4551).

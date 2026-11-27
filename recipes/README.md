@@ -37,7 +37,7 @@ checkpointing and activation offloading.
 | [Qwen3.6-35B-A3B](qwen3.6-35b-a3b/rl.toml) | 1 | | | | not tested in this layout |
 | [DeepSeek-V4-Flash](deepseek-v4-flash-0731/rl.toml) | 4 | | | | not tested in this layout; FP8 trainer and inference, also on B300 (MXFP8) |
 | [Nemotron 3.5 Super](nemotron-3.5-super/rl.toml) | 4 | | | | not tested in this layout |
-| [Inkling 2 Small](inkling-2-small/rl.toml) | 6 | 41.7k tok/s | 870 tok/s | 107.6 GiB allocated | fake 16k samples (no context parallelism for Inkling 2), FP8 routed experts, full offload, Sign-SGD; RL not tested in this layout |
+| [Inkling 2 Small](inkling-2-small/rl.toml) | 6 | 20.3k tok/s | 424 tok/s | 107.6 GiB allocated | real weights, FP8 routed experts, full offload, Sign-SGD, no activation offloading; RL not tested in this layout |
 
 "Reserved" includes PyTorch's allocator cache, so real use is lower; "allocated" is the peak of
 live tensors (`perf/peak_allocated_memory`). Both include memory outside the allocator (NCCL, CUDA
