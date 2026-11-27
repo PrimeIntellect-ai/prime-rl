@@ -27,7 +27,7 @@ in full only once it completes (its context grows call by call), so the controll
   worth its units and the next one grows by how clearly it paid; a rejected step returns to the level and shrinks,
   down to ``STEP_MIN``.
 - **Queue**: a queued share above ``QUEUE_TRIM`` trims the units queued beyond the target while the cap binds,
-  without cancelling. A queue still above ``QUEUE_CANCEL`` once a trim has drained cancels the excess.
+  without shedding. A queue still above ``QUEUE_SHED`` once a trim has drained sheds the excess.
 - **Trainer demand**: in RL the trainer consumes rollouts at its own pace, and rollouts finished beyond it only wait
   and go stale. A level whose train rollouts finished per second clear the trainer's capacity (``TrainerCapacity``:
   rollouts per busy second) by ``TRAINER_MARGIN`` is **fed**: no step up from it, steps down from it are sized by
@@ -35,11 +35,11 @@ in full only once it completes (its context grows call by call), so the controll
   waits ``TRAINER_STARVED`` of a step for its batch takes the cut back.
 - **Throughput drop**: two windows in a row ``THROUGHPUT_DROP`` below the best window's throughput with as many units
   in flight (a KV thrash, a collapsed frontend) trim the cap in proportion to the throughput lost, without
-  cancelling. A third, with the engines the bottleneck (their latency stretched by ``LATENCY_STRETCH``, or a queue
-  above ``QUEUE_CANCEL``), cancels the excess: past a cliff, completions drain too slowly.
+  shedding. A third, with the engines the bottleneck (their latency stretched by ``LATENCY_STRETCH``, or a queue
+  above ``QUEUE_SHED``), sheds the excess: past a cliff, completions drain too slowly.
 
 The queue serves the elasticity: while the last measurement showed growth still pays, the queue neither tapers growth
-nor trims (requests waiting on KV loads queue while extra units still buy throughput); only its cancelling tier
+nor trims (requests waiting on KV loads queue while extra units still buy throughput); only its shedding tier
 applies. While the engines are paused for a weight update the controller freezes, and it ignores the queue the pause
 leaves behind for a few polls.
 
@@ -113,8 +113,8 @@ QUEUE_TARGET = 0.1
 QUEUE_TRIM = 0.15
 """Queued share above which the cap is trimmed back to the target."""
 
-QUEUE_CANCEL = 0.5
-"""Queued share that, still standing once a trim has drained, cancels the excess."""
+QUEUE_SHED = 0.5
+"""Queued share that, still standing once a trim has drained, sheds the excess."""
 
 THROUGHPUT_DROP = 0.25
 """A window's throughput this far below the best window's, with as many units in flight, trims the cap."""
@@ -347,7 +347,7 @@ class ConcurrencyController(Reconfigurable):
 
         self.turnover = 0.0
         self.pending_turnover = 0.0
-        # Throughput is measured once the pool has turned over since this turnover (the start, or a cancel)
+        # Throughput is measured once the pool has turned over since this turnover (the start, or a shed)
         self.fresh_turnover = 0.0
         # Engines paused for a weight update, and the polls after resume whose queue is the pause's backlog
         self.paused = False
@@ -409,8 +409,8 @@ class ConcurrencyController(Reconfigurable):
         trainer: TrainerCapacity | None = None,
     ) -> None:
         """Attach the dispatcher's hooks (no-ops until then). The dispatcher is constructed with this controller's
-        initial cap, so no ``set_limit`` fires here. ``on_overload`` receives the units to cancel on an overload;
-        without it a trim only blocks admission. ``get_train_finished`` counts the train rollouts finished so far and
+        initial cap, so no ``set_limit`` fires here. ``on_overload`` receives the units to shed on an overload
+        (the dispatcher pauses them); without it a trim only blocks admission. ``get_train_finished`` counts the train rollouts finished so far and
         ``trainer`` measures what the trainer consumes: together they size the cap to the trainer."""
         self.set_limit = set_limit
         self.get_inflight = get_inflight
@@ -581,7 +581,7 @@ class ConcurrencyController(Reconfigurable):
 
     @property
     def steady(self) -> bool:
-        """The pool carries its steady load: it is mature, or turned over since the start or the last cancel. A
+        """The pool carries its steady load: it is mature, or turned over since the start or the last shed. A
         younger pool runs shorter contexts, so its throughput overstates what the same units sustain."""
         return self.turnover - self.fresh_turnover >= 1.0 or self.mature
 
@@ -782,7 +782,7 @@ class ConcurrencyController(Reconfigurable):
 
     def throughput_drop(self, inflight: int) -> bool:
         """Close the drop window every ``DWELL_SECONDS``. Two windows in a row whose throughput fell well below the
-        best window's with as many units in flight trim the cap; a third with the engines the bottleneck cancels.
+        best window's with as many units in flight trim the cap; a third with the engines the bottleneck sheds.
         Windows are timed only: past a cliff units finish too slowly for turnovers to come."""
         window = self.window
         if not window.timed:
@@ -804,16 +804,16 @@ class ConcurrencyController(Reconfigurable):
         if self.drops < 2:
             return False
         stretched = best.latency > 0 and window.latency > LATENCY_STRETCH * best.latency
-        cancel = self.drops >= 3 and (stretched or self.queued_share > QUEUE_CANCEL)
+        shed = self.drops >= 3 and (stretched or self.queued_share > QUEUE_SHED)
         self.trim(
             inflight * max(DROP_TRIM_MIN, window.throughput / best.throughput),
             inflight,
-            cancel=cancel,
+            shed=shed,
             reason=f"throughput drop ({window.throughput:.0f} < {best.throughput:.0f} tokens/s, "
             f"latency {window.latency:.1f}s vs {best.latency:.1f}s)",
         )
         self.ceiling = self.cap
-        if cancel:
+        if shed:
             # A fresh pool: measure the best window again once it has turned over
             self.best = None
             self.drops = 0
@@ -823,37 +823,37 @@ class ConcurrencyController(Reconfigurable):
     def queue_trim(self, inflight: int) -> bool:
         """Trim the units queued beyond the target once the pool has drained from the last trim and turned over,
         unless growth was last measured to pay or the cap does not bind (admission is held back elsewhere, and a
-        trim from the smaller pool would undercut the cap); cancel them when a drained trim did not clear the queue."""
+        trim from the smaller pool would undercut the cap); shed them when a drained trim did not clear the queue."""
         if self.draining or self.trim_wait > 0:
             return False
         share = self.queued_share
         if share <= QUEUE_TRIM:
             self.queue_trimmed = False
             return False
-        cancel = self.queue_trimmed and share > QUEUE_CANCEL
+        shed = self.queue_trimmed and share > QUEUE_SHED
         # Past a cliff units finish too slowly for a turnover to come: an overloaded queue does not wait for it
         binding = inflight >= BINDING_FRACTION * self.max_inflight
-        if not cancel and (self.paying or not binding or self.turnover - self.trim_turnover < 1.0):
+        if not shed and (self.paying or not binding or self.turnover - self.trim_turnover < 1.0):
             return False
         self.trim(
             self.projected(inflight * (1.0 - share + QUEUE_TARGET)),
             inflight,
-            cancel=cancel,
-            reason=f"{'queue overload' if cancel else 'queue'} {share:.2f}",
-            brake=not cancel,
+            shed=shed,
+            reason=f"{'queue overload' if shed else 'queue'} {share:.2f}",
+            brake=not shed,
         )
         self.queue_trimmed = True
         return True
 
-    def trim(self, target: float, inflight: int, *, reason: str, cancel: bool, brake: bool = False) -> None:
-        """Lower the cap to ``target`` (clamped, never raised) and, with ``cancel``, shed the in-flight excess;
+    def trim(self, target: float, inflight: int, *, reason: str, shed: bool, brake: bool = False) -> None:
+        """Lower the cap to ``target`` (clamped, never raised) and, with ``shed``, shed the in-flight excess;
         without it, admission stays blocked until the pool drains below the new cap on its own. The trim was the
         step down: the steps measure the trimmed level next and step up with the smallest step. A ``brake`` trim
         during the fast climb leaves it climbing."""
         target = min(int(self.clamp(target)), self.max_inflight)
         self.cap = float(target)
         self.apply_limit(target, reason=reason)
-        if cancel and self.on_overload is not None and inflight > target:
+        if shed and self.on_overload is not None and inflight > target:
             self.on_overload(inflight - target)
         self.draining = True
         self.fed_cut = False  # the trim, not the trainer, set this cap

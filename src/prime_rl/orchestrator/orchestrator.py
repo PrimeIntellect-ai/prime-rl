@@ -432,7 +432,7 @@ class Orchestrator:
         self.concurrency.bind(
             set_limit=self.dispatcher.set_limit,
             get_inflight=lambda: self.dispatcher.current_inflight,
-            on_overload=self.dispatcher.cancel_inflight,
+            on_overload=self.dispatcher.pause_inflight,
             get_train_finished=lambda: self.dispatcher.finished_train_rollouts,
             trainer=self.trainer_capacity,
         )

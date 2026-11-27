@@ -35,13 +35,14 @@ import zmq.asyncio
 from verifiers.v1.utils.loaders import resolve_env_config
 
 from prime_rl.configs.env_worker_pool import ElasticPoolConfig, PoolConfig, StaticPoolConfig
-from prime_rl.env.types import CancelResponse, HealthResponse
+from prime_rl.env.types import CancelResponse, HealthResponse, PauseResponse
 from prime_rl.env.worker import LATE_CANCEL_SECONDS, EnvWorker
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.process import set_proc_title
 
 _HEALTH = msgpack.packb(HealthResponse().model_dump(mode="json"), use_bin_type=True)
 _CANCEL_MISS = msgpack.packb(CancelResponse(cancelled=False).model_dump(mode="json"), use_bin_type=True)
+_PAUSE_MISS = msgpack.packb(PauseResponse(found=False).model_dump(mode="json"), use_bin_type=True)
 
 BROADCAST = (b"save", b"release")
 """Requests every worker answers for its own rollouts (`merge_replies`)."""
@@ -216,10 +217,10 @@ class EnvWorkerPool:
                         client_id, request_id, method, payload = frames
                         if method == b"health":
                             await self.frontend.send_multipart([client_id, request_id, b"reply", _HEALTH])
-                        elif method == b"cancel":
-                            # Route the cancel to the worker holding the target run,
-                            # or to the one that replied to it within
-                            # `LATE_CANCEL_SECONDS` (it may hold the run's kept
+                        elif method in (b"cancel", b"pause"):
+                            # Route the cancel or pause to the worker holding the
+                            # target run; a cancel also to the one that replied to it
+                            # within `LATE_CANCEL_SECONDS` (it may hold the run's kept
                             # arrays); any other target (or an unparseable payload
                             # — one bad frame must not tear down the broker) is
                             # answered inline
@@ -232,12 +233,17 @@ class EnvWorkerPool:
                             late = replied.get(target)
                             if target_entry is not None:
                                 worker = target_entry["worker"]
-                            elif late is not None and time.monotonic() - late[0] < LATE_CANCEL_SECONDS:
+                            elif (
+                                method == b"cancel"
+                                and late is not None
+                                and time.monotonic() - late[0] < LATE_CANCEL_SECONDS
+                            ):
                                 worker = late[1]
                             else:
                                 worker = None
                             if worker is None:
-                                await self.frontend.send_multipart([client_id, request_id, b"reply", _CANCEL_MISS])
+                                miss = _CANCEL_MISS if method == b"cancel" else _PAUSE_MISS
+                                await self.frontend.send_multipart([client_id, request_id, b"reply", miss])
                             else:
                                 worker["active"] += 1
                                 pending[request_id] = {
