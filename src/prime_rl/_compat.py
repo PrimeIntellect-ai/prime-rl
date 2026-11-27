@@ -76,3 +76,32 @@ import triton.knobs
 
 if "TRITON_PTXAS_PATH" not in os.environ:
     os.environ["TRITON_PTXAS_PATH"] = triton.knobs.nvidia.ptxas_blackwell.path
+
+# ---------------------------------------------------------------------------
+# Inductor sym_size lowering inside flex attention subgraphs
+#
+# The backward of a flex_attention score_mod that reads a captured tensor with a gradient (Inkling 2's
+# relative bias) scatters into zeros of that tensor's shape. Under dynamic shapes the shape can be an
+# expression of the graph's symbols, such as a context-parallel rank's whole row (cp times its shard
+# length), and the score_mod's backward subgraph then reads it with aten.sym_size. Inductor lowers
+# sym_size from the meta of V.graph.current_node, which inside the subgraph is the flex attention node,
+# and int() of its tuple value raises.
+#
+# Fix: inside a flex attention subgraph, read the size from the lowered tensor.
+# Remove once torch's sym_size lowering handles pointwise subgraphs.
+# ---------------------------------------------------------------------------
+import torch
+from torch._inductor import lowering as _inductor_lowering
+from torch._inductor.subgraph_lowering import PointwiseSubgraphLowering
+from torch._inductor.virtualized import V
+
+_sym_size_lowering = _inductor_lowering.lowerings[torch.ops.aten.sym_size.int]
+
+
+def _sym_size_in_subgraphs(tensor, dim):
+    if isinstance(V.graph, PointwiseSubgraphLowering):
+        return tensor.get_size()[dim]
+    return _sym_size_lowering(tensor, dim)
+
+
+_inductor_lowering.lowerings[torch.ops.aten.sym_size.int] = _sym_size_in_subgraphs
