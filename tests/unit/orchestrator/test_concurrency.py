@@ -500,3 +500,74 @@ def test_overload_pauses_the_youngest_groups_and_resumes_them_first():
         assert dispatcher.current_inflight == 2
 
     asyncio.run(run())
+
+
+def test_a_pause_the_worker_missed_gives_the_permit_back_and_a_resume_is_repeated():
+    sent: list[tuple[str, bool]] = []
+    # A run still on the wire (missed), a pause whose answer was lost, a resume that fails once
+    answers = {("a0", True): [False], ("a1", True): [ConnectionError("lost")], ("a1", False): [True]}
+    answers[("a2", True)] = [True]
+    answers[("a2", False)] = [ConnectionError("down"), True]
+
+    class Env:
+        async def pause(self, request_id: str, paused: bool) -> bool:
+            sent.append((request_id, paused))
+            answer = answers[(request_id, paused)].pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+    class Envs:
+        def get(self, name: str) -> Env:
+            return Env()
+
+        def __iter__(self):
+            return iter(())
+
+    async def run() -> None:
+        dispatcher = Dispatcher(
+            train_envs=Envs(),
+            eval_envs=None,
+            train_source=None,
+            eval_source=None,
+            policy_clients=None,
+            policy=Policy(version=0, model_name="policy"),
+            progress=None,
+            initial_max_inflight=3,
+            max_inflight_ceiling=None,
+            dispatch_per_minute=None,
+            run_id="run",
+            run_name=None,
+        )
+        group = uuid.uuid4()
+        tasks = {}
+        for i in range(3):
+            meta = InflightEpisode(
+                kind="train",
+                env_name="env",
+                group_id=group,
+                task=None,
+                policy_version=0,
+                step=0,
+                started_at=float(i),
+                dispatch_id=f"a{i}",
+            )
+            tasks[meta.dispatch_id] = asyncio.get_running_loop().create_future()
+            dispatcher.inflight[tasks[meta.dispatch_id]] = meta
+        dispatcher.current_inflight = 3
+
+        dispatcher.pause_inflight(3)
+        assert dispatcher.current_inflight == 0
+        while dispatcher.pausing:
+            await asyncio.gather(*dispatcher.pausing.values())
+        # a0 and a1 run on: a0 was never paused, and a1's pause was undone by a resume
+        assert dispatcher.current_inflight == 2 and list(dispatcher.paused) == [tasks["a2"]]
+        assert ("a1", False) in sent
+
+        dispatcher.set_limit(3)
+        dispatcher.resume_paused()
+        while dispatcher.pausing:
+            await asyncio.gather(*dispatcher.pausing.values())
+        assert sent.count(("a2", False)) == 2 and dispatcher.current_inflight == 3
+
+    asyncio.run(run())

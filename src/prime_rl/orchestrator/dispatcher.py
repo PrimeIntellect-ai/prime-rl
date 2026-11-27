@@ -361,17 +361,29 @@ class Dispatcher:
         resumed = 0
         while self.paused and self.available_permits > 0 and self.admission_budget() > 0:
             task, paused_at = next(iter(self.paused.items()))
-            del self.paused[task]
-            self.current_inflight += 1
+            self.unpause(task)
             self.admissions_in_window += 1
             self.send_pause(task, self.inflight[task], paused=False)
             resumed += 1
         if resumed and not self.paused:
             get_logger().info(f"Resumed every paused episode, the last one after {time.monotonic() - paused_at:.0f}s")
 
+    def unpause(self, task: asyncio.Task) -> None:
+        """Count a paused episode as running again: it takes a permit back."""
+        paused_at = self.paused.pop(task, None)
+        if paused_at is None:
+            return
+        self.current_inflight += 1
+        meta = self.inflight.get(task)
+        if meta is not None:
+            meta.paused_s += time.monotonic() - paused_at
+
     def send_pause(self, task: asyncio.Task, meta: InflightEpisode, *, paused: bool) -> None:
         """Tell the episode's env worker to pause or resume it, after any earlier such
-        message for the episode."""
+        message for the episode. A pause the worker did not apply (its run was not there
+        yet) leaves the episode running, so it takes its permit back; one whose answer
+        was lost is undone with a resume. A resume is repeated until the worker answers:
+        an episode left paused on its worker would hold its group open for good."""
         assert self.train_envs is not None
         env = self.train_envs.get(meta.env_name)
         previous = self.pausing.get(task)
@@ -379,11 +391,25 @@ class Dispatcher:
         async def send() -> None:
             if previous is not None:
                 await asyncio.wait({previous})
-            try:
-                await env.pause(meta.dispatch_id, paused)
-            except Exception as e:  # noqa: BLE001 - a lost message must not crash the dispatcher
-                verb = "pause" if paused else "resume"
-                get_logger().warning(f"Could not {verb} episode {meta.dispatch_id} ({meta.env_name}) - {e!r}")
+            verb = "pause" if paused else "resume"
+            delay = 1.0
+            while True:
+                try:
+                    applied = await env.pause(meta.dispatch_id, paused)
+                    break
+                except Exception as e:  # noqa: BLE001 - a lost message must not crash the dispatcher
+                    get_logger().warning(f"Could not {verb} episode {meta.dispatch_id} ({meta.env_name}) - {e!r}")
+                    if paused:
+                        applied = None
+                        break
+                    if task.done():
+                        return
+                    await asyncio.sleep(delay)
+                    delay = min(2 * delay, 15.0)
+            if paused and not applied:
+                self.unpause(task)
+                if applied is None and not task.done():
+                    self.send_pause(task, meta, paused=False)
 
         def forget(done: asyncio.Task) -> None:
             if self.pausing.get(task) is done:
@@ -843,11 +869,14 @@ class Dispatcher:
         meta = self.inflight.pop(task, None)
         if meta is None:
             return  # already handled by drop_group / cancel_inflight_episodes
+        now = time.monotonic()
+        # The trainer target sizes the pool by how long an episode generates, which a pause is not
+        paused_s = meta.paused_s + (now - self.paused[task] if task in self.paused else 0.0)
         self.retire(meta)
         self.leave(task, refund_admission=True)
         group = self.groups.get(meta.group_id)
         if meta.kind == "train" and not task.cancelled():
-            seconds = time.monotonic() - meta.started_at
+            seconds = now - meta.started_at - paused_s
             self.generation_s = (
                 seconds
                 if self.generation_s is None

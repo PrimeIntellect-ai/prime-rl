@@ -121,6 +121,8 @@ class InflightEpisode:
     told: which phase each is in and how many turns it has committed."""
     calls: int = 0
     """Model calls the episode's traces streamed so far."""
+    paused_s: float = 0.0
+    """Seconds the episode spent paused before its last resume."""
 
 
 @dataclass
