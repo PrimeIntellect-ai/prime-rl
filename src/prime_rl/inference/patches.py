@@ -791,7 +791,8 @@ def monkey_patch_routed_experts_with_pd_connectors():
     computes a remotely prefilled prompt, so it has no rows for it. This carries our upstream fix
     (AuxOutput patch 02): a request on a decode instance emits rows only from its first forward on
     this instance, and the worker does not buffer the
-    partially known first block. The router takes the prompt rows from the prefill instance.
+    partially known first block. The prompt rows come from the prefill instance through
+    ``kv_transfer_params`` (``hand_off_pd_routed_experts`` in ``serving_tokens.py``).
 
     Since vllm-project/vllm#62591 the scheduler also caps local and external prefix hits at the blocks whose
     rows this instance retains (``max_cache_hit`` / ``cap_external_hit``). A decode instance never has rows for
