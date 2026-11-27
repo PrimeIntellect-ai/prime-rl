@@ -28,8 +28,9 @@ staging_buffers_count = 2          # overlap the next read with the current inst
 - Trainer rank 0 and the orchestrator (in SFT, the online-eval process) must share the broadcast directory, which holds only rendezvous markers, not weights.
 - MX transfers floating-point tensors only. Integer tensors are lookup tables that training never changes, such as DeepSeek-V4's hash-routing table `tid2eid`: inference keeps the values it loaded from the checkpoint.
 - P/D deployments update like the other transports: prefill and decode GPUs form one transfer group. Each update pauses the prefill engines first, since a prefill engine's pause waits until decode has pulled the KV it holds, then the decode engines, installs the version on all of them and resumes them.
+- With Dynamo (`[orchestrator.model.client.dynamo]`), the orchestrator discovers the Dynamo workers before every update instead of using a fixed endpoint list. Workers that joined since the last update are initialized and receive the update; workers that left are dropped. A worker that joins between updates serves its launch weights until the next update. Each worker must load the ModelExpress extension, `--worker-extension-cls prime_rl.inference.vllm.worker.modelexpress.ModelExpressWeightUpdateWorker`.
 - With speculative decoding, MX updates the target model and the draft keeps its own weights; a drafter that shares the target's embedding or LM head reads the updated ones. A draft swap (`[orchestrator.speculative_decoding] draft`, changed live) loads from disk at the next update, after the target is installed and before inference resumes.
 
 ## Limitations
 
-LoRA and Dynamo discovery are rejected at config validation. Pipeline parallelism is untested.
+LoRA is rejected at config validation. Pipeline parallelism is untested.

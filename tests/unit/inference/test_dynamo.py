@@ -1,14 +1,14 @@
 import asyncio
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from prime_rl.configs.shared import PolicyClientConfig
 from prime_rl.inference.dynamo import (
     DynamoAdminPlane,
     DynamoDiscoveryPending,
-    parse_dynamo_worker,
-    topology_fingerprint,
+    parse_dynamo_workers,
 )
 from prime_rl.orchestrator.clients import AdminPlane, setup_admin_plane
 
@@ -24,11 +24,12 @@ def worker(
     *,
     admin_base_url: str | None = None,
     model: str = MODEL,
+    world_size: int = 1,
 ) -> dict:
     return {
         "instance_id": instance_id,
         "admin_base_url": admin_base_url or f"http://worker:{8200 + instance_id}",
-        "world_size": 1,
+        "world_size": world_size,
         "model": model,
     }
 
@@ -38,24 +39,28 @@ def snapshot(*workers: dict) -> dict:
 
 
 def parsed(*workers: dict):
-    return parse_dynamo_worker(snapshot(*workers), MODEL, expected_admin_host="worker")
+    return parse_dynamo_workers(snapshot(*workers), MODEL, expected_admin_host="worker")
 
 
-def admin_for(*workers: dict) -> DynamoAdminPlane:
+def unbound_admin() -> DynamoAdminPlane:
     config = PolicyClientConfig(
         base_url="http://worker:8000/v1",
         skip_model_check=True,
         wait_for_ready_timeout=2,
         dynamo=dynamo_config(),
     )
-    admin = DynamoAdminPlane(config, MODEL, poll_interval=0)
-    admin._fingerprint = topology_fingerprint(parsed(*workers))
+    return DynamoAdminPlane(config, MODEL, poll_interval=0)
+
+
+def admin_for(*workers: dict) -> DynamoAdminPlane:
+    admin = unbound_admin()
+    admin._workers = parsed(*workers)
     admin.clients = [AsyncMock() for _ in workers]
     return admin
 
 
-def test_parse_dynamo_worker_filters_model_and_checks_admin_host():
-    discovered_worker = parse_dynamo_worker(
+def test_parse_dynamo_workers_filters_model_and_checks_admin_host():
+    [discovered_worker] = parse_dynamo_workers(
         snapshot(
             worker(3),
             worker(1, model="other"),
@@ -67,29 +72,34 @@ def test_parse_dynamo_worker_filters_model_and_checks_admin_host():
     assert discovered_worker.admin_base_url == "http://worker:8203"
 
     with pytest.raises(ValueError, match="does not match discovery host"):
-        parse_dynamo_worker(
+        parse_dynamo_workers(
             snapshot(worker(1, admin_base_url="http://other-worker:8201")),
             MODEL,
             expected_admin_host="worker",
         )
 
 
-def test_parse_dynamo_worker_rejects_multiple_matching_workers():
-    with pytest.raises(ValueError, match="exactly one inference worker"):
-        parse_dynamo_worker(snapshot(worker(1), worker(2)), MODEL, expected_admin_host="worker")
+def test_parse_dynamo_workers_orders_workers_by_instance_id():
+    workers = parse_dynamo_workers(snapshot(worker(2), worker(1, world_size=4)), MODEL, expected_admin_host="worker")
+
+    assert [(discovered.instance_id, discovered.world_size) for discovered in workers] == [(1, 4), (2, 1)]
+    with pytest.raises(ValueError, match="duplicate worker instance ids"):
+        parse_dynamo_workers(
+            snapshot(worker(1), worker(1, admin_base_url="http://worker:8300")), MODEL, expected_admin_host="worker"
+        )
 
 
 @pytest.mark.parametrize(
     ("worker_update", "error", "match"),
     [
         ({"admin_base_url": None}, DynamoDiscoveryPending, "admin_base_url"),
-        ({"world_size": 2}, ValueError, "exactly one inference rank"),
+        ({"world_size": 0}, ValueError, "positive world_size"),
     ],
 )
-def test_parse_dynamo_worker_validates_required_singleton_metadata(worker_update, error, match):
+def test_parse_dynamo_workers_validates_required_metadata(worker_update, error, match):
     payload = {**worker(1), **worker_update}
     with pytest.raises(error, match=match):
-        parse_dynamo_worker(snapshot(payload), MODEL, expected_admin_host="worker")
+        parse_dynamo_workers(snapshot(payload), MODEL, expected_admin_host="worker")
 
 
 def test_dynamo_admin_plane_factory_pins_two_identical_snapshots():
@@ -132,7 +142,7 @@ def test_dynamo_worker_client_propagates_admin_headers(monkeypatch, api_key, aut
         dynamo=dynamo_config(),
     )
     admin = DynamoAdminPlane(config, MODEL)
-    client = admin._make_worker_client(parsed(worker(1)))
+    client = admin._make_worker_client(parsed(worker(1))[0])
 
     assert client.headers["X-Static"] == "static"
     assert client.headers["X-Environment"] == "from-env"
@@ -262,4 +272,120 @@ def test_dynamo_nccl_update_failure_stays_paused_and_terminal(tmp_path):
 
     assert [call.args[1] for call in post.await_args_list] == ["/pause"]
     assert admin._nccl_initialization_state == "terminal"
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_nccl_rejects_multiple_workers():
+    admin = admin_for(worker(1), worker(2))
+
+    with (
+        patch.object(admin, "_collective_rpc", new=AsyncMock()) as collective_rpc,
+        pytest.raises(ValueError, match="exactly one inference worker"),
+    ):
+        asyncio.run(admin.initialize_nccl(host="trainer", port=29501, timeout=10, inference_world_size=1))
+
+    collective_rpc.assert_not_awaited()
+    assert admin._nccl_initialization_state == "uninitialized"
+    asyncio.run(admin.aclose())
+
+
+class FakeEngine:
+    """Admin client of one Dynamo worker; records its admin calls into a shared log."""
+
+    def __init__(self, url: str, log: list, world_size: int = 1, fail_install: bool = False):
+        self.base_url = httpx.URL(url)
+        self.log = log
+        self.world_size = world_size
+        self.fail_install = fail_install
+        self.closed = False
+
+    async def post(self, path, *, json=None, **kwargs):
+        call = path if json is None else json["method"]
+        self.log.append((self.base_url.port, call, json["args"] if json else None))
+        request = httpx.Request("POST", self.base_url.join(path))
+        if call == "update_weights_from_modelexpress" and self.fail_install:
+            return httpx.Response(500, request=request)
+        return httpx.Response(200, request=request, json={"results": [None] * self.world_size})
+
+    async def aclose(self):
+        self.closed = True
+
+
+def modelexpress_admin(log: list, *workers: dict, failing: set[int] = frozenset()):
+    """A Dynamo admin plane whose discovery reports ``workers`` until the test changes ``discovered``."""
+    admin = unbound_admin()
+    discovered = list(workers)
+    engines = {
+        8200 + raw["instance_id"]: FakeEngine(
+            f"http://worker:{8200 + raw['instance_id']}", log, raw["world_size"], raw["instance_id"] in failing
+        )
+        for raw in workers
+    }
+
+    def make_worker_client(dynamo_worker):
+        port = httpx.URL(dynamo_worker.admin_base_url).port
+        return engines.setdefault(port, FakeEngine(dynamo_worker.admin_base_url, log, dynamo_worker.world_size))
+
+    admin._discover = AsyncMock(side_effect=lambda: parsed(*discovered))
+    admin._make_worker_client = make_worker_client
+    return admin, discovered, engines
+
+
+def initialize(admin):
+    asyncio.run(
+        admin.initialize_modelexpress(
+            "trainer", 8001, 60, inference_world_size=1, staging_buffer_bytes=None, staging_buffers_count=1
+        )
+    )
+
+
+def test_dynamo_modelexpress_initializes_every_worker_once_and_updates_all_of_them():
+    log = []
+    admin, _, _ = modelexpress_admin(log, worker(2), worker(1, world_size=2))
+
+    with patch("prime_rl.inference.dynamo.check_health", new=AsyncMock()):
+        initialize(admin)
+        init_args = {port: args for port, call, args in log if call == "init_broadcaster"}
+        log.clear()
+        asyncio.run(admin.update_modelexpress_weights(version_uid="v1", step=1))
+
+    session_id = admin._modelexpress.session_id
+    assert init_args == {
+        8201: ["trainer", 8001, 0, 2, 60, f"{session_id}-1", None, 1],
+        8202: ["trainer", 8001, 0, 1, 60, f"{session_id}-2", None, 1],
+    }
+    # Every worker pauses before any installs, and resumes only after all installed.
+    assert [call for _, call, _ in log] == ["/pause"] * 2 + ["update_weights_from_modelexpress"] * 2 + ["/resume"] * 2
+    assert {(port, tuple(args)) for port, call, args in log if args} == {(8201, ("v1",)), (8202, ("v1",))}
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_modelexpress_updates_follow_workers_that_join_and_leave():
+    log = []
+    admin, discovered, engines = modelexpress_admin(log, worker(1), worker(2))
+
+    with patch("prime_rl.inference.dynamo.check_health", new=AsyncMock()):
+        initialize(admin)
+        discovered[:] = [worker(2), worker(3)]
+        log.clear()
+        asyncio.run(admin.update_modelexpress_weights(version_uid="v1", step=1))
+
+    assert [port for port, call, _ in log if call == "init_broadcaster"] == [8203]
+    assert {port for port, call, _ in log if call == "update_weights_from_modelexpress"} == {8202, 8203}
+    assert all(port != 8201 for port, _, _ in log)
+    assert engines[8201].closed
+    assert [engine.base_url.port for engine in admin.clients] == [8202, 8203]
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_modelexpress_install_failure_keeps_workers_paused():
+    log = []
+    admin, _, _ = modelexpress_admin(log, worker(1), worker(2), failing={2})
+
+    with patch("prime_rl.inference.dynamo.check_health", new=AsyncMock()):
+        initialize(admin)
+        with pytest.raises(httpx.HTTPStatusError):
+            asyncio.run(admin.update_modelexpress_weights(version_uid="v1", step=1))
+
+    assert "/resume" not in [call for _, call, _ in log]
     asyncio.run(admin.aclose())
