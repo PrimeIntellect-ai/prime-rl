@@ -68,7 +68,12 @@ class WeightSender(ABC):
     offered (``.sender_ready``), acknowledged by the consumer
     (``.receiver_ready``), transferred (``.started``), and committed
     (``.finished``). The trainer therefore runs in lockstep with its consumer
-    on every transport — a broadcast nobody receives blocks and then fails."""
+    on every transport — a broadcast nobody receives blocks and then fails —
+    unless the engines pull (``acknowledged``)."""
+
+    acknowledged = True
+    """Whether a consumer acknowledges each offered version before the transfer. Engines that pull the versions
+    themselves (``weight_broadcast.pull``) acknowledge none: the trainer publishes and goes on."""
 
     def __init__(self, output_dir: Path, timeout: int):
         self.logger = get_logger()
@@ -87,7 +92,8 @@ class WeightSender(ABC):
             shutil.rmtree(step_dir, ignore_errors=True)
             step_dir.mkdir(parents=True)
             (step_dir / SENDER_READY_MARKER).touch()
-            self._wait_for_receiver_ready(step_dir)
+            if self.acknowledged:
+                self._wait_for_receiver_ready(step_dir)
             (step_dir / STARTED_MARKER).touch()
         wait_for_master(f"weight_broadcast/{step}", self.timeout)
         self._broadcast(model, step, step_dir)
@@ -124,6 +130,9 @@ class WeightSender(ABC):
         """Move v{step}'s weights to the consumer. All ranks enter only after
         the master finished the handshake."""
 
+    def close(self) -> None:
+        """Called once training ends, after the last broadcast."""
+
     def _clean(self, step: int) -> None:
         """Remove old broadcast dirs, keeping ``step`` and ``step - 1`` (a
         lagging consumer may still be reading it). Broadcasts are purely
@@ -155,6 +164,10 @@ class WeightReceiver(ABC):
         self.config = config
         self.admin_plane = admin_plane
         self.model_name = model_name
+
+    engines_pull = False
+    """Whether the engines move themselves onto each version (``weight_broadcast.pull``): the consumer then only
+    waits until they serve it, and pauses nothing."""
 
     async def initialize(self) -> None:
         """One-time transport bootstrap (rendezvous groups, sessions)."""

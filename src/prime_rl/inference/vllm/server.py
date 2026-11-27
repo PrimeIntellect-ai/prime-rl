@@ -50,6 +50,9 @@ def models(request: Request) -> OpenAIServingModels:
 
 API_SERVER_GC_THRESHOLDS = (50_000, 20, 100)
 
+API_SERVER_INDEX = 0
+"""This API server process's index among the server's API server processes."""
+
 WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
     "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
@@ -86,6 +89,57 @@ async def update_weights_from_modelexpress(request: Request):
     client = engine_client(request)
     await client.collective_rpc("update_weights_from_modelexpress", args=(data["version_uid"],))
     await client.update_weight_version(str(data["weight_version"]))
+    return {"status": "ok"}
+
+
+@router.get("/weight_version")
+async def weight_version(request: Request):
+    """The policy version the engine serves: the label of the tokens it samples, None before the first update or
+    while its data-parallel engines disagree (an update between them)."""
+    try:
+        label = await engine_client(request).get_weight_version()
+    except RuntimeError:
+        return {"version": None}
+    return {"version": int(label) if label.isdigit() else None}
+
+
+# A pulling DP group's first rank moves every rank of the group through these routes
+# (``prime_rl.inference.vllm.weight_pull``); a server that pulls for itself calls the same code in process.
+
+
+@admin_router.post("/modelexpress/can_stage_live")
+async def modelexpress_can_stage_live(request: Request):
+    from prime_rl.inference.vllm.weight_pull import LocalEngine
+
+    data = await request.json()
+    return {"live": await LocalEngine(engine_client(request)).can_stage_live(data["mesh"])}
+
+
+@admin_router.post("/modelexpress/stage")
+async def modelexpress_stage(request: Request):
+    """Stage a version on every worker, while serving if ``live``; returns once every worker staged it."""
+    from prime_rl.inference.vllm.weight_pull import LocalEngine
+
+    data = await request.json()
+    await LocalEngine(engine_client(request)).stage(data["version_uid"], live=data["live"])
+    return {"status": "ok"}
+
+
+@admin_router.post("/modelexpress/discard")
+async def modelexpress_discard(request: Request):
+    from prime_rl.inference.vllm.weight_pull import LocalEngine
+
+    await LocalEngine(engine_client(request)).discard()
+    return {"status": "ok"}
+
+
+@admin_router.post("/modelexpress/apply")
+async def modelexpress_apply(request: Request):
+    """Install the staged version on every worker of the paused engines and label the tokens sampled from now on."""
+    from prime_rl.inference.vllm.weight_pull import LocalEngine
+
+    data = await request.json()
+    await LocalEngine(engine_client(request)).apply(data["version_uid"], data["mesh"], data["step"])
     return {"status": "ok"}
 
 
@@ -195,12 +249,33 @@ async def custom_init_app_state(
         prime_serving.__dict__.update(upstream.__dict__)
         state.serving_tokens = prime_serving
 
+    # Engines that pull their weights: one API server process moves the shared engines, or, on the first rank of a
+    # multi-node DP group, every rank of the group.
+    if args.weight_pull is not None and API_SERVER_INDEX == 0:
+        from prime_rl.inference.vllm.weight_pull import EngineGroup, LocalEngine, PullConfig, WeightPuller
+
+        group = args.weight_pull_group
+        engines = LocalEngine(engine_client) if group is None else EngineGroup(group, args.admin_token_var)
+        state.weight_puller = WeightPuller(engines, PullConfig(**args.weight_pull))
+        state.weight_pull_task = asyncio.create_task(state.weight_puller.run())
+        state.weight_pull_task.add_done_callback(_weight_pull_done)
+
     # Under RL load the API server holds millions of live objects, and CPython's
     # default thresholds rerun full collections over them every few seconds.
     # Move everything alive after startup out of GC and collect less often.
     gc.collect()
     gc.freeze()
     gc.set_threshold(*API_SERVER_GC_THRESHOLDS)
+
+
+def _weight_pull_done(task: asyncio.Task) -> None:
+    """A puller only ends on an error it cannot recover from: stop the server rather than serve an ever older policy."""
+    if task.cancelled() or task.exception() is None:
+        return
+    from prime_rl.inference.vllm.weight_pull import exit_server
+
+    logger.error("Pulling policy weights stopped", exc_info=task.exception())
+    exit_server("The weight puller stopped")
 
 
 import vllm.entrypoints.launchers.api_server.entry
@@ -243,8 +318,9 @@ def custom_run_api_server_worker_proc(listen_address, sock, args, client_config=
     Re-import our module in child processes so monkey patches (custom routes,
     custom init_app_state) are applied in multi-API-server mode.
     """
-    import prime_rl.inference.vllm.server  # noqa: F401
+    import prime_rl.inference.vllm.server as server_module
 
+    server_module.API_SERVER_INDEX = (client_config or {}).get("client_index", 0)
     _original_run_api_server_worker_proc(listen_address, sock, args, client_config, **uvicorn_kwargs)
 
 
@@ -280,6 +356,20 @@ def server(config: InferenceConfig):
 
     # Set the worker extension class based on the broadcast backend
     args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
+    broadcast = config.weight_broadcast
+    args.weight_pull = (
+        {
+            "host": broadcast.host,
+            "port": broadcast.port,
+            "model_name": config.vllm.model,
+            "staging_buffer_bytes": broadcast.staging_buffer_bytes,
+            "staging_buffers_count": broadcast.staging_buffers_count,
+            "timeout": broadcast.timeout,
+        }
+        if broadcast.pull
+        else None
+    )
+    args.weight_pull_group = broadcast.pull_group
 
     if args.headless or args.api_server_count < 1:
         run_headless(args)

@@ -962,6 +962,8 @@ def train(config: TrainerConfig):
     if gradient_manager is not None:
         gradient_manager.close()
     micro_batch_workers.close()
+    if weight_sender is not None:
+        weight_sender.close()
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
     logger.success(f"RL trainer {'paused' if paused else 'finished'} at step {progress.step}")

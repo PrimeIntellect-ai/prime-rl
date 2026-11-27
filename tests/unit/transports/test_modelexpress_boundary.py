@@ -27,6 +27,7 @@ def test_modelexpress_adapter_uses_only_public_clients(relative_path):
             "create_weight_version",
             "get_weight_version",
             "delete_weight_version",
+            "list_weight_versions",
             "delete_trainer_mesh",
             "close",
         },
@@ -295,10 +296,10 @@ def test_modelexpress_installation_outcome_reaches_non_master_without_shared_sto
     publication = next(
         index
         for index, node in enumerate(broadcast.body)
-        if isinstance(node, ast.Expr)
+        if isinstance(node, ast.Assign)
         and isinstance(node.value, ast.Call)
         and isinstance(node.value.func, ast.Attribute)
-        and node.value.func.attr == "publish_version"
+        and node.value.func.attr == "_publish"
     )
     # Execute the real acknowledgment block without importing the GPU runtime.
     module = ast.parse("def acknowledge(self, step_dir, version): pass")
@@ -390,3 +391,121 @@ def test_integer_parameters_keep_their_values_through_a_layerwise_reload():
     assert torch.equal(gate.weight, torch.ones(4, 8))
     assert torch.equal(gate.tid2eid, table)
     assert experts.hash_indices_table is gate.tid2eid
+
+
+def test_modelexpress_pull_sender_retires_each_version_before_refilling_its_host_copy(tmp_path, monkeypatch):
+    """Under pull the trainer holds one version: before publishing the next, it stops new reads of the previous one
+    and waits for those in flight. It never waits for an engine to install, except for the last version at close."""
+    import torch
+    from torch import nn
+
+    import prime_rl.transports.weights.modelexpress as sender_module
+    from prime_rl.configs.shared import ModelExpressWeightBroadcastConfig
+
+    calls = []
+    lease_held = [1]
+
+    class FakeTrainer:
+        worker_id = "trainer-0"
+
+        def bind_tensors(self, tensors):
+            return SimpleNamespace(logical_shard_id="shard-0", metadata_endpoint="host:5655")
+
+        def publish_version(self, *, version):
+            calls.append(("publish", version.version_id))
+
+        def release_version(self, *, version):
+            if lease_held[0]:
+                lease_held[0] -= 1
+                calls.append(("release refused", version.version_id))
+                raise RuntimeError("weight version has an active lease")
+            calls.append(("release", version.version_id))
+
+        def close(self):
+            pass
+
+    def list_weight_versions(model_name):
+        return [
+            SimpleNamespace(
+                version_id="dead", version_number=7, state=sender_module.WeightVersionState.READY, trainer_mesh_id="old"
+            ),
+            SimpleNamespace(
+                version_id="gone",
+                version_number=6,
+                state=sender_module.WeightVersionState.RELEASING,
+                trainer_mesh_id="old",
+            ),
+        ]
+
+    control = SimpleNamespace(
+        create_trainer_mesh=lambda **kwargs: SimpleNamespace(mesh_id="mesh-0"),
+        create_weight_version=lambda **kwargs: SimpleNamespace(version_id=f"version-{kwargs['version_number']}"),
+        delete_weight_version=lambda version_id: calls.append(("retire", version_id)),
+        list_weight_versions=list_weight_versions,
+        delete_trainer_mesh=lambda mesh_id: None,
+        close=lambda: None,
+    )
+    monkeypatch.setattr(sender_module.ModelExpressTrainerClient, "initialize", lambda config: FakeTrainer())
+    monkeypatch.setattr(sender_module.ModelExpressControlClient, "connect", lambda **kwargs: control)
+    monkeypatch.setattr(sender_module, "ModelExpressTrainerConfig", lambda **kwargs: kwargs)
+    monkeypatch.setattr(sender_module, "FSDPTrainerContext", lambda **kwargs: kwargs)
+    monkeypatch.setattr(sender_module, "all_gather_bytes", lambda payload: [payload])
+    monkeypatch.setattr(sender_module, "broadcast_bytes", lambda payload: payload)
+    monkeypatch.setattr(sender_module.dist, "barrier", lambda: None)
+    monkeypatch.setattr(sender_module.atexit, "register", lambda *args: None)
+    monkeypatch.delenv("MX_METADATA_PORT", raising=False)
+
+    sender = sender_module.ModelExpressWeightSender(
+        tmp_path, ModelExpressWeightBroadcastConfig(timeout=5, pull=True), model_name="model-a"
+    )
+    assert not sender.acknowledged
+    sender.world = SimpleNamespace(is_master=True, local_rank=0)
+    model = nn.Linear(2, 2)
+    for step in (0, 1, 2):
+        sender.step_dir(step).mkdir(parents=True)
+        sender._broadcast(model, step, sender.step_dir(step))
+        assert sender._tensors == {}
+    (sender.step_dir(2) / ".installed").write_text("version-2")
+    sender.close()
+    assert calls == [
+        ("retire", "dead"),
+        ("publish", "version-0"),
+        ("retire", "version-0"),
+        ("release refused", "version-0"),
+        ("release", "version-0"),
+        ("publish", "version-1"),
+        ("retire", "version-1"),
+        ("release", "version-1"),
+        ("publish", "version-2"),
+        ("retire", "version-2"),
+        ("release", "version-2"),
+    ]
+    assert torch.is_tensor(model.weight)
+
+
+def test_modelexpress_pull_receiver_waits_until_every_engine_serves_a_version_of_this_trainer(tmp_path):
+    import asyncio
+
+    from prime_rl.configs.shared import ModelExpressWeightBroadcastConfig
+    from prime_rl.transports.weights import setup_weight_receiver
+    from prime_rl.transports.weights.base import FINISHED_MARKER
+
+    served = [[None, 3], [3, 5], [3, 4]]
+
+    class AdminPlane:
+        async def served_versions(self):
+            return served.pop(0)
+
+    receiver = setup_weight_receiver(
+        tmp_path, ModelExpressWeightBroadcastConfig(timeout=5, pull=True), AdminPlane(), "model-a"
+    )
+    receiver.poll_interval = 0
+    assert receiver.engines_pull
+    for step in (3, 4):
+        receiver.step_dir(step).mkdir(parents=True)
+        (receiver.step_dir(step) / FINISHED_MARKER).touch()
+    (receiver.step_dir(3) / ".mx_version").write_text("version-3")
+    # v5 has no finished broadcast (it predates a trainer restart), so the second answer does not count
+    asyncio.run(receiver.receive(3))
+    assert served == []
+    assert (receiver.step_dir(3) / ".installed").read_text() == "version-3"

@@ -2,6 +2,8 @@
 
 import atexit
 import os
+import threading
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
 import torch
@@ -13,6 +15,7 @@ from modelexpress_rl import (
     WeightVersionRef,
 )
 from torch import nn
+from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.worker.weight_transfer import WeightRPCMixin
 
@@ -20,6 +23,19 @@ if TYPE_CHECKING:
     from vllm.v1.worker.gpu_worker import Worker
 else:
     Worker = object
+
+logger = init_logger(__name__)
+
+
+@dataclass
+class StagedVersion:
+    """A version this worker stages, or staged, for an engine that pulls its weights."""
+
+    version_uid: str
+    done: threading.Event = field(default_factory=threading.Event)
+    handle: object | None = None
+    """The generator client's staged handle."""
+    error: str | None = None
 
 
 def keep_integer_parameters_as_buffers(model: nn.Module) -> list[str]:
@@ -78,7 +94,10 @@ class ModelExpressWeightUpdateWorker(WeightRPCMixin, Worker):
         if previous is not None and previous.worker_id == worker_id:
             return
         if previous is not None:
+            self.modelexpress_discard()
             previous.close()
+        # A new client has no record of any trainer's layout yet
+        self._mx_mesh = None
 
         from transformers import AutoConfig
 
@@ -108,6 +127,78 @@ class ModelExpressWeightUpdateWorker(WeightRPCMixin, Worker):
             )
         )
         atexit.register(self._generator.close)
+
+    # Engines that pull their weights (``prime_rl.inference.vllm.weight_pull``) stage a version while they serve and
+    # install it in a pause of their own. Staging writes only ModelExpress's own buffers, except the first staging
+    # of a trainer's versions: it records how the trainer's tensors map onto the engine's on the live model, so it
+    # must run paused. Later versions of the same trainer reuse that record.
+
+    def modelexpress_can_stage_live(self, mesh: str) -> bool:
+        """Whether this worker can stage a version of trainer ``mesh`` while the engine serves."""
+        return getattr(self, "_mx_mesh", None) == mesh
+
+    def modelexpress_stage(self, version_uid: str, live: bool) -> None:
+        """Stage a version, on a background thread while the engine serves if ``live``, else right away."""
+        self.modelexpress_discard()
+        staged = StagedVersion(version_uid)
+        self._mx_staged = staged
+        if not live:
+            self._stage(staged)
+            if staged.error is not None:
+                raise RuntimeError(staged.error)
+            return
+        if getattr(self, "_mx_stream", None) is None:
+            self._mx_stream = torch.cuda.Stream(device=self.device)
+        threading.Thread(target=self._stage, args=(staged, self._mx_stream), name="mx-stage", daemon=True).start()
+
+    def _stage(self, staged: StagedVersion, stream: torch.cuda.Stream | None = None) -> None:
+        try:
+            if stream is None:
+                staged.handle = self._generator.stage_weight(version=WeightVersionRef(staged.version_uid))
+            else:
+                # Copies a stage makes run on their own stream, beside the engine's steps
+                torch.cuda.set_device(self.device)
+                with torch.cuda.stream(stream):
+                    staged.handle = self._generator.stage_weight(version=WeightVersionRef(staged.version_uid))
+                stream.synchronize()
+        except Exception as error:
+            logger.warning(f"Staging ModelExpress version {staged.version_uid} failed: {error!r}")
+            staged.error = f"{type(error).__name__}: {error}"
+        finally:
+            staged.done.set()
+
+    def modelexpress_stage_status(self) -> str:
+        """``staging``, ``staged``, ``idle`` (nothing staged) or ``failed: <error>``."""
+        staged = getattr(self, "_mx_staged", None)
+        if staged is None:
+            return "idle"
+        if not staged.done.is_set():
+            return "staging"
+        return "staged" if staged.error is None else f"failed: {staged.error}"
+
+    def modelexpress_discard(self) -> None:
+        """Release the staged version and the version lease it holds. A stage in flight finishes first."""
+        staged, self._mx_staged = getattr(self, "_mx_staged", None), None
+        if staged is None:
+            return
+        staged.done.wait()
+        if staged.handle is not None:
+            staged.handle.release()
+
+    @torch.no_grad()
+    def modelexpress_apply(self, version_uid: str, mesh: str) -> None:
+        """Install the staged version into the live weights. Call while the engine is paused."""
+        staged = getattr(self, "_mx_staged", None)
+        if staged is None or staged.version_uid != version_uid or not staged.done.is_set() or staged.handle is None:
+            raise RuntimeError(f"ModelExpress version {version_uid} is not staged on this worker")
+        self._mx_staged = None
+        # Until the install completes, the weights may be partly written: the next stage must run paused
+        self._mx_mesh = None
+        try:
+            self._generator.apply_weight(staged.handle)
+        finally:
+            staged.handle.release()
+        self._mx_mesh = mesh
 
     @torch.no_grad()
     def update_weights_from_modelexpress(self, version_uid: str) -> None:

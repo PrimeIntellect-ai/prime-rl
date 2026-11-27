@@ -12,9 +12,9 @@ rank_log() {
     fi
 }
 
-# launch_inference_rank <port> <cuda_visible_devices> <dp> <rpc_port> <vllm_extra_json|""> <nixl_side_channel_port|""> <log_file>
+# launch_inference_rank <port> <cuda_visible_devices> <dp> <rpc_port> <vllm_extra_json|""> <nixl_side_channel_port|""> <log_file> [<weight_pull_args>]
 launch_inference_rank() {
-    local port="$1" gpus="$2" dp="$3" rpc="$4" extra="$5" nixl="$6" log="$7"
+    local port="$1" gpus="$2" dp="$3" rpc="$4" extra="$5" nixl="$6" log="$7" pull="${8:-}"
     # Per-rank dir for the mooncake-store lookup ipc socket. It must be unique per process:
     # external-LB runs one engine per process, all with data_parallel_rank_local 0, so the
     # lookup socket name collides on bind if the dir is shared node-wide. $port is unique per
@@ -52,6 +52,15 @@ launch_inference_rank() {
     if [ -n "${ADMIN_TOKEN_ENV:-}" ]; then
         rank_env+=("$ADMIN_TOKEN_ENV")
         cmd+=(--server.require-admin-token)
+    fi
+    if [ -n "$pull" ]; then
+        local -a pull_args
+        read -ra pull_args <<< "$pull"
+        cmd+=("${pull_args[@]}")
+        # A rank that pulls for its DP group calls the group's admin routes, so it holds the token
+        if [[ "$pull" == *--weight-broadcast.pull-group* ]] && [ -n "${ADMIN_TOKEN_SEND_ENV:-}" ]; then
+            rank_env+=("$ADMIN_TOKEN_SEND_ENV")
+        fi
     fi
     env "${rank_env[@]}" "${cmd[@]}" 2>&1 | tee -a "$log" &
     INFERENCE_PORT_BY_PID[$!]="$port"

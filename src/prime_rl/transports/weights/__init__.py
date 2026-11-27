@@ -60,6 +60,10 @@ def setup_weight_receiver(
         return NCCLWeightReceiver(broadcast_dir, config, admin_plane, model_name)
     elif config.type == "filesystem":
         return FileSystemWeightReceiver(broadcast_dir, config, admin_plane, model_name)
+    elif config.type == "modelexpress" and config.pull:
+        from prime_rl.transports.weights.modelexpress import ModelExpressPullWeightReceiver
+
+        return ModelExpressPullWeightReceiver(broadcast_dir, config, admin_plane, model_name)
     elif config.type == "modelexpress":
         from prime_rl.transports.weights.modelexpress import ModelExpressWeightReceiver
 
