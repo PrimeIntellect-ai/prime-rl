@@ -93,6 +93,9 @@ class GRPOAlgorithm(Algorithm):
                 dtype=torch.float64,
             )
             penalty = (length_penalty.weight * cost).clamp(0, 1)
+            # A rollout that stopped early keeps its reward: the env sets a fixed one for such stops.
+            stopped_early = torch.tensor([trace.stopped_early for trace in traces], dtype=torch.bool)
+            penalty = penalty.masked_fill(stopped_early, 0.0)
             shaped_rewards = rewards - penalty.to(rewards.dtype)
         else:
             subagent_weight = (

@@ -71,6 +71,9 @@ class TraceHead(BaseModel):
     num_output_tokens: int = 0
     num_total_tokens: int = 0
     is_truncated: bool = False
+    stopped_early: bool = False
+    """Whether the trace is truncated or the env skipped its task scoring: its reward, if any,
+    is the fixed reward the env sets for that stop."""
     has_sampled_tokens: bool = False
     """Whether any node has trainable (model-sampled) tokens."""
     trainable_tokens: int = 0
@@ -214,6 +217,7 @@ def trace_head(trace: vf.Trace) -> TraceHead:
         num_output_tokens=trace.num_output_tokens,
         num_total_tokens=trace.num_total_tokens,
         is_truncated=trace.is_truncated,
+        stopped_early=trace.is_truncated or "scoring_skipped" in trace.info,
         has_sampled_tokens=any(np.any(node.mask) for node in trace.nodes),
         trainable_tokens=sum(int(np.count_nonzero(node.mask)) for node in trainable),
         trainable_turns=sum(node.sampled for node in on_trainable_branch.values()),

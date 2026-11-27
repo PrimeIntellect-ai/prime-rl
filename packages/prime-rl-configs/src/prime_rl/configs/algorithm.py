@@ -105,7 +105,9 @@ class CostLengthPenaltyConfig(BaseConfig):
     effort, set to the slope of the base model's reward-vs-cost Pareto curve at that effort so that moving
     along the curve leaves the objective unchanged to first order. It neither scales with the group's pass
     rate nor depends on the rest of the group, and it reaches failed rollouts too, unless every rollout of
-    the group failed (no positive reward), in which case the group is not charged."""
+    the group failed (no positive reward), in which case the group is not charged. A rollout that stopped early
+    (truncated, or task scoring skipped by the env's ``scoring.skip`` or a ``skip_scoring`` stop) is not charged
+    either: its reward stays the fixed reward the env sets for that stop."""
 
     type: Literal["cost"] = "cost"
 
