@@ -61,10 +61,10 @@ from prime_rl.trainer.models.fusions import (
     write_back_loaded_packed_parameters,
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
+from prime_rl.trainer.models.layers.attn import load_flash_attn_2_hub_kernel
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import TokenSupport, inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import MoE
-from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
 from prime_rl.trainer.models.layers.ngram import NGramTable
 from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIndexer
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
@@ -73,6 +73,7 @@ from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.utils import get_dcp_group
 from prime_rl.trainer.vlm import get_language_model, get_vision_encoder
 from prime_rl.trainer.world import get_world, wait_for_master
+from prime_rl.utils.device import DEVICE_TYPE
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import has_step_dir_name, is_checkpoint_step_dir
 from prime_rl.utils.weights import (
@@ -703,7 +704,7 @@ def initialize_from_scratch(model: nn.Module, seed: int) -> None:
     ``_init_weights``), seeded with ``seed``. Floating parameters and buffers are NaN-filled first, so any the init misses
     raises."""
     get_logger().info(f"Initializing the weights from scratch (seed {seed})")
-    model.to_empty(device="cuda")
+    model.to_empty(device=DEVICE_TYPE)
     torch.distributed.barrier()
 
     def floating_tensors() -> dict[str, Tensor]:
@@ -729,7 +730,7 @@ def initialize_from_scratch(model: nn.Module, seed: int) -> None:
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
-    device = "cuda"
+    device = DEVICE_TYPE
     model.to_empty(device=device)
     torch.distributed.barrier()
 
@@ -976,6 +977,9 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
             raise ValueError(
                 f"MXFP8 quantization requires Blackwell (SM100+), but device is SM{capability[0]}{capability[1]}."
             )
+        # Imported here: its torchao kernels fail to import under some Triton builds, e.g. XPU's.
+        from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
+
         replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=ignore_modules)
 
 
@@ -1040,6 +1044,11 @@ def resolve_auto_attn(config: ModelConfig) -> None:
     """
     if config.attn != "auto":
         return
+    if DEVICE_TYPE == "xpu":
+        # FA3 and FA4 are Hopper/Blackwell kernels; Intel XPU runs FlashAttention-2.
+        get_logger().info("Auto-resolved attn='auto' to 'flash_attention_2' (Intel XPU)")
+        config.attn = "flash_attention_2"
+        return
     major, minor = torch.cuda.get_device_capability()
     if major in (10, 11):
         resolved = "flash_attention_4"
@@ -1066,6 +1075,10 @@ def setup_model(
 
     if config.attn == "flash_attention_4":
         _validate_flash_attn_4_installed()
+
+    if config.attn == "flash_attention_2":
+        # Bind the Kernel Hub fallback before compile: a compiled forward can't trace get_kernel.
+        load_flash_attn_2_hub_kernel()
 
     logger = get_logger()
 
@@ -1132,7 +1145,7 @@ def setup_model(
         logger.warning(
             "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
         )
-        device = "cuda"
+        device = DEVICE_TYPE
         model.to_empty(device=device)
         torch.distributed.barrier()
         model.init_buffers_post_meta()

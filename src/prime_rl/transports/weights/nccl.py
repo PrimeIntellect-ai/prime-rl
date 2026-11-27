@@ -72,7 +72,7 @@ def get_max_layer_num(state_dict: dict[str, Tensor], layer_prefix: str = "model.
 
 def broadcast_integer(integer: int, communicator: PyNcclCommunicator) -> None:
     """Broadcast an integer to a process group using NCCL communicator."""
-    integer_tensor = torch.tensor([integer], dtype=torch.long).cuda()
+    integer_tensor = torch.tensor([integer], dtype=torch.long, device=communicator.device)
     communicator.broadcast(integer_tensor, src=0)
 
 
@@ -96,9 +96,9 @@ def broadcast_state_dict(state_dict: dict[str, Tensor], communicator: PyNcclComm
 
     # Send metadata
     state = encode_tensor_metadata(metadata)
-    size_tensor = torch.tensor([len(state)], dtype=torch.long).cuda()
+    size_tensor = torch.tensor([len(state)], dtype=torch.long, device=communicator.device)
     communicator.broadcast(size_tensor, src=0)
-    state_tensor = torch.ByteTensor(list(state)).cuda()
+    state_tensor = torch.ByteTensor(list(state)).to(communicator.device)
     communicator.broadcast(state_tensor, src=0)
 
     # Concatenate and broadcast tensors grouped by dtype

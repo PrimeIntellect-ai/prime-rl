@@ -3,6 +3,7 @@ import json
 import math
 import os
 from collections.abc import Iterator
+from datetime import timedelta
 from typing import Any
 
 import pynvml
@@ -11,6 +12,7 @@ from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.device_communicators.pynccl_wrapper import ncclUniqueId
 from vllm.distributed.utils import StatelessProcessGroup
 
+from prime_rl.utils.device import DEVICE_TYPE
 from prime_rl.utils.logger import get_logger
 
 
@@ -24,6 +26,8 @@ def disable_nccl_p2p_if_unavailable() -> None:
     Uses pynvml to check physical GPU topology, which works regardless of
     CUDA_VISIBLE_DEVICES restrictions on the current process.
     """
+    if DEVICE_TYPE == "xpu":
+        return  # oneCCL picks its own transports, and NVML sees no Intel GPUs
     pynvml.nvmlInit()
     try:
         n = pynvml.nvmlDeviceGetCount()
@@ -116,12 +120,42 @@ class UniqueIdProcessGroup(StatelessProcessGroup):
         raise NotImplementedError("UniqueIdProcessGroup only broadcasts the NCCL unique id")
 
 
+class XCCLCommunicator:
+    """The part of vLLM's ``PyNcclCommunicator`` the weight broadcast uses, over oneCCL on Intel XPU.
+
+    vLLM has no XPU counterpart to ``PyNcclCommunicator``, so this builds a ``ProcessGroupXCCL`` directly on the
+    rendezvous store. It stays outside ``torch.distributed``'s global state, like the NCCL communicator, so it
+    does not touch the trainer's or vLLM's own process groups.
+    """
+
+    def __init__(self, store: Any, rank: int, world_size: int, device: int | str | torch.device, timeout: int):
+        from torch.distributed import PrefixStore, ProcessGroupXCCL
+
+        self.device = torch.device(DEVICE_TYPE, device) if isinstance(device, int) else torch.device(device)
+        self.rank = rank
+        self.world_size = world_size
+        options = ProcessGroupXCCL.Options()
+        options._timeout = timedelta(seconds=timeout)
+        options.group_name = "weight_broadcast"
+        options.global_ranks_in_group = list(range(world_size))
+        self.group = ProcessGroupXCCL(PrefixStore("weight_broadcast", store), rank, world_size, options)
+
+    def broadcast(self, tensor: torch.Tensor, src: int) -> None:
+        assert tensor.device == self.device, f"Tensor is on {tensor.device}, communicator on {self.device}"
+        options = torch.distributed.BroadcastOptions()
+        options.rootRank = src
+        self.group.broadcast([tensor], options).wait()
+
+
 def create_nccl_communicator(
     host: str, port: int, rank: int, world_size: int, device: int | str | torch.device, timeout: int
-) -> PyNcclCommunicator:
-    """Rendezvous at `host:port` through a TCPStore hosted by rank 0 and build an NCCL communicator over it."""
+) -> PyNcclCommunicator | XCCLCommunicator:
+    """Rendezvous at `host:port` through a TCPStore hosted by rank 0 and build a communicator over it:
+    NCCL on CUDA, XCCL on Intel XPU."""
     store = StatelessProcessGroup.create(
         host=host, port=port, rank=rank, world_size=world_size, store_timeout=timeout
     ).store
+    if DEVICE_TYPE == "xpu":
+        return XCCLCommunicator(store, rank, world_size, device, timeout)
     group = UniqueIdProcessGroup(rank=rank, world_size=world_size, store=store)
     return PyNcclCommunicator(group, device=device)
