@@ -86,6 +86,10 @@ uv run rl @ examples/extra/dynamo/rl.toml
 
 The example stops after five optimizer steps. Outputs are written under `outputs/` unless `output_dir` is overridden.
 
+## Sampling
+
+Dynamo's sidecar rejects Prime-RL's request extensions (`extra_args`), so train sources that sample from the policy must use plain sampling: no truncation (`top_p` below 1 or `top_k`, which need sampling replay) and no logprob head (`sampling.logprobs`, which score centering sets). Config validation rejects these with Dynamo. Tokens carry no weight versions, so staleness counts each rollout as old as its dispatch version.
+
 ## ModelExpress weight transfer
 
 To transfer weights through [ModelExpress](../../../docs/model-express.md) instead of NCCL, start each engine with `--worker-extension-cls prime_rl.inference.vllm.worker.modelexpress.ModelExpressWeightUpdateWorker` and set:

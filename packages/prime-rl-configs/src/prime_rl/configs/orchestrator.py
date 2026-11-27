@@ -585,6 +585,23 @@ class OrchestratorConfig(BaseConfig):
     """Draft model served by the policy engines. Auto-filled by the ``rl`` entrypoint from the inference
     servers' speculative config; set it for standalone orchestrator runs that should swap drafts."""
 
+    def dynamo_sampling_conflict(self) -> str | None:
+        """Why the policy sampling cannot run on Dynamo engines, or None. Dynamo's sidecar rejects
+        prime-rl's request extensions (``extra_args``), which sampling replay and logprob heads use."""
+        for sampling in self.policy_samplings:
+            if sampling.truncates_distribution():
+                return f"truncated sampling (top_p = {sampling.top_p}, top_k = {sampling.top_k}) needs sampling replay"
+            if sampling.logprobs:
+                return f"a logprob head (sampling.logprobs = {sampling.logprobs}, also set by score centering)"
+        return None
+
+    @model_validator(mode="after")
+    def validate_dynamo_sampling(self):
+        dynamo = self.model.client.dynamo
+        if dynamo is not None and dynamo.enabled and (conflict := self.dynamo_sampling_conflict()):
+            raise ValueError(f"Dynamo engines cannot serve {conflict}: their sidecar rejects prime-rl's extra_args")
+        return self
+
     @model_validator(mode="after")
     def validate_draft_swaps(self):
         dynamo = self.model.client.dynamo
