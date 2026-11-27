@@ -1,0 +1,6 @@
+GitHub connection workflow test
+
+Created at the repository user's request to verify branch creation, commits,
+and draft pull requests through the connected GitHub app.
+
+Temporary test marker. Close the draft pull request without merging after review.
