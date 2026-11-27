@@ -29,6 +29,8 @@ def apply_shared_vllm_patches():
     monkey_patch_skip_prompt_routing_for_chat()
     monkey_patch_dp_coordinator_startup_timeout()
     monkey_patch_minimax_m2_for_lora()
+    monkey_patch_minimax_m2_named_norm_loaders()
+    monkey_patch_moe_runner_loads_score_correction_bias()
     monkey_patch_packed_sampling_masks()
     monkey_patch_engine_gc()
     monkey_patch_packed_aux_outputs()
@@ -1456,3 +1458,67 @@ def monkey_patch_dp_coordinator_startup_timeout():
             zmq_addr_pipe.close()
 
     DPCoordinator._wait_for_zmq_addrs = _patched_wait_for_zmq_addrs
+
+
+def monkey_patch_minimax_m2_named_norm_loaders():
+    """INTERIM workaround for a vLLM bug; remove once vLLM's layerwise reload tolerates unnamed weight loaders.
+
+    vLLM's layerwise reload (``reload/layerwise.py``: ``_wrap_parameters_weight_loader`` and
+    ``_get_original_loader``) reads ``weight_loader.__name__``, but ``MiniMaxText01RMSNormTP`` installs a
+    ``functools.partial``, which has none. Every in-place weight update of MiniMax-M2 (NCCL, filesystem and
+    ModelExpress alike) then fails with ``AttributeError`` before loading anything. Naming the partial after the
+    method it binds keeps its call signature unchanged.
+    """
+    from vllm.model_executor.layers.minimax_rms_norm.rms_norm_tp import MiniMaxText01RMSNormTP
+
+    if getattr(MiniMaxText01RMSNormTP.__init__, "_prime_named_loader", False):
+        return
+    original_init = MiniMaxText01RMSNormTP.__init__
+
+    def __init__(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        loader = getattr(self.weight, "weight_loader", None)
+        if loader is not None and not hasattr(loader, "__name__"):
+            loader.__name__ = getattr(getattr(loader, "func", None), "__name__", "weight_loader")
+
+    __init__._prime_named_loader = True
+    MiniMaxText01RMSNormTP.__init__ = __init__
+
+
+def monkey_patch_moe_runner_loads_score_correction_bias():
+    """INTERIM workaround for a vLLM bug; remove once vLLM's MoE runner loads ``e_score_correction_bias`` itself.
+
+    ``MoERunner.load_weights`` hands every checkpoint name under the runner to ``RoutedExperts.load_weights``,
+    which maps expert projections only. A model whose router bias lives solely on the routed experts and whose
+    checkpoint stores it under the runner (Laguna: ``mlp.experts.e_score_correction_bias``) therefore never loads
+    it, neither at startup nor on a weight update: the engine routes with the bias it was constructed with.
+    """
+    from vllm.model_executor.layers.fused_moe.runner.moe_runner import MoERunner
+    from vllm.model_executor.model_loader.weight_utils import default_weight_loader
+
+    if getattr(MoERunner.load_weights, "_prime_loads_bias", False):
+        return
+    original_load_weights = MoERunner.load_weights
+    name = "e_score_correction_bias"
+
+    def load_weights(self, weights):
+        bias = self.routed_experts._parameters.get(name)
+        if bias is None:
+            yield from original_load_weights(self, weights)
+            return
+        loaded = []
+
+        def experts(weights):
+            for weight_name, weight in weights:
+                if weight_name == name:
+                    getattr(bias, "weight_loader", default_weight_loader)(bias, weight)
+                    loaded.append(weight_name)
+                else:
+                    yield weight_name, weight
+
+        yield from original_load_weights(self, experts(weights))
+        if loaded:
+            yield f"routed_experts.{name}"
+
+    load_weights._prime_loads_bias = True
+    MoERunner.load_weights = load_weights
