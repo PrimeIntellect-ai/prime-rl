@@ -40,7 +40,7 @@ def test_save_writes_one_restore_point_per_episode_and_deletes_the_snapshots_of_
             # Prime refuses the newest snapshot of a box that still runs: t3's episode goes on.
             return [snapshot.id for snapshot in snapshots if snapshot.id != "s-t3"]
 
-    async def save_all(*, hold: bool, watchdog: bool) -> list[dict]:
+    async def save_all(*, hold: bool, watchdog: bool, timeout: float | None) -> list[dict]:
         # t9's run ended while the checkpoints were taken.
         assert hold and not watchdog
         return [point("t1"), point("t2"), point("t3"), point("t9")]

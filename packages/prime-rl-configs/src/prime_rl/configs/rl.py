@@ -100,8 +100,8 @@ class SharedCheckpointConfig(BaseConfig):
     rollouts: bool = False
     """Also checkpoint the orchestrator's finished but unshipped episodes and its running rollouts, so a resumed run continues them (``orchestrator.ckpt.rollouts``)."""
 
-    rollouts_save_timeout: int = Field(600, ge=1)
-    """Seconds each env worker pool gets to save its running rollouts at a rollout checkpoint (``orchestrator.ckpt.rollouts_save_timeout``)."""
+    rollouts_save_timeout: int = Field(120, ge=1)
+    """Seconds each running rollout gets to take its memory checkpoint at a rollout checkpoint (``orchestrator.ckpt.rollouts_save_timeout``)."""
 
     async_save: bool | None = None
     """Write trainer checkpoints in the background (see ``trainer.ckpt.async_save``). If None, uses the trainer's default."""
@@ -486,16 +486,6 @@ class RLConfig(BaseConfig):
                     f"{name}.weight_broadcast conflicts with the shared weight_broadcast. Under the rl "
                     "entrypoint it is copied from [weight_broadcast]; set that instead."
                 )
-        if self.weight_broadcast.type == "modelexpress":
-            dynamo = self.orchestrator.model.client.dynamo
-            if dynamo is not None and dynamo.enabled:
-                raise ValueError(
-                    "modelexpress requires static inference admin endpoints; Dynamo discovery is not supported."
-                )
-            if self.inference is not None:
-                extra = self.inference.vllm.model_extra or {}
-                if extra.get("speculative_config") is not None:
-                    raise ValueError("modelexpress does not support speculative decoding.")
         self.trainer.weight_broadcast = self.weight_broadcast.model_copy()
         self.orchestrator = self.orchestrator.model_copy(
             update={"weight_broadcast": self.weight_broadcast.model_copy()}
@@ -662,6 +652,14 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_dynamo_sampling(self):
+        """Score centering requests a logprob head after the orchestrator validated, so check again."""
+        dynamo = self.orchestrator.model.client.dynamo
+        if dynamo is not None and dynamo.enabled and (conflict := self.orchestrator.dynamo_sampling_conflict()):
+            raise ValueError(f"Dynamo engines cannot serve {conflict}: their sidecar rejects prime-rl's extra_args")
+        return self
+
+    @model_validator(mode="after")
     def validate_speculative_sampler_logprobs(self):
         """Speculative verification captures replayed supports, not untruncated sampler rows."""
         if self.inference is None or not getattr(self.inference.vllm, "speculative_config", None):
@@ -786,7 +784,7 @@ class RLConfig(BaseConfig):
                 if self.inference.vllm.api_server_count == 1 and dp_per_node > 1:
                     self.inference.vllm.api_server_count = dp_per_node
 
-            if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl", "modelexpress"):
+            if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "modelexpress"):
                 # Every allocated inference GPU is an in-memory transfer worker.
                 # The external-LB launcher starts dp_per_node (= gpus_per_node / tp)
                 # TP-sharded servers per node, i.e. gpus_per_node workers per node, so use
@@ -795,11 +793,11 @@ class RLConfig(BaseConfig):
                 # factor count twice and wait for ranks that never connect. Matches
                 # the disaggregated path below.
                 total_infer_workers = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
-                assert self.trainer.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
+                assert self.trainer.weight_broadcast.type in ("nccl", "modelexpress")
                 if self.trainer.weight_broadcast.type == "nccl":
                     self.trainer.weight_broadcast.host = "0.0.0.0"
                 self.trainer.weight_broadcast.inference_world_size = total_infer_workers
-                assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
+                assert self.orchestrator.weight_broadcast.type in ("nccl", "modelexpress")
                 self.orchestrator.weight_broadcast.inference_world_size = total_infer_workers
 
         self.orchestrator = self.orchestrator.model_copy(update={"env_worker_pool_replicas": env_worker_pool_replicas})
@@ -833,10 +831,10 @@ class RLConfig(BaseConfig):
             self.orchestrator = self.orchestrator.model_copy(
                 update={"inference_metrics_roles": role_order * self.deployment.num_infer_replicas}
             )
-        if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl", "modelexpress"):
-            assert self.trainer.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
+        if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "modelexpress"):
+            assert self.trainer.weight_broadcast.type in ("nccl", "modelexpress")
             self.trainer.weight_broadcast.inference_world_size = total_infer_gpus
-            assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
+            assert self.orchestrator.weight_broadcast.type in ("nccl", "modelexpress")
             self.orchestrator.weight_broadcast.inference_world_size = total_infer_gpus
 
         return self

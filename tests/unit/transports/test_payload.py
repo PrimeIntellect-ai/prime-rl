@@ -557,6 +557,6 @@ def test_link_or_copy_fallback_copies_atomically(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "link", exdev)
     assert link_or_copy(src, dst) is True
     assert dst.read_bytes() == b"payload-bytes"
-    assert [p.name for p in tmp_path.iterdir()] == sorted(["src", "dst"])
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["dst", "src"]
     assert link_or_copy(tmp_path / "missing", tmp_path / "dst2") is False
     assert not (tmp_path / "dst2").exists()

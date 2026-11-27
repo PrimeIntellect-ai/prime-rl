@@ -45,7 +45,7 @@ uv run rl @ base.toml --trainer @ trainer.toml                 # mixed
 A checked-in TOML that only parses on top of a base is an overlay. Document how to compose it with a launch command in its header comment, using repo-relative paths:
 
 ```toml
-#   uv run rl @ examples/advanced/glm-4.5-air/swe-budget.toml @ examples/advanced/glm-4.5-air/swe-2-node.toml
+#   uv run rl @ recipes/glm-4.5-air/swe-budget.toml @ recipes/glm-4.5-air/swe-2-node.toml
 ```
 
 CI parses every such command with its entrypoint's config class, and fails on an overlay that no command covers.
@@ -248,7 +248,11 @@ For standalone `sft` and `inference` configs, `[env_vars]` applies to that entry
 
 ## Examples
 
-The shipped end-to-end examples in [`examples/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples) are the canonical, kept-up-to-date references — the rest of the repo's TOMLs (under `configs/`) are CI- and debug-internal and may drift. Each basic example directory has its own README with the full launch story; the advanced examples are config-only.
+The repo ships TOMLs in three places:
+
+- [`examples/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples) — end-to-end walkthroughs on 1–8 GPUs, each with a README that covers the full launch story.
+- [`recipes/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes) — frontier-model configs, one folder per model.
+- [`dev/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/dev) — smoke configs for developing the framework. They may drift.
 
 **Basic** (1–8 GPUs):
 
@@ -260,12 +264,12 @@ The shipped end-to-end examples in [`examples/`](https://github.com/PrimeIntelle
 
 **Advanced** (32–2048 GPUs, SLURM):
 
-- [**Qwen3-30B-A3B**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/qwen3-30b-a3b) — `Qwen3-30B-A3B` on math, SWE, and tool use.
-- [**GLM-4.5-Air**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/glm-4.5-air) — `GLM-4.5-Air` on search, SWE, and terminal; includes a variant that trains the 100B+ MoE on only two nodes.
-- [**Nemotron-3-Super**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/configs/advanced/nemotron-3-super) — `Nemotron-3-Super-120B` hybrid-Mamba MoE on SWE at 131k context.
-- [**MiniMax-M2.5 SWE**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/configs/advanced/minimax-m2.5) — `MiniMax-M2.5` on agentic SWE.
-- [**INTELLECT-3.1**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/intellect-3.1) — reproduces our INTELLECT-3.1 training run.
-- [**High-throughput GLM-5**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/glm-5.3) — large-scale `GLM-5`/`GLM-5.3` inference with P/D disaggregation and FP8.
+- [**Qwen3-30B-A3B**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes/qwen3-30b-a3b) — `Qwen3-30B-A3B` on math, SWE, and tool use.
+- [**GLM-4.5-Air**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes/glm-4.5-air) — `GLM-4.5-Air` on search, SWE, and terminal; includes a variant that trains the 100B+ MoE on only two nodes.
+- [**Nemotron-3-Super**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes/nemotron-3-super) — `Nemotron-3-Super-120B` hybrid-Mamba MoE on SWE at 256k context.
+- [**MiniMax-M2.5 SWE**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes/minimax-m2.5) — `MiniMax-M2.5` on agentic SWE.
+- [**INTELLECT-3.1**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes/intellect-3.1) — reproduces our INTELLECT-3.1 training run.
+- [**High-throughput GLM-5**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes/glm-5.3) — large-scale `GLM-5`/`GLM-5.3` inference with P/D disaggregation and FP8.
 
 ### Worked Example: Compose, Override, Dry-Run
 

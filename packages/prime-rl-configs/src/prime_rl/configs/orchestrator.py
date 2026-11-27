@@ -446,11 +446,11 @@ class CheckpointConfig(BaseCheckpointConfig):
     of step N is then written when the trainer publishes the weights of N, not when N
     ships. Eval rollouts are never checkpointed."""
 
-    rollouts_save_timeout: int = Field(600, ge=1)
-    """Seconds each env worker pool gets to take the memory checkpoints of its running
-    train rollouts and write their restore files. A pool that has not answered by then
-    contributes no restore points: all of its running rollouts start over on resume.
-    The trainer waits in its weight broadcast for the whole save."""
+    rollouts_save_timeout: int = Field(120, ge=1)
+    """Seconds each running train rollout gets to take its memory checkpoint. A rollout
+    that takes longer has no restore point and starts over on resume. The trainer
+    waits in its weight broadcast for the whole save. The save takes at most this
+    long, plus the time the env worker pools take to write the restore files."""
 
 
 class ConcurrencyConfig(BaseConfig):
@@ -585,13 +585,28 @@ class OrchestratorConfig(BaseConfig):
     """Draft model served by the policy engines. Auto-filled by the ``rl`` entrypoint from the inference
     servers' speculative config; set it for standalone orchestrator runs that should swap drafts."""
 
+    def dynamo_sampling_conflict(self) -> str | None:
+        """Why the policy sampling cannot run on Dynamo engines, or None. Dynamo's sidecar rejects
+        prime-rl's request extensions (``extra_args``), which sampling replay and logprob heads use."""
+        for sampling in self.policy_samplings:
+            if sampling.truncates_distribution():
+                return f"truncated sampling (top_p = {sampling.top_p}, top_k = {sampling.top_k}) needs sampling replay"
+            if sampling.logprobs:
+                return f"a logprob head (sampling.logprobs = {sampling.logprobs}, also set by score centering)"
+        return None
+
+    @model_validator(mode="after")
+    def validate_dynamo_sampling(self):
+        dynamo = self.model.client.dynamo
+        if dynamo is not None and dynamo.enabled and (conflict := self.dynamo_sampling_conflict()):
+            raise ValueError(f"Dynamo engines cannot serve {conflict}: their sidecar rejects prime-rl's extra_args")
+        return self
+
     @model_validator(mode="after")
     def validate_draft_swaps(self):
         dynamo = self.model.client.dynamo
         if self.speculative_decoding is not None and dynamo is not None and dynamo.enabled:
             raise ValueError("Draft swaps use prime-rl's engine admin routes, which Dynamo deployments do not serve")
-        if self.speculative_decoding is not None and self.weight_broadcast.type == "modelexpress":
-            raise ValueError("Draft swaps load with filesystem, NCCL or NIXL weight broadcasts, not modelexpress")
         return self
 
     @model_validator(mode="after")
@@ -751,11 +766,11 @@ class OrchestratorConfig(BaseConfig):
     def resolve_sampling_replay(self):
         """Opt policy train sources into replay and keep eval sampling independent."""
         for env in self.train.source:
-            # Policy-sourced rollouts hit our vLLM server; frozen-sourced
-            # rollouts may hit external OAI endpoints that reject these knobs.
-            if env.algo.rollout_model == "policy":
+            # Only truncated policy sampling needs replay. Frozen-sourced rollouts may hit external
+            # OAI endpoints, and policy engines without prime-rl's extension (Dynamo), that reject the flag.
+            if env.algo.rollout_model == "policy" and env.sampling.truncates_distribution():
                 extra_args = dict(env.sampling.extra_body.get("extra_args") or {})
-                extra_args["prl_replay"] = env.sampling.truncates_distribution()
+                extra_args["prl_replay"] = True
                 env.sampling.extra_body["extra_args"] = extra_args
         if self.eval is not None:
             for env in self.eval.source:

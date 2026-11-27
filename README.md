@@ -35,7 +35,7 @@ prime-rl is a framework for large-scale reinforcement learning. It is designed t
 5. Multi-node deployment with Slurm support.
 6. Multimodal support for Qwen3.5 and Qwen3.8 VLMs, with [image RL and SFT examples](examples/extra/vlm/README.md).
 7. Hackable, modular, and extensible by design.
-8. One-line SLURM deployment for frontier models — e.g. [`GLM-5` FP8 with P/D disaggregation, the `llm-d` router, and Mooncake KV offload](examples/advanced/glm-5.3/).
+8. One-line SLURM deployment for frontier models — e.g. [`GLM-5` FP8 with P/D disaggregation, the `llm-d` router, and Mooncake KV offload](recipes/glm-5.3/).
 
 
 ## Models support
@@ -135,7 +135,7 @@ uv run python -c "import flash_attn"
 3. Check that you can run SFT trainer  (*this requires 1 GPU*)
 
 ```bash
-uv run sft @ configs/debug/fake/sft.toml
+uv run sft @ dev/fake/sft.toml
 ```
 
 4. Check that you can run the inference server (*this requires 1 GPU*)
@@ -168,27 +168,39 @@ uv run hf auth login
 # Or set `export HF_TOKEN=...`
 ```
 
-## Training Examples
-We provide end-to-end training examples in the [`examples`](examples) directory to highlight features of the framework and guide you through the process of training your own models.
+## Examples
 
-### Basic Training: 1 to 8 GPUs
+The [`examples`](examples) directory holds end-to-end walkthroughs on 1 to 8 GPUs. Each one has a README that takes you from a baseline eval through training to a final eval. Start here to learn prime-rl.
 
-Follow this guide to learn the basics of prime-rl. You can train your own models on 1 to 8 GPUs. Ideal for getting started and exploring the capabilities of the framework. These guides cover most use cases -- single-turn, multi-turn, tool calling, etc. -- on toy environments and small models.
+1. [**Reverse Text**](examples/basic/reverse-text/README.md): Train `Qwen3-0.6B` to reverse a small chunk of text. Tiny single-turn SFT and RL on a single consumer GPU in a few minutes. Start here.
+2. [**Wordle**](examples/basic/wordle/README.md): Train `Qwen3-1.7B` to play Wordle. Multi-turn SFT and RL on 2-4 H100s in a few hours.
+3. [**Alphabet Sort**](examples/basic/alphabet-sort/README.md): Train `Qwen3-4B-Instruct-2507` to sort names alphabetically. Multi-turn LoRA RL without SFT warmup on one H100.
+4. [**Wiki Search**](examples/basic/wiki-search/README.md): Train `Qwen3-4B-Instruct-2507` to answer trivia by searching Wikipedia. Multi-turn tool use.
+5. [**Hendrycks Sanity**](examples/basic/hendrycks-sanity/README.md): Train `Qwen3-1.7B` on a MATH subset that `DeepSeek-R1-Distill-Qwen-1.5B` partially solves (20-80%). Useful for algorithm ablations.
+6. [**VLM**](examples/extra/vlm/README.md): Image RL for Qwen3.5 and Qwen3.8, and LoRA SFT for dense and MoE models.
+7. [**Dynamo**](examples/extra/dynamo/README.md): Train with external Dynamo inference and NCCL weight updates.
 
-1. [**Reverse Text**](examples/basic/reverse-text/README.md): Train `Qwen3-0.6B` to reverse a small chunk of text. Demonstrates tiny-scale single-turn SFT and RL training. Can be trained on a single consumer GPU in a few minutes, and is ideal for getting started.
-2. [**Wordle**](examples/basic/wordle/README.md): Train `Qwen3-1.7B` to play Wordle. A fun example of multi-turn SFT and RL training. Can be trained on a 2-4 H100 GPUs in a few hours. Ideal for exploring the multi-turn training capabilities of the framework.
-3. [**Alphabet Sort**](examples/basic/alphabet-sort/README.md): Train `Qwen3-4B-Instruct-2507` to sort names alphabetically. Demonstrates multi-turn RL training via LoRA without SFT warmup. Can be trained on a single H100 GPU in just over an hour. Ideal for exploring LoRA-based training.
-4. [**Wiki Search**](examples/basic/wiki-search/README.md): Train `Qwen3-4B-Instruct-2507` to answer trivia questions by searching through a Wikipedia. Demonstrates multi-turn with web search tool use.
-5. [**Hendrycks Sanity**](examples/basic/hendrycks-sanity/README.md): Run a sanity check experiment on `Qwen3-1.7B` using a subset of MATH filtered to problems that `DeepSeek-R1-Distill-Qwen-1.5B` partially solves (20-80%). Useful for algorithm ablations.
+## Recipes
 
-### Advanced Training: 32 - 2048 GPUs:
+The [`recipes`](recipes) directory holds the configs for frontier RL, one folder per model. They run multi-node on a Slurm cluster. Most recipes compose a model config, a GPU overlay and a data overlay; see the [recipes README](recipes/README.md) for the layout, trainer fits and RL results.
 
-Follow this guide to train large models on hard reasoning and agentic tasks.
-These guides are designed to be run from a Slurm cluster.
-
-1. [**Qwen3-30B-A3B**](examples/advanced/qwen3-30b-a3b/): Train `Qwen3-30B-A3B` on math, SWE, and agentic tool use.
-2. [**GLM-4.5-Air**](examples/advanced/glm-4.5-air/): Train `GLM-4.5-Air` on search, SWE, and terminal tasks.
-3. [**GLM-5**](examples/advanced/glm-5.3/): Large-scale `GLM-5`/`GLM-5.3` training with P/D disaggregation, the `llm-d` router, and FP8.
+| Model | Recipe |
+|---|---|
+| `DeepSeek-V4-Flash` | [`deepseek-v4-flash-0731`](recipes/deepseek-v4-flash-0731/) |
+| `GLM-4.5-Air` | [`glm-4.5-air`](recipes/glm-4.5-air/) |
+| `GLM-5.3` | [`glm-5.3`](recipes/glm-5.3/) |
+| `GLM-5.3-Flash` | [`glm-5.3-flash`](recipes/glm-5.3-flash/) |
+| `INTELLECT-3.1` | [`intellect-3.1`](recipes/intellect-3.1/) |
+| `Inkling-2-Small` | [`inkling-2-small`](recipes/inkling-2-small/) |
+| `MiniMax-M2.5` | [`minimax-m2.5`](recipes/minimax-m2.5/) |
+| `Muse-Glimmer-30B` | [`muse-glimmer-30b`](recipes/muse-glimmer-30b/) |
+| `Nemotron-3-Super-120B-A12B` | [`nemotron-3-super`](recipes/nemotron-3-super/) |
+| `Nemotron-3.5-Super-VL-120B-A12B` | [`nemotron-3.5-super`](recipes/nemotron-3.5-super/) |
+| `Qwen3-30B-A3B` | [`qwen3-30b-a3b`](recipes/qwen3-30b-a3b/) |
+| `Qwen3-235B-A22B` | [`qwen3-235b-a22b`](recipes/qwen3-235b-a22b/) |
+| `Qwen3.6-35B-A3B` | [`qwen3.6-35b-a3b`](recipes/qwen3.6-35b-a3b/) |
+| `Qwen3.8-27B` | [`qwen3.8-27b`](recipes/qwen3.8-27b/) |
+| `Qwen3.8-Flash-Next` | [`qwen3.8-flash-next`](recipes/qwen3.8-flash-next/) |
 
 ## Docs
 

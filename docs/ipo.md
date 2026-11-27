@@ -63,12 +63,12 @@ The IPO band has the same width in probability everywhere. The IcePop cone is ve
 
 ## Reproducing
 
-The configs are in [`examples/advanced/glm-4.5-air/ipo-ablation/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/glm-4.5-air/ipo-ablation): a shared `base.toml` and one overlay per loss. See the [GLM-4.5-Air README](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/glm-4.5-air) for cluster setup.
+The configs are in [`recipes/glm-4.5-air/ipo-ablation/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes/glm-4.5-air/ipo-ablation): a shared `base.toml` and one overlay per loss. See the [GLM-4.5-Air README](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes/glm-4.5-air) for cluster setup.
 
 ```bash
-uv run rl @ examples/advanced/glm-4.5-air/ipo-ablation/base.toml @ examples/advanced/glm-4.5-air/ipo-ablation/ipo.toml
-uv run rl @ examples/advanced/glm-4.5-air/ipo-ablation/base.toml @ examples/advanced/glm-4.5-air/ipo-ablation/ipo.toml --trainer.loss.eps 0.2
-uv run rl @ examples/advanced/glm-4.5-air/ipo-ablation/base.toml @ examples/advanced/glm-4.5-air/ipo-ablation/icepop.toml
+uv run rl @ recipes/glm-4.5-air/ipo-ablation/base.toml @ recipes/glm-4.5-air/ipo-ablation/ipo.toml
+uv run rl @ recipes/glm-4.5-air/ipo-ablation/base.toml @ recipes/glm-4.5-air/ipo-ablation/ipo.toml --trainer.loss.eps 0.2
+uv run rl @ recipes/glm-4.5-air/ipo-ablation/base.toml @ recipes/glm-4.5-air/ipo-ablation/icepop.toml
 ```
 
 Compare `mismatch_kl/all/mean` and the training solve rate across arms.

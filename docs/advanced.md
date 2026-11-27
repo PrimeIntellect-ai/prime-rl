@@ -224,7 +224,7 @@ For large MoE serving, splitting prefill and decode onto separate vLLM groups ca
 | Agentic (SWE, Lean) | 3:1 | Long growing contexts → prefill-heavy |
 | Non-agentic (math, chat) | 1:2 | Short prompts, long generations → decode-heavy |
 
-Example config: [`examples/advanced/glm-5.3/swe.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/advanced/glm-5.3/swe.toml) — full RL run on `GLM-5` with P/D disaggregation behind a `vllm-router`, FP8 inference, and NCCL weight broadcast, paired with an inference config from [`examples/advanced/glm-5.3/infer/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/glm-5.3/infer).
+Example config: [`recipes/glm-5.3/swe.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/recipes/glm-5.3/swe.toml) — full RL run on `GLM-5` with P/D disaggregation behind a `vllm-router`, FP8 inference, and NCCL weight broadcast, paired with an inference config from [`recipes/glm-5.3/infer/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes/glm-5.3/infer).
 
 Monitor live queue depths to detect imbalance:
 
@@ -235,11 +235,4 @@ curl -s http://<decode_node>:8200/metrics | grep num_requests_waiting
 
 If prefill queues and decode is idle, add prefill nodes (and vice versa).
 
-**Required setup for disaggregated P/D (NIXL/UCX).** The pip-wheel NIXL's bundled UCX segfaults on the prefill→decode KV transfer (`signal 11: invalid permissions for mapped object` in `libucs.so`) — reproduced on vLLM 0.22 and 0.23, with/without mooncake, with/without llm-d. Building NIXL against UCX 1.19.x from source is therefore **required** (not optional) for disaggregated P/D.
-
-```bash
-salloc -N 1 --gres=gpu:1 bash -c 'bash scripts/install_nixl_from_source.sh'
-uv pip install --reinstall --no-deps deps/nixl_cu13-*.whl
-```
-
-The script writes UCX 1.19 to `third_party/ucx/`; the bundled sbatch templates prepend it to `LD_LIBRARY_PATH` so it overrides the system version. Re-run both commands after every `uv sync`, since the lock pins the wheel.
+The KV transfer uses the NIXL wheel that `uv sync` installs. It needs no source-built UCX.

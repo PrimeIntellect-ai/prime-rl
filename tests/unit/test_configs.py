@@ -53,8 +53,14 @@ CONFIG_CLASSES = [
 
 
 def get_config_files() -> list[Path]:
-    """Any TOML file inside `configs/`, `examples/`, `recipes/` or `tests/regression/configs/`."""
-    roots = [Path("configs"), Path("examples"), Path("recipes"), Path("tests/regression/configs")]
+    """Any TOML file inside `dev/`, `examples/`, `recipes/`, `tests/integration/configs/` or `tests/regression/configs/`."""
+    roots = [
+        Path("dev"),
+        Path("examples"),
+        Path("recipes"),
+        Path("tests/integration/configs"),
+        Path("tests/regression/configs"),
+    ]
     return [path for root in roots for path in root.rglob("*.toml")]
 
 
@@ -844,6 +850,25 @@ def test_group_defaults_match_source_defaults(group):
             assert default(field) == default(source.model_fields[name]), f"{group.__name__}.{name}"
 
 
+def test_only_truncated_policy_sources_request_replay():
+    config = OrchestratorConfig.model_validate(
+        {
+            "renderer": {"name": "qwen3"},
+            "train": {
+                "source": [
+                    {"name": "full", "env": {"taskset": {"id": "reverse-text"}}},
+                    {"name": "nucleus", "env": {"taskset": {"id": "reverse-text"}}, "sampling": {"top_p": 0.95}},
+                ]
+            },
+        }
+    )
+
+    full, nucleus = config.train.source
+    assert "extra_args" not in full.sampling.extra_body
+    assert nucleus.sampling.extra_body["extra_args"] == {"prl_replay": True}
+    assert OrchestratorConfig.model_validate(config.model_dump(mode="json")) == config
+
+
 def test_policy_sources_accept_different_top_p_values():
     config = OrchestratorConfig.model_validate(
         {
@@ -985,6 +1010,67 @@ def test_sft_launcher_gives_the_admin_token_to_online_evals_and_its_digest_to_ch
     assert envs["inference"] == envs["trainer"] == {"PRIME_RL_ADMIN_TOKEN_SHA256": admin_token_digest(token)}
 
 
+SFT_ONLINE_EVAL = {"source": [{"name": "reverse-text", "env": {"taskset": {"id": "reverse-text"}}}]}
+
+
+@pytest.mark.parametrize("transport", ["nccl", "modelexpress"])
+def test_sft_online_evals_size_the_in_memory_transfer_group(transport):
+    from prime_rl.entrypoints.launcher import build_online_eval_config
+
+    config = SFTConfig.model_validate(
+        {
+            "weight_broadcast": {"type": transport},
+            "eval": SFT_ONLINE_EVAL,
+            "inference": {},
+            "deployment": {"num_train_gpus": 1, "num_infer_gpus": 2},
+        }
+    )
+
+    assert config.weight_broadcast.inference_world_size == 2
+    assert config.inference.weight_broadcast.type == transport
+    assert build_online_eval_config(config).weight_broadcast == config.weight_broadcast
+
+    config = SFTConfig.model_validate(
+        {
+            "weight_broadcast": {"type": transport},
+            "eval": SFT_ONLINE_EVAL,
+            "inference": {},
+            "deployment": {"type": "multi_node", "num_train_nodes": 1, "num_infer_nodes": 2},
+            "max_steps": 10,
+            "slurm": {},
+        }
+    )
+
+    assert config.weight_broadcast.inference_world_size == 16
+
+
+@pytest.mark.parametrize("launch", [True, False])
+def test_multi_node_sft_online_evals_reach_the_modelexpress_server(tmp_path, launch):
+    from prime_rl.entrypoints.launcher import write_slurm_script
+
+    config = SFTConfig.model_validate(
+        {
+            "weight_broadcast": {"type": "modelexpress", "host": "mx-host"},
+            "eval": SFT_ONLINE_EVAL,
+            "inference": {},
+            "deployment": {"type": "multi_node", "num_train_nodes": 1, "num_infer_nodes": 1},
+            "max_steps": 10,
+            "slurm": {"launch_modelexpress": launch},
+            "output_dir": tmp_path,
+        }
+    )
+    script_path = tmp_path / "sft.sbatch"
+    config_path = tmp_path / "sft.json"
+    write_slurm_script(config, config_path, config_path, tmp_path / "logs", script_path, "run-id", False, "sft")
+    script = script_path.read_text()
+
+    host = "$MASTER_ADDR" if launch else "mx-host"
+    assert f'export WEIGHT_BROADCAST_HOST="{host}"' in script
+    assert ('"$MX_BIN/modelexpress-server"' in script) == launch
+    # The trainer and the online evals both reach the server through its host.
+    assert script.count("--weight-broadcast.host $WEIGHT_BROADCAST_HOST") == 2
+
+
 def test_single_node_nccl_resolved_json_roundtrips(tmp_path):
     """The resolved rl.json re-parses (as a SLURM launch does) to the same config."""
     import json
@@ -1073,6 +1159,23 @@ def test_disaggregated_inference_inherits_deployment_gpus_per_node():
     config["inference"]["deployment"]["gpus_per_node"] = 4
     with pytest.raises(ValidationError, match="gpus_per_node must match"):
         RLConfig.model_validate(config)
+
+
+def test_modelexpress_under_pd_transfers_to_every_prefill_and_decode_gpu():
+    config = RLConfig.model_validate(
+        {
+            "weight_broadcast": {"type": "modelexpress"},
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {"deployment": {"type": "disaggregated"}},
+            "deployment": {"type": "multi_node", "num_train_nodes": 1, "num_infer_nodes": 2},
+            "slurm": {},
+        }
+    )
+
+    assert config.trainer.weight_broadcast.inference_world_size == 16
+    assert config.orchestrator.weight_broadcast.inference_world_size == 16
+    assert config.orchestrator.inference_metrics_roles == ["prefill"] * 8 + ["decode"] * 8
 
 
 def test_ac_none_disables_ac_offloading():
@@ -1807,6 +1910,21 @@ def test_inference_loads_dummy_weights_for_a_scratch_init(
     assert RLConfig.model_validate_json(config.model_dump_json()) == config
 
 
+def test_modelexpress_serves_a_draft_and_swaps_it():
+    config = RLConfig.model_validate(
+        {
+            "weight_broadcast": {"type": "modelexpress"},
+            "trainer": {},
+            "orchestrator": {
+                "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
+                "renderer": {"name": "qwen3"},
+            },
+            "inference": {"vllm": {"speculative_config": {"method": "eagle3", "model": "drafts/eagle3"}}},
+        }
+    )
+    assert config.orchestrator.speculative_decoding.draft == Path("drafts/eagle3")
+
+
 @pytest.mark.parametrize(
     ("init_type", "vllm", "match"),
     [
@@ -1887,7 +2005,7 @@ def test_shared_ckpt_rollouts_reaches_the_orchestrator(rollouts):
 def test_ckpt_rollouts_is_off_by_default():
     config = RLConfig.model_validate({"ckpt": {}, "trainer": {}, "orchestrator": {"renderer": {"name": "default"}}})
     assert config.orchestrator.ckpt.rollouts is False
-    assert config.orchestrator.ckpt.rollouts_save_timeout == 600
+    assert config.orchestrator.ckpt.rollouts_save_timeout == 120
 
 
 def test_shared_ckpt_rollouts_save_timeout_reaches_the_orchestrator():
@@ -1948,3 +2066,39 @@ def test_env_worker_pool_uses_ckpt_output_dir_as_save_root(tmp_path):
     assert pool_configs
     data = json.loads(pool_configs[0].read_text())
     assert Path(data["output_dir"]) == ckpt_dir.resolve()
+
+
+def _dynamo_orchestrator(sampling: dict, dynamo: bool = True) -> dict:
+    return {
+        "model": {"client": {"dynamo": {"enabled": dynamo, "discovery_url": "http://frontend:8001"}}},
+        "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}, "sampling": sampling}]},
+        "renderer": {"name": "qwen3"},
+    }
+
+
+@pytest.mark.parametrize(
+    ("sampling", "match"),
+    [
+        ({"top_p": 0.9}, "truncated sampling"),
+        ({"top_k": 20}, "truncated sampling"),
+        ({"logprobs": 5}, "a logprob head"),
+    ],
+)
+def test_dynamo_rejects_sampling_its_sidecar_cannot_serve(sampling: dict, match: str):
+    with pytest.raises(ValidationError, match=f"Dynamo engines cannot serve {match}"):
+        OrchestratorConfig.model_validate(_dynamo_orchestrator(sampling))
+
+
+def test_dynamo_serves_plain_sampling_and_other_engines_serve_truncated_sampling():
+    OrchestratorConfig.model_validate(_dynamo_orchestrator({"temperature": 0.7}))
+    OrchestratorConfig.model_validate(_dynamo_orchestrator({"top_p": 0.9}, dynamo=False))
+
+
+def test_dynamo_rejects_score_centering_at_launch():
+    with pytest.raises(ValidationError, match="Dynamo engines cannot serve a logprob head"):
+        RLConfig.model_validate(
+            {
+                "trainer": {"loss": {"type": "icepop", "score_centering": True}},
+                "orchestrator": _dynamo_orchestrator({}),
+            }
+        )

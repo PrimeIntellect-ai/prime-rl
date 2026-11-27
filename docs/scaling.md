@@ -237,8 +237,8 @@ Then add nodes instead of CP (`cp = 1`) and run one full-length sequence per GPU
 
 Examples:
 
-- [`examples/advanced/qwen3-235b-a22b/sft-max-perf.toml`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/qwen3-235b-a22b): Qwen3-235B-A22B SFT on 4 x 8 B300 at 16k, around 46% MFU.
-- [`examples/advanced/glm-5.3/sft/h200/16k-12-node.toml`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/glm-5.3/sft/h200): the same recipe as an overlay for GLM-5.3 SFT on 12 H200 nodes.
+- [`recipes/qwen3-235b-a22b/sft-max-perf.toml`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes/qwen3-235b-a22b): Qwen3-235B-A22B SFT on 4 x 8 B300 at 16k, around 46% MFU.
+- [`recipes/glm-5.3/sft/h200/16k-12-node.toml`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes/glm-5.3/sft/h200): the same recipe as an overlay for GLM-5.3 SFT on 12 H200 nodes.
 
 ## SLURM
 
@@ -295,35 +295,17 @@ gpus_per_node = 8
 
 ### Examples
 
-Full multi-node configs ship under [`examples/advanced/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced) and [`configs/advanced/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/configs/advanced):
+Full multi-node configs ship under [`recipes/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes):
 
-- [`configs/advanced/nemotron-3-super/swe.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/configs/advanced/nemotron-3-super/swe.toml) — 4 trainer + 1 inference node RL on a 120B hybrid-Mamba MoE with NCCL weight broadcast.
-- [`glm-5.3/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/glm-5.3) — large-scale and P/D-disaggregated inference across the GLM-5 family.
-- [`glm-4.5-air/swe-2-node.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/advanced/glm-4.5-air/swe-2-node.toml) — train a 100B+ MoE on only two nodes: a single-node sign-SGD trainer (full optimizer offload) paired with one inference replica at batch size 64. An overlay on the shared `swe-budget.toml` base — launch with `uv run rl @ swe-budget.toml @ swe-2-node.toml`.
+- [`nemotron-3-super/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes/nemotron-3-super) — 2 trainer + 4 inference node RL on a 120B hybrid-Mamba MoE at 256k context.
+- [`glm-5.3/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes/glm-5.3) — large-scale and P/D-disaggregated inference across the GLM-5 family.
+- [`glm-4.5-air/swe-2-node.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/recipes/glm-4.5-air/swe-2-node.toml) — train a 100B+ MoE on only two nodes: a single-node sign-SGD trainer (full optimizer offload) paired with one inference replica at batch size 64. An overlay on the shared `swe-budget.toml` base — launch with `uv run rl @ swe-budget.toml @ swe-2-node.toml`.
 
 For inference-only multi-node, set `[deployment] type = "multi_node"` on an inference TOML — each node runs an independent vLLM replica (TP and DP must fit within one node), fronted by a single global router on node 0. Point clients at the router URL the launcher prints.
 
 ### ModelExpress weight broadcast
 
 See [ModelExpress](model-express.md) for the `modelexpress` weight transport.
-
-### NIXL weight broadcast
-
-Set `[weight_broadcast] type = "nixl"` to use receiver-driven NIXL weight transfer. Before the first SLURM run, install the NIXL/UCX build and the ModelExpress service binaries on the shared filesystem:
-
-```bash
-bash scripts/install_nixl_from_source.sh
-uv pip install --reinstall --no-deps deps/nixl_cu13-*.whl
-bash scripts/install_modelexpress.sh
-```
-
-The generated job starts a job-scoped ModelExpress server and Redis backend on the trainer head node and passes that address to every component. To use an existing service, set `slurm.launch_modelexpress = false` and configure `weight_broadcast.host` and `weight_broadcast.port`.
-
-The launcher requires the CUDA and InfiniBand transports from `third_party/ucx`. Each NIXL process selects the active InfiniBand port nearest its GPU; an explicitly configured `UCX_NET_DEVICES` takes precedence. Inference ranks start their pulls at different trainer ranks so concurrent workers distribute traffic across all available source rails.
-
-ModelExpress exchanges peer metadata during startup. Weight updates reuse prepared NIXL requests, post every trainer-rank read in a transfer group concurrently, and use versioned NIXL notifications for source readiness and buffer credits.
-
-By default, the trainer and inference worker each allocate one transfer arena. Set `weight_broadcast.overlap_transfer_and_replay = true` to allocate two arenas on both sides and replay one weight group while receiving the next. The additional arena is the size of the largest transfer group per GPU; allocation errors are reported instead of silently disabling overlap.
 
 ### Custom Templates
 

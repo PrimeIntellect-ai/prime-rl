@@ -2,21 +2,7 @@
 
 End-to-end usage examples for prime-rl, referenced from the top-level [README](../README.md).
 
-New here? Follow [`basic/reverse-text/`](basic/reverse-text/README.md) first — it trains a small model end-to-end on 2 GPUs and introduces the launch → dashboard → checkpoint flow the advanced examples reuse.
-
-## advanced/ — frontier models, multi-node
-
-Larger runs on frontier models, one folder per model, each with a launch README covering requirements, credentials, launch, monitoring, and resume:
-
-- [`qwen3-30b-a3b/`](advanced/qwen3-30b-a3b/README.md) — `Qwen3-30B-A3B` RL on math (`i3_math`), SWE (`r2e-gym`), and agentic tool use (general-agent on Modal). 2 train + 2 infer nodes; the SWE config runs at 131k context with `ep = 8` + `cp = 2`.
-- [`glm-4.5-air/`](advanced/glm-4.5-air/README.md) — `GLM-4.5-Air` (100B MoE) RL across search, SWE, and terminal domains at 131k context, with agents in sandboxes. 2 train + 4 infer nodes (SWE: 1 + 3).
-- [`glm-5.3/`](advanced/glm-5.3/README.md) — the GLM-5 family at scale: 16 trainer nodes, P/D-disaggregated FP8 inference, and an llm-d router + Mooncake KV-offload variant. Also ships standalone `infer/` pre-flights.
-- `deepseek-v4-flash/` — `DeepSeek-V4-Flash` (284B MoE) agentic RL on SWE tasks (`scaleswe`, eval on SWE-bench Verified) at 131k context with 1024+ rollouts in flight. A base plus per-GPU overlays: H200 runs 4 train + 2 infer nodes with blockwise FP8, B300 runs 4 train + 4 infer nodes with MXFP8.
-- `qwen3.6-35b-a3b/` — `Qwen3.6-35B-A3B` agentic RL on SWE tasks (`scaleswe`, eval on SWE-bench Verified) at 256k context. A base plus per-GPU overlays: H200 runs 1 train + 3 DEP8 infer nodes.
-- `intellect-3.1/` — reproduce the `INTELLECT-3.1` run: 4 train + 12 infer nodes on SWE.
-- [`qwen3-235b-a22b/`](advanced/qwen3-235b-a22b/README.md) — SFT max trainer perf: `Qwen3-235B-A22B` on 4 trainer nodes at 16k context, a throughput reference using the max trainer throughput recipe.
-
-All advanced configs submit through SLURM (the `rl` entrypoint writes the sbatch job when the config has a `[slurm]` table) and are monitored with `uv run dashboard`. See the per-model README for the full walkthrough.
+New here? Follow [`basic/reverse-text/`](basic/reverse-text/README.md) first — it trains a small model end-to-end on 2 GPUs and introduces the launch → dashboard → checkpoint flow the [recipes](../recipes) reuse.
 
 ## basic/ — 1 to 8 GPUs
 
@@ -35,6 +21,6 @@ Examples that don't follow the basic eval → SFT → RL walk-through pattern:
 - [`dynamo/`](extra/dynamo/README.md) — five-step Qwen3 math training with external Dynamo inference and NCCL weight updates
 - [`vlm/`](extra/vlm/README.md) — Qwen3.5 / Qwen3.8 multi-node image RL and dense + MoE LoRA SFT
 
-## Related config folders
+## Frontier models
 
-- Frontier-model configs without launch walkthroughs (`minimax-m2.5`, `nemotron-3-super`, `deepseek-v4-flash` SFT and serving) live in [`configs/advanced/`](../configs/advanced).
+Multi-node configs for frontier models live in [`recipes/`](../recipes), one folder per model.

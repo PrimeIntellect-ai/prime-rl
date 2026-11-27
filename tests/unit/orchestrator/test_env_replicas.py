@@ -4,6 +4,7 @@ import asyncio
 from types import SimpleNamespace
 
 from prime_rl.env.types import RestoreRef, SaveResponse
+from prime_rl.orchestrator import envs
 from prime_rl.orchestrator.envs import Env
 
 
@@ -48,14 +49,16 @@ class SaveClient:
         if not waits:
             self.release.set()
 
-    async def save(self, directory: str) -> SaveResponse:
+    async def save(self, directory: str, timeout: float) -> SaveResponse:
         await self.release.wait()
         if self.fails:
             raise RuntimeError("worker failed")
         return SaveResponse(restores={self.request_id: self.restore}, orphans=[{"id": f"unused-{self.request_id}"}])
 
 
-def test_save_merges_the_replicas_that_answer_in_time():
+def test_save_merges_the_replicas_that_answer_in_time(monkeypatch):
+    monkeypatch.setattr(envs, "SAVE_REPLY_SECONDS", 0.0)
+
     async def run():
         env = Env(SimpleNamespace(resolved_name="test"), None, [])
         fast, failing, slow = SaveClient("r1"), SaveClient("r2", fails=True), SaveClient("r3", waits=True)
