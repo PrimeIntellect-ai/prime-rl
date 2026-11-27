@@ -2,6 +2,7 @@
 
 Reference implementations:
   * transformers 5.23 ``transformers/models/inkling2/modeling_inkling2.py``
+  * transformers 5.24 ``transformers/models/inkling2_loop/modeling_inkling2_loop.py``
   * the vLLM port (vllm/models/inkling2)
 
 Structure per layer: block attention residual -> attention (sliding window or
@@ -9,6 +10,11 @@ global with a hidden-conditioned relative bias, per-token sinks, output gate,
 q/rel L2 clips, unweighted value norm, log scaling on global layers) -> short
 convolution -> block attention residual -> MoE (384 experts, top-8 sigmoid
 router with a selection bias, softcapped SwiGLU) -> short convolution.
+
+Looped checkpoints (Inkling 2 Mini) run the loop core several times with shared
+weights. Every pass restarts from the state that entered the core; after the
+first pass, each core layer also reads the previous pass's blocks (the message)
+and gates it into its attention and MoE inputs.
 """
 
 from __future__ import annotations
@@ -17,13 +23,20 @@ import math
 from typing import Union
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.nn.attention.flex_attention import AuxRequest, BlockMask, create_block_mask
 from torch.nn.attention.flex_attention import flex_attention as _flex_attention
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, TextModelOutput
-from prime_rl.trainer.models.inkling2.configuration_inkling2 import Inkling2Config, Inkling2TextConfig
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL, TextModelOutput, count_active_params
+from prime_rl.trainer.models.inkling2.configuration_inkling2 import (
+    Inkling2Config,
+    Inkling2LoopConfig,
+    Inkling2LoopTextConfig,
+    Inkling2TextConfig,
+)
 from prime_rl.trainer.models.inkling2.converting_inkling2 import conversion_chain
+from prime_rl.trainer.models.layers.activations import SoftcappedSwiglu
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
@@ -294,6 +307,27 @@ class Inkling2AttnRes(nn.Module):
         self.output_query = nn.Parameter(torch.zeros(config.hidden_size), requires_grad=True)
 
 
+class Inkling2LoopController(nn.Module):
+    """Gates a message of the previous loop pass into one sublayer input, in fp32:
+    ``(1 - tanh(z @ forget.T)) * x + tanh(z @ gain.T) * m`` with ``z = [rms(x), rms(m)] @ down.T``."""
+
+    def __init__(self, hidden_size: int, rank: int, eps: float):
+        super().__init__()
+        self.norm = Inkling2UnweightedRMSNorm(eps)
+        self.down_weight = nn.Parameter(torch.empty(rank, 2 * hidden_size))
+        self.gain_weight = nn.Parameter(torch.empty(hidden_size, rank))
+        self.forget_weight = nn.Parameter(torch.empty(hidden_size, rank))
+
+    def forward(self, hidden_states: Tensor, message: Tensor) -> Tensor:
+        hidden_states, message = hidden_states.float(), message.float()
+        joined = torch.cat([self.norm(hidden_states), self.norm(message)], dim=-1)
+        # The down projection runs in the weight dtype like serving; the gates stay in fp32.
+        z = F.linear(joined.to(self.down_weight.dtype), self.down_weight).float()
+        forget = torch.tanh(F.linear(z, self.forget_weight.float()))
+        gain = torch.tanh(F.linear(z, self.gain_weight.float()))
+        return (1 - forget) * hidden_states + gain * message
+
+
 class Inkling2DecoderLayer(nn.Module):
     def __init__(self, config: Inkling2TextConfig, layer_idx: int):
         super().__init__()
@@ -315,7 +349,23 @@ class Inkling2DecoderLayer(nn.Module):
         self.post_mlp_convolution = Inkling2ShortConvolution(hidden, config.sconv_kernel_size)
         self.attention_input = Inkling2BlockAttentionResidual(hidden, config.rms_norm_eps) if layer_idx > 0 else None
         self.mlp_input = Inkling2BlockAttentionResidual(hidden, config.rms_norm_eps)
+        if layer_idx in config.loop_core_layers:
+            self.message_input = Inkling2BlockAttentionResidual(hidden, config.rms_norm_eps)
+            self.controllers = nn.ModuleDict(
+                {
+                    name: Inkling2LoopController(hidden, config.loop_gate_rank, config.rms_norm_eps)
+                    for name in ("attn", "k", "v", "mlp")
+                }
+            )
 
+        if (config.mlp_gate_softcap, config.mlp_up_softcap) != (
+            SoftcappedSwiglu.gate_softcap,
+            SoftcappedSwiglu.up_softcap,
+        ):
+            raise ValueError(
+                f"Inkling 2 expert softcaps {config.mlp_gate_softcap}/{config.mlp_up_softcap} are not supported; "
+                f"the expert activation uses {SoftcappedSwiglu.gate_softcap}/{SoftcappedSwiglu.up_softcap}"
+            )
         moe_args = MoEArgs(
             num_experts=config.n_routed_experts,
             expert_type="gated",
@@ -340,10 +390,18 @@ class Inkling2DecoderLayer(nn.Module):
         doc_ids: Tensor,
         block_masks: dict[str, BlockMask],
         routed_experts: Tensor | None = None,
+        bank: Tensor | None = None,
+        message_queries: Tensor | None = None,
         **kwargs,
     ) -> tuple[Tensor, Tensor]:
+        """``bank`` (``[B, S, n, H]``) and ``message_queries`` (``[4, H]``) are given to a loop core
+        layer after the first pass: the blocks the previous pass sealed inside the core followed by
+        its last partial block, and this layer's Q, K, V and MoE message queries."""
         dtype = hidden_states.dtype
         block_residual = hidden_states
+        messages = None
+        if bank is not None:
+            messages = self.message_input(message_queries, bank[..., :-1, :], bank[..., -1, :]).unbind(-2)
 
         if self.attention_input is not None:
             q_hidden = self.attention_input(attn_query, block_states, hidden_states)
@@ -352,7 +410,7 @@ class Inkling2DecoderLayer(nn.Module):
             else:
                 q_hidden, k_hidden, v_hidden = q_hidden.unbind(-2)
 
-        if self.is_sliding:
+        if self.is_sliding and messages is None:
             attn_input = self.input_layernorm(hidden_states).to(dtype)
             attn_out = self.self_attn(
                 attn_input,
@@ -364,14 +422,24 @@ class Inkling2DecoderLayer(nn.Module):
                 block_masks["sliding"],
             )
         else:
+            if self.is_sliding:
+                # A sliding layer has one input and one norm; its Q, K and V inputs differ only by their messages.
+                q_hidden = k_hidden = v_hidden = hidden_states
+                q_norm = k_norm = v_norm = self.input_layernorm
+            else:
+                q_norm, k_norm, v_norm = self.q_input_layernorm, self.k_input_layernorm, self.v_input_layernorm
+            if messages is not None:
+                q_hidden = self.controllers["attn"](q_hidden, messages[0])
+                k_hidden = self.controllers["k"](k_hidden, messages[1])
+                v_hidden = self.controllers["v"](v_hidden, messages[2])
             attn_out = self.self_attn(
-                self.q_input_layernorm(q_hidden).to(dtype),
-                self.k_input_layernorm(k_hidden).to(dtype),
-                self.v_input_layernorm(v_hidden).to(dtype),
+                q_norm(q_hidden).to(dtype),
+                k_norm(k_hidden).to(dtype),
+                v_norm(v_hidden).to(dtype),
                 position_ids,
                 cu_seqlens,
                 doc_ids,
-                block_masks["full"],
+                block_masks["sliding" if self.is_sliding else "full"],
             )
         attn_out = self.post_attention_convolution(attn_out, cu_seqlens, doc_ids)
 
@@ -382,6 +450,8 @@ class Inkling2DecoderLayer(nn.Module):
             residual = (block_residual.float() + attn_out.float()).to(dtype)
 
         mlp_in = self.mlp_input(mlp_query, block_states, residual)[..., 0, :]
+        if messages is not None:
+            mlp_in = self.controllers["mlp"](mlp_in, messages[3])
         mlp_out = self.mlp(self.post_attention_layernorm(mlp_in).to(dtype), routed_experts=routed_experts)
         mlp_out = self.post_mlp_convolution(mlp_out, cu_seqlens, doc_ids)
         return ((residual.float() + mlp_out.float()).to(dtype), block_states)
@@ -424,6 +494,12 @@ class Inkling2PreTrainedModel(PreTrainedModelPrimeRL):
         elif isinstance(module, Inkling2AttnRes):
             for param in module.parameters():
                 nn.init.zeros_(param)
+        elif isinstance(module, Inkling2LoopModel):
+            nn.init.zeros_(module.middle_cycle_cross_pass_queries)
+            nn.init.zeros_(module.middle_cycle_cross_pass_kv_queries)
+        elif isinstance(module, Inkling2LoopController):
+            for param in module.parameters():
+                nn.init.trunc_normal_(param, mean=0.0, std=std)
         elif isinstance(module, Inkling2ScaledL2Clip):
             nn.init.ones_(module.scale)
         elif isinstance(module, RMSNorm):
@@ -451,7 +527,7 @@ class Inkling2PreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
-        return "attn_res." in name or name.endswith("mlp.router.selection_bias")
+        return "attn_res." in name or "middle_cycle_cross_pass_" in name or name.endswith("mlp.router.selection_bias")
 
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:
@@ -461,6 +537,11 @@ class Inkling2PreTrainedModel(PreTrainedModelPrimeRL):
 class Inkling2Model(Inkling2PreTrainedModel):
     def __init__(self, config: Inkling2TextConfig):
         super().__init__(config)
+        self.build(config)
+        self.post_init()
+
+    def build(self, config: Inkling2TextConfig) -> None:
+        """Create the modules and parameters; `post_init` initializes them right after."""
         self.vocab_size = config.vocab_size
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         self.embed_norm = RMSNorm(RMSNormConfig(config.hidden_size, config.rms_norm_eps))
@@ -468,7 +549,6 @@ class Inkling2Model(Inkling2PreTrainedModel):
         self.norm = RMSNorm(RMSNormConfig(config.hidden_size, config.rms_norm_eps))
         self.attn_res = Inkling2AttnRes(config)
         self.final_input = Inkling2BlockAttentionResidual(config.hidden_size, config.rms_norm_eps)
-        self.post_init()
 
     def forward(
         self,
@@ -503,23 +583,110 @@ class Inkling2Model(Inkling2PreTrainedModel):
         B, S, _ = hidden_states.shape
         block_states = hidden_states.new_zeros(B, S, 0, self.config.hidden_size)
 
-        for layer_idx, layer in enumerate(self.layers):
-            attn_query = self.attn_res.attn_queries[layer_idx - 1] if layer_idx > 0 else None
-            hidden_states, block_states = layer(
-                hidden_states,
-                block_states,
-                attn_query,
-                self.attn_res.mlp_queries[layer_idx],
-                position_ids,
-                cu_seqlens,
-                doc_ids,
-                block_masks,
-                routed_experts[:, :, layer_idx] if routed_experts is not None else None,
+        if routed_experts is not None and routed_experts.shape[2] != self.config.num_layer_visits:
+            raise ValueError(
+                f"routed_experts has {routed_experts.shape[2]} layer slots, but the model routes "
+                f"{self.config.num_layer_visits} times per token (once per layer visit)"
             )
+        hidden_states, block_states = self._run_layers(
+            hidden_states, block_states, routed_experts, (position_ids, cu_seqlens, doc_ids, block_masks)
+        )
 
         hidden_states = self.final_input(self.attn_res.output_query, block_states, hidden_states)[..., 0, :]
         hidden_states = self.norm(hidden_states).to(inputs_embeds.dtype)
         return TextModelOutput(last_hidden_state=hidden_states)
+
+    def _run_layer(
+        self,
+        layer_idx: int,
+        visit: int,
+        hidden_states: Tensor,
+        block_states: Tensor,
+        routed_experts: Tensor | None,
+        layer_args: tuple,
+        bank: Tensor | None = None,
+        message_queries: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
+        """Runs one layer. ``visit`` counts the layer calls of a forward and indexes ``routed_experts``."""
+        # Every call passes the same positional arguments, so a compiled layer is not guarded on keyword names.
+        return self.layers[layer_idx](
+            hidden_states,
+            block_states,
+            self.attn_res.attn_queries[layer_idx - 1] if layer_idx > 0 else None,
+            self.attn_res.mlp_queries[layer_idx],
+            *layer_args,
+            # A compiled layer takes the routes of its visit as a tensor of their own, not a strided view.
+            routed_experts[:, :, visit].contiguous() if routed_experts is not None else None,
+            bank,
+            message_queries,
+        )
+
+    def _run_layers(
+        self, hidden_states: Tensor, block_states: Tensor, routed_experts: Tensor | None, layer_args: tuple
+    ) -> tuple[Tensor, Tensor]:
+        for layer_idx in range(len(self.layers)):
+            hidden_states, block_states = self._run_layer(
+                layer_idx, layer_idx, hidden_states, block_states, routed_experts, layer_args
+            )
+        return hidden_states, block_states
+
+
+class Inkling2LoopModel(Inkling2Model):
+    def build(self, config: Inkling2LoopTextConfig) -> None:
+        # The trainer can truncate the layers after the config is built (`debug.num_layers`).
+        config.validate_loop()
+        super().build(config)
+        # Queries of the loop messages, named as in the checkpoint: non-layer weights are broadcast to
+        # inference under the trainer's names. Rows 2j and 2j+1 belong to core layer j, as its Q and MoE
+        # queries in the first table and its K and V queries in the second. Like the other block-residual
+        # queries, the release stores them in FP32 and training keeps them in the model dtype.
+        num_queries = 2 * len(config.loop_core_layers)
+        self.middle_cycle_cross_pass_queries = nn.Parameter(torch.zeros(num_queries, config.hidden_size))
+        self.middle_cycle_cross_pass_kv_queries = nn.Parameter(torch.zeros(num_queries, config.hidden_size))
+
+    def _run_layers(
+        self, hidden_states: Tensor, block_states: Tensor, routed_experts: Tensor | None, layer_args: tuple
+    ) -> tuple[Tensor, Tensor]:
+        core, num_passes = self.config.loop_core_layers, self.config.loop_num_passes
+        for layer_idx in range(core.start):
+            hidden_states, block_states = self._run_layer(
+                layer_idx, layer_idx, hidden_states, block_states, routed_experts, layer_args
+            )
+
+        restart_hidden_states, restart_block_states = hidden_states, block_states
+        num_restart_blocks = restart_block_states.shape[-2]
+        queries, kv_queries = self.middle_cycle_cross_pass_queries, self.middle_cycle_cross_pass_kv_queries
+        # Q, K, V and MoE queries of each core layer, stacked into new tensors: a compiled layer must
+        # not receive views of the two tables.
+        message_queries = [
+            torch.stack((queries[2 * j], kv_queries[2 * j], kv_queries[2 * j + 1], queries[2 * j + 1]))
+            for j in range(len(core))
+        ]
+        bank = None
+        for pass_idx in range(num_passes):
+            if pass_idx > 0:
+                # The first core layer seals the restart partial as a block; the blocks after it and
+                # the last partial are what this pass produced inside the core.
+                bank = torch.cat([block_states[..., num_restart_blocks + 1 :, :], hidden_states.unsqueeze(-2)], dim=-2)
+                hidden_states, block_states = restart_hidden_states, restart_block_states
+            for j, layer_idx in enumerate(core):
+                hidden_states, block_states = self._run_layer(
+                    layer_idx,
+                    self.config.layer_visit_ids(layer_idx)[pass_idx],
+                    hidden_states,
+                    block_states,
+                    routed_experts,
+                    layer_args,
+                    bank,
+                    message_queries[j] if bank is not None else None,
+                )
+
+        for layer_idx in range(core.stop, len(self.layers)):
+            (visit,) = self.config.layer_visit_ids(layer_idx)
+            hidden_states, block_states = self._run_layer(
+                layer_idx, visit, hidden_states, block_states, routed_experts, layer_args
+            )
+        return hidden_states, block_states
 
 
 class SoftcapLinear(nn.Linear):
@@ -531,14 +698,17 @@ class SoftcapLinear(nn.Linear):
 
 
 class Inkling2ForCausalLM(Inkling2PreTrainedModel):
+    text_config_class = Inkling2TextConfig
+    text_model_class = Inkling2Model
+
     def __init__(self, config: Inkling2Config | Inkling2TextConfig):
         text_config = getattr(config, "text_config", None)
         if isinstance(text_config, dict):
-            text_config = Inkling2TextConfig(**text_config)
+            text_config = self.text_config_class(**text_config)
         if text_config is None:
             text_config = config
         super().__init__(text_config)
-        self.model = Inkling2Model(text_config)
+        self.model = self.text_model_class(text_config)
         self.vocab_size = text_config.vocab_size
         self.lm_head = SoftcapLinear(
             text_config.hidden_size, text_config.vocab_size, text_config.final_logit_softcapping
@@ -597,4 +767,33 @@ class Inkling2ForCausalLM(Inkling2PreTrainedModel):
                         module.router.selection_bias.zero_()
 
 
-__all__ = ["Inkling2Config", "Inkling2TextConfig", "Inkling2ForCausalLM", "Inkling2Model", "Inkling2PreTrainedModel"]
+class Inkling2LoopForCausalLM(Inkling2ForCausalLM):
+    config: Inkling2LoopConfig
+    text_config_class = Inkling2LoopTextConfig
+    text_model_class = Inkling2LoopModel
+
+    def num_active_params(self) -> int:
+        """A token goes through the loop core once per pass, and through its controllers once per pass after the first."""
+        extra_passes = self.config.loop_num_passes - 1
+        core_params, controller_params = [], []
+        for layer_idx in self.config.loop_core_layers:
+            for name, param in self.model.layers[layer_idx].named_parameters():
+                (controller_params if ".controllers." in f".{name}" else core_params).append(param)
+        return (
+            count_active_params(self)
+            + extra_passes * count_active_params(self, core_params)
+            + (extra_passes - 1) * count_active_params(self, controller_params)
+        )
+
+
+__all__ = [
+    "Inkling2Config",
+    "Inkling2ForCausalLM",
+    "Inkling2LoopConfig",
+    "Inkling2LoopForCausalLM",
+    "Inkling2LoopModel",
+    "Inkling2LoopTextConfig",
+    "Inkling2Model",
+    "Inkling2PreTrainedModel",
+    "Inkling2TextConfig",
+]

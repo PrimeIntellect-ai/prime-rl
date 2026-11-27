@@ -59,6 +59,7 @@ The trainer runs the PrimeRL model implementations under `src/prime_rl/trainer/m
 | Trinity (`afmoe`) | `arcee-ai/Trinity-Mini`, … | yes | ✅ | ✅ |
 | GLM-4 · GLM-4.5 MoE · INTELLECT-3 (`glm4_moe`) | `THUDM/GLM-4-9B-0414`, `zai-org/GLM-4.5-Air`, `zai-org/GLM-4.5`, `PrimeIntellect/INTELLECT-3`, … | yes | ✅ | ✅ |
 | GPT-OSS (`gpt_oss`) | `unsloth/gpt-oss-20b-BF16`, … | yes | ✅ | ✅ |
+| Inkling 2, text only (`inkling2`, `inkling2_loop`) | `thinkingmachines/Inkling-2-Small`, `thinkingmachines/Inkling-2-Mini`, [converted to bf16](docs/advanced.md#custom-modeling) | yes | ✅ | ❌ |
 
 ## Setup
 
