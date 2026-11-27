@@ -357,7 +357,7 @@ class EnvWorker:
         reasons: dict[str, int] = {}
         # Held at their restore points until the client's `release`: a saved rollout
         # must still run when the client records what is in flight.
-        traces = await save_all(reasons, hold=True, watchdog=False)
+        traces = await save_all(reasons, hold=True, watchdog=False, timeout=req.timeout)
         slots = {
             slot.traces[0].id: (request_id, slot) for request_id, slot in self._slots.items() if len(slot.traces) == 1
         }

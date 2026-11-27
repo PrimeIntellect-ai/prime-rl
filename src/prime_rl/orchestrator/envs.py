@@ -40,6 +40,12 @@ from prime_rl.utils.pathing import env_address_file
 # broker; a reply does not establish worker readiness.
 ENV_WORKER_POOL_STARTUP_TIMEOUT = 600.0
 
+SAVE_REPLY_SECONDS = 600.0
+"""Seconds a replica gets past the save timeout to write its restore files and reply.
+Restore files with top-k logprobs take minutes to write. A replica that misses this
+budget loses all its restore points, so the budget is generous. It delays a save
+only when a replica hangs."""
+
 
 async def wait_for_address(path: Path, timeout: float) -> str:
     """The address a launcher-managed env worker pool published, polling for the file the
@@ -179,12 +185,14 @@ class Env:
 
     async def save(self, directory: str, timeout: float) -> dict[str, RestoreRef]:
         """Take a memory checkpoint of every rollout running on every replica, each
-        written as a restore file under ``directory``. Returns the restore points by the
-        ``request_id`` of their run; the caller owns their snapshots. A replica that
-        fails contributes nothing, and neither does one that takes longer than
-        ``timeout``: what it returns later lands in ``late_restores``."""
-        saves = [asyncio.create_task(client.save(directory)) for client in self.env_clients]
-        done, pending = await asyncio.wait(saves, timeout=timeout)
+        written as a restore file under ``directory``. Each rollout gets ``timeout``
+        seconds for its memory checkpoint; one that takes longer starts over. Returns
+        the restore points by the ``request_id`` of their run; the caller owns their
+        snapshots. A replica that fails contributes nothing, and neither does one that
+        does not reply within ``SAVE_REPLY_SECONDS`` after the timeout: what it returns
+        later lands in ``late_restores``."""
+        saves = [asyncio.create_task(client.save(directory, timeout)) for client in self.env_clients]
+        done, pending = await asyncio.wait(saves, timeout=timeout + SAVE_REPLY_SECONDS)
         restores: dict[str, RestoreRef] = {}
         self.save_skipped = Counter()
         for save in done:
@@ -200,7 +208,7 @@ class Env:
         if pending:
             get_logger().warning(
                 f"{len(pending)} of {len(saves)} replicas of {self.name} did not save their running rollouts "
-                f"within {timeout:.0f}s; those rollouts start over on resume"
+                f"within {timeout + SAVE_REPLY_SECONDS:.0f}s; those rollouts start over on resume"
             )
         return restores
 

@@ -17,6 +17,7 @@ from prime_rl.configs.algorithm import GRPOAlgoConfig
 from prime_rl.configs.orchestrator import CheckpointConfig, CurriculumConfig, OrchestratorConfig
 from prime_rl.env.heads import EpisodeHead, recorded_head
 from prime_rl.env.types import RestoreRef
+from prime_rl.orchestrator import orchestrator as orchestrator_module
 from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.orchestrator.algo.routing import assign_advantages
 from prime_rl.orchestrator.ckpt import (
@@ -461,6 +462,104 @@ def orchestrator() -> Orchestrator:
     o.staged = deque()
     o.resume_step = 4
     return o
+
+
+def barrier_orchestrator(tmp_path, monkeypatch, events: list) -> Orchestrator:
+    """An orchestrator whose rollout checkpoint saves one rollout of one env and writes
+    nothing: ``persist_open_work`` and ``finish_rollout_ckpt`` are the test's."""
+    o = orchestrator()
+    o.config = SimpleNamespace(ckpt=SimpleNamespace(rollouts=True, interval=1, rollouts_save_timeout=5), max_steps=None)
+    o.controller = None
+    o.ckpt_task = None
+    o.gc = object()
+    o.control_steps = set()
+    o.progress = o.train_source = None
+    o.config_state = lambda: {}
+    restore = RestoreRef(trace_id="t1", path=str(tmp_path / "t1.restore"), snapshot={"id": "s1"})
+
+    class Env:
+        orphan_snapshots: list = []
+
+        async def save(self, directory: str, timeout: float) -> dict:
+            events.append(("save", timeout))
+            return {"r1": restore}
+
+        async def release(self) -> None:
+            events.append("release")
+
+    o.train_envs = [Env()]
+    o.dispatcher = SimpleNamespace(inflight_train_count=1)
+    ledger = SimpleNamespace(record=lambda step, snapshots: events.append(("record", step)), orphan=lambda _: None)
+    o.ckpt_manager = SimpleNamespace(
+        get_ckpt_path=lambda step: tmp_path / f"step_{step}",
+        clear=lambda step: None,
+        snapshots=ledger,
+        fork_writer=lambda state, work, step, freeze: 42,
+    )
+    o.open_work = lambda restores: {"restores": restores, "batch": None}
+    monkeypatch.setattr(orchestrator_module, "build_state", lambda *args: {})
+    return o
+
+
+def test_the_publish_barrier_ends_before_the_arrays_are_written(tmp_path, monkeypatch):
+    """The hook at the publish barrier records the pipeline and lets the saved
+    rollouts go on. It writes the arrays of the cut batch before it returns: the
+    trainer frees them once it took the batch. The other training arrays are written
+    afterwards, with the sink still locked."""
+
+    async def run():
+        events: list = []
+        o = barrier_orchestrator(tmp_path, monkeypatch, events)
+        batch = SimpleNamespace(samples=[SimpleNamespace(url="http://worker", id="a")])
+        o.open_work = lambda restores: {"restores": restores, "batch": batch}
+        persisting, written = asyncio.Event(), asyncio.Event()
+
+        async def persist_arrays(refs: dict, rollouts) -> int:
+            events.append(("batch", {url: sorted(ids) for url, ids in refs.items()}))
+            return 1
+
+        async def persist(work: dict, rollouts, skip) -> tuple[int, int]:
+            assert skip == {"http://worker": {"a"}}
+            persisting.set()
+            await written.wait()
+            return 1, 1
+
+        monkeypatch.setattr(orchestrator_module, "persist_arrays", persist_arrays)
+        monkeypatch.setattr(orchestrator_module, "persist_open_work", persist)
+        finished = []
+
+        async def finish(step, pid, work, unused, seconds) -> None:
+            finished.append((step, pid, sorted(seconds)))
+
+        o.finish_rollout_ckpt = finish
+        await asyncio.wait_for(o.checkpoint_rollouts(1), 1)
+        assert events == [("save", 5), ("record", 1), "release", ("batch", {"http://worker": ["a"]})]
+        await persisting.wait()
+        assert o.sink_lock.locked() and not o.ckpt_task.done()
+        written.set()
+        await o.ckpt_task
+        assert not o.sink_lock.locked()
+        assert finished == [(1, 42, ["persist", "save", "snapshot"])]
+
+    asyncio.run(run())
+
+
+def test_a_barrier_that_cannot_record_the_pipeline_fails_and_lets_the_rollouts_go_on(tmp_path, monkeypatch):
+    async def run():
+        events: list = []
+        o = barrier_orchestrator(tmp_path, monkeypatch, events)
+
+        def open_work(restores):
+            raise RuntimeError("no open work")
+
+        o.open_work = open_work
+        with pytest.raises(RuntimeError, match="no open work"):
+            await o.checkpoint_rollouts(1)
+        assert events[-1] == "release" and not o.sink_lock.locked()
+        with pytest.raises(RuntimeError, match="no open work"):
+            await o.ckpt_task
+
+    asyncio.run(run())
 
 
 def test_a_resumed_step_loop_ships_the_batch_then_the_saved_results_then_new_ones():

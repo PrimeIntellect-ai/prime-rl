@@ -100,8 +100,8 @@ class SharedCheckpointConfig(BaseConfig):
     rollouts: bool = False
     """Also checkpoint the orchestrator's finished but unshipped episodes and its running rollouts, so a resumed run continues them (``orchestrator.ckpt.rollouts``)."""
 
-    rollouts_save_timeout: int = Field(600, ge=1)
-    """Seconds each env worker pool gets to save its running rollouts at a rollout checkpoint (``orchestrator.ckpt.rollouts_save_timeout``)."""
+    rollouts_save_timeout: int = Field(120, ge=1)
+    """Seconds each running rollout gets to take its memory checkpoint at a rollout checkpoint (``orchestrator.ckpt.rollouts_save_timeout``)."""
 
     async_save: bool | None = None
     """Write trainer checkpoints in the background (see ``trainer.ckpt.async_save``). If None, uses the trainer's default."""

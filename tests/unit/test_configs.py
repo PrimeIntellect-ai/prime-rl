@@ -2005,7 +2005,7 @@ def test_shared_ckpt_rollouts_reaches_the_orchestrator(rollouts):
 def test_ckpt_rollouts_is_off_by_default():
     config = RLConfig.model_validate({"ckpt": {}, "trainer": {}, "orchestrator": {"renderer": {"name": "default"}}})
     assert config.orchestrator.ckpt.rollouts is False
-    assert config.orchestrator.ckpt.rollouts_save_timeout == 600
+    assert config.orchestrator.ckpt.rollouts_save_timeout == 120
 
 
 def test_shared_ckpt_rollouts_save_timeout_reaches_the_orchestrator():

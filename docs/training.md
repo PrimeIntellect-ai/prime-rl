@@ -582,7 +582,9 @@ These start over:
   - A rollout of an episode with more than one agent run.
   - A rollout whose task has tool servers, shared tools or services of its own.
   - A rollout that has not booted its sandbox yet, or that is in setup or scoring.
-- A running rollout whose env worker pool did not answer within `ckpt.rollouts_save_timeout` seconds (600 by default). The pool's other rollouts start over too, even those whose memory checkpoint was taken. The trainer waits in its weight broadcast for the whole save, so a longer timeout trades a longer pause at each checkpoint for fewer rollouts that start over.
+- A running rollout that did not take its memory checkpoint within `ckpt.rollouts_save_timeout` seconds (120 by default). The trainer waits in its weight broadcast for the whole save, so a longer timeout trades a longer pause at each checkpoint for fewer rollouts that start over. A rollout's memory checkpoint ends when the sandbox provider accepts the snapshot, not when the sandbox has stopped or runs again.
+- A running rollout whose sandbox did not stop for its snapshot, or whose program ended while it stopped. The owner learns this only when it restores the rollout: the snapshot is gone, so the rollout starts over.
+- A running rollout whose env worker pool did not answer within 600 seconds after the timeout. The pool's other rollouts start over too, even those whose memory checkpoint was taken.
 - All eval rollouts. Eval epochs are not checkpointed.
 
 The orchestrator logs one line per checkpoint with the episode counts, the time of each phase and the size on disk. The same values are in the `ckpt/rollouts/*` metrics.
