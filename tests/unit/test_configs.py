@@ -1405,6 +1405,20 @@ def test_shared_monitor_disable_and_prime_propagate():
     assert config.trainer.monitors.prime.name == config.orchestrator.monitors.prime.name == "shared-prime"
 
 
+def test_shared_file_monitor_trace_options_propagate():
+    """A shared ``[monitors.file]`` passes ``live`` and ``trace_sample`` to both sub-configs."""
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "monitors": {"file": {"live": False, "trace_sample": 0.1}},
+            "trainer": {},
+            "orchestrator": {"renderer": {"name": "default"}},
+        }
+    )
+    for file in (config.trainer.monitors.file, config.orchestrator.monitors.file):
+        assert file.live is False and file.trace_sample == 0.1
+
+
 @pytest.mark.parametrize(
     "monitor,trainer,orchestrator",
     [("wandb", {"wandb": {"project": "p"}}, {}), ("prime", {"prime": {}}, {})],
