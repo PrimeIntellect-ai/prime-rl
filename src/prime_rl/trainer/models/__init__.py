@@ -4,6 +4,7 @@ import torch
 from transformers import AutoConfig
 from transformers.configuration_utils import PretrainedConfig
 from transformers.models.llama.configuration_llama import LlamaConfig
+from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
 from prime_rl.trainer.models.afmoe import AfmoeConfig, AfmoeForCausalLM
@@ -20,6 +21,7 @@ from prime_rl.trainer.models.llama import LlamaForCausalLM
 from prime_rl.trainer.models.minimax_m2 import MiniMaxM2Config, MiniMaxM2ForCausalLM
 from prime_rl.trainer.models.muse_glimmer import MuseGlimmerConfig, MuseGlimmerForCausalLM, MuseGlimmerTextConfig
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM, NemotronHOmniConfig
+from prime_rl.trainer.models.qwen2 import Qwen2ForCausalLM
 from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
 from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5Config,
@@ -89,6 +91,7 @@ _CUSTOM_CAUSAL_LM_MODELS: tuple[
     (GptOssConfig, GptOssForCausalLM),
     (Inkling2TextConfig, Inkling2ForCausalLM),
     (Inkling2Config, Inkling2ForCausalLM),
+    (Qwen2Config, Qwen2ForCausalLM),
 )
 _CUSTOM_CAUSAL_LM_MAPPING: dict[type[PretrainedConfig], type[PreTrainedModelPrimeRL]] = dict(_CUSTOM_CAUSAL_LM_MODELS)
 
