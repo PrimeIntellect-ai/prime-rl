@@ -19,7 +19,7 @@ staging_buffers_count = 2          # overlap the next read with the current inst
 
 - `staging_mode`: `COPY_TO_HOST` (default) snapshots trainer shards into host memory. `COPY_TO_DEVICE` uses extra GPU memory. `IN_PLACE` copies nothing, but requires the trainer tensors to stay unchanged and already have the transfer dtype until inference has installed them.
 - `metadata_port` (default 5655): base port of the trainer's NIXL metadata listener. Each trainer GPU listens on this port plus its local device id.
-- `staging_buffer_bytes` × `staging_buffers_count` bounds the extra receiver memory per inference GPU. Without it, each GPU stages a full copy of its shard, which can OOM at high `gpu_memory_utilization`.
+- `staging_buffer_bytes` × `staging_buffers_count` bounds the extra receiver memory per inference GPU. Without it, each GPU stages a full copy of its shard, which can OOM at high `gpu_memory_utilization`. Each buffer must hold the largest module of a GPU's shard; an update with a larger one fails.
 
 ## Behavior
 
@@ -34,3 +34,5 @@ staging_buffers_count = 2          # overlap the next read with the current inst
 ## Limitations
 
 LoRA is rejected at config validation. Pipeline parallelism is untested.
+
+NIXL needs a network device UCX can use. A sandbox without `/sys/class/net` (such as gVisor) has none. On hosts that also expose an RDMA device UCX cannot open, such as a bonded Ethernet port, pin `UCX_NET_DEVICES` to the GPU-attached NICs in `[trainer.env_vars]` and `[inference.env_vars]`.

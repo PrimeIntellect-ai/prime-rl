@@ -178,7 +178,7 @@ The [`examples`](examples) directory holds end-to-end walkthroughs on 1 to 8 GPU
 4. [**Wiki Search**](examples/basic/wiki-search/README.md): Train `Qwen3-4B-Instruct-2507` to answer trivia by searching Wikipedia. Multi-turn tool use.
 5. [**Hendrycks Sanity**](examples/basic/hendrycks-sanity/README.md): Train `Qwen3-1.7B` on a MATH subset that `DeepSeek-R1-Distill-Qwen-1.5B` partially solves (20-80%). Useful for algorithm ablations.
 6. [**VLM**](examples/extra/vlm/README.md): Image RL for Qwen3.5 and Qwen3.8, and LoRA SFT for dense and MoE models.
-7. [**Dynamo**](examples/extra/dynamo/README.md): Train with external Dynamo inference and NCCL weight updates.
+7. [**Dynamo**](examples/extra/dynamo/README.md): Train with external Dynamo inference and ModelExpress weight updates.
 
 ## Recipes
 

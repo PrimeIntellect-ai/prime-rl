@@ -1,6 +1,6 @@
 # Dynamo RL
 
-This example runs five steps of GRPO training on the Hendrycks math environment with `Qwen/Qwen3-0.6B`, one trainer GPU, one external Dynamo inference worker, and NCCL weight transfer.
+This example runs five steps of GRPO training on the Hendrycks math environment with `Qwen/Qwen3-0.6B`, one trainer GPU, one external Dynamo inference worker, and [ModelExpress](../../../docs/model-express.md) weight transfer.
 
 Prime-RL does not launch Dynamo from this configuration. Run the frontend, worker, and trainer as separate processes. This example requires two GPUs: GPU 0 for Prime-RL training and GPU 1 for Dynamo inference.
 
@@ -19,13 +19,13 @@ DYN_HTTP_HOST=127.0.0.1 DYN_HTTP_PORT=8000 DYN_ENABLE_RL=true DYN_RL_PORT=8001 \
 DYN_VLLM_ENABLE_INFERENCE_V1_GENERATE=1 uv run python -m dynamo.frontend
 ```
 
-Start the engine on GPU 1 with the Prime-RL weight-update extension. `VLLM_SERVER_DEV_MODE=1` enables the `/pause`, `/resume` and `/collective_rpc` administration routes on its HTTP port:
+Start the engine on GPU 1 with the Prime-RL ModelExpress weight-update extension. `VLLM_SERVER_DEV_MODE=1` enables the `/pause`, `/resume` and `/collective_rpc` administration routes on its HTTP port:
 
 ```bash
 VLLM_RS=$(uv run python -c "import os, vllm; print(os.path.join(os.path.dirname(vllm.__file__), 'vllm-rs'))")
 CUDA_VISIBLE_DEVICES=1 VLLM_SERVER_DEV_MODE=1 uv run "$VLLM_RS" serve Qwen/Qwen3-0.6B \
   --host 127.0.0.1 --port 8100 --grpc-port 50051 --max-model-len 4096 --reasoning-parser none \
-  -- --worker-extension-cls prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker
+  -- --worker-extension-cls prime_rl.inference.vllm.worker.modelexpress.ModelExpressWeightUpdateWorker
 ```
 
 Arguments after `--` go to the vLLM engine. Keep GPU 0 out of `CUDA_VISIBLE_DEVICES` so it remains available to the Prime-RL trainer.
@@ -45,7 +45,7 @@ The default configuration expects:
 
 - The Dynamo frontend at `http://127.0.0.1:8000/v1`, serving `/inference/v1/generate`.
 - The Dynamo RL discovery endpoint at `http://127.0.0.1:8001/v1/rl/workers`, listing each worker for `Qwen/Qwen3-0.6B` with its `admin_base_url` and `world_size`.
-- With NCCL, exactly one worker with `world_size = 1`, running the Prime-RL NCCL weight-update extension.
+- Every worker running the Prime-RL ModelExpress weight-update extension.
 
 Verify both endpoints before starting training:
 
@@ -90,14 +90,14 @@ The example stops after five optimizer steps. Outputs are written under `outputs
 
 Dynamo's sidecar rejects Prime-RL's request extensions (`extra_args`), so train sources that sample from the policy must use plain sampling: no truncation (`top_p` below 1 or `top_k`, which need sampling replay) and no logprob head (`sampling.logprobs`, which score centering sets). Config validation rejects these with Dynamo. Tokens carry no weight versions, so staleness counts each rollout as old as its dispatch version.
 
-## ModelExpress weight transfer
+## Weight transfer
 
-To transfer weights through [ModelExpress](../../../docs/model-express.md) instead of NCCL, start each engine with `--worker-extension-cls prime_rl.inference.vllm.worker.modelexpress.ModelExpressWeightUpdateWorker` and set:
+The example sends weights through [ModelExpress](../../../docs/model-express.md) on port 8011, since the default ModelExpress port, 8001, is the Dynamo discovery port here:
 
 ```toml
 [weight_broadcast]
 type = "modelexpress"
-port = 8011  # the default ModelExpress port, 8001, is the Dynamo discovery port here
+port = 8011
 ```
 
-`uv run rl` starts the ModelExpress server. With ModelExpress, Prime-RL accepts any number of discovered workers and any worker `world_size`, and rediscovers them before every weight update: a worker that joins is initialized and receives the next update, and a worker that leaves is dropped. A worker that joins between updates serves its launch weights until then.
+`uv run rl` starts the ModelExpress server. Prime-RL accepts any number of discovered workers and any worker `world_size`, and rediscovers them before every weight update: a worker that joins is initialized and receives the next update, and a worker that leaves is dropped. A worker that joins between updates serves its launch weights until then.

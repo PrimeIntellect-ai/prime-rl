@@ -213,7 +213,7 @@ dropout = 0.0
 
 `target_modules` defaults to a reasonable cross-family set (`q_proj`, `k_proj`, `v_proj`, `o_proj`, `gate_proj`, `up_proj`, `down_proj`, `experts`, plus a few latent-projection names for Nemotron). Unknown names are silently ignored, so the defaults work across architectures. Add architecture-specific names to extend coverage (e.g. `in_proj` / `out_proj` for Mamba).
 
-LoRA is supported across SFT and RL. NCCL weight broadcast is **not** supported with LoRA — the default NCCL transport automatically falls back to filesystem when LoRA is enabled. Broadcast dirs of LoRA runs contain the raw adapter (`adapter_model.safetensors` + `adapter_config.json`). With LoRA on, the inference server registers the adapter under the model name and serves the base model as `<model>-base`.
+LoRA is supported across SFT and RL, with the filesystem weight broadcast (the default): config validation rejects `modelexpress` with LoRA. Broadcast dirs of LoRA runs contain the raw adapter (`adapter_model.safetensors` + `adapter_config.json`). With LoRA on, the inference server registers the adapter under the model name and serves the base model as `<model>-base`.
 
 ## Disaggregated Prefill/Decode Inference
 
@@ -224,7 +224,7 @@ For large MoE serving, splitting prefill and decode onto separate vLLM groups ca
 | Agentic (SWE, Lean) | 3:1 | Long growing contexts → prefill-heavy |
 | Non-agentic (math, chat) | 1:2 | Short prompts, long generations → decode-heavy |
 
-Example config: [`recipes/glm-5.3/swe.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/recipes/glm-5.3/swe.toml) — full RL run on `GLM-5` with P/D disaggregation behind a `vllm-router`, FP8 inference, and NCCL weight broadcast, paired with an inference config from [`recipes/glm-5.3/infer/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes/glm-5.3/infer).
+Example config: [`recipes/glm-5.3/swe.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/recipes/glm-5.3/swe.toml) — full RL run on `GLM-5` with P/D disaggregation behind a `vllm-router`, FP8 inference, and ModelExpress weight broadcast, paired with an inference config from [`recipes/glm-5.3/infer/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/recipes/glm-5.3/infer).
 
 Monitor live queue depths to detect imbalance:
 
