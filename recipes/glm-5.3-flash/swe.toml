@@ -26,8 +26,11 @@ project = "glm53-flash"
 name = "swe"
 
 [weight_broadcast]
-type = "nccl"
+type = "modelexpress"
 timeout = 12000
+# Each inference GPU stages at most 2 x 4 GiB of an update instead of a full copy of its shard.
+staging_buffer_bytes = 4294967296
+staging_buffers_count = 2
 
 [deployment]
 type = "multi_node"
@@ -48,7 +51,7 @@ tool_call_parser = "glm47"
 reasoning_parser = "glm45"
 # vLLM sizes this hybrid model's pages at 640 tokens; DeepGEMM's k-pool indexer on SM90 needs a multiple of 256.
 block_size = 768
-# Higher values OOM on the first weight update while receiving an MoE layer.
+# Leaves ~35 GB per GPU outside vLLM's budget for weight updates; higher values are untested.
 gpu_memory_utilization = 0.75
 # vLLM's KDA decode kernel puts num_seqs * 64 on a grid axis capped at 65535.
 max_num_seqs = 512

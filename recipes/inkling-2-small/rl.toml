@@ -25,8 +25,11 @@ seq_len = 16384
 name = "PrimeIntellect/Inkling-2-Small-bf16"
 
 [weight_broadcast]
-type = "nccl"
+type = "modelexpress"
 timeout = 12000
+# Each inference GPU stages at most 2 x 4 GiB of an update instead of a full copy of its shard.
+staging_buffer_bytes = 4294967296
+staging_buffers_count = 2
 
 [trainer.model]
 # Compiled flex attention hits the saved-tensor tracker assertion under activation offloading.

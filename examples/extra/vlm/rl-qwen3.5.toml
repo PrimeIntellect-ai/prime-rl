@@ -31,8 +31,11 @@ keep_last = 1
 keep_interval = 200
 
 [weight_broadcast]
-type = "nccl"
+type = "modelexpress"
 timeout = 7200
+# Each inference GPU stages at most 2 x 4 GiB of an update instead of a full copy of its shard.
+staging_buffer_bytes = 4294967296
+staging_buffers_count = 2
 
 [trainer]
 dist_timeout_seconds = 7200
