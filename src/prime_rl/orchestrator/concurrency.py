@@ -29,10 +29,11 @@ in full only once it completes (its context grows call by call), so the controll
 - **Queue**: a queued share above ``QUEUE_TRIM`` trims the units queued beyond the target while the cap binds,
   without cancelling. A queue still above ``QUEUE_CANCEL`` once a trim has drained cancels the excess.
 - **Trainer demand**: in RL the trainer consumes rollouts at its own pace, and rollouts finished beyond it only wait
-  and go stale. A level whose train rollouts finished per second clear the trainer's capacity (``TrainerCapacity``:
-  rollouts per busy second) by ``TRAINER_MARGIN`` is **fed**: no step up from it, steps down from it are sized by
-  the surplus, and a step down that leaves the trainer fed is kept even when throughput falls. A trainer that then
-  waits ``TRAINER_STARVED`` of a step for its batch takes the cut back.
+  and go stale. A level whose train rollouts finished per second, times the share of finished rollouts that ship,
+  clear the trainer's capacity (``TrainerCapacity``: rollouts per busy second) by ``TRAINER_MARGIN`` is **fed**: no
+  step up from it, steps down from it are sized by the surplus, and a step down that leaves the trainer fed is kept
+  even when throughput falls. A trainer that then waits ``TRAINER_STARVED`` of a step for its batch takes the cut
+  back.
 - **Throughput drop**: two windows in a row ``THROUGHPUT_DROP`` below the best window's throughput with as many units
   in flight (a KV thrash, a collapsed frontend) trim the cap in proportion to the throughput lost, without
   cancelling. A third, with the engines the bottleneck (their latency stretched by ``LATENCY_STRETCH``, or a queue

@@ -78,8 +78,8 @@ BUFFERED_BATCHES = 1
 trainer finds its next batch ready."""
 
 TRAINER_MARGIN = 0.1
-"""Train episodes in flight beyond what a bottlenecked trainer consumes over a generation lifetime: rollouts made
-faster than it takes them only wait, while the held permits drain any surplus."""
+"""Train episodes in flight beyond those that produce what a bottlenecked trainer consumes over a generation lifetime:
+rollouts made faster than it takes them only wait, while the held permits drain any surplus."""
 
 GENERATION_EWMA = 0.05
 """Weight of each finished train episode in the generation lifetime average."""
@@ -171,6 +171,7 @@ class Dispatcher:
         unconsumed_train_rollouts: Callable[[], int] | None = None,
         batch_size: Callable[[], int] | None = None,
         trainer_rate: Callable[[], float | None] | None = None,
+        shipped_train_rollouts: Callable[[], int] | None = None,
     ) -> None:
         self.policy = policy
         self.policy_weights_change = policy_weights_change
@@ -193,11 +194,12 @@ class Dispatcher:
         self.on_pause = on_pause
         self.on_resume = on_resume
         # The consumer's finished train rollouts of complete groups not taken yet (``out_q`` excluded), the live
-        # batch size, and the rollouts per second the trainer takes while it is the bottleneck (else None); all
-        # unset without a trainer
+        # batch size, the rollouts per second the trainer takes while it is the bottleneck (else None), and the
+        # train rollouts shipped to it so far; all unset without a trainer
         self.unconsumed_train_rollouts = unconsumed_train_rollouts
         self.batch_size = batch_size
         self.trainer_rate = trainer_rate
+        self.shipped_train_rollouts = shipped_train_rollouts
         # Rollouts of the train episodes waiting in ``out_q``, and of every train episode finished so far
         self.queued_train_rollouts = 0
         self.finished_train_rollouts = 0
@@ -295,11 +297,17 @@ class Dispatcher:
     @property
     def trainer_target(self) -> float | None:
         """Train episodes in flight that keep a bottlenecked trainer fed, by Little's law: the rollouts per second it
-        takes times the generation lifetime, plus ``TRAINER_MARGIN``. None while the trainer is not the bottleneck."""
+        takes times the generation lifetime, over the share of finished rollouts that ship, plus ``TRAINER_MARGIN``.
+        None while the trainer is not the bottleneck."""
         rate = self.trainer_rate() if self.trainer_rate is not None else None
         if rate is None or self.generation_s is None:
             return None
-        return (1 + TRAINER_MARGIN) * rate * self.generation_s
+        # Failed and filtered rollouts (a group without reward signal, stale tokens) never ship, so a shipped rollout
+        # costs more than one episode: divide by the share that ships (low while a batch still fills, so the error
+        # leans towards more episodes in flight)
+        shipped = self.shipped_train_rollouts() if self.shipped_train_rollouts is not None else 0
+        share = min(shipped / self.finished_train_rollouts, 1.0) if shipped and self.finished_train_rollouts else 1.0
+        return (1 + TRAINER_MARGIN) * rate * self.generation_s / share
 
     def train_admission_open(self) -> bool:
         """Whether a train group may open: held permits count against the cap and against the trainer target."""

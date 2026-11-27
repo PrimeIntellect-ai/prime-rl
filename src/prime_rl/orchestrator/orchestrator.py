@@ -428,6 +428,7 @@ class Orchestrator:
             unconsumed_train_rollouts=lambda: self.train_sink.batchable_rollouts() + self.step_loop.unshipped_rollouts,
             batch_size=lambda: self.train_sink.batch_size,
             trainer_rate=lambda: self.trainer_rate,
+            shipped_train_rollouts=lambda: self.trainer_capacity.rollouts_shipped,
         )
         self.concurrency.bind(
             set_limit=self.dispatcher.set_limit,
