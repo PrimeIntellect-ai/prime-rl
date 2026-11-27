@@ -448,8 +448,8 @@ class ModelConfig(BaseModelConfig):
     dsa_backend: DSABackend = "cudnn_flashmla"
     """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``cudnn_flashmla`` (default) runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs an SM90, SM100 or SM103 GPU, vLLM's bundled FlashMLA (installed with the ``gpu`` extra), 64 or 128 attention heads and head_dim 512, and setup fails otherwise. ``tilelang`` runs the TileLang forward and backward."""
 
-    dsv4_kv_precision: Literal["bf16", "fp8"] = "fp8"
-    """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
+    dsv4_kv_precision: Literal["bf16", "fp8", "nvfp4"] = "fp8"
+    """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient. ``nvfp4`` matches engines whose ratio-4 compressed KV cache is NVFP4: those entries are rounded to NVFP4 and then to the fp8 record sparse decode reads; everything else stays ``fp8``."""
 
     dsv4_compressor_backend: Literal["cudnn", "torch"] = "cudnn"
     """Backend of the DeepSeek V4 compressors' softmax-gated pooling. ``cudnn`` (default) runs the cuDNN frontend's fused CSA/HCA compressor where its kernels apply: an SM100 or newer GPU, bf16 activations, and a compress rate of 2 or 4, or 128 with head_dim 128 or 512. Elsewhere it silently runs the torch ops, so on SM90 GPUs such as the H100 and H200 ``cudnn`` runs torch. ``cudnn`` scans each entry's document list, so it wins on rows of few long documents and loses to the flat torch ops on rows of many short documents. ``torch`` always runs the torch ops."""
