@@ -141,6 +141,11 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
     logger = get_logger()
     from prime_rl.trainer.models import PreTrainedModelPrimeRL
 
+    if isinstance(model, PreTrainedModelPrimeRL):
+        lora_blocker = type(model).lora_blocker(model.config)
+        if lora_blocker is not None:
+            raise ValueError(f"{model.config.model_type!r} cannot train with LoRA: {lora_blocker}")
+
     lora_state = setup_lora_state()
     if isinstance(model, PreTrainedModelPrimeRL):
         lora_state.register_adapter_state_dict_converter(type(model).convert_adapter_to_hf)
