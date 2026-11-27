@@ -240,7 +240,7 @@ Time is counted in pool turnovers: each completed episode advances the turnover 
 
 The queue serves the elasticity: while the last measured step showed that the episodes in flight still buy throughput (`concurrency/paying`), the queue neither holds growth back nor trims the cap. Requests waiting on KV loads (Mooncake, CPU offload) queue even while extra episodes still pay. Only the pausing tiers apply regardless.
 
-A paused episode keeps its progress. It sends no new model call: each call waits in its env worker until the episode resumes, and a call already on the engines finishes. Its box keeps running, and the time paused does not count against its rollout timeout. A paused episode gives back its permit, and paused episodes resume, oldest pause first, before any new episode starts (`dispatcher/paused/train`).
+A paused episode keeps its progress. It sends no new model call: each call waits in its env worker until the episode resumes, and a call already on the engines finishes. Its box stops at a memory checkpoint and frees its compute until the episode resumes. A rollout that takes no memory checkpoints keeps its box running. The time paused does not count against the rollout timeout. A paused episode gives back its permit, and paused episodes resume, oldest pause first, before any new episode starts (`dispatcher/paused/train`).
 
 While the engines are paused for a weight update the controller freezes, and it ignores the queue the pause leaves behind for the next 30 s.
 
