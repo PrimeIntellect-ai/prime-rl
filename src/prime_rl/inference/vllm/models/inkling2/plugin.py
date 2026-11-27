@@ -3,6 +3,7 @@
 """Register Inkling2 with transformers and the vLLM model registry."""
 
 ARCHITECTURE = "Inkling2ForConditionalGeneration"
+LOOP_ARCHITECTURE = "Inkling2LoopForConditionalGeneration"
 
 
 def _patch_deep_gemm_situ() -> None:
@@ -58,12 +59,15 @@ def register() -> None:
     from transformers import AutoConfig
     from vllm.model_executor.models.registry import ModelRegistry
 
-    from .configs import Inkling2MMConfig, Inkling2ModelConfig
+    from .configs import Inkling2LoopMMConfig, Inkling2MMConfig, Inkling2ModelConfig
     from .model import Inkling2ForCausalLM
 
     for model_type, config_cls in (
         ("inkling2", Inkling2MMConfig),
+        ("inkling2_loop", Inkling2LoopMMConfig),
         ("inkling2_model", Inkling2ModelConfig),
     ):
         AutoConfig.register(model_type, config_cls, exist_ok=True)
+    # One class serves both: it builds the looped model from the config's loop_config.
     ModelRegistry.register_model(ARCHITECTURE, Inkling2ForCausalLM)
+    ModelRegistry.register_model(LOOP_ARCHITECTURE, Inkling2ForCausalLM)
