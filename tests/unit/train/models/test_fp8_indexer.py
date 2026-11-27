@@ -196,3 +196,29 @@ def test_query_chunks_match_one_pass(segments, monkeypatch):
     chunked = fp8_indexer(q, k, w, ks.int(), ke.int(), TOPK)
 
     assert torch.equal(chunked, one_pass)
+
+
+@pytest.mark.parametrize("deep_select", [True, False], ids=["deep-select", "torch-topk"])
+def test_selection_ignores_logits_past_row_end(deep_select, monkeypatch):
+    """`select_topk` picks exactly what it picks when every logit at and past a row's end is -inf.
+
+    `fp8_fp4_mqa_logits` leaves a row's columns past its end uncleaned, so they hold +inf, huge finite values and
+    NaN here. The logits are bfloat16 values, so most rows tie at the top-k boundary and any change in which logits
+    the selection reads would show as a different pick. Row ends are ragged: empty rows, rows shorter than, as long
+    as and one longer than `topk`, full rows, and rows ending anywhere in between, with padding columns no row reaches.
+    """
+    if deep_select and not fp8_indexer_module._deep_select_supported(torch.device("cuda")):
+        pytest.skip("DeepSelect not installed or not built for this GPU")
+    if not deep_select:
+        monkeypatch.setattr(fp8_indexer_module, "_deep_select_supported", lambda device: False)
+    rows, cols = 1024, 4096
+    logits = torch.randn(rows, cols, device="cuda").bfloat16().float()
+    ke = torch.randint(0, cols - 255, (rows,), device="cuda", dtype=torch.int32)
+    ke[:6] = torch.tensor([0, 1, TOPK - 1, TOPK, TOPK + 1, cols - 256], dtype=torch.int32)
+    past_end = torch.arange(cols, device="cuda")[None, :] >= ke[:, None]
+    garbage = torch.tensor([float("inf"), 3e38, float("nan")], device="cuda")
+    uncleaned = torch.where(past_end, garbage[torch.randint(0, 3, (rows, cols), device="cuda")], logits)
+
+    picks = select_topk(uncleaned, ke, TOPK, cols)
+
+    assert torch.equal(picks, select_topk(logits.masked_fill(past_end, float("-inf")), ke, TOPK, cols))

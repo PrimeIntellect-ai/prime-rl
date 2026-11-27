@@ -115,10 +115,10 @@ def per_token_group_quant_fp8(
 def select_topk(logits: torch.Tensor, ke: torch.Tensor, topk: int, sentinel: int) -> torch.Tensor:
     """Indices of the `topk` largest logits in each row, in no particular order.
 
-    Logits at and past a row's end `ke` must be -inf. Slots that can only hold an -inf logit are either
-    `sentinel` or an index outside the row's range, so the caller masks by range. Uses DeepSelect where it
-    is built for the GPU, `torch.topk` elsewhere; the two agree except on which of several tied logits
-    fills the last slots.
+    Logits at and past a row's end `ke` are never picked, whatever they hold. Slots that can only hold such a
+    logit are either `sentinel` or an index outside the row's range, so the caller masks by range. Uses
+    DeepSelect where it is built for the GPU, `torch.topk` elsewhere; the two agree except on which of several
+    tied logits fills the last slots.
     """
     n_rows, n_cols = logits.shape
     actual_topk = min(topk, n_cols)
@@ -135,7 +135,9 @@ def select_topk(logits: torch.Tensor, ke: torch.Tensor, topk: int, sentinel: int
             abort_when_nan_found=False,
         )
     else:
-        _, indices = torch.topk(logits, actual_topk, dim=-1)
+        # DeepSelect reads only the columns before each row's end; torch.topk reads them all
+        past_end = torch.arange(n_cols, device=logits.device) >= ke[:, None]
+        _, indices = torch.topk(logits.float().masked_fill(past_end, float("-inf")), actual_topk, dim=-1)
     if actual_topk < topk:
         padding = torch.full((n_rows, topk - actual_topk), sentinel, dtype=indices.dtype, device=logits.device)
         indices = torch.cat([indices, padding], dim=-1)
@@ -324,10 +326,7 @@ def _select_topk(q_fp8, k_fp8, k_scales, w, ks, ke, S_k, chunk_rows, indices):
             k_fp8.shape[0],
             logits_dtype,
         ).float()
-        row_lengths = lengths[start:end]
-        columns = torch.arange(logits.shape[1], device=logits.device)
-        logits.masked_fill_(columns >= row_lengths[:, None], float("-inf"))
-        chunk_indices = select_topk(logits, row_lengths, indices.shape[1], S_k) + ks[start:end, None]
+        chunk_indices = select_topk(logits, lengths[start:end], indices.shape[1], S_k) + ks[start:end, None]
         del logits
         # Replace cross-sequence indices with sentinel S_k (maps to zero-valued KV)
         out_of_range = (chunk_indices < ks[start:end, None]) | (chunk_indices >= ke[start:end, None])
