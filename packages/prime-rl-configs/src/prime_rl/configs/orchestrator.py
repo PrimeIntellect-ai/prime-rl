@@ -7,7 +7,6 @@ import verifiers.v1 as vf
 from pydantic import AliasChoices, BaseModel, Field, SerializeAsAny, TypeAdapter, ValidationError, model_validator
 from pydantic.fields import FieldInfo
 from renderers import AutoRendererConfig, RendererConfig
-from verifiers.v1.configs.agent import agent_config_fields
 
 from prime_rl.configs.algorithm import (
     AlgoConfig,
@@ -273,9 +272,9 @@ class TrainSourceConfig(EnvConfig):
             raise ValueError(
                 f"Policy source '{self.resolved_name}' has unsupported sampling parameters: {sorted(unsupported)}"
             )
-        for name, agent in agent_config_fields(self.env).items():
+        for name, agent in self.env:
             # An agent with its own client does not sample from the policy.
-            if agent.sampling is None or agent.client is not None:
+            if not isinstance(agent, vf.AgentConfig) or agent.sampling is None or agent.client is not None:
                 continue
             if unsupported := agent.sampling.model_dump(exclude_unset=True).keys() - agent_options:
                 raise ValueError(

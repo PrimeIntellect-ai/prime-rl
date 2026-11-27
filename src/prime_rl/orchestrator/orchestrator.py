@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING
 
 import verifiers.v1 as vf
 from pydantic import ValidationError
-from verifiers.v1.runtimes import set_base_sandbox_labels
+from verifiers.v1 import set_base_sandbox_labels
 
 if TYPE_CHECKING:
     from transformers.tokenization_utils import PreTrainedTokenizer

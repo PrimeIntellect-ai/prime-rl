@@ -43,7 +43,7 @@ from typing import Any, Literal
 
 import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
-from verifiers.v1.semantic import routing_session_id
+from verifiers.v1 import routing_session_id
 
 from prime_rl import monitors
 from prime_rl.env.heads import EpisodeHead

@@ -14,8 +14,7 @@ from typing import Any
 import numpy as np
 import verifiers.v1 as vf
 from pydantic import BaseModel, Field, PrivateAttr
-from verifiers.v1.trace import Error, RunInfo, Timing
-from verifiers.v1.types import Usage
+from verifiers.v1 import Error, RunInfo, Timing, Usage
 
 from prime_rl.transports.batch.types import PAYLOAD_INFO_KEY, UNLABELED
 

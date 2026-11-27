@@ -1,9 +1,7 @@
 from typing import ClassVar
 
 from pydantic import BaseModel, Field
-from verifiers.v1.configs.client import ClientConfig
-from verifiers.v1.configs.sampling import SamplingConfig
-from verifiers.v1.trace import RunInfo
+from verifiers.v1 import ClientConfig, RunInfo, SamplingConfig
 
 
 class BaseRequest(BaseModel):

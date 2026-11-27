@@ -4,8 +4,7 @@ from unittest.mock import MagicMock
 import pydantic
 import pytest
 import verifiers.v1 as vf
-from verifiers.v1.graph import MessageNode
-from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage
+from verifiers.v1 import AssistantMessage, MessageNode, ToolMessage, UserMessage
 
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
 from prime_rl.orchestrator.algo import (

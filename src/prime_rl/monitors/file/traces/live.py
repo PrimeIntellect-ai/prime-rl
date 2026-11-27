@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import orjson
-from verifiers.v1.delta import EpisodeAssembly
+from verifiers.v1 import EpisodeAssembly
 
 from prime_rl.monitors.file.traces import get_trace_dir
 

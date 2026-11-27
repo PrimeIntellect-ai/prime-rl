@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import httpx
 import pytest
-from verifiers.v1.configs.client import EvalClientConfig
+from verifiers.v1 import EvalClientConfig
 
 from prime_rl.configs.shared import ADMIN_TOKEN_HEADER, ClientConfig, VLLMClientConfig
 from prime_rl.orchestrator.clients import (

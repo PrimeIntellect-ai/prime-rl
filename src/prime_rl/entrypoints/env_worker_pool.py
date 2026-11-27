@@ -12,8 +12,8 @@ from functools import partial
 from multiprocessing.connection import Connection
 from pathlib import Path
 
-from verifiers.v1.configs.agent import agent_config_fields
-from verifiers.v1.runtimes import set_base_sandbox_labels
+import verifiers.v1 as vf
+from verifiers.v1 import set_base_sandbox_labels
 
 from prime_rl.configs.env_worker_pool import EnvWorkerPoolConfig
 from prime_rl.env import run_env_worker_pool, set_episode_hook
@@ -143,7 +143,7 @@ def run_pool(config: EnvWorkerPoolConfig):
         if (
             attempt_dir
             and config.address_file
-            and any(agent.runtime.type == "prime" for agent in agent_config_fields(config.env).values())
+            and any(value.runtime.type == "prime" for _, value in config.env if isinstance(value, vf.AgentConfig))
         ):
             sandbox_labels.append(stack.enter_context(register_sandbox_pool(Path(attempt_dir))))
         directory = None

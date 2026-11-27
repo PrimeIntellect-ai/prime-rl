@@ -9,7 +9,7 @@ import verifiers.v1 as vf
 from prime_runs.sinks.base import stamp_run, to_mapping
 from prime_runs.sinks.traces import names_run
 from prime_traces.traces import _encode_record
-from verifiers.v1.delta import DeltaStreamer
+from verifiers.v1 import DeltaStreamer
 
 from prime_rl import monitors
 from prime_rl.configs.monitors import FileMonitorConfig
@@ -36,7 +36,7 @@ def _over_the_wire(source: vf.Episode) -> tuple[EpisodeHead, list[dict]]:
     """The episode as the orchestrator receives it: its head holding its record, and the
     deltas that streamed its traces."""
     traces = source.traces
-    deltas = [unpack(pack(delta)) for _, delta, _ in DeltaStreamer(lambda: traces, _noop).diff()]
+    deltas = [unpack(pack(delta)) for _, delta, _ in DeltaStreamer(lambda: traces, _noop)._diff()]
     return recorded_head(source, float_decimals=4), deltas
 
 

@@ -21,9 +21,7 @@ from typing import TypeVar
 import msgpack
 import zmq
 import zmq.asyncio
-from verifiers.v1.configs.client import ClientConfig
-from verifiers.v1.configs.sampling import SamplingConfig
-from verifiers.v1.trace import RunInfo
+from verifiers.v1 import ClientConfig, RunInfo, SamplingConfig
 
 from prime_rl.env.encoding import unpack
 from prime_rl.env.heads import EpisodeHead, EpisodeRecord

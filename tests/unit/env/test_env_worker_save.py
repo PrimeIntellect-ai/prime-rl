@@ -4,7 +4,7 @@ restore point continues."""
 import asyncio
 from types import SimpleNamespace
 
-from verifiers.v1.env import RunSlot
+from verifiers.v1 import RunSlot
 
 from prime_rl.env import worker
 from prime_rl.env.types import SaveRequest

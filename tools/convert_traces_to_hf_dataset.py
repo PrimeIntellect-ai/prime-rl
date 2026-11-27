@@ -26,7 +26,7 @@ import yaml
 from datasets import Dataset
 from pydantic import BaseModel
 from verifiers.v1 import Trace, WireEpisode
-from verifiers.v1.dialects.chat import message_to_wire
+from verifiers.v1._dialects.chat import message_to_wire
 
 
 def jsonable(value: Any) -> Any:

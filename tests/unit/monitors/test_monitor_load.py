@@ -20,9 +20,7 @@ from prime_runs.sinks import RftMetricsSink, TracesSink
 from prime_runs.worker import UploadWorker
 from prime_traces import TracesClient
 from prime_traces.core.client import GZIP_LEVEL
-from verifiers.v1.graph import MessageNode
-from verifiers.v1.trace import ModelCall
-from verifiers.v1.types import AssistantMessage, Usage, UserMessage
+from verifiers.v1 import AssistantMessage, MessageNode, ModelCall, Usage, UserMessage
 
 from prime_rl import monitors
 from prime_rl.configs.monitors import FileMonitorConfig, PrimeMonitorConfig, WandbMonitorConfig

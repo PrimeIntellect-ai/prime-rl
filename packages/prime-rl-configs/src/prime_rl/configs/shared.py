@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import AfterValidator, Field, model_validator
-from verifiers.v1.configs.client import BaseClientConfig
+from verifiers.v1 import BaseClientConfig
 
 from prime_rl.utils.config import BaseConfig
 

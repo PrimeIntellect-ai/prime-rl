@@ -24,11 +24,11 @@ from tenacity import (
     stop_after_delay,
     wait_exponential,
 )
-from verifiers.v1.clients.base import build_async_openai
-from verifiers.v1.configs.client import (
+from verifiers.v1 import (
     BaseClientConfig,
     EvalClientConfig,
     TrainClientConfig,
+    build_async_openai,
     resolve_api_key,
     resolve_headers,
 )
