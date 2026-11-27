@@ -509,6 +509,16 @@ def _assert_layout_is_consistent(packed: PackedContext, doc_lens: tuple[int, ...
         "an entry pools source tokens outside its own document's window"
     )
     assert torch.equal(packed.tok_doc_idx, _doc_ids(doc_lens)), "tok_doc_idx must follow the document lengths"
+    if compress_rate == COMPRESS_RATE:
+        _assert_index_row_lengths_match_device(packed, cp_rank=0)
+
+
+def _assert_index_row_lengths_match_device(packed: PackedContext, cp_rank: int) -> None:
+    """The indexer sizes its logits from the host row lengths, while DeepGEMM writes up to the device range
+    `[ks, ke)` the indexer computes; a longer device range would overwrite the next row's logits unchecked."""
+    start = packed.compression_layouts[COMPRESS_RATE].first_entry_of_doc[packed.tok_doc_idx]
+    stop = start + (packed.position_ids[0] + 1) // COMPRESS_RATE
+    assert torch.equal(packed.index_row_lengths[cp_rank], (stop - start).int().cpu())
 
 
 @pytest.mark.parametrize(
@@ -634,6 +644,8 @@ def test_halo_shards_give_every_entry_and_window_slot_exactly_once(doc_lens, cp_
     assert rows == 2 * HCA_COMPRESS_RATE - 1
 
     for rank, local in enumerate(halo):
+        assert torch.equal(local.index_row_lengths, whole.index_row_lengths.view(cp_world_size, n_queries))
+        _assert_index_row_lengths_match_device(local, rank)
         key_start = rank * n_queries - rows
         expected = whole.window_indices[rank * n_queries : (rank + 1) * n_queries]
         valid = local.window_indices >= 0

@@ -515,7 +515,8 @@ class PackedContext:
         if index_rate in compress_rates:
             doc_starts = torch.repeat_interleave(host_seq_lens.cumsum(0) - host_seq_lens, host_seq_lens)
             host_positions = torch.arange(total_tokens) - doc_starts
-            index_row_lengths = ((host_positions + 1) // index_rate).to(torch.int32).view(cp_world_size, n_queries)
+            # Cast after the view: the result then has no `_base` that Dynamo would also have to see as dynamic.
+            index_row_lengths = ((host_positions + 1) // index_rate).view(cp_world_size, n_queries).to(torch.int32)
             torch._dynamo.maybe_mark_dynamic(index_row_lengths, 1)
 
         # A token attends the last `sliding_window` positions (itself included), clipped to its own

@@ -115,10 +115,10 @@ def per_token_group_quant_fp8(
 def select_topk(logits: torch.Tensor, ke: torch.Tensor, topk: int, sentinel: int) -> torch.Tensor:
     """Indices of the `topk` largest logits in each row, in no particular order.
 
-    Logits at and past a row's end `ke` are ignored and may hold anything. Slots that can only hold an -inf
-    logit are either `sentinel` or an index outside the row's range, so the caller masks by range. Uses
-    DeepSelect where it is built for the GPU, `torch.topk` elsewhere; the two agree except on which of several
-    tied logits fills the last slots.
+    Logits at and past a row's end `ke` are ignored and may hold anything; the `torch.topk` path overwrites them
+    with -inf in place. Slots that can only hold an -inf logit are either `sentinel` or an index outside the row's
+    range, so the caller masks by range. Uses DeepSelect where it is built for the GPU, `torch.topk` elsewhere; the
+    two agree except on which of several tied logits fills the last slots.
     """
     n_rows, n_cols = logits.shape
     actual_topk = min(topk, n_cols)
@@ -137,7 +137,7 @@ def select_topk(logits: torch.Tensor, ke: torch.Tensor, topk: int, sentinel: int
     else:
         # DeepSelect reads each row only up to `ke`; torch.topk needs the tail masked.
         columns = torch.arange(n_cols, device=logits.device)
-        logits = logits.masked_fill(columns >= ke[:, None], float("-inf"))
+        logits.masked_fill_(columns >= ke[:, None], float("-inf"))
         _, indices = torch.topk(logits, actual_topk, dim=-1)
     if actual_topk < topk:
         padding = torch.full((n_rows, topk - actual_topk), sentinel, dtype=indices.dtype, device=logits.device)
