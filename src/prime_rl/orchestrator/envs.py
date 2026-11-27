@@ -16,6 +16,7 @@ its workers keep the episode itself and its training samples.
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
@@ -260,6 +261,16 @@ class TrainEnv(Env):
         # Truncated policy sampling must ship the sampling masks the trainer replays.
         self.requires_sampling_masks = config.sampling.truncates_distribution() and self.uses_live_policy
         self.requires_sampler_logprobs = config.sampling.logprobs is not None and self.uses_live_policy
+
+    async def start(self) -> None:
+        await super().start()
+        if self.config.select.shuffle:
+            # Sources that share a selection, e.g. one taskset at several efforts, each
+            # walk their own order. The selected set itself stays the one every source
+            # with this ``select`` (an eval split, say) agrees on.
+            tasks = list(self.tasks)
+            random.Random(f"{self.config.select.seed}:{self.name}").shuffle(tasks)
+            self.tasks = iter(tasks)
 
     def train_request(self) -> TrainRequest:
         return TrainRequest(algo=self.config.algo.model_dump(mode="json"))
