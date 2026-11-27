@@ -70,6 +70,14 @@ class ModelExpressWeightUpdateWorker(WeightRPCMixin, Worker):
         staging_buffer_bytes=None,
         staging_buffers_count=1,
     ):
+        worker_id = f"{session_id}:{rank_offset + self.rank}"
+        # Admin planes that discover engines call this before every update; the client the engine runs stays.
+        previous = getattr(self, "_generator", None)
+        if previous is not None and previous.worker_id == worker_id:
+            return
+        if previous is not None:
+            previous.close()
+
         from transformers import AutoConfig
 
         from prime_rl.trainer.models import get_custom_causal_lm_cls
@@ -80,7 +88,6 @@ class ModelExpressWeightUpdateWorker(WeightRPCMixin, Worker):
         model_config = self.model_runner.model_config
         hf_config = AutoConfig.from_pretrained(model_config.model, trust_remote_code=model_config.trust_remote_code)
         chain = get_custom_causal_lm_cls(hf_config).conversion_chain(hf_config)
-        worker_id = f"{session_id}:{rank_offset + self.rank}"
         model = cast(nn.Module, self.model_runner.get_model())
         keep_integer_parameters_as_buffers(model)
         self._generator = ModelExpressGeneratorClient.initialize(

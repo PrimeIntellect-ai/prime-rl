@@ -290,7 +290,10 @@ def test_dynamo_nccl_rejects_multiple_workers():
 
 
 class FakeEngine:
-    """Admin client of one Dynamo worker; records its admin calls into a shared log."""
+    """Admin client of one Dynamo worker; records its admin calls into a shared log.
+
+    Like the ModelExpress worker extension, it keeps its client across repeated ``init_broadcaster`` calls under the
+    same worker id and cannot install a version without one."""
 
     def __init__(self, url: str, log: list, world_size: int = 1, fail_install: bool = False):
         self.base_url = httpx.URL(url)
@@ -298,12 +301,20 @@ class FakeEngine:
         self.world_size = world_size
         self.fail_install = fail_install
         self.closed = False
+        self.client_id: str | None = None
+        self.inits = 0
+
+    def restart(self):
+        self.client_id = None
 
     async def post(self, path, *, json=None, **kwargs):
         call = path if json is None else json["method"]
         self.log.append((self.base_url.port, call, json["args"] if json else None))
         request = httpx.Request("POST", self.base_url.join(path))
-        if call == "update_weights_from_modelexpress" and self.fail_install:
+        if call == "init_broadcaster" and self.client_id != json["args"][5]:
+            self.client_id = json["args"][5]
+            self.inits += 1
+        if call == "update_weights_from_modelexpress" and (self.fail_install or self.client_id is None):
             return httpx.Response(500, request=request)
         return httpx.Response(200, request=request, json={"results": [None] * self.world_size})
 
@@ -339,24 +350,32 @@ def initialize(admin):
     )
 
 
-def test_dynamo_modelexpress_initializes_every_worker_once_and_updates_all_of_them():
+def update(admin, step: int):
+    asyncio.run(admin.update_modelexpress_weights(version_uid=f"v{step}", step=step))
+
+
+def test_dynamo_modelexpress_initializes_every_worker_under_its_instance_id_and_updates_all_of_them():
     log = []
-    admin, _, _ = modelexpress_admin(log, worker(2), worker(1, world_size=2))
+    admin, _, engines = modelexpress_admin(log, worker(2), worker(1, world_size=2))
 
     with patch("prime_rl.inference.dynamo.check_health", new=AsyncMock()):
         initialize(admin)
         init_args = {port: args for port, call, args in log if call == "init_broadcaster"}
         log.clear()
-        asyncio.run(admin.update_modelexpress_weights(version_uid="v1", step=1))
+        update(admin, 1)
 
     session_id = admin._modelexpress.session_id
     assert init_args == {
         8201: ["trainer", 8001, 0, 2, 60, f"{session_id}-1", None, 1],
         8202: ["trainer", 8001, 0, 1, 60, f"{session_id}-2", None, 1],
     }
-    # Every worker pauses before any installs, and resumes only after all installed.
-    assert [call for _, call, _ in log] == ["/pause"] * 2 + ["update_weights_from_modelexpress"] * 2 + ["/resume"] * 2
-    assert {(port, tuple(args)) for port, call, args in log if args} == {(8201, ("v1",)), (8202, ("v1",))}
+    # Every update re-sends the same initialization, which the engines' running clients absorb. Every worker
+    # pauses before any installs, and resumes only after all installed.
+    assert [call for _, call, _ in log] == (
+        ["init_broadcaster"] * 2 + ["/pause"] * 2 + ["update_weights_from_modelexpress"] * 2 + ["/resume"] * 2
+    )
+    assert {port: args for port, call, args in log if call == "init_broadcaster"} == init_args
+    assert [engine.inits for engine in engines.values()] == [1, 1]
     asyncio.run(admin.aclose())
 
 
@@ -368,13 +387,31 @@ def test_dynamo_modelexpress_updates_follow_workers_that_join_and_leave():
         initialize(admin)
         discovered[:] = [worker(2), worker(3)]
         log.clear()
-        asyncio.run(admin.update_modelexpress_weights(version_uid="v1", step=1))
+        update(admin, 1)
 
-    assert [port for port, call, _ in log if call == "init_broadcaster"] == [8203]
     assert {port for port, call, _ in log if call == "update_weights_from_modelexpress"} == {8202, 8203}
     assert all(port != 8201 for port, _, _ in log)
     assert engines[8201].closed
+    assert {port: engine.inits for port, engine in engines.items()} == {8201: 1, 8202: 1, 8203: 1}
     assert [engine.base_url.port for engine in admin.clients] == [8202, 8203]
+    asyncio.run(admin.aclose())
+
+
+def test_dynamo_modelexpress_reinitializes_an_engine_that_restarted_behind_the_same_worker():
+    log = []
+    admin, _, engines = modelexpress_admin(log, worker(1), worker(2))
+
+    with patch("prime_rl.inference.dynamo.check_health", new=AsyncMock()):
+        initialize(admin)
+        update(admin, 1)
+        engines[8201].restart()
+        update(admin, 2)
+
+    assert {port: engine.inits for port, engine in engines.items()} == {8201: 2, 8202: 1}
+    assert {port for port, call, args in log if call == "update_weights_from_modelexpress" and args == ["v2"]} == {
+        8201,
+        8202,
+    }
     asyncio.run(admin.aclose())
 
 

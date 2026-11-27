@@ -189,8 +189,8 @@ class DynamoAdminPlane(AdminPlane):
     """Admin plane over the workers a trusted Dynamo discovery endpoint reports.
 
     Readiness binds the worker set of two identical discovery snapshots. NCCL and filesystem updates require that set
-    to stay unchanged. ModelExpress updates rediscover the workers before every update: workers that joined are
-    initialized and receive the update, workers that left are dropped."""
+    to stay unchanged. ModelExpress updates rediscover the workers before every update: every worker is initialized
+    (a no-op on an engine that already runs the client) and receives the update, and workers that left are dropped."""
 
     def __init__(
         self,
@@ -213,7 +213,6 @@ class DynamoAdminPlane(AdminPlane):
         self.clients: list[httpx.AsyncClient] = []
         self._nccl_initialization_state: Literal["uninitialized", "initializing", "ready", "terminal"] = "uninitialized"
         self._modelexpress: _ModelExpressSession | None = None
-        self._modelexpress_workers: set[tuple[int, str]] = set()
         self._mutation_lock = asyncio.Lock()
 
     def _require_uninitialized_nccl(self) -> None:
@@ -316,7 +315,6 @@ class DynamoAdminPlane(AdminPlane):
         fingerprints = [worker_fingerprint(worker) for worker in workers]
         left = [fingerprint for fingerprint in bound if fingerprint not in fingerprints]
         for fingerprint in left:
-            self._modelexpress_workers.discard(fingerprint)
             await bound[fingerprint].aclose()
         if bound and (joined or left):
             get_logger().info(f"Dynamo workers changed: joined {sorted(joined)}, left {left}")
@@ -507,7 +505,10 @@ class DynamoAdminPlane(AdminPlane):
             await self._sync_modelexpress_workers()
 
     async def _sync_modelexpress_workers(self) -> None:
-        """Bind the workers Dynamo reports now and initialize ModelExpress on the ones that joined."""
+        """Bind the workers Dynamo reports now and make sure each runs a ModelExpress client.
+
+        Every bound worker is initialized before every update: an engine that already runs the client keeps it, and
+        one that restarted behind an unchanged worker identity starts a new one."""
         if self._modelexpress is None:
             raise RuntimeError("Dynamo ModelExpress updates require initialize_modelexpress first")
         session = self._modelexpress
@@ -521,14 +522,11 @@ class DynamoAdminPlane(AdminPlane):
                 timeout=max(ADMIN_TIMEOUT_S, session.timeout),
                 args=session.init_broadcaster_args(worker),
             )
-            self._modelexpress_workers.add(worker_fingerprint(worker))
 
-        joined = [
-            (worker, client)
-            for worker, client in zip(self._workers, self.clients, strict=True)
-            if worker_fingerprint(worker) not in self._modelexpress_workers
-        ]
-        results = await asyncio.gather(*(initialize(*pair) for pair in joined), return_exceptions=True)
+        results = await asyncio.gather(
+            *(initialize(worker, client) for worker, client in zip(self._workers, self.clients, strict=True)),
+            return_exceptions=True,
+        )
         for result in results:
             if isinstance(result, BaseException):
                 raise result
