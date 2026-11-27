@@ -65,10 +65,12 @@ type = "adamw"
 lr = 1e-6
 weight_decay = 0.1
 
+[trainer.data]
+pad_to_seq_len = true
+
 [ckpt]
 
 [orchestrator]
-pad_to_seq_len = true
 batch_size = 64
 
 [orchestrator.train]
