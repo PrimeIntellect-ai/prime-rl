@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -292,8 +293,8 @@ def test_dynamo_nccl_rejects_multiple_workers():
 class FakeEngine:
     """Admin client of one Dynamo worker; records its admin calls into a shared log.
 
-    Like the ModelExpress worker extension, it keeps its client across repeated ``init_broadcaster`` calls under the
-    same worker id and cannot install a version without one."""
+    Like the ModelExpress worker extension, it keeps its client across repeated ``init_broadcaster`` calls of the same
+    session and cannot install a version without one."""
 
     def __init__(self, url: str, log: list, world_size: int = 1, fail_install: bool = False):
         self.base_url = httpx.URL(url)
@@ -311,8 +312,8 @@ class FakeEngine:
         call = path if json is None else json["method"]
         self.log.append((self.base_url.port, call, json["args"] if json else None))
         request = httpx.Request("POST", self.base_url.join(path))
-        if call == "init_broadcaster" and self.client_id != json["args"][5]:
-            self.client_id = json["args"][5]
+        if call == "init_broadcaster" and self.client_id != json["args"][3]:
+            self.client_id = json["args"][3]
             self.inits += 1
         if call == "update_weights_from_modelexpress" and (self.fail_install or self.client_id is None):
             return httpx.Response(500, request=request)
@@ -343,18 +344,16 @@ def modelexpress_admin(log: list, *workers: dict, failing: set[int] = frozenset(
 
 
 def initialize(admin):
-    asyncio.run(
-        admin.initialize_modelexpress(
-            "trainer", 8001, 60, inference_world_size=1, staging_buffer_bytes=None, staging_buffers_count=1
-        )
-    )
+    asyncio.run(admin.initialize_modelexpress("trainer", 8001, 60, staging_buffer_bytes=None, staging_buffers_count=1))
 
 
 def update(admin, step: int):
     asyncio.run(admin.update_modelexpress_weights(version_uid=f"v{step}", step=step))
 
 
-def test_dynamo_modelexpress_initializes_every_worker_under_its_instance_id_and_updates_all_of_them():
+def test_dynamo_modelexpress_initializes_every_worker_alike_and_updates_all_of_them():
+    from prime_rl.inference.vllm.worker.modelexpress import ModelExpressWeightUpdateWorker
+
     log = []
     admin, _, engines = modelexpress_admin(log, worker(2), worker(1, world_size=2))
 
@@ -364,11 +363,13 @@ def test_dynamo_modelexpress_initializes_every_worker_under_its_instance_id_and_
         log.clear()
         update(admin, 1)
 
+    # Each worker names itself, so every worker gets the same arguments whatever its size.
     session_id = admin._modelexpress.session_id
     assert init_args == {
-        8201: ["trainer", 8001, 0, 2, 60, f"{session_id}-1", None, 1],
-        8202: ["trainer", 8001, 0, 1, 60, f"{session_id}-2", None, 1],
+        8201: ["trainer", 8001, 60, session_id, None, 1],
+        8202: ["trainer", 8001, 60, session_id, None, 1],
     }
+    inspect.signature(ModelExpressWeightUpdateWorker.init_broadcaster).bind(None, *init_args[8201])
     # Every update re-sends the same initialization, which the engines' running clients absorb. Every worker
     # pauses before any installs, and resumes only after all installed.
     assert [call for _, call, _ in log] == (

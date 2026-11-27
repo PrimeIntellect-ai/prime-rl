@@ -24,6 +24,7 @@ staging_buffers_count = 2          # overlap the next read with the current inst
 ## Behavior
 
 - The trainer and inference layouts need not match. Each trainer rank publishes the region of each tensor it holds and each inference worker reads the slices its weight loaders take, so trainer FSDP, HSDP (`dp_replicate`), expert parallelism (`ep`, also below the FSDP size and with uneven shards) and context parallelism (`cp`) combine with tensor, data and expert parallelism in vLLM.
+- Each inference worker registers with MX under an id it derives itself, from the run's session, its GPU's UUID and its process id. The orchestrator sends every engine the same initialization and needs no knowledge of the inference layout: data-parallel engines, external-LB servers, P/D roles and replicas of any size each get their own ids.
 - The first update is slower while MX plans the transfer; later updates reuse the plan.
 - Inference is paused only after the trainer has published the version. A failed update leaves inference paused; restart the trainer and inference together, since there is no rollback.
 - Trainer rank 0 and the orchestrator (in SFT, the online-eval process) must share the broadcast directory, which holds only rendezvous markers, not weights.

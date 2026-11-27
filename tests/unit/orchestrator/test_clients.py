@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
@@ -60,6 +61,8 @@ def test_load_lora_adapter_succeeds_on_first_attempt():
 
 
 def test_admin_plane_initializes_nccl():
+    from prime_rl.inference.vllm.worker.nccl import NCCLWeightUpdateWorker
+
     admin_plane = AdminPlane(ClientConfig())
     client = AsyncMock()
     response = MagicMock()
@@ -86,6 +89,39 @@ def test_admin_plane_initializes_nccl():
             "timeout": 1200,
         },
     )
+    # /init_broadcaster passes the body to the worker extension as keyword arguments.
+    inspect.signature(NCCLWeightUpdateWorker.init_broadcaster).bind(None, **client.post.await_args.kwargs["json"])
+    asyncio.run(admin_plane.aclose())
+
+
+def test_admin_plane_initializes_modelexpress_without_the_inference_layout():
+    from prime_rl.inference.vllm.worker.modelexpress import ModelExpressWeightUpdateWorker
+
+    admin_plane = AdminPlane(ClientConfig())
+    admin_plane.clients = [AsyncMock(), AsyncMock()]
+    for client in admin_plane.clients:
+        client.post.return_value = MagicMock()
+
+    asyncio.run(
+        admin_plane.initialize_modelexpress("trainer", 8001, 1200, staging_buffer_bytes=None, staging_buffers_count=2)
+    )
+
+    # Every engine gets the same request: each worker derives its own MX id.
+    payloads = [client.post.await_args.kwargs["json"] for client in admin_plane.clients]
+    assert (
+        payloads[0]
+        == payloads[1]
+        == {
+            "host": "trainer",
+            "port": 8001,
+            "timeout": 1200,
+            "session_id": payloads[0]["session_id"],
+            "staging_buffer_bytes": None,
+            "staging_buffers_count": 2,
+        }
+    )
+    # /init_broadcaster passes the body to the worker extension as keyword arguments.
+    inspect.signature(ModelExpressWeightUpdateWorker.init_broadcaster).bind(None, **payloads[0])
     asyncio.run(admin_plane.aclose())
 
 

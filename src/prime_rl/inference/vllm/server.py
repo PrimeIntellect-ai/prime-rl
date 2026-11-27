@@ -154,17 +154,9 @@ async def liveness(raw_request: Request):
 
 @admin_router.post("/init_broadcaster")
 async def init_broadcaster(request: Request):
-    data = await request.json()
-    host = data.get("host")
-    port = data.get("port")
-    timeout = data.get("timeout")
-    rank_offset = data.get("rank_offset")
-    inference_world_size = data.get("inference_world_size")
-    session_id = data.get("session_id", "default")
-    args = (host, port, rank_offset, inference_world_size, timeout, session_id)
-    if "staging_buffer_bytes" in data:
-        args += (data["staging_buffer_bytes"], data["staging_buffers_count"])
-    await engine_client(request).collective_rpc("init_broadcaster", args=args)
+    # The body holds the keyword arguments of the loaded worker extension's `init_broadcaster`; each weight transport
+    # takes its own.
+    await engine_client(request).collective_rpc("init_broadcaster", kwargs=await request.json())
     return {"status": "ok"}
 
 

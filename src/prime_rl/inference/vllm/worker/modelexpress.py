@@ -1,6 +1,7 @@
 """vLLM extension using the public ModelExpress generator client."""
 
 import atexit
+import os
 from typing import TYPE_CHECKING, cast
 
 import torch
@@ -63,16 +64,15 @@ class ModelExpressWeightUpdateWorker(WeightRPCMixin, Worker):
         self,
         host,
         port,
-        rank_offset,
-        inference_world_size,
         timeout,
-        session_id="default",
+        session_id,
         staging_buffer_bytes=None,
         staging_buffers_count=1,
     ):
-        # The id names this worker's MX registration, version leases and NIXL agent, so it must be unique per
-        # inference GPU. `self.rank` restarts at 0 in every data-parallel engine of a server; the device index does not.
-        worker_id = f"{session_id}:{rank_offset + self.device.index}"
+        # The id names this worker's MX registration, version leases and NIXL agent, so it must be unique per worker.
+        # vLLM's ranks and device indices are not: they restart in every data-parallel engine, every external-LB server
+        # and every P/D role. The GPU's UUID and the process id are, without any knowledge of the inference layout.
+        worker_id = f"{session_id}:{torch.cuda.get_device_properties(self.device).uuid}:{os.getpid()}"
         # Admin planes that discover engines call this before every update; the client the engine runs stays.
         previous = getattr(self, "_generator", None)
         if previous is not None and previous.worker_id == worker_id:

@@ -155,7 +155,6 @@ class ModelExpressWeightReceiver(WeightReceiver):
             self.config.host,
             self.config.port,
             self.config.timeout,
-            self.config.inference_world_size,
             self.config.staging_buffer_bytes,
             self.config.staging_buffers_count,
         )

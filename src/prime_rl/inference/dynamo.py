@@ -171,15 +171,13 @@ class _ModelExpressSession:
     staging_buffers_count: int
     session_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
-    def init_broadcaster_args(self, worker: DynamoWorker) -> list[object]:
-        # A worker names its ranks under its own instance id, so no inference-wide rank layout is needed.
+    def init_broadcaster_args(self) -> list[object]:
+        # Every worker gets the same arguments: each names itself, so no inference layout is needed.
         return [
             self.host,
             self.port,
-            0,
-            worker.world_size,
             self.timeout,
-            f"{self.session_id}-{worker.instance_id}",
+            self.session_id,
             self.staging_buffer_bytes,
             self.staging_buffers_count,
         ]
@@ -488,12 +486,9 @@ class DynamoAdminPlane(AdminPlane):
         host: str,
         port: int,
         timeout: int,
-        inference_world_size: int,
         staging_buffer_bytes: int | None,
         staging_buffers_count: int,
     ) -> None:
-        # Workers join and leave between updates and each reports its own world size.
-        del inference_world_size
         async with self._mutation_lock:
             self._modelexpress = _ModelExpressSession(
                 host=host,
@@ -515,18 +510,15 @@ class DynamoAdminPlane(AdminPlane):
         deadline = time.monotonic() + self._timeout
         await self._bind(await self._discover_until(deadline), deadline)
 
-        async def initialize(worker: DynamoWorker, client: httpx.AsyncClient) -> None:
+        async def initialize(client: httpx.AsyncClient) -> None:
             await self._collective_rpc(
                 client,
                 method="init_broadcaster",
                 timeout=max(ADMIN_TIMEOUT_S, session.timeout),
-                args=session.init_broadcaster_args(worker),
+                args=session.init_broadcaster_args(),
             )
 
-        results = await asyncio.gather(
-            *(initialize(worker, client) for worker, client in zip(self._workers, self.clients, strict=True)),
-            return_exceptions=True,
-        )
+        results = await asyncio.gather(*(initialize(client) for client in self.clients), return_exceptions=True)
         for result in results:
             if isinstance(result, BaseException):
                 raise result

@@ -103,42 +103,47 @@ def test_modelexpress_worker_uses_stage_apply_release(fail_install):
     assert calls == ["stage", "apply", "release"]
 
 
-def test_modelexpress_worker_initializes_once_per_worker_id():
+def test_modelexpress_worker_initializes_once_per_worker_id(monkeypatch):
     import torch
 
-    from prime_rl.inference.vllm.worker.modelexpress import ModelExpressWeightUpdateWorker
+    import prime_rl.inference.vllm.worker.modelexpress as worker_module
 
+    monkeypatch.setattr(torch.cuda, "get_device_properties", lambda device: SimpleNamespace(uuid="gpu-a"))
+    monkeypatch.setattr(worker_module, "os", SimpleNamespace(getpid=lambda: 100))
     closed = []
-    running = SimpleNamespace(worker_id="session-7:0", close=lambda: closed.append(True))
-    worker = ModelExpressWeightUpdateWorker()
+    running = SimpleNamespace(worker_id="session-7:gpu-a:100", close=lambda: closed.append(True))
+    worker = worker_module.ModelExpressWeightUpdateWorker()
     worker.device = torch.device("cuda", 0)
     worker._generator = running
 
     # The same worker id keeps the running client without touching the engine.
-    worker.init_broadcaster("trainer", 8001, 0, 1, 60, "session-7")
+    worker.init_broadcaster("trainer", 8001, 60, "session-7")
     assert worker._generator is running and not closed
 
     # A new worker id closes the running client before initializing another one from the engine.
     worker.model_runner = SimpleNamespace()
     with pytest.raises(AttributeError, match="model_config"):
-        worker.init_broadcaster("trainer", 8001, 0, 1, 60, "session-8")
+        worker.init_broadcaster("trainer", 8001, 60, "session-8")
     assert closed == [True]
 
 
 @pytest.mark.parametrize(
-    "servers",
+    "workers",
     [
         # One server running four data-parallel engines: every engine's worker has rank 0.
-        [(0, [(0, 0), (0, 1), (0, 2), (0, 3)])],
-        # One server running two data-parallel engines of TP=2.
-        [(0, [(0, 0), (1, 1), (0, 2), (1, 3)])],
-        # Two external-LB servers of TP=2, each seeing only its own two GPUs.
-        [(0, [(0, 0), (1, 1)]), (2, [(0, 0), (1, 1)])],
+        [("gpu-0", 10, 0, 0), ("gpu-1", 11, 0, 1), ("gpu-2", 12, 0, 2), ("gpu-3", 13, 0, 3)],
+        # Two external-LB servers of TP=2, each seeing only its own two GPUs as devices 0 and 1.
+        [("gpu-0", 10, 0, 0), ("gpu-1", 11, 1, 1), ("gpu-2", 20, 0, 0), ("gpu-3", 21, 1, 1)],
+        # Prefill and decode deployments on two nodes: each starts at rank 0 on device 0, in its own container.
+        [("gpu-0", 10, 0, 0), ("gpu-8", 10, 0, 0)],
+        # Two engines sharing one GPU.
+        [("gpu-0", 10, 0, 0), ("gpu-0", 20, 0, 0)],
     ],
-    ids=["dp4", "tp2-dp2", "external-lb-tp2"],
+    ids=["dp4", "external-lb-tp2", "pd", "shared-gpu"],
 )
-def test_modelexpress_worker_ids_are_unique_across_data_parallel_engines(monkeypatch, servers):
-    """Each inference GPU registers with MX under its own id, which also names its version leases and NIXL agent."""
+def test_modelexpress_worker_ids_are_unique_without_layout_knowledge(monkeypatch, workers):
+    """Each worker registers with MX under its own id, which also names its version lease and NIXL agent. Every
+    engine receives the same initialization, so the id comes from the worker's own GPU and process."""
     import torch
     import transformers
     from torch import nn
@@ -162,19 +167,22 @@ def test_modelexpress_worker_ids_are_unique_across_data_parallel_engines(monkeyp
     )
     monkeypatch.setattr(worker_module.atexit, "register", lambda *args: None)
 
-    inference_world_size = sum(len(workers) for _, workers in servers)
-    for rank_offset, workers in servers:
-        for rank, device_index in workers:
-            worker = worker_module.ModelExpressWeightUpdateWorker()
-            worker.rank = rank
-            worker.device = torch.device("cuda", device_index)
-            worker.vllm_config = None
-            worker.model_runner = SimpleNamespace(
-                model_config=SimpleNamespace(model="model-a", trust_remote_code=False), get_model=nn.Module
-            )
-            worker.init_broadcaster("host", 8001, rank_offset, inference_world_size, 60, "session")
+    for gpu_uuid, pid, rank, device_index in workers:
+        monkeypatch.setattr(
+            torch.cuda, "get_device_properties", lambda device, uuid=gpu_uuid: SimpleNamespace(uuid=uuid)
+        )
+        monkeypatch.setattr(worker_module, "os", SimpleNamespace(getpid=lambda pid=pid: pid))
+        worker = worker_module.ModelExpressWeightUpdateWorker()
+        worker.rank = rank
+        worker.device = torch.device("cuda", device_index)
+        worker.vllm_config = None
+        worker.model_runner = SimpleNamespace(
+            model_config=SimpleNamespace(model="model-a", trust_remote_code=False), get_model=nn.Module
+        )
+        worker.init_broadcaster("host", 8001, 60, "session")
 
-    assert sorted(registered) == [f"session:{index}" for index in range(inference_world_size)]
+    assert registered == [f"session:{gpu_uuid}:{pid}" for gpu_uuid, pid, _, _ in workers]
+    assert len(set(registered)) == len(workers)
 
 
 def test_modelexpress_sender_publishes_current_values_of_state_dict_copies(tmp_path, monkeypatch):

@@ -354,33 +354,24 @@ class AdminPlane:
         host: str,
         port: int,
         timeout: int,
-        inference_world_size: int,
         staging_buffer_bytes: int | None,
         staging_buffers_count: int,
     ) -> None:
-        workers_per_server = inference_world_size // len(self.clients)
-        if workers_per_server < 1 or inference_world_size % len(self.clients):
-            raise ValueError("modelexpress requires an equal number of workers per inference server")
-        session_id = uuid.uuid4().hex
+        # Every engine gets the same request: each worker names itself, so no inference layout is needed here.
+        payload = {
+            "host": host,
+            "port": port,
+            "timeout": timeout,
+            "session_id": uuid.uuid4().hex,
+            "staging_buffer_bytes": staging_buffer_bytes,
+            "staging_buffers_count": staging_buffers_count,
+        }
 
-        async def initialize(index, client):
-            response = await client.post(
-                "/init_broadcaster",
-                json={
-                    "host": host,
-                    "port": port,
-                    "timeout": timeout,
-                    "rank_offset": index * workers_per_server,
-                    "inference_world_size": inference_world_size,
-                    "session_id": session_id,
-                    "staging_buffer_bytes": staging_buffer_bytes,
-                    "staging_buffers_count": staging_buffers_count,
-                },
-                timeout=max(ADMIN_TIMEOUT_S, timeout),
-            )
+        async def initialize(client):
+            response = await client.post("/init_broadcaster", json=payload, timeout=max(ADMIN_TIMEOUT_S, timeout))
             response.raise_for_status()
 
-        await asyncio.gather(*(initialize(index, client) for index, client in enumerate(self.clients)))
+        await asyncio.gather(*(initialize(client) for client in self.clients))
 
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:
