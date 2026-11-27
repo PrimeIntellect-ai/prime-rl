@@ -8,6 +8,7 @@ from prime_rl.configs.orchestrator import OnlineEvalSourceConfig
 from prime_rl.configs.shared import LogConfig
 from prime_rl.configs.supervised import BaseValConfig, SupervisedTrainerConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, run_links
+from prime_rl.entrypoints.modelexpress_server import modelexpress_template_vars, start_modelexpress
 from prime_rl.entrypoints.slurm import load_slurm_template, submit_sbatch
 from prime_rl.utils.admin_token import AdminTokenUses, TokenUse
 from prime_rl.utils.config import dump_resolved_config
@@ -191,6 +192,9 @@ def write_slurm_script(
         )
     else:
         online_eval = config.eval is not None
+        modelexpress_vars = modelexpress_template_vars(
+            config.weight_broadcast if online_eval else None, config.slurm.launch_modelexpress
+        )
         eval_vars = {}
         if online_eval:
             assert config.inference is not None
@@ -242,6 +246,7 @@ def write_slurm_script(
             ),
             entrypoint=entrypoint,
             **eval_vars,
+            **modelexpress_vars,
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
@@ -377,6 +382,10 @@ def launch_local(config: SupervisedTrainerConfig, entrypoint: str):
     base_env, admin_envs = admin_token_uses(config).split(os.environ)
 
     with ProcessGroup() as processes:
+        if config.eval is not None and config.weight_broadcast.type == "modelexpress":
+            logger.info(f"Starting ModelExpress server on port {config.weight_broadcast.port}")
+            start_modelexpress(processes, config.weight_broadcast.port, log_dir, base_env)
+
         # Optionally, start the inference server for online evals
         if config.inference is not None:
             logger.info(f"Starting inference on GPU(s) {' '.join(map(str, infer_gpu_ids))}")
@@ -483,9 +492,13 @@ def clean_stale_eval_artifacts(config: SupervisedTrainerConfig) -> None:
 def launch(config: SupervisedTrainerConfig, entrypoint: str):
     # Launcher-only check: the trainer re-parses a sub-config with [inference] and
     # [deployment] stripped, so the model validator cannot enforce this.
-    if config.weight_broadcast is not None and config.weight_broadcast.type == "nccl" and config.inference is None:
+    if (
+        config.weight_broadcast is not None
+        and config.weight_broadcast.type != "filesystem"
+        and config.inference is None
+    ):
         raise ValueError(
-            "NCCL weight broadcast requires launcher-managed inference. "
+            f"{config.weight_broadcast.type} weight broadcast requires launcher-managed inference. "
             "Add an [inference] block or set weight_broadcast.type = 'filesystem'."
         )
 

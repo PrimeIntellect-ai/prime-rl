@@ -991,6 +991,67 @@ def test_sft_launcher_gives_the_admin_token_to_online_evals_and_its_digest_to_ch
     assert envs["inference"] == envs["trainer"] == {"PRIME_RL_ADMIN_TOKEN_SHA256": admin_token_digest(token)}
 
 
+SFT_ONLINE_EVAL = {"source": [{"name": "reverse-text", "env": {"taskset": {"id": "reverse-text"}}}]}
+
+
+@pytest.mark.parametrize("transport", ["nccl", "modelexpress"])
+def test_sft_online_evals_size_the_in_memory_transfer_group(transport):
+    from prime_rl.entrypoints.launcher import build_online_eval_config
+
+    config = SFTConfig.model_validate(
+        {
+            "weight_broadcast": {"type": transport},
+            "eval": SFT_ONLINE_EVAL,
+            "inference": {},
+            "deployment": {"num_train_gpus": 1, "num_infer_gpus": 2},
+        }
+    )
+
+    assert config.weight_broadcast.inference_world_size == 2
+    assert config.inference.weight_broadcast.type == transport
+    assert build_online_eval_config(config).weight_broadcast == config.weight_broadcast
+
+    config = SFTConfig.model_validate(
+        {
+            "weight_broadcast": {"type": transport},
+            "eval": SFT_ONLINE_EVAL,
+            "inference": {},
+            "deployment": {"type": "multi_node", "num_train_nodes": 1, "num_infer_nodes": 2},
+            "max_steps": 10,
+            "slurm": {},
+        }
+    )
+
+    assert config.weight_broadcast.inference_world_size == 16
+
+
+@pytest.mark.parametrize("launch", [True, False])
+def test_multi_node_sft_online_evals_reach_the_modelexpress_server(tmp_path, launch):
+    from prime_rl.entrypoints.launcher import write_slurm_script
+
+    config = SFTConfig.model_validate(
+        {
+            "weight_broadcast": {"type": "modelexpress", "host": "mx-host"},
+            "eval": SFT_ONLINE_EVAL,
+            "inference": {},
+            "deployment": {"type": "multi_node", "num_train_nodes": 1, "num_infer_nodes": 1},
+            "max_steps": 10,
+            "slurm": {"launch_modelexpress": launch},
+            "output_dir": tmp_path,
+        }
+    )
+    script_path = tmp_path / "sft.sbatch"
+    config_path = tmp_path / "sft.json"
+    write_slurm_script(config, config_path, config_path, tmp_path / "logs", script_path, "run-id", False, "sft")
+    script = script_path.read_text()
+
+    host = "$MASTER_ADDR" if launch else "mx-host"
+    assert f'export WEIGHT_BROADCAST_HOST="{host}"' in script
+    assert ('"$MX_BIN/modelexpress-server"' in script) == launch
+    # The trainer and the online evals both reach the server through its host.
+    assert script.count("--weight-broadcast.host $WEIGHT_BROADCAST_HOST") == 2
+
+
 def test_single_node_nccl_resolved_json_roundtrips(tmp_path):
     """The resolved rl.json re-parses (as a SLURM launch does) to the same config."""
     import json
