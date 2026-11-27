@@ -850,6 +850,25 @@ def test_group_defaults_match_source_defaults(group):
             assert default(field) == default(source.model_fields[name]), f"{group.__name__}.{name}"
 
 
+def test_only_truncated_policy_sources_request_replay():
+    config = OrchestratorConfig.model_validate(
+        {
+            "renderer": {"name": "qwen3"},
+            "train": {
+                "source": [
+                    {"name": "full", "env": {"taskset": {"id": "reverse-text"}}},
+                    {"name": "nucleus", "env": {"taskset": {"id": "reverse-text"}}, "sampling": {"top_p": 0.95}},
+                ]
+            },
+        }
+    )
+
+    full, nucleus = config.train.source
+    assert "extra_args" not in full.sampling.extra_body
+    assert nucleus.sampling.extra_body["extra_args"] == {"prl_replay": True}
+    assert OrchestratorConfig.model_validate(config.model_dump(mode="json")) == config
+
+
 def test_policy_sources_accept_different_top_p_values():
     config = OrchestratorConfig.model_validate(
         {

@@ -749,11 +749,11 @@ class OrchestratorConfig(BaseConfig):
     def resolve_sampling_replay(self):
         """Opt policy train sources into replay and keep eval sampling independent."""
         for env in self.train.source:
-            # Policy-sourced rollouts hit our vLLM server; frozen-sourced
-            # rollouts may hit external OAI endpoints that reject these knobs.
-            if env.algo.rollout_model == "policy":
+            # Only truncated policy sampling needs replay. Frozen-sourced rollouts may hit external
+            # OAI endpoints, and policy engines without prime-rl's extension (Dynamo), that reject the flag.
+            if env.algo.rollout_model == "policy" and env.sampling.truncates_distribution():
                 extra_args = dict(env.sampling.extra_body.get("extra_args") or {})
-                extra_args["prl_replay"] = env.sampling.truncates_distribution()
+                extra_args["prl_replay"] = True
                 env.sampling.extra_body["extra_args"] = extra_args
         if self.eval is not None:
             for env in self.eval.source:

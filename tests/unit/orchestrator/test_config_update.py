@@ -99,11 +99,12 @@ def test_example_config_rest_of_algo_is_frozen(example):
 
 def test_example_config_frozen_change_that_fails_validation_is_reported_frozen(example):
     raw = dump_resolved_config(example)
-    raw["train"]["source"][0]["sampling"]["top_p"] = 0.9
+    raw["train"]["source"][0]["sampling"]["top_p"] = 1.5
 
     with pytest.raises(InvalidConfigError) as error:
         validate_update(example, raw)
 
+    assert error.value.detail["errors"]
     assert error.value.detail["frozen"] == ["train.source[0].sampling.top_p"]
 
 
