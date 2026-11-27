@@ -63,7 +63,7 @@ def patch_qwen38_weight_loading() -> None:
                         if overlap is None:
                             skipped.add("ngram_embedding.weight")
                             continue
-                        # Preserve symbolic tensor subclasses used to trace NIXL transfers.
+                        # Preserve symbolic tensor subclasses used to trace ModelExpress transfers.
                         if live_weight is not None and type(weight) is torch.Tensor:
                             rows = weight.narrow(0, overlap.source_start, overlap.row_count)
                             live_weight.narrow(0, overlap.destination_start, overlap.row_count).copy_(rows)

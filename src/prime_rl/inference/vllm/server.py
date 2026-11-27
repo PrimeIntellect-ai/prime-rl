@@ -53,7 +53,6 @@ API_SERVER_GC_THRESHOLDS = (50_000, 20, 100)
 WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
     "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
-    "nixl": "prime_rl.inference.vllm.worker.nixl.NIXLWeightUpdateWorker",
     "modelexpress": "prime_rl.inference.vllm.worker.modelexpress.ModelExpressWeightUpdateWorker",
 }
 

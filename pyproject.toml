@@ -84,7 +84,8 @@ inference = [
     # downloads the trtllm-gen cubins and JIT-builds its modules into its node-local cache at startup.
     "flashinfer-cubin==0.7.3 ; sys_platform == 'linux'",
     "flashinfer-jit-cache==0.7.3+cu130 ; sys_platform == 'linux'",
-    "modelexpress==0.8.0.dev20261022 ; sys_platform == 'linux'",
+    "modelexpress==0.8.0 ; sys_platform == 'linux'",
+    "modelexpress-server==0.8.0 ; sys_platform == 'linux'",
 ]
 gpu = [
     "prime-rl[train]",
@@ -271,6 +272,7 @@ prime-pydantic-config = false
 vllm-router = false
 dion = false
 deep-ep = false
+modelexpress-server = false
 nixl-cu13 = false
 torchao = false
 prime-kernels = false
@@ -295,6 +297,10 @@ dion = { git = "https://github.com/samsja/dion.git", rev = "0c801b0" }
 sonic-moe = { git = "https://github.com/S1ro1/sonic-moe", rev = "0bf06ac" }
 quack-kernels = { git = "https://github.com/S1ro1/quack", rev = "f62009f" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "0251105" }
+modelexpress-server = [
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-8387229/modelexpress_server-0.8.0-py3-none-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-8387229/modelexpress_server-0.8.0-py3-none-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+]
 vllm-router = [
     { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.8/vllm_router-0.2.8-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
     { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.8/vllm_router-0.2.8-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },

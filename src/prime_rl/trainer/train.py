@@ -444,7 +444,6 @@ def train(config: SFTConfig | PretrainConfig):
         weight_sender = setup_weight_sender(
             config.run_dir,
             config.weight_broadcast,
-            parallel_dims,
             config.model.lora,
             model_name=config.model.name,
         )
