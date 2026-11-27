@@ -1,0 +1,61 @@
+# Inkling 2 Mini (26.4B-A3.4B MoE, 128 experts; sliding-window and global relative attention, short
+# convolutions; layers 6-17 run three times with shared weights, so a token takes 48 layer visits)
+# RL at 256k context. Model settings only: compose it with a compute overlay from `gpu/` and a data
+# config from `recipes/data/`:
+#
+#   uv run rl @ recipes/inkling-2-mini/rl.toml @ recipes/inkling-2-mini/gpu/h200.toml @ recipes/data/swe.toml
+#   uv run rl @ recipes/inkling-2-mini/rl.toml @ recipes/inkling-2-mini/gpu/h200.toml @ recipes/data/math.toml
+#
+# The optimizer, router replay and engine settings come from
+# examples/advanced/inkling2/mini-math-rl.toml, which ran 100 math steps at 8k (#4669).
+
+seq_len = 262144
+
+[slurm]
+
+[model]
+# bf16 export of thinkingmachines/Inkling-2-Mini (NVFP4 and MXFP8 routed experts). Without access to
+# this repo, convert the release locally (about 53 GB) and pass the folder as --model.name:
+#   uv run python tools/convert_inkling2_to_bf16.py <Inkling-2-Mini dir> <out dir>
+name = "PrimeIntellect/Inkling-2-Mini-bf16"
+
+[weight_broadcast]
+type = "nccl"
+
+# The trainer reuses the experts vLLM routed every token to, one choice per layer visit. Mismatch KL
+# on math: 0.00009 with replay, 0.0013 without (#4669).
+[trainer]
+enable_router_replay = true
+
+[trainer.model]
+# Compiled flex attention hits the saved-tensor tracker assertion under activation offloading.
+ac_offloading = "None"
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+weight_decay = 0.1
+
+[trainer.data]
+# The trainer compiles flex attention for static shapes: pad every micro batch to seq_len.
+pad_to_seq_len = true
+
+[orchestrator.renderer]
+# The bf16 export is not in the renderer map. The tested recipe uses low effort; the template
+# defaults to high.
+name = "inkling-2"
+reasoning_effort = "low"
+# Envs that pass tools (the SWE bash harness) need a renderer-side tool parser.
+tool_parser = "inkling2"
+
+[inference.vllm]
+# Server window above the trainer seq_len so the harness can compact before the cap.
+max_model_len = 270336
+enable_prefix_caching = true
+# Every scheduled token takes a short-conv state page in each of the 48 layer visits, padded to the
+# attention page: small pages keep that transient small.
+block_size = 16
+tool_call_parser = "inkling2"
+reasoning_parser = "inkling2"
+# The Inkling 2 framing tokens are special tokens; parsers need them in the text.
+override_generation_config = { skip_special_tokens = false }

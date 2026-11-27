@@ -1,0 +1,40 @@
+# H200 overlay for rl.toml: 1 trainer node and 1 one-node inference replica, bf16 experts on both
+# sides. ScaleSWE RL (batch 128): steady steps of 4.5-6 min, the trainer waits ~70% of each step,
+# mismatch KL 0.0005, 66.8 GiB peak allocated. Trainer fit on fake 256k samples (real weights,
+# 1 node, cp 8, ep 8): 7.0k tok/s (873 per GPU), 59.8 GiB peak allocated; with --seq-len 131072,
+# 10.3k tok/s (1,282 per GPU) and 57.2 GiB.
+#
+#   uv run rl @ recipes/inkling-2-mini/rl.toml @ recipes/inkling-2-mini/gpu/h200.toml @ recipes/fake.toml --trainer.model.init.type pretrained --trainer.model.debug.force-balanced-routing
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+# As many inference nodes as trainer nodes.
+num_infer_replicas = 1
+
+[trainer]
+# The first step compiles for about 15 minutes.
+dist_timeout_seconds = 1800
+
+[trainer.model]
+# cp 4 trained 4% faster at 256k (7.3k tok/s) but peaked at 91.7 GiB allocated.
+cp = 8
+ep = 8
+
+# Eight single-GPU engines (the bf16 weights take 49 GiB of each GPU). Under a synthetic agentic
+# load they decoded 5.8k tok/s at 256 sessions; TP2 x DP4 (with #4819) decoded 5.3k and DEP8 3.5k.
+# At 512 sessions the KV cache (136k pages of 16 tokens per GPU) filled, prefix-cache hits fell and
+# decode dropped to 4.3k tok/s. max_num_seqs barely changes the KV cache; an 8192-token step budget
+# shrinks vLLM's KV capacity estimate by a third.
+[inference.vllm]
+tensor_parallel_size = 1
+data_parallel_size = 8
+gpu_memory_utilization = 0.85
+max_num_seqs = 128
+max_num_batched_tokens = 4096
+
+# The KV cache fills between 256 and 512 synthetic sessions. In ScaleSWE RL the controller held
+# 113-184 episodes in flight, the KV cache peaked at 36% and the node decoded 3.5k tok/s.
+[orchestrator.concurrency]
+max_inflight = 256
