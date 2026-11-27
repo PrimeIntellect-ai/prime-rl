@@ -1054,7 +1054,7 @@ class Orchestrator:
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {eff.reward.mean():.4f} | "
             f"Trainable {n_trainable}/{n_effective} ({trainable_rate:.1%}) | "
-            f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
+            f"Turns {eff.rollout_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
             f"Max Staleness {max_staleness} | "
             f"Truncation {eff.is_truncated.mean():.1%} | Timeout {eff.is_timeout.mean():.1%}"
         )
@@ -1072,7 +1072,7 @@ class Orchestrator:
             ratio = env_eff_pool.num_traces / n_effective if n_effective else 0.0
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_eff.reward.mean():.4f} | "
-                f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
+                f"Turns {env_eff.rollout_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
                 f"Max Staleness {max_rollout_staleness(env_eff_pool, step)} | "
                 f"Truncation {env_eff.is_truncated.mean():.1%} | Timeout {env_eff.is_timeout.mean():.1%}"
             )
@@ -1130,7 +1130,7 @@ class Orchestrator:
         get_logger().success(
             f"Evaluated {batch.env_name} | "
             f"Policy v{policy_version} | {format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
-            f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
+            f"Turns {eff.rollout_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
             f"Error {full.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%} | "
             f"Timeout {full.is_timeout.mean():.1%}"
         )

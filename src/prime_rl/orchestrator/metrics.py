@@ -375,6 +375,10 @@ class EpisodeMetrics:
         return self._episode_stat("num_turns")
 
     @property
+    def rollout_turns(self) -> Stat:
+        return Stat([float(record.trace.num_turns) for record in self.records])
+
+    @property
     def num_branches(self) -> Stat:
         return self._episode_stat("num_branches")
 
