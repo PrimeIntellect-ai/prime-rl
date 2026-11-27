@@ -1,8 +1,8 @@
 # prime-rl-configs
 
-Slim config schema for [`prime-rl`](https://github.com/PrimeIntellect-ai/prime-rl), with no GPU or ML deps.
+Slim config schema for [`prime-rl`](https://github.com/PrimeIntellect-ai/prime-rl).
 
-`pip install prime-rl-configs` gives you `prime_rl.configs.*` (RL/SFT/inference/orchestrator/trainer/env-worker-pool schemas) without pulling in `torch`, `vllm`, `transformers`, `wandb`, etc. The full training stack lives in `prime-rl`, which depends on this package.
+`pip install prime-rl-configs` gives you `prime_rl.configs.*` (RL/SFT/inference/orchestrator/trainer/env-worker-pool schemas) without pulling in `torch`, `vllm`, or `wandb`. Installing the package brings in `transformers` through `verifiers`. Importing the schemas does not load `transformers`. The full training stack lives in `prime-rl`, which depends on this package.
 
 ## Install
 
