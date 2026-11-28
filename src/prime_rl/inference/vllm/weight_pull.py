@@ -322,7 +322,10 @@ class WeightPuller:
                     # Stay paused until the server is gone
                     await asyncio.Event().wait()
                 await asyncio.sleep(1.0)
-                target = await self.newest(after=None) or target
+                try:
+                    target = await self.newest(after=None) or target
+                except Exception as list_error:
+                    logger.warning(f"Listing policy versions failed; retrying v{target.version_number}: {list_error!r}")
                 live = False
         installed = time.perf_counter()
         await self.engines.resume()
