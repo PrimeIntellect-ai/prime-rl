@@ -49,29 +49,17 @@ class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
 
 
-class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
-    host: str = "localhost"
-    """Weight transfer host."""
-
-    port: int
-    """Weight transfer port."""
-
-    inference_world_size: int = Field(1, ge=1)
-    """Total inference workers across all servers. Set automatically by ``rl`` and ``sft``."""
-
-
-class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
-    type: Literal["nccl"] = "nccl"
-
-    port: int = 29501
-    """Port for the NCCL broadcast rendezvous."""
-
-
-class ModelExpressWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
+class ModelExpressWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["modelexpress"] = "modelexpress"
+
+    host: str = "localhost"
+    """ModelExpress server host."""
 
     port: int = 8001
     """ModelExpress gRPC port."""
+
+    inference_world_size: int = Field(1, ge=1)
+    """Total inference workers across all servers. Set automatically by ``rl`` and ``sft``."""
 
     metadata_port: int = 5655
     """Base port of the trainer's NIXL metadata listener. Each local rank listens on this plus its device id."""
@@ -87,7 +75,7 @@ class ModelExpressWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | ModelExpressWeightBroadcastConfig,
+    FileSystemWeightBroadcastConfig | ModelExpressWeightBroadcastConfig,
     Field(discriminator="type"),
 ]
 """Weight transfer from trainer to inference. ``rl`` copies its ``[weight_broadcast]`` to the trainer and orchestrator."""

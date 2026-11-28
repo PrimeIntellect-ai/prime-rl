@@ -59,36 +59,6 @@ def test_load_lora_adapter_succeeds_on_first_attempt():
     )
 
 
-def test_admin_plane_initializes_nccl():
-    admin_plane = AdminPlane(ClientConfig())
-    client = AsyncMock()
-    response = MagicMock()
-    response.raise_for_status.return_value = None
-    client.post.return_value = response
-    admin_plane.clients = [client]
-
-    asyncio.run(
-        admin_plane.initialize_nccl(
-            host="trainer",
-            port=29501,
-            timeout=1200,
-            inference_world_size=1,
-        )
-    )
-
-    client.post.assert_awaited_once_with(
-        "/init_broadcaster",
-        json={
-            "host": "trainer",
-            "port": 29501,
-            "rank_offset": 0,
-            "inference_world_size": 1,
-            "timeout": 1200,
-        },
-    )
-    asyncio.run(admin_plane.aclose())
-
-
 def test_admin_plane_sends_the_admin_token_to_engines_only(monkeypatch):
     monkeypatch.setenv("PRIME_RL_ADMIN_TOKEN", "secret")
     config = VLLMClientConfig(base_url="http://router:8000/v1", admin_base_url=["http://engine:8100/v1"])

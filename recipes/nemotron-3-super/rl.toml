@@ -13,7 +13,10 @@ seq_len = 262144
 name = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"
 
 [weight_broadcast]
-type = "nccl"
+type = "modelexpress"
+# Each inference GPU stages at most 2 x 4 GiB of an update instead of a full copy of its shard.
+staging_buffer_bytes = 4294967296
+staging_buffers_count = 2
 
 [trainer]
 enable_router_replay = true

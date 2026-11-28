@@ -10,6 +10,10 @@ num_train_nodes = 1
 num_infer_nodes = 1
 num_infer_replicas = 1
 
+# An 80 GB GPU leaves under 12 GB outside vLLM's budget, so stage weight updates through one 4 GiB buffer.
+[weight_broadcast]
+staging_buffers_count = 1
+
 [trainer.model]
 cp = 8
 

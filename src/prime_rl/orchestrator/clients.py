@@ -8,7 +8,6 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Literal
 
 import httpx
 import verifiers.v1 as vf
@@ -184,7 +183,7 @@ class AdminPlane:
     so these clients bypass it via ``admin_base_url``.
 
     The client order is load-bearing: ``admin_base_url`` order must match the
-    GPU rank order used by NCCL/NIXL initialization and the metrics collector's
+    GPU rank order used by ModelExpress initialization and the metrics collector's
     role list index."""
 
     roles: list[str | None] | None = None
@@ -222,56 +221,14 @@ class AdminPlane:
         )
         await maybe_check_has_model(self.clients, model_name, skip_model_check=self._skip_model_check)
 
-    async def initialize_nccl(
-        self,
-        *,
-        host: str,
-        port: int,
-        timeout: int,
-        inference_world_size: int,
-    ) -> None:
-        gpus_per_server = inference_world_size // len(self.clients)
-        get_logger().info(
-            f"Initializing NCCL broadcast: {len(self.clients)} servers, "
-            f"inference_world_size={inference_world_size}, gpus_per_server={gpus_per_server}"
-        )
-
-        async def initialize_client(admin_client: AsyncClient, rank_offset: int) -> None:
-            try:
-                response = await admin_client.post(
-                    "/init_broadcaster",
-                    json={
-                        "host": host,
-                        "port": port,
-                        "rank_offset": rank_offset,
-                        "inference_world_size": inference_world_size,
-                        "timeout": timeout,
-                    },
-                )
-                response.raise_for_status()
-            except httpx.HTTPStatusError as error:
-                if error.response.status_code != 404:
-                    raise
-                get_logger().warning(
-                    "The route /init_broadcaster does not exist. Skipping NCCL broadcast initialization."
-                )
-
-        await asyncio.gather(
-            *(
-                initialize_client(admin_client, client_num * gpus_per_server)
-                for client_num, admin_client in enumerate(self.clients)
-            )
-        )
-
     async def update_weights(
         self,
         weight_dir: Path | None,
         *,
-        transport: Literal["filesystem", "nccl"],
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
     ) -> None:
-        """Update every inference engine through its configured weight transport."""
+        """Load the checkpoint in ``weight_dir`` on every inference engine."""
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
         pause_times = await _pause_engines(self.clients, step=step, roles=self.roles)
@@ -575,8 +532,8 @@ def _is_retryable_admin_error(exception: BaseException) -> bool:
 # that tenacity retries. Sized for `/pause`, which drains in-flight requests
 # (mode="keep") and so can legitimately take a while.
 ADMIN_TIMEOUT_S = 300.0
-# `/update_weights` runs a collective NCCL receive across all DP workers, which
-# can take longer than the other admin ops.
+# Weight installs (`/update_weights`, `/update_weights_from_modelexpress`, `/update_draft_weights`)
+# replace every weight on every DP worker, which can take longer than the other admin ops.
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
 
 

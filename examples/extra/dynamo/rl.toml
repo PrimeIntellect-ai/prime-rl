@@ -5,7 +5,9 @@ seq_len = 2048
 name = "Qwen/Qwen3-0.6B"
 
 [weight_broadcast]
-type = "nccl"
+type = "modelexpress"
+# The default ModelExpress port, 8001, is the Dynamo discovery port here.
+port = 8011
 
 [deployment]
 num_train_gpus = 1

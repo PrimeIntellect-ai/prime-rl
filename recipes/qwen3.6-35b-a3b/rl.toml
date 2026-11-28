@@ -13,7 +13,10 @@ seq_len = 262144
 name = "Qwen/Qwen3.6-35B-A3B"
 
 [weight_broadcast]
-type = "nccl"
+type = "modelexpress"
+# Each inference GPU stages at most 2 x 4 GiB of an update instead of a full copy of its shard.
+staging_buffer_bytes = 4294967296
+staging_buffers_count = 2
 
 [trainer.optim]
 type = "muon"

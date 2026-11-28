@@ -245,9 +245,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
                 @ $CONFIG_DIR/eval.json \
                 --client.base-url $INFER_URLS \
                 --client.admin-base-url $ADMIN_URLS \
-{%- if use_nccl_broadcast %}
-                --weight-broadcast.host $MASTER_ADDR \
-{%- elif uses_modelexpress_server %}
+{%- if uses_modelexpress_server %}
                 --weight-broadcast.host $WEIGHT_BROADCAST_HOST \
 {%- endif %}
                 2>&1 | tee $LOG_DIR/eval.log
@@ -284,9 +282,7 @@ else
             --local-ranks-filter={{ ranks_filter }} \
             -m prime_rl.trainer.{{ entrypoint }}.train \
             @ $TRAIN_CONFIG_PATH \
-{%- if use_nccl_broadcast %}
-            --weight-broadcast.host 0.0.0.0 \
-{%- elif uses_modelexpress_server %}
+{%- if uses_modelexpress_server %}
             --weight-broadcast.host $WEIGHT_BROADCAST_HOST \
 {%- endif %}
             2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $LOG_DIR/trainer/node_${TRAIN_NODE_RANK}.log

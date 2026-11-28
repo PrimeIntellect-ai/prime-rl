@@ -8,6 +8,8 @@
 max_steps = 3
 # Drop the inference server of the model config.
 inference = "None"
+# Without inference there is nothing to broadcast to: drop the model config's weight transport.
+weight_broadcast = "None"
 
 # Required by the RL config; not started without inference.
 [orchestrator]
@@ -18,10 +20,6 @@ num_infer_nodes = 0
 # Router replay needs the inference engine's routed experts.
 [trainer]
 enable_router_replay = false
-
-# Without inference there is nothing to broadcast to; NCCL needs an inference world.
-[weight_broadcast]
-type = "filesystem"
 
 [trainer.model.init]
 type = "scratch"

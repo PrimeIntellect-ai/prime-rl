@@ -204,88 +204,17 @@ def test_dynamo_admin_plane_rejects_confirmed_topology_drift():
     asyncio.run(admin.aclose())
 
 
-def test_dynamo_nccl_lifecycle_initializes_and_updates_weights(tmp_path):
-    admin = admin_for(worker(3))
-
-    with (
-        patch.object(admin, "ensure_topology_current", new=AsyncMock()),
-        patch.object(admin, "_collective_rpc", new=AsyncMock()) as collective_rpc,
-        patch("prime_rl.inference.dynamo._admin_post", new=AsyncMock()) as post,
-    ):
-        with pytest.raises(ValueError, match="exactly one inference rank"):
-            asyncio.run(admin.initialize_nccl(host="trainer", port=29501, timeout=10, inference_world_size=2))
-        collective_rpc.assert_not_awaited()
-        assert admin._nccl_initialization_state == "uninitialized"
-
-        with pytest.raises(RuntimeError, match="ready NCCL initialization"):
-            asyncio.run(admin.update_weights(tmp_path / "step_1", transport="nccl", step=1))
-
-        asyncio.run(admin.initialize_nccl(host="trainer", port=29501, timeout=10, inference_world_size=1))
-        asyncio.run(admin.update_weights(tmp_path / "step_1", transport="nccl", step=1))
-
-    assert collective_rpc.await_args_list[0].kwargs["args"] == ["trainer", 29501, 0, 1, 10, "default"]
-    assert collective_rpc.await_args_list[1].kwargs["args"] == [(tmp_path / "step_1").as_posix()]
-    assert [call.args[1] for call in post.await_args_list] == ["/pause", "/resume"]
-    assert admin._nccl_initialization_state == "ready"
-    asyncio.run(admin.aclose())
-
-
-def test_dynamo_delegates_non_nccl_weight_updates(tmp_path):
+def test_dynamo_delegates_filesystem_weight_updates(tmp_path):
     admin = admin_for(worker(1))
 
     with (
         patch.object(admin, "ensure_topology_current", new=AsyncMock()) as ensure_topology,
         patch.object(AdminPlane, "update_weights", new=AsyncMock()) as update_weights,
     ):
-        asyncio.run(admin.update_weights(tmp_path, transport="filesystem", step=1))
+        asyncio.run(admin.update_weights(tmp_path, step=1))
 
     ensure_topology.assert_awaited_once_with()
-    update_weights.assert_awaited_once_with(tmp_path, transport="filesystem", step=1, on_paused=None)
-    asyncio.run(admin.aclose())
-
-
-def test_dynamo_nccl_initialization_failure_is_terminal():
-    admin = admin_for(worker(1))
-
-    with (
-        patch.object(admin, "ensure_topology_current", new=AsyncMock()),
-        patch.object(admin, "_collective_rpc", new=AsyncMock(side_effect=ValueError("unexpected"))),
-        pytest.raises(RuntimeError, match="must restart"),
-    ):
-        asyncio.run(admin.initialize_nccl(host="trainer", port=29501, timeout=10, inference_world_size=1))
-
-    assert admin._nccl_initialization_state == "terminal"
-    asyncio.run(admin.aclose())
-
-
-def test_dynamo_nccl_update_failure_stays_paused_and_terminal(tmp_path):
-    admin = admin_for(worker(1))
-    admin._nccl_initialization_state = "ready"
-
-    with (
-        patch.object(admin, "ensure_topology_current", new=AsyncMock()),
-        patch("prime_rl.inference.dynamo._admin_post", new=AsyncMock()) as post,
-        patch.object(admin, "_collective_rpc", new=AsyncMock(side_effect=RuntimeError("failed"))),
-        pytest.raises(RuntimeError, match="engines remain paused"),
-    ):
-        asyncio.run(admin.update_weights(tmp_path / "step_1", transport="nccl", step=1))
-
-    assert [call.args[1] for call in post.await_args_list] == ["/pause"]
-    assert admin._nccl_initialization_state == "terminal"
-    asyncio.run(admin.aclose())
-
-
-def test_dynamo_nccl_rejects_multiple_workers():
-    admin = admin_for(worker(1), worker(2))
-
-    with (
-        patch.object(admin, "_collective_rpc", new=AsyncMock()) as collective_rpc,
-        pytest.raises(ValueError, match="exactly one inference worker"),
-    ):
-        asyncio.run(admin.initialize_nccl(host="trainer", port=29501, timeout=10, inference_world_size=1))
-
-    collective_rpc.assert_not_awaited()
-    assert admin._nccl_initialization_state == "uninitialized"
+    update_weights.assert_awaited_once_with(tmp_path, step=1, on_paused=None)
     asyncio.run(admin.aclose())
 
 

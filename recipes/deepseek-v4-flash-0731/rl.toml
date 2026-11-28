@@ -19,7 +19,10 @@ seq_len = 262144
 name = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
 
 [weight_broadcast]
-type = "nccl"
+type = "modelexpress"
+# Each inference GPU stages at most 2 x 4 GiB of an update instead of a full copy of its shard.
+staging_buffer_bytes = 4294967296
+staging_buffers_count = 2
 
 [trainer.optim]
 type = "muon"

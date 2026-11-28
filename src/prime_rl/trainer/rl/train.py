@@ -313,8 +313,7 @@ def train(config: TrainerConfig):
     else:
         logger.info("Starting from scratch")
 
-    # Set up weight broadcast after the checkpoint load: the NCCL sender blocks until every inference
-    # engine joins, and the engines take longer to start than the load. Skip with fake data (no inference).
+    # Set up weight broadcast after the checkpoint load. Skip with fake data (no inference).
     if config.data.fake:
         weight_sender = None
         logger.info("Skipping weight broadcast setup (fake data mode)")

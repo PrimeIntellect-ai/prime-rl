@@ -56,8 +56,7 @@ data_parallel_size = 8
 enable_expert_parallel = true
 dtype = "bfloat16"
 quantization = "mxfp8"
-# Headroom for the NCCL weight-receive staging buffer, which OOMed at 0.85.
-gpu_memory_utilization = 0.75
+gpu_memory_utilization = 0.85
 
 [inference.vllm.quantization_config]
 # wo_a: vLLM's deep_gemm_fp8_o_proj treats an MXFP8 `wo_a` as blockwise FP8 and fails a DeepGEMM

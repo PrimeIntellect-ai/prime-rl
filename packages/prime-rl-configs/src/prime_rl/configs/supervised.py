@@ -14,7 +14,6 @@ from prime_rl.configs.shared import (
     BaseMultiNodeDeploymentConfig,
     BaseSingleNodeDeploymentConfig,
     FileSystemWeightBroadcastConfig,
-    NCCLWeightBroadcastConfig,
     ResumeConfig,
     RunConfig,
     SlurmConfig,
@@ -173,9 +172,9 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
     does not start a server and evals connect to ``eval.client.base_url``."""
 
     weight_broadcast: WeightBroadcastConfig | None = None
-    """Trainer-to-inference weight transport for online evals. Defaults to NCCL; set
+    """Trainer-to-inference weight transport for online evals. Defaults to filesystem; set
     ``type = "modelexpress"`` to send weights through ModelExpress. LoRA and external
-    inference use filesystem broadcast."""
+    inference require filesystem broadcast."""
 
     resume: ResumeConfig | None = None
     """Resume the run from a checkpoint (point at it with the previous run's ``run.name``). Without ``[ckpt]`` the run loads the checkpoint but saves no new ones. The checkpoint supplies the training state; the hyperparameters and the learning rate schedule come from this config. If None, does not resume."""
@@ -283,10 +282,7 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
             setup_dummy_load(self.inference, self.model.init.type == "scratch")
 
         if self.weight_broadcast is None:
-            if self.model.lora is not None or self.inference is None:
-                self.weight_broadcast = FileSystemWeightBroadcastConfig()
-            else:
-                self.weight_broadcast = NCCLWeightBroadcastConfig()
+            self.weight_broadcast = FileSystemWeightBroadcastConfig()
         if self.weight_broadcast.type != "filesystem" and self.model.lora is not None:
             raise ValueError(
                 "LoRA training is not yet supported with in-memory weight broadcast. "

@@ -14,7 +14,6 @@ from prime_rl.configs.shared import (
     BaseSingleNodeDeploymentConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
-    NCCLWeightBroadcastConfig,
     ResumeConfig,
     RunConfig,
     SlurmConfig,
@@ -457,17 +456,13 @@ class RLConfig(BaseConfig):
     def auto_setup_weight_broadcast(self):
         """Auto-setup shared weight broadcast config for trainer, orchestrator, and inference.
 
-        Defaults to NCCL broadcast when no ``weight_broadcast`` is configured. Falls back to
-        filesystem when LoRA is enabled (not yet supported by in-memory transfer), when no
-        inference server is configured, or with ``rollout_transport.retain`` (a restarted
-        trainer cannot rejoin an in-memory transfer group).
+        Defaults to filesystem broadcast when no ``weight_broadcast`` is configured. In-memory
+        transfer (``modelexpress``) supports neither LoRA nor ``rollout_transport.retain`` (a
+        restarted trainer cannot rejoin its transfer group).
         """
         retain = self.trainer.rollout_transport.retain
         if self.weight_broadcast is None:
-            if self.trainer.model.lora is not None or self.inference is None or retain:
-                self.weight_broadcast = FileSystemWeightBroadcastConfig()
-            else:
-                self.weight_broadcast = NCCLWeightBroadcastConfig()
+            self.weight_broadcast = FileSystemWeightBroadcastConfig()
         if self.weight_broadcast.type != "filesystem" and self.trainer.model.lora is not None:
             raise ValueError(
                 "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
@@ -496,16 +491,6 @@ class RLConfig(BaseConfig):
         )
         if self.inference is not None:
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
-        return self
-
-    @model_validator(mode="after")
-    def validate_enough_devices_for_nccl(self):
-        if self.deployment.type == "single_node":
-            if self.weight_broadcast.type == "nccl":
-                if self.deployment.num_train_gpus + self.deployment.num_infer_gpus < 2:
-                    raise ValueError(
-                        "NCCL weight broadcast requires at least 2 GPUs to build the broadcast process group."
-                    )
         return self
 
     @model_validator(mode="after")
@@ -788,7 +773,7 @@ class RLConfig(BaseConfig):
                 if self.inference.vllm.api_server_count == 1 and dp_per_node > 1:
                     self.inference.vllm.api_server_count = dp_per_node
 
-            if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "modelexpress"):
+            if self.weight_broadcast is not None and self.weight_broadcast.type == "modelexpress":
                 # Every allocated inference GPU is an in-memory transfer worker.
                 # The external-LB launcher starts dp_per_node (= gpus_per_node / tp)
                 # TP-sharded servers per node, i.e. gpus_per_node workers per node, so use
@@ -797,11 +782,9 @@ class RLConfig(BaseConfig):
                 # factor count twice and wait for ranks that never connect. Matches
                 # the disaggregated path below.
                 total_infer_workers = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
-                assert self.trainer.weight_broadcast.type in ("nccl", "modelexpress")
-                if self.trainer.weight_broadcast.type == "nccl":
-                    self.trainer.weight_broadcast.host = "0.0.0.0"
+                assert self.trainer.weight_broadcast.type == "modelexpress"
                 self.trainer.weight_broadcast.inference_world_size = total_infer_workers
-                assert self.orchestrator.weight_broadcast.type in ("nccl", "modelexpress")
+                assert self.orchestrator.weight_broadcast.type == "modelexpress"
                 self.orchestrator.weight_broadcast.inference_world_size = total_infer_workers
 
         self.orchestrator = self.orchestrator.model_copy(update={"env_worker_pool_replicas": env_worker_pool_replicas})
@@ -835,10 +818,10 @@ class RLConfig(BaseConfig):
             self.orchestrator = self.orchestrator.model_copy(
                 update={"inference_metrics_roles": role_order * self.deployment.num_infer_replicas}
             )
-        if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "modelexpress"):
-            assert self.trainer.weight_broadcast.type in ("nccl", "modelexpress")
+        if self.weight_broadcast is not None and self.weight_broadcast.type == "modelexpress":
+            assert self.trainer.weight_broadcast.type == "modelexpress"
             self.trainer.weight_broadcast.inference_world_size = total_infer_gpus
-            assert self.orchestrator.weight_broadcast.type in ("nccl", "modelexpress")
+            assert self.orchestrator.weight_broadcast.type == "modelexpress"
             self.orchestrator.weight_broadcast.inference_world_size = total_infer_gpus
 
         return self

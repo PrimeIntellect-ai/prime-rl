@@ -18,7 +18,6 @@ from prime_rl.orchestrator.clients import (
     ENGINE_ADMIN_LIMITS,
     UPDATE_WEIGHTS_TIMEOUT_S,
     AdminPlane,
-    _admin_post,
     _pause_engines,
     _resume_engines,
     check_health,
@@ -188,9 +187,9 @@ class _ModelExpressSession:
 class DynamoAdminPlane(AdminPlane):
     """Admin plane over the workers a trusted Dynamo discovery endpoint reports.
 
-    Readiness binds the worker set of two identical discovery snapshots. NCCL and filesystem updates require that set
-    to stay unchanged. ModelExpress updates rediscover the workers before every update: every worker is initialized
-    (a no-op on an engine that already runs the client) and receives the update, and workers that left are dropped."""
+    Readiness binds the worker set of two identical discovery snapshots. Filesystem updates require that set to stay
+    unchanged. ModelExpress updates rediscover the workers before every update: every worker is initialized (a no-op
+    on an engine that already runs the client) and receives the update, and workers that left are dropped."""
 
     def __init__(
         self,
@@ -211,22 +210,8 @@ class DynamoAdminPlane(AdminPlane):
         # The bound workers and their admin clients, in the same order.
         self._workers: list[DynamoWorker] = []
         self.clients: list[httpx.AsyncClient] = []
-        self._nccl_initialization_state: Literal["uninitialized", "initializing", "ready", "terminal"] = "uninitialized"
         self._modelexpress: _ModelExpressSession | None = None
         self._mutation_lock = asyncio.Lock()
-
-    def _require_uninitialized_nccl(self) -> None:
-        if self._nccl_initialization_state != "uninitialized":
-            raise RuntimeError(
-                "Dynamo NCCL can only be initialized once; restart the inference workers before retrying"
-            )
-
-    def _require_ready_nccl(self) -> None:
-        if self._nccl_initialization_state != "ready":
-            raise RuntimeError("Dynamo weight updates require a ready NCCL initialization")
-
-    def _terminalize_nccl(self) -> None:
-        self._nccl_initialization_state = "terminal"
 
     async def _discover(self) -> list[DynamoWorker]:
         return await discover_dynamo_workers(
@@ -324,8 +309,6 @@ class DynamoAdminPlane(AdminPlane):
         ]
 
     async def ensure_topology_current(self) -> None:
-        if self._nccl_initialization_state == "terminal":
-            raise RuntimeError("Dynamo administration is in a terminal state; restart is required")
         if not self._workers:
             raise RuntimeError("Dynamo topology has not been pinned")
         pinned_fingerprint = topology_fingerprint(self._workers)
@@ -365,7 +348,7 @@ class DynamoAdminPlane(AdminPlane):
         self,
         client: httpx.AsyncClient,
         *,
-        method: Literal["init_broadcaster", "update_weights_from_path", "update_weights_from_modelexpress"],
+        method: Literal["init_broadcaster", "update_weights_from_modelexpress"],
         timeout: int | float,
         args: list[object],
     ) -> None:
@@ -387,101 +370,12 @@ class DynamoAdminPlane(AdminPlane):
         self,
         weight_dir: Path | None,
         *,
-        transport: Literal["filesystem", "nccl"],
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
     ) -> None:
-        if transport != "nccl":
-            async with self._mutation_lock:
-                await self.ensure_topology_current()
-                await super().update_weights(
-                    weight_dir,
-                    transport=transport,
-                    step=step,
-                    on_paused=on_paused,
-                )
-            return
-        if weight_dir is None:
-            raise ValueError(f"{transport.upper()} weight updates require a broadcast directory")
-        self._require_ready_nccl()
         async with self._mutation_lock:
             await self.ensure_topology_current()
-            self._nccl_initialization_state = "terminal"
-
-            try:
-                await _admin_post(self.clients[0], "/pause", params={"mode": "keep", "clear_cache": "false"})
-            except BaseException as failure:
-                raise RuntimeError("Dynamo pause failed; worker state is unknown and restart is required") from failure
-
-            if on_paused is not None:
-                try:
-                    on_paused()
-                except BaseException as error:
-                    raise RuntimeError(
-                        "Dynamo pause callback failed; engines remain paused and restart is required"
-                    ) from error
-            try:
-                await self._collective_rpc(
-                    self.clients[0],
-                    method="update_weights_from_path",
-                    timeout=UPDATE_WEIGHTS_TIMEOUT_S,
-                    args=[weight_dir.as_posix()],
-                )
-            except BaseException as failure:
-                self._terminalize_nccl()
-                raise RuntimeError(
-                    f"Dynamo {transport} update failed; engines remain paused and restart is required"
-                ) from failure
-
-            try:
-                await _admin_post(self.clients[0], "/resume", timeout_s=ADMIN_TIMEOUT_S)
-            except BaseException as failure:
-                self._terminalize_nccl()
-                raise RuntimeError("Dynamo resume failed; worker state is unknown and restart is required") from failure
-            self._nccl_initialization_state = "ready"
-            get_logger().info(f"Applied NCCL weights for policy v{step} to the Dynamo worker")
-
-    async def initialize_nccl(
-        self,
-        *,
-        host: str,
-        port: int,
-        timeout: int,
-        inference_world_size: int,
-    ) -> None:
-        async with self._mutation_lock:
-            self._require_uninitialized_nccl()
-            if inference_world_size != 1 or any(worker.world_size != 1 for worker in self._workers):
-                raise ValueError("Dynamo NCCL currently supports exactly one inference rank")
-            if len(self._workers) != 1:
-                raise ValueError("Dynamo NCCL currently supports exactly one inference worker")
-            self._nccl_initialization_state = "initializing"
-            try:
-                await self.ensure_topology_current()
-                get_logger().info("Initializing Dynamo NCCL broadcast for one inference rank")
-                await self._collective_rpc(
-                    self.clients[0],
-                    method="init_broadcaster",
-                    timeout=timeout,
-                    args=[
-                        host,
-                        port,
-                        0,
-                        1,
-                        timeout,
-                        "default",
-                    ],
-                )
-            except asyncio.CancelledError:
-                self._terminalize_nccl()
-                raise
-            except BaseException as error:
-                self._terminalize_nccl()
-                raise RuntimeError(
-                    "Dynamo NCCL initialization failed; inference workers must restart before retrying"
-                ) from error
-
-            self._nccl_initialization_state = "ready"
+            await super().update_weights(weight_dir, step=step, on_paused=on_paused)
 
     async def initialize_modelexpress(
         self,

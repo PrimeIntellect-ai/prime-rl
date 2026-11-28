@@ -118,10 +118,8 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        # The NCCL transport broadcasts one decoder layer at a time, plus everything outside
-        # `model.layers.` as its own group, and asks this of each group separately. That last group
-        # (embeddings, final norm, `hc_head`, `lm_head`) holds no MoE key, so `model.hc_head.` is
-        # what stops it claiming to be unconverted and skipping the chain.
+        # A key subset outside `model.layers.` (embeddings, final norm, `hc_head`, `lm_head`) holds no
+        # MoE key, so `model.hc_head.` is what marks it as converted.
         return any(
             name.endswith("mlp.router.gate.weight") or "mlp.shared_expert." in name or "model.hc_head." in name
             for name in state_dict

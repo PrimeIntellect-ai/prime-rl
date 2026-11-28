@@ -956,8 +956,6 @@ def test_single_node_auto_inference_ports_follow_server_port():
 
     assert config.inference is not None
     assert config.inference.vllm.data_parallel_size == 2
-    assert config.trainer.weight_broadcast.inference_world_size == 2
-    assert config.orchestrator.weight_broadcast.inference_world_size == 2
     assert config.inference.backend_port == 8101
     assert config.orchestrator.model.client.admin_base_url == ["http://localhost:8101/v1"]
 
@@ -1013,13 +1011,12 @@ def test_sft_launcher_gives_the_admin_token_to_online_evals_and_its_digest_to_ch
 SFT_ONLINE_EVAL = {"source": [{"name": "reverse-text", "env": {"taskset": {"id": "reverse-text"}}}]}
 
 
-@pytest.mark.parametrize("transport", ["nccl", "modelexpress"])
-def test_sft_online_evals_size_the_in_memory_transfer_group(transport):
+def test_sft_online_evals_size_the_in_memory_transfer_group():
     from prime_rl.entrypoints.launcher import build_online_eval_config
 
     config = SFTConfig.model_validate(
         {
-            "weight_broadcast": {"type": transport},
+            "weight_broadcast": {"type": "modelexpress"},
             "eval": SFT_ONLINE_EVAL,
             "inference": {},
             "deployment": {"num_train_gpus": 1, "num_infer_gpus": 2},
@@ -1027,12 +1024,12 @@ def test_sft_online_evals_size_the_in_memory_transfer_group(transport):
     )
 
     assert config.weight_broadcast.inference_world_size == 2
-    assert config.inference.weight_broadcast.type == transport
+    assert config.inference.weight_broadcast.type == "modelexpress"
     assert build_online_eval_config(config).weight_broadcast == config.weight_broadcast
 
     config = SFTConfig.model_validate(
         {
-            "weight_broadcast": {"type": transport},
+            "weight_broadcast": {"type": "modelexpress"},
             "eval": SFT_ONLINE_EVAL,
             "inference": {},
             "deployment": {"type": "multi_node", "num_train_nodes": 1, "num_infer_nodes": 2},
@@ -1071,12 +1068,13 @@ def test_multi_node_sft_online_evals_reach_the_modelexpress_server(tmp_path, lau
     assert script.count("--weight-broadcast.host $WEIGHT_BROADCAST_HOST") == 2
 
 
-def test_single_node_nccl_resolved_json_roundtrips(tmp_path):
+def test_single_node_modelexpress_resolved_json_roundtrips(tmp_path):
     """The resolved rl.json re-parses (as a SLURM launch does) to the same config."""
     import json
 
     config = RLConfig.model_validate(
         {
+            "weight_broadcast": {"type": "modelexpress"},
             "trainer": {},
             "orchestrator": {},
             "inference": {"vllm": {"tensor_parallel_size": 1}},
@@ -1094,11 +1092,12 @@ def test_single_node_nccl_resolved_json_roundtrips(tmp_path):
     "overrides, match",
     [
         ({"orchestrator": {"weight_broadcast": {"type": "filesystem"}}}, "orchestrator.weight_broadcast"),
-        ({"trainer": {"weight_broadcast": {"type": "nccl", "timeout": 60}}}, "trainer.weight_broadcast"),
+        ({"trainer": {"weight_broadcast": {"type": "modelexpress", "timeout": 60}}}, "trainer.weight_broadcast"),
     ],
 )
 def test_rl_rejects_conflicting_launcher_owned_fields(overrides, match):
     data = {
+        "weight_broadcast": {"type": "modelexpress"},
         "trainer": {},
         "orchestrator": {},
         "inference": {"vllm": {"tensor_parallel_size": 1}},
@@ -1108,18 +1107,6 @@ def test_rl_rejects_conflicting_launcher_owned_fields(overrides, match):
         data[key] = value
     with pytest.raises(ValidationError, match=match):
         RLConfig.model_validate(data)
-
-
-def test_rl_nccl_broadcast_needs_two_gpus():
-    with pytest.raises(ValidationError, match="at least 2 GPUs"):
-        RLConfig.model_validate(
-            {
-                "trainer": {"data": {"fake": {}}},
-                "orchestrator": {},
-                "weight_broadcast": {"type": "nccl"},
-                "deployment": {"type": "single_node", "gpus_per_node": 1, "num_train_gpus": 1, "num_infer_gpus": 0},
-            }
-        )
 
 
 def test_multi_node_auto_inference_parallelism():
