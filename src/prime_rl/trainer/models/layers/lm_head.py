@@ -62,12 +62,12 @@ class TokenSupport:
             replayed=torch.cat([shifted.replayed, shifted.replayed.new_zeros(1)]),
         )
 
-    def to(self, device: torch.device | str) -> TokenSupport:
+    def to(self, device: torch.device | str, non_blocking: bool = False) -> TokenSupport:
         return replace(
             self,
-            ids=self.ids.to(device),
-            replayed=self.replayed.to(device),
-            logprobs=self.logprobs.to(device) if self.logprobs is not None else None,
+            ids=self.ids.to(device, non_blocking=non_blocking),
+            replayed=self.replayed.to(device, non_blocking=non_blocking),
+            logprobs=self.logprobs.to(device, non_blocking=non_blocking) if self.logprobs is not None else None,
         )
 
     def row_index(self) -> Tensor:

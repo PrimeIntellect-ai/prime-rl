@@ -21,8 +21,8 @@ class DifficultyPoolSampler(TaskSampler):
     """Weight finite tasks by a pool derived from their latest group mean.
 
     Each pool's threshold is its inclusive maximum reward; the final pool is
-    the catch-all. Unseen tasks have neutral weight, so observations affect
-    sampling immediately without requiring a full taskset pass.
+    the catch-all. Unseen tasks have weight ``unseen_weight`` (neutral by default),
+    so observations affect sampling immediately without requiring a full taskset pass.
     """
 
     def __init__(
@@ -43,6 +43,7 @@ class DifficultyPoolSampler(TaskSampler):
         self.tasks_by_key = dict(zip(self.keys, self.tasks))
         self.rng = random.Random(config.seed)
         self.pools = config.pools
+        self.unseen_weight = config.unseen_weight
         ordered = sorted(self.pools.items(), key=lambda item: item[1].threshold)
         self._ordered_pools = tuple(ordered)
         self.task_rewards: dict[str, float] = {}
@@ -61,7 +62,7 @@ class DifficultyPoolSampler(TaskSampler):
         weights = []
         for key in self.keys:
             pool = self.task_pool(key)
-            weights.append(1.0 if pool is None else self.pools[pool].weight)
+            weights.append(self.unseen_weight if pool is None else self.pools[pool].weight)
         if not any(weights):
             raise RuntimeError("DifficultyPoolSampler has no tasks in a pool with positive weight")
         return self.rng.choices(self.tasks, weights=weights, k=1)[0]

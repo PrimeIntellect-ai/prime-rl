@@ -47,7 +47,8 @@ def warmup_routed_experts(model: nn.Module, num_tokens: int, generator: torch.Ge
     if not routers:
         return None
     num_experts = min(router.num_experts for router in routers)
-    num_layers = len(get_language_model(model).layers)
+    language_model = get_language_model(model)
+    num_layers = getattr(language_model.config, "num_layer_visits", len(language_model.layers))
     first = torch.randint(0, num_experts, (1, num_tokens, num_layers, 1), generator=generator, dtype=torch.int32)
     return (first + torch.arange(routers[0].top_k, dtype=torch.int32)) % num_experts
 
