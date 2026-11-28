@@ -7,6 +7,7 @@ from safetensors.torch import save_file
 
 from prime_rl.transports.weights.checkpoint_publisher import (
     HostTensors,
+    MemoryFloor,
     published_tensors,
     read_checkpoint,
     read_integer_tables,
@@ -17,6 +18,8 @@ from prime_rl.transports.weights.checkpoint_versions import (
     integer_tables_digest,
     version_integer_tables,
 )
+
+NO_FLOOR = MemoryFloor(gib=0, fraction=0)
 
 
 def checkpoint(path, seed: int) -> dict[str, torch.Tensor]:
@@ -40,7 +43,7 @@ def test_ranks_read_their_share_of_every_checkpoint_into_the_same_buffers(tmp_pa
     assert set(entries) == {"embed.weight", "layers.0.norm.weight", "layers.0.scale"}
     shares = split_tensors(entries, ranks)
     assert sorted(name for share in shares for name in share) == sorted(entries) and all(shares)
-    hosts = [HostTensors(entries, share, pin=False) for share in shares]
+    hosts = [HostTensors(entries, share, pin=False, floor=NO_FLOOR) for share in shares]
     pointers = [{name: t.data_ptr() for name, t in host.tensors.items()} for host in hosts]
 
     for step, seed in ((1, 1), (2, 2)):
@@ -57,13 +60,20 @@ def test_ranks_read_their_share_of_every_checkpoint_into_the_same_buffers(tmp_pa
 def test_a_checkpoint_with_another_layout_is_refused(tmp_path):
     checkpoint(tmp_path / "step-1", seed=1)
     entries = published_tensors(read_checkpoint(tmp_path / "step-1"))
-    host = HostTensors(entries, list(entries), pin=False)
+    host = HostTensors(entries, list(entries), pin=False, floor=NO_FLOOR)
     save_file({"embed.weight": torch.zeros(63, 16, dtype=torch.bfloat16)}, tmp_path / "step-1" / "a.safetensors")
     assert host.check_layout(read_checkpoint(tmp_path / "step-1")) == [
         "embed.weight: torch.bfloat16[63, 16] != torch.bfloat16[64, 16]"
     ]
     (tmp_path / "step-1" / "b.safetensors").unlink()
     assert "layers.0.norm.weight: missing" in host.check_layout(read_checkpoint(tmp_path / "step-1"))
+
+
+def test_the_publisher_refuses_to_take_the_host_below_its_memory_floor(tmp_path):
+    checkpoint(tmp_path, seed=1)
+    entries = published_tensors(read_checkpoint(tmp_path))
+    with pytest.raises(MemoryError, match="below the floor"):
+        HostTensors(entries, list(entries), pin=False, floor=MemoryFloor(gib=0, fraction=1.0))
 
 
 def test_floating_dtypes_modelexpress_cannot_publish_are_refused(tmp_path):

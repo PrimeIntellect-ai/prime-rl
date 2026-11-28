@@ -19,8 +19,10 @@ READY) and ``POST /release`` (retire the version and exit; SIGTERM does the same
 """
 
 import ctypes
+import errno
 import json
 import logging
+import mmap
 import os
 import queue
 import resource
@@ -62,7 +64,8 @@ SAFETENSORS_DTYPES = {
 PUBLISHED_DTYPES = (torch.bfloat16, torch.float16, torch.float32)
 """The wire dtypes ModelExpress publishes; a tensor is published in its checkpoint dtype."""
 
-READ_CHUNK_BYTES = 256 << 20
+READ_CHUNK_BYTES = 64 << 20
+DIRECT_IO_ALIGNMENT = 4096
 PR_SET_PDEATHSIG = 1
 READY_POLL_S = 0.1
 RELEASE_RETRY_S = 1.0
@@ -137,11 +140,43 @@ def split_tensors(entries: dict[str, TensorEntry], ranks: int) -> list[list[str]
     return parts
 
 
+def available_memory() -> tuple[int, int]:
+    """The host's (MemAvailable, MemTotal) in bytes."""
+    info = {}
+    with open("/proc/meminfo") as meminfo:
+        for line in meminfo:
+            key, value = line.split(":", 1)
+            info[key] = int(value.split()[0]) * 1024
+    return info["MemAvailable"], info["MemTotal"]
+
+
+@dataclass(frozen=True)
+class MemoryFloor:
+    """Host memory the publisher leaves to everything else on its host: it refuses to start, and stops reading,
+    rather than take the host below ``max(gib, fraction of total)`` of available memory."""
+
+    gib: float = 200.0
+    fraction: float = 0.15
+
+    def bytes(self, total: int) -> int:
+        return int(max(self.gib * 2**30, self.fraction * total))
+
+    def check(self, needed: int = 0) -> None:
+        available, total = available_memory()
+        if available - needed < self.bytes(total):
+            raise MemoryError(
+                f"{(available - needed) / 2**30:.0f} GiB of host memory would remain available, below the floor of "
+                f"{self.bytes(total) / 2**30:.0f} GiB (max of {self.gib:g} GiB and {self.fraction:.0%} of "
+                f"{total / 2**30:.0f} GiB)"
+            )
+
+
 class HostTensors:
     """One rank's share of a checkpoint in host memory: a page-locked buffer per file region it reads, and every tensor
     a view into it. The buffers stay put for the publisher's lifetime, since ModelExpress serves them in place."""
 
-    def __init__(self, entries: dict[str, TensorEntry], names: list[str], pin: bool):
+    def __init__(self, entries: dict[str, TensorEntry], names: list[str], pin: bool, floor: MemoryFloor):
+        self.floor = floor
         self.tensors: dict[str, torch.Tensor] = {}
         self._bytes: dict[str, torch.Tensor] = {}
         self.buffers: list[torch.Tensor] = []
@@ -161,6 +196,7 @@ class HostTensors:
                 self.tensors[name] = raw.view(entry.dtype).view(entry.shape)
 
     def _allocate(self, size: int, pin: bool) -> torch.Tensor:
+        self.floor.check(needed=size)
         buffer = torch.empty(max(size, 1), dtype=torch.uint8)
         if pin:
             # Pin exactly these pages. torch's pinned allocator rounds every allocation up to a power of two.
@@ -186,25 +222,56 @@ class HostTensors:
         return problems
 
     def read(self, entries: dict[str, TensorEntry], threads: int) -> int:
-        """Read every tensor of this share from ``entries``' files into its buffer; returns the bytes read."""
+        """Read every tensor of this share from ``entries``' files into its buffer; returns the bytes read.
+
+        Reads bypass the page cache (O_DIRECT, through a page-aligned bounce buffer per thread): cached pages of a
+        checkpoint as large as the host's memory would otherwise sit beside the copy in the buffers."""
         chunks = [
             (entries[name].file, entries[name].begin + offset, raw[offset : offset + READ_CHUNK_BYTES])
             for name, raw in self._bytes.items()
             for offset in range(0, raw.numel(), READ_CHUNK_BYTES)
         ]
-        descriptors = {path: os.open(path, os.O_RDONLY) for path in {path for path, _, _ in chunks}}
+        descriptors, direct = {}, {}
+        for path in {path for path, _, _ in chunks}:
+            try:
+                descriptors[path], direct[path] = os.open(path, os.O_RDONLY | os.O_DIRECT), True
+            except OSError as error:
+                # Filesystems without O_DIRECT (tmpfs): read through the cache and drop the pages read
+                if error.errno != errno.EINVAL:
+                    raise
+                descriptors[path], direct[path] = os.open(path, os.O_RDONLY), False
+        bounces = threading.local()
         try:
 
             def read_chunk(chunk) -> int:
                 path, offset, raw = chunk
-                view = memoryview(raw.numpy())
+                if not direct[path]:
+                    self.floor.check()
+                    view = memoryview(raw.numpy())
+                    done = 0
+                    while done < len(view):
+                        count = os.preadv(descriptors[path], [view[done:]], offset + done)
+                        if count == 0:
+                            raise EOFError(f"{path} ended at byte {offset + done}")
+                        done += count
+                    os.posix_fadvise(descriptors[path], offset, done, os.POSIX_FADV_DONTNEED)
+                    return done
+                if not hasattr(bounces, "buffer"):
+                    # Anonymous mappings are page-aligned, as O_DIRECT needs
+                    bounces.buffer = mmap.mmap(-1, READ_CHUNK_BYTES + 2 * DIRECT_IO_ALIGNMENT)
+                self.floor.check()
+                start = offset - offset % DIRECT_IO_ALIGNMENT
+                skip, size = offset - start, raw.numel()
+                length = -(-(skip + size) // DIRECT_IO_ALIGNMENT) * DIRECT_IO_ALIGNMENT
+                bounce = memoryview(bounces.buffer)[:length]
                 done = 0
-                while done < len(view):
-                    count = os.preadv(descriptors[path], [view[done:]], offset + done)
+                while done < skip + size:
+                    count = os.preadv(descriptors[path], [bounce[done:]], start + done)
                     if count == 0:
-                        raise EOFError(f"{path} ended at byte {offset + done}")
+                        raise EOFError(f"{path} ended at byte {start + done}")
                     done += count
-                return done
+                memoryview(raw.numpy())[:] = bounce[skip : skip + size]
+                return size
 
             with ThreadPoolExecutor(max_workers=threads) as pool:
                 return sum(pool.map(read_chunk, chunks))
@@ -258,6 +325,9 @@ class PublisherConfig:
     worker_port: int = 16555
     """First ModelExpress worker gRPC port; rank r listens on ``worker_port + r``."""
 
+    memory_floor: MemoryFloor = field(default_factory=MemoryFloor)
+    """Host memory to leave available: the publisher refuses to start, and a publish fails, below it."""
+
     release_timeout: float = 1800.0
     """Seconds to wait for reads of the version being retired before giving up on publishing the next one."""
 
@@ -308,7 +378,7 @@ class Publisher:
         start = time.perf_counter()
         entries = published_tensors(read_checkpoint(config.model_dir))
         names = split_tensors(entries, world)[rank]
-        self.host = HostTensors(entries, names, config.pin)
+        self.host = HostTensors(entries, names, config.pin, config.memory_floor)
         allocated = time.perf_counter()
         os.environ["MX_METADATA_PORT"] = str(config.metadata_port + rank)
         os.environ["MX_WORKER_GRPC_PORT"] = str(config.worker_port + rank)
@@ -584,6 +654,10 @@ def run_publisher(config: PublisherConfig) -> None:
         modelexpress = ProcessGroup()
         start_modelexpress(modelexpress, config.mx_port, config.serve_modelexpress, dict(os.environ))
         config.mx_host = "127.0.0.1"
+    # Before any rank pins its share
+    config.memory_floor.check(
+        needed=sum(entry.nbytes for entry in published_tensors(read_checkpoint(config.model_dir)).values())
+    )
     context = mp.get_context("spawn")
     children = [
         context.Process(target=serve_rank, args=(config, rank, config.ranks), name=f"publisher-{rank}", daemon=True)
