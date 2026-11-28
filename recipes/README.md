@@ -121,7 +121,8 @@ Each model also has an `sft.toml` (its trainer setup from `gpu/h200.toml` and se
 uv run sft @ recipes/<model>/sft.toml @ recipes/data/sft.toml --slurm.partition <partition> --output-dir <shared-dir>
 ```
 
-The SFT configs are not tested; they reuse the trainer setups fitted for RL.
+The SFT configs are not tested; they reuse the trainer setups fitted for RL. DeepSeek-V4-Flash is the
+exception: its `sft.toml` is self-contained and tested (see [Self-contained configs](#self-contained-configs)).
 
 ## Fit a trainer
 
