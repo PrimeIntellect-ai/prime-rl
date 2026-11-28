@@ -20,6 +20,7 @@ READY) and ``POST /release`` (retire the version and exit; SIGTERM does the same
 
 import ctypes
 import errno
+import itertools
 import json
 import logging
 import mmap
@@ -226,11 +227,14 @@ class HostTensors:
 
         Reads bypass the page cache (O_DIRECT, through a page-aligned bounce buffer per thread): cached pages of a
         checkpoint as large as the host's memory would otherwise sit beside the copy in the buffers."""
-        chunks = [
-            (entries[name].file, entries[name].begin + offset, raw[offset : offset + READ_CHUNK_BYTES])
-            for name, raw in self._bytes.items()
-            for offset in range(0, raw.numel(), READ_CHUNK_BYTES)
-        ]
+        by_file = defaultdict(list)
+        for name, raw in self._bytes.items():
+            for offset in range(0, raw.numel(), READ_CHUNK_BYTES):
+                by_file[entries[name].file].append(
+                    (entries[name].file, entries[name].begin + offset, raw[offset : offset + READ_CHUNK_BYTES])
+                )
+        # Round-robin over the files: a file's bandwidth is bounded (its storage targets), the readers' is not
+        chunks = [chunk for batch in itertools.zip_longest(*by_file.values()) for chunk in batch if chunk is not None]
         descriptors, direct = {}, {}
         for path in {path for path, _, _ in chunks}:
             try:
@@ -270,7 +274,8 @@ class HostTensors:
                     if count == 0:
                         raise EOFError(f"{path} ended at byte {start + done}")
                     done += count
-                memoryview(raw.numpy())[:] = bounce[skip : skip + size]
+                # A torch copy releases the GIL, so the threads copy in parallel
+                raw.copy_(torch.frombuffer(bounces.buffer, dtype=torch.uint8, count=size, offset=skip))
                 return size
 
             with ThreadPoolExecutor(max_workers=threads) as pool:
