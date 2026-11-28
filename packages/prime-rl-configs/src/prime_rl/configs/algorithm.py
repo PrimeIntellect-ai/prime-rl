@@ -105,7 +105,8 @@ class CostLengthPenaltyConfig(BaseConfig):
     effort, set to the slope of the base model's reward-vs-cost Pareto curve at that effort so that moving
     along the curve leaves the objective unchanged to first order. It neither scales with the group's pass
     rate nor depends on the rest of the group, and it reaches failed rollouts too, unless every rollout of
-    the group failed (no positive reward), in which case the group is not charged."""
+    the group failed (no positive reward), in which case the group is not charged. A rollout whose stop condition
+    is in ``skip_stop_conditions`` is not charged either."""
 
     type: Literal["cost"] = "cost"
 
@@ -119,6 +120,12 @@ class CostLengthPenaltyConfig(BaseConfig):
     num_input_tokens_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
     """Weight of a new input token in the cost: tokens the model conditioned on but did not generate (prompts,
     tool responses), each counted once per trainable branch, as the ``linear`` penalty counts them."""
+
+    skip_stop_conditions: list[str] = ["max_turn_tokens"]
+    """Stop conditions (``Trace.stop_condition``) that exempt a rollout from the cost, so it keeps its reward as
+    is: framework limits or ``@vf.stop`` names. Pair one with a fixed reward for it in the env (``scoring.skip``
+    or ``@vf.stop(skip_scoring=...)``). Run-wide caps such as ``max_turns`` or the token budgets keep the cost by
+    default, since they bound every rollout alike."""
 
 
 LengthPenaltyConfig: TypeAlias = Annotated[

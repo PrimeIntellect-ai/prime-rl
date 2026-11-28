@@ -93,6 +93,10 @@ class GRPOAlgorithm(Algorithm):
                 dtype=torch.float64,
             )
             penalty = (length_penalty.weight * cost).clamp(0, 1)
+            exempt = torch.tensor(
+                [trace.stop_condition in length_penalty.skip_stop_conditions for trace in traces], dtype=torch.bool
+            )
+            penalty = penalty.masked_fill(exempt, 0.0)
             shaped_rewards = rewards - penalty.to(rewards.dtype)
         else:
             subagent_weight = (

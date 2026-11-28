@@ -261,6 +261,28 @@ def test_cost_penalty_charges_each_rollout_its_own_cost():
     assert _grpo(all_failed, length_penalty=cfg) == pytest.approx([0.0, 0.0])
 
 
+@pytest.mark.parametrize(
+    "stop,skip_stop_conditions,exempt",
+    [
+        ("max_turn_tokens", None, True),
+        ("max_turns", None, False),
+        ("bad_format", ["bad_format"], True),
+        ("max_turn_tokens", [], False),
+    ],
+)
+def test_cost_penalty_skips_listed_stop_conditions(stop, skip_stop_conditions, exempt):
+    group = [_make_episode(1.0, 40), _make_episode(-1.0, 40)]
+    group[1].traces[0].stop(stop)
+    cfg = CostLengthPenaltyConfig(weight=5e-3)
+    if skip_stop_conditions is not None:
+        cfg = CostLengthPenaltyConfig(weight=5e-3, skip_stop_conditions=skip_stop_conditions)
+    shaped = _cost_shaped(group, 5e-3, 1.0, 1.0)
+    if exempt:
+        shaped[1] = -1.0
+    expected = [s - sum(shaped) / 2 for s in shaped]
+    assert _grpo(group, length_penalty=cfg) == pytest.approx(expected, abs=1e-6)
+
+
 def test_max_rl_mean_normalized():
     # mean 0.25: the success gets (1 - 0.25)/0.25 = 3, failures (0 - 0.25)/0.25 = -1
     assert _max_rl(_make_group(rewards=[1.0, 0.0, 0.0, 0.0])) == pytest.approx([3.0, -1.0, -1.0, -1.0])
