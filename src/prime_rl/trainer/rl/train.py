@@ -263,6 +263,11 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing loss function ({config.loss})")
     rl_loss_fn = setup_rl_loss_fn(config.loss)
 
+    # Initialize adapters before full offload copies their weights into CPU masters.
+    # A checkpoint resume below overwrites the initialized weights.
+    if config.model.lora is not None:
+        get_lora_state().reset_adapter_parameters()
+
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
     t0 = time.perf_counter()
@@ -285,11 +290,6 @@ def train(config: TrainerConfig):
     is_moe_model = is_tt_moe_model(model)
     staleness_bin_edges = torch.tensor(STALENESS_BIN_EDGES, dtype=torch.int16, device="cuda")
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
-
-    # Fresh adapter init after FSDP materialization (the pretrained checkpoint
-    # carries no adapter weights); a checkpoint resume below overwrites it.
-    if config.model.lora is not None:
-        get_lora_state().reset_adapter_parameters()
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
