@@ -829,3 +829,72 @@ def test_grpo_conditional_prefix_max_fraction_and_guards():
     assert g_err[1].traces[0].metrics["conditional_prefix/applied"] == 0.0
     assert g_err[1].traces[0].metrics["conditional_prefix/skipped_error"] == 1.0
     assert g_err[1].traces[0].branches[0].token_ids.tolist() == orig
+
+
+def test_grpo_conditional_prefix_zero_group_promotion_ranking_ema_and_revert():
+    """Zero-advantage all-fail groups promote top-k prefixed traces by rank_metric, respect
+    the global EMA cap, never promote all-pass groups, and revert advantage to 0 on score error."""
+    cfg = GRPOAlgoConfig(
+        conditional_prefix=ConditionalPrefixConfig(
+            info_key="ctx",
+            positive_only=True,
+            zero_group_advantage=0.25,
+            zero_group_max_traces=2,
+            zero_group_rank_metric="quality",
+            max_global_prefixed_positive_fraction=0.65,
+            ema_decay=0.5,
+        )
+    )
+    clients = _FakeScoringClients()
+    algo = GRPOAlgorithm(cfg, clients=clients)
+    algo.renderer = _FakePrefixRenderer([900, 901])
+
+    # Group 1: 0/4 all-fail -> should promote top-2 by quality (ep2=0.8, ep1=0.6), skipping timeout ep3=0.95
+    ep0 = _build_episode(0.0, sampled_lengths=[2], metrics={"quality": 0.2})
+    ep1 = _build_episode(0.0, sampled_lengths=[2], metrics={"quality": 0.6})
+    ep2 = _build_episode(0.0, sampled_lengths=[2], metrics={"quality": 0.8})
+    ep3 = _build_episode(0.0, sampled_lengths=[2], metrics={"quality": 0.95})
+    ep3.traces[0].is_timeout = True
+    for ep in (ep0, ep1, ep2, ep3):
+        ep.traces[0].info["ctx"] = "prefix text"
+
+    asyncio.run(algo.score_group([ep0, ep1, ep2, ep3]))
+    assert [_scalar(ep) for ep in (ep0, ep1, ep2, ep3)] == pytest.approx([0.0, 0.25, 0.25, 0.0])
+    assert [ep.traces[0].metrics["conditional_prefix/zero_group_promoted"] for ep in (ep0, ep1, ep2, ep3)] == [
+        0.0,
+        1.0,
+        1.0,
+        0.0,
+    ]
+    # EMA is now 1.0 (> 0.65 cap) -> next 0/2 group must be paused!
+    assert ep1.traces[0].metrics["conditional_prefix/prefixed_pos_ema"] == pytest.approx(1.0)
+
+    g_paused = [
+        _build_episode(0.0, sampled_lengths=[2], metrics={"quality": 0.9}),
+        _build_episode(0.0, sampled_lengths=[2], metrics={"quality": 0.8}),
+    ]
+    for ep in g_paused:
+        ep.traces[0].info["ctx"] = "prefix text"
+    asyncio.run(algo.score_group(g_paused))
+    assert [_scalar(ep) for ep in g_paused] == pytest.approx([0.0, 0.0])
+
+    # Clean mixed group (1/2 pass with no prefix) lowers EMA: 0.5*1.0 + 0.5*0.0 = 0.5 <= 0.65!
+    g_clean = [_build_episode(0.0, sampled_lengths=[2]), _build_episode(1.0, sampled_lengths=[2])]
+    asyncio.run(algo.score_group(g_clean))
+    assert g_clean[1].traces[0].metrics["conditional_prefix/prefixed_pos_ema"] == pytest.approx(0.5)
+
+    # All-pass group (2/2 reward=1.0) must NEVER be promoted as a zero-group!
+    g_allpass = [_build_episode(1.0, sampled_lengths=[2]), _build_episode(1.0, sampled_lengths=[2])]
+    for ep in g_allpass:
+        ep.traces[0].info["ctx"] = "prefix text"
+    asyncio.run(algo.score_group(g_allpass))
+    assert [_scalar(ep) for ep in g_allpass] == pytest.approx([0.0, 0.0])
+
+    # Scoring failure on a zero-group-promoted trace must revert advantage to 0.0 (never reinforce bare!)
+    algo_fail = GRPOAlgorithm(cfg, clients=_FakeScoringClients(fail=True))
+    algo_fail.renderer = _FakePrefixRenderer([900, 901])
+    g_fail = [_build_episode(0.0, sampled_lengths=[2], metrics={"quality": 0.9})]
+    g_fail[0].traces[0].info["ctx"] = "prefix text"
+    asyncio.run(algo_fail.score_group(g_fail))
+    assert _scalar(g_fail[0]) == pytest.approx(0.0)
+    assert g_fail[0].traces[0].metrics["conditional_prefix/skipped_error"] == 1.0

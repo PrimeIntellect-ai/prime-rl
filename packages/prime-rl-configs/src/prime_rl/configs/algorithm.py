@@ -205,6 +205,29 @@ class ConditionalPrefixConfig(BaseConfig):
     """Optional upper bound on ``len(prefix_ids) + len(branch.token_ids)``. Traces
     with any trainable branch exceeding this limit stay un-prefixed."""
 
+    zero_group_advantage: float | None = Field(None, gt=0.0, allow_inf_nan=False)
+    """When set, if a group has all-zero advantages and no trace reached
+    ``zero_group_reward_threshold``, promote up to ``zero_group_max_traces``
+    non-timed-out traces carrying ``info_key`` to this positive advantage."""
+
+    zero_group_reward_threshold: float = Field(1.0, allow_inf_nan=False)
+    """Primary reward threshold below which a zero-advantage group is treated as
+    all-fail (prevents promoting all-pass groups)."""
+
+    zero_group_max_traces: int = Field(2, ge=1)
+    """Maximum number of prefixed traces to promote per zero-advantage group."""
+
+    zero_group_rank_metric: str | None = None
+    """Optional scalar key in ``trace.metrics`` used to rank candidates in a
+    zero-advantage group (higher is preferred)."""
+
+    max_global_prefixed_positive_fraction: float | None = Field(None, ge=0.0, le=1.0, allow_inf_nan=False)
+    """Optional EMA ceiling on the fraction of positive-advantage traces that are
+    prefixed across groups. Zero-group promotions pause while the EMA exceeds this cap."""
+
+    ema_decay: float = Field(0.95, ge=0.0, lt=1.0, allow_inf_nan=False)
+    """EMA decay for tracking the global prefixed-positive fraction."""
+
 
 class EchoRoleConfig(BaseConfig):
     """Echo CE supervision for one message role."""

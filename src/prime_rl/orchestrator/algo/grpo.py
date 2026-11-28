@@ -85,6 +85,8 @@ class GRPOAlgorithm(Algorithm):
         self.loss_aggregation = config.loss_aggregation
         self._binary_group_ema: float = 0.0
         self._binary_group_count: int = 0
+        self._prefixed_pos_ema: float = 0.0
+        self._prefixed_pos_groups: int = 0
         self.renderer: Renderer | None = None
 
     async def setup(self) -> None:
@@ -205,10 +207,42 @@ class GRPOAlgorithm(Algorithm):
             baseline = (lengths * shaped_rewards).sum() / lengths.sum()
         advantages = shaped_rewards - baseline
         advantage_list = advantages.tolist()
+        promoted_zero_group: set[int] = set()
+        cfg_cp = self.conditional_prefix
+        if (
+            cfg_cp is not None
+            and cfg_cp.zero_group_advantage is not None
+            and traces
+            and all(abs(a) == 0.0 for a in advantage_list)
+            and max(trace.reward for trace in traces) < cfg_cp.zero_group_reward_threshold
+        ):
+            under_cap = (
+                cfg_cp.max_global_prefixed_positive_fraction is None
+                or self._prefixed_pos_groups == 0
+                or self._prefixed_pos_ema <= cfg_cp.max_global_prefixed_positive_fraction
+            )
+            if under_cap:
+                zero_cands: list[tuple[float, int]] = []
+                for idx_t, trace in enumerate(traces):
+                    if trace.is_timeout:
+                        continue
+                    raw = trace.info.get(cfg_cp.info_key)
+                    if not (isinstance(raw, str) and raw.strip()):
+                        continue
+                    score = 0.0
+                    if cfg_cp.zero_group_rank_metric is not None:
+                        val = trace.metrics.get(cfg_cp.zero_group_rank_metric)
+                        score = float(val) if val is not None else float("-inf")
+                    zero_cands.append((score, idx_t))
+                zero_cands.sort(key=lambda item: (-item[0], item[1]))
+                for _, idx_t in zero_cands[: cfg_cp.zero_group_max_traces]:
+                    advantage_list[idx_t] = float(cfg_cp.zero_group_advantage)
+                    promoted_zero_group.add(idx_t)
+
         for trace, advantage in zip(traces, advantage_list, strict=True):
             assign_advantages(trace, advantage)
-        if self.conditional_prefix is not None and traces:
-            await self._apply_conditional_prefixes(traces, advantage_list)
+        if cfg_cp is not None and traces:
+            await self._apply_conditional_prefixes(traces, advantage_list, promoted_zero_group=promoted_zero_group)
         nodes = [node for trace in traces for node in trainable_nodes(trace)]
         if self.loss_aggregation == "prompt" and nodes:
             # rl weight 1/T_q per token: each group's weights sum to 1, and the trainer divides the
@@ -218,7 +252,14 @@ class GRPOAlgorithm(Algorithm):
                 rl = np.where(np.asarray(node.mask, dtype=bool), weight, 0.0).astype(np.float32)
                 node.loss_weights = {**(node.loss_weights or {}), "rl": rl}
 
-    async def _apply_conditional_prefixes(self, traces: list[vf.Trace], advantages: list[float]) -> None:
+    async def _apply_conditional_prefixes(
+        self,
+        traces: list[vf.Trace],
+        advantages: list[float],
+        *,
+        promoted_zero_group: set[int] | None = None,
+    ) -> None:
+        promoted_zero_group = promoted_zero_group or set()
         cfg = self.conditional_prefix
         assert cfg is not None
         renderer = self._ensure_renderer()
@@ -334,12 +375,35 @@ class GRPOAlgorithm(Algorithm):
 
                 applied.add(i)
 
+        # If a zero-group-promoted trace failed prefixing (length/error), revert its advantage to 0.0
+        # so an un-prefixed failing rollout is never reinforced on the bare prompt.
+        for i in promoted_zero_group:
+            if i not in applied:
+                advantages[i] = 0.0
+                assign_advantages(traces[i], 0.0)
+
+        pos_after = [i for i, adv in enumerate(advantages) if adv > 0.0]
+        if pos_after:
+            group_prefixed_pos_frac = sum(1 for i in pos_after if i in applied) / float(len(pos_after))
+            if self._prefixed_pos_groups == 0:
+                self._prefixed_pos_ema = group_prefixed_pos_frac
+            else:
+                self._prefixed_pos_ema = (
+                    cfg.ema_decay * self._prefixed_pos_ema + (1.0 - cfg.ema_decay) * group_prefixed_pos_frac
+                )
+            self._prefixed_pos_groups += 1
+
         for i, (trace, adv) in enumerate(zip(traces, advantages, strict=True)):
             was_applied = i in applied
             trace.record_metric("conditional_prefix/applied", 1.0 if was_applied else 0.0)
             trace.record_metric("conditional_prefix/has_prefix", 1.0 if i in has_prefix else 0.0)
             trace.record_metric("conditional_prefix/skipped_length", 1.0 if i in skipped_length else 0.0)
             trace.record_metric("conditional_prefix/skipped_error", 1.0 if i in skipped_error else 0.0)
+            trace.record_metric(
+                "conditional_prefix/zero_group_promoted",
+                1.0 if (i in promoted_zero_group and was_applied) else 0.0,
+            )
+            trace.record_metric("conditional_prefix/prefixed_pos_ema", float(self._prefixed_pos_ema))
             if was_applied:
                 trace.record_metric("conditional_prefix/adv_prefixed", float(adv))
             else:
