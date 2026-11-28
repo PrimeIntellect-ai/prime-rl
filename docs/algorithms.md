@@ -396,12 +396,15 @@ Subagent membership follows harness-declared `subagent_call`, `continuation`, `c
 
 The `cost` penalty charges each rollout for its own cost instead of against its group: its reward becomes $r - \min(1, \lambda C)$, with $C = w_{out} \cdot \text{output} + w_{in} \cdot \text{input}$ in tokens (input is new input, counted once, as the `linear` penalty counts it; subagent tokens count like the main agent's) and $\lambda$ the `weight`, in reward per cost token. This is the $R = S - \lambda_e C$ of Cognition's SWE-2: set $\lambda_e$ per source to the slope of the base model's reward-vs-cost Pareto curve at that source's reasoning effort, so that moving along the curve leaves the objective unchanged to first order and only pushing the curve up raises it. It applies to every rollout, solved or not, and does not scale with the group's pass rate, except that a group where every rollout failed (no positive reward) is not charged: with no success to keep, the penalty would only teach shorter failures. The penalty is linear, so a token budget would only rescale $\lambda$.
 
+A rollout whose stop condition is in `skip_stop_conditions` keeps its reward as is. List a framework limit or a `@vf.stop` name there, and give that stop a fixed reward in the env (`scoring.skip` or `@vf.stop(skip_scoring=...)`). The default is `["max_turn_tokens"]`: a rollout that hits the per-turn cap gets its fixed reward with no cost on top. Run-wide caps such as `max_turns` or the token budgets bound every rollout alike, so they keep the cost by default.
+
 ```toml
 [orchestrator.train.source.algo.length_penalty]
 type = "cost"
 weight = 4e-6                # reward per cost token (lambda_e)
 num_output_tokens_weight = 1.0
 num_input_tokens_weight = 0.25
+skip_stop_conditions = ["max_turn_tokens"]
 ```
 
 A **length-weighted baseline** (`length_weighted_baseline = true` on the `grpo`-family algorithms) replaces the plain group mean with $b = \sum_i L_i s_i / \sum_i L_i$, where $L_i$ is the number of trainable (policy-sampled, loss-masked) tokens of rollout $i$, summed across all its turns; it applies after the length penalty. With token-level loss normalization, long rollouts carry more gradient weight, so this baseline makes the per-token advantage zero-mean across the group's tokens rather than across rollouts.
