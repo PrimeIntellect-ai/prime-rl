@@ -651,6 +651,17 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_policy_train_temperature(self):
+        """Policy RL training scales logits by temperature to evaluate policy logprobs and gradients.
+        Greedy sampling (temperature=0) causes division by zero and NaN gradients in the RL trainer."""
+        if any(sampling.temperature == 0 for sampling in self.policy_samplings):
+            raise ValueError(
+                "Policy RL training requires sampling.temperature > 0: greedy/temperature=0 sampling "
+                "cannot be replayed with finite logprob gradients in the RL trainer."
+            )
+        return self
+
+    @model_validator(mode="after")
     def setup_truncated_sampling(self):
         """Truncated policy sampling trains with sampling replay (rollout
         logprobs are renormalized — see docs/inference.md, Sampling Replay).

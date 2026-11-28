@@ -906,6 +906,48 @@ def test_policy_sources_accept_different_top_p_values():
     assert OrchestratorConfig.model_validate_json(mixed.model_dump_json()) == mixed
 
 
+def test_policy_train_temperature_must_be_positive():
+    with pytest.raises(ValidationError, match="requires sampling.temperature > 0"):
+        OrchestratorConfig.model_validate(
+            {
+                "renderer": {"name": "qwen3"},
+                "train": {
+                    "source": [
+                        {
+                            "name": "greedy-policy",
+                            "env": {"taskset": {"id": "reverse-text"}},
+                            "sampling": {"temperature": 0.0},
+                        }
+                    ]
+                },
+            }
+        )
+
+    with pytest.raises(ValidationError, match="requires sampling.temperature > 0"):
+        OrchestratorConfig.model_validate(
+            {
+                "renderer": {"name": "qwen3"},
+                "train": {"sampling": {"temperature": 0.0}},
+            }
+        )
+
+    config = OrchestratorConfig.model_validate(
+        {
+            "renderer": {"name": "qwen3"},
+            "train": {
+                "source": [
+                    {
+                        "name": "valid-policy",
+                        "env": {"taskset": {"id": "reverse-text"}},
+                        "sampling": {"temperature": 0.7},
+                    }
+                ]
+            },
+        }
+    )
+    assert config.train.source[0].sampling.temperature == 0.7
+
+
 @pytest.mark.parametrize("frozen", [False, True])
 @pytest.mark.parametrize(
     "sampling,agent_sampling,rejected",
