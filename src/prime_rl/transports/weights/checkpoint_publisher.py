@@ -327,6 +327,13 @@ class PublisherConfig:
     read_threads: int = 16
     """Reader threads per rank."""
 
+    rails: bool | None = None
+    """Give rank r GPU r, the RDMA port nearest it (of those in ``UCX_NET_DEVICES``, if set) and that port's CPUs
+    and memory, so that every rank sends through a rail of its own: each rank then registers its tensors with one
+    port instead of all of them, and engines connect to it in a fraction of the time. Without it every rank uses the
+    visible GPU and UCX's choice of ports. None: on when the host has at least as many GPUs as ranks and
+    ``CUDA_VISIBLE_DEVICES`` does not restrict them."""
+
     pin: bool = True
     """Page-lock the host buffers with CUDA (needs a GPU visible to the publisher). Registering them with NIXL pins
     them as well; this makes the cost explicit at load and keeps the memory pinned in between versions."""
@@ -562,8 +569,52 @@ class Publisher:
         }
 
 
+def use_rails(config: PublisherConfig) -> bool:
+    if config.rails is not None:
+        return config.rails
+    if "CUDA_VISIBLE_DEVICES" in os.environ:
+        return False
+    import pynvml
+
+    pynvml.nvmlInit()
+    try:
+        return pynvml.nvmlDeviceGetCount() >= config.ranks
+    finally:
+        pynvml.nvmlShutdown()
+
+
+def bind_to_rail(rank: int) -> str:
+    """Give this process GPU ``rank``, the RDMA port nearest it and the CPUs of that port's NUMA node, before it
+    touches CUDA or allocates its buffers (their pages land on the node of the CPU that first touches them)."""
+    from prime_rl.utils.rdma import SYSFS_INFINIBAND, active_rdma_ports, gpu_pci_path, pci_distance
+
+    allowed = {device.split(":")[0] for device in os.environ.get("UCX_NET_DEVICES", "").split(",") if device}
+    ports = [(port, path) for port, path in active_rdma_ports() if not allowed or port.split(":")[0] in allowed]
+    if not ports:
+        raise RuntimeError(f"No active InfiniBand port among {sorted(allowed) or 'all'}")
+    gpu = gpu_pci_path(str(rank))
+    port = min((pci_distance(gpu, path), port) for port, path in ports)[1]
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
+    os.environ["UCX_NET_DEVICES"] = port
+    node = int((SYSFS_INFINIBAND / port.split(":")[0] / "device" / "numa_node").read_text())
+    if node >= 0:
+        cpulist = Path(f"/sys/devices/system/node/node{node}/cpulist").read_text().strip()
+        cpus = set()
+        for span in cpulist.split(","):
+            first, _, last = span.partition("-")
+            cpus.update(range(int(first), int(last or first) + 1))
+        os.sched_setaffinity(0, cpus & os.sched_getaffinity(0) or cpus)
+    return f"GPU {rank}, {port}, NUMA node {node}"
+
+
 def init_rank(config: PublisherConfig, rank: int, world: int) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    if config.rails:
+        logger.info(f"Rank {rank}: {bind_to_rail(rank)}")
+    else:
+        logger.info(
+            f"Rank {rank}: GPU {os.environ.get('CUDA_VISIBLE_DEVICES', '0')}, ports {os.environ.get('UCX_NET_DEVICES', 'all')}"
+        )
     dist.init_process_group(
         "gloo",
         init_method=f"tcp://127.0.0.1:{config.dist_port}",
@@ -668,6 +719,7 @@ def run_publisher(config: PublisherConfig) -> None:
         modelexpress = ProcessGroup()
         start_modelexpress(modelexpress, config.mx_port, config.serve_modelexpress, dict(os.environ))
         config.mx_host = "127.0.0.1"
+    config.rails = use_rails(config)
     # Before any rank pins its share
     config.memory_floor.check(
         needed=sum(entry.nbytes for entry in published_tensors(read_checkpoint(config.model_dir)).values())

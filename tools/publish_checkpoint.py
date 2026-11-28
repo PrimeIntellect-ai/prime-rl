@@ -37,6 +37,13 @@ def main() -> None:
     parser.add_argument("--ranks", type=int, default=1, help="publisher processes sharing the checkpoint")
     parser.add_argument("--read-threads", type=int, default=16, help="reader threads per rank")
     parser.add_argument("--no-pin", action="store_true", help="leave pinning the host buffers to NIXL registration")
+    parser.add_argument(
+        "--rails",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="rank r uses GPU r, its nearest RDMA port (of UCX_NET_DEVICES) and that port's NUMA node "
+        "(default: when the host has as many GPUs as ranks and CUDA_VISIBLE_DEVICES is unset)",
+    )
     parser.add_argument("--control-host", default="0.0.0.0")
     parser.add_argument("--control-port", type=int, default=8090)
     parser.add_argument("--metadata-port", type=int, default=15555, help="first NIXL metadata port (one per rank)")
@@ -66,6 +73,7 @@ def main() -> None:
             ranks=args.ranks,
             read_threads=args.read_threads,
             pin=not args.no_pin,
+            rails=args.rails,
             control_host=args.control_host,
             control_port=args.control_port,
             metadata_port=args.metadata_port,
