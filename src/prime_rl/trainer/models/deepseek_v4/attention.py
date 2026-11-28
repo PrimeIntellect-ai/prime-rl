@@ -435,6 +435,8 @@ class PackedContext:
     window_indices: Tensor  # (n_queries, sliding_window) int32 - key token per window slot, IGNORE_SLOT if unused
     compression_layouts: dict[int, CompressionLayout]  # keyed by compress rate
     cp_halo: CPHalo | None = None  # set under context parallelism
+    # CPU int32 (cp_world_size, n_queries): entries each CP rank's queries may read at the indexer's compress rate.
+    index_row_lengths: Tensor | None = None
 
     @classmethod
     def build(
@@ -457,8 +459,9 @@ class PackedContext:
         and its halo, while the entries and the index values addressing them stay global.
         """
         config = rotary_emb.config
-        # Read the width before `seq_lens` moves: on a CPU `seq_lens` that costs no device sync.
-        total_tokens = int(seq_lens.sum())
+        # One host copy: the width and the indexer's row lengths are read from it without further device syncs.
+        host_seq_lens = seq_lens.cpu()
+        total_tokens = int(host_seq_lens.sum())
         assert total_tokens % cp_world_size == 0, (
             f"{total_tokens} tokens do not split evenly across {cp_world_size} CP ranks"
         )
@@ -507,6 +510,15 @@ class PackedContext:
             )
         key_start = q_start - cp_halo.rows if cp_halo is not None else 0
 
+        index_row_lengths = None
+        index_rate = config.compress_rates.get("compressed_sparse_attention")
+        if index_rate in compress_rates:
+            doc_starts = torch.repeat_interleave(host_seq_lens.cumsum(0) - host_seq_lens, host_seq_lens)
+            host_positions = torch.arange(total_tokens) - doc_starts
+            # Cast after the view: the result then has no `_base` that Dynamo would also have to see as dynamic.
+            index_row_lengths = ((host_positions + 1) // index_rate).view(cp_world_size, n_queries).to(torch.int32)
+            torch._dynamo.maybe_mark_dynamic(index_row_lengths, 1)
+
         # A token attends the last `sliding_window` positions (itself included), clipped to its own
         # document.
         window_base = torch.maximum(tok_idx - position_ids[0], tok_idx - config.sliding_window + 1)
@@ -525,6 +537,7 @@ class PackedContext:
             compression_layouts=compression_layouts,
             window_indices=window_indices,
             cp_halo=cp_halo,
+            index_row_lengths=index_row_lengths,
         )
 
 
@@ -816,6 +829,7 @@ class DeepseekV4Indexer(nn.Module):
             self.index_topk,
             amax_floor=VLLM_INDEXER_FP8_AMAX_FLOOR,
             cp_group_name=cp_group.group_name if cp_world_size > 1 else None,
+            host_row_lengths=packed.index_row_lengths,
         ).unsqueeze(0)
 
         # Mark indices-to-ignore with IGNORE_SLOT
