@@ -3,6 +3,7 @@
 import atexit
 import os
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
@@ -72,6 +73,41 @@ def keep_integer_parameters_as_buffers(model: nn.Module) -> list[str]:
     return moved
 
 
+def checkpoint_integer_tables(model: nn.Module) -> list[str]:
+    """The engine's integer parameters loaded from its checkpoint, such as DeepSeek-V4's ``tid2eid``: those vLLM
+    recorded at load, unlike integer tensors it derives after loading (MXFP8 weight scales)."""
+    from vllm.model_executor.model_loader.reload.layerwise import LAYERWISE_INFO
+
+    return [
+        f"{module_name}.{name}" if module_name else name
+        for module_name, module in model.named_modules()
+        if (info := LAYERWISE_INFO.get(module)) is not None
+        for name, parameter in module.named_parameters(recurse=False)
+        if not parameter.is_floating_point() and name in info.restore_metadata[0]
+    ]
+
+
+def source_to_hf_conversion(hf_config) -> Callable[[dict], dict] | None:
+    """How a version's tensors map onto the checkpoint layout vLLM's loader reads, from their names.
+
+    A trainer publishes PrimeRL-native tensors, which the model's conversion chain turns into the checkpoint layout. A
+    checkpoint publisher publishes the checkpoint's own tensors, which need none: like a trainer loading a checkpoint,
+    the model class tells the two apart by their names. The chain comes from the PrimeRL model class registered for
+    the config, not vLLM's own."""
+    from prime_rl.trainer.models import get_custom_causal_lm_cls
+    from prime_rl.trainer.models.conversion_ops import apply_prime_to_hf
+
+    model_cls = get_custom_causal_lm_cls(hf_config)
+    chain = model_cls.conversion_chain(hf_config)
+    if not chain:
+        return None
+
+    def convert(tensors: dict) -> dict:
+        return tensors if model_cls.is_hf_state_dict(tensors) else apply_prime_to_hf(tensors, chain)
+
+    return convert
+
+
 class ModelExpressWeightUpdateWorker(WeightRPCMixin, Worker):
     def liveness_probe(self) -> None:
         return None
@@ -102,22 +138,18 @@ class ModelExpressWeightUpdateWorker(WeightRPCMixin, Worker):
 
         from transformers import AutoConfig
 
-        from prime_rl.trainer.models import get_custom_causal_lm_cls
-        from prime_rl.trainer.models.conversion_ops import apply_prime_to_hf
-
-        # The trainer publishes PrimeRL-native tensors, so the conversion chain must come from the
-        # PrimeRL config class registered on import above, not vLLM's own config class.
         model_config = self.model_runner.model_config
         hf_config = AutoConfig.from_pretrained(model_config.model, trust_remote_code=model_config.trust_remote_code)
-        chain = get_custom_causal_lm_cls(hf_config).conversion_chain(hf_config)
         model = cast(nn.Module, self.model_runner.get_model())
+        if not hasattr(self, "_mx_integer_tables"):
+            self._mx_integer_tables = checkpoint_integer_tables(model)
         keep_integer_parameters_as_buffers(model)
         self._generator = ModelExpressGeneratorClient.initialize(
             ModelExpressGeneratorConfig(
                 engine_context=VllmGeneratorContext(
                     model=model,
                     vllm_config=self.vllm_config,
-                    convert_native_to_hf=(lambda tensors: apply_prime_to_hf(tensors, chain)) if chain else None,
+                    convert_native_to_hf=source_to_hf_conversion(hf_config),
                 ),
                 # The name the trainer publishes versions under; the served model's by default
                 model_name=model_name or self.model_runner.model_config.model,
@@ -208,6 +240,19 @@ class ModelExpressWeightUpdateWorker(WeightRPCMixin, Worker):
     def modelexpress_served(self) -> str | None:
         """The ModelExpress version this worker installed last, None before the first or after a failed install."""
         return getattr(self, "_mx_served", None)
+
+    def modelexpress_integer_tables(self) -> str:
+        """Digest of the integer tables this worker loaded from its checkpoint (``checkpoint_versions``): versions
+        leave them out, so they stay as loaded."""
+        from prime_rl.transports.weights.checkpoint_versions import integer_tables_digest
+
+        model = cast(nn.Module, self.model_runner.get_model())
+        names = getattr(self, "_mx_integer_tables", None)
+        if names is None:
+            names = checkpoint_integer_tables(model)
+        # Parameters until init_broadcaster moves them to buffers
+        tensors = {**dict(model.named_parameters()), **dict(model.named_buffers())}
+        return integer_tables_digest(tensors[name] for name in names)
 
     @torch.no_grad()
     def update_weights_from_modelexpress(self, version_uid: str) -> None:

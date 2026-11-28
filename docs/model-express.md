@@ -52,6 +52,48 @@ pull = true
 - A failed stage leaves the live weights untouched: the engines keep serving and retry with the newest version. A failed install may leave them partly written, so the engines stay paused and install the newest version from scratch until one succeeds; past `weight_broadcast.timeout` the server exits.
 - Not supported yet: draft swaps (speculative decoding itself works, with the draft the engines launch with), rollout checkpoints, Dynamo and SFT online evals.
 
+## Swapping checkpoints on a running deployment
+
+A deployment that serves exported checkpoints (offline evals of an RL run) can move to another checkpoint without a restart: a checkpoint publisher offers the export as an MX version, and the engines install it through `POST /swap-checkpoint`.
+
+```toml
+[weight_broadcast]
+type = "modelexpress"
+host = "<MX server host>"
+port = 8001
+model_name = "my-run"   # the MX model the publisher publishes under; defaults to vllm.model
+```
+
+**Publisher.** `tools/publish_checkpoint.py` reads an HF safetensors export (bf16, fp16 or fp32 tensors) into page-locked host memory and serves it to the engines over RDMA until it is released:
+
+```bash
+uv run python tools/publish_checkpoint.py /exports/step-300 300 --model-name my-run --mx-host <host> --ranks 8
+curl -X POST http://<host>:8090/publish -d '{"model_dir": "/exports/step-400", "step": 400}'   # roll to the next one
+curl -X POST http://<host>:8090/release                                                     # or SIGTERM
+```
+
+- Its ranks (`--ranks`, one process each) split the checkpoint's tensors, read their share with `--read-threads` threads each and register it with NIXL. MX reads those buffers in place, so the publisher holds one copy of the checkpoint in host memory. Each rank needs a GPU visible (one is enough for all of them): MX's NIXL agent and the pinning need CUDA.
+- The tensors keep the checkpoint's names and layout, which vLLM's own loader reads, so the engines install them without a conversion. An engine converts a version only when its tensor names are PrimeRL's (a trainer's), as the trainer does when it loads a checkpoint.
+- A version is numbered with its step (`version_number`), and engines label the tokens they sample with it.
+- The publisher holds one version at a time and keeps one trainer mesh for its lifetime. To publish the next checkpoint it marks the current version RELEASING, so no new reads start, waits until the reads in flight end, reads the new checkpoint into the same buffers and publishes it. A checkpoint whose tensors differ in names, shapes or dtypes is refused before the current version is retired: start a new publisher for it.
+- MX publishes floating-point tensors only. The engines keep the integer tensors they loaded at startup (DeepSeek-V4's hash-routing tables), which is right only while the new checkpoint holds the same ones. The version's uid carries a digest of the checkpoint's integer tensors, and a swap to a version whose digest differs from the engines' is refused (409): serving it needs a restart on that checkpoint.
+
+**Swap.** `POST /swap-checkpoint {"step": 400, "mode": "drain", "drain_timeout_s": 300}` (or `"version_uid"`), behind the admin token, on the first rank of a DP group (`weight_broadcast.group`, which the multi-node templates pass to it) or on a server that holds all of its engines:
+
+1. It resolves the target: the newest READY version of the step under `weight_broadcast.model_name`. A version the engines already serve returns `{"unchanged": true}`.
+2. Every worker stages it while the engines keep serving. A missing or unreadable version fails here (404, 502) and nothing changes.
+3. New requests stop entering the engines: they wait at the API servers, they are not rejected. Requests in flight decide the `mode`: `fail` (default) answers 409 if there are any; `drain` waits for them up to `drain_timeout_s`, else 409; `abort` aborts them, and they finish with the `abort` finish reason. A 409 changes nothing.
+4. The group pauses (vLLM's data-parallel pause stops every rank at the same step), installs the version, drops the prefix cache (its blocks hold KV of the old weights), labels the tokens sampled from then on with the step and resumes. The waiting requests then run on the new weights.
+5. It answers `{"step", "version_uid", "unchanged": false, "cold", "timings": {"stage", "drain", "pause", "apply", "total"}}`. `GET /weight_version?uid=true` returns `{"version", "uid"}` on every rank, and every completion can return its per-token labels (`return_weight_versions`).
+
+- The first version of a mesh that a group installs (the first swap to a publisher process) stages while paused, since that stage records on the live model how the mesh's tensors map onto the engine's: `cold: true`, and its `stage_paused` time counts toward `pause`. Later versions of the same publisher stage while serving.
+- One swap runs at a time per group. A second request for the same version waits for the first one's result; one for another version gets 409.
+- A failed stage, also a paused one, leaves the weights as they were, and the group serves on. A failed install may leave them partly written: the group stays paused, every rank answers `/health` with 503 so the router drops it, the request gets 500, and the group retries the install while paused until it succeeds or `weight_broadcast.timeout` passes. It never resumes on mixed weights. A new swap request, to any version, takes over from a failed one.
+- A server that pulls from a trainer (`pull = true`) does not swap checkpoints (409), and swaps need one API server per engine (`api_server_count = 1`, as every external-LB rank has).
+- With speculative decoding, the draft keeps its weights; a draft that shares the target's embedding or LM head reads the new ones.
+
+**Whole deployment.** `tools/swap_checkpoint.py --router <url> --step 400 --mode drain` asks every engine behind the router (or `--servers`) for its DP group and swaps every group at once, so the deployment pauses together; it exits 0 only if all of them serve the step. `--rolling` swaps one group at a time and takes it out of the router's rotation meanwhile, so the others keep serving. Guarded engines take the admin token from `$PRIME_RL_ADMIN_TOKEN`; a DP group's first rank needs it too, to call its ranks' admin routes (the multi-node inference template passes it from `$ADMIN_TOKEN_SEND_ENV`, `NAME=token`). Serve under a stable model name (`vllm.served_model_name`): the step is in the labels, not the name.
+
 ## Limitations
 
 LoRA is rejected at config validation. Pipeline parallelism is untested.

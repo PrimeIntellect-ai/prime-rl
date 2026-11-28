@@ -29,6 +29,8 @@ from modelexpress_rl import ModelExpressControlClient, WeightVersion, WeightVers
 from vllm.engine.protocol import EngineClient
 from vllm.logger import init_logger
 
+from prime_rl.inference.vllm import serving_control
+
 logger = init_logger("vllm.inference.vllm.weight_pull")
 
 POLL_INTERVAL_S = 0.2
@@ -89,6 +91,31 @@ class Engines(Protocol):
         """The step label and the ModelExpress version every engine serves; None where they disagree, or before an
         install."""
 
+    # Serving control (``serving_control``): what an operation that must not run beside requests (a checkpoint swap)
+    # needs on top of a switch. Every count is of requests that reached the engines' API servers.
+
+    async def hold(self) -> int:
+        """Stop admitting new requests; they wait at the API servers, unrejected. Returns the requests in flight."""
+
+    async def release(self) -> None:
+        """Admit new requests again, the held ones first."""
+
+    async def in_flight(self) -> int:
+        """Requests the engines run or are about to."""
+
+    async def abort(self) -> int:
+        """Abort the requests in flight; each finishes with the ``abort`` finish reason. Returns how many."""
+
+    async def reset_prefix_cache(self) -> None:
+        """Drop every engine's prefix cache. Raises if an engine still holds a request's blocks."""
+
+    async def set_health(self, healthy: bool, reason: str | None = None) -> None:
+        """Report every engine healthy, or unhealthy (``/health`` 503, so routers stop sending it requests)."""
+
+    async def integer_tables(self) -> str | None:
+        """Digest of the integer tables every engine loaded at startup, which no version replaces; None where they
+        differ."""
+
 
 async def on_every_worker(client: EngineClient, method: str, *args) -> list:
     """Every worker's result of ``method``, from every engine of this server. vLLM's ``collective_rpc`` reaches every
@@ -147,6 +174,29 @@ class LocalEngine:
         uids = set(await on_every_worker(self.client, "modelexpress_served"))
         version = int(label) if label is not None and label.isdigit() else None
         return version, uids.pop() if len(uids) == 1 else None
+
+    async def hold(self) -> int:
+        return await serving_control.admission().close()
+
+    async def release(self) -> None:
+        serving_control.admission().open()
+
+    async def in_flight(self) -> int:
+        return serving_control.admission().in_flight()
+
+    async def abort(self) -> int:
+        return await serving_control.admission().abort()
+
+    async def reset_prefix_cache(self) -> None:
+        if not await self.client.reset_prefix_cache():
+            raise RuntimeError("An engine did not reset its prefix cache: it still holds a request's blocks")
+
+    async def set_health(self, healthy: bool, reason: str | None = None) -> None:
+        serving_control.health.set(healthy, reason)
+
+    async def integer_tables(self) -> str | None:
+        digests = set(await on_every_worker(self.client, "modelexpress_integer_tables"))
+        return digests.pop() if len(digests) == 1 else None
 
 
 class EngineGroup:
@@ -212,6 +262,37 @@ class EngineGroup:
 
         served = set(await asyncio.gather(*map(get, self.clients)))
         return served.pop() if len(served) == 1 else (None, None)
+
+    async def _get_all(self, path: str) -> list[dict]:
+        async def get(client) -> dict:
+            response = await client.get(path, timeout=60)
+            if response.is_error:
+                raise RuntimeError(f"{client.base_url}{path} failed ({response.status_code}): {response.text[:2000]}")
+            return response.json()
+
+        return await asyncio.gather(*map(get, self.clients))
+
+    async def hold(self) -> int:
+        return sum(result["in_flight"] for result in await self._post_all("/admission/close"))
+
+    async def release(self) -> None:
+        await self._post_all("/admission/open")
+
+    async def in_flight(self) -> int:
+        return sum(result["in_flight"] for result in await self._get_all("/in_flight"))
+
+    async def abort(self) -> int:
+        return sum(result["aborted"] for result in await self._post_all("/abort_in_flight"))
+
+    async def reset_prefix_cache(self) -> None:
+        await self._post_all("/reset_prefix_cache_paused")
+
+    async def set_health(self, healthy: bool, reason: str | None = None) -> None:
+        await self._post_all("/set_health", json={"healthy": healthy, "reason": reason})
+
+    async def integer_tables(self) -> str | None:
+        digests = {result["digest"] for result in await self._get_all("/modelexpress/integer_tables")}
+        return digests.pop() if len(digests) == 1 else None
 
 
 class WeightPuller:

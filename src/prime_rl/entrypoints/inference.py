@@ -148,6 +148,8 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, log_dir: Path
             data_parallel_rpc_port=config.vllm.data_parallel_rpc_port,
             enable_expert_parallel=config.vllm.enable_expert_parallel,
             infer_nodes_per_replica=config.deployment.num_nodes,
+            # ModelExpress engines can swap checkpoints, each DP group through its first rank
+            weight_group=config.weight_broadcast.type == "modelexpress",
         )
 
     script = template.render(**template_vars)
