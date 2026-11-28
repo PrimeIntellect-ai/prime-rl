@@ -302,15 +302,28 @@ class WeightPuller:
             raise
         paused = time.perf_counter()
         deadline = time.monotonic() + self.config.timeout
+        # Whether an install started, so that the weights may be partly written
+        written = False
         while True:
             try:
                 if not live:
-                    await self.engines.stage(target.version_id, live=False)
+                    try:
+                        await self.engines.stage(target.version_id, live=False)
+                    except Exception:
+                        if written:
+                            raise
+                        # Nothing was installed: the engines serve their weights again and the puller retries later
+                        await self.engines.discard()
+                        await self.engines.resume()
+                        raise
+                written = True
                 await self.engines.apply(target.version_id, mesh_key(target), target.version_number)
                 break
             except asyncio.CancelledError:
                 raise
             except Exception as error:
+                if not written:
+                    raise
                 # The weights may be partly written: stay paused, and install the newest version from scratch
                 logger.exception(f"Installing policy v{target.version_number} failed; retrying while paused")
                 try:

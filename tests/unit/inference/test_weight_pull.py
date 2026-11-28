@@ -159,6 +159,15 @@ def test_a_failed_install_stays_paused_and_installs_the_newest_version_before_re
     assert pull.served.version_number == 2 and engines.label == 2
 
 
+def test_a_failed_stage_while_paused_resumes_the_untouched_engines():
+    engines = FakeEngines(fail_stage=1)
+    pull = puller(engines, [version(0, created=10)])
+    with pytest.raises(RuntimeError, match="stage failed"):
+        run(pull.switch(version(0, created=10)))
+    assert engines.calls == ["pause", ("stage", "uid-0-10", False), "discard", "resume"]
+    assert not engines.paused and pull.served is None
+
+
 def test_a_pause_that_fails_resumes_without_installing():
     engines = FakeEngines()
 
