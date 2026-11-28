@@ -2,7 +2,12 @@ import pytest
 import torch
 
 import prime_rl.trainer.models.kernels.fp8_indexer as fp8_indexer_module
-from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer, per_token_group_quant_fp8, select_topk
+from prime_rl.trainer.models.kernels.fp8_indexer import (
+    fp8_indexer,
+    fp8_indexer_prequantized,
+    per_token_group_quant_fp8,
+    select_topk,
+)
 
 pytestmark = [
     pytest.mark.gpu,
@@ -196,3 +201,24 @@ def test_query_chunks_match_one_pass(segments, monkeypatch):
     chunked = fp8_indexer(q, k, w, ks.int(), ke.int(), TOPK)
 
     assert torch.equal(chunked, one_pass)
+
+
+@pytest.mark.parametrize("segments", SEGMENTS, ids=SEGMENT_IDS)
+def test_host_row_lengths_match_full_width(segments, monkeypatch):
+    """Logits only as wide as each chunk's longest row, sized from the host row lengths, pick exactly
+    what full-width logits pick. Chunks of 512 queries give each chunk its own width."""
+    ks, ke = ranges(segments)
+    q = torch.randn(NUM_Q, HEADS, DIM, device="cuda").bfloat16()
+    k = torch.randn(NUM_K, DIM, device="cuda").bfloat16()
+    w = torch.randn(NUM_Q, HEADS, device="cuda").bfloat16()
+    q_fp8, q_scales = per_token_group_quant_fp8(
+        q.reshape(NUM_Q * HEADS, DIM).contiguous(), group_size=DIM, use_ue8m0=True, eps=fp8_indexer_module.FP8_EPS
+    )
+    q_fp8, w = q_fp8.view(NUM_Q, HEADS, DIM), w * q_scales.view(NUM_Q, HEADS)
+    monkeypatch.setattr(fp8_indexer_module, "LOGITS_CHUNK_BYTES", 1)
+
+    full = fp8_indexer_prequantized(q_fp8, k, w, ks.int(), ke.int(), TOPK)
+    host_row_lengths = (ke - ks).clamp_min(0).int().cpu()[None]
+    narrow = fp8_indexer_prequantized(q_fp8, k, w, ks.int(), ke.int(), TOPK, host_row_lengths=host_row_lengths)
+
+    assert torch.equal(narrow, full)

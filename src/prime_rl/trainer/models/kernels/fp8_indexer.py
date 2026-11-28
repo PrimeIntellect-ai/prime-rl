@@ -115,10 +115,10 @@ def per_token_group_quant_fp8(
 def select_topk(logits: torch.Tensor, ke: torch.Tensor, topk: int, sentinel: int) -> torch.Tensor:
     """Indices of the `topk` largest logits in each row, in no particular order.
 
-    Logits at and past a row's end `ke` must be -inf. Slots that can only hold an -inf logit are either
-    `sentinel` or an index outside the row's range, so the caller masks by range. Uses DeepSelect where it
-    is built for the GPU, `torch.topk` elsewhere; the two agree except on which of several tied logits
-    fills the last slots.
+    Logits at and past a row's end `ke` are ignored and may hold anything; the `torch.topk` path overwrites them
+    with -inf in place. Slots that can only hold an -inf logit are either `sentinel` or an index outside the row's
+    range, so the caller masks by range. Uses DeepSelect where it is built for the GPU, `torch.topk` elsewhere; the
+    two agree except on which of several tied logits fills the last slots.
     """
     n_rows, n_cols = logits.shape
     actual_topk = min(topk, n_cols)
@@ -135,6 +135,9 @@ def select_topk(logits: torch.Tensor, ke: torch.Tensor, topk: int, sentinel: int
             abort_when_nan_found=False,
         )
     else:
+        # DeepSelect reads each row only up to `ke`; torch.topk needs the tail masked.
+        columns = torch.arange(n_cols, device=logits.device)
+        logits.masked_fill_(columns >= ke[:, None], float("-inf"))
         _, indices = torch.topk(logits, actual_topk, dim=-1)
     if actual_topk < topk:
         padding = torch.full((n_rows, topk - actual_topk), sentinel, dtype=indices.dtype, device=logits.device)
@@ -195,6 +198,7 @@ def fp8_indexer_prequantized(
     topk: int,
     amax_floor: float = FP8_EPS,
     cp_group_name: str | None = None,
+    host_row_lengths: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """`fp8_indexer` on queries already UE8M0-quantized per head, each head's scale folded into `w`.
 
@@ -204,6 +208,9 @@ def fp8_indexer_prequantized(
         w: [S_q, H] fp32 per-head weights times each head's query scale
         ks, ke, topk, cp_group_name: as in `fp8_indexer`
         amax_floor: lower bound on each key's absolute maximum before its UE8M0 scale is taken
+        host_row_lengths: optional CPU int32 [cp_world_size, S_q], `ke - ks` of every CP rank's rows. With it the
+            logits of a chunk are only as wide as its longest row and the CP balance plan needs no collective or
+            device sync.
     """
     S_q, H, D = q_fp8.shape
     S_k = k.shape[0]
@@ -216,22 +223,35 @@ def fp8_indexer_prequantized(
     indices = torch.empty((S_q, topk), dtype=torch.int32, device=q_fp8.device)
     chunk_rows = max(MIN_CHUNK_ROWS, LOGITS_CHUNK_BYTES // (4 * S_k_aligned))
     if cp_group_name is None:
-        _select_topk(q_fp8, k_fp8, k_scales, w, ks, ke, S_k, chunk_rows, indices)
+        widths = None if host_row_lengths is None else _chunk_widths(host_row_lengths[0], chunk_rows, S_k_aligned)
+        _select_topk(q_fp8, k_fp8, k_scales, w, ks, ke, S_k, chunk_rows, indices, widths)
         return indices
 
     group = dist.distributed_c10d._resolve_process_group(cp_group_name)
     rank, world_size = group.rank(), group.size()
     partner = world_size - 1 - rank
-    row_costs = _row_costs(ks, ke, S_k_aligned)
-    chunk_costs = torch.stack([chunk.sum() for chunk in row_costs.split(chunk_rows)])
-    all_chunk_costs = chunk_costs.new_empty(world_size, chunk_costs.numel())
-    dist.all_gather_into_tensor(all_chunk_costs, chunk_costs, group=group)
-    all_chunk_costs = all_chunk_costs.tolist()
-    send_chunks, recv_chunks = cp_balance_plan(all_chunk_costs[rank], all_chunk_costs[partner])
-    n_chunks = len(chunk_costs)
+    own_widths = recv_widths = None
+    if host_row_lengths is None:
+        row_costs = _row_costs(ks, ke, S_k_aligned)
+        chunk_costs = torch.stack([chunk.sum() for chunk in row_costs.split(chunk_rows)])
+        all_chunk_costs = chunk_costs.new_empty(world_size, chunk_costs.numel())
+        dist.all_gather_into_tensor(all_chunk_costs, chunk_costs, group=group)
+        all_chunk_costs = all_chunk_costs.tolist()
+        send_chunks, recv_chunks = cp_balance_plan(all_chunk_costs[rank], all_chunk_costs[partner])
+        n_chunks = len(chunk_costs)
+    else:
+        own_lengths, partner_lengths = host_row_lengths[rank], host_row_lengths[partner]
+        send_chunks, recv_chunks = cp_balance_plan(
+            _host_chunk_costs(own_lengths, chunk_rows, S_k_aligned),
+            _host_chunk_costs(partner_lengths, chunk_rows, S_k_aligned),
+        )
+        n_chunks = triton.cdiv(S_q, chunk_rows)
+        own_widths = _chunk_widths(own_lengths, chunk_rows, S_k_aligned)
     keep = min(S_q, (n_chunks - send_chunks) * chunk_rows)
     recv_rows = S_q - min(S_q, (n_chunks - recv_chunks) * chunk_rows)
     peer = dist.get_global_rank(group, partner)
+    if host_row_lengths is not None and recv_chunks:
+        recv_widths = _chunk_widths(partner_lengths[S_q - recv_rows :], chunk_rows, S_k_aligned)
 
     if send_chunks:
         sent = [q_fp8[keep:].view(torch.uint8), w[keep:].contiguous(), ks[keep:], ke[keep:]]
@@ -245,7 +265,9 @@ def fp8_indexer_prequantized(
         ]
         works = dist.batch_isend_irecv([dist.P2POp(dist.irecv, t, peer, group) for t in received])
 
-    _select_topk(q_fp8[:keep], k_fp8, k_scales, w[:keep], ks[:keep], ke[:keep], S_k, chunk_rows, indices[:keep])
+    _select_topk(
+        q_fp8[:keep], k_fp8, k_scales, w[:keep], ks[:keep], ke[:keep], S_k, chunk_rows, indices[:keep], own_widths
+    )
 
     if send_chunks:
         for work in works:
@@ -266,6 +288,7 @@ def fp8_indexer_prequantized(
             S_k,
             chunk_rows,
             partner_indices,
+            recv_widths,
         )
         dist.isend(partner_indices, peer, group).wait()
 
@@ -275,6 +298,25 @@ def fp8_indexer_prequantized(
 def _row_costs(ks: torch.Tensor, ke: torch.Tensor, S_k_aligned: int) -> torch.Tensor:
     scored = (ke - ks).clamp_min(0).to(torch.float64)
     return scored + TOPK_COST_PER_KEY * (scored + S_k_aligned)
+
+
+def _host_chunk_costs(lengths: torch.Tensor, chunk_rows: int, S_k_aligned: int) -> list[float]:
+    """Per-chunk cost of rows with `lengths` scored keys, the same model as `_row_costs`, each row's logits as wide
+    as the longest row of its chunk."""
+    costs = []
+    for chunk in lengths.split(chunk_rows):
+        scored = float(chunk.sum(dtype=torch.float64))
+        width = _logits_width(int(chunk.max()), S_k_aligned)
+        costs.append(scored + TOPK_COST_PER_KEY * (scored + width * chunk.numel()))
+    return costs
+
+
+def _logits_width(max_length: int, S_k_aligned: int) -> int:
+    return min(S_k_aligned, max(KEY_ALIGNMENT, triton.cdiv(max_length, KEY_ALIGNMENT) * KEY_ALIGNMENT))
+
+
+def _chunk_widths(lengths: torch.Tensor, chunk_rows: int, S_k_aligned: int) -> list[int]:
+    return [_logits_width(int(chunk.max()), S_k_aligned) for chunk in lengths.split(chunk_rows)]
 
 
 def cp_balance_plan(own_chunk_costs: list[int], partner_chunk_costs: list[int]) -> tuple[int, int]:
@@ -297,7 +339,7 @@ def _trailing_chunks_to_send(chunk_costs: list[int], partner_cost: int) -> int:
     return best_chunks
 
 
-def _select_topk(q_fp8, k_fp8, k_scales, w, ks, ke, S_k, chunk_rows, indices):
+def _select_topk(q_fp8, k_fp8, k_scales, w, ks, ke, S_k, chunk_rows, indices, widths=None):
     from vllm.third_party import deep_gemm
 
     q_scales = None
@@ -312,7 +354,7 @@ def _select_topk(q_fp8, k_fp8, k_scales, w, ks, ke, S_k, chunk_rows, indices):
         q_scales = torch.full(q_fp8.shape[:-1], UNIT_UE8M0_X4, dtype=torch.int32, device=q_fp8.device)
         w = w.to(logits_dtype)
     lengths = (ke - ks).clamp_min(0)
-    for start in range(0, q_fp8.shape[0], chunk_rows):
+    for chunk, start in enumerate(range(0, q_fp8.shape[0], chunk_rows)):
         end = min(start + chunk_rows, q_fp8.shape[0])
         # Row i holds the logits of keys [ks[i], ke[i]) from column 0; columns past ke[i] - ks[i] are not cleaned.
         logits = deep_gemm.fp8_fp4_mqa_logits(
@@ -321,12 +363,10 @@ def _select_topk(q_fp8, k_fp8, k_scales, w, ks, ke, S_k, chunk_rows, indices):
             w[start:end],
             ks[start:end],
             ke[start:end],
-            k_fp8.shape[0],
+            k_fp8.shape[0] if widths is None else widths[chunk],
             logits_dtype,
         ).float()
         row_lengths = lengths[start:end]
-        columns = torch.arange(logits.shape[1], device=logits.device)
-        logits.masked_fill_(columns >= row_lengths[:, None], float("-inf"))
         chunk_indices = select_topk(logits, row_lengths, indices.shape[1], S_k) + ks[start:end, None]
         del logits
         # Replace cross-sequence indices with sentinel S_k (maps to zero-valued KV)
@@ -340,5 +380,7 @@ def _fp8_indexer_fake(q, k, w, ks, ke, topk, weight_scale=1.0, amax_floor=FP8_EP
 
 
 @fp8_indexer_prequantized.register_fake
-def _fp8_indexer_prequantized_fake(q_fp8, k, w, ks, ke, topk, amax_floor=FP8_EPS, cp_group_name=None):
+def _fp8_indexer_prequantized_fake(
+    q_fp8, k, w, ks, ke, topk, amax_floor=FP8_EPS, cp_group_name=None, host_row_lengths=None
+):
     return q_fp8.new_empty((q_fp8.shape[0], topk), dtype=torch.int32)
