@@ -32,20 +32,19 @@ staging_buffers_count = 2          # overlap the next read with the current inst
 
 ## Verifying updates
 
-`tools/check_weight_update_bit_exact.py` checks that updates install exactly what vLLM's own loader produces:
+`tools/check_weight_update_bit_exact.py` takes a local HF safetensors checkpoint, W0, and writes two deterministic perturbations of its floating-point tensors, W1 and W2. vLLM cold-loads each version. The trainer publishes W0, W1, W0, W2 and W0 through the real weight transport. Each live install must match its own cold load on every worker for tensor inventory, bytes, dtype, shape, strides, and storage aliasing. The check also requires the live parameters to keep their addresses across updates.
 
-1. An engine cold-loads `MODEL_DIR`, a checkpoint holding the trainer's initial weights W0. The per-tensor digests it then reports (`GET /weight_fingerprint/model?buffers=true`: parameters, buffers and bare tensors such as fused or post-processed copies) are the reference.
-2. The trainer loads the same checkpoint and checks that its weights, converted back, equal it bit for bit.
-3. Instead of optimizer steps, the trainer publishes W0, W0 + D1, W0, W0 + D2 and W0 through the real transport, where D1 and D2 are seeded perturbations of every floating-point tensor it publishes. After each install the engine's digests are compared with the reference: every W0 install must restore every engine tensor bit for bit, and every perturbed install must change every floating-point engine parameter.
-
-A pass shows that each update is installed, and that the install reproduces the loader's result for the same trainer weights, including fused, permuted and post-processed tensors (such as Mamba's `A = -exp(A_log)`) and dtypes. It runs no forward pass, and integer tensors are not perturbed, so they are only checked for equality.
+For ModelExpress, the checker verifies each published wire manifest for tensor names, dtypes, shapes, and shard geometry. `--wire-fp32` accepts a regex over native trainer names to specify the expected FP32 tensors independently. The default uses the model's dtype policy. `--forward` additionally compares greedy generations and sampled logprobs against the cold references.
 
 ```bash
 uv run python tools/check_weight_update_bit_exact.py MODEL_DIR OUTPUT_DIR \
-  --trainer-gpus 0,1 --inference-gpus 2,3 --vllm '{"max_model_len": 4096}'
+  --trainer-gpus 0,1 --inference-gpus 2,3 --vllm '{"max_model_len": 4096}' \
+  --staging-buffer-bytes 4294967296 --staging-buffers-count 2 --forward
 ```
 
-`--trainer-gpus` sets the FSDP ranks, `--inference-gpus` the engine's tensor parallelism, `--transport filesystem` checks the filesystem transport instead, and `OUTPUT_DIR/report.json` lists every mismatching tensor by version. The integration test `tests/integration/test_modelexpress_bit_exact.py` runs the check on a tiny checkpoint of every architecture in the vLLM parity test, on two GPUs; cases that fail today are strict xfails that name the fix they wait for.
+`--trainer-gpus` selects the FSDP ranks. `--inference-gpus` selects the engine devices, and `--vllm` can set the TP and DP layout explicitly. `--transport filesystem` exercises filesystem installs. Use an empty output directory for `report.json`, per-worker fingerprints, and logs. The temporary checkpoints need disk space for two additional copies of the model.
+
+In GitHub Actions, dispatch **GPU Tests** with `mx-architecture` for the two-GPU sweep, `mx-distributed` for the four-Blackwell DeepSeek V4 MXFP8 check, or `mx-all` for both. These jobs run every selected case as a required pass and upload reports and logs. They require a native Linux runner with CUDA, a UCX-visible network interface and the requested GPUs. Choose its label with `mx_runner` or the repository variable `PRIME_RL_MX_GPU_RUNNER`. The fallback label is `mx-gpu`.
 
 ## Limitations
 

@@ -64,7 +64,7 @@ class WeightRPCMixin:
     def get_weight_fingerprint(self, target: WeightTarget = "model", buffers: bool = False) -> dict:
         """Exact per-worker tensor digests for validating distributed reloads: parameters, and bare CUDA tensor
         attributes of modules named like weights or biases (fused or post-processed copies), as ``@module.name``.
-        With ``buffers``, also every buffer and every other bare CUDA tensor attribute, except views of the KV cache.
+        With ``buffers``, also every materialized buffer and bare tensor attribute, except views of the KV cache.
 
         Draft fingerprints skip target-owned shared weights, so they change only with the draft."""
         model = get_weight_model(self.model_runner, target)
@@ -76,43 +76,61 @@ class WeightRPCMixin:
         )
         tensors = {
             name: ("parameter", parameter)
-            for name, parameter in model.named_parameters()
+            for name, parameter in model.named_parameters(remove_duplicate=not buffers)
             if parameter.untyped_storage().data_ptr() not in shared_storage
         }
         tensors.update(
             (f"@{module_name}.{name}", ("attribute", value))
-            for module_name, module in model.named_modules()
+            for module_name, module in model.named_modules(remove_duplicate=not buffers)
             if id(module) not in target_modules
             for name, value in vars(module).items()
-            if isinstance(value, torch.Tensor) and value.is_cuda and (buffers or "weight" in name or "bias" in name)
+            if isinstance(value, torch.Tensor)
+            and (not value.is_meta if buffers else value.is_cuda and ("weight" in name or "bias" in name))
         )
         if buffers:
             tensors.update(
                 (name, ("buffer", buffer))
-                for name, buffer in model.named_buffers()
+                for name, buffer in model.named_buffers(remove_duplicate=False)
                 if not buffer.is_meta and buffer.untyped_storage().data_ptr() not in shared_storage
             )
             kv_cache_storage = {
-                cache.untyped_storage().data_ptr() for cache in getattr(self.model_runner, "kv_caches", [])
+                (cache.device, cache.untyped_storage().data_ptr())
+                for cache in getattr(self.model_runner, "kv_caches", [])
             }
             tensors = {
                 name: (kind, tensor)
                 for name, (kind, tensor) in tensors.items()
-                if kind == "parameter" or tensor.untyped_storage().data_ptr() not in kv_cache_storage
+                if kind == "parameter" or (tensor.device, tensor.untyped_storage().data_ptr()) not in kv_cache_storage
             }
-        return {
-            name: {
+        entries = {}
+        for name, (kind, tensor) in tensors.items():
+            logical = tensor.detach()
+            if buffers and name.endswith(".input_mix_weight_down_block_inject.weight"):
+                parent = model.get_submodule(name.rsplit(".", 2)[0])
+                # The Qwen HC loader only writes the two logical projections, leaving trailing GEMM padding.
+                if padding := parent.pad_size:
+                    logical = logical[:-padding]
+            entries[name] = {
                 "kind": kind,
                 "shape": list(tensor.shape),
                 "dtype": str(tensor.dtype),
                 "data_ptr": tensor.data_ptr(),
                 "sha256": hashlib.sha256(
-                    tensor.detach().contiguous().reshape(-1).view(torch.uint8).cpu().numpy().tobytes()
+                    logical.contiguous().reshape(-1).view(torch.uint8).cpu().numpy().tobytes()
                 ).hexdigest(),
-                "nonzero": tensor.count_nonzero().item(),
+                **(
+                    {
+                        "stride": list(tensor.stride()),
+                        "storage_offset": tensor.storage_offset(),
+                        "storage_ptr": tensor.untyped_storage().data_ptr() if tensor.numel() else None,
+                        "hashed_shape": list(logical.shape),
+                        "device": str(tensor.device),
+                    }
+                    if buffers
+                    else {"nonzero": tensor.count_nonzero().item()}
+                ),
             }
-            for name, (kind, tensor) in tensors.items()
-        }
+        return entries
 
 
 def load_draft_weights(model_runner, state_iter, vllm_config) -> None:

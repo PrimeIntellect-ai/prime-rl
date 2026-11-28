@@ -1,0 +1,67 @@
+name: ModelExpress GPU checks
+
+on:
+  workflow_call:
+    inputs:
+      profile:
+        type: string
+        required: true
+      runner:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  bit-exact:
+    name: Bit-exact weights
+    runs-on: [self-hosted, linux, "${{ inputs.runner }}"]
+    timeout-minutes: 240
+    env:
+      PRIME_RL_MX_STRICT: "1"
+      MX_PROFILE: ${{ inputs.profile }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Initialize public submodules
+        run: |
+          git -c url.https://github.com/.insteadOf=git@github.com: submodule update --init --recursive \
+            -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Install locked dependencies
+        run: uv sync --locked --all-extras --all-packages
+      - name: Verify runner and run ModelExpress suite
+        shell: bash
+        env:
+          MX_OUTPUTS: ${{ runner.temp }}/mx-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          test -d /sys/class/net || { echo "::error::ModelExpress needs a native UCX network interface"; exit 1; }
+          uv run --locked python - <<'PY'
+          import os
+          import torch
+
+          distributed = os.environ["MX_PROFILE"] != "mx-architecture"
+          required = 4 if distributed else 2
+          assert torch.cuda.device_count() >= required, f"Need at least {required} visible GPUs"
+          if distributed:
+              assert all(torch.cuda.get_device_capability(i)[0] == 10 for i in range(4)), "Need four Blackwell GPUs"
+          PY
+          case "$MX_PROFILE" in
+            mx-architecture) selection=(-k 'not distributed_quantized') ;;
+            mx-distributed) selection=(-k 'distributed_quantized') ;;
+            mx-all) selection=() ;;
+            *) exit 2 ;;
+          esac
+          uv run --locked pytest -vv --basetemp "$MX_OUTPUTS" tests/integration/test_modelexpress_bit_exact.py "${selection[@]}"
+      - name: Upload MX reports and logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.profile }}-reports
+          path: |
+            ${{ runner.temp }}/mx-${{ github.run_id }}-${{ github.run_attempt }}/**/run/*.json
+            ${{ runner.temp }}/mx-${{ github.run_id }}-${{ github.run_attempt }}/**/run/logs/**/*.log
+          retention-days: 7
+          if-no-files-found: ignore
