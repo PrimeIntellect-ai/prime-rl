@@ -6,7 +6,7 @@ from typing import Literal
 
 import uvloop
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.datastructures import State
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.common.cli_args import make_arg_parser, validate_parsed_serve_args
@@ -149,6 +149,120 @@ async def modelexpress_apply(request: Request):
     return {"status": "ok"}
 
 
+@admin_router.get("/modelexpress/integer_tables")
+async def modelexpress_integer_tables(request: Request):
+    """Digest of the integer tables the engines loaded at startup, which ModelExpress versions leave out."""
+    from prime_rl.inference.vllm.weight_pull import LocalEngine
+
+    return {"digest": await LocalEngine(engine_client(request)).integer_tables()}
+
+
+# Serving control of this server (``serving_control``), through which a DP group's first rank swaps every rank's
+# checkpoint without dropping requests.
+
+
+@admin_router.post("/admission/close")
+async def admission_close(request: Request):
+    """Hold new requests at this server until ``/admission/open``; returns the requests in flight."""
+    from prime_rl.inference.vllm.weight_pull import LocalEngine
+
+    return {"in_flight": await LocalEngine(engine_client(request)).hold()}
+
+
+@admin_router.post("/admission/open")
+async def admission_open(request: Request):
+    from prime_rl.inference.vllm.weight_pull import LocalEngine
+
+    await LocalEngine(engine_client(request)).release()
+    return {"status": "ok"}
+
+
+@admin_router.get("/in_flight")
+async def in_flight(request: Request):
+    from prime_rl.inference.vllm.weight_pull import LocalEngine
+
+    return {"in_flight": await LocalEngine(engine_client(request)).in_flight()}
+
+
+@admin_router.post("/abort_in_flight")
+async def abort_in_flight(request: Request):
+    """Abort every request in flight; each finishes with the ``abort`` finish reason."""
+    from prime_rl.inference.vllm.weight_pull import LocalEngine
+
+    return {"aborted": await LocalEngine(engine_client(request)).abort()}
+
+
+@admin_router.post("/reset_prefix_cache_paused")
+async def reset_prefix_cache_paused(request: Request):
+    """Drop the prefix cache of every engine; 409 if a request still holds blocks (pause and drain first)."""
+    from prime_rl.inference.vllm.weight_pull import LocalEngine
+
+    try:
+        await LocalEngine(engine_client(request)).reset_prefix_cache()
+    except RuntimeError as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
+    return {"status": "ok"}
+
+
+@admin_router.post("/set_health")
+async def set_health(request: Request):
+    """Report this server healthy, or unhealthy with a reason (``/health`` answers 503)."""
+    from prime_rl.inference.vllm.weight_pull import LocalEngine
+
+    data = await request.json()
+    await LocalEngine(engine_client(request)).set_health(bool(data["healthy"]), data.get("reason"))
+    return {"status": "ok"}
+
+
+@admin_router.post("/swap-checkpoint")
+async def swap_checkpoint(request: Request):
+    """Serve another checkpoint version from ModelExpress on every rank of this server's DP group, without a restart
+    (``prime_rl.inference.vllm.checkpoint_swap``). Body: ``{step | version_uid, mode, drain_timeout_s, draft_dir}``."""
+    from pydantic import ValidationError
+
+    from prime_rl.inference.vllm.checkpoint_swap import SwapFailed, SwapRequest
+
+    state = request.app.state
+    if state.checkpoint_swapper is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, state.checkpoint_swap_unavailable)
+    try:
+        swap = SwapRequest.model_validate(await request.json())
+    except ValidationError as error:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error)) from error
+    if swap.draft_dir is not None:
+        # Every rank of the group serves the same draft as this one: check the new draft here, before any pause
+        speculative_config = engine_client(request).vllm_config.speculative_config
+        if speculative_config is None:
+            raise HTTPException(status.HTTP_409_CONFLICT, "This server runs without speculative decoding")
+        try:
+            draft = local_draft_dir(swap.draft_dir)
+            check_draft_swap(local_draft_dir(speculative_config.model, speculative_config.revision), draft)
+        except (OSError, ValueError) as error:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error)) from error
+        swap.draft_dir = str(draft)
+    try:
+        return await state.checkpoint_swapper.swap(swap)
+    except SwapFailed as failure:
+        return JSONResponse(failure.body, status_code=failure.status)
+
+
+@admin_router.get("/swap-checkpoint")
+async def swap_checkpoint_status(request: Request):
+    """Whether this server swaps checkpoints, for which ranks, and what they serve."""
+    state = request.app.state
+    swapper = state.checkpoint_swapper
+    if swapper is None:
+        return {"available": False, "reason": state.checkpoint_swap_unavailable}
+    version, uid = await swapper.engines.served()
+    return {
+        "available": True,
+        "group": state.checkpoint_swap_group,
+        "version": version,
+        "uid": uid,
+        **swapper.status(),
+    }
+
+
 @admin_router.post("/update_draft_weights")
 async def update_draft_weights(request: Request):
     """Load a draft checkpoint from disk on every engine. Cached draft KV stays; the target verifies every token."""
@@ -197,6 +311,19 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
     await engine_client(raw_request).update_weight_version(weight_version)
     return {"status": "ok"}
+
+
+@router.get("/health", response_class=Response)
+async def health(raw_request: Request) -> Response:
+    """vLLM's health check, unless this server was marked unhealthy (``/set_health``): a DP group left paused with
+    partly installed weights drops out of its router's rotation."""
+    from vllm.entrypoints.serve.instrumentator.health import health as vllm_health
+
+    from prime_rl.inference.vllm.serving_control import health as health_override
+
+    if health_override.unhealthy_reason is not None:
+        return JSONResponse({"status": "unhealthy", "reason": health_override.unhealthy_reason}, status_code=503)
+    return await vllm_health(raw_request)
 
 
 @router.get("/liveness")
@@ -266,12 +393,49 @@ async def custom_init_app_state(
         state.weight_pull_task = asyncio.create_task(state.weight_puller.run())
         state.weight_pull_task.add_done_callback(_weight_pull_done)
 
+    setup_checkpoint_swap(engine_client, state, args)
+
     # Under RL load the API server holds millions of live objects, and CPython's
     # default thresholds rerun full collections over them every few seconds.
     # Move everything alive after startup out of GC and collect less often.
     gc.collect()
     gc.freeze()
     gc.set_threshold(*API_SERVER_GC_THRESHOLDS)
+
+
+def setup_checkpoint_swap(engine_client: EngineClient, state: State, args: Namespace) -> None:
+    """Hold requests at an admission gate, so a checkpoint swap can stop new work without rejecting it, and on the
+    server that swaps for its DP group, the swapper: the group's first rank (``weight_broadcast.group``) or a server
+    whose engines are all its own."""
+    state.checkpoint_swapper = None
+    state.checkpoint_swap_group = args.weight_broadcast_group
+    if args.weight_swap is None:
+        state.checkpoint_swap_unavailable = "Swapping checkpoints needs weight_broadcast.type = 'modelexpress'"
+        return
+    from prime_rl.inference.vllm import serving_control
+
+    serving_control.install_admission(engine_client)
+    parallel = engine_client.vllm_config.parallel_config
+    group = args.weight_broadcast_group
+    if args.weight_pull is not None:
+        # Its generator clients follow the trainer's versions; a swapper would replace them
+        state.checkpoint_swap_unavailable = "This server pulls every version its trainer publishes"
+    elif args.api_server_count > 1:
+        state.checkpoint_swap_unavailable = (
+            "Swapping checkpoints counts and holds requests per API server: it needs api_server_count = 1"
+        )
+    elif group is None and parallel.data_parallel_external_lb and parallel.data_parallel_size > 1:
+        state.checkpoint_swap_unavailable = (
+            f"This server is DP rank {parallel.data_parallel_rank} of an external-LB DP group: send swaps to the "
+            "group's first rank, which needs the group's admin URLs (weight_broadcast.group)"
+        )
+    else:
+        from prime_rl.inference.vllm.checkpoint_swap import CheckpointSwapper, SwapConfig
+        from prime_rl.inference.vllm.weight_pull import EngineGroup, LocalEngine
+
+        engines = LocalEngine(engine_client) if group is None else EngineGroup(group, args.admin_token_var)
+        state.checkpoint_swapper = CheckpointSwapper(engines, SwapConfig(**args.weight_swap))
+        state.checkpoint_swap_prepare = asyncio.create_task(state.checkpoint_swapper.prepare())
 
 
 def _weight_pull_done(task: asyncio.Task) -> None:
@@ -314,6 +478,8 @@ def custom_build_app(args: Namespace, supported_tasks: tuple, model_config=None)
     """
     app = _original_build_app(args, supported_tasks, model_config)
     drop_unused_routes(app)
+    # prime-rl's /health wraps vLLM's
+    app.router.routes[:] = [route for route in app.router.routes if getattr(route, "path", None) != "/health"]
     app.include_router(router)
     app.include_router(admin_router)
     return app
@@ -376,6 +542,19 @@ def server(config: InferenceConfig):
         else None
     )
     args.weight_broadcast_group = broadcast.group
+    # Any ModelExpress server can swap the checkpoint it serves (``/swap-checkpoint``)
+    args.weight_swap = (
+        {
+            "host": broadcast.host,
+            "port": broadcast.port,
+            "model_name": broadcast.model_name or config.vllm.model,
+            "staging_buffer_bytes": broadcast.staging_buffer_bytes,
+            "staging_buffers_count": broadcast.staging_buffers_count,
+            "timeout": broadcast.timeout,
+        }
+        if broadcast.type == "modelexpress"
+        else None
+    )
 
     if args.headless or args.api_server_count < 1:
         run_headless(args)
