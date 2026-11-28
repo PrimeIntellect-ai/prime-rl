@@ -67,6 +67,7 @@ PUBLISHED_DTYPES = (torch.bfloat16, torch.float16, torch.float32)
 
 READ_CHUNK_BYTES = 64 << 20
 DIRECT_IO_ALIGNMENT = 4096
+PAGE_BYTES = 4096
 PR_SET_PDEATHSIG = 1
 READY_POLL_S = 0.1
 RELEASE_RETRY_S = 1.0
@@ -173,8 +174,12 @@ class MemoryFloor:
 
 
 class HostTensors:
-    """One rank's share of a checkpoint in host memory: a page-locked buffer per file region it reads, and every tensor
-    a view into it. The buffers stay put for the publisher's lifetime, since ModelExpress serves them in place."""
+    """One rank's share of a checkpoint in host memory: a page-locked buffer per file it reads from, and every tensor
+    a view into it. The buffers stay put for the publisher's lifetime, since ModelExpress serves them in place.
+
+    Each tensor starts on a page of its own. ModelExpress registers every tensor with NIXL separately, and UCX's
+    registration cache merges registrations whose pages overlap into one and registers it anew: tensors packed back
+    to back would make every registration re-register all the ones before it."""
 
     def __init__(self, entries: dict[str, TensorEntry], names: list[str], pin: bool, floor: MemoryFloor):
         self.floor = floor
@@ -185,20 +190,24 @@ class HostTensors:
         for name in names:
             by_file[entries[name].file].append(name)
         for file_names in by_file.values():
-            low = min(entries[name].begin for name in file_names)
-            high = max(entries[name].end for name in file_names)
-            buffer = self._allocate(high - low, pin)
+            file_names.sort(key=lambda name: entries[name].begin)
+            offsets, size = {}, 0
+            for name in file_names:
+                offsets[name] = size
+                size += -(-entries[name].nbytes // PAGE_BYTES) * PAGE_BYTES
+            buffer = self._allocate(size, pin)
             for name in file_names:
                 entry = entries[name]
-                raw = buffer[entry.begin - low : entry.end - low]
-                if (entry.begin - low) % entry.dtype.itemsize:
-                    raw = self._allocate(entry.nbytes, pin)
+                raw = buffer[offsets[name] : offsets[name] + entry.nbytes]
                 self._bytes[name] = raw
                 self.tensors[name] = raw.view(entry.dtype).view(entry.shape)
 
     def _allocate(self, size: int, pin: bool) -> torch.Tensor:
+        """A page-aligned buffer of ``size`` bytes, page-locked if ``pin``."""
         self.floor.check(needed=size)
-        buffer = torch.empty(max(size, 1), dtype=torch.uint8)
+        storage = torch.empty(max(size, 1) + PAGE_BYTES, dtype=torch.uint8)
+        start = -storage.data_ptr() % PAGE_BYTES
+        buffer = storage[start : start + max(size, 1)]
         if pin:
             # Pin exactly these pages. torch's pinned allocator rounds every allocation up to a power of two.
             error = torch.cuda.cudart().cudaHostRegister(buffer.data_ptr(), buffer.numel(), 0)
