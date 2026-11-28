@@ -288,12 +288,12 @@ def _copy_cpu_state_split_on_sharded_dim_to_gpu(
     return {**optimizer_state_dict, "state": state}
 
 
-# Param group entries that are training state: dion's Muon keeps its step count there. A load takes these from the
+# Param group entries that are training state: Muon keeps its step count there. A load takes these from the
 # checkpoint and every other entry (the hyperparameters, the scheduled lr) from this run's optimizer.
 STATE_PARAM_GROUP_KEYS = ("step",)
 # Param group entries that follow this run's offloading and layout, which the warning skips: AdamW's kernel choice
-# (optimizer offload keeps the step counters on the CPU, which the fused kernel rejects) and the mesh that dion's Muon
-# names.
+# (optimizer offload keeps the step counters on the CPU, which the fused kernel rejects) and the mesh that Muon's
+# expert group names.
 RUN_PARAM_GROUP_KEYS = ("fused", "foreach", "capturable", "differentiable", "distributed_mesh_name")
 
 
@@ -353,7 +353,7 @@ def _check_param_group_count(saved_keys: set[str], optimizers: list[OptimizerLik
 
 
 def _check_param_group_algorithms(loaded_groups: list[dict], live_groups: list[dict]) -> None:
-    """Raise unless each loaded param group ran its live group's algorithm (dion's Muon names one per group), whose
+    """Raise unless each loaded param group ran its live group's algorithm (Muon names one per group), whose
     optimizer state it holds."""
     for index, (loaded, live) in enumerate(zip(loaded_groups, live_groups, strict=True)):
         if loaded.get("algorithm") != live.get("algorithm"):
@@ -511,7 +511,7 @@ class AppState(Stateful):
             # The template only aliases a packed parameter's state where the packing
             # dimension is unsharded, so the loaded logical entries are packed back in.
             write_back_loaded_packed_optimizer_state(self.model, checkpoint_optimizers, optimizer_state_dict)
-            # The in-place load reaches tensors only: restore the param groups' state too (dion's Muon keeps its step
+            # The in-place load reaches tensors only: restore the param groups' state too (Muon keeps its step
             # count there), in the live groups, since full offload's checkpoint optimizer holds copies.
             live_groups = [group for optimizer in self.optimizers for group in optimizer.param_groups]
             loaded_groups = optimizer_state_dict["param_groups"]
