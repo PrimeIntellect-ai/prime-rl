@@ -184,6 +184,28 @@ class FallbackRewardConfig(BaseConfig):
     """EMA decay for the binary-active group fraction used when ``anneal_power > 0``."""
 
 
+class ConditionalPrefixConfig(BaseConfig):
+    """Optionally prepend a per-trace system message from ``trace.info`` before
+    compiling training samples, rescoring sampling logprobs under the prefixed
+    sequence so importance ratios track policy staleness rather than the prefix
+    shift."""
+
+    info_key: str
+    """Key in ``trace.info`` holding an optional prefix string. Missing, ``None``,
+    or blank values leave the trace unchanged."""
+
+    positive_only: bool = True
+    """When True, apply the prefix only to traces with positive scalar advantage."""
+
+    max_positive_fraction: float | None = Field(None, ge=0.0, le=1.0, allow_inf_nan=False)
+    """Optional cap on the fraction of positive-advantage traces in a group that
+    may be prefixed. Excess candidates stay un-prefixed."""
+
+    max_total_tokens: int | None = Field(None, gt=0)
+    """Optional upper bound on ``len(prefix_ids) + len(branch.token_ids)``. Traces
+    with any trainable branch exceeding this limit stay un-prefixed."""
+
+
 class EchoRoleConfig(BaseConfig):
     """Echo CE supervision for one message role."""
 
@@ -279,6 +301,9 @@ class GRPOAlgoConfig(BaseAlgoConfig):
 
     fallback_reward: Annotated[FallbackRewardConfig | None, Live()] = None
     """Optional per-group fallback reward from ``trace.metrics`` when no rollout in the group reaches ``fallback_reward.threshold`` on the primary reward. None disables fallback."""
+
+    conditional_prefix: Annotated[ConditionalPrefixConfig | None, Live()] = None
+    """Optional per-trace leading system-message prefix applied in ``score_group`` after advantages are assigned. None disables it."""
 
     zero_on_timeout: bool = False
     """Keep timed-out train rollouts in the batch with reward ``0.0`` instead of dropping them as timeout errors."""

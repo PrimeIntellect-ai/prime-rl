@@ -4,6 +4,7 @@ import pytest
 import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import (
+    ConditionalPrefixConfig,
     CosineLengthPenaltyScheduleConfig,
     FallbackRewardConfig,
     GRPOAlgoConfig,
@@ -691,3 +692,140 @@ def test_grpo_zero_on_timeout():
     asyncio.run(algo.score_group(g))
     assert [ep.traces[0].reward for ep in g] == pytest.approx([0.4, 0.0])
     assert [_scalar(ep) for ep in g] == pytest.approx([0.2, -0.2])
+
+
+class _FakePrefixRenderer:
+    def __init__(self, prefix_ids: list[int] | None = None):
+        self.prefix_ids = [900, 901, 902] if prefix_ids is None else prefix_ids
+        self.calls: list[list[dict]] = []
+
+    def render_ids(self, messages: list[dict], *, add_generation_prompt: bool = False) -> list[int]:
+        assert not add_generation_prompt
+        self.calls.append(messages)
+        return list(self.prefix_ids)
+
+
+class _FakeScoringClients:
+    def __init__(self, *, fail: bool = False):
+        self.fail = fail
+        self.scored: list[list[int]] = []
+
+    async def score(self, token_ids: list[int]) -> list[float]:
+        self.scored.append(list(token_ids))
+        if self.fail:
+            raise RuntimeError("boom")
+        return [-0.01 * (i + 1) for i in range(len(token_ids))]
+
+
+def test_grpo_conditional_prefix_positive_only_and_alignment():
+    """Only positive-advantage traces with a non-empty info_key are prefixed and rescored,
+    keeping trace_to_samples, prepare_sample, and staleness alignment intact."""
+    import numpy as np
+
+    from prime_rl.orchestrator.batch import prepare_sample
+    from prime_rl.orchestrator.train_sink import mask_stale_tokens, token_staleness
+
+    cfg = GRPOAlgoConfig(conditional_prefix=ConditionalPrefixConfig(info_key="ctx_prefix", positive_only=True))
+    clients = _FakeScoringClients()
+    algo = GRPOAlgorithm(cfg, clients=clients)
+    algo.renderer = _FakePrefixRenderer([900, 901, 902])
+
+    # ep0: A < 0 with prefix -> must stay un-prefixed and not scored
+    # ep1: A > 0 with prefix -> must be prefixed and rescored
+    # ep2: A > 0 without prefix -> must stay un-prefixed and not scored
+    ep0 = _build_episode(0.0, sampled_lengths=[2, 2], obs_lengths=[1])
+    ep0.traces[0].info["ctx_prefix"] = "prefix for negative"
+    ep1 = _build_episode(1.0, sampled_lengths=[2, 2], obs_lengths=[1])
+    ep1.traces[0].info["ctx_prefix"] = "prefix for positive"
+    ep2 = _build_episode(1.0, sampled_lengths=[2, 2], obs_lengths=[1])
+
+    orig_len = len(ep1.traces[0].branches[0].token_ids)
+    orig_ids = ep1.traces[0].branches[0].token_ids.tolist()
+
+    asyncio.run(algo.score_group([ep0, ep1, ep2]))
+
+    assert len(clients.scored) == 1
+    assert clients.scored[0] == [900, 901, 902, *orig_ids]
+
+    # ep0 and ep2 unchanged
+    assert len(ep0.traces[0].branches[0].token_ids) == orig_len
+    assert len(ep2.traces[0].branches[0].token_ids) == orig_len
+    assert ep0.traces[0].metrics["conditional_prefix/applied"] == 0.0
+    assert ep0.traces[0].metrics["conditional_prefix/has_prefix"] == 1.0
+    assert "conditional_prefix/adv_bare" in ep0.traces[0].metrics
+    assert ep2.traces[0].metrics["conditional_prefix/applied"] == 0.0
+    assert ep2.traces[0].metrics["conditional_prefix/has_prefix"] == 0.0
+
+    # ep1 prefixed + rescored + aligned through trace_to_samples, prepare_sample, and staleness
+    b1 = ep1.traces[0].branches[0]
+    assert b1.token_ids.tolist() == [900, 901, 902, *orig_ids]
+    assert b1.sampled_mask[:3].tolist() == [False, False, False]
+    assert int(b1.sampled_mask.sum()) == 4
+    assert ep1.traces[0].metrics["conditional_prefix/applied"] == 1.0
+    assert "conditional_prefix/adv_prefixed" in ep1.traces[0].metrics
+
+    # Rescored logprobs match the fake scorer positions (root has 3 prefix + 1 prompt = 4 tokens,
+    # turn 0 sampled at positions 4,5; obs at 6; turn 1 sampled at positions 7,8).
+    expected_turn0_lp = [-0.05, -0.06]
+    expected_turn1_lp = [-0.08, -0.09]
+    assert ep1.traces[0].nodes[1].logprobs.tolist() == pytest.approx(expected_turn0_lp)
+    assert ep1.traces[0].nodes[3].logprobs.tolist() == pytest.approx(expected_turn1_lp)
+
+    samples = trace_to_samples(ep1.traces[0], env_name="test")
+    assert len(samples) == 1
+    sample = samples[0]
+    sample.temperatures = np.ones(len(sample.token_ids), dtype=np.float32)
+    staleness = token_staleness(b1, fallback=1, trained_version=3)
+    assert len(staleness) == len(sample.token_ids)
+    assert (staleness[:4] == -1).all()
+    assert (staleness[4:6] == 2).all()
+    sample.staleness = staleness
+    mb = prepare_sample(sample, seq_len=64)
+    assert len(mb.input_ids) == orig_len + 3
+    masked = mask_stale_tokens(sample, b1, fallback=1, min_version=2)
+    assert masked == 4
+
+
+def test_grpo_conditional_prefix_max_fraction_and_guards():
+    """max_positive_fraction caps prefixed positives; max_total_tokens and scorer errors fail open."""
+    # Cap: 2 positive candidates with max_positive_fraction=0.5 -> only 1 (highest advantage) prefixed
+    fb = FallbackRewardConfig(metric="criteria_score", weight=1.0)
+    cfg = GRPOAlgoConfig(
+        fallback_reward=fb,
+        conditional_prefix=ConditionalPrefixConfig(info_key="ctx", positive_only=True, max_positive_fraction=0.5),
+    )
+    clients = _FakeScoringClients()
+    algo = GRPOAlgorithm(cfg, clients=clients)
+    algo.renderer = _FakePrefixRenderer([900, 901])
+
+    ep0 = _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 0.0})
+    ep1 = _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 0.6})
+    ep2 = _build_episode(0.0, sampled_lengths=[2], metrics={"criteria_score": 0.9})
+    for ep in (ep0, ep1, ep2):
+        ep.traces[0].info["ctx"] = "p"
+    asyncio.run(algo.score_group([ep0, ep1, ep2]))
+    assert [ep.traces[0].metrics["conditional_prefix/applied"] for ep in (ep0, ep1, ep2)] == [0.0, 0.0, 1.0]
+
+    # Length cap guard -> skipped gracefully
+    cfg_len = GRPOAlgoConfig(
+        conditional_prefix=ConditionalPrefixConfig(info_key="ctx", positive_only=True, max_total_tokens=4)
+    )
+    algo_len = GRPOAlgorithm(cfg_len, clients=_FakeScoringClients())
+    algo_len.renderer = _FakePrefixRenderer([900, 901, 902])
+    g_len = [_build_episode(0.0, sampled_lengths=[2]), _build_episode(1.0, sampled_lengths=[2])]
+    g_len[1].traces[0].info["ctx"] = "too long"
+    asyncio.run(algo_len.score_group(g_len))
+    assert g_len[1].traces[0].metrics["conditional_prefix/applied"] == 0.0
+    assert g_len[1].traces[0].metrics["conditional_prefix/skipped_length"] == 1.0
+
+    # Scorer error guard -> fails open to bare trace
+    cfg_err = GRPOAlgoConfig(conditional_prefix=ConditionalPrefixConfig(info_key="ctx", positive_only=True))
+    algo_err = GRPOAlgorithm(cfg_err, clients=_FakeScoringClients(fail=True))
+    algo_err.renderer = _FakePrefixRenderer([900, 901])
+    g_err = [_build_episode(0.0, sampled_lengths=[2]), _build_episode(1.0, sampled_lengths=[2])]
+    g_err[1].traces[0].info["ctx"] = "will fail score"
+    orig = g_err[1].traces[0].branches[0].token_ids.tolist()
+    asyncio.run(algo_err.score_group(g_err))
+    assert g_err[1].traces[0].metrics["conditional_prefix/applied"] == 0.0
+    assert g_err[1].traces[0].metrics["conditional_prefix/skipped_error"] == 1.0
+    assert g_err[1].traces[0].branches[0].token_ids.tolist() == orig
