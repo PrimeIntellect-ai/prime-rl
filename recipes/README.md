@@ -38,6 +38,7 @@ checkpointing and activation offloading.
 | [DeepSeek-V4-Flash](deepseek-v4-flash-0731/rl.toml) | 4 | | | | not tested in this layout; FP8 trainer and inference, also on B300 (MXFP8) |
 | [Nemotron 3.5 Super](nemotron-3.5-super/rl.toml) | 4 | | | | not tested in this layout |
 | [Inkling 2 Small](inkling-2-small/rl.toml) | 6 | 41.7k tok/s | 870 tok/s | 107.6 GiB allocated | fake 16k samples (no context parallelism for Inkling 2), FP8 routed experts, full offload, Sign-SGD; RL not tested in this layout |
+| [Inkling 2 Mini](inkling-2-mini/rl.toml) | 1 (4 GPUs) | | | | not fitted on fake data (`fake.toml` needs a multi-node layout); one node with 4 trainer GPUs and 4 single-GPU replicas at 8k, math RL ran in this layout |
 
 "Reserved" includes PyTorch's allocator cache, so real use is lower; "allocated" is the peak of
 live tensors (`perf/peak_allocated_memory`). Both include memory outside the allocator (NCCL, CUDA
@@ -62,8 +63,6 @@ These configs run without overlays. Each header or README gives its launch comma
 - [`glm-5.3-flash/swe.toml`](glm-5.3-flash/swe.toml): SWE RL at 128k on 2 trainer nodes + 4 replicas.
 - [`inkling-2-small/`](inkling-2-small): `math-rl.toml` and `swe-rl.toml`, 6 trainer nodes + 2
   replicas at 8k and 16k.
-- [`inkling-2-mini/math-rl.toml`](inkling-2-mini/math-rl.toml): math RL on one node, 4 trainer GPUs + 4
-  single-GPU replicas at 8k.
 - [`deepseek-v4-flash-0731/`](deepseek-v4-flash-0731): `sft.toml`, the vLLM serving pre-flight
   `inference.toml`, P/D inference `inference_pd.toml`, and the DSpark draft overlay `dspark.toml`.
 - [`minimax-m2.5/swe.toml`](minimax-m2.5/swe.toml): `MiniMax-M2.5` SWE RL.

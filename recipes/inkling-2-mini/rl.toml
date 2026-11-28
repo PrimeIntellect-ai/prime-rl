@@ -1,0 +1,61 @@
+# Inkling 2 Mini (MoE; runs layers 6-17 three times, so a token takes 48 layer visits) RL at 8k
+# context. Model settings only: compose it with a compute overlay from `gpu/` and a data config from
+# `recipes/data/`:
+#
+#   uv run rl @ recipes/inkling-2-mini/rl.toml @ recipes/inkling-2-mini/gpu/h200.toml @ recipes/data/math.toml --orchestrator.train.sampling.max-completion-tokens 4096
+#
+# The data overlays target 256k models: give them a completion budget that fits the window. RL ran
+# on math only (i3-math, batch 64, group 8, 4096 completion tokens); tool use is not tested.
+
+# The trainer has no context parallelism for Inkling 2, so each sample must fit on one GPU.
+seq_len = 8192
+
+[slurm]
+
+[model]
+# The release converted with tools/convert_inkling2_to_bf16.py (about 53 GB).
+name = "<path to the bf16 export>"
+
+[weight_broadcast]
+type = "nccl"
+
+[trainer]
+# The trainer reuses the experts vLLM routed every token to, one choice per layer visit.
+enable_router_replay = true
+
+[trainer.model]
+attn = "flash_attention_2"
+# Compiled flex attention hits the saved-tensor tracker assertion under activation offloading.
+ac_offloading = "None"
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+weight_decay = 0.1
+
+[trainer.data]
+# The trainer compiles flex attention for static shapes: pad every micro batch to seq_len.
+pad_to_seq_len = true
+
+[orchestrator.renderer]
+# The template defaults to high effort.
+name = "inkling-2"
+reasoning_effort = "low"
+# Envs that pass tools need a renderer-side tool parser.
+tool_parser = "inkling2"
+
+[inference]
+use_deep_gemm = false
+enable_fp32_lm_head = true
+
+[inference.vllm]
+dtype = "bfloat16"
+max_model_len = 16384
+enable_prefix_caching = true
+# Every scheduled token takes a short-conv state page in each of the 48 layer visits, padded to the
+# attention page: a small block size keeps that transient small.
+block_size = 16
+tool_call_parser = "inkling2"
+reasoning_parser = "inkling2"
+# The Inkling 2 framing tokens are special tokens; parsers need them in the text.
+override_generation_config = { skip_special_tokens = false }

@@ -1,0 +1,29 @@
+# H200 overlay for rl.toml: one node, 4 trainer GPUs and 4 single-GPU vLLM replicas, bf16 experts on
+# both sides. Math RL ran in this layout (batch 64, group 8, 4096 completion tokens).
+#
+#   uv run rl @ recipes/inkling-2-mini/rl.toml @ recipes/inkling-2-mini/gpu/h200.toml @ recipes/data/math.toml --orchestrator.train.sampling.max-completion-tokens 4096
+
+[deployment]
+type = "single_node"
+num_train_gpus = 4
+num_infer_gpus = 4
+
+[trainer]
+dist_timeout_seconds = 1800
+
+[trainer.model]
+ep = 4
+
+[trainer.model.ac]
+mode = "full"
+freq = 1
+
+[inference.vllm]
+data_parallel_size = 4
+gpu_memory_utilization = 0.85
+max_num_seqs = 64
+# A small prefill chunk keeps the short-conv state transient small (see rl.toml).
+max_num_batched_tokens = 4096
+
+[orchestrator.concurrency]
+initial_inflight = 128
