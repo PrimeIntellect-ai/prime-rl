@@ -213,7 +213,9 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
 
         hidden_states = inputs_embeds.repeat(1, 1, self.config.hc_count)
         for layer_index, decoder_layer in enumerate(self.layers):
-            layer_routed_experts = routed_experts[:, :, layer_index] if routed_experts is not None else None
+            layer_routed_experts = (
+                routed_experts[:, :, layer_index].contiguous() if routed_experts is not None else None
+            )
             hidden_states = decoder_layer(
                 hidden_states=hidden_states,
                 ngram_embedding=self.ngram.embed(ngram_ids, layer_index),
