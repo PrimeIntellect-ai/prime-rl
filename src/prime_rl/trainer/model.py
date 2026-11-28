@@ -439,7 +439,7 @@ def get_model(config: ModelConfig, dtype: torch.dtype = torch.bfloat16) -> nn.Mo
         logger.debug(f"Loaded model {config.name} in {format_time(time.perf_counter() - load_model_start_time)}")
 
     assert model.lm_head.weight.dtype == dtype, (
-        f"LM head dtype wasnt loaded correctly {model.lm_head.weight.dtype} != {dtype}"
+        f"LM head dtype wasn't loaded correctly {model.lm_head.weight.dtype} != {dtype}"
     )
     return model
 
