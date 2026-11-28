@@ -218,10 +218,14 @@ class WeightBroadcastConfig(BaseConfig):
     ``weight_broadcast.pull``: on the server of a single-node deployment, and on the first rank of each DP group of a
     multi-node one."""
 
-    pull_group: list[str] | None = None
+    group: list[str] | None = None
     """Admin URL of every rank in this server's DP group, its own included. The ranks of an expert-parallel DP group
-    share every forward pass, so they switch versions together: the group's first rank pulls for all of them,
-    through their admin routes, and groups switch independently. Unset, the server moves only its own engines."""
+    share every forward pass, so they switch versions together, moved by the group's first rank through their admin
+    routes: with ``pull``, that rank pulls for all of them, and groups switch independently. The multi-node launcher
+    gives it to the first rank of each DP group. Unset, the server moves only its own engines."""
+
+    model_name: str | None = None
+    """The model name the trainer publishes versions under in ModelExpress. Defaults to ``vllm.model``."""
 
     host: str = "localhost"
     """ModelExpress server host the puller reads versions from."""
@@ -245,8 +249,6 @@ class WeightBroadcastConfig(BaseConfig):
             raise ValueError(
                 "Engines pull their weights only from ModelExpress (weight_broadcast.type = 'modelexpress')"
             )
-        if self.pull_group is not None and not self.pull:
-            raise ValueError("weight_broadcast.pull_group needs weight_broadcast.pull")
         return self
 
 

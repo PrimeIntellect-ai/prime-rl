@@ -1950,7 +1950,7 @@ def modelexpress_pull_config(**overrides) -> dict:
 def test_modelexpress_pull_reaches_the_engines_and_the_receiver():
     config = RLConfig.model_validate(modelexpress_pull_config())
     broadcast = config.inference.weight_broadcast
-    assert broadcast.pull and broadcast.pull_group is None
+    assert broadcast.pull and broadcast.group is None
     assert (broadcast.host, broadcast.port, broadcast.timeout) == ("mx-host", 9001, 77)
     assert (broadcast.staging_buffer_bytes, broadcast.staging_buffers_count) == (1024, 2)
     assert config.orchestrator.weight_broadcast.pull and config.trainer.weight_broadcast.pull
@@ -1973,20 +1973,18 @@ def test_a_group_leaders_pull_args_parse():
             "--weight-broadcast.pull",
             "--weight-broadcast.host",
             "mx-host",
-            "--weight-broadcast.pull-group",
+            "--weight-broadcast.group",
             "http://a:8100/v1",
             "http://a:8101/v1",
         ],
     )
     assert config.weight_broadcast.pull and config.weight_broadcast.host == "mx-host"
-    assert config.weight_broadcast.pull_group == ["http://a:8100/v1", "http://a:8101/v1"]
+    assert config.weight_broadcast.group == ["http://a:8100/v1", "http://a:8101/v1"]
 
 
 def test_engines_pull_only_from_modelexpress():
     with pytest.raises(ValidationError, match="only from ModelExpress"):
         InferenceConfig.model_validate({"weight_broadcast": {"type": "filesystem", "pull": True}})
-    with pytest.raises(ValidationError, match="needs weight_broadcast.pull"):
-        InferenceConfig.model_validate({"weight_broadcast": {"type": "modelexpress", "pull_group": ["http://a/v1"]}})
 
 
 @pytest.mark.parametrize(

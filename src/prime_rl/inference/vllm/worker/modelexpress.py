@@ -84,6 +84,7 @@ class ModelExpressWeightUpdateWorker(WeightRPCMixin, Worker):
         session_id,
         staging_buffer_bytes=None,
         staging_buffers_count=1,
+        model_name=None,
     ):
         # The id names this worker's MX registration, version leases and NIXL agent, so it must be unique per worker.
         # vLLM's ranks and device indices are not: they restart in every data-parallel engine, every external-LB server
@@ -118,7 +119,8 @@ class ModelExpressWeightUpdateWorker(WeightRPCMixin, Worker):
                     vllm_config=self.vllm_config,
                     convert_native_to_hf=(lambda tensors: apply_prime_to_hf(tensors, chain)) if chain else None,
                 ),
-                model_name=self.model_runner.model_config.model,
+                # The name the trainer publishes versions under; the served model's by default
+                model_name=model_name or self.model_runner.model_config.model,
                 server_url=f"{host}:{port}",
                 source_order=(WeightSource.TRAINER,),
                 worker_id=worker_id,
@@ -192,13 +194,20 @@ class ModelExpressWeightUpdateWorker(WeightRPCMixin, Worker):
         if staged is None or staged.version_uid != version_uid or not staged.done.is_set() or staged.handle is None:
             raise RuntimeError(f"ModelExpress version {version_uid} is not staged on this worker")
         self._mx_staged = None
-        # Until the install completes, the weights may be partly written: the next stage must run paused
+        # Until the install completes, the weights may be partly written: the next stage must run paused, and the
+        # worker serves no version
         self._mx_mesh = None
+        self._mx_served = None
         try:
             self._generator.apply_weight(staged.handle)
         finally:
             staged.handle.release()
         self._mx_mesh = mesh
+        self._mx_served = version_uid
+
+    def modelexpress_served(self) -> str | None:
+        """The ModelExpress version this worker installed last, None before the first or after a failed install."""
+        return getattr(self, "_mx_served", None)
 
     @torch.no_grad()
     def update_weights_from_modelexpress(self, version_uid: str) -> None:
@@ -206,7 +215,9 @@ class ModelExpressWeightUpdateWorker(WeightRPCMixin, Worker):
             raise ValueError("modelexpress requires version_uid")
         version = WeightVersionRef(version_uid)
         staged = self._generator.stage_weight(version=version)
+        self._mx_served = None
         try:
             self._generator.apply_weight(staged)
         finally:
             staged.release()
+        self._mx_served = version_uid

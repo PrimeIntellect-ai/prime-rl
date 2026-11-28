@@ -224,7 +224,9 @@ def test_a_worker_stages_on_a_background_thread_and_installs_only_what_it_staged
     assert w.modelexpress_stage_status() == "staged"
     with pytest.raises(RuntimeError, match="not staged"):
         w.modelexpress_apply("uid-other", "mesh-a")
+    assert w.modelexpress_served() is None
     w.modelexpress_apply("uid-1", "mesh-a")
+    assert w.modelexpress_served() == "uid-1"
     assert generator.applied == ["uid-1"] and generator.released == ["uid-1"]
     assert w.modelexpress_stage_status() == "idle"
     assert w.modelexpress_can_stage_live("mesh-a") and not w.modelexpress_can_stage_live("mesh-b")
@@ -261,5 +263,6 @@ def test_a_failed_install_makes_the_next_stage_run_paused(no_cuda):
     w._mx_staged.done.wait(timeout=10)
     with pytest.raises(RuntimeError, match="install failed"):
         w.modelexpress_apply("uid-2", "mesh-a")
+    assert w.modelexpress_served() is None
     assert generator.released == ["uid-1", "uid-2"]
     assert not w.modelexpress_can_stage_live("mesh-a")

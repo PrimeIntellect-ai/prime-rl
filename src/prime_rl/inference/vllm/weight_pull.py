@@ -85,6 +85,10 @@ class Engines(Protocol):
 
     async def resume(self) -> None: ...
 
+    async def served(self) -> tuple[int | None, str | None]:
+        """The step label and the ModelExpress version every engine serves; None where they disagree, or before an
+        install."""
+
 
 async def on_every_worker(client: EngineClient, method: str, *args) -> list:
     """Every worker's result of ``method``, from every engine of this server. vLLM's ``collective_rpc`` reaches every
@@ -134,9 +138,19 @@ class LocalEngine:
     async def resume(self) -> None:
         await self.client.resume_generation()
 
+    async def served(self) -> tuple[int | None, str | None]:
+        try:
+            label = await self.client.get_weight_version()
+        except RuntimeError:
+            # vLLM requires every engine to report the same label: they disagree during an install
+            label = None
+        uids = set(await on_every_worker(self.client, "modelexpress_served"))
+        version = int(label) if label is not None and label.isdigit() else None
+        return version, uids.pop() if len(uids) == 1 else None
+
 
 class EngineGroup:
-    """The ranks of one DP group (``weight_broadcast.pull_group``), this server's own included, reached through their
+    """The ranks of one DP group (``weight_broadcast.group``), this server's own included, reached through their
     admin routes."""
 
     def __init__(self, admin_urls: list[str], admin_token_var: str):
@@ -190,6 +204,15 @@ class EngineGroup:
     async def resume(self) -> None:
         await self._post_all("/resume")
 
+    async def served(self) -> tuple[int | None, str | None]:
+        async def get(client) -> tuple[int | None, str | None]:
+            response = await client.get("/weight_version", params={"uid": "true"}, timeout=60)
+            response.raise_for_status()
+            return response.json()["version"], response.json()["uid"]
+
+        served = set(await asyncio.gather(*map(get, self.clients)))
+        return served.pop() if len(served) == 1 else (None, None)
+
 
 class WeightPuller:
     def __init__(self, engines: Engines, config: PullConfig):
@@ -199,6 +222,8 @@ class WeightPuller:
         """The version the engines serve, None until they installed one."""
         self.switches = 0
         self.last_pause_s = 0.0
+        self.lock = asyncio.Lock()
+        """Held through every switch. Anything else that moves these engines (a checkpoint swap) takes it too."""
         self._control: ModelExpressControlClient | None = None
 
     async def run(self) -> None:
@@ -211,6 +236,7 @@ class WeightPuller:
             "session_id": uuid.uuid4().hex,
             "staging_buffer_bytes": self.config.staging_buffer_bytes,
             "staging_buffers_count": self.config.staging_buffers_count,
+            "model_name": self.config.model_name,
         }
         while True:
             # The ModelExpress server may come up after the engines
@@ -254,6 +280,10 @@ class WeightPuller:
 
     async def switch(self, target: WeightVersion) -> None:
         """Move the engines onto ``target``: stage it while they serve, then install it in a short pause."""
+        async with self.lock:
+            await self._switch(target)
+
+    async def _switch(self, target: WeightVersion) -> None:
         start = time.perf_counter()
         live = await self.engines.can_stage_live(mesh_key(target))
         if live:

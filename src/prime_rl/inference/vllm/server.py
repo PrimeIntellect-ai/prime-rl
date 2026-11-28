@@ -93,9 +93,15 @@ async def update_weights_from_modelexpress(request: Request):
 
 
 @router.get("/weight_version")
-async def weight_version(request: Request):
+async def weight_version(request: Request, uid: bool = False):
     """The policy version the engine serves: the label of the tokens it samples, None before the first update or
-    while its data-parallel engines disagree (an update between them)."""
+    while its data-parallel engines disagree (an update between them). With ``uid``, also the ModelExpress version
+    every worker installed last, which asks the workers."""
+    if uid:
+        from prime_rl.inference.vllm.weight_pull import LocalEngine
+
+        version, version_uid = await LocalEngine(engine_client(request)).served()
+        return {"version": version, "uid": version_uid}
     try:
         label = await engine_client(request).get_weight_version()
     except RuntimeError:
@@ -254,7 +260,7 @@ async def custom_init_app_state(
     if args.weight_pull is not None and API_SERVER_INDEX == 0:
         from prime_rl.inference.vllm.weight_pull import EngineGroup, LocalEngine, PullConfig, WeightPuller
 
-        group = args.weight_pull_group
+        group = args.weight_broadcast_group
         engines = LocalEngine(engine_client) if group is None else EngineGroup(group, args.admin_token_var)
         state.weight_puller = WeightPuller(engines, PullConfig(**args.weight_pull))
         state.weight_pull_task = asyncio.create_task(state.weight_puller.run())
@@ -361,7 +367,7 @@ def server(config: InferenceConfig):
         {
             "host": broadcast.host,
             "port": broadcast.port,
-            "model_name": config.vllm.model,
+            "model_name": broadcast.model_name or config.vllm.model,
             "staging_buffer_bytes": broadcast.staging_buffer_bytes,
             "staging_buffers_count": broadcast.staging_buffers_count,
             "timeout": broadcast.timeout,
@@ -369,7 +375,7 @@ def server(config: InferenceConfig):
         if broadcast.pull
         else None
     )
-    args.weight_pull_group = broadcast.pull_group
+    args.weight_broadcast_group = broadcast.group
 
     if args.headless or args.api_server_count < 1:
         run_headless(args)
