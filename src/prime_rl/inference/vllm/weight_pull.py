@@ -47,6 +47,7 @@ class PullConfig:
     staging_buffer_bytes: int | None
     staging_buffers_count: int
     timeout: int
+    staging_host_bytes: int | None = None
 
     @property
     def server_url(self) -> str:
@@ -236,6 +237,7 @@ class WeightPuller:
             "session_id": uuid.uuid4().hex,
             "staging_buffer_bytes": self.config.staging_buffer_bytes,
             "staging_buffers_count": self.config.staging_buffers_count,
+            "staging_host_bytes": self.config.staging_host_bytes,
             "model_name": self.config.model_name,
         }
         while True:

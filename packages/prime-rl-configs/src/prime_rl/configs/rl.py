@@ -509,6 +509,7 @@ class RLConfig(BaseConfig):
                     port=broadcast.port,
                     staging_buffer_bytes=broadcast.staging_buffer_bytes,
                     staging_buffers_count=broadcast.staging_buffers_count,
+                    staging_host_bytes=broadcast.staging_host_bytes,
                     timeout=broadcast.timeout,
                 )
         return self

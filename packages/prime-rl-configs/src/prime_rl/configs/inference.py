@@ -240,6 +240,12 @@ class WeightBroadcastConfig(BaseConfig):
     staging_buffers_count: int = Field(1, ge=1)
     """Number of receiver buffers. Two overlap the next read with installation."""
 
+    staging_host_bytes: int | None = Field(None, gt=0)
+    """Pinned host memory per inference GPU, on the GPU's NUMA node, that receives a whole version while the engines
+    serve, so the pause only copies it to the GPU through the staging buffers and installs it. Needs
+    ``staging_buffer_bytes`` and must hold every weight the GPU installs. Pinned when the engine connects to
+    ModelExpress, outside any pause."""
+
     timeout: int = 3600
     """Seconds a paused engine retries a failed install before the server exits."""
 

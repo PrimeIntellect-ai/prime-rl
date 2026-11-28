@@ -85,6 +85,12 @@ class ModelExpressWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     staging_buffers_count: int = Field(1, ge=1)
     """Number of receiver buffers. Two overlap the next read with installation."""
 
+    staging_host_bytes: int | None = Field(None, gt=0)
+    """Pinned host memory per inference GPU, on the GPU's NUMA node, that receives a whole version while the engines
+    serve, so the pause only copies it to the GPU through the staging buffers and installs it. Needs
+    ``staging_buffer_bytes`` and must hold every weight the GPU installs. Pinned when the engine connects to
+    ModelExpress, outside any pause."""
+
     pull: bool = False
     """The engines pull every version themselves instead of the orchestrator pausing them and pushing each update.
     Each server (on several nodes, the first rank of each expert-parallel DP group, for all its ranks) watches
@@ -93,6 +99,12 @@ class ModelExpressWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     serves. The trainer publishes without waiting for the engines; before publishing the next version it waits
     only for reads of the previous one still in flight. Not supported with rollout checkpoints, draft swaps or
     Dynamo."""
+
+    @model_validator(mode="after")
+    def validate_host_staging(self):
+        if self.staging_host_bytes is not None and self.staging_buffer_bytes is None:
+            raise ValueError("weight_broadcast.staging_host_bytes needs weight_broadcast.staging_buffer_bytes")
+        return self
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[
