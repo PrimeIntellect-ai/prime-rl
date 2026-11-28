@@ -728,13 +728,13 @@ def initialize_from_scratch(model: nn.Module, seed: int) -> None:
         )
 
 
-def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
-    device = "cuda"
-    model.to_empty(device=device)
-    torch.distributed.barrier()
+def load_dcp_from_hf(model: nn.Module, config: ModelConfig, *, materialize: bool = True):
+    if materialize:
+        model.to_empty(device="cuda")
+        torch.distributed.barrier()
 
-    # Must run before any weight loading: reinit can zero persistent buffers that ship in checkpoints
-    model.init_buffers_post_meta()
+        # Must run before any weight loading: reinit can zero persistent buffers that ship in checkpoints
+        model.init_buffers_post_meta()
 
     logger = get_logger()
     if not Path(config.name).exists():

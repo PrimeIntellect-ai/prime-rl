@@ -6,6 +6,15 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      suite:
+        description: GPU suite
+        type: choice
+        options: [full, mx-architecture, mx-distributed, mx-all]
+        default: full
+      mx_runner:
+        description: Native GPU runner label (defaults to PRIME_RL_MX_GPU_RUNNER or mx-gpu)
+        type: string
 
 permissions:
   contents: read
@@ -25,7 +34,8 @@ jobs:
     name: Gate
     runs-on: ubuntu-latest
     if: >-
-      github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+      github.event_name == 'push'
+      || (github.event_name == 'workflow_dispatch' && inputs.suite == 'full')
       || (github.event.pull_request.head.repo.full_name == github.repository
           && github.event.label.name == 'gpu-ci')
     permissions:
@@ -99,3 +109,11 @@ jobs:
       group: gpu-full-suite
     uses: ./.github/workflows/gpu-full.yml
     secrets: inherit
+
+  modelexpress:
+    name: ModelExpress exact weight updates
+    if: github.event_name == 'workflow_dispatch' && startsWith(inputs.suite, 'mx-')
+    uses: ./.github/workflows/gpu-mx.yml
+    with:
+      profile: ${{ inputs.suite }}
+      runner: ${{ inputs.mx_runner || vars.PRIME_RL_MX_GPU_RUNNER || 'mx-gpu' }}
