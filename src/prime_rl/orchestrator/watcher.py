@@ -107,7 +107,9 @@ class WeightWatcher:
             # the engine and cascading to every DP rank. Draining first lets the
             # aborts settle under normal stepping. ``on_new_version`` (below)
             # still runs post-update for observers that need the live version.
-            for observer in self.observers:
+            # Engines that pull their weights pause themselves for the swap, with
+            # the requests kept, so scheduling goes on across it.
+            for observer in [] if self.receiver.engines_pull else self.observers:
                 try:
                     await observer.on_version_pending(next_step)
                 except Exception as exc:

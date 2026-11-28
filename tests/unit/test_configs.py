@@ -1925,6 +1925,68 @@ def test_modelexpress_serves_a_draft_and_swaps_it():
     assert config.orchestrator.speculative_decoding.draft == Path("drafts/eagle3")
 
 
+def modelexpress_pull_config(**overrides) -> dict:
+    config = {
+        "weight_broadcast": {
+            "type": "modelexpress",
+            "pull": True,
+            "host": "mx-host",
+            "port": 9001,
+            "staging_buffer_bytes": 1024,
+            "staging_buffers_count": 2,
+            "timeout": 77,
+        },
+        "trainer": {},
+        "orchestrator": {
+            "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
+            "renderer": {"name": "qwen3"},
+        },
+        "inference": {"vllm": {"speculative_config": {"method": "eagle3", "model": "drafts/eagle3"}}},
+    }
+    config.update(overrides)
+    return config
+
+
+def test_modelexpress_pull_reaches_the_engines_and_the_receiver():
+    config = RLConfig.model_validate(modelexpress_pull_config())
+    broadcast = config.inference.weight_broadcast
+    assert broadcast.pull and broadcast.group is None
+    assert (broadcast.host, broadcast.port, broadcast.timeout) == ("mx-host", 9001, 77)
+    assert (broadcast.staging_buffer_bytes, broadcast.staging_buffers_count) == (1024, 2)
+    assert config.orchestrator.weight_broadcast.pull and config.trainer.weight_broadcast.pull
+    # Speculative decoding keeps its launch draft: draft swaps hook into the orchestrator's update
+    assert config.orchestrator.speculative_decoding is None
+
+
+def test_modelexpress_pull_rejects_what_hooks_into_the_orchestrators_update():
+    with pytest.raises(ValidationError, match="rollout checkpoints"):
+        RLConfig.model_validate(modelexpress_pull_config(ckpt={"interval": 5, "rollouts": True}))
+
+
+def test_a_group_leaders_pull_args_parse():
+    """The arguments the multi-node template gives the first rank of each DP group."""
+    config = cli(
+        InferenceConfig,
+        args=[
+            "--weight-broadcast.type",
+            "modelexpress",
+            "--weight-broadcast.pull",
+            "--weight-broadcast.host",
+            "mx-host",
+            "--weight-broadcast.group",
+            "http://a:8100/v1",
+            "http://a:8101/v1",
+        ],
+    )
+    assert config.weight_broadcast.pull and config.weight_broadcast.host == "mx-host"
+    assert config.weight_broadcast.group == ["http://a:8100/v1", "http://a:8101/v1"]
+
+
+def test_engines_pull_only_from_modelexpress():
+    with pytest.raises(ValidationError, match="only from ModelExpress"):
+        InferenceConfig.model_validate({"weight_broadcast": {"type": "filesystem", "pull": True}})
+
+
 @pytest.mark.parametrize(
     ("init_type", "vllm", "match"),
     [

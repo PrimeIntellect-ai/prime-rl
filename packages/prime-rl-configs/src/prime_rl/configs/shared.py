@@ -85,6 +85,15 @@ class ModelExpressWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     staging_buffers_count: int = Field(1, ge=1)
     """Number of receiver buffers. Two overlap the next read with installation."""
 
+    pull: bool = False
+    """The engines pull every version themselves instead of the orchestrator pausing them and pushing each update.
+    Each server (on several nodes, the first rank of each expert-parallel DP group, for all its ranks) watches
+    ModelExpress for new versions, stages the newest one while it keeps serving, then pauses, installs it, labels
+    the tokens sampled from then on with it and resumes. The orchestrator only reads the version each engine
+    serves. The trainer publishes without waiting for the engines; before publishing the next version it waits
+    only for reads of the previous one still in flight. Not supported with rollout checkpoints, draft swaps or
+    Dynamo."""
+
 
 WeightBroadcastConfig: TypeAlias = Annotated[
     FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | ModelExpressWeightBroadcastConfig,

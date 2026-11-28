@@ -323,6 +323,35 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 {%- if admin_token.guards and admin_token.by_process.inference.checks %}
     ADMIN_TOKEN_ENV="{{ admin_token.by_process.inference.checks }}_SHA256=$ADMIN_TOKEN_DIGEST"
 {%- endif %}
+    # Engines that pull their weights from ModelExpress switch per DP group: the ranks of an expert-parallel group
+    # share every forward pass, so the group's first rank moves all of them through their admin routes, and holds the
+    # admin token for it. Groups switch independently. A rank that is its own group pulls for itself.
+    # group_admin_urls <first inference node> <nodes> <port>: the admin URL of every DP rank on those nodes
+    group_admin_urls() {
+        local first="$1" nodes="$2" port="$3" n k
+        local -a hosts urls=()
+        read -ra hosts <<< "$HOSTNAMES_STR"
+        for ((n=first; n<first+nodes; n++)); do
+            for ((k=0; k<INFERENCE_DP_LOCAL; k++)); do urls+=("http://${hosts[$n]}:$((port + k))/v1"); done
+        done
+        echo "${urls[*]}"
+    }
+    # weight_group_args <rank in its DP group> [<admin URLs of the group's ranks>]: the first rank of a DP group of
+    # several ranks gets their admin URLs, and with pull the args to pull for them
+    weight_group_args() {
+        local rank="$1"; shift
+        [ "$rank" -eq 0 ] || return 0
+        local args=""
+{%- if weight_pull %}
+        args="--weight-broadcast.pull --weight-broadcast.host $WEIGHT_BROADCAST_HOST"
+{%- endif %}
+        # The URL list goes last: it takes every argument up to the next option
+        if [ "$#" -gt 1 ]; then args="$args --weight-broadcast.group $*"; fi
+        echo "$args"
+    }
+{%- if weight_pull and admin_token.guards and admin_token.by_process.inference.sends %}
+    ADMIN_TOKEN_SEND_ENV="{{ admin_token.by_process.inference.sends }}=$ADMIN_TOKEN"
+{%- endif %}
 {% include '_launch_rank.sh.j2' %}
 {% include '_launch_router.sh.j2' %}
 
@@ -368,7 +397,9 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         DP=$((NODES_PER_PREFILL_REPLICA * INFERENCE_DP_LOCAL))
         PORT=$PREFILL_PORT
         START_RANK=$((ROLE_RANK * INFERENCE_DP_LOCAL))
-        HEAD_HOST="${HOSTNAMES[$((REPLICA_BASE + SUB_REPLICA * NODES_PER_PREFILL_REPLICA))]}"
+        GROUP_FIRST_NODE=$((REPLICA_BASE + SUB_REPLICA * NODES_PER_PREFILL_REPLICA))
+        GROUP_NODES=$NODES_PER_PREFILL_REPLICA
+        HEAD_HOST="${HOSTNAMES[$GROUP_FIRST_NODE]}"
 {% if prefill_deepep_high_throughput %}
         # vLLM >= 0.29 auto-enables breakable CUDA graphs; capturing the DeepEP
         # high-throughput internode dispatch then fails ("timeout (dispatch CPU)").
@@ -388,7 +419,9 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         DP=$((NODES_PER_DECODE_REPLICA * INFERENCE_DP_LOCAL))
         PORT=$DECODE_PORT
         START_RANK=$((ROLE_RANK * INFERENCE_DP_LOCAL))
-        HEAD_HOST="${HOSTNAMES[$((REPLICA_BASE + NUM_PREFILL_NODES + SUB_REPLICA * NODES_PER_DECODE_REPLICA))]}"
+        GROUP_FIRST_NODE=$((REPLICA_BASE + NUM_PREFILL_NODES + SUB_REPLICA * NODES_PER_DECODE_REPLICA))
+        GROUP_NODES=$NODES_PER_DECODE_REPLICA
+        HEAD_HOST="${HOSTNAMES[$GROUP_FIRST_NODE]}"
 {% for key, value in decode_env_vars.items() %}
         export {{ key }}="{{ value }}"
 {% endfor %}
@@ -429,6 +462,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     # group rooted on the role-replica head (HEAD_HOST); the router balances across the per-rank
     # endpoints. The kv_transfer_config is built in InferenceConfig.to_namespace() from the config.
     if [ "$ROLE_RANK" -eq 0 ]; then DP_ADDR=$LOCAL_IP; else DP_ADDR=$HEAD_HOST; fi
+    read -ra GROUP_URLS <<< "$(group_admin_urls "$GROUP_FIRST_NODE" "$GROUP_NODES" "$PORT")"
     for k in $(seq 0 $((INFERENCE_DP_LOCAL - 1))); do
         GLOBAL_RANK=$((START_RANK + k))
         RANK_GPUS=$(seq -s, $((k * INFERENCE_TP)) $((k * INFERENCE_TP + INFERENCE_TP - 1)))
@@ -439,7 +473,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         else
             RANK_EXTRA="{$ROLE_EXTRA}"
         fi
-        launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$INFERENCE_DATA_PARALLEL_RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")"
+        launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$INFERENCE_DATA_PARALLEL_RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")" "$(weight_group_args "$GLOBAL_RANK" "${GROUP_URLS[@]}")"
     done
 {%- else -%}
     # Start the single global router on inference node 0 (external LB across all per-rank endpoints)
@@ -456,6 +490,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
     REPLICA_HEAD_HOST="${HOSTNAMES[$((REPLICA_IDX * NODES_PER_INFER_REPLICA))]}"
     INFER_GROUP_DP=$((NODES_PER_INFER_REPLICA * INFERENCE_DP_LOCAL))
+    read -ra GROUP_URLS <<< "$(group_admin_urls $((REPLICA_IDX * NODES_PER_INFER_REPLICA)) "$NODES_PER_INFER_REPLICA" "$BACKEND_PORT")"
     if [ "$RANK_IN_REPLICA" -eq 0 ]; then DP_ADDR="$LOCAL_IP"; else DP_ADDR="$REPLICA_HEAD_HOST"; fi
     for ((d=0; d<INFERENCE_DP_LOCAL; d++)); do
         RANK_GPUS=$(seq -s, $((d * INFERENCE_TP)) $((d * INFERENCE_TP + INFERENCE_TP - 1)))
@@ -463,13 +498,13 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         if [ "$INFERENCE_ENABLE_EXPERT_PARALLEL" -eq 1 ] && [ "$INFER_GROUP_DP" -gt 1 ]; then
             GLOBAL_DP_RANK=$((RANK_IN_REPLICA * INFERENCE_DP_LOCAL + d))
             RANK_EXTRA="{\"data_parallel_rank\": $GLOBAL_DP_RANK, \"data_parallel_address\": \"$DP_ADDR\"}"
-            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" "$INFER_GROUP_DP" "$INFERENCE_DATA_PARALLEL_RPC_PORT" "$RANK_EXTRA" "" "$RANK_LOG"
+            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" "$INFER_GROUP_DP" "$INFERENCE_DATA_PARALLEL_RPC_PORT" "$RANK_EXTRA" "" "$RANK_LOG" "$(weight_group_args "$GLOBAL_DP_RANK" "${GROUP_URLS[@]}")"
         else
             # Dense or single-DP-rank EP (dp=1, e.g. EP within one tp=8 group):
             # independent single-engine servers. vLLM rejects the external-LB DP
             # args when data_parallel_size == 1; enable_expert_parallel in the
             # inference config alone shards experts across the TP group.
-            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" 1 "" "" "" "$RANK_LOG"
+            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" 1 "" "" "" "$RANK_LOG" "$(weight_group_args 0)"
         fi
     done
 {%- endif %}

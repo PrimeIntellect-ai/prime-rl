@@ -170,7 +170,7 @@ class RLConfig(BaseConfig):
     def auto_setup_draft_swaps(self):
         """The orchestrator swaps drafts on the engines, starting from the draft they launch with."""
         dynamo = self.orchestrator.model.client.dynamo
-        if self.inference is None or (dynamo is not None and dynamo.enabled):
+        if self.inference is None or (dynamo is not None and dynamo.enabled) or self.weight_pull:
             return self
         draft = (getattr(self.inference.vllm, "speculative_config", None) or {}).get("model")
         if draft is None:
@@ -200,6 +200,12 @@ class RLConfig(BaseConfig):
     def run_dir(self) -> Path:
         assert self.run.dir is not None  # resolved at construction
         return self.output_dir / self.run.dir
+
+    @property
+    def weight_pull(self) -> bool:
+        """Whether the engines pull their weights from ModelExpress (``weight_broadcast.pull``)."""
+        broadcast = self.weight_broadcast
+        return broadcast is not None and broadcast.type == "modelexpress" and broadcast.pull
 
     def _resolve_run_name(self) -> None:
         """Fill the auto-generated run name and directory (idempotent — called by every
@@ -492,6 +498,37 @@ class RLConfig(BaseConfig):
         )
         if self.inference is not None:
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
+            if self.weight_pull:
+                # A multi-node launcher marks the first rank of each DP group as the one that pulls, with the
+                # ModelExpress host it resolves at runtime.
+                broadcast = self.weight_broadcast
+                self.inference.weight_broadcast = InferenceWeightBroadcastConfig(
+                    type="modelexpress",
+                    pull=self.deployment.type == "single_node",
+                    host=broadcast.host,
+                    port=broadcast.port,
+                    staging_buffer_bytes=broadcast.staging_buffer_bytes,
+                    staging_buffers_count=broadcast.staging_buffers_count,
+                    timeout=broadcast.timeout,
+                )
+        return self
+
+    @model_validator(mode="after")
+    def validate_weight_pull(self):
+        """Engines that pull their weights replace the orchestrator's update, so the features that hook into it are
+        not supported yet."""
+        if not self.weight_pull:
+            return self
+        dynamo = self.orchestrator.model.client.dynamo
+        unsupported = {
+            "Dynamo (its admin plane pushes every update)": dynamo is not None and dynamo.enabled,
+            "draft swaps (orchestrator.speculative_decoding)": self.orchestrator.speculative_decoding is not None,
+            "rollout checkpoints (their consistency point is the orchestrator's weight update)": (
+                self.orchestrator.ckpt is not None and self.orchestrator.ckpt.rollouts
+            ),
+        }
+        if blocked := [name for name, hit in unsupported.items() if hit]:
+            raise ValueError(f"weight_broadcast.pull does not support {', '.join(blocked)} yet")
         return self
 
     @model_validator(mode="after")

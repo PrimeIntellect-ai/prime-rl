@@ -292,6 +292,8 @@ class SupervisedTrainerConfig(BaseTrainerConfig):
                 "LoRA training is not yet supported with in-memory weight broadcast. "
                 "Set weight_broadcast.type = 'filesystem'."
             )
+        if self.weight_broadcast.type == "modelexpress" and self.weight_broadcast.pull:
+            raise ValueError("weight_broadcast.pull is supported only by rl; SFT online evals push every version")
 
         if self.deployment.type == "multi_node":
             # Dedicated nodes in the SFT allocation run the inference pool, router,

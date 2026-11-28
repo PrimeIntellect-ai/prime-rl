@@ -33,6 +33,25 @@ staging_buffers_count = 2          # overlap the next read with the current inst
 - With Dynamo (`[orchestrator.model.client.dynamo]`), the orchestrator discovers the Dynamo workers before every update instead of using a fixed endpoint list. Each update initializes ModelExpress on every worker that does not run it yet, such as a worker that joined or whose engine restarted, and drops workers that left. A worker that joins between updates serves its launch weights until the next update. Each worker must load the ModelExpress extension, `--worker-extension-cls prime_rl.inference.vllm.worker.modelexpress.ModelExpressWeightUpdateWorker`.
 - With speculative decoding, MX updates the target model and the draft keeps its own weights; a drafter that shares the target's embedding or LM head reads the updated ones. A draft swap (`[orchestrator.speculative_decoding] draft`, changed live) loads from disk at the next update, after the target is installed and before inference resumes.
 
+## Engines that pull their weights
+
+With `pull = true`, the engines move themselves onto each version the trainer publishes, instead of the orchestrator pausing every engine and pushing each update:
+
+```toml
+[weight_broadcast]
+type = "modelexpress"
+pull = true
+```
+
+- Each inference server polls the MX server for the newest version published after the one it serves, and skips the versions in between. While it serves, every worker stages that version on a background thread. Once all have, the server pauses its engines at the next step with the running requests kept, installs the version, labels the tokens sampled from then on with its step (`weight_versions` on every response) and resumes. A request that runs across a switch keeps its KV cache and samples its later tokens with the new version, which its labels record.
+- The first version of a trainer stages while the engines are paused: that stage records on the live model how the trainer's tensors map onto the engine's. Later versions of the same trainer stage while serving.
+- Staging while serving needs memory for it. Without `staging_buffer_bytes`, each GPU holds one more copy of its weights, and the reads overlap serving, so the pause only installs. With bounded staging, staging while serving only plans the transfer and the bytes move during the pause, as with push.
+- On several nodes every DP rank is its own server. The ranks of an expert-parallel DP group share every forward pass, so the group's first rank pulls for all of them, through their admin routes (`/modelexpress/stage`, `/modelexpress/apply`, `/pause`, `/resume`), and gets the admin token for it. vLLM's data-parallel pause stops every rank of the group at the same step, so no forward pass mixes versions. Groups switch independently, each as soon as it is ready.
+- The trainer publishes each version and goes on. It holds one version: before it publishes the next, it stops new reads of the previous one and waits only for the reads already in flight. Trainer host memory stays at one copy of the weights. At the end of training it keeps the last version until the engines serve it.
+- The orchestrator only reads the version each engine serves (`GET /weight_version`), for its dispatch gate, the startup sync and the final evals. It keeps dispatching across a switch.
+- A failed stage leaves the live weights untouched: the engines keep serving and retry with the newest version. A failed install may leave them partly written, so the engines stay paused and install the newest version from scratch until one succeeds; past `weight_broadcast.timeout` the server exits.
+- Not supported yet: draft swaps (speculative decoding itself works, with the draft the engines launch with), rollout checkpoints, Dynamo and SFT online evals.
+
 ## Limitations
 
 LoRA is rejected at config validation. Pipeline parallelism is untested.

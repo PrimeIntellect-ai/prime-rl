@@ -212,6 +212,45 @@ class WeightBroadcastConfig(BaseConfig):
     type: Literal["nccl", "filesystem", "modelexpress"] = "filesystem"
     """Weight broadcast transport."""
 
+    pull: bool = False
+    """Install every policy version the trainer publishes to ModelExpress on this server's own initiative
+    (``modelexpress`` only): stage it while serving, then pause, install and label it. ``rl`` sets it with
+    ``weight_broadcast.pull``: on the server of a single-node deployment, and on the first rank of each DP group of a
+    multi-node one."""
+
+    group: list[str] | None = None
+    """Admin URL of every rank in this server's DP group, its own included. The ranks of an expert-parallel DP group
+    share every forward pass, so they switch versions together, moved by the group's first rank through their admin
+    routes: with ``pull``, that rank pulls for all of them, and groups switch independently. The multi-node launcher
+    gives it to the first rank of each DP group. Unset, the server moves only its own engines."""
+
+    model_name: str | None = None
+    """The model name the trainer publishes versions under in ModelExpress. Defaults to ``vllm.model``."""
+
+    host: str = "localhost"
+    """ModelExpress server host the puller reads versions from."""
+
+    port: int = 8001
+    """ModelExpress server port the puller reads versions from."""
+
+    staging_buffer_bytes: int | None = Field(None, gt=0)
+    """Receiver staging capacity per buffer. None stages a complete version while serving, in one more copy of the
+    weights on each GPU, so the pause only installs it. Bounded buffers move the bytes during the pause."""
+
+    staging_buffers_count: int = Field(1, ge=1)
+    """Number of receiver buffers. Two overlap the next read with installation."""
+
+    timeout: int = 3600
+    """Seconds a paused engine retries a failed install before the server exits."""
+
+    @model_validator(mode="after")
+    def validate_pull(self):
+        if self.pull and self.type != "modelexpress":
+            raise ValueError(
+                "Engines pull their weights only from ModelExpress (weight_broadcast.type = 'modelexpress')"
+            )
+        return self
+
 
 class CPUOffloadTier(BaseConfig):
     num_bytes: int = Field(..., ge=0)
