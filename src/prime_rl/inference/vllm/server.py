@@ -217,7 +217,7 @@ async def set_health(request: Request):
 @admin_router.post("/swap-checkpoint")
 async def swap_checkpoint(request: Request):
     """Serve another checkpoint version from ModelExpress on every rank of this server's DP group, without a restart
-    (``prime_rl.inference.vllm.checkpoint_swap``). Body: ``{step | version_uid, mode, drain_timeout_s}``."""
+    (``prime_rl.inference.vllm.checkpoint_swap``). Body: ``{step | version_uid, mode, drain_timeout_s, draft_dir}``."""
     from pydantic import ValidationError
 
     from prime_rl.inference.vllm.checkpoint_swap import SwapFailed, SwapRequest
@@ -229,6 +229,17 @@ async def swap_checkpoint(request: Request):
         swap = SwapRequest.model_validate(await request.json())
     except ValidationError as error:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error)) from error
+    if swap.draft_dir is not None:
+        # Every rank of the group serves the same draft as this one: check the new draft here, before any pause
+        speculative_config = engine_client(request).vllm_config.speculative_config
+        if speculative_config is None:
+            raise HTTPException(status.HTTP_409_CONFLICT, "This server runs without speculative decoding")
+        try:
+            draft = local_draft_dir(swap.draft_dir)
+            check_draft_swap(local_draft_dir(speculative_config.model, speculative_config.revision), draft)
+        except (OSError, ValueError) as error:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error)) from error
+        swap.draft_dir = str(draft)
     try:
         return await state.checkpoint_swapper.swap(swap)
     except SwapFailed as failure:

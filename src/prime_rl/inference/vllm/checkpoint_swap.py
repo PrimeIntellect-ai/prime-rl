@@ -67,6 +67,11 @@ class SwapRequest(BaseModel):
 
     drain_timeout_s: float = Field(300.0, gt=0)
 
+    draft_dir: str | None = None
+    """A speculative-decoding draft to load with the version, in the pause (a directory or a Hub id in the local
+    cache, matching the served draft's architecture). Without one the draft keeps its weights; a draft that shares
+    the target's embedding or LM head reads the new ones."""
+
     @model_validator(mode="after")
     def one_target(self):
         if (self.step is None) == (self.version_uid is None):
@@ -186,7 +191,7 @@ class CheckpointSwapper:
         timings = {"stage": 0.0, "drain": 0.0, "pause": 0.0, "apply": 0.0}
         start = time.perf_counter()
         await self.engines.init(self._init_payload())
-        if not paused:
+        if not paused and request.draft_dir is None:
             served = await self.engines.served()
             if served == (step, uid):
                 return {"step": step, "version_uid": uid, "unchanged": True}
@@ -237,7 +242,7 @@ class CheckpointSwapper:
                 if paused:
                     # The weights are still partly written from the install that failed before
                     reason = f"Staging {uid} (step {step}) failed while the group is broken: {error!r}"
-                    await self._break(target, reason)
+                    await self._break(target, reason, request.draft_dir)
                     raise SwapFailed(
                         500, f"{reason}; the group stays paused and unhealthy and retries", version_uid=uid
                     ) from error
@@ -251,11 +256,15 @@ class CheckpointSwapper:
             mark = time.perf_counter()
             await self.engines.apply(uid, mesh, step)
             timings["apply"] = time.perf_counter() - mark
+            if request.draft_dir is not None:
+                mark = time.perf_counter()
+                await self.engines.update_draft(request.draft_dir)
+                timings["draft"] = time.perf_counter() - mark
             # Its blocks hold KV of the old weights. Nothing runs: no request holds a block.
             await self.engines.reset_prefix_cache()
         except Exception as error:
             reason = f"Installing {uid} (step {step}) failed: {error!r}"
-            await self._break(target, reason)
+            await self._break(target, reason, request.draft_dir)
             raise SwapFailed(
                 500, f"{reason}; the group stays paused and unhealthy and retries the install", version_uid=uid
             ) from error
@@ -269,6 +278,7 @@ class CheckpointSwapper:
             "cold": not live,
             "in_flight": in_flight,
             "aborted": aborted,
+            "draft_dir": request.draft_dir,
             "timings": timings,
         }
         logger.info(f"Swapped to step {step} ({uid}): {result}")
@@ -332,7 +342,7 @@ class CheckpointSwapper:
             await self.engines.set_health(True)
             self.broken = None
 
-    async def _break(self, target: WeightVersion, reason: str) -> None:
+    async def _break(self, target: WeightVersion, reason: str, draft_dir: str | None) -> None:
         """Keep the group paused with mixed weights out of service, and retry the install."""
         logger.error(f"{reason}; the group stays paused and unhealthy")
         self.broken = reason
@@ -341,9 +351,9 @@ class CheckpointSwapper:
         except Exception:
             logger.exception("Reporting the group unhealthy failed")
         self._stop_repair.clear()
-        self._repair = asyncio.create_task(self._repair_install(target))
+        self._repair = asyncio.create_task(self._repair_install(target, draft_dir))
 
-    async def _repair_install(self, target: WeightVersion) -> None:
+    async def _repair_install(self, target: WeightVersion, draft_dir: str | None) -> None:
         """Retry installing ``target`` from a fresh stage until it succeeds, ``timeout`` passes or a swap takes over."""
         uid, step, mesh = target.version_id, target.version_number, mesh_key(target)
         deadline = time.monotonic() + self.config.timeout
@@ -358,6 +368,8 @@ class CheckpointSwapper:
                 await self.engines.discard()
                 await self.engines.stage(uid, live=False)
                 await self.engines.apply(uid, mesh, step)
+                if draft_dir is not None:
+                    await self.engines.update_draft(draft_dir)
                 await self.engines.reset_prefix_cache()
                 await self._resume()
                 logger.info(f"Installed {uid} (step {step}) on retry; the group serves again")

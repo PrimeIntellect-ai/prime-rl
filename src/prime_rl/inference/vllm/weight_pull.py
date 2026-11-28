@@ -116,6 +116,9 @@ class Engines(Protocol):
         """Digest of the integer tables every engine loaded at startup, which no version replaces; None where they
         differ."""
 
+    async def update_draft(self, weight_dir: str) -> None:
+        """Load a speculative-decoding draft from disk on every engine (``/update_draft_weights``)."""
+
 
 async def on_every_worker(client: EngineClient, method: str, *args) -> list:
     """Every worker's result of ``method``, from every engine of this server. vLLM's ``collective_rpc`` reaches every
@@ -197,6 +200,10 @@ class LocalEngine:
     async def integer_tables(self) -> str | None:
         digests = set(await on_every_worker(self.client, "modelexpress_integer_tables"))
         return digests.pop() if len(digests) == 1 else None
+
+    async def update_draft(self, weight_dir: str) -> None:
+        # Reaches every engine of the server
+        await self.client.collective_rpc("update_draft_weights", args=(weight_dir,))
 
 
 class EngineGroup:
@@ -293,6 +300,9 @@ class EngineGroup:
     async def integer_tables(self) -> str | None:
         digests = {result["digest"] for result in await self._get_all("/modelexpress/integer_tables")}
         return digests.pop() if len(digests) == 1 else None
+
+    async def update_draft(self, weight_dir: str) -> None:
+        await self._post_all("/update_draft_weights", json={"weight_dir": weight_dir})
 
 
 class WeightPuller:

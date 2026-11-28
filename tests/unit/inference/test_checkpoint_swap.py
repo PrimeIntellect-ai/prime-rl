@@ -101,6 +101,10 @@ class FakeEngines:
         self.meshes.add(mesh)
         self.served_ = (step, version_uid)
 
+    async def update_draft(self, weight_dir):
+        assert self.paused
+        self.calls.append(("draft", weight_dir))
+
     async def reset_prefix_cache(self):
         assert self.paused and self.in_flight_ == 0
         self.calls.append("reset")
@@ -148,6 +152,25 @@ def test_a_first_swap_stages_paused_a_later_one_while_serving_and_a_repeat_chang
         "unchanged": True,
     }
     assert engines.calls == []
+
+
+def test_a_matching_draft_loads_in_the_pause_after_the_target_also_for_the_served_version():
+    engines = FakeEngines()
+    target = version(2)
+    engines.meshes.add(mesh_key(target))
+    engines.served_ = (2, target.version_id)
+    result = run(swapper(engines, [target]).swap(SwapRequest(step=2, draft_dir="/drafts/step-2")))
+    assert not result["unchanged"] and result["draft_dir"] == "/drafts/step-2"
+    assert engines.calls == [
+        ("stage", True),
+        "hold",
+        "pause",
+        "apply",
+        ("draft", "/drafts/step-2"),
+        "reset",
+        "resume",
+        "release",
+    ]
 
 
 def test_the_newest_ready_version_of_a_step_is_the_target():
