@@ -204,16 +204,22 @@ class WeightPuller:
     async def run(self) -> None:
         logger.info(f"Pulling policy weights of {self.config.model_name} from ModelExpress at {self.config.server_url}")
         await self.engines.ready()
-        await self.engines.init(
-            {
-                "host": self.config.host,
-                "port": self.config.port,
-                "timeout": self.config.timeout,
-                "session_id": uuid.uuid4().hex,
-                "staging_buffer_bytes": self.config.staging_buffer_bytes,
-                "staging_buffers_count": self.config.staging_buffers_count,
-            }
-        )
+        payload = {
+            "host": self.config.host,
+            "port": self.config.port,
+            "timeout": self.config.timeout,
+            "session_id": uuid.uuid4().hex,
+            "staging_buffer_bytes": self.config.staging_buffer_bytes,
+            "staging_buffers_count": self.config.staging_buffers_count,
+        }
+        while True:
+            # The ModelExpress server may come up after the engines
+            try:
+                await self.engines.init(payload)
+                break
+            except Exception as error:
+                logger.warning(f"Connecting the engines to ModelExpress failed; retrying: {error!r}")
+                await asyncio.sleep(MAX_RETRY_INTERVAL_S)
         self._control = ModelExpressControlClient.connect(server_url=self.config.server_url)
         retry_interval = POLL_INTERVAL_S
         while True:
@@ -297,8 +303,8 @@ class WeightPuller:
         logger.info(
             f"Pulled policy v{target.version_number} ({target.version_id}): "
             f"{'staged while serving' if live else 'staged while paused'} in {staged - start:.3f}s, "
-            f"paused {resumed - paused:.3f}s (pause {paused - staged:.3f}s, install {installed - paused:.3f}s, "
-            f"resume {resumed - installed:.3f}s)"
+            f"reached a pause in {paused - staged:.3f}s, paused {resumed - paused:.3f}s "
+            f"(install {installed - paused:.3f}s, resume {resumed - installed:.3f}s)"
         )
 
 
