@@ -352,6 +352,8 @@ class TrainSink(Reconfigurable):
 
         survivors = [trace for _, trace in iter_trainable_traces(group)]
         if not env.algorithm.accepts_group(group):
+            if env.config.algo.type == "writer_suffix":
+                raise RuntimeError("Incomplete synchronous writer cohort; inspect failures before restarting")
             self._close([group_id])
             self._record_group(group, failures, cancellation, env_name, admitted=False)
             self._record_zero_output(group, survivors, n_owed, reason="incomplete algorithm cohort")
@@ -364,6 +366,8 @@ class TrainSink(Reconfigurable):
             await env.algorithm.score_group(group)
         admitted = self._admit(group) if group else False
         if not survivors or not admitted:
+            if env.config.algo.type == "writer_suffix":
+                raise RuntimeError("Synchronous writer cohort has no admitted trainable traces")
             self._close([group_id])
             self._record_group(group, failures, cancellation, env_name, admitted=admitted)
             reason = "no trainable survivors" if not survivors else "rejected by curriculum"
@@ -403,6 +407,8 @@ class TrainSink(Reconfigurable):
                 samples_by_trace[trace.id] = samples
 
         if not samples_by_trace:
+            if env.config.algo.type == "writer_suffix":
+                raise RuntimeError("Synchronous writer cohort produced no training samples")
             self._close([group_id])
             self._record_group(group, failures, cancellation, env_name)
             self._record_zero_output(group, survivors, n_owed, reason="zero advantage")

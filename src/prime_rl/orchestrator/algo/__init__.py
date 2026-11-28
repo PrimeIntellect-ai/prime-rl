@@ -32,6 +32,7 @@ from prime_rl.orchestrator.algo.opd import OPDAlgorithm
 from prime_rl.orchestrator.algo.opsd import OPSDAlgorithm
 from prime_rl.orchestrator.algo.rae import RAEAlgorithm
 from prime_rl.orchestrator.algo.rime import RIMEAlgorithm
+from prime_rl.orchestrator.algo.writer_suffix import WriterSuffixAlgorithm
 from prime_rl.orchestrator.algo.routing import assign_advantages, stamp_loss_routing
 from prime_rl.orchestrator.algo.sft import SFTDistillAlgorithm
 
@@ -47,6 +48,7 @@ ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
     "max_rl": MaxRLAlgorithm,
     "rae": RAEAlgorithm,
     "rime": RIMEAlgorithm,
+    "writer_suffix": WriterSuffixAlgorithm,
     "hierarchical_grpo": HierarchicalGRPOAlgorithm,
     "opd": OPDAlgorithm,
     "opsd": OPSDAlgorithm,

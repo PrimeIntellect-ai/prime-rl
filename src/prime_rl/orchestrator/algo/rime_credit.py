@@ -30,6 +30,28 @@ class Credit:
     writer_mask: np.ndarray
 
 
+def assign_suffix_credit(task, exploration, well_formed):
+    """WRITE after position t receives only outcomes at positions greater than t.
+
+    Format validity is diagnostic: invalid writes retain old memory and receive
+    the same task-return rule. Terminal writes have no future task credit.
+    """
+    task = matrix(task, "task")
+    exploration = matrix(exploration, "exploration")
+    gates = matrix(well_formed, "well_formed")
+    if task.shape != exploration.shape or task.shape != gates.shape:
+        raise ValueError("All matrices must have the same [G,T] shape")
+    if task.shape[0] < 2 or task.shape[1] < 2:
+        raise ValueError("Writer suffix credit needs at least two siblings and tasks")
+    if np.any(exploration != 0) or not np.isin(gates, [0, 1]).all():
+        raise ValueError("Writer suffix credit forbids exploration scores and requires binary diagnostics")
+    reward = np.zeros_like(task)
+    reward[:, :-1] = np.cumsum(task[:, :0:-1], axis=1)[:, ::-1]
+    mask = np.ones_like(task, dtype=bool)
+    mask[:, -1] = False
+    return Credit(np.zeros_like(task), normalize_siblings(reward), reward, mask)
+
+
 def assign_credit(task, exploration, well_formed, *, horizon, beta):
     """Past window includes current task; future window starts at the next task.
 

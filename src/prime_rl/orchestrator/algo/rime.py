@@ -15,6 +15,10 @@ from prime_rl.orchestrator.trajectories import iter_trainable_branches
 
 class RIMEAlgorithm(Algorithm):
     preserve_zero_advantages = True
+    writer_reward_metric = "rime/writer_improvement_reward"
+
+    def credit(self, task, exploration, well_formed):
+        return assign_credit(task, exploration, well_formed, horizon=self.horizon, beta=self.beta)
 
     def __init__(self, config: RIMEAlgoConfig, clients):
         super().__init__(config, clients)
@@ -109,12 +113,10 @@ class RIMEAlgorithm(Algorithm):
                     raise ValueError("Need one writer per nonterminal trial and no terminal writer")
             rows.append(row)
             indexed.append(members)
-        credit = assign_credit(
+        credit = self.credit(
             [row[1] for row in rows],
             [row[2] for row in rows],
             [row[3] for row in rows],
-            horizon=self.horizon,
-            beta=self.beta,
         )
         for i, members in enumerate(indexed):
             for trace, role, t in members:
@@ -129,4 +131,4 @@ class RIMEAlgorithm(Algorithm):
                 assign_advantages(trace, advantage)
                 trace.info["advantage"] = advantage
                 if role == "writer":
-                    trace.record_metric("rime/writer_improvement_reward", float(credit.writer_reward[i, t]))
+                    trace.record_metric(self.writer_reward_metric, float(credit.writer_reward[i, t]))

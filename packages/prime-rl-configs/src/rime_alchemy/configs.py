@@ -40,6 +40,8 @@ class RIMEAlchemyEnvConfig(vf.EnvConfig):
     writer_frozen: bool = False
     actor_frozen: bool = False
     score_exploration: bool = True
+    action_decoding: Literal["original", "visible_legal_schema"] = "original"
+    eval_untrainable: bool = False
     memory_mode: Literal["written", "history", "shuffled", "fork"] = "written"
     fork_trial: int = Field(4, ge=1, le=8)
     fork_horizon: int = Field(2, ge=1, le=5)
@@ -55,7 +57,11 @@ class RIMEAlchemyEnvConfig(vf.EnvConfig):
             self.fork_horizon > self.fork_trial or self.fork_trial + self.fork_horizon > 10
         ):
             raise ValueError("Memory forks need a full past window and must fit inside ten trials")
-        if self.actor_frozen and self.writer_frozen:
+        if self.action_decoding == "visible_legal_schema" and (
+            not self.actor_frozen or self.score_exploration or self.judge_local or self.memory_mode != "written"
+        ):
+            raise ValueError("Legal ACT requires frozen actor, written memory and no judge")
+        if self.actor_frozen and self.writer_frozen and not self.eval_untrainable:
             raise ValueError("At least one RIME role must remain trainable")
         if any(agent.model is not None or agent.client is not None for agent in (self.actor, self.writer)):
             raise ValueError("ACT and WRITE must inherit the same trainable run policy")

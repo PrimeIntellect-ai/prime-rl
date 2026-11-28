@@ -4,16 +4,19 @@ Each episode is ONE sibling's complete ten-trial stream. prime-rl groups episode
 for the same source task, then RIMEAlgorithm assigns cross-sibling advantages.
 """
 
+import hashlib
 import json
 from dataclasses import replace
 
 import verifiers.v1 as vf
 from rime_alchemy.configs import RIMEAlchemyEnvConfig, RIMEAlchemyTasksetConfig, StreamData, StreamTask
-from verifiers.v1.configs.client import EvalClientConfig
+from verifiers.v1.configs.client import EvalClientConfig, TrainClientConfig
+from verifiers.v1.clients.client import ModelRoute
 
 from rime_study.alchemy import AlchemyStream
 from rime_study.data import ROOT, chemistry_fingerprint, prebuilt_episodes, training_streams, verify_sources
 from rime_study.decision_judge import MemoryDecisionJudge
+from rime_study.legal_action_schema import action_schema
 from rime_study.rollout import ACT, WRITE, ProtocolError
 
 
@@ -38,45 +41,48 @@ class RIMEAlchemyTaskset(vf.Taskset[StreamTask, RIMEAlchemyTasksetConfig]):
 
 
 class RIMEAlchemyEnv(vf.Env[RIMEAlchemyEnvConfig]):
+    def _check_role_contract(self, agents):
+        if self.config.action_decoding != "visible_legal_schema":
+            return
+        if not isinstance(agents.actor.ctx.client, EvalClientConfig) or agents.actor.trainable:
+            raise ValueError("Legal ACT must use an immutable evaluation client")
+        writer_client = EvalClientConfig if self.config.eval_untrainable else TrainClientConfig
+        if not isinstance(agents.writer.ctx.client, writer_client):
+            raise ValueError("WRITE client does not match the training/evaluation contract")
+        expected = not self.config.eval_untrainable and not self.config.writer_frozen
+        if agents.writer.trainable != expected:
+            raise ValueError("WRITE trainability differs from configured role")
+        if (agents.writer.ctx.sampling.model_extra or {}).get("response_format") is not None:
+            raise ValueError("Writer must remain unconstrained")
+
     async def setup(self, agents: vf.Agents):
-        agents.actor.trainable = not self.config.actor_frozen
-        agents.writer.trainable = not self.config.writer_frozen and self.config.memory_mode == "written"
-        if self.config.writer_frozen:
-            client = agents.actor.config.client
-            if client is None:
-                raise ValueError("Frozen writer needs the resolved policy client")
-            writer_client = EvalClientConfig(
-                base_url=client.base_url.rstrip("/") + "/rime/writer",
-                api_key_var=client.api_key_var,
-                headers=client.headers,
-                headers_from_env=client.headers_from_env,
+        agents.actor.trainable = not self.config.actor_frozen and not self.config.eval_untrainable
+        agents.writer.trainable = (
+            not self.config.writer_frozen and not self.config.eval_untrainable
+            and self.config.memory_mode == "written"
+        )
+        policy_client = agents.writer.config.client
+        if (self.config.actor_frozen or self.config.writer_frozen) and policy_client is None:
+            raise ValueError("Frozen roles need the resolved policy client")
+        for role, frozen in (("actor", self.config.actor_frozen), ("writer", self.config.writer_frozen)):
+            if not frozen:
+                continue
+            agent = getattr(agents, role)
+            client = EvalClientConfig(
+                base_url=policy_client.base_url.rstrip("/") + "/rime/writer",
+                api_key_var=policy_client.api_key_var,
+                headers=policy_client.headers,
+                headers_from_env=policy_client.headers_from_env,
             )
-            sampling = agents.writer.config.sampling.model_copy(
+            sampling = agent.config.sampling.model_copy(
                 update={"chat_template_kwargs": {"enable_thinking": True}},
             )
-            agents.writer.config = agents.writer.config.model_copy(
-                update={"client": writer_client, "sampling": sampling}
-            )
-            agents.writer.ctx = replace(agents.writer.ctx, client=writer_client, sampling=sampling)
-        if self.config.actor_frozen:
-            client = agents.writer.config.client
-            if client is None:
-                raise ValueError("Frozen actor needs the resolved policy client")
-            # Reuse the independent frozen-model sidecar. Its legacy route name
-            # is writer, but the supplied ACT prompt selects the actor role.
-            actor_client = EvalClientConfig(
-                base_url=client.base_url.rstrip("/") + "/rime/writer",
-                api_key_var=client.api_key_var,
-                headers=client.headers,
-                headers_from_env=client.headers_from_env,
-            )
-            sampling = agents.actor.config.sampling.model_copy(
-                update={"chat_template_kwargs": {"enable_thinking": True}},
-            )
-            agents.actor.config = agents.actor.config.model_copy(
-                update={"client": actor_client, "sampling": sampling}
-            )
-            agents.actor.ctx = replace(agents.actor.ctx, client=actor_client, sampling=sampling)
+            agent.config = agent.config.model_copy(update={"client": client, "sampling": sampling})
+            agent.ctx = replace(agent.ctx, client=client, sampling=sampling)
+        self._check_role_contract(agents)
+        self.memory_judge = None
+        if not self.config.score_exploration:
+            return
         judge_config = self.config.exploration_judge
         if self.config.judge_local and self.config.score_exploration:
             client = agents.actor.config.client
@@ -99,6 +105,7 @@ class RIMEAlchemyEnv(vf.Env[RIMEAlchemyEnvConfig]):
         )
 
     async def run(self, task: StreamTask, agents: vf.Agents, *, _donor=False):
+        self._check_role_contract(agents)
         if self.config.memory_mode == "fork":
             from rime_study.memory_forks import run_memory_forks
 
@@ -149,9 +156,24 @@ class RIMEAlchemyEnv(vf.Env[RIMEAlchemyEnvConfig]):
             )
             # One trace per complete ACT trajectory keeps whole stream cohorts
             # together when the train sink counts samples by trace.
-            async with agents.actor.interaction(actor_task) as interaction:
+            actor_route = ModelRoute(agents.actor.ctx) if self.config.action_decoding == "visible_legal_schema" else None
+            route_kwargs = {"route": actor_route} if actor_route is not None else {}
+            async with agents.actor.interaction(actor_task, **route_kwargs) as interaction:
                 feedback = None
-                for _ in range(env.max_steps + 2):
+                for turn_index in range(env.max_steps + 2):
+                    self._check_role_contract(agents)
+                    if actor_route is not None:
+                        schema = action_schema(env.observation())
+                        sampling = actor_route.ctx.sampling.model_copy(update={
+                            "response_format": {"type": "json_schema", "json_schema": {
+                                "name": "visible_action", "strict": True, "schema": schema,
+                            }},
+                        })
+                        await actor_route.update(sampling=sampling)
+                        interaction.trace.info.setdefault("rime_legal_action_schema", []).append({
+                            "turn": turn_index + 1,
+                            "schema_sha256": hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest(),
+                        })
                     segment = await interaction.turn(feedback)
                     if segment.terminated or interaction.trace.is_truncated:
                         raise ProtocolError("Actor terminated before finishing the trial")

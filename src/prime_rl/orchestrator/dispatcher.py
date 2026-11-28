@@ -223,6 +223,10 @@ class Dispatcher:
         self.live_dropped = False
         self.live_task: asyncio.Task | None = None
         self.groups: dict[uuid.UUID, GroupState] = {}
+        self.synchronous_writer = any(
+            env.config.algo.type == "writer_suffix" for env in (self.train_envs or ())
+        )
+        self.last_writer_cohort_version: int | None = None
         # Policy versions repeat after a resume, with weights that can differ from the
         # previous attempt's, and engines or a KV offload pool may outlive that attempt.
         self.cache_salt_prefix = uuid.uuid4().hex[:8]
@@ -520,6 +524,11 @@ class Dispatcher:
         scheduled."""
         if kind == "train" and self.train_scheduling_disabled:
             return False
+        if kind == "eval" and self.synchronous_writer:
+            if self.progress is not None and self.progress.step - 1 > self.policy.version:
+                return False
+            if any(group.kind == "train" for group in self.groups.values()):
+                return False
         envs = self.train_envs if kind == "train" else self.eval_envs
         if envs is None:
             return False
@@ -531,11 +540,18 @@ class Dispatcher:
 
         if kind == "train" and not self.train_admission_open():
             return False
+        if kind == "train" and self.synchronous_writer:
+            if self.last_writer_cohort_version == self.policy.version:
+                return False
+            if any(group.kind == "eval" for group in self.groups.values()):
+                return False
         fresh = self.next_fresh_group(kind, envs)
         if fresh is None:
             return False
         gid = fresh.group_id or uuid.uuid4()
         self.groups[gid] = fresh
+        if kind == "train" and self.synchronous_writer:
+            self.last_writer_cohort_version = self.policy.version
         return await self.schedule_group_episode(gid, fresh)
 
     def next_fresh_group(self, kind: WorkKind, envs) -> GroupState | None:

@@ -268,6 +268,24 @@ class RIMEAlgoConfig(BaseAlgoConfig):
     mask_invalid_writer_pg: bool = False
 
 
+class WriterSuffixAlgoConfig(RIMEAlgoConfig):
+    type: Literal["writer_suffix"] = "writer_suffix"
+    train_actor: Literal[False] = False
+    train_writer: Literal[True] = True
+    beta: Literal[0.0] = 0.0
+    mask_invalid_writer_pg: Literal[False] = False
+
+    def validate_env(self, env_config: vf.EnvConfig) -> None:
+        if not (
+            getattr(env_config, "actor_frozen", False)
+            and not getattr(env_config, "writer_frozen", True)
+            and not getattr(env_config, "score_exploration", True)
+            and getattr(env_config, "action_decoding", None) == "visible_legal_schema"
+            and not getattr(env_config, "eval_untrainable", True)
+        ):
+            raise ValueError("writer_suffix requires frozen legal ACT, live WRITE and no exploration judge")
+
+
 class HierarchicalGRPOAlgoConfig(BaseAlgoConfig):
     type: Literal["hierarchical_grpo"] = "hierarchical_grpo"
     """GRPO for proposer-solver envs.
@@ -396,6 +414,7 @@ AlgoConfig: TypeAlias = Annotated[
     | RAEAlgoConfig
     | HierarchicalGRPOAlgoConfig
     | RIMEAlgoConfig
+    | WriterSuffixAlgoConfig
     | OPDAlgoConfig
     | OPSDAlgoConfig
     | SFTAlgoConfig
