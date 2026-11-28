@@ -225,8 +225,6 @@ async def swap_checkpoint(request: Request):
     state = request.app.state
     if state.checkpoint_swapper is None:
         raise HTTPException(status.HTTP_409_CONFLICT, state.checkpoint_swap_unavailable)
-    if getattr(state, "weight_puller", None) is not None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "This server pulls every version its trainer publishes")
     try:
         swap = SwapRequest.model_validate(await request.json())
     except ValidationError as error:
@@ -408,7 +406,10 @@ def setup_checkpoint_swap(engine_client: EngineClient, state: State, args: Names
     serving_control.install_admission(engine_client)
     parallel = engine_client.vllm_config.parallel_config
     group = args.weight_broadcast_group
-    if args.api_server_count > 1:
+    if args.weight_pull is not None:
+        # Its generator clients follow the trainer's versions; a swapper would replace them
+        state.checkpoint_swap_unavailable = "This server pulls every version its trainer publishes"
+    elif args.api_server_count > 1:
         state.checkpoint_swap_unavailable = (
             "Swapping checkpoints counts and holds requests per API server: it needs api_server_count = 1"
         )
@@ -423,6 +424,7 @@ def setup_checkpoint_swap(engine_client: EngineClient, state: State, args: Names
 
         engines = LocalEngine(engine_client) if group is None else EngineGroup(group, args.admin_token_var)
         state.checkpoint_swapper = CheckpointSwapper(engines, SwapConfig(**args.weight_swap))
+        state.checkpoint_swap_prepare = asyncio.create_task(state.checkpoint_swapper.prepare())
 
 
 def _weight_pull_done(task: asyncio.Task) -> None:

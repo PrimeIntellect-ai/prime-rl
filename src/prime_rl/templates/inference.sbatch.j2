@@ -350,9 +350,12 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     # group is node-local (rendezvous on LOCAL_IP); dense models run independent engines.
 {%- if weight_group %}
     # The first rank of each DP group moves all of its ranks onto a new checkpoint (POST /swap-checkpoint) through
-    # their admin routes, with the admin token from $ADMIN_TOKEN_SEND_ENV (NAME=token) when they are guarded.
+    # their admin routes, with the admin token from $ADMIN_TOKEN_SEND_ENV (NAME=token) when they are guarded. The
+    # URLs name the ranks as the router does, so tools that read the router's workers find every group.
     GROUP_URLS=""
-    for ((d=0; d<DP_PER_NODE; d++)); do GROUP_URLS="$GROUP_URLS http://$LOCAL_IP:$((BACKEND_PORT + d))/v1"; done
+    for ((d=0; d<DP_PER_NODE; d++)); do
+        GROUP_URLS="$GROUP_URLS http://${HOSTNAMES[$INFER_NODE_RANK]}:$((BACKEND_PORT + d))/v1"
+    done
 {%- endif %}
     for ((d=0; d<DP_PER_NODE; d++)); do
         RANK_GPUS=$(seq -s, $((d * TP)) $((d * TP + TP - 1)))

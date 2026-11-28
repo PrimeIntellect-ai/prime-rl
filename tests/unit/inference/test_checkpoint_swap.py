@@ -242,10 +242,12 @@ def test_one_swap_at_a_time_a_duplicate_shares_its_result_and_another_target_con
     assert engines.calls.count("apply") == 1
 
 
-def test_a_failed_install_stays_paused_and_unhealthy_until_a_retry_installs(monkeypatch):
+def test_a_failed_install_stays_paused_and_unhealthy_until_a_swap_installs(monkeypatch):
     engines = FakeEngines()
     engines.fail_apply = 2
     swap = swapper(engines, [version(2), version(3)])
+    monkeypatch.setattr(checkpoint_swap, "MAX_REPAIR_INTERVAL_S", 0.01)
+    swap.config = SwapConfig(**{**CONFIG.__dict__, "timeout": 0})
 
     async def scenario():
         with pytest.raises(SwapFailed) as failure:
@@ -253,17 +255,22 @@ def test_a_failed_install_stays_paused_and_unhealthy_until_a_retry_installs(monk
         assert failure.value.status == 500
         assert engines.paused and not engines.admitting and not engines.healthy and swap.broken
         await swap._repair
-        return failure.value
+        # the only retry also failed and the timeout passed: still paused, unhealthy
+        assert engines.paused and not engines.healthy and engines.served_ == (None, None)
 
-    monkeypatch.setattr(checkpoint_swap, "MAX_REPAIR_INTERVAL_S", 0.01)
-    swap.config = SwapConfig(**{**CONFIG.__dict__, "timeout": 0})
-    run(scenario())
-    # the only retry also failed and the timeout passed: still paused, unhealthy
-    assert engines.paused and not engines.healthy and engines.served_ == (None, None)
+        # a swap whose stage fails leaves a broken group paused: its weights are still partly written
+        engines.calls.clear()
+        engines.fail_stage = 1
+        with pytest.raises(SwapFailed) as failure:
+            await swap.swap(SwapRequest(step=3))
+        assert failure.value.status == 500 and engines.paused and not engines.admitting and not engines.healthy
+        assert "resume" not in engines.calls and swap.broken
 
-    # a new swap takes over from the paused group, without pausing again
-    engines.calls.clear()
-    result = run(swap.swap(SwapRequest(step=3)))
+        # a new swap takes over from the paused group, without pausing again
+        engines.calls.clear()
+        return await swap.swap(SwapRequest(step=3))
+
+    result = run(scenario())
     assert engines.calls == [("stage", False), "apply", "reset", "resume", "release", ("health", True)]
     assert result["cold"] and engines.healthy and not engines.paused and swap.broken is None
 

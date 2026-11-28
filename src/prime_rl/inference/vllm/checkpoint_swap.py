@@ -96,6 +96,8 @@ class CheckpointSwapper:
         self._stop_repair = asyncio.Event()
         self.broken: str | None = None
         """Why the group is paused and unhealthy after a failed install, None while it serves."""
+        self.phase: str | None = None
+        """Where the running swap is: staging (while serving), draining (holding new requests) or paused."""
 
     @property
     def control(self) -> ModelExpressControlClient:
@@ -103,16 +105,29 @@ class CheckpointSwapper:
             self._control = ModelExpressControlClient.connect(server_url=self.config.server_url)
         return self._control
 
+    async def prepare(self) -> None:
+        """Connect the group's workers to ModelExpress ahead of the first swap, so that they build what a first stage
+        needs while they serve. Best effort: every swap connects them again."""
+        try:
+            await self.engines.ready()
+            await self.engines.init(self._init_payload())
+        except Exception as error:
+            logger.warning(f"Connecting the engines to ModelExpress ahead of a swap failed: {error!r}")
+
     def status(self) -> dict:
         return {
             "swapping": self._swapping[0] if self._swapping is not None else None,
+            "phase": self.phase,
             "broken": self.broken,
             "repairing": self._repair is not None and not self._repair.done(),
             "model_name": self.config.model_name,
         }
 
     async def swap(self, request: SwapRequest) -> dict:
-        target = await self.resolve(request)
+        try:
+            target = await self.resolve(request)
+        except grpc.RpcError as error:
+            raise SwapFailed(502, f"ModelExpress at {self.config.server_url} failed: {error.details()}") from error
         if self._swapping is not None:
             uid, task = self._swapping
             if uid != target.version_id:
@@ -127,6 +142,7 @@ class CheckpointSwapper:
     def _swap_done(self, task: asyncio.Task) -> None:
         if self._swapping is not None and self._swapping[1] is task:
             self._swapping = None
+        self.phase = None
         if not task.cancelled() and task.exception() is not None and not isinstance(task.exception(), SwapFailed):
             logger.error("Checkpoint swap failed", exc_info=task.exception())
 
@@ -178,8 +194,9 @@ class CheckpointSwapper:
 
         live = not paused and await self.engines.can_stage_live(mesh)
         if live:
+            self.phase = "staging"
             mark = time.perf_counter()
-            await self._stage(uid, live=True, failure="the engines keep serving the previous weights")
+            await self._stage_live(uid)
             timings["stage"] = time.perf_counter() - mark
 
         in_flight = aborted = 0
@@ -187,6 +204,7 @@ class CheckpointSwapper:
             mark = time.perf_counter()
             try:
                 in_flight = await self.engines.hold()
+                self.phase = "draining"
                 if in_flight and request.mode == "fail":
                     raise SwapFailed(
                         409, f"{in_flight} requests in flight (mode 'fail'); nothing changed", in_flight=in_flight
@@ -208,15 +226,26 @@ class CheckpointSwapper:
                 await self._abandon(live)
                 raise SwapFailed(500, f"Pausing the engines failed: {error!r}") from error
         paused_at = time.perf_counter()
+        self.phase = "paused"
 
         if not live:
             mark = time.perf_counter()
             try:
+                await self.engines.stage(uid, live=False)
+            except Exception as error:
+                await self.engines.discard()
+                if paused:
+                    # The weights are still partly written from the install that failed before
+                    reason = f"Staging {uid} (step {step}) failed while the group is broken: {error!r}"
+                    await self._break(target, reason)
+                    raise SwapFailed(
+                        500, f"{reason}; the group stays paused and unhealthy and retries", version_uid=uid
+                    ) from error
                 # A stage leaves the live weights as they are, also a failed one
-                await self._stage(uid, live=False, failure="the engines resume on the previous weights")
-            except SwapFailed:
                 await self._abandon(False)
-                raise
+                raise SwapFailed(
+                    502, f"Staging {uid} failed; the engines resume on the previous weights: {error}", version_uid=uid
+                ) from error
             timings["stage_paused"] = time.perf_counter() - mark
         try:
             mark = time.perf_counter()
@@ -271,12 +300,14 @@ class CheckpointSwapper:
                 "checkpoint needs a restart on it",
             )
 
-    async def _stage(self, uid: str, live: bool, failure: str) -> None:
+    async def _stage_live(self, uid: str) -> None:
         try:
-            await self.engines.stage(uid, live=live)
+            await self.engines.stage(uid, live=True)
         except Exception as error:
             await self.engines.discard()
-            raise SwapFailed(502, f"Staging {uid} failed; {failure}: {error}", version_uid=uid) from error
+            raise SwapFailed(
+                502, f"Staging {uid} failed; the engines keep serving the previous weights: {error}", version_uid=uid
+            ) from error
 
     async def _wait_idle(self, timeout: float) -> None:
         deadline = time.monotonic() + timeout
