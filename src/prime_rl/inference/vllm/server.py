@@ -370,6 +370,7 @@ def server(config: InferenceConfig):
             "model_name": broadcast.model_name or config.vllm.model,
             "staging_buffer_bytes": broadcast.staging_buffer_bytes,
             "staging_buffers_count": broadcast.staging_buffers_count,
+            "staging_host_bytes": broadcast.staging_host_bytes,
             "timeout": broadcast.timeout,
         }
         if broadcast.pull

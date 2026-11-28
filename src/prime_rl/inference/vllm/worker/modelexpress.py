@@ -85,6 +85,7 @@ class ModelExpressWeightUpdateWorker(WeightRPCMixin, Worker):
         staging_buffer_bytes=None,
         staging_buffers_count=1,
         model_name=None,
+        staging_host_bytes=None,
     ):
         # The id names this worker's MX registration, version leases and NIXL agent, so it must be unique per worker.
         # vLLM's ranks and device indices are not: they restart in every data-parallel engine, every external-LB server
@@ -126,6 +127,7 @@ class ModelExpressWeightUpdateWorker(WeightRPCMixin, Worker):
                 worker_id=worker_id,
                 staging_buffer_bytes=staging_buffer_bytes,
                 staging_buffers_count=staging_buffers_count,
+                staging_host_bytes=staging_host_bytes,
             )
         )
         atexit.register(self._generator.close)

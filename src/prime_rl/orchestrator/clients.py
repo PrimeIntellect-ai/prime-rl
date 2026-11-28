@@ -370,6 +370,7 @@ class AdminPlane:
         timeout: int,
         staging_buffer_bytes: int | None,
         staging_buffers_count: int,
+        staging_host_bytes: int | None = None,
     ) -> None:
         # Every engine gets the same request: each worker names itself, so no inference layout is needed here.
         payload = {
@@ -379,6 +380,7 @@ class AdminPlane:
             "session_id": uuid.uuid4().hex,
             "staging_buffer_bytes": staging_buffer_bytes,
             "staging_buffers_count": staging_buffers_count,
+            "staging_host_bytes": staging_host_bytes,
         }
 
         async def initialize(client):

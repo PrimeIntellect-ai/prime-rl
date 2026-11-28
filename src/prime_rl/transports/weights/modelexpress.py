@@ -242,6 +242,7 @@ class ModelExpressWeightReceiver(WeightReceiver):
             self.config.timeout,
             self.config.staging_buffer_bytes,
             self.config.staging_buffers_count,
+            self.config.staging_host_bytes,
         )
 
     async def receive(self, step: int) -> None:
